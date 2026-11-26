@@ -153,3 +153,115 @@ def test_run_load_plans_the_same_prequant_sources_it_fetches():
     )
     # The fetch reads the very list the plan was made from, not a second resolution.
     assert "self._fetch_denoiser_prequant(\n                    denoiser_sources," in src
+
+
+FALLBACK_KEY = "c4" * 32
+
+
+def test_a_fallback_denoiser_candidate_is_counted_while_it_downloads(fake_cache, monkeypatch):
+    """The first listed checkpoint fails mid-transfer; progress follows the fallback file the loop then pulls."""
+    from utils import hf_xet_fallback
+
+    primary, fallback = "transformer_fp8.safetensors", "transformer_fp8.pt"
+    siblings = [_sib(primary, 900, DIT_KEY), _sib(fallback, 300, FALLBACK_KEY)]
+    listings = types.SimpleNamespace(info = lambda repo: types.SimpleNamespace(siblings = siblings))
+    dit = PrequantSource(
+        kind = "repo", location = PREQUANT, filename = primary, fallback_filenames = (fallback,)
+    )
+    backend = video_mod.VideoBackend()
+    plan = backend._plan_prequant_fetches(listings, denoiser_sources = [(dit, None)])
+    assert [e.files for e in plan.values()] == [((primary, DIT_KEY, 900),)]
+    backend._load_token = token = 7
+    _start_load(backend, plan, video_mod._plan_total(plan))
+    seen = []
+
+    def download(repo, name, *_a, **_kw):
+        if name == primary:
+            raise ConnectionError("transfer reset")
+        _partial(fake_cache, PREQUANT, FALLBACK_KEY, 150)
+        seen.append(backend.load_progress())
+
+    monkeypatch.setattr(hf_xet_fallback, "hf_hub_download_with_xet_fallback", download)
+    followed = {}
+
+    def on_fallback(source, name):
+        followed["plan"] = backend._publish_followed_candidate(token, plan, source, name)
+
+    backend._fetch_denoiser_prequant([dit], None, on_fallback = on_fallback)
+    assert seen and seen[0]["downloaded_bytes"] == 150
+    assert seen[0]["expected_bytes"] == 300
+    # A re-plan made from the followed source names the same file.
+    moved = video_mod._source_starting_at(dit, fallback)
+    replanned = backend._plan_prequant_fetches(listings, denoiser_sources = [(moved, None)])
+    assert [e.files for e in replanned.values()] == [((fallback, FALLBACK_KEY, 300),)]
+    assert list(replanned) == list(followed["plan"])
+
+
+def test_run_load_follows_a_denoiser_fallback():
+    src = inspect.getsource(video_mod.VideoBackend._run_load)
+    assert src.count("on_fallback = _follow_denoiser_fallback") == 2
+
+
+def test_a_completed_hosted_file_in_a_symlinkless_cache_stays_counted(fake_cache):
+    """Windows without symlinks moves the finished blob into snapshots/<commit>/: still the full size."""
+    backend = video_mod.VideoBackend()
+    te = TePrequantSource(kind = "repo", location = PREQUANT, filename = "text_encoder_fp8.safetensors")
+    expected, plan = _estimate(backend, te_sources = {"text_encoder": te})
+    _start_load(backend, plan, expected)
+    folder = fake_cache / ("models--" + PREQUANT.replace("/", "--"))
+    (folder / "blobs").mkdir(parents = True)
+    stable = folder / "blobs" / f"{TE_KEY}.incomplete"
+    stable.write_bytes(b"x" * 150)
+    assert backend.load_progress()["downloaded_bytes"] == 150
+    commit = "9" * 40
+    (folder / "refs").mkdir()
+    (folder / "refs" / "main").write_text(commit)
+    snap = folder / "snapshots" / commit / "text_encoder_fp8.safetensors"
+    snap.parent.mkdir(parents = True)
+    stable.unlink()
+    snap.write_bytes(b"x" * 400)
+    assert backend.load_progress()["downloaded_bytes"] == 400
+
+
+def test_a_snapshot_symlink_to_another_blob_is_not_counted(fake_cache):
+    """With symlinks, the snapshot entry points at a blob read by key; an older revision's blob must not count."""
+    backend = video_mod.VideoBackend()
+    te = TePrequantSource(kind = "repo", location = PREQUANT, filename = "text_encoder_fp8.safetensors")
+    expected, plan = _estimate(backend, te_sources = {"text_encoder": te})
+    _start_load(backend, plan, expected)
+    folder = fake_cache / ("models--" + PREQUANT.replace("/", "--"))
+    (folder / "blobs").mkdir(parents = True)
+    old = folder / "blobs" / ("d5" * 32)
+    old.write_bytes(b"o" * 400)
+    commit = "8" * 40
+    (folder / "refs").mkdir()
+    (folder / "refs" / "main").write_text(commit)
+    snap = folder / "snapshots" / commit / "text_encoder_fp8.safetensors"
+    snap.parent.mkdir(parents = True)
+    snap.symlink_to(old)
+    assert backend.load_progress()["downloaded_bytes"] == 0
+
+
+def test_the_encoder_pick_and_the_plan_share_one_listing(fake_cache, monkeypatch):
+    """The hosted-encoder choice and the plan that sizes it list the pre-cast repo once, so they read one commit."""
+    import huggingface_hub
+
+    calls = []
+
+    class _CountingApi(_FakeApi):
+        def model_info(
+            self,
+            repo,
+            files_metadata = True,
+            **kw,
+        ):
+            calls.append(repo)
+            return super().model_info(repo, files_metadata = files_metadata, **kw)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _CountingApi)
+    backend = video_mod.VideoBackend()
+    te = TePrequantSource(kind = "repo", location = PREQUANT, filename = "text_encoder_fp8.safetensors")
+    expected, plan = _estimate(backend, te_sources = {"text_encoder": te})
+    assert expected == 2 + 1 + 30 + 400
+    assert calls.count(PREQUANT) == 1
+    assert calls.count(BASE) == 1

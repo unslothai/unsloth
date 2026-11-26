@@ -2336,6 +2336,8 @@ class _PlannedFetch(NamedTuple):
     # The encoder components the plan left out (hosted pre-cast checkpoints it expected to find); _run_load re-plans
     # the base when the actual fetches skip a different set.
     skip_te: tuple = ()
+    # The other listed candidates a fetch loop may fall back to, in its order, as ``(name, blob key, size)``.
+    alternates: tuple = ()
 
 
 def _sibling_etag(sibling: Any) -> Optional[str]:
@@ -2384,6 +2386,37 @@ class _OneCommitListings:
                 repo, files_metadata = True, **({"revision": pinned} if pinned else {})
             )
         return self._infos[key]
+
+    def recording(self, api: Any) -> "_RecordedListings":
+        """``api`` whose unpinned full listings are shared with this plan, both ways."""
+        return _RecordedListings(api, self)
+
+
+class _RecordedListings:
+    """A ``model_info`` client for a picker that runs before the plan (the hosted encoder choice): its full listing of
+    an unpinned repo is the plan's listing of that repo, so the repo is listed once and the plan sizes the very blob the
+    picker chose. The fetch itself still resolves the repo's ref on its own (the revision is not carried to it)."""
+
+    def __init__(self, api: Any, listings: _OneCommitListings):
+        self._api = api
+        self._listings = listings
+
+    def model_info(self, repo_id: str, *args: Any, **kwargs: Any) -> Any:
+        key = repo_id.strip().lower()
+        shareable = (
+            not args
+            and kwargs.get("files_metadata")
+            and set(kwargs) <= {"files_metadata", "timeout"}
+            and key not in self._listings._pins
+        )
+        if not shareable:
+            return self._api.model_info(repo_id, *args, **kwargs)
+        if key not in self._listings._infos:
+            self._listings._infos[key] = self._api.model_info(repo_id, *args, **kwargs)
+        return self._listings._infos[key]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._api, name)
 
 
 def _plan_total(plan: dict[str, "_PlannedFetch"]) -> Optional[int]:
@@ -2464,13 +2497,49 @@ def _plan_fetch(
 def _plan_first_listed(repo: str, info: Any, candidates: Any) -> Optional["_PlannedFetch"]:
     """Plan the first of ``candidates`` listed in ``repo`` (exact repo, no mirror swap), else None. Unpinned."""
     meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
-    name = next((n for n in candidates if n in meta), None)
-    if name is None:
+    listed = [
+        (n, _sibling_etag(meta[n]), int(getattr(meta[n], "size", 0) or 0))
+        for n in dict.fromkeys(candidates)
+        if n in meta
+    ]
+    if not listed:
         return None
-    sibling = meta[name]
-    return _PlannedFetch(
-        repo, None, ((name, _sibling_etag(sibling), int(getattr(sibling, "size", 0) or 0)),)
-    )
+    return _PlannedFetch(repo, None, (listed[0],), alternates = tuple(listed[1:]))
+
+
+def _plan_follow_candidate(
+    plan: dict[str, "_PlannedFetch"], role: str, repo: str, name: str
+) -> Optional[dict[str, "_PlannedFetch"]]:
+    """``plan`` with ``role``'s entry for ``repo`` moved to its listed fallback ``name``, else None (nothing to move)."""
+    prefix = f"{role}:{repo}:"
+    for key, entry in plan.items():
+        names = [alt[0] for alt in entry.alternates]
+        if not key.startswith(prefix) or name not in names:
+            continue
+        at = names.index(name)
+        out = {k: v for k, v in plan.items() if k != key}
+        out[prefix + name] = entry._replace(
+            files = (entry.alternates[at],), alternates = entry.alternates[at + 1 :]
+        )
+        return out
+    return None
+
+
+def _source_starting_at(source: Any, name: str) -> Any:
+    """``source`` with ``name`` as its first candidate (a fetch fell back to it), so a re-plan names that file."""
+    import dataclasses
+
+    from .diffusion_prequant import candidate_filenames_of
+
+    names = list(candidate_filenames_of(source))
+    if name not in names or not dataclasses.is_dataclass(source):
+        return source
+    try:
+        return dataclasses.replace(
+            source, filename = name, fallback_filenames = tuple(names[names.index(name) + 1 :])
+        )
+    except (TypeError, ValueError):
+        return source
 
 
 _FETCH_CHECKPOINT = "checkpoint"
@@ -7714,6 +7783,24 @@ class VideoBackend:
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
             )
+
+            def _follow_denoiser_fallback(source: Any, name: str) -> None:
+                # The fetch moved past a failed candidate: count the file it now pulls, and so does any re-plan.
+                nonlocal denoiser_plan, planned_files, expected
+                denoiser_plan = [
+                    (
+                        _source_starting_at(src, name)
+                        if getattr(src, "location", None) == source.location
+                        else src,
+                        sch,
+                    )
+                    for src, sch in denoiser_plan
+                ]
+                moved = self._publish_followed_candidate(token, planned_files, source, name)
+                if moved is not None:
+                    planned_files = moved
+                    expected = _plan_total(planned_files) if expected else expected
+
             # Fetch the hosted DiT here, under this load's cancel event, and claim it against a mid-load delete.
             if _ltx23_prequant_serves_on_card(
                 fam,
@@ -7764,6 +7851,7 @@ class VideoBackend:
                     cancel_event = cancel_event,
                     local_files_only = local_files_only,
                     scheme = TQ_FP8,
+                    on_fallback = _follow_denoiser_fallback,
                 )
             # The denoiser artifact too: the injection that would fetch it has no cancel event.
             if skip_transformer_weights:
@@ -7773,6 +7861,7 @@ class VideoBackend:
                     cancel_event = cancel_event,
                     local_files_only = local_files_only,
                     scheme = planned_denoiser,
+                    on_fallback = _follow_denoiser_fallback,
                 )
             base_plan = planned_files.get(_FETCH_BASE)
             actual_te_skip = tuple(te_skipped) + tuple(h3_te_skipped)
@@ -9238,8 +9327,10 @@ class VideoBackend:
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
         scheme: Optional[str] = None,
+        on_fallback: Optional[Callable[[Any, str], None]] = None,
     ) -> None:
-        """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation."""
+        """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation.
+        ``on_fallback(source, name)`` runs before each attempt past the first, so progress can follow that file."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from core.inference.diffusion_prequant import (
             candidate_filenames_of,
@@ -9261,6 +9352,11 @@ class VideoBackend:
                 cache_dir = hub_cache_dir(),
             )
             for index, name in enumerate(names):
+                if index and on_fallback is not None:
+                    try:
+                        on_fallback(source, name)
+                    except Exception as exc:  # noqa: BLE001 -- progress is best effort, the fetch is not
+                        logger.debug("video.denoiser_prequant_replan_failed: %s", exc)
                 try:
                     hf_hub_download_with_xet_fallback(
                         source.location,
@@ -9699,15 +9795,17 @@ class VideoBackend:
 
             total = 0
             api = hub_reachability.guarded(HfApi(token = hf_token or None))
+            listings = _OneCommitListings(api, pin_revisions)
             if skip_te_override is not None:
                 # The encoder fetches already ran: plan around what they actually staged.
                 skip_te_components = tuple(skip_te_override)
             else:
-                skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, api))
-                if self._h3_te_quant_hub_files(h3_te_scheme, api)[1]:
+                # The listings that pick the encoders are the ones the plan sizes them from: one request per repo.
+                picker = listings.recording(hub_reachability.always_asked(api))
+                skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, picker))
+                if self._h3_te_quant_hub_files(h3_te_scheme, picker)[1]:
                     skip_te_components = skip_te_components + ("text_encoder",)
             planned: dict[str, _PlannedFetch] = {}
-            listings = _OneCommitListings(api, pin_revisions)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 listing = _video_listing_repo(repo_id)
                 info = listings.info(listing)
@@ -9753,6 +9851,24 @@ class VideoBackend:
             return _plan_total(planned) if planned else (total or None)
         except Exception:  # noqa: BLE001 -- progress totals are best-effort only
             return None
+
+    def _publish_followed_candidate(
+        self, token: Any, plan: dict[str, "_PlannedFetch"], source: Any, name: str
+    ) -> Optional[dict[str, "_PlannedFetch"]]:
+        """``plan`` with the hosted denoiser of ``source`` moved to its listed fallback ``name``, published to this
+        load's progress (still its token, and a total to report); None when the plan has no such fallback."""
+        moved = _plan_follow_candidate(plan, _FETCH_DENOISER_PREQUANT, source.location, name)
+        if moved is None:
+            return None
+        added = self._plan_partials(moved, known = plan)
+        with self._lock:
+            loading = self._loading
+            if self._load_token == token and loading is not None and loading.expected_bytes:
+                loading.expected_bytes = _plan_total(moved)
+                if hasattr(loading, "fetch_plan"):
+                    loading.incomplete_baseline = {**added, **loading.incomplete_baseline}
+                    loading.fetch_plan = moved
+        return moved
 
     @staticmethod
     def _plan_prequant_fetches(
@@ -10684,17 +10800,22 @@ class VideoBackend:
                 for root in roots:
                     folder = root / ("models--" + repo.replace("/", "--"))
                     try:
+                        ref = folder / "refs" / "main"
+                        rev = entry.revision or (
+                            ref.read_text(encoding = "utf-8").strip() if ref.is_file() else None
+                        )
+                        snapshot = folder / "snapshots" / rev / name if rev else None
                         if etag:
                             candidates = [folder / "blobs" / etag]
                             stable = folder / "blobs" / f"{etag}.incomplete"
                             if stable.is_file():
                                 best = max(best, blob_bytes_present(stable))
+                            # A cache without symlinks (Windows) MOVES the finished blob into the snapshot; a symlink
+                            # there points at a blob already read by key, possibly another revision's.
+                            if snapshot is not None and not snapshot.is_symlink():
+                                candidates.append(snapshot)
                         else:
-                            ref = folder / "refs" / "main"
-                            rev = entry.revision or (
-                                ref.read_text(encoding = "utf-8").strip() if ref.is_file() else None
-                            )
-                            candidates = [folder / "snapshots" / rev / name] if rev else []
+                            candidates = [snapshot] if snapshot is not None else []
                         for path in candidates:
                             if path.is_file():
                                 best = max(best, os.path.getsize(path))
