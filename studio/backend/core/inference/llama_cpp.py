@@ -43403,67 +43403,6 @@ class LlamaCppBackend:
                     yield _build_metadata_event(_iter_usage, _iter_timings, _iter_finish_reason)
                     return
 
-                # Unsloth calls in a batch with a client call do not run: the model repeats them.
-                # Only tools offered this round: a forced choice narrows them to one.
-                _client_calls = client_tool_calls_in(
-                    tool_calls,
-                    (client_tool_names or frozenset()) & _enabled_tool_names,
-                    tool_controller.resolved_tool_name,
-                )
-                if _client_calls and not has_structured_tc:
-                    # Textual repeats collapse and cap as Unsloth calls do below.
-                    if deduplicate_tool_calls:
-                        _unique_calls: dict = {}
-                        for _call in _client_calls:
-                            _fn = _call["function"]
-                            _unique_calls.setdefault((_fn["name"], _fn["arguments"]), _call)
-                        _client_calls = list(_unique_calls.values())
-                    _client_calls = _client_calls[:_MAX_TOOL_CALLS_PER_TURN]
-                if disable_parallel_tool_use:
-                    _client_calls = _client_calls[:1]
-                if _client_calls:
-                    for _pid, _pname in provisional_started_tool_calls.items():
-                        if _pid not in resolved_provisional_tool_call_ids:
-                            resolved_provisional_tool_call_ids.add(_pid)
-                            yield {
-                                "type": "tool_end",
-                                "tool_name": _pname,
-                                "tool_call_id": _pid,
-                                "result": "",
-                                "provenance": provisional_tool_provenance(_pname),
-                            }
-                    logger.info(
-                        f"Returning {len(_client_calls)} client tool call(s) to the caller: "
-                        + ", ".join(call["function"]["name"] for call in _client_calls)
-                    )
-                    yield {"type": "status", "text": ""}
-                    yield {
-                        "type": "client_tool_calls",
-                        "tool_calls": _client_calls,
-                        "content": content_text or "",
-                    }
-                    yield _build_metadata_event(_iter_usage, _iter_timings, "tool_calls")
-                    return
-
-                # ── Execute tool calls ──
-                # Progress made: reset stall counters and restore thinking.
-                _length_continuations = 0
-                _thought_before_retries = ""
-                _effective_enable_thinking = enable_thinking
-                _effective_reasoning_effort = reasoning_effort
-                # Captured before the reset: later records must merge into a resumed partial.
-                _merge_into_partial = continue_final_message
-                continue_final_message = _caller_continue_final_message
-                _accumulated_completion_tokens += (
-                    _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
-                ).get("completion_tokens", 0)
-                _it = _iter_timings or {}
-                _accumulated_predicted_ms += _it.get("predicted_ms", 0)
-                _accumulated_predicted_n += _it.get("predicted_n", 0)
-                # Refreshes the context meter from the usage llama-server already reported (no
-                # recount). Sent once the first tool is running, so it never delays a tool.
-                _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
-
                 # Dedupe and cap TEXTUAL fallback calls (see _MAX_TOOL_CALLS_PER_TURN).
                 _over_cap: list = []
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
@@ -43526,6 +43465,56 @@ class LlamaCppBackend:
                 if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
                     tool_calls = tool_calls[:1]
                     _over_cap = []
+
+                # After dedupe and the parallel cut, before any call runs: Unsloth calls in a batch
+                # with a client call do not run (the model repeats them). Only this round's tools count.
+                _client_calls = client_tool_calls_in(
+                    tool_calls,
+                    (client_tool_names or frozenset()) & _enabled_tool_names,
+                    tool_controller.resolved_tool_name,
+                )
+                if _client_calls:
+                    for _pid, _pname in provisional_started_tool_calls.items():
+                        if _pid not in resolved_provisional_tool_call_ids:
+                            resolved_provisional_tool_call_ids.add(_pid)
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": _pname,
+                                "tool_call_id": _pid,
+                                "result": "",
+                                "provenance": provisional_tool_provenance(_pname),
+                            }
+                    logger.info(
+                        f"Returning {len(_client_calls)} client tool call(s) to the caller: "
+                        + ", ".join(call["function"]["name"] for call in _client_calls)
+                    )
+                    yield {"type": "status", "text": ""}
+                    yield {
+                        "type": "client_tool_calls",
+                        "tool_calls": _client_calls,
+                        "content": content_text or "",
+                    }
+                    yield _build_metadata_event(_iter_usage, _iter_timings, "tool_calls")
+                    return
+
+                # ── Execute tool calls ──
+                # Progress made: reset stall counters and restore thinking.
+                _length_continuations = 0
+                _thought_before_retries = ""
+                _effective_enable_thinking = enable_thinking
+                _effective_reasoning_effort = reasoning_effort
+                # Captured before the reset: later records must merge into a resumed partial.
+                _merge_into_partial = continue_final_message
+                continue_final_message = _caller_continue_final_message
+                _accumulated_completion_tokens += (
+                    _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
+                ).get("completion_tokens", 0)
+                _it = _iter_timings or {}
+                _accumulated_predicted_ms += _it.get("predicted_ms", 0)
+                _accumulated_predicted_n += _it.get("predicted_n", 0)
+                # Refreshes the context meter from the usage llama-server already reported (no
+                # recount). Sent once the first tool is running, so it never delays a tool.
+                _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 if reasoning_accum.strip():

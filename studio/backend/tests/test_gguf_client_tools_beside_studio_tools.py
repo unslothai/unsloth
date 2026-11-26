@@ -237,6 +237,25 @@ def test_a_forced_tool_choice_hands_back_only_the_forced_client_tool(monkeypatch
     assert [call["id"] for e in handed_back for call in e["tool_calls"]] == ["call_ha"]
 
 
+def test_parallel_tool_calls_false_hands_back_the_first_call(monkeypatch):
+    backend, _payloads = _backend(
+        monkeypatch,
+        [
+            [
+                _tool_call("mcp_homeassistant__call_action", {}, "call_action", index = 0),
+                _tool_call("mcp_homeassistant__GetLiveContext", {}, "call_ha", index = 1),
+                _done(),
+            ]
+        ],
+    )
+    _executed(monkeypatch)
+
+    events = _loop(backend, disable_parallel_tool_use = True)
+
+    [handed_back] = [e for e in events if e["type"] == "client_tool_calls"]
+    assert [call["id"] for call in handed_back["tool_calls"]] == ["call_action"]
+
+
 def test_client_tool_results_continue_the_loop(monkeypatch):
     backend, payloads = _backend(
         monkeypatch, [[_sse({"content": "The living room light is on."}), _done()]]
