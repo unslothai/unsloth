@@ -287,6 +287,11 @@ jobs:
         if: always()
         run: python tests/_shared/rank_zygote.py --summary /tmp/unsloth_rank_zygote_stats
 
+      - name: Processes the kernel killed for memory
+        # "node down: Not properly terminated" from xdist is a worker that died; this says if it was the OOM killer.
+        if: failure()
+        run: sudo dmesg -T | grep -iE "out of memory|oom-kill|killed process" | tail -20 || true
+
       - name: Why a failure here might already be fixed on the base branch
         # Only on failure; the action reports when the base branch moved since the merge ref.
         if: failure() && github.event_name == 'pull_request'

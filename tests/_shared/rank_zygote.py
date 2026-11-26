@@ -115,7 +115,13 @@ def _record(kind: str, **fields) -> None:
     try:
         os.makedirs(root, exist_ok = True)
         with open(os.path.join(root, f"{os.getpid()}.jsonl"), "a", encoding = "utf-8") as f:
-            event = {"event": kind, "pid": os.getpid(), "t": time.time(), **fields}
+            event = {
+                "event": kind,
+                "pid": os.getpid(),
+                "t": time.time(),
+                "mem_gb": _mem_available_gb(),
+                **fields,
+            }
             event.setdefault("test", os.environ.get("PYTEST_CURRENT_TEST"))
             f.write(json.dumps(event) + "\n")
     except Exception:
@@ -1395,6 +1401,7 @@ class _Observer:
 def summary(root: str) -> dict:
     counts = {"start": 0, "hit": 0, "respawn": 0}
     reasons = {}
+    lowest = []  # (MemAvailable GB, test) at the events where the host had the least memory left
     for name in os.listdir(root) if os.path.isdir(root) else []:
         with open(os.path.join(root, name), encoding = "utf-8") as f:
             for line in f:
@@ -1404,6 +1411,10 @@ def summary(root: str) -> dict:
                     continue
                 kind = event.get("event")
                 counts[kind] = counts.get(kind, 0) + 1
+                if isinstance(event.get("mem_gb"), (int, float)) and event["mem_gb"] != float(
+                    "inf"
+                ):
+                    lowest = sorted(lowest + [(round(event["mem_gb"], 2), event.get("test"))])[:5]
                 if kind == "respawn":
                     reasons[event.get("reason")] = reasons.get(event.get("reason"), 0) + 1
                 if kind == "spawn":
@@ -1413,6 +1424,7 @@ def summary(root: str) -> dict:
     return {
         "counts": counts,
         "reasons": dict(sorted(reasons.items(), key = lambda kv: -kv[1])),
+        "lowest_mem_available_gb": lowest,
     }
 
 
