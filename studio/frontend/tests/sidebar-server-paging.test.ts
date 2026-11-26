@@ -13,7 +13,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import type * as ProgressiveRowsModule from "../src/components/progressive-rows.tsx";
 import type * as RowPagesModule from "../src/features/chat/hooks/use-sidebar-row-pages.ts";
 import type { SidebarDropPlace } from "../src/features/chat/lib/sidebar-drag.ts";
-import { applyManualOrder, discardUndoneSidebarPlacements, insertIdAt } from "../src/features/chat/stores/sidebar-organization-store.ts";
+import { applyManualOrder, discardUndoneSidebarPlacements, insertIdAt, useSidebarOrganizationStore } from "../src/features/chat/stores/sidebar-organization-store.ts";
 import {
   type RowPageResult,
   RowPager,
@@ -609,8 +609,11 @@ test("a drag in a partly loaded list shows its order at once and saves it once e
   assert.match(src, /applyManualOrder\(items, displayManualOrder\[scope\]/);
 });
 
-for (const [fullyLoaded, undo] of [[false, false], [true, false], [false, true]]) {
-  test(`superseding paged drags preserve the other browser's order (fully loaded: ${fullyLoaded}, undo: ${undo})`, async () => {
+for (const [fullyLoaded, undo, sortChange] of [
+  [false, false, null], [true, false, null], [false, true, null],
+  [false, false, "peer"], [false, false, "local"],
+] as const) {
+  test(`superseding paged drags preserve the other browser's order (fully loaded: ${fullyLoaded}, undo: ${undo}, sort change: ${sortChange})`, async () => {
     const src = readSrc("components/app-sidebar.tsx");
     const declaration = src.slice(
       src.indexOf("const writeManualOrder = useCallback("),
@@ -622,6 +625,8 @@ for (const [fullyLoaded, undo] of [[false, false], [true, false], [false, true]]
     const scope = "section:research";
     const all = ["a", "b", "c", "d", "e", "f", "g"];
     let current = all;
+    let sort: "manual" | "updated" = "manual";
+    let explicitSortChoice = 0;
     const chatRowLists = { [scope]: { hasMore: true } };
     const reads: ((ids: string[]) => void)[] = [];
     const saved: { ids: string[]; placements: SidebarDropPlace[] }[] = [];
@@ -636,8 +641,10 @@ for (const [fullyLoaded, undo] of [[false, false], [true, false], [false, true]]
       mergeManualOrderTail: rowQuery.mergeManualOrderTail,
       settledManualOrder: rowQuery.settledManualOrder,
       useSidebarOrganizationStore: { getState: () => ({
-        manualOrder: { [scope]: current }, customSections: [{ id: "research", sort: "manual" }],
+        manualOrder: { [scope]: current }, customSections: [{ id: "research", sort }],
       }) },
+      customSectionUpdatedSortChoice: () => explicitSortChoice,
+      setCustomSectionSort: (_id: string, next: typeof sort) => { sort = next; },
       applyManualOrder,
       discardUndoneSidebarPlacements,
       insertIdAt,
@@ -659,6 +666,8 @@ for (const [fullyLoaded, undo] of [[false, false], [true, false], [false, true]]
     chatRowLists[scope].hasMore = !fullyLoaded;
     const latest = undo ? ["a", "b", "c", "d", "e", "f"] : ["b", "a", "d", "c", "e", "f"];
     write(scope, [...latest, ...(fullyLoaded ? ["g"] : [])], second);
+    if (sortChange) sort = "updated";
+    if (sortChange === "local") explicitSortChoice++;
     if (!fullyLoaded) reads[1](all);
     await setImmediate();
     reads[0](all);
@@ -667,6 +676,7 @@ for (const [fullyLoaded, undo] of [[false, false], [true, false], [false, true]]
       ids: ["b", "a", "g", "d", "c", "f", "e"],
       placements: [first, second],
     }]);
+    assert.equal(sort, sortChange === "local" ? "updated" : "manual");
   });
 }
 
@@ -685,6 +695,35 @@ test("pending placements retain a position that depends on another drag", () => 
     ] satisfies SidebarDropPlace[];
     assert.deepEqual(discardUndoneSidebarPlacements(base, edited, withUndo), placements);
   }
+});
+
+test("the sidebar filing menu records deliberate returns for both kinds of pinned row", () => {
+  const store = useSidebarOrganizationStore;
+  store.setState(store.getInitialState(), true);
+  const section = store.getState().createCustomSection("Research")!;
+  store.getState().setChatsSection(["chat"], section);
+  store.getState().setProjectsSection(["project"], section);
+  const source = readSrc("components/app-sidebar.tsx");
+  const handlers = source.slice(source.indexOf("function fileChatsInSection("), source.indexOf("function removeCustomSection("));
+  const { outputText } = ts.transpileModule(handlers, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  });
+  const dependencies = {
+    setChatsSection: store.getState().setChatsSection,
+    setProjectsSection: store.getState().setProjectsSection,
+    useSidebarOrganizationStore: store,
+    pinnedIdSet: new Set(["chat"]), pinnedProjectIdSet: new Set(["project"]),
+    setPinnedChats: () => {}, toggleProjectPin: () => {},
+    setSectionHidden: () => {}, setCustomSectionOpen: () => {},
+  };
+  new Function(...Object.keys(dependencies), "section", outputText +
+    'fileChatsInSection(["chat"], section); fileProjectsInSection(["project"], section);')(
+    ...Object.values(dependencies), section,
+  );
+  assert.deepEqual(store.getState().orderMoves, [
+    { sectionId: section, id: "chat", targetId: null, edge: "bottom", afterUnpin: true, unpinKind: "chat" },
+    { sectionId: section, id: "project", targetId: null, edge: "bottom", afterUnpin: true, unpinKind: "project" },
+  ]);
 });
 
 test("the full-list fallback finds a compare row through one of its pane threads", () => {

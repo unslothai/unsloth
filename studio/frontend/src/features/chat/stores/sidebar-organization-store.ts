@@ -164,6 +164,7 @@ export interface SidebarOrganizationState {
   renameCustomSection: (sectionId: string, name: string) => void;
   deleteCustomSection: (sectionId: string) => void;
   setCustomSectionSort: (sectionId: string, sort: SidebarChatSort) => void;
+  recordUnpinFilings: (kind: "chat" | "project", sectionId: string, ids: string[]) => void;
   setChatsSection: (chatIds: string[], sectionId: string | null) => void;
   setProjectsSection: (projectIds: string[], sectionId: string | null) => void;
   setPagesSection: (pageIds: string[], sectionId: string | null) => void;
@@ -434,6 +435,12 @@ export function mergePersistedOrganization(
   };
 }
 
+const updatedSortChoices = new Map<string, number>();
+
+export function customSectionUpdatedSortChoice(sectionId: string): number {
+  return updatedSortChoices.get(sectionId) ?? 0;
+}
+
 export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
   persist(
     (set) => ({
@@ -526,12 +533,26 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           };
         }),
       setPendingNewChatSection: (pending) => set({ pendingNewChatSection: pending }),
-      setCustomSectionSort: (sectionId, sort) =>
+      setCustomSectionSort: (sectionId, sort) => {
+        if (sort === "updated") {
+          updatedSortChoices.set(sectionId, customSectionUpdatedSortChoice(sectionId) + 1);
+        }
         set((state) => ({
           customSections: state.customSections.map((section) =>
             section.id === sectionId ? { ...section, sort } : section,
           ),
-        })),
+        }));
+      },
+      recordUnpinFilings: (kind, sectionId, ids) => {
+        if (ids.length === 0) return;
+        set((state) => {
+          const assignments = kind === "project" ? state.sectionByProjectId : state.sectionByChatId;
+          const filings = ids.filter((id) => assignments[id] === sectionId).map((id): SidebarOrderMove => ({
+            sectionId, id, targetId: null, edge: "bottom", afterUnpin: true, unpinKind: kind,
+          }));
+          return filings.length ? { orderMoves: [...(state.orderMoves ?? []), ...filings] } : state;
+        });
+      },
       setChatsSection: (chatIds, sectionId) =>
         set((state) => {
           if (sectionId && !state.customSections.some((s) => s.id === sectionId)) {
