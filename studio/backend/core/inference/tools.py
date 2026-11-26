@@ -3108,6 +3108,7 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "create_server",
         "create_unix_connection",
         "create_unix_server",
+        # more asyncio listen/connect + UDP/raw socket helpers.
         "start_server",
         "start_unix_server",
         "open_unix_connection",
@@ -5700,6 +5701,7 @@ def _folded_path(
                     return sep.join(pieces)
                 parts = [(fold(a) or "\x00") for a in node.args]
                 return _posix_join(parts)
+            # A bare os.path.join alias (from os.path import join): join(*pieces).
             if isinstance(func, ast.Name) and func.id in join_names:
                 parts = [(fold(a) or "\x00") for a in node.args]
                 return _posix_join(parts)
@@ -16909,6 +16911,7 @@ def _is_text_candidate_content_type(content_type: str | None) -> bool:
     return False
 
 
+# First path segments on github.com that are site pages, not repo owners.
 _GITHUB_NON_OWNER_SEGMENTS = frozenset(
     {
         "about",

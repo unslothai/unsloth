@@ -470,6 +470,7 @@ def local_cosmos3_pipeline_family(path: Optional[str]) -> Optional[str]:
     return sizes.get(hidden) if sizes and isinstance(hidden, int) else None
 
 
+# --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
 
 # int8 small-M exclusions (on top of diffusion_transformer_quant._INT8_EXCLUDE_NAME_TOKENS); baked into the published
 # int8 artifacts, so each moves only with a rebuild and republish.

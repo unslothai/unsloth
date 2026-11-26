@@ -20739,6 +20739,7 @@ class LlamaCppBackend:
 
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Metadata lives in shard 1 of split GGUFs; per-model flags are reset first so none carry over."""
+        # Reset so stale flags do not carry over when switching models.
         self._context_length = None
         self._chat_template = None
         self._empty_chat_render_refused = False

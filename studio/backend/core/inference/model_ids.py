@@ -103,6 +103,7 @@ def mlx_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
 
 
 def mlx_host_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
+    """Return the MLX replacement, excluding diffusion models."""
     import utils.hardware.hardware as hw
     from core.inference.diffusion_families import detect_family
 
