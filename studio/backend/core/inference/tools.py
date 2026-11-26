@@ -16290,7 +16290,13 @@ _ATTACHMENT_OVERVIEW = re.compile(
 
 
 def _cover_thread_attachments(
-    query, thread_id, thread_docs, hits, top_k, document_opening, ranked_thread_lead = None
+    query,
+    thread_id,
+    thread_docs,
+    hits,
+    top_k,
+    document_opening,
+    ranked_thread_lead = None,
 ):
     """Keep one hit per attachment and preserve any project hits."""
     if not thread_docs or not 1 < len(thread_docs) <= top_k:
@@ -16540,7 +16546,12 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             return None
         try:
             covered = _cover_thread_attachments(
-                query, thread_id, thread_docs, found[1] if found else [], top_k, document_opening,
+                query,
+                thread_id,
+                thread_docs,
+                found[1] if found else [],
+                top_k,
+                document_opening,
                 ranked_thread_lead,
             )
         except Exception:

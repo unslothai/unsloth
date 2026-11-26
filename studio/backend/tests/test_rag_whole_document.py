@@ -1373,7 +1373,9 @@ def test_budgeted_attachment_overview_keeps_the_ranked_lead(rag_conn, monkeypatc
     monkeypatch.setattr(
         tool,
         "search_for_autoinject",
-        lambda **scope: None if scope["min_dense_score"] is not None else (tool.render_sources(hits), hits),
+        lambda **scope: None
+        if scope["min_dense_score"] is not None
+        else (tool.render_sources(hits), hits),
     )
     monkeypatch.setattr(
         inf_tools, "_text_token_cost", lambda text, _: 200 * text.count("<chunk id=")
