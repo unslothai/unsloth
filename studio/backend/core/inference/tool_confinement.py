@@ -84,6 +84,9 @@ _PRIVATE_RUNTIME_ROOTS = (
     "/run/media",
     "/run/mount",
     "/run/host",
+    # The Docker launcher stages the initial admin password here; cloud-init keeps user-data copies here.
+    "/run/unsloth",
+    "/run/cloud-init",
 )
 # Secrets a root-run Studio (the Docker image) could otherwise hand a managed tool; the rest of /etc
 # (ld.so.cache, nsswitch, hosts, resolv.conf, ssl/certs) is what tool processes need.
@@ -102,7 +105,45 @@ _PRIVATE_SYSTEM_PATHS = (
     "/etc/ipsec.secrets",
     "/etc/docker/key.json",
     "/etc/ssh/ssh_host_*_key",
+    "/etc/wireguard",
+    "/etc/NetworkManager/system-connections",
+    # cloud-init user-data often carries the headless Studio password (UNSLOTH_STUDIO_PASSWORD).
+    "/var/lib/cloud",
+    "/var/lib/tailscale",
 )
+
+
+# A root-run server reads root-only entries that DAC hides from any other service user.
+_ROOT_ONLY_SCAN_ROOTS = ("/etc", "/opt", "/run", "/var/lib")
+_ROOT_UID = 0
+
+
+def _root_only_children() -> list[str]:
+    """Direct children of the system roots that only root may read, when the server runs as root.
+
+    A non-root Studio cannot read them either, so tools lose nothing they had there."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != _ROOT_UID:
+        return []
+    import stat
+
+    out: list[str] = []
+    for root in _ROOT_ONLY_SCAN_ROOTS:
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for name in names:
+            child = os.path.join(root, name)
+            try:
+                info = os.lstat(child)
+            except OSError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            if info.st_uid == _ROOT_UID and not info.st_mode & 0o044:
+                out.append(child)
+    return out
 
 
 def _private_system_paths() -> list[str]:
@@ -111,6 +152,9 @@ def _private_system_paths() -> list[str]:
     out: list[str] = []
     for pattern in _PRIVATE_SYSTEM_PATHS:
         out.extend(sorted(glob.glob(pattern)) if any(ch in pattern for ch in "*?[") else [pattern])
+    for path in _root_only_children():
+        if path not in out:
+            out.append(path)
     return out
 
 

@@ -336,8 +336,7 @@ def _weight_key(quantizer, w):
         type(w) not in _PLAIN_TENSOR_TYPES
         or w.requires_grad
         or w.device.type == "meta"
-        # An inference tensor (built under torch.inference_mode, e.g. weights shared with vLLM) has no
-        # version counter to detect an in place write.
+        # Inference tensors lack a version counter, so an in-place write goes undetected.
         or w.is_inference()
         or not getattr(quantizer, "enabled", True)
         or getattr(config, "range_learning", False)

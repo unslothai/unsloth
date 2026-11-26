@@ -89,6 +89,43 @@ def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
     return (torch.cat([zeros, x], dim = 2), *args[1:])
 
 
+_CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d"})
+
+
+def _zero_buffer_causal_conv(
+    module: Any,
+    x: Any,
+    cache_x: Any = None,
+) -> Any:
+    """``WanCausalConv3d.forward`` padding into a zero buffer: MPS F.pad leaks driver memory per call before torch
+    2.15 (pytorch#195368: 270 GiB over one Wan 2.2 decode)."""
+    import torch
+
+    padding = list(module._padding)
+    lead = None
+    if cache_x is not None and padding[4] > 0:
+        lead = cache_x.to(x.device)
+        padding[4] -= lead.shape[2]
+    if (
+        x.dim() != 5
+        or min(padding) < 0
+        or padding[5]
+        or (lead is not None and (lead.dim() != 5 or lead.dtype != x.dtype))
+    ):
+        return type(module).forward(module, x, cache_x)
+    left, right, top, bottom, front, _back = padding
+    lead_t = 0 if lead is None else lead.shape[2]
+    batch, channels, frames, height, width = x.shape
+    buffer = x.new_zeros(
+        (batch, channels, front + lead_t + frames, top + height + bottom, left + width + right)
+    )
+    rows, cols = slice(top, top + height), slice(left, left + width)
+    if lead is not None:
+        buffer[:, :, front : front + lead_t, rows, cols] = lead
+    buffer[:, :, front + lead_t :, rows, cols] = x
+    return torch.nn.Conv3d.forward(module, buffer)
+
+
 def install_frame_pad_fix(
     pipe: Any,
     target: DiffusionDeviceTarget,
@@ -104,16 +141,25 @@ def install_frame_pad_fix(
         if not callable(modules):
             continue
         for module in modules():
-            if type(module).__name__ not in _FRAME_PAD_CLASSES:
-                continue
             if getattr(module, "_unsloth_frame_pad_fix", False):
                 continue
-            module.register_forward_pre_hook(_prepend_zero_frames)
+            name = type(module).__name__
+            if name in _FRAME_PAD_CLASSES:
+                module.register_forward_pre_hook(_prepend_zero_frames)
+            elif (
+                name in _CAUSAL_PAD_CLASSES
+                and len(getattr(module, "_padding", ())) == 6
+                and "forward" not in module.__dict__
+            ):
+                module.forward = types.MethodType(_zero_buffer_causal_conv, module)
+            else:
+                continue
             module._unsloth_frame_pad_fix = True
             patched += 1
     if patched and logger is not None:
         logger.info(
-            "diffusion.vae_frame_pad: %d module(s) pad by concatenation (MPS pad defect)", patched
+            "diffusion.vae_frame_pad: %d module(s) pad by concatenation or into a zero buffer (MPS pad defects)",
+            patched,
         )
     return patched
 
@@ -492,6 +538,33 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     return 0
 
 
+_SMI_ROWS: ContextVar[Optional[dict]] = ContextVar("unsloth_diffusion_smi_rows", default = None)
+
+
+@contextmanager
+def smi_rows_snapshot():
+    """smi_free_total_mib and smi_util_pct share one nvidia-smi reading inside this block; failures are not cached."""
+    token = _SMI_ROWS.set({})
+    try:
+        yield
+    finally:
+        _SMI_ROWS.reset(token)
+
+
+def _smi_rows(hw: Any) -> Optional[dict]:
+    spec = hw._get_parent_visible_gpu_spec()
+    memo = _SMI_ROWS.get()
+    if memo is None:
+        return hw._smi_visible_utilization(spec)
+    key = repr(spec)
+    if key not in memo:
+        result = hw._smi_visible_utilization(spec)
+        if result is None:
+            return None
+        memo[key] = result
+    return memo[key]
+
+
 def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
     on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
@@ -515,7 +588,7 @@ def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
         mig = hw._nvidia_mig_gpu_indices_or_none()
         if mig is None or index in mig:
             return None, None
-        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        result = _smi_rows(hw)
         for device in (result or {}).get("devices", []):
             if device.get("index") != index:
                 continue
@@ -540,7 +613,7 @@ def smi_util_pct(ordinal: int) -> Optional[float]:
         if not 0 <= int(ordinal) < len(visible):
             return None
         index = visible[int(ordinal)]
-        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        result = _smi_rows(hw)
         for device in (result or {}).get("devices", []):
             if device.get("index") == index:
                 util = device.get("gpu_utilization_pct")

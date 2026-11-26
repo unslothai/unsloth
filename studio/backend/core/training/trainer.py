@@ -54,6 +54,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import STREAMING_EVAL_MAX_SAMPLES, evaluation_enabled
+from core.training import parallel_launch as _parallel_launch
+from core.training.resume import checked_resume_checkpoint
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.audio_rows import (
     audio_transcription_messages,
@@ -81,7 +83,7 @@ from utils.models.diffusion_lm import (
 )
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
-from utils.models.model_config import _env_offline
+from utils.utils import hf_env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.cells import cell_text, csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
@@ -585,6 +587,9 @@ class UnslothTrainer:
 
         self._lock = threading.Lock()
 
+    def _remember_model_source(self, load_name, revision, local_files_only) -> None:
+        self._model_source = (load_name, revision, bool(local_files_only))
+
     def pre_detect_and_load_tokenizer(
         self,
         model_name: str,
@@ -609,6 +614,7 @@ class UnslothTrainer:
             model_revision,
             load_in_4bit,
         )
+        self._remember_model_source(model_load_name or model_name, model_revision, local_files_only)
 
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
@@ -1036,7 +1042,13 @@ class UnslothTrainer:
                 )
 
             def on_step_end(self, args, state, control, **kwargs):
-                if trainer_ref.should_stop:
+                stop = trainer_ref.should_stop
+                if _parallel_launch.is_multi_process():
+                    # Every rank acts on rank 0's stop so all leave the loop at the same step.
+                    stop, save = _parallel_launch.sync_stop(stop, trainer_ref.save_on_stop)
+                    if stop:
+                        trainer_ref.should_stop, trainer_ref.save_on_stop = True, save
+                if stop:
                     logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
                     return control
@@ -1132,11 +1144,18 @@ class UnslothTrainer:
         label = "",
     ):
         """Save model after training and update progress. Used by all training branches."""
+        # Saves are collective (FSDP2 gathers on every rank): all ranks must take the same save path.
+        main_rank = _parallel_launch.is_main_rank()
+        if _parallel_launch.is_multi_process():
+            self.should_stop, self.save_on_stop = _parallel_launch.sync_stop(
+                self.should_stop, self.save_on_stop
+            )
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if main_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training stopped" if label else "Training stopped"
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
@@ -1151,8 +1170,9 @@ class UnslothTrainer:
             self._update_progress(is_training = False, status_message = "Training cancelled.")
         else:
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if main_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training completed" if label else "Training completed"
             logger.info(f"\n{msg}! Model saved to {output_dir}\n")
             self._update_progress(
@@ -1227,6 +1247,7 @@ class UnslothTrainer:
         metadata_name = _metadata_lookup_name(
             model_name, lookup_name, local_files_only, model_revision, load_in_4bit
         )
+        self._remember_model_source(lookup_name, model_revision, local_files_only)
         self.model_load_error = None
         try:
             if self.model is not None:
@@ -1257,7 +1278,8 @@ class UnslothTrainer:
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
             _preserve = ["Unsloth*Trainer.py"] if sys.platform in ("win32", "darwin") else None
-            clear_unsloth_compiled_cache(preserve_patterns = _preserve)
+            if not os.environ.get(_parallel_launch.CACHE_CLEARED_ENV):
+                clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Use the checked variant: it reassigns _audio_type, else the flag describes the previous probe.
             self._audio_type, self._audio_type_known = detect_audio_type_checked(
                 metadata_name,
@@ -1337,7 +1359,7 @@ class UnslothTrainer:
                 os.environ["HF_TOKEN"] = hf_token
 
             # Gate-check the repo Unsloth will fetch, which may be a public mirror of it.
-            if "/" in model_name and not local_files_only and not _env_offline():
+            if "/" in model_name and not local_files_only and not hf_env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
 
@@ -2229,9 +2251,15 @@ class UnslothTrainer:
         from datasets import Audio
         import torch
 
+        # The pinned snapshot the consent gate scanned and the tokenizer loaded, never the repo's moving main.
+        source, revision, local_files_only = getattr(
+            self, "_model_source", (self.model_name, None, False)
+        )
         processor = AutoProcessor.from_pretrained(
-            self.model_name,
+            source,
             trust_remote_code = getattr(self, "trust_remote_code", False),
+            revision = revision,
+            local_files_only = local_files_only,
         )
 
         # A leaked pad_to_multiple_of is rejected by EncodecFeatureExtractor.
@@ -3869,6 +3897,8 @@ class UnslothTrainer:
                     tokenizer = self.tokenizer,
                     is_vlm = self.is_vlm,
                     format_type = format_type,
+                    # Eval rows without their own question column score the training prompt; per-row questions stay.
+                    vlm_fallback_instruction = dataset_info.get("vlm_instruction"),
                     dataset_name = dataset_source,
                     dataset_revision = dataset_revision,
                     custom_format_mapping = custom_format_mapping,
@@ -4352,7 +4382,11 @@ class UnslothTrainer:
 
             self._update_progress(is_training = True, error = None)
 
-            if training_args.get("enable_wandb", False) and training_args.get("wandb_token"):
+            if (
+                training_args.get("enable_wandb", False)
+                and training_args.get("wandb_token")
+                and _parallel_launch.is_main_rank()
+            ):
                 os.environ["WANDB_API_KEY"] = training_args["wandb_token"]
                 import wandb
                 wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
@@ -4400,7 +4434,9 @@ class UnslothTrainer:
                 self._update_progress(total_steps = total, status_message = "Starting CSM training...")
                 logger.info(f"CSM training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "CSM")
                 return
@@ -4445,7 +4481,9 @@ class UnslothTrainer:
                 self._update_progress(total_steps = total, status_message = "Starting SNAC training...")
                 logger.info(f"SNAC training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "SNAC")
                 return
@@ -4505,7 +4543,9 @@ class UnslothTrainer:
                 )
                 logger.info(f"Whisper training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "Whisper")
                 return
@@ -5249,7 +5289,9 @@ class UnslothTrainer:
                         num_samples = None
                 if num_samples is None:
                     num_samples = len(train_dataset_obj)
-                batch_size = training_args.get("batch_size", 2)
+                batch_size = (
+                    training_args.get("batch_size", 2) * _parallel_launch.data_parallel_size()
+                )
                 total_steps = self._calculate_total_steps(
                     num_samples,
                     batch_size,
@@ -5270,7 +5312,9 @@ class UnslothTrainer:
             logger.info("Starting training...\n")
             try:
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
             finally:
                 # Release before finalize: workers hold a fork during merge/export.

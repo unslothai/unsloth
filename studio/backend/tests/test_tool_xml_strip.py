@@ -31,6 +31,7 @@ from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
+    _strip_lfm_calls,
     _strip_minimax_calls,
     _strip_mistral_closed_calls,
 )
@@ -46,6 +47,7 @@ _ns = {
     "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
     "_strip_gemma_wrapperless_calls": _strip_gemma_wrapperless_calls,
     "_strip_glm_calls": _strip_glm_calls,
+    "_strip_lfm_calls": _strip_lfm_calls,
     "_strip_minimax_calls": _strip_minimax_calls,
     "_strip_function_xml_calls": _strip_function_xml_calls,
 }
@@ -128,15 +130,16 @@ def test_route_display_strip_removes_closed_xml_before_think_block():
 
 
 def test_all_route_cleanup_sites_use_protected_display_helper():
-    # Every route cleanup site must use _strip_tool_xml_for_display; the only raw sub
-    # lives inside the helper itself.
+    # Every route cleanup site must use _strip_tool_xml_for_display; the only raw use
+    # lives inside its helper.
     raw_sub_lines = [
         (i, line)
         for i, line in enumerate(_src.splitlines(), 1)
-        if "_TOOL_XML_RE.sub(" in line and not line.lstrip().startswith("#")
+        if _re.search(r"_TOOL_XML_RE\.(?:sub|search|finditer)\(", line)
+        and not line.lstrip().startswith("#")
     ]
     assert len(raw_sub_lines) == 1, (
-        "raw _TOOL_XML_RE.sub must appear only inside _strip_tool_xml_for_display; "
+        "raw _TOOL_XML_RE use must appear only inside _strip_tool_xml_for_display; "
         f"found extra call sites: {raw_sub_lines!r}"
     )
 

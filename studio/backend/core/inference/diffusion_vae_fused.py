@@ -1574,10 +1574,41 @@ def up_nearest2x(
     return out.permute(0, 3, 1, 2), t_o
 
 
+def _wan_folded_upsample(conv: Any, x: Any) -> Any:
+    """Per-frame ``conv(nearest_2x(x))`` via diffusion_vae_strips' folded ConvTranspose2d. None = use the 2x path; also
+    under torch.compile (the mutable fold cache would add guards) and when autograd needs the detached folded weight."""
+    torch = _torch()
+    if torch.compiler.is_compiling():
+        return None
+    if torch.is_grad_enabled() and (conv.weight.requires_grad or x.requires_grad):
+        return None
+    from . import diffusion_vae_strips as strips
+
+    b, c, t, h, w = x.shape
+    frames = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    if not (
+        strips._fold_allowed()
+        and strips._fold_on(frames)
+        and strips._fold_ok(conv, frames)
+        and strips.fold_finite(conv)
+    ):
+        return None
+    elems = conv.out_channels * 4 * h * w
+    full_max = strips._fold_full_max(frames)
+    full_max = strips.FOLD_FULL_MAX_ELEMS if full_max is None else full_max
+    if b * t != 1 and b * t * elems > full_max:
+        return None  # the strip fold writes one frame
+    _count("upsample_fold")
+    return strips._fold_upsample(conv, frames, conv.bias, full_max = full_max)
+
+
 def _fast_wan_resample(mod: Any) -> Any:
     import torch.nn.functional as F
 
     conv = mod.resample[1]
+    # Qwen-Image-2.1's Conv2d time_conv: only the first chunk (which never runs it) is fast; later chunks stay stock.
+    time_2d = mod.mode == "upsample3d" and _conv_kind(getattr(mod, "time_conv", None)) == "2d"
+    stock = _stock_forward(mod)
 
     def fast(
         x: Any,
@@ -1586,6 +1617,8 @@ def _fast_wan_resample(mod: Any) -> Any:
     ) -> Any:
         if feat_idx is None:
             feat_idx = [0]
+        if time_2d and feat_cache is not None and feat_cache[feat_idx[0]] is not None:
+            return stock(x, feat_cache = feat_cache, feat_idx = feat_idx)
         b = x.shape[0]
         interleave = False
         t_bias = None
@@ -1604,6 +1637,13 @@ def _fast_wan_resample(mod: Any) -> Any:
                 feat_cache[idx] = new
                 interleave = True
             feat_idx[0] += 1
+        if not interleave:
+            out = _wan_folded_upsample(conv, y)
+            if out is not None:
+                t_o = y.shape[2]
+                return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(
+                    0, 2, 1, 3, 4
+                )
         up, t_o = up_nearest2x(y, interleave, t_bias)
         out = F.conv2d(up, conv.weight, conv.bias, conv.stride, conv.padding)
         return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(0, 2, 1, 3, 4)
@@ -1622,7 +1662,9 @@ def _wan_resample_ok(mod: Any) -> bool:
         and seq[0].mode in ("nearest", "nearest-exact")
         and tuple(float(f) for f in (seq[0].scale_factor or ())) == (2.0, 2.0)
         and isinstance(seq[1], torch.nn.Conv2d)
-        and (mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) == "3d")
+        and (
+            mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) in ("3d", "2d")
+        )
     )
 
 
@@ -1684,8 +1726,8 @@ def install_wan_vae(
             act._unsloth_vae_fused = True
             n += 1
         for module in part.modules():
-            if "forward" in module.__dict__:
-                continue  # already patched (by us or another speed path)
+            if "forward" in module.__dict__ and not getattr(module, "_unsloth_vae_noclone", False):
+                continue  # already patched (by us or another speed path); the clone-free block is replaced
             name = type(module).__name__
             if name.endswith("ResidualBlock") and _wan_resblock_fusable(module):
                 _guard(
@@ -2025,6 +2067,102 @@ def _wan_batched_tiled_decode(
     )
     if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
         dec.clamp_(min = -1.0, max = 1.0)  # dec is this decode's own buffer: in place, one copy less
+    if not return_dict:
+        return (dec,)
+    return DecoderOutput(sample = dec)
+
+
+def wan_pair_decode_ok(vae: Any) -> bool:
+    """Whether ``vae`` decodes with diffusers' own ``AutoencoderKLWan._decode`` loop (one latent frame per decoder
+    call), which :func:`wan_paired_decode` reproduces two latent frames at a time."""
+    try:
+        from diffusers.models.autoencoders.autoencoder_kl_wan import AutoencoderKLWan
+    except Exception:  # noqa: BLE001
+        return False
+    return (
+        isinstance(vae, AutoencoderKLWan)
+        and getattr(type(vae), "_decode", None) is AutoencoderKLWan._decode
+        and callable(getattr(vae, "clear_cache", None))
+        and getattr(vae, "decoder", None) is not None
+        and _accepts_first_chunk(vae.decoder)
+    )
+
+
+def wan_paired_decode(
+    vae: Any,
+    z: Any,
+    return_dict: bool = True,
+    frames_per_call: int = 2,
+) -> Any:
+    """Stock ``AutoencoderKLWan._decode`` (untiled) with ``frames_per_call`` latent frames per decoder call after the
+    first. The first call stays one frame (the temporal upsamplers mark their first call and skip its time conv); each
+    causal conv's cache is the last two frames of its padded input, which is the same tensor whether those frames
+    arrived in one call or two, so every output frame matches the one-frame loop (same math; only the conv shapes
+    differ). Output frames are copied into one buffer as they arrive; unpatchify and clamp as stock."""
+    torch = _torch()
+    from diffusers.models.autoencoders.vae import DecoderOutput
+
+    num_frame = int(z.shape[2])
+    step = max(1, int(frames_per_call))
+    vae.clear_cache()
+    x = vae.post_quant_conv(z)
+    buf = None
+    parts: list = []
+    filled = 0
+    rate = 0
+    start = 0
+    while start < num_frame:
+        end = 1 if start == 0 else min(num_frame, start + step)
+        vae._conv_idx = [0]
+        kw = {"first_chunk": True} if start == 0 else {}
+        out = vae.decoder(
+            x[:, :, start:end], feat_cache = vae._feat_map, feat_idx = vae._conv_idx, **kw
+        )
+        n = end - start
+        if buf is None and parts and start == 1 and out.shape[2] % n == 0:
+            first = parts[0]
+            rate = out.shape[2] // n
+            shape = list(first.shape)
+            shape[2] = first.shape[2] + rate * (num_frame - 1)
+            if (
+                out.dim() == first.dim() == 5
+                and out.dtype == first.dtype
+                and list(out.shape[:2]) == shape[:2]
+                and list(out.shape[3:]) == shape[3:]
+            ):
+                buf = torch.empty(
+                    shape, dtype = first.dtype, device = first.device, memory_format = _cat_format(first)
+                )
+                buf[:, :, : first.shape[2]].copy_(first)
+                filled = first.shape[2]
+                parts = []
+        if (
+            buf is not None
+            and not parts
+            and out.shape[2] == rate * n
+            and filled + out.shape[2] <= buf.shape[2]
+        ):
+            buf[:, :, filled : filled + out.shape[2]].copy_(out)
+            filled += out.shape[2]
+        else:
+            if buf is not None and not parts:
+                parts = [
+                    buf[:, :, :filled]
+                ]  # an unexpected chunk: concatenate as stock from here on
+            parts.append(out)
+        del out
+        start = end
+    if parts:
+        dec = torch.cat(parts, dim = 2)
+    else:
+        dec = buf if filled == buf.shape[2] else buf[:, :, :filled]
+    del parts, buf, x
+    patch = getattr(vae.config, "patch_size", None)
+    if patch is not None:
+        from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
+        dec = unpatchify(dec, patch_size = patch)
+    dec.clamp_(min = -1.0, max = 1.0)
+    vae.clear_cache()
     if not return_dict:
         return (dec,)
     return DecoderOutput(sample = dec)

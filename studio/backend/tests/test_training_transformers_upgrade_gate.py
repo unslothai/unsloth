@@ -62,6 +62,9 @@ def _stub(
     )
     monkeypatch.setattr(latest_mod, "check_upgrade_for_model", _check_upgrade)
     monkeypatch.setattr(tv, "latest_tier_active_for", _latest_tier)
+    # An active tier makes the precision check read the adapter and config: an unvalidated architecture, offline.
+    monkeypatch.setattr(tv, "_remote_lora_base", lambda *a, **kw: None)
+    monkeypatch.setattr(tv, "_load_config_json", lambda *a, **kw: {"model_type": "muse_glimmer"})
     monkeypatch.setattr(
         "utils.models.model_config.get_base_model_from_lora_identifier", lambda *a, **k: None
     )

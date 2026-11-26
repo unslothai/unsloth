@@ -94,12 +94,15 @@ _CATALOG_WINDOW_PROVIDERS = frozenset({"anthropic", "openrouter", "gemini"})
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
-_GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
+_GEMINI_RESTRICTED_GENERATION = re.compile(
+    r"^gemini-(?:3\.[78]-flash|(?:[4-9]|\d{2,})(?:\.\d+)?)(?:-|$)"
+)
 _GEMINI_DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
 _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
 _served_vision: dict[tuple[str, str, str, str], tuple[float, Optional[bool]]] = {}
+_served_ollama: dict[tuple[str, str], tuple[float, bool]] = {}
 # outlives the TTL: Ollama unloads an idle model after keep_alive and reloads it at the same window.
 _ollama_last_windows: dict[tuple[str, str, str, str], int] = {}
 
@@ -1632,6 +1635,14 @@ class ExternalProviderClient:
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
 
+    def _stream_timeout_for(self, read_timeout: Optional[float]) -> httpx.Timeout:
+        if read_timeout is None:
+            return self._stream_timeout
+        t = self._stream_timeout
+        return httpx.Timeout(
+            connect = t.connect, read = max(t.read or 0.0, read_timeout), write = t.write, pool = t.pool
+        )
+
     def set_header_context(self, thread_id: Optional[str], model: Optional[str]) -> None:
         """Values for ``{{VAR}}`` in extra headers; set before any request of a chat turn."""
         session = (thread_id or "").strip()
@@ -1760,8 +1771,10 @@ class ExternalProviderClient:
         thread_id: Optional[str] = None,
         compaction_fallback: Optional[CompactionFallback] = None,
         compaction_uncapped: bool = False,
+        read_timeout: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
-        """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
+        """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in.
+        read_timeout widens the read timeout for a server that is silent while it reads a long prompt."""
         self.set_header_context(thread_id, model)
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
@@ -1853,6 +1866,7 @@ class ExternalProviderClient:
                 compaction_fallback = compaction_fallback,
                 thread_id = thread_id,
                 compaction_uncapped = compaction_uncapped,
+                read_timeout = read_timeout,
             ):
                 yield line
             return
@@ -1900,10 +1914,12 @@ class ExternalProviderClient:
             if self.provider_type == "vllm"
             else messages,
             "stream": stream,
-            "temperature": temperature,
             "presence_penalty": presence_penalty,
             **_continue_body,
         }
+        # Omitted, not null: some OpenAI-compatible servers reject a null temperature.
+        if temperature is not None:
+            body["temperature"] = temperature
         if top_p is not None:
             body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.
@@ -2070,7 +2086,7 @@ class ExternalProviderClient:
                 url,
                 body,
                 headers = self._chat_headers(thread_id),
-                timeout = self._stream_timeout,
+                timeout = self._stream_timeout_for(read_timeout),
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
@@ -5659,6 +5675,7 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
         thread_id: Optional[str] = None,
         compaction_uncapped: bool = False,
+        read_timeout: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """Responses takes input and instructions, not messages; presence_penalty and top_k are dropped."""
         import json as _json
@@ -6197,7 +6214,7 @@ class ExternalProviderClient:
                     url,
                     json = attempt_body,
                     headers = self._chat_headers(thread_id),
-                    timeout = self._stream_timeout,
+                    timeout = self._stream_timeout_for(read_timeout),
                 ) as response:
                     if response.status_code != 200:
                         error_body = await response.aread()
@@ -7906,6 +7923,30 @@ class ExternalProviderClient:
             del _served_templates[stale]
         _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
         return template
+
+    async def serves_ollama(self) -> bool:
+        now = time.monotonic()
+        key = (self.base_url, self._credential_digest())
+        cached = _served_ollama.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        found = False
+        try:
+            response = await _client().get(
+                _native_server_path(self.base_url, "/api/version"),
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            body = response.json() if response.status_code == 200 else None
+            found = isinstance(body, dict) and isinstance(body.get("version"), str)
+        except httpx.ConnectError:
+            return False
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No Ollama version from %s: %s", self.base_url, type(exc).__name__)
+        for stale in [k for k, (expiry, _) in _served_ollama.items() if expiry <= now]:
+            del _served_ollama[stale]
+        _served_ollama[key] = (now + _SERVED_WINDOW_TTL_S, found)
+        return found
 
     async def _read_served_vision(self, model: str) -> Optional[bool]:
         if self.provider_type == "ollama":

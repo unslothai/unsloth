@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.2 / FLUX.3 int8 ConvRot without the separate rotate + quantize pass over each bf16 activation.
+"""FLUX.1 / FLUX.2 / FLUX.3 int8 ConvRot without the separate rotate + quantize pass over each bf16 activation.
 
 On the int8 GEMM swap (``diffusion_int8_gemm``) every rotated Linear quantizes its own input with ``rotq_h16``: the
 producer writes bf16, the kernel reads it back. Here:
@@ -10,8 +10,12 @@ producer writes bf16, the kernel reads it back. Here:
   * the MLP down projection and FLUX.2's single-block output projection read the SwiGLU halves (and the attention
     output) straight from the producers' buffers (``rotq_h16x``), so neither the product nor the concat is written.
 Every patch checks its Linears per call and runs the stock code when they are not swapped rotated int8 Linears.
-Kill switch ``UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED=0``; ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_PRODUCER=0`` keeps only the
-shared quants. On a resident FLUX.3 denoiser Q / K / V also run as one int8 GEMM over their rows concatenated in one
+Kill switch ``UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED=0`` (main's path exactly, every family);
+``UNSLOTH_DIFFUSION_INT8_ROTQUANT_PRODUCER=0`` keeps only the shared quants, and on FLUX.1
+``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED=0`` does the same (the shared Q / K / V quant is the same op on the same tensor,
+so images stay bit-identical to main either way; only ``..._FLUX_CONVROT_FUSED=0`` removes it). FLUX.1's patches sit
+on module-wide diffusers functions / classes other families reuse (Chroma's attention, every ``FeedForward``): they act
+only on the modules ``install`` marked on a FLUX.1 denoiser. On a resident FLUX.3 denoiser Q / K / V also run as one int8 GEMM over their rows concatenated in one
 buffer (the weights become row slices of it, so memory is unchanged; bit-identical) where torch attention reads them
 (the INT8 attention route keeps three GEMMs);
 ``UNSLOTH_DIFFUSION_FLUX3_FUSED_QKV=0`` keeps three GEMMs."""
@@ -38,7 +42,9 @@ _LOCK = threading.Lock()
 _STOCK: dict = {}  # (owner, attr) -> original
 # Flux3SingleTransformerBlock class -> the diffusers forward diffusion_cond_blocks records as its stock (span patch)
 _SPAN_STOCK: dict = {}
-_CALLS = {"shared": [0], "producer": [0], "block": [0]}
+_CALLS = {"shared": [0], "producer": [0], "block": [0], "gelu": [0]}
+# FLUX.1 modules ``install`` marked (the GELU patches sit on shared diffusers classes: only these take the fused path)
+_F1_MARK = "_unsloth_f1_convrot_gelu"
 
 # Stock lines each replacement mirrors; a diffusers whose body lacks any keeps the stock function.
 _NEEDLES = {
@@ -83,6 +89,16 @@ _NEEDLES = {
         "hidden_states = hidden_states.to(query.dtype)",
         "hidden_states = attn.to_out[0](hidden_states)",
         "hidden_states = attn.to_out[1](hidden_states)",
+    ),
+    "gelu_ff": ("for module in self.net:", "hidden_states = module(hidden_states)"),
+    "f1_single": (
+        "hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)",
+        "norm_hidden_states, gate = self.norm(hidden_states, emb=temb)",
+        "mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))",
+        "hidden_states = torch.cat([attn_output, mlp_hidden_states], dim=2)",
+        "hidden_states = gate * self.proj_out(hidden_states)",
+        "hidden_states = residual + hidden_states",
+        "encoder_hidden_states, hidden_states = hidden_states[:, :text_seq_len], hidden_states[:, text_seq_len:]",
     ),
     "f3_attn_forward": (
         "return self.processor(self, hidden_states, attention_mask, image_rotary_emb)",
@@ -214,6 +230,14 @@ def flux_convrot_fused_disabled() -> bool:
         "false",
         "no",
     )
+
+
+def _flux1_module() -> Any:
+    try:
+        from diffusers.models.transformers import transformer_flux as f1
+    except Exception:  # noqa: BLE001 - diffusers without FLUX.1
+        return None
+    return f1
 
 
 def _flux_modules() -> tuple:
@@ -535,6 +559,213 @@ def _make_f3_single_forward(stock: Any, mod: Any) -> Any:
     return forward
 
 
+def _plain_gelu_tanh(act: Any, cls: Any) -> bool:
+    """``act`` is an unhooked ``cls`` (diffusers ``GELU`` / ``nn.GELU``) with the tanh approximation."""
+    return (
+        act is not None
+        and cls is not None
+        and type(act) is cls
+        and getattr(act, "approximate", None) == "tanh"
+        and not _gemm._hooked(act)
+    )
+
+
+def _gelu_ff_ready(ff: Any) -> bool:
+    """A FLUX.1 ``FeedForward`` (GELU(tanh) -> Dropout -> rotated int8 Linear) ``install`` marked, with no hook or
+    ``forward`` override on the GELU or the Dropout (the fused path calls neither). Traced: plain attribute reads only; the mark (an instance ``__dict__`` read) first, so unmarked modules pay one dict lookup."""
+    if not ff.__dict__.get(_F1_MARK, False) or _gemm._hooked(ff):
+        return False
+    net = ff.net
+    return (
+        len(net) == 3
+        and _plain_gelu_tanh(net[0], _CLS.get("GELU"))
+        and type(net[1]) is _CLS.get("Dropout")
+        and not _gemm._hooked(net[1])
+        and (not ff.training or net[1].p == 0)
+        and _rotated(net[2])
+    )
+
+
+def _make_gelu_ff_forward(stock: Any) -> Any:
+    def forward(self, hidden_states, *args, **kwargs):
+        if args or kwargs or not _gelu_ff_ready(self):
+            return stock(self, hidden_states, *args, **kwargs)
+        act, down = self.net[0], self.net[2]
+        h = act.proj(hidden_states)
+        y = _gemm.gelu_linear(down, None, h)
+        if y is None:
+            return down(self.net[1](act.gelu(h)))
+        _count("gelu")
+        return y
+
+    functools.update_wrapper(
+        forward, stock, assigned = ("__name__", "__qualname__", "__doc__"), updated = ()
+    )
+    setattr(forward, _MARK, True)
+    return forward
+
+
+def _f1_single_ready(block: Any) -> bool:
+    """A FLUX.1 single block ``install`` marked whose ``proj_out`` can read [attention | GELU] from the producers."""
+    if not block.__dict__.get(_F1_MARK, False):
+        return False
+    attn = getattr(block, "attn", None)
+    return (
+        attn is not None
+        and isinstance(getattr(attn, "heads", None), int)
+        and _plain_gelu_tanh(getattr(block, "act_mlp", None), _CLS.get("nn.GELU"))
+        and _rotated(block.proj_out)
+    )
+
+
+def _make_f1_single_forward(stock: Any, addcmul: bool) -> Any:
+    """``FluxSingleTransformerBlock.forward`` (diffusers' or, ``addcmul``, the arch patch's gated residual) with the
+    GELU, the concat and ``proj_out``'s rotation + act quant in one kernel."""
+
+    def forward(
+        self,
+        hidden_states,
+        encoder_hidden_states,
+        temb,
+        image_rotary_emb = None,
+        joint_attention_kwargs = None,
+    ):
+        if not _f1_single_ready(self):
+            return stock(
+                self,
+                hidden_states,
+                encoder_hidden_states,
+                temb,
+                image_rotary_emb,
+                joint_attention_kwargs,
+            )
+        text_seq_len = encoder_hidden_states.shape[1]
+        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
+        residual = hidden_states
+        norm_hidden_states, gate = self.norm(hidden_states, emb = temb)
+        h = self.proj_mlp(norm_hidden_states)
+        joint_attention_kwargs = joint_attention_kwargs or {}
+        attn_output = self.attn(
+            hidden_states = norm_hidden_states,
+            image_rotary_emb = image_rotary_emb,
+            **joint_attention_kwargs,
+        )
+        heads = self.attn.heads
+        out = _gemm.gelu_linear(
+            self.proj_out, attn_output.unflatten(-1, (heads, attn_output.shape[-1] // heads)), h
+        )
+        if out is None:
+            out = self.proj_out(torch.cat([attn_output, self.act_mlp(h)], dim = 2))
+        else:
+            _count("gelu")
+        gate = gate.unsqueeze(1)
+        if addcmul:
+            hidden_states = torch.addcmul(residual, gate, out)
+        else:
+            hidden_states = gate * out
+            hidden_states = residual + hidden_states
+        if hidden_states.dtype == torch.float16:
+            hidden_states = hidden_states.clip(-65504, 65504)
+        encoder_hidden_states, hidden_states = (
+            hidden_states[:, :text_seq_len],
+            hidden_states[:, text_seq_len:],
+        )
+        return encoder_hidden_states, hidden_states
+
+    functools.update_wrapper(
+        forward, stock, assigned = ("__name__", "__qualname__", "__doc__"), updated = ()
+    )
+    setattr(forward, _MARK, True)
+    forward._unsloth_stock = stock
+    return forward
+
+
+def _arch_single_forward() -> Any:
+    try:
+        from . import diffusion_arch_patches as ap
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(ap, "_flux_single_forward", None)
+
+
+def _patch_f1_single(cls: Any) -> bool:
+    """Wrap ``cls.forward`` when it is diffusers' body or the arch patch's addcmul rewrite of it; idempotent."""
+    current = getattr(cls, "forward", None)
+    if current is None:
+        return False
+    if getattr(current, _MARK, False):
+        return True
+    arch = _arch_single_forward()
+    addcmul = arch is not None and current is arch
+    if not addcmul and not _has(current, "f1_single"):
+        return False
+    _STOCK[(cls, "forward")] = current
+    cls.forward = _make_f1_single_forward(current, addcmul)
+    return True
+
+
+def _install_f1_patches() -> dict:
+    """FLUX.1: Q / K / V (and the added context Q / K / V) on one rotation + act quant; the FF and single-block down
+    projections read GELU(tanh) (and the attention output) straight from their producers."""
+    done: dict = {}
+    f1 = _flux1_module()
+    if f1 is None:
+        return done
+    try:
+        from diffusers.models import activations, attention
+        from torch import nn
+    except Exception:  # noqa: BLE001
+        return done
+    with _LOCK:
+        done["f1_projections"] = _patch(
+            f1, "_get_projections", "f2_projections", _make_f1_projections
+        )
+        gelu = getattr(activations, "GELU", None)
+        ff = getattr(attention, "FeedForward", None)
+        if gelu is not None and ff is not None:
+            _CLS["GELU"], _CLS["Dropout"], _CLS["nn.GELU"] = gelu, nn.Dropout, nn.GELU
+            done["f1_ff"] = _patch(ff, "forward", "gelu_ff", _make_gelu_ff_forward)
+            single = getattr(f1, "FluxSingleTransformerBlock", None)
+            if single is not None:
+                done["f1_single"] = _patch_f1_single(single)
+    return done
+
+
+def _mark_f1(transformer: Any) -> int:
+    """Mark the denoiser's FLUX.1 FeedForward / single blocks / attentions for the class- and module-wide patches
+    (Chroma reuses ``transformer_flux``'s attention; the mark keeps it on the stock projections). Returns the
+    FeedForward + single block count."""
+    n = 0
+    for m in transformer.modules():
+        name = type(m).__name__
+        if name == "FluxSingleTransformerBlock" or (
+            name == "FeedForward" and type(m).__module__ == "diffusers.models.attention"
+        ):
+            m.__dict__[_F1_MARK] = True
+            n += 1
+        elif name == "FluxAttention":
+            m.__dict__[_F1_MARK] = True
+    return n
+
+
+def _make_f1_projections(stock: Any) -> Any:
+    """FLUX.1's ``_get_projections``: the FLUX.2 shared-quant body, on marked FLUX.1 attentions only."""
+    shared = _make_f2_projections(stock)
+
+    def _get_projections(
+        attn,
+        hidden_states,
+        encoder_hidden_states = None,
+    ):
+        if not attn.__dict__.get(_F1_MARK, False):
+            return stock(attn, hidden_states, encoder_hidden_states)
+        return shared(attn, hidden_states, encoder_hidden_states)
+
+    functools.update_wrapper(_get_projections, stock, assigned = ("__name__", "__doc__"), updated = ())
+    setattr(_get_projections, _MARK, True)
+    return _get_projections
+
+
 def _patch(owner: Any, attr: str, key: str, make: Any) -> bool:
     """Swap ``owner.attr`` for ``make(stock)`` when the stock body carries ``_NEEDLES[key]``; idempotent."""
     current = getattr(owner, attr, None)
@@ -684,10 +915,15 @@ def _rotated_linears(transformer: Any) -> int:
 
 def _arm_cards(transformer: Any, logger: Any = None) -> list:
     """``rotq_h16x`` on every card the denoiser sits on (outside any trace / capture)."""
-    from .diffusion_convrot_quant import _arm_producer
+    from .diffusion_convrot_quant import _arm_gelu, _arm_producer
     from .diffusion_int8_fused import resident_cuda_cards
 
-    cards = [index for index in resident_cuda_cards(transformer) or () if _arm_producer(index)]
+    if type(transformer).__name__ == "FluxTransformer2DModel":
+        cards = [
+            index for index in resident_cuda_cards(transformer) or () if _arm_gelu(index, logger)
+        ]
+    else:
+        cards = [index for index in resident_cuda_cards(transformer) or () if _arm_producer(index)]
     try:
         merge_qkv(transformer, logger)
     except Exception as exc:  # noqa: BLE001 - optimisation only: three GEMMs stay
@@ -710,21 +946,38 @@ def producer_probe_expected(transformer: Any) -> bool:
     )
 
 
+def gelu_probe_expected(transformer: Any) -> bool:
+    """``install`` will arm (and probe) the GELU ``rotq_h16x`` for this denoiser (FLUX.1)."""
+    return (
+        not flux_convrot_fused_disabled() and type(transformer).__name__ == "FluxTransformer2DModel"
+    )
+
+
 def install(transformer: Any, logger: Any = None) -> dict:
-    """After the int8 GEMM swap, before the regional compile: patch the FLUX.2 / FLUX.3 helpers (each checks its
+    """After the int8 GEMM swap, before the regional compile: patch the FLUX.1 / FLUX.2 / FLUX.3 helpers (each checks its
     Linears per call) and arm ``rotq_h16x`` on the denoiser's cards, at the first forward when the weights (and so
     the swap) are not on the GPU yet. Nothing without ConvRot Linears."""
     result = {"rotated": 0, "producer_cards": None, "patches": {}}
     if flux_convrot_fused_disabled():
         uninstall()
         return result
-    if type(transformer).__name__ not in ("Flux2Transformer2DModel", "Flux3Transformer2DModel"):
+    flux1 = type(transformer).__name__ == "FluxTransformer2DModel"
+    if not flux1 and type(transformer).__name__ not in (
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+    ):
         return result
     try:
         result["rotated"] = _rotated_linears(transformer)
         if not result["rotated"]:
             return result
-        result["patches"] = _install_patches(logger)
+        if flux1:
+            result["patches"] = _install_f1_patches()
+            result["marked"] = _mark_f1(transformer)
+            if logger is not None:
+                logger.info("diffusion.flux_convrot_fused: FLUX.1 patches %s", result["patches"])
+        else:
+            result["patches"] = _install_patches(logger)
         native = sum(1 for m in transformer.modules() if _gemm.rdna_native_rotated(m))
         if native:
             result["rdna_native"] = native

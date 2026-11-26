@@ -29,3 +29,16 @@ test("VRAM has its own rounded row with the exact value on hover", () => {
   assert.match(row, /Math\.round\(gpu\.memoryTotalGb\)\} GiB/);
   assert.match(row, /title=\{`\$\{gpu\.memoryTotalGb\} GiB`\}/);
 });
+
+test("a multi-GPU host names the extra GPUs and labels VRAM as a total", () => {
+  const hardware = metaRow("studio.preview.hardware");
+  assert.match(hardware, /gpu\.deviceCount > 1/);
+  assert.match(hardware, /"onboarding\.device\.moreGpus"/);
+  assert.match(hardware, /count: gpu\.deviceCount - 1/);
+
+  const vram = metaRow("studio.preview.vram");
+  assert.match(
+    vram,
+    /gpu\.deviceCount > 1\s*\?\s*t\("studio\.preview\.vramTotal"/,
+  );
+});

@@ -10,6 +10,9 @@ import { useEffect, useMemo, useState } from "react";
 // Summed from files: the Hub's parameter counts read packed MLX weights at full width.
 const sizes = new Map<string, number | null>();
 const inflight = new Map<string, Promise<number | null>>();
+// A failed listing (often a 429) waits this long before it is asked again.
+const FAILURE_COOLDOWN_MS = 5 * 60_000;
+const failedAt = new Map<string, number>();
 const MAX_CONCURRENT = 3;
 let active = 0;
 const waiting: Array<() => void> = [];
@@ -29,6 +32,11 @@ async function withSlot<T>(run: () => Promise<T>): Promise<T> {
 
 function keyOf(id: string): string {
   return `${getHfEndpoint()}::${id.toLowerCase()}`;
+}
+
+function coolingDown(key: string): boolean {
+  const at = failedAt.get(key);
+  return at !== undefined && Date.now() - at < FAILURE_COOLDOWN_MS;
 }
 
 function fetchSize(id: string): Promise<number | null> {
@@ -53,10 +61,13 @@ function fetchSize(id: string): Promise<number | null> {
   })
     .then((bytes) => {
       sizes.set(key, bytes);
+      failedAt.delete(key);
       return bytes;
     })
-    // Failures are not cached, so they retry.
-    .catch(() => null)
+    .catch(() => {
+      failedAt.set(key, Date.now());
+      return null;
+    })
     .finally(() => inflight.delete(key));
   inflight.set(key, promise);
   return promise;
@@ -74,7 +85,7 @@ export function useHubRepoSizes(
     }
     let live = true;
     for (const id of joined.split("\n")) {
-      if (!sizes.has(keyOf(id))) {
+      if (!sizes.has(keyOf(id)) && !coolingDown(keyOf(id))) {
         void fetchSize(id).then(() => {
           if (live) {
             bump((n) => n + 1);

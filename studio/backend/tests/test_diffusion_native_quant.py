@@ -15,6 +15,7 @@ torch = pytest.importorskip("torch")
 
 import core.inference.diffusion_native_quant as nq
 import core.inference.diffusion_transformer_quant as tq
+import core.inference.rocm_bf16 as rocm_bf16
 
 
 def _target(device = "cuda", dtype = None):
@@ -25,6 +26,8 @@ def _target(device = "cuda", dtype = None):
 def rocm(monkeypatch):
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: True)
     monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
+    # the measured RDNA arch (rdna_explicit_w8a8_reason reads the target card's gfx arch)
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", lambda _torch, _ordinal: "gfx1151")
 
 
 @pytest.fixture

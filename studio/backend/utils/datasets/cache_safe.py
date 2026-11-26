@@ -76,25 +76,41 @@ def load_dataset_cache_safe(*args, **kwargs):
 
     quiet_third_party_progress_bars()
 
+    files = _local_json_files(args, kwargs)
     try:
-        return _load_with_cache_retries(load_dataset, args, kwargs)
+        dataset = _load_with_cache_retries(load_dataset, args, kwargs)
     except Exception as error:
-        features = _json_retry_features(error, args, kwargs)
-        if features is None:
+        if files is None:
+            raise
+        from datasets.exceptions import DatasetGenerationError
+
+        if not isinstance(error, DatasetGenerationError):
+            raise
+        rebuilt = _json_rows_rebuild(files, kwargs)
+        if rebuilt is None:
             raise
         logger.warning(
-            "Rows of %s do not share one structure (%s); reloading with a schema covering every row",
+            "Rows of %s do not share one structure (%s); reloaded with a schema covering every row",
             kwargs["data_files"],
             error.__cause__ or error,
         )
-        return _load_with_cache_retries(load_dataset, args, {**kwargs, "features": features})
+        return rebuilt
+    features = getattr(dataset, "features", None)
+    if files is None or features is None:
+        return dataset
+    from utils.datasets.json_rows import has_timestamp
+
+    if not has_timestamp(features.arrow_schema):
+        return dataset
+    return _json_rows_rebuild(files, kwargs) or dataset
 
 
-def _json_retry_features(error, args, kwargs):
-    """Features for a local JSON load that failed on rows typed unlike the first block, else None."""
+def _local_json_files(args, kwargs):
     loader = args[0] if args else kwargs.get("path")
     files = kwargs.get("data_files")
     if loader != "json" or kwargs.get("features") is not None or kwargs.get("streaming"):
+        return None
+    if kwargs.get("split") != "train":
         return None
     if isinstance(files, (str, os.PathLike)):
         files = [files]
@@ -102,13 +118,17 @@ def _json_retry_features(error, args, kwargs):
         return None
     if not all(isinstance(path, (str, os.PathLike)) and os.path.isfile(path) for path in files):
         return None
-    from datasets.exceptions import DatasetGenerationError
+    return files
 
-    if not isinstance(error, DatasetGenerationError):
-        return None
-    from utils.datasets.json_rows import json_rows_features
 
-    return json_rows_features(files)
+def _json_rows_rebuild(files, kwargs):
+    """Rows as ``json`` parses them: one schema across rows, and date strings kept as written."""
+    from functools import partial
+
+    from utils.datasets.json_rows import json_rows_dataset
+
+    rebuild = partial(json_rows_dataset, files)
+    return _load_with_cache_retries(rebuild, (), {"cache_dir": kwargs.get("cache_dir")})
 
 
 def _load_with_cache_retries(load_dataset, args, kwargs):

@@ -86,7 +86,7 @@ SCHEMA_FACTS = [
         lambda props: {"model", "kind", "variant", "max_seq_length", "load_in_4bit", "hf_token"}
         <= set(props),
     ),
-    ("load_model", "parameters/properties/kind/default", "llm"),
+    ("load_model", "parameters/properties/kind/default", None),
     (
         "cancel",
         "parameters/properties/kind/enum",

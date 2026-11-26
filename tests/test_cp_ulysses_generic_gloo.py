@@ -198,7 +198,12 @@ def _parity_worker(
     packed,
     out_dir,
     control = None,
+    chunk_rows = None,
 ):
+    if chunk_rows is not None:
+        # Every sequence takes the query-chunked sdpa path (the long-sequence one).
+        os.environ["UNSLOTH_CP_DENSE_MASK_MAX_TOKENS"] = "0"
+        os.environ["UNSLOTH_CP_MASK_CHUNK_ROWS"] = str(chunk_rows)
     ad.HAS_FLASH_ATTENTION = False
     ad.HAS_XFORMERS = False
     model = _model(kind, implementation)
@@ -260,7 +265,11 @@ def _parity_worker(
     dist.all_reduce(loss.detach())
     uh._ulysses_hf_attention = original
     assert len(calls) == model.config.num_hidden_layers, calls
-    assert lengths_seen == {SEQ}, lengths_seen
+    if chunk_rows is None:
+        assert lengths_seen == {SEQ}, lengths_seen
+    else:
+        # Gemma3's global layers without packing are plain causal: sdpa's is_causal path, whole sequence.
+        assert chunk_rows in lengths_seen and lengths_seen <= {chunk_rows, SEQ}, lengths_seen
     assert inputs["input_ids"].shape[1] == SEQ // world
     worst = 0.0
     for name, param in model.named_parameters():
@@ -353,6 +362,22 @@ def test_generic_ulysses_matches_one_process(kind, implementation, packed):
                 f"{cp._hybrid_config_blocker(model)}"
             )
     _spawn(_parity_worker, 2, kind, implementation, packed, _OUT)
+
+
+@pytest.mark.parametrize("world", [1, 2])
+@pytest.mark.parametrize(
+    "kind, packed",
+    [
+        ("gemma3", False),  # sliding window across chunks and the shard seam
+        ("gemma3", True),  # window and packed documents
+        ("qwen3", True),  # packed documents with the cp padding tail, GQA
+    ],
+)
+def test_chunked_sdpa_mask_matches_one_process(kind, packed, world):
+    """The query-chunked sdpa path (taken past UNSLOTH_CP_DENSE_MASK_MAX_TOKENS) gives the one-process loss
+    and gradients, with the model's own attention function called once per chunk."""
+    _config(kind)
+    _spawn(_parity_worker, world, kind, "sdpa", packed, "", None, 4)
 
 
 def _fullgraph_packed_worker(rank, world, kind, implementation, out_dir):

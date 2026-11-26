@@ -6,7 +6,13 @@ import test from "node:test";
 import ts from "@typescript/typescript6";
 import {
   apiCompactionRequestFields,
+  autoCompactPercentForModel,
+  cloudCompactionTrigger,
   ggufCompactionRequestFields,
+  normalizeAutoCompactPercentByModel,
+  normalizeAutoCompactTokens,
+  parseAutoCompactPercent,
+  parseAutoCompactPercentByModel,
 } from "../src/features/chat/utils/auto-compaction.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -396,4 +402,75 @@ test("provider compaction replay stays on the tool-loop subturn that produced it
     adapter,
     /providerCompactionAfterToolCalls = toolCallParts\.filter\([\s\S]*toolCallPartSurvivesOpenAIReplay\(part\)[\s\S]*\)\.length/,
   );
+});
+
+test("Auto-compact at is a whole percent of the window, typed with or without %", () => {
+  assert.equal(parseAutoCompactPercent(""), null);
+  assert.equal(parseAutoCompactPercent("60"), 60);
+  assert.equal(parseAutoCompactPercent(" 85 % "), 85);
+  for (const bad of ["5", "101", "50.5", "lots", "-20"]) {
+    assert.throws(() => parseAutoCompactPercent(bad), /Auto-compact at/);
+  }
+  assert.equal(normalizeAutoCompactTokens(2_000_000), 1_200_000);
+});
+
+test("a percent becomes that share of whichever window the model has", () => {
+  for (const window of [128_000, 1_000_000]) {
+    assert.deepEqual(
+      apiCompactionRequestFields({
+        autoCompactEnabled: true,
+        contextLength: window,
+        autoCompactPercent: 50,
+      }),
+      {
+        context_overflow: "truncate_oldest",
+        compaction_percent: 50,
+        compaction_threshold: window / 2,
+        compaction_uncapped: true,
+        context_window: window,
+      },
+    );
+  }
+  assert.deepEqual(
+    apiCompactionRequestFields({
+      autoCompactEnabled: true,
+      contextLength: null,
+      autoCompactPercent: 60,
+    }),
+    { context_overflow: "truncate_oldest", compaction_percent: 60 },
+  );
+  assert.equal(
+    cloudCompactionTrigger({
+      providerType: "openrouter",
+      contextLength: 200_000,
+      autoCompactTokens: 30_000,
+      autoCompactPercent: 90,
+    }),
+    180_000,
+  );
+});
+
+test("a model's own percent wins over the connection's", () => {
+  const provider = {
+    autoCompactPercent: 80,
+    autoCompactPercentByModel: { "qwen3:32b": 50 },
+  };
+  assert.equal(autoCompactPercentForModel(provider, "qwen3:32b"), 50);
+  assert.equal(autoCompactPercentForModel(provider, "gpt-oss:20b"), 80);
+  assert.equal(autoCompactPercentForModel({}, "qwen3:32b"), undefined);
+});
+
+test("per-model percent drafts save only listed models and skip blanks", () => {
+  assert.deepEqual(
+    parseAutoCompactPercentByModel({ a: "50%", b: "", gone: "60" }, ["a", "b"]),
+    { a: 50 },
+  );
+  assert.throws(
+    () => parseAutoCompactPercentByModel({ a: "5" }, ["a"]),
+    /^Error: a: Auto-compact at must be/,
+  );
+  assert.deepEqual(normalizeAutoCompactPercentByModel({ a: 50, b: 5, c: "x" }), {
+    a: 50,
+  });
+  assert.equal(normalizeAutoCompactPercentByModel({ b: 5 }), undefined);
 });

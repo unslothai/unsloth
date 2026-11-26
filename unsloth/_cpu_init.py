@@ -33,12 +33,46 @@ from .import_fixes import fix_transformers_quantizer_unquantized_converters
 fix_transformers_quantizer_unquantized_converters()
 del fix_transformers_quantizer_unquantized_converters
 
+# Tokenizer files naming host paths (vocab_file, vocab, merges, ...); the GPU route installs it in _gpu_init.
+from .import_fixes import fix_transformers_tokenizer_config_vocab_file_override
+
+fix_transformers_tokenizer_config_vocab_file_override()
+del fix_transformers_tokenizer_config_vocab_file_override
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
-    f"slower than GPU training; supported: text LoRA / full finetuning with SFTTrainer. "
+    f"slower than GPU training; supported: text LoRA / full finetuning with SFTTrainer, and "
+    f"DPO / ORPO / KTO / CPO with TRL's trainers. "
     f"Set UNSLOTH_DISABLE_CPU_FALLBACK=1 to raise instead."
 )
+
+
+def _cpu_run_report():
+    # By file: unsloth.utils/__init__ imports the GPU model stack.
+    import sys
+    import importlib.util
+    from pathlib import Path
+
+    name = f"{__name__.rsplit('.', 1)[0]}._cpu_run_report"
+    module = sys.modules.get(name)
+    if module is None:
+        path = Path(__file__).resolve().parent / "utils" / "run_report.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[name] = module
+    return module
+
+
+def _report_cpu_memory(stage, owner):
+    # UNSLOTH_MEMORY_REPORT=1: host RAM (RSS, peak, available) at the same stages the GPU route reports.
+    if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") == "0":
+        return
+    try:
+        _cpu_run_report().report_memory(stage, owner, cpu = True)
+    except Exception:
+        pass
 
 
 class FastLanguageModel(FastCPUModel):
@@ -54,6 +88,7 @@ class FastLanguageModel(FastCPUModel):
         check_tiling_available(unsloth_tiled_mlp)
         model, tokenizer = FastCPUModel.from_pretrained(*args, **kwargs)
         loader_tile_mlp(model, unsloth_tiled_mlp)
+        _report_cpu_memory("load", model)
         return model, tokenizer
 
 
@@ -106,6 +141,14 @@ def train_on_responses_only(*args, **kwargs):
 def check_dataset(*args, **kwargs):
     from .chat_templates import check_dataset as _check_dataset
     return _check_dataset(*args, **kwargs)
+
+
+def PatchDPOTrainer():
+    """No-op like the GPU route: TRL's DPO / ORPO / CPO trainers run as is on CPU."""
+
+
+def PatchKTOTrainer():
+    """No-op like the GPU route: TRL's KTO trainer runs as is on CPU."""
 
 
 try:
@@ -286,6 +329,11 @@ def _install_cpu_context_parallel():
             # context_parallel_size = 1 / None opts out, but stock TRL still rejects the keyword.
             init = cp_fields_into_config if any(key in kwargs for key in cp_keys) else original_init
         init(self, *args, **kwargs)
+        if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+            try:
+                _cpu_run_report().install_memory_report(self, cpu = True)
+            except Exception:
+                pass
         # A config TRL rebuilt from to_dict() loses CP attributes set on it.
         if (
             requested
@@ -345,6 +393,8 @@ __all__ = [
     "standardize_sharegpt",
     "train_on_responses_only",
     "check_dataset",
+    "PatchDPOTrainer",
+    "PatchKTOTrainer",
     "UnslothTrainer",
     "UnslothTrainingArguments",
     "UnslothVisionDataCollator",

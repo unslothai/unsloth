@@ -106,11 +106,19 @@ def create_studio_mcp(profile: CallerProfile = AGENT, exclude: frozenset = froze
             built = Tool.from_function(
                 tool, annotations = annotations, **({"output_schema": schema[0]} if schema else {})
             )
+            narrow = getattr(module, "narrow", None)
+            parameters = (
+                narrow(tool.__name__, built.parameters, profile) if narrow else built.parameters
+            )
+            describe = getattr(module, "describe", None)
+            description = (
+                describe(tool.__name__, profile) if describe else None
+            ) or built.description
             mcp.add_tool(
                 built.model_copy(
                     update = {
-                        "description": render(built.description, tools),
-                        "parameters": render_schema(built.parameters, tools),
+                        "description": render(description, tools),
+                        "parameters": render_schema(parameters, tools),
                         "output_schema": render_schema(built.output_schema, tools),
                     }
                 )

@@ -9,7 +9,9 @@ import { modelInfo } from "@huggingface/hub";
 import {
   localGgufPath,
   packsDirectly,
+  q4nxArchitecture,
   q4nxFitQuant,
+  q4nxIsFirstChoice,
   q4nxPacking,
   Q4NX_INFO_FIELDS,
   q4nxArchFit,
@@ -484,4 +486,33 @@ test("a shard of a split GGUF is never a standalone source", () => {
   assert.equal(q4nxIsSplitFile("/models/Q4_K_M-00001-of-00002.gguf"), true);
   assert.equal(q4nxIsSplitFile("C:\\m\\Q4_K_M-00002-of-00002.gguf "), true);
   assert.equal(q4nxIsSplitFile("/models/Qwen3-0.6B-Q4_K_M.gguf"), false);
+});
+
+test("a local GGUF with no architecture is read by its model name", () => {
+  assert.equal(q4nxArchitecture(null, "unsloth/Qwen3.5-4B-GGUF"), "qwen35");
+  assert.equal(q4nxArchitecture(null, "Qwen3.6-35B-A3B-Q4_K_M.gguf"), "qwen35");
+  assert.equal(q4nxArchitecture(null, "Qwen2.5-3B-Instruct-Q4_0.gguf"), "qwen2");
+  assert.equal(q4nxArchitecture(null, "Qwen2.5-VL-3B-Instruct-Q4_1.gguf"), null);
+  assert.equal(q4nxArchitecture(null, "LFM2-1.2B-Q4_0.gguf"), "lfm2");
+  assert.equal(q4nxArchitecture(null, "Qwen3.50-fake"), null);
+  assert.equal(q4nxArchitecture("llama", "Qwen3.5-4B"), "llama");
+  assert.equal(
+    q4nxArchitecture(null, "/models/Qwen3.5-comparisons/Qwen2.5-3B-Instruct-Q4_0.gguf"),
+    "qwen2",
+  );
+  assert.equal(q4nxArchitecture(null, "C:\\models\\Qwen3.5-runs\\Llama-3.2-1B-Q4_1.gguf"), null);
+  assert.equal(q4nxPacking("Q4_K_M", null, "/models/omni/Qwen3.5-4B-Q4_K_M.gguf"), "direct");
+  assert.equal(q4nxFitQuant(null, "unsloth/Qwen3.5-Omni-4B-GGUF"), "q4_1");
+  // A local Qwen3.5 Q4_0 is the repeated-slashes file: refused, not "packs directly".
+  assert.equal(q4nxPacking("Q4_0", null, "unsloth/Qwen3.5-4B-GGUF"), "mismatch");
+  assert.equal(q4nxPacking("Q4_K_M", null, "unsloth/Qwen3.5-4B-GGUF"), "direct");
+  assert.equal(q4nxPacking("Q4_0", null, "some/Unknown-1B-GGUF"), "direct");
+});
+
+test("the short file list keeps what packs as is", () => {
+  const short = ["Q4_0", "Q4_1", "Q4_K_M", "BF16", "Q8_0", "UD-Q4_K_XL"].filter((q) =>
+    q4nxIsFirstChoice(q4nxPacking(q, "qwen35")),
+  );
+  assert.deepEqual(short, ["Q4_K_M"]);
+  assert.equal(q4nxIsFirstChoice(q4nxPacking("Q4_K_M", null)), true);
 });

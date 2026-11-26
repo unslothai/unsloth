@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Test archive integrity, atomic installation, reuse and FastFlowLM pins with a local server."""
+"""Test archive integrity, atomic installation, reuse and FastFlowLM pins with a local server.
+
+Since #18554 the default install path downloads the pinned FastFlowLM directly, with no Lemonade;
+UNSLOTH_NPU_LEMONADE=1 keeps the lemond path. Both are covered here, each pinned explicitly, so a
+change of default can never leave one of them tested against the other's assets."""
 
 from __future__ import annotations
 
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tarfile
 import threading
@@ -23,6 +28,20 @@ if str(STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(STUDIO_DIR))
 
 import install_lemonade_prebuilt as lp  # noqa: E402
+
+
+def test_installer_imports_without_the_studio_backend_on_sys_path():
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import install_lemonade_prebuilt",
+            str(STUDIO_DIR),
+        ],
+        check = True,
+    )
 
 
 def _archive(directory: Path, key: str) -> Path:
@@ -49,6 +68,56 @@ def _archive(directory: Path, key: str) -> Path:
     return path
 
 
+def _flm_archive(directory: Path, key: str) -> Path:
+    binary = "flm.exe" if key == "windows-x64" else "flm"
+    if key == "windows-x64":
+        path = directory / "fastflowlm.zip"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(binary, b"flm\n")
+    else:
+        path = directory / "fastflowlm.tar.gz"
+        with tarfile.open(path, "w:gz") as archive:
+            info = tarfile.TarInfo(binary)
+            info.size = 4
+            info.mode = 0o755
+            archive.addfile(info, io.BytesIO(b"flm\n"))
+    return path
+
+
+def test_custom_lemonade_uses_local_archive_and_preserves_backend_versions(tmp_path, monkeypatch):
+    key = lp.host_asset_key()
+    if key is None:
+        pytest.skip("no Lemonade build for this platform")
+    archive = _archive(tmp_path, key)
+    root = tmp_path / "runtime"
+    monkeypatch.setenv("UNSLOTH_LEMONADE_ARCHIVE", str(archive))
+    monkeypatch.setattr(lp, "_download", lambda *a, **kw: pytest.fail("unexpected download"))
+
+    binary = lp.install(root)
+    assert binary == lp.install(root) == lp.installed_lemond(root)
+    assert binary.parent.parent == root
+    versions = json.loads((binary.parent / "resources" / "backend_versions.json").read_text())
+    assert versions["flm"]["npu"] == "v0.0.1"
+
+    archive.write_bytes(archive.read_bytes() + b"\0")
+    assert lp.installed_lemond(root) is None
+    assert binary.is_file()
+
+
+@pytest.fixture
+def lemond_path(monkeypatch):
+    """Opt in to the lemond install path (the default runs FastFlowLM directly)."""
+    monkeypatch.setenv("UNSLOTH_NPU_LEMONADE", "1")
+    assert lp.direct_flm() is False
+
+
+@pytest.fixture
+def direct_path(monkeypatch):
+    """The default install path: the pinned FastFlowLM, no Lemonade."""
+    monkeypatch.delenv("UNSLOTH_NPU_LEMONADE", raising = False)
+    assert lp.direct_flm() is True
+
+
 @pytest.fixture
 def served(tmp_path, monkeypatch):
     key = lp.host_asset_key()
@@ -56,6 +125,8 @@ def served(tmp_path, monkeypatch):
         pytest.skip("no Lemonade build for this platform")
     archive = _archive(tmp_path, key)
     sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+    flm_archive = _flm_archive(tmp_path, key)
+    flm_sha = hashlib.sha256(flm_archive.read_bytes()).hexdigest()
     httpd = ThreadingHTTPServer(
         ("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory = str(tmp_path))
     )
@@ -74,7 +145,11 @@ def served(tmp_path, monkeypatch):
         lp.core, "release_asset_download_url", lambda repo, tag, name: f"{base}/{name}"
     )
 
-    def pins(digest: str = sha, flm_version: str = "v1.0.3") -> Path:
+    def pins(
+        digest: str = sha,
+        flm_version: str = "v1.0.3",
+        flm_digest: str = flm_sha,
+    ) -> Path:
         path = tmp_path / "pins.json"
         path.write_text(
             json.dumps(
@@ -88,19 +163,20 @@ def served(tmp_path, monkeypatch):
                     "fastflowlm": {
                         "version": flm_version,
                         "repo": "ROCm/FastFlowLM",
-                        "assets": {key: {"name": "fastflowlm.tar.gz", "sha256": "ab" * 32}},
+                        "assets": {key: {"name": flm_archive.name, "sha256": flm_digest}},
                     },
                 }
             )
         )
         return path
 
+    pins.flm_name, pins.flm_sha = flm_archive.name, flm_sha
     yield pins, httpd
     httpd.shutdown()
     httpd.server_close()
 
 
-def test_install_verifies_and_pins_fastflowlm(tmp_path, served):
+def test_install_verifies_and_pins_fastflowlm(tmp_path, served, lemond_path):
     pins, _ = served
     path = pins()
     root = tmp_path / "root"
@@ -109,14 +185,14 @@ def test_install_verifies_and_pins_fastflowlm(tmp_path, served):
     versions = json.loads((binary.parent / "resources" / "backend_versions.json").read_text())
     assert versions["flm"]["npu"] == "v1.0.3"
     assert versions["checksums"]["github"]["ROCm/FastFlowLM"]["v1.0.3"] == {
-        "fastflowlm.tar.gz": "sha256:" + "ab" * 32
+        pins.flm_name: "sha256:" + pins.flm_sha
     }
     assert "other/repo" in versions["checksums"]["github"]
     assert lp.installed_version(binary) == "9.9.9"
     assert lp.installed_version(tmp_path / "elsewhere" / "lemond") is None
 
 
-def test_a_complete_install_is_not_downloaded_again(tmp_path, served):
+def test_a_complete_install_is_not_downloaded_again(tmp_path, served, lemond_path):
     pins, httpd = served
     path = pins()
     root = tmp_path / "root"
@@ -126,7 +202,7 @@ def test_a_complete_install_is_not_downloaded_again(tmp_path, served):
     assert httpd.requests == before
 
 
-def test_a_fastflowlm_only_pin_bump_repins_lemond(tmp_path, served):
+def test_a_fastflowlm_only_pin_bump_repins_lemond(tmp_path, served, lemond_path):
     pins, _ = served
     root = tmp_path / "root"
     lp.install(root, pins_path = pins())
@@ -137,7 +213,7 @@ def test_a_fastflowlm_only_pin_bump_repins_lemond(tmp_path, served):
     assert versions["flm"]["npu"] == "v1.0.5"
 
 
-def test_a_digest_mismatch_installs_nothing(tmp_path, served):
+def test_a_digest_mismatch_installs_nothing(tmp_path, served, lemond_path):
     pins, _ = served
     path = pins("00" * 32)
     root = tmp_path / "root"
@@ -147,7 +223,7 @@ def test_a_digest_mismatch_installs_nothing(tmp_path, served):
     assert not (root / "9.9.9").exists()
 
 
-def test_a_cancelled_download_installs_nothing(tmp_path, served):
+def test_a_cancelled_download_installs_nothing(tmp_path, served, lemond_path):
     pins, _ = served
     path = pins()
     root = tmp_path / "root"
@@ -165,3 +241,39 @@ def test_the_shipped_pins_cover_both_npu_platforms():
         for asset in pins[section]["assets"].values():
             assert len(asset["sha256"]) == 64
     assert pins["fastflowlm"]["version"].startswith("v")
+
+
+def test_the_default_installs_the_pinned_fastflowlm_without_lemonade(tmp_path, served, direct_path):
+    pins, httpd = served
+    path = pins()
+    root = tmp_path / "root"
+    host = lp.install(root, pins_path = path)
+    assert host == lp.FLM_HOST == lp.installed_lemond(root, lp.load_pins(path))
+    target = lp.flm_dir(root)
+    marker = json.loads((target / lp.FLM_MARKER_NAME).read_text())
+    assert marker == {"version": "v1.0.3", "asset": pins.flm_name, "sha256": pins.flm_sha}
+    assert not (root / "9.9.9").exists(), "the direct path must not install Lemonade"
+    before = httpd.requests
+    lp.install(root, pins_path = path)
+    assert httpd.requests == before, "a complete FastFlowLM install was downloaded again"
+
+
+def test_a_fastflowlm_digest_mismatch_installs_nothing(tmp_path, served, direct_path):
+    pins, _ = served
+    path = pins(flm_digest = "00" * 32)
+    root = tmp_path / "root"
+    with pytest.raises(lp.core.ReleaseIntegrityError):
+        lp.install(root, pins_path = path)
+    assert lp.installed_flm_host(root, lp.load_pins(path)) is None
+    assert not lp.flm_dir(root).exists()
+
+
+def test_a_cancelled_fastflowlm_download_installs_nothing(tmp_path, served, direct_path):
+    pins, _ = served
+    path = pins()
+    root = tmp_path / "root"
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(lp.LemonadeInstallCancelled):
+        lp.install(root, pins_path = path, cancel = cancel)
+    assert lp.installed_flm_host(root, lp.load_pins(path)) is None

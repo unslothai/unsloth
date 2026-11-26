@@ -1139,7 +1139,7 @@ def test_gguf_variants_serve_the_hf_cache_only_to_an_authorized_caller(monkeypat
 def test_offline_capability_probes_do_not_read_the_cache_anonymously(monkeypatch, hf_token):
     """Offline, local_files_only comes from the environment, so an anonymous probe reads the cache."""
     _counting_probe(monkeypatch, False)
-    monkeypatch.setattr(model_config_module, "_env_offline", lambda: True)
+    monkeypatch.setattr(model_config_module, "hf_env_offline", lambda: True)
     reached = {"vision": 0, "audio": 0}
 
     def _vision(*_a, **_k):
@@ -1171,7 +1171,7 @@ def test_offline_capability_probes_do_not_read_the_cache_anonymously(monkeypatch
 def test_the_config_json_fallbacks_do_not_reach_the_cache_anonymously(monkeypatch, hf_token):
     """Keying the memo apart is not enough when the value came off disk to begin with."""
     _counting_probe(monkeypatch, False)
-    monkeypatch.setattr(transformers_version, "_env_offline", lambda: True)
+    monkeypatch.setattr(transformers_version, "hf_env_offline", lambda: True)
     monkeypatch.setattr(transformers_version, "_safe_is_file", lambda _p: False)
     monkeypatch.setattr(transformers_version, "_safe_is_dir", lambda _p: False)
     monkeypatch.setattr(transformers_version, "_config_json_cache", {})
@@ -1216,7 +1216,7 @@ def test_the_scan_route_derives_its_caller_rather_than_trusting_an_absent_body_t
     assert (
         "allow_ambient_token" in signature.parameters
     ), "the scan route cannot tell an api key from a ui session"
-    source = inspect.getsource(models_routes.scan_model_remote_code)
+    source = inspect.getsource(models_routes._scan_model_remote_code_sync)
     assert (
         "hf_token_arg(hf_token" in source
     ), "the body token reaches the cache-backed scan target unresolved"
@@ -1336,7 +1336,7 @@ def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatc
     """token=False disables auth, not the local cache, so a cached repo is denied to anonymous callers."""
 
     _counting_probe(monkeypatch, False)
-    monkeypatch.setattr(model_config_module, "_env_offline", lambda: True)
+    monkeypatch.setattr(model_config_module, "hf_env_offline", lambda: True)
     monkeypatch.setattr(model_config_module, "active_hf_hub_cache", lambda: None, raising = False)
     monkeypatch.setattr(model_config_module, "_config_json_already_cached", lambda *_a, **_k: True)
     reached = {"n": 0}
@@ -1359,7 +1359,7 @@ def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatc
 def test_the_prefer_local_scan_branch_carries_the_anonymous_guard():
     """Only the exact-snapshot branch was gated; the sibling resolved the cache anyway."""
     # Bound by indentation; a fixed character window drifted with edits.
-    lines = inspect.getsource(models_routes.scan_model_remote_code).splitlines()
+    lines = inspect.getsource(models_routes._scan_model_remote_code_sync).splitlines()
     start = next(i for i, line in enumerate(lines) if "prefer_local_cache is True" in line)
     depth = len(lines[start]) - len(lines[start].lstrip())
     condition = []
@@ -1399,7 +1399,7 @@ def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
     shared_rules = ("anonymous_and_offline", "refuse_unauthorized_dataset_preview")
     for owner, name in (
         (models_routes.get_model_config, "/config"),
-        (models_routes.scan_model_remote_code, "scan-remote-code"),
+        (models_routes._scan_model_remote_code_sync, "scan-remote-code"),
         (formatting.load_preview_slice, "check-format"),
     ):
         source = inspect.getsource(owner)
@@ -1503,7 +1503,7 @@ def test_the_format_check_gates_the_streaming_tiers_by_caller(monkeypatch, via_a
 def test_the_offline_config_memo_follows_the_caller(monkeypatch, explicit, memoized):
     """_config_json_cache has no TTL, so explicit callers must not memoize values read from disk."""
     transformers_version._config_json_cache.clear()
-    monkeypatch.setattr(transformers_version, "_env_offline", lambda: True)
+    monkeypatch.setattr(transformers_version, "hf_env_offline", lambda: True)
     reads = {"n": 0}
 
     def _from_cache(*_a, **_k):
@@ -1995,7 +1995,7 @@ def test_local_only_audio_detection_refuses_without_asking(monkeypatch):
     local_files_only=True over every adapter it finds, so an unentitled caller must be told
     no from the disk state alone, without a probe and without a cached answer."""
     probes = _counting_probe(monkeypatch, True, offline = False)
-    monkeypatch.setattr(model_config_module, "_env_offline", lambda: False)
+    monkeypatch.setattr(model_config_module, "hf_env_offline", lambda: False)
 
     audio_type, definitive = model_config_module.detect_audio_type_checked(
         "acme/private-audio", hf_token = "hf_dummy", local_files_only = True
@@ -2055,7 +2055,7 @@ def test_the_config_memo_is_rechecked_before_it_is_served(monkeypatch):
 
     reset_repo_access_cache()
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
-    monkeypatch.setattr(transformers_version, "_env_offline", lambda: True)
+    monkeypatch.setattr(transformers_version, "hf_env_offline", lambda: True)
     assert (
         transformers_version._load_config_json("acme/private", "hf_dummy") is None
     ), "revoked token kept the memo"

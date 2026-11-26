@@ -2786,6 +2786,43 @@ def test_incidental_wording_keeps_the_tool_block_byte_identical(tmp_path, monkey
     assert len(set(blocks)) == 1
 
 
+def test_a_message_that_fills_the_window_gets_no_search_after_it(
+    tmp_path, monkeypatch, listing_window
+):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_SEARCH_SHARE", 0.0)
+    window = listing_window(4096)
+    lookup = "Move my roadmap page under the Archive page."
+    chat = [{"role": "user", "content": "hello"}]
+    _thread_listing(tools_mod, window, chat)
+    chat += [{"role": "assistant", "content": "Hi."}, {"role": "user", "content": lookup}]
+    _, exchange, _ = _thread_turn(tools_mod, window, chat)
+    assert exchange
+    chat[-1] = {"role": "user", "content": lookup + " notes" * 2500}
+    _, exchange, _ = _thread_turn(tools_mod, window, chat)
+    assert exchange == []
+
+
+def test_controller_checks_remembered_tools_with_one_catalog_build(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    real = tools_mod._cached_mcp_catalog
+    builds = []
+    monkeypatch.setattr(tools_mod, "_cached_mcp_catalog", lambda: builds.append(1) or real())
+    names = [spec["function"]["name"] for spec in real()]
+    search = {"type": "function", "function": {"name": "mcp_tool_search", "parameters": {}}}
+    controller = ToolLoopController(tools = [search], loaded_mcp_tools = names + ["mcp__srv1__gone"])
+    assert len(builds) == 1
+    assert _names(controller.active_tools(include_deferred = True)) == [
+        "mcp_tool_search",
+        *sorted(names),
+    ]
+
+
 def test_controller_accepts_the_matched_tools(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
     from core.inference.tool_loop_controller import ToolLoopController

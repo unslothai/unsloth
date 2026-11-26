@@ -274,3 +274,235 @@ def test_gemma2_decode_norm_scratch_only_on_layer_devices(monkeypatch):
             self, torch.zeros(1, 1, dtype = torch.long), past, torch.full((1, 1), 5)
         )
     assert [getattr(d, "index", None) for d in made if d is not None] == [0], made
+
+
+def _keep_mask(bsz, kv_len):
+    # Left padding: row i drops its first 2 * i positions (row 0 none), as a batched rollout does.
+    pos = torch.arange(kv_len)[None, :]
+    return (pos >= 2 * torch.arange(bsz)[:, None])[:, None, None, :]
+
+
+def _masked_reference(attn, X, K, V, keep):
+    bsz = X.shape[0]
+    Q = (X.double() @ attn.q_proj.weight.double().t()).view(bsz, N_HEADS, 1, HEAD_DIM)
+    K = K.double().repeat_interleave(N_HEADS // N_KV, dim = 1)
+    V = V.double().repeat_interleave(N_HEADS // N_KV, dim = 1)
+    S = (Q / HEAD_DIM**0.5) @ K.transpose(2, 3)
+    A = torch.softmax(S.masked_fill(~keep, float("-inf")), dim = -1) @ V
+    return A.transpose(1, 2).reshape(bsz, 1, -1) @ attn.o_proj.weight.double().t()
+
+
+def _batched_steps(
+    monkeypatch,
+    mode,
+    dtype,
+    bsz = 3,
+    cached = 11,
+):
+    monkeypatch.setattr(llama, "GROUPED_DECODE", mode)
+    attn = _attention(bsz, dtype)
+    torch.manual_seed(1)
+    past = (
+        torch.randn(bsz, N_KV, cached, HEAD_DIM, dtype = dtype),
+        torch.randn(bsz, N_KV, cached, HEAD_DIM, dtype = dtype),
+    )
+    outs = []
+    calls = llama.GROUPED_DECODE_CALLS[0]
+    for step in range(2):
+        X = torch.randn(bsz, 1, HIDDEN, dtype = dtype)
+        keep = _keep_mask(bsz, cached + 1 + step)
+        out, past = llama.LlamaAttention_fast_forward_inference(
+            attn,
+            X,
+            past,
+            torch.full((bsz, 1), cached + step),
+            attention_mask = keep,
+            do_prefill = step == 0,
+        )
+        # out is the layer's reused output scratch: keep a copy before the next step.
+        outs.append((out.clone(), X, keep) + tuple(past))
+    return attn, outs, llama.GROUPED_DECODE_CALLS[0] - calls
+
+
+@pytest.mark.parametrize("sdpa_gqa", [True, False], ids = ["sdpa_gqa", "expand"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_batched_decode_grouped_matches_sdpa_with_left_padding(monkeypatch, dtype, sdpa_gqa):
+    assert "s7_decode" in llama.__file__ or hasattr(llama, "_grouped_decode_batched")
+    monkeypatch.setattr(llama, "SDPA_HAS_GQA", sdpa_gqa and llama.SDPA_HAS_GQA)
+    attn0, base, calls0 = _batched_steps(monkeypatch, "0", dtype)
+    attn1, grouped, calls1 = _batched_steps(monkeypatch, "1", dtype)
+    # "0" keeps today's batched route; "1" takes the grouped route in every layer call.
+    assert calls0 == 0 and calls1 == 2
+    tol = 1e-5 if dtype == torch.float32 else 3e-2
+    for (o0, X, keep, K, V), (o1, *_rest) in zip(base, grouped):
+        ref = _masked_reference(attn1, X, K, V, keep)
+        torch.testing.assert_close(o1.double(), ref, atol = tol, rtol = tol)
+        torch.testing.assert_close(o1.float(), o0.float(), atol = tol, rtol = tol)
+
+
+def test_batched_grouped_decode_does_not_materialise_kv_per_query_head(monkeypatch):
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "1")
+    monkeypatch.setattr(llama, "SDPA_HAS_GQA", False)  # the route it replaces would expand K / V
+    bsz, cached = 3, 9
+    attn = _attention(bsz, torch.float32)
+    past = (torch.randn(bsz, N_KV, cached, HEAD_DIM), torch.randn(bsz, N_KV, cached, HEAD_DIM))
+    _, past = llama.LlamaAttention_fast_forward_inference(
+        attn, torch.randn(bsz, 1, HIDDEN), past, torch.full((bsz, 1), cached),
+        attention_mask = _keep_mask(bsz, cached + 1), do_prefill = True,
+    )  # fmt: skip
+    with _ShapeRecorder() as rec:
+        llama.LlamaAttention_fast_forward_inference(
+            attn, torch.randn(bsz, 1, HIDDEN), past, torch.full((bsz, 1), cached + 1),
+            attention_mask = _keep_mask(bsz, cached + 2), do_prefill = False,
+        )  # fmt: skip
+    kv_len = cached + 2
+    repeated = [
+        (op, shape)
+        for op, shape in rec.shapes
+        if shape
+        in ((bsz, N_HEADS, kv_len, HEAD_DIM), (bsz, N_KV, N_HEADS // N_KV, kv_len, HEAD_DIM))
+    ]
+    assert repeated == [], repeated
+
+
+@pytest.mark.parametrize("sdpa_gqa_with_batch_mask", [True, False], ids = ["llama", "qwen3"])
+def test_batched_core_and_span_routes_agree(monkeypatch, sdpa_gqa_with_batch_mask):
+    # The captured-step attention (_decode_attention_core) and the whole-step span (_decode_attention_span).
+    torch.manual_seed(2)
+    bsz, kv_len, rows = 3, 13, 32
+    attn = _attention(bsz, torch.float64)
+    attn.paged_attention = torch.randn(rows, 2, bsz, N_KV, HEAD_DIM, dtype = torch.float64)
+    attn.paged_attention_K = attn.paged_attention[:, 0]
+    attn.paged_attention_V = attn.paged_attention[:, 1]
+    attn.attention = torch.empty(bsz, N_HEADS, 1, rows, dtype = torch.float64)
+    attn.scalar = 1.0 / HEAD_DIM**0.5
+    keep = _keep_mask(bsz, kv_len)
+    Q = torch.randn(bsz, 1, N_HEADS, HEAD_DIM, dtype = torch.float64).transpose(1, 2)
+    span = 16
+    span_keep = torch.zeros(bsz, 1, 1, rows, dtype = torch.bool)
+    span_keep[..., :kv_len] = keep
+    static = types.SimpleNamespace(span = span, keep = span_keep, drop = ~span_keep)
+    out = {}
+    for mode in ("0", "1"):
+        monkeypatch.setattr(llama, "GROUPED_DECODE", mode)
+        calls = llama.GROUPED_DECODE_CALLS[0]
+        core = llama._decode_attention_core(
+            attn, Q.clone(), kv_len, keep, bsz, sdpa_gqa_with_batch_mask
+        )[0]
+        whole = llama._decode_attention_span(attn, Q.clone(), static, bsz, sdpa_gqa_with_batch_mask)
+        out[mode] = (core, whole, llama.GROUPED_DECODE_CALLS[0] - calls)
+    assert out["0"][2] == 0 and out["1"][2] == 2
+    # The grouped route's softmax runs in float32 (as at bsz == 1), so float64 inputs agree to ~1e-7.
+    for i in range(2):
+        torch.testing.assert_close(out["1"][i], out["0"][i], atol = 1e-6, rtol = 1e-5)
+    torch.testing.assert_close(out["1"][0], out["1"][1], atol = 1e-6, rtol = 1e-5)
+
+
+def test_grouped_decode_auto_follows_the_card_rule(monkeypatch):
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "auto")
+    cpu = torch.device("cpu")
+    gate = llama._grouped_decode_batched
+    # No measured rule off CUDA: batched decode keeps SDPA.
+    assert llama._grouped_decode_rule(cpu) == (None, None, None)
+    assert not gate(8, 4096, True, True, cpu)
+    # (SDPA GQA unmasked, SDPA GQA masked, expanded K / V)
+    monkeypatch.setattr(llama, "_grouped_decode_rule", lambda device: (None, 8192, 1024))
+    assert not gate(16, 8192, False, False, cpu)  # unmasked SDPA GQA: never on this card
+    assert not gate(8, 1023, False, True, cpu)  # 8184 < 8192
+    assert gate(8, 1024, False, True, cpu)
+    assert not gate(2, 511, True, True, cpu)  # 1022 < 1024 vs the expand route
+    assert gate(2, 512, True, False, cpu)  # expand ignores the mask
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "0")
+    assert not gate(16, 8192, True, True, cpu)
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "1")
+    assert gate(2, 1, False, False, cpu)
+
+
+@pytest.mark.parametrize(
+    "name, rule",
+    [
+        ("Tesla T4", (8192, 1024, 256)),
+        ("NVIDIA L4", (None, 2048, 1024)),
+        ("NVIDIA A100-SXM4-40GB", (None, 16384, 8192)),
+        ("NVIDIA A100 80GB PCIe", (None, 16384, 8192)),
+        ("NVIDIA L40S", (None, None, None)),  # not an L4
+        ("NVIDIA RTX A1000", (None, None, None)),
+        ("NVIDIA H100 80GB HBM3", (None, None, None)),  # unmeasured: keeps SDPA
+    ],
+)
+def test_grouped_decode_rule_matches_whole_card_names(monkeypatch, name, rule):
+    monkeypatch.setattr(llama, "_grouped_decode_rules", {})
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: name)
+    assert llama._grouped_decode_rule(torch.device("cuda", 0)) == rule
+
+
+@pytest.mark.parametrize("fullgraph", [False, True], ids = ["default", "fullgraph"])
+def test_batched_grouped_decode_core_compiles_once_at_a_fixed_shape(monkeypatch, fullgraph):
+    # The engagement counter must stay out of Dynamo's guards: a traced `GROUPED_DECODE_CALLS[0] += 1`
+    # guarded on the counter's value, so six identical calls compiled six frames.
+    from torch._dynamo.testing import CompileCounter
+
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "1")
+    torch.manual_seed(3)
+    bsz, kv_len, rows = 3, 13, 32
+    attn = _attention(bsz, torch.float32)
+    attn.paged_attention = torch.randn(rows, 2, bsz, N_KV, HEAD_DIM)
+    attn.paged_attention_K = attn.paged_attention[:, 0]
+    attn.paged_attention_V = attn.paged_attention[:, 1]
+    attn.attention = torch.empty(bsz, N_HEADS, 1, rows)
+    attn.scalar = 1.0 / HEAD_DIM**0.5
+    keep = _keep_mask(bsz, kv_len)
+    Q = torch.randn(bsz, 1, N_HEADS, HEAD_DIM).transpose(1, 2)
+
+    calls = llama.GROUPED_DECODE_CALLS[0]
+    eager = llama._decode_attention_core(attn, Q.clone(), kv_len, keep, bsz, True)[0].clone()
+    assert llama.GROUPED_DECODE_CALLS[0] - calls == 1  # eager calls are still counted
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    core = torch.compile(llama._decode_attention_core, backend = counter, fullgraph = fullgraph)
+    for _ in range(6):
+        out = core(attn, Q.clone(), kv_len, keep, bsz, True)[0]
+        torch.testing.assert_close(out, eager)
+    torch._dynamo.reset()
+    assert counter.frame_count == 1, counter.frame_count
+
+
+@pytest.mark.parametrize(
+    "dtype, amp, value",
+    [(torch.bfloat16, torch.float16, 70144.0), (torch.float16, torch.bfloat16, 257.0)],
+    ids = ["bf16_under_fp16_autocast", "fp16_under_bf16_autocast"],
+)
+def test_compiled_grouped_decode_keeps_the_eager_dtype_under_autocast(
+    monkeypatch, dtype, amp, value
+):
+    # Eager writes with out=, which autocast skips; the compiled branch's functional matmul / bmm
+    # must not pick up the ambient autocast dtype either. Zero keys give uniform weights, so every
+    # output equals the constant value: 70144 fits bf16 but overflows fp16, 257 is exact in fp16
+    # but rounds to 256 in bf16.
+    from torch._dynamo.testing import CompileCounter
+
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "1")
+    bsz, kv_len, rows = 3, 13, 32
+    attn = _attention(bsz, dtype)
+    attn.paged_attention = torch.zeros(rows, 2, bsz, N_KV, HEAD_DIM, dtype = dtype)
+    attn.paged_attention_K = attn.paged_attention[:, 0]
+    attn.paged_attention_V = attn.paged_attention[:, 1]
+    attn.paged_attention_V.fill_(value)
+    attn.attention = torch.empty(bsz, N_HEADS, 1, rows, dtype = dtype)
+    attn.scalar = 1.0 / HEAD_DIM**0.5
+    keep = _keep_mask(bsz, kv_len)
+    keep[:] = True
+    Q = torch.randn(bsz, 1, N_HEADS, HEAD_DIM, dtype = dtype).transpose(1, 2)
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    core = torch.compile(llama._decode_attention_core, backend = counter, fullgraph = True)
+    with torch.autocast("cpu", dtype = amp):
+        eager = llama._decode_attention_core(attn, Q.clone(), kv_len, keep, bsz, True)[0].clone()
+        compiled = core(attn, Q.clone(), kv_len, keep, bsz, True)[0].clone()
+    torch._dynamo.reset()
+    assert counter.frame_count == 1, counter.frame_count
+    assert torch.isfinite(eager).all() and (eager.float() == value).all()
+    assert compiled.dtype == eager.dtype
+    torch.testing.assert_close(compiled, eager, rtol = 0, atol = 0)

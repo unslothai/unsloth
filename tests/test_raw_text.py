@@ -893,6 +893,17 @@ def test_empty_fence_ends_before_the_next_heading_and_code_block():
     )
 
 
+def test_longer_fence_keeps_a_shorter_fence_inside_as_code():
+    text = "````md\n```\n# comment\n```\n````\n# Setup"
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|code|md|>```\n# comment\n```<|/code|>\n<|chapter|>Setup<|/chapter|>"
+    )
+    text = "````\n```python\n# comment\n```\n`````\n# Setup"
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|code||>```python\n# comment\n```<|/code|>\n<|chapter|>Setup<|/chapter|>"
+    )
+
+
 def test_add_structure_tokens_closer_fills_its_line():
     text = (
         "1. Install\n\n   ```bash\n   # deps\n   pip install unsloth\n   ```\n\n"
@@ -915,6 +926,7 @@ def test_add_structure_tokens_unclosed_long_fence_line_is_linear():
         "```" + " " * 200_000 + "`",
         "```" + " " * 100_000 + "a" * 100_000 + "`",
         "```python\nx = 1\n" * 20_000,
+        "".join("`" * n + "a\n" for n in range(300, 2, -1)) + "x\n" * 200_000,
     ):
         start = time.perf_counter()
         assert TextPreprocessor().add_structure_tokens(text) == text
@@ -946,4 +958,5 @@ if __name__ == "__main__":
     test_add_structure_tokens_closer_fills_its_line()
     test_add_structure_tokens_unclosed_long_fence_line_is_linear()
     test_empty_fence_ends_before_the_next_heading_and_code_block()
+    test_longer_fence_keeps_a_shorter_fence_inside_as_code()
     sys.exit(0 if success else 1)

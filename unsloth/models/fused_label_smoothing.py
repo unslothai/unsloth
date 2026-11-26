@@ -14,9 +14,28 @@ import weakref
 
 import torch
 
+try:
+    from peft.tuners.tuners_utils import BaseTunerLayer as _BaseTunerLayer
+except Exception:
+    _BaseTunerLayer = None
+try:
+    # The same live-adapter check the unsloth_zoo fused forwards use (also catches merged-then-disabled heads and
+    # PEFT's per-example adapter_names hook). Older zoo: the module walk below.
+    from unsloth_zoo.fused_losses.forward_adapter import (
+        lm_head_needs_module_forward as _zoo_head_needs_module_forward,
+    )
+except Exception:
+    _zoo_head_needs_module_forward = None
+
 __all__ = ["fused_label_smoothing_compute_loss"]
 
-_OFF = os.environ.get("UNSLOTH_FUSED_LABEL_SMOOTHING", "1") == "0"
+
+def _off():
+    # Read per call: llama.py imports this module with unsloth, so an import-time read would miss
+    # UNSLOTH_FUSED_LABEL_SMOOTHING=0 set after `import unsloth` but before training.
+    return os.environ.get("UNSLOTH_FUSED_LABEL_SMOOTHING", "1") == "0"
+
+
 # Models whose forward did not reach the fused CE once; they keep the stock LabelSmoother.
 _FALLBACK_MODELS = weakref.WeakSet()
 STATS = {"fused": 0, "fallback": 0}
@@ -58,10 +77,73 @@ def _router_logits_requested(trainer, model, inputs):
     return False
 
 
+def _output_head(model):
+    for module in (model, getattr(model, "module", None)):
+        getter = getattr(module, "get_output_embeddings", None)
+        head = None
+        if callable(getter):
+            try:
+                head = getter()
+            except Exception:
+                head = None
+        if head is None:
+            head = getattr(module, "lm_head", None)
+        if isinstance(head, torch.nn.Module):
+            return head
+    return None
+
+
+def _head_has_live_adapter(head):
+    # An active, unmerged, enabled PEFT tuner layer anywhere in the head: its forward adds what .weight lacks.
+    if not head._modules or _BaseTunerLayer is None:
+        return False
+    for module in head.modules():
+        if not isinstance(module, _BaseTunerLayer):
+            continue
+        merged = set(getattr(module, "merged_adapters", None) or ())
+        if getattr(module, "disable_adapters", False):
+            # A disabled forward unmerges first, so a merged weight is not what it computes with.
+            if merged:
+                return True
+            continue
+        held = set()
+        for layer_name in getattr(module, "adapter_layer_names", None) or ():
+            held.update(getattr(module, layer_name, None) or ())
+        if any(
+            n in held and n not in merged for n in (getattr(module, "active_adapters", None) or ())
+        ):
+            return True
+    return False
+
+
+def output_head_not_fusable(head):
+    # The fused CE projects with lm_head.weight (llama.py, the compiled forwards) and llama.py passes no bias, so a
+    # live adapter on the head (PEFT LoRA layer: .weight is the base weight) would get no gradient and a head bias
+    # would leave the loss: both take lm_head(hidden). A tuner head asks unsloth_zoo's check when it has one, so both
+    # repos route the same heads; an older zoo, or a tuner nested inside a wrapper, uses the module walk. Runs every
+    # labelled forward: a plain nn.Linear head (no children, so no tuner layer) returns before any walk.
+    if getattr(head, "bias", None) is not None:
+        return True
+    if not head._modules:
+        return False
+    if (
+        _zoo_head_needs_module_forward is not None
+        and _BaseTunerLayer is not None
+        and isinstance(head, _BaseTunerLayer)
+    ):
+        return bool(_zoo_head_needs_module_forward(head))
+    return _head_has_live_adapter(head)
+
+
+def _head_not_fusable(model):
+    head = _output_head(model)
+    return head is not None and output_head_not_fusable(head)
+
+
 def _skip_reason(trainer, model, inputs, return_outputs):
     """None when the fused path applies, else why not (counted in STATS)."""
     smoother = getattr(trainer, "label_smoother", None)
-    if _OFF or smoother is None:
+    if _off() or smoother is None:
         return "off"
     # Evaluation (prediction_step asks for outputs, under no_grad) keeps the stock smoother and its logits.
     if return_outputs or not torch.is_grad_enabled():
@@ -70,6 +152,11 @@ def _skip_reason(trainer, model, inputs, return_outputs):
         return "compute_loss_func"
     if getattr(trainer.args, "loss_type", None) not in (None, "nll"):
         return "loss_type"
+    # Only transformers' own LabelSmoother: a subclass or custom callable may compute another objective.
+    if type(smoother).__name__ != "LabelSmoother" or not type(smoother).__module__.startswith(
+        "transformers."
+    ):
+        return "smoother"
     if (
         not float(getattr(smoother, "epsilon", 0.0) or 0.0) > 0.0
         or getattr(smoother, "ignore_index", -100) != -100
@@ -84,6 +171,8 @@ def _skip_reason(trainer, model, inputs, return_outputs):
         return "fell_back"
     if _router_logits_requested(trainer, model, inputs):
         return "router_logits"
+    if _head_not_fusable(model):
+        return "head"
     if _override() is None:
         return "zoo"
     return None
@@ -111,11 +200,19 @@ class _FusedLabelSmoother:
     def _fallback(self, model_output, labels, shift_labels, kwargs):
         STATS["fallback"] += 1
         _FALLBACK_MODELS.add(self._model)
-        logits = (
-            model_output.get("logits", None)
-            if isinstance(model_output, dict)
-            else (model_output[1] if len(model_output) > 1 else None)
-        )
+        if isinstance(model_output, dict):
+            logits = model_output.get("logits", None)
+        else:
+            # A labelled (injected) forward returns (loss, logits, ...); a label-free one (logits, ...).
+            has_loss = (
+                self._injection.done
+                and len(model_output) > 1
+                and isinstance(model_output[0], torch.Tensor)
+                and model_output[0].dim() == 0
+            )
+            logits = (
+                model_output[1] if has_loss else (model_output[0] if len(model_output) else None)
+            )
         if not (
             isinstance(logits, torch.Tensor)
             and logits.dim() == labels.dim() + 1
@@ -127,6 +224,10 @@ class _FusedLabelSmoother:
             # No usable logits came back: run the stock label-free forward again.
             del model_output, logits
             model_output = self._model(*injection.args, **injection.kwargs)
+            return self.original(model_output, labels, shift_labels = shift_labels, **kwargs)
+        # LabelSmoother reads output[0] of a tuple, which is the loss when labels were injected.
+        if not isinstance(model_output, dict):
+            model_output = (logits,)
         return self.original(model_output, labels, shift_labels = shift_labels, **kwargs)
 
     def __call__(

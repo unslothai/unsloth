@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ParallelModeChoice } from "./parallel";
 import type { ModelInventoryFormat } from "@/features/hub";
 import type { S3Config } from "@/types/training";
 
@@ -64,6 +65,10 @@ export interface TrainingStartRequest {
   offload_layers: number | "auto";
   offload_vram_gb: number | null;
   offload_vram_gb_per_device: (number | null)[] | null;
+  /** Multi-GPU hosts only; absent = the backend's legacy single / layer-split choice. */
+  parallel_mode?: ParallelModeChoice;
+  parallel_spec?: string;
+  gpu_ids?: number[];
   prefetch_depth: number | "auto";
   use_rslora: boolean;
   use_loftq: boolean;

@@ -144,26 +144,34 @@ def file_times_ms(path: Path) -> tuple[int, int]:
 
 
 def _zstd_reader(raw):
+    """(stream, mid-read decode errors): each backend has its own ZstdError; a truncated frame is EOFError."""
     try:
-        # novermin -- 3.14; the ImportError fallback to zstandard below is the guard, which vermin cannot see.
+        # novermin -- 3.14; the ImportError fallbacks below are the guard, which vermin cannot see.
         from compression import zstd  # novermin
-        return zstd.ZstdFile(raw)
     except ImportError:
-        import zstandard  # ImportError here means the caller skips the file
-        return zstandard.ZstdDecompressor().stream_reader(raw)
+        try:
+            from backports import zstd  # what Studio installs below 3.14
+        except ImportError:
+            import zstandard  # ImportError here means the caller skips the file
+            return zstandard.ZstdDecompressor().stream_reader(raw), (EOFError, zstandard.ZstdError)
+    return zstd.ZstdFile(raw), (EOFError, zstd.ZstdError)
 
 
 def read_jsonl(path: Path) -> Iterator[dict]:
     """Records of a JSONL(.zst) file; a half-written last line is normal for a live session."""
     with path.open("rb") as raw:
-        stream = _zstd_reader(raw) if path.suffix == ".zst" else raw
-        for line in io.TextIOWrapper(stream, encoding = "utf-8", errors = "replace"):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(record, dict):
-                yield record
+        # Plain files catch nothing: the except clause also runs on GeneratorExit for every early close.
+        stream, corrupt = _zstd_reader(raw) if path.suffix == ".zst" else (raw, ())
+        try:
+            for line in io.TextIOWrapper(stream, encoding = "utf-8", errors = "replace"):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    yield record
+        except corrupt as exc:
+            logger.warning("external_import_corrupt_archive", path = str(path), error = str(exc))
 
 
 def iso_ms(value) -> Optional[int]:
@@ -253,13 +261,12 @@ def _reader(revision: str) -> str:
 
 
 def _pending_messages(
-    source: Source, transcript: Transcript, existing: bool, stored: list[dict]
+    transcript: Transcript, existing: bool, stored: list[dict], mark: Optional[tuple[int, str]]
 ) -> list[dict]:
     # Only turns appended since the last import. The ledger count, not the message rows,
     # says which those are: a message deleted in Studio leaves no row behind.
     if not existing:
         return list(transcript.messages)
-    mark = studio_db.get_external_import_mark(source.key, transcript.session_id)
     if mark is None:
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
@@ -326,6 +333,18 @@ def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[
     return patched
 
 
+def _mark_write_is_noop(
+    stored: Optional[tuple[int, str]], mark: studio_db.ExternalImportMark
+) -> bool:
+    # record_external_import_mark keeps the larger count under the same revision.
+    return (
+        stored is not None
+        and stored[1] == mark.revision
+        and type(stored[0]) is int
+        and stored[0] >= mark.turns
+    )
+
+
 def _import_session(source: Source, path: Path, project_id: str, summary: ImportSummary) -> bool:
     session_id = source.session_id(path)
     thread_id = thread_id_for(source, session_id)
@@ -341,18 +360,23 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
         summary.skipped += 1
         return False
 
-    existing = studio_db.get_chat_thread(thread_id) or {}
-    try:
-        studio_db.upsert_chat_thread(
-            _thread_row(transcript, existing, project_id),
-            external_import_session = (source.key, session_id) if not existing else None,
-        )
-    except studio_db.ChatThreadDeletedError:
-        summary.skipped += 1
-        return False
+    existing, stored_row = studio_db.get_chat_thread_with_row(thread_id)
+    existing = existing or {}
+    thread = _thread_row(transcript, existing, project_id)
+    # Rewriting an identical row still fires the revision triggers, so every open tab re-reads.
+    if not existing or not studio_db.chat_thread_upsert_is_noop(thread, stored_row):
+        try:
+            studio_db.upsert_chat_thread(
+                thread,
+                external_import_session = (source.key, session_id) if not existing else None,
+            )
+        except studio_db.ChatThreadDeletedError:
+            summary.skipped += 1
+            return False
     # One read of the thread's rows serves both passes; nothing writes between them.
     stored = studio_db.list_chat_messages(thread_id) if existing else []
-    pending = _pending_messages(source, transcript, bool(existing), stored)
+    stored_mark = studio_db.get_external_import_mark(source.key, session_id) if existing else None
+    pending = _pending_messages(transcript, bool(existing), stored, stored_mark)
     if existing:
         pending = _late_tool_results(transcript, stored) + pending
     mark = studio_db.ExternalImportMark(
@@ -363,9 +387,13 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
     )
     if pending:
         studio_db.sync_chat_messages(
-            thread_id, pending, prune_missing = False, external_import_mark = mark
+            thread_id,
+            pending,
+            prune_missing = False,
+            external_import_mark = mark,
+            return_rows = False,
         )
-    else:
+    elif not _mark_write_is_noop(stored_mark, mark):
         studio_db.record_external_import_mark(*mark)
     summary.new_chats += 0 if existing else 1
     summary.messages += len(pending)

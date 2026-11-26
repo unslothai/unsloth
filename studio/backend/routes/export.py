@@ -119,6 +119,8 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     for name in dict.fromkeys([base, *bases]):
         if name:
             account_access.require_model_access(name)
+            account_access.require_adapter_chain_access(name)
+    account_access.require_listed_adapters_access(checkpoint_path)
     return base or None
 
 
@@ -148,6 +150,8 @@ async def load_checkpoint(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
             base_model = base_model,
+            # Checked with no adapter config: one written later must not pick a base unchecked.
+            adapter_free = base_model is None and account_access.managed_account(),
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             offload_layers = request.offload_layers,
@@ -492,6 +496,15 @@ async def get_moe_info(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+            from utils.datasets.remote_images import is_network_share
+
+            if isinstance(base, str) and is_network_share(base):
+                # The Hub repo picked this path; probing it on Windows authenticates to that host (NTLM).
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"The adapter '{model}' names a base model on a network share. "
+                    "Download the base model and export from a local folder instead.",
+                )
             if hub_adapter and not base:
                 # A confirmed adapter whose base could not be read (a failed download after its
                 # retries): unknown, not dense.

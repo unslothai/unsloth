@@ -354,19 +354,37 @@ class _RoPE(nn.Module):
         return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2).unsqueeze(0)
 
     def tables(self, height, width, text_length, device, dtype):
-        """``((cos, sin) for image + text, (cos, sin) for the text alone)`` in ``dtype``, cached per key."""
+        """``((cos, sin) for image + text, (cos, sin) for the text alone)`` in ``dtype``, cached per key.
+
+        Uncached during CUDA graph capture: a replay reads them at fixed addresses, and an evicted entry's memory is reused."""
         device = torch.device(device)
+        if _capturing(device):
+            return self._build(height, width, text_length, device, dtype)
         key = (int(height), int(width), int(text_length), device.type, device.index, dtype)
         hit = self._tables.get(key)
         if hit is not None:
             return hit
-        rope = self.forward(height, width, text_length, device).to(dtype)
-        full = _rope_tables(rope)
-        text = _rope_tables(rope[:, height * width :])
+        full, text = self._build(height, width, text_length, device, dtype)
         if len(self._tables) >= self._MAX_CACHED:
             self._tables.pop(next(iter(self._tables)))
         entry = self._tables[key] = (full, text)
         return entry
+
+    def _build(self, height, width, text_length, device, dtype):
+        rope = self.forward(height, width, text_length, device).to(dtype)
+        return _rope_tables(rope), _rope_tables(rope[:, height * width :])
+
+
+def _capturing(device) -> bool:
+    if device.type != "cuda":
+        return False
+    try:
+        if torch.compiler.is_compiling():
+            return False
+        with torch.cuda.device(device):
+            return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - a build without CUDA graphs never records one
+        return False
 
 
 def _model_bases():

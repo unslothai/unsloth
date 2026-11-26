@@ -21,6 +21,7 @@ from fastmcp.exceptions import ToolError
 from core.inference import model_identity
 from studio_mcp import job_store
 from studio_mcp import placement as place
+from studio_mcp import problems
 from studio_mcp.caller import Caller
 from studio_mcp.errors import raise_for_route, tool_error
 from studio_mcp.forward import forward
@@ -87,6 +88,8 @@ class LoadJob(job_store.Job):
     post: Optional[asyncio.Future] = field(default = None, repr = False)
     # The media load's load_token: an unload naming it ends this load only, even if its POST is still out.
     load_token: Optional[str] = None
+    # A chat tool call's key fingerprint: only that call follows the job, which stops with it.
+    scoped: Optional[str] = None
 
     def note(self, fraction: Optional[float], phase: str) -> None:
         # A step without a fraction keeps the last one, so progress never drops back.
@@ -125,10 +128,28 @@ def _same_id(left: str, right: str) -> bool:
     return model_identity.same_repo(left, right, probe = True)
 
 
+def _fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _scope_of(caller: Caller) -> Optional[str]:
+    return _fingerprint(caller.token) if caller.call_scoped else None
+
+
+async def stop_scoped_loads(token: str) -> int:
+    """Ends the jobs of the loads a call-scoped key started; a media load already posted still finishes."""
+    jobs = [job for job in LOADS.running() if job.scoped == _fingerprint(token)]
+    for job in jobs:
+        job_store.mark_cancelled(job)
+    return len(jobs)
+
+
 def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
     for job in LOADS.running(caller.account_id):
         if (
-            job.slot == asked.slot
+            # Another call's key is revoked when that call ends.
+            job.scoped == asked.scoped
+            and job.slot == asked.slot
             and _same(job.model, asked.model)
             and model_identity.same_variant(job.variant, asked.variant)
             and job.options == asked.options
@@ -211,6 +232,7 @@ async def start_load(
         model = model,
         variant = variant,
         options = (options, hashlib.sha256(token.encode()).hexdigest()[:16] if token else None),
+        scoped = _scope_of(caller),
     )
 
     async def drive(job: LoadJob) -> LoadResult:
@@ -336,6 +358,9 @@ async def finish_load(
 def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     async def poll() -> Progress:
         loading = await route_json("GET", "/api/inference/load-progress", caller = caller)
+        # Checked before the fraction: the placement search reports 0, which reads as no progress.
+        if isinstance(loading, dict) and loading.get("phase") == "fit":
+            return 0.0, "Finding a GPU layer split that fits in memory"
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
         if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
@@ -354,6 +379,22 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     return poll
 
 
+_NOT_LLM_MARKERS = ("autoconfig", "model_type", "unrecognized model")
+
+
+def _wrong_kind_hint(message: str) -> Optional[str]:
+    """A note on kind for a model the llm route could not read; None for any other failure."""
+    if not any(marker in message.lower() for marker in _NOT_LLM_MARKERS):
+        return None
+    tools = problems.caller_tools()
+    if "load_model" not in tools:
+        return None
+    hint = "If this is an image, video or speech-to-text model, pass kind"
+    if "list_models" in tools:
+        hint += "; list_models(source='catalog') shows each catalog model's kind"
+    return hint + "."
+
+
 async def load_llm(
     caller: Caller,
     ctx: Optional[Context],
@@ -370,6 +411,7 @@ async def load_llm(
     kv_cache_type: Optional[str] = None,
     gpu_layers: Optional[int] = None,
     is_lora: bool = False,
+    precheck: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -391,6 +433,8 @@ async def load_llm(
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         # The GGUF listing and status reads run inside the job, so a slow one never holds the call
         # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
+        if precheck is not None:
+            await precheck()
         gguf = await place.require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
         body.update(
             place.llm_fields(
@@ -402,12 +446,18 @@ async def load_llm(
                 gpu_layers = gpu_layers,
             )
         )
-        payload = await with_progress(
-            None,
-            route_json("POST", "/api/inference/load", caller = caller, json_body = body),
-            _llm_poll(caller, model),
-            job,
-        )
+        try:
+            payload = await with_progress(
+                None,
+                route_json("POST", "/api/inference/load", caller = caller, json_body = body),
+                _llm_poll(caller, model),
+                job,
+            )
+        except ToolError as error:
+            hint = _wrong_kind_hint(str(error))
+            if hint is None:
+                raise
+            raise tool_error(str(error), hint) from error
         if not isinstance(payload, dict):
             raise ToolError("Unsloth Studio did not confirm the load")
         loaded = opt_text(payload.get("model")) or model
@@ -504,15 +554,24 @@ async def unload_llm(
     else:
         # The route unloads by checkpoint id, listed in the same order as serving.
         target = dict(zip(serving, checkpoints)).get(model, model)
+        # Two loaded quants of one repo share its id: the route unloads the one the id reaches.
+        copies = [
+            c for s, c in zip(serving, checkpoints) if s == model and c.startswith(f"{model}:")
+        ]
+        if len(copies) > 1:
+            target = model
     await route_json(
         "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
     )
     # An id that matches nothing still answers success, so compare what is resident before and after.
     _serving, _checkpoints, after = await _llm_resident(caller)
     was_loaded = bool({model, target} & before)
-    return UnloadResult(
-        kind = kind, model = model, unloaded = was_loaded and not ({model, target} & after)
-    )
+    # The other quant of its repo keeps the id resident, so only a copy's own name tells.
+    named = [c for c in checkpoints if model is not None and c.startswith(f"{model}:")]
+    if target in named:
+        named = [target]
+    unloaded = any(c not in after for c in named) if named else not ({model, target} & after)
+    return UnloadResult(kind = kind, model = model, unloaded = was_loaded and unloaded)
 
 
 MEDIA_ROUTES = {
