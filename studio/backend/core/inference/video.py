@@ -15896,26 +15896,8 @@ class VideoBackend:
 
     @keeps_system_awake
     @holds_inference
-    def generate(
-        self,
-        *,
-        _on_gpu_released: Optional[Callable[[dict[str, Any]], None]] = None,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """Render one clip. The GPU part runs under _generate_lock; the CPU MP4 encode of a clip that was not
-        streamed runs after the lock is released, so a queued successor's GPU work overlaps it.
-        ``_on_gpu_released`` (begin_generate's worker) runs between the two with the result so far."""
-        result = self._generate_locked(**kwargs)
-        finish = result.pop("_finish_encode", None)
-        if finish is None:
-            return result
-        if _on_gpu_released is not None:
-            _on_gpu_released(result)
-        result["mp4_bytes"] = finish(_on_gpu_released is None)
-        return result
-
     @vram_budget_scope("video")
-    def _generate_locked(
+    def generate(
         self,
         *,
         prompt: str,
@@ -15944,7 +15926,11 @@ class VideoBackend:
         live_preview: Optional[bool] = None,
         # Wan only: decode the final latent with the tiny VAE (fast, lower fidelity). None = UNSLOTH_VIDEO_DRAFT_DECODE.
         draft_decode: Optional[bool] = None,
+        # begin_generate's worker: called with the result between the GPU part and the encode after the lock.
+        _on_gpu_released: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> dict[str, Any]:
+        """Render one clip. The GPU part runs under _generate_lock; the CPU MP4 encode of a clip that was not
+        streamed during its decode runs after the lock is released, so a queued successor's GPU work overlaps it."""
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
@@ -17025,8 +17011,7 @@ class VideoBackend:
                 if bg_eager:
                     _settle_bg_compile(bg, i2v = _bg_i2v_render(first_pil, i2v_active))
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
-                return {
-                    **({"_finish_encode": finish_encode} if finish_encode is not None else {}),
+                result = {
                     "mp4_bytes": mp4_bytes,
                     "seed": int(seed),
                     "repo_id": state.display_repo_id or state.repo_id,
@@ -17086,6 +17071,13 @@ class VideoBackend:
                 output = video_frames = encode_args = None
                 release_pinned_host_memory()
                 _release_held_cache_writes(getattr(state, "pipe", None), "the first render ended")
+        if finish_encode is None:
+            return result
+        # The lock is free: a queued clip's GPU work runs while this clip encodes on the CPU.
+        if _on_gpu_released is not None:
+            _on_gpu_released(result)
+        result["mp4_bytes"] = finish_encode(_on_gpu_released is None)
+        return result
 
     def _detached_encoder(
         self,
