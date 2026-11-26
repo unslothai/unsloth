@@ -366,20 +366,51 @@ def _krea2_qkv_widths(root: Any, attn: str) -> tuple[int, ...]:
     )
 
 
-def _is_untrained(state: dict, stem: str) -> bool:
-    """True when ``stem`` has factors and one of them is all zero, so its delta is zero."""
-    factors = [
-        v
-        for k, v in state.items()
-        if k.startswith(stem + ".") and k[len(stem) + 1 :] in _FACTOR_SUFFIXES
-    ]
-    return bool(factors) and any(not bool(t.any()) for t in factors)
+def _dora_magnitude_is_initial(root: Any, stem: str, magnitude: Any) -> bool:
+    """True when a DoRA magnitude is still what DoRA starts from: the base weight's norm per output row (PEFT) or per
+    input column (LyCORIS ``wd_on_out=False``). With a zero ``B @ A`` that layer is then the base layer."""
+    if root is None:
+        return False
+    try:
+        weight = _base_layer(_krea2_module(root, _strip(stem))).weight
+    except (AttributeError, ValueError):
+        return False
+    w = weight.detach().float().flatten(1)
+    m = magnitude.detach().float().flatten()
+    for norm in (w.norm(dim = 1), w.norm(dim = 0)):
+        if m.numel() == norm.numel() and bool(
+            ((m - norm.to(m.device)).abs() <= 1e-2 * norm.abs().to(m.device) + 1e-6).all()
+        ):
+            return True
+    return False
 
 
-def krea2_drop_unused_projections(state: dict) -> dict:
+def _is_untrained(
+    state: dict,
+    stem: str,
+    root: Any = None,
+) -> bool:
+    """True when ``stem`` leaves its layer untouched: one of its factors is all zero (so ``B @ A`` is zero), every bias
+    it carries is zero, and any DoRA magnitude is still the base weight's norm (a trained one rescales the layer even
+    with a zero ``B @ A``)."""
+    own = {k[len(stem) + 1 :]: v for k, v in state.items() if k.startswith(stem + ".")}
+    factors = [v for k, v in own.items() if k in _FACTOR_SUFFIXES]
+    if not factors or all(bool(t.any()) for t in factors):
+        return False
+    if any(k.endswith(".bias") and bool(v.any()) for k, v in own.items()):
+        return False
+    return all(
+        _dora_magnitude_is_initial(root, stem, v)
+        for k, v in own.items()
+        if k in _MAGNITUDE_SUFFIXES
+    )
+
+
+def krea2_drop_unused_projections(state: dict, root: Any = None) -> dict:
     """A trainer that fuses q / k / v still saves the separate ``to_q`` / ``to_k`` / ``to_v`` it never ran, untrained
-    (a zero factor): drop them so the fused delta is the only one on those layers. A trained one beside a fused one
-    has no single meaning, so it is refused."""
+    (a zero factor, zero bias, initial DoRA magnitude): drop them so the fused delta is the only one on those layers.
+    A trained one beside a fused one has no single meaning, so it is refused. ``root`` (the transformer) prices a
+    DoRA magnitude; without it a sibling carrying one counts as trained."""
     fused = {m.group(1) for m in map(_KREA2_FUSED_QKV.match, state) if m is not None}
     if not fused:
         return state
@@ -390,7 +421,7 @@ def krea2_drop_unused_projections(state: dict) -> dict:
             keys = [k for k in state if k.startswith(stem + ".")]
             if not keys:
                 continue
-            if not _is_untrained(state, stem):
+            if not _is_untrained(state, stem, root):
                 raise ValueError(
                     f"{stem} is trained beside the fused {attn}to_qkv; the file holds two deltas for one layer"
                 )
@@ -915,7 +946,7 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
     raw = read_lora_file(path)
     dotted = _dotted_kohya_keys(pipe, raw, family)
     if family == "krea-2":
-        dotted = krea2_drop_unused_projections(dotted)
+        dotted = krea2_drop_unused_projections(dotted, pipe.transformer)
     lokr, rest = split_lokr(dotted)
 
     def normalized(metadata: Optional[dict] = None) -> dict:

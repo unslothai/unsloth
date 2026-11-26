@@ -101,8 +101,11 @@ def _fused_lora_file(
             for name, r in (("to_q", q), ("to_k", kv), ("to_v", kv)):
                 state[f"transformer.{attn}{name}.lora_A.weight"] = _ints(RANK, width, seed = 40 + i)
                 state[f"transformer.{attn}{name}.lora_B.weight"] = torch.zeros(r, RANK)
-                if dora:
-                    state[f"transformer.{attn}{name}.lora_magnitude_vector.weight"] = torch.ones(r)
+                if dora:  # DoRA starts from the base weight's row norm, so an unrun sibling still holds it
+                    base = _Pipe().transformer.get_submodule(attn + name).weight
+                    state[f"transformer.{attn}{name}.lora_magnitude_vector.weight"] = (
+                        base.detach().norm(dim = 1)
+                    )
     save_file(state, str(path))
     return fused
 
@@ -220,6 +223,39 @@ def test_a_trained_projection_beside_a_fused_one_is_refused(tmp_path):
     )
     with pytest.raises(ValueError, match = "trained beside the fused"):
         lf.load_adapter(_Pipe(), str(path), "a", "krea-2")
+
+
+@pytest.mark.parametrize("extra", ["bias", "magnitude"])
+def test_a_zero_delta_sibling_with_a_trained_bias_or_magnitude_is_refused(tmp_path, extra):
+    # B @ A is zero, but a bias still adds an output and a trained DoRA magnitude still rescales the base weight.
+    attn, width, q, kv = ATTNS[0]
+    path = tmp_path / "zero_delta.safetensors"
+    state = {
+        f"transformer.{attn}to_qkv.lora_A.weight": _ints(RANK, width, seed = 1),
+        f"transformer.{attn}to_qkv.lora_B.weight": _ints(q + 2 * kv, RANK, seed = 2),
+        f"transformer.{attn}to_k.lora_A.weight": _ints(RANK, width, seed = 3),
+        f"transformer.{attn}to_k.lora_B.weight": torch.zeros(kv, RANK),
+    }
+    if extra == "bias":
+        state[f"transformer.{attn}to_k.lora_B.bias"] = _ints(kv, seed = 4)
+    else:
+        state[f"transformer.{attn}to_k.lora_magnitude_vector.weight"] = torch.ones(kv)
+    save_file(state, str(path))
+    with pytest.raises(ValueError, match = "trained beside the fused"):
+        lf.load_adapter(_Pipe(), str(path), "a", "krea-2")
+
+
+def test_a_zero_delta_sibling_with_a_zero_bias_is_dropped():
+    attn, width, q, kv = ATTNS[0]
+    state = {
+        f"transformer.{attn}to_qkv.lora_A.weight": _ints(RANK, width, seed = 1),
+        f"transformer.{attn}to_qkv.lora_B.weight": _ints(q + 2 * kv, RANK, seed = 2),
+        f"transformer.{attn}to_k.lora_A.weight": _ints(RANK, width, seed = 3),
+        f"transformer.{attn}to_k.lora_B.weight": torch.zeros(kv, RANK),
+        f"transformer.{attn}to_k.lora_B.bias": torch.zeros(kv),
+    }
+    kept = lf.krea2_drop_unused_projections(state, _Pipe().transformer)
+    assert not any(".to_k." in k for k in kept) and len(kept) == 2
 
 
 def test_a_fused_qkv_with_the_wrong_rows_is_refused(tmp_path):
