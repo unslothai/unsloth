@@ -56062,6 +56062,15 @@ def _follow_up_pass():
 _COALESCE_KEY_IGNORED = frozenset({"live_preview"})
 
 
+def _callable_takes(fn: Any, name: str) -> bool:
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 async def _coalesced_image_generate(
     backend: Any,
     status: Optional[dict],
@@ -56072,12 +56081,13 @@ async def _coalesced_image_generate(
     generate_kwargs: dict,
 ) -> Optional[dict]:
     """Join a batch while a render runs; None = render alone. ``generate_kwargs`` all go into the key."""
+    from core.inference import diffusion_batch_trace as batch_trace
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-    from core.inference.diffusion_anima import ANIMA_FAMILY_NAME
+    from core.inference.diffusion_batch_adapters import batched_forward
+    from core.inference.diffusion_cuda_graph import batch_rows
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
     from core.inference.generation_ticket import (
         GenerationTicket,
         TicketStopEvent,
@@ -56087,19 +56097,27 @@ async def _coalesced_image_generate(
     holder = getattr(backend, "generation_holder", None)
     if holder is None or active_engine_name() != ENGINE_DIFFUSERS:
         return None
+    batch_trace.count("admitted")
     if not image_request_batching.collecting():
         try:
             if holder() is None:
+                # Idle: dispatch now, before any key, policy, status read or timer.
+                batch_trace.count("idle_direct")
                 return None
         except Exception:  # noqa: BLE001 -- no busy signal; render individually
             return None
     if status is None:
         status = await asyncio.to_thread(backend.status)
     family = status.get("family")
-    if family in FLUX3_FAMILY_NAMES or family == ANIMA_FAMILY_NAME:
-        return None
-    if family and getattr(detect_family("", family), "layer_count", 0):
-        return None
+    if family:
+        try:
+            fused = batched_forward(detect_family("", family))
+        except Exception:  # noqa: BLE001 -- an unknown family renders alone
+            fused = False
+        if not fused:
+            # FLUX.3, Anima, layered and the other families that loop one image per forward, unless they say so.
+            batch_trace.fallback("family renders one image per forward")
+            return None
     if generate_kwargs.get("expected_load") is None:
         # Pin to the model read here, so a swapped model is refused rather than rendering every member.
         from core.inference.diffusion_families import load_identity
@@ -56115,6 +56133,7 @@ async def _coalesced_image_generate(
     if plan is not None:
         decided = await asyncio.to_thread(plan, prompt, bool(loras))
         if decided is None:
+            batch_trace.fallback("engine policy or prompt layout")
             return None
         prompt_key, private = decided
     else:
@@ -56173,7 +56192,8 @@ async def _coalesced_image_generate(
             # Row 0 may be another account's image, so a cross-account batch shows no preview.
             call.update(_live_preview_kwarg(backend.generate, False))
         runner = _image_generate_on_reserved_turn if "turn" in lead else _image_generate_in_thread
-        with generation_ticket(ticket), _reserved_turn(lead.get("turn")):
+        # A user's call never records a batch-size graph (only an idle race does): an unrecorded size runs eager.
+        with generation_ticket(ticket), _reserved_turn(lead.get("turn")), batch_rows(len(seeds)):
             try:
                 return await runner(
                     backend.generate,
@@ -56229,15 +56249,52 @@ async def _coalesced_image_generate(
         }
 
     sizes_of = getattr(backend, "coalesce_batch_sizes", None)
+    shape_kwargs = {}
+    if sizes_of is not None and _callable_takes(sizes_of, "guidance"):
+        shape_kwargs["guidance"] = generate_kwargs.get("guidance")
 
     def fits(total: int) -> bool:
         if sizes_of is None:
             return True
         try:
-            sizes = sizes_of(generate_kwargs.get("width"), generate_kwargs.get("height"))
+            sizes = sizes_of(
+                generate_kwargs.get("width"), generate_kwargs.get("height"), **shape_kwargs
+            )
         except Exception:  # noqa: BLE001 -- unknown shapes: render alone
             return False
         return sizes is None or total in sizes
+
+    if sizes_of is not None:
+        try:
+            admitted = await asyncio.to_thread(
+                sizes_of,
+                generate_kwargs.get("width"),
+                generate_kwargs.get("height"),
+                **shape_kwargs,
+            )
+        except Exception:  # noqa: BLE001 -- unknown shapes: render alone
+            admitted = frozenset()
+        if admitted is not None and not any(size > n for size in admitted):
+            # No batch size this request could be part of at this shape: never wait to coalesce.
+            batch_trace.fallback("no admitted batch size at this shape")
+            return None
+
+    seeded_of = getattr(backend, "coalesce_seeded_ok", None)
+
+    def seeded_ok() -> bool:
+        if seeded_of is None:
+            return False
+        try:
+            return bool(
+                seeded_of(
+                    generate_kwargs.get("width"),
+                    generate_kwargs.get("height"),
+                    generate_kwargs.get("guidance"),
+                    n,
+                )
+            )
+        except Exception:  # noqa: BLE001 -- unknown: a seeded request renders alone
+            return False
 
     waiter = getattr(backend, "generation_waiter", None)
     rider = getattr(backend, "generation_rider", None)
@@ -56259,6 +56316,7 @@ async def _coalesced_image_generate(
             salvage = salvage,
             on_lead = on_lead,
             wait = wait,
+            seeded_ok = seeded_ok,
         )
         # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
         if result is None and stopped.is_set():
@@ -56282,6 +56340,62 @@ async def _coalesced_image_generate(
             lead["remove"]()
         if "turn" in lead:
             backend.release_slot_turn(lead["turn"])
+
+
+class ImageBatchRaceRequest(BaseModel):
+    width: Optional[int] = None
+    height: Optional[int] = None
+    steps: Optional[int] = None
+    guidance: Optional[float] = None
+    sizes: Optional[list[int]] = None
+    repeats: int = 5
+    accuracy: bool = True
+
+
+@studio_router.post("/images/batching/race")
+async def images_batching_race(
+    body: Optional[ImageBatchRaceRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Explicit warm-up: on an idle engine, race serial against batched calls for the loaded model at this shape and
+    persist the verdicts that decide whether concurrent requests share a call. Owner only; 409 when a request holds
+    or waits for the slot (the race never runs on a user's request)."""
+    from core.inference.diffusion_batch_race import RACE_SIZES, RaceRefused
+    from core.inference.diffusion_engine_router import (
+        ENGINE_DIFFUSERS,
+        active_engine_name,
+        get_active_diffusion_engine,
+    )
+
+    if account_access.managed_account():
+        raise HTTPException(status_code = 403, detail = "Only the owner can run the batching race.")
+    body = body or ImageBatchRaceRequest()
+    backend = get_active_diffusion_engine()
+    race = getattr(backend, "batch_race", None)
+    if race is None or active_engine_name() != ENGINE_DIFFUSERS:
+        raise HTTPException(
+            status_code = 409, detail = "The active image engine does not batch requests."
+        )
+    status = await asyncio.to_thread(backend.status)
+    if not status.get("loaded"):
+        raise HTTPException(status_code = 409, detail = "No image model is loaded.")
+    steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
+    try:
+        report = await asyncio.to_thread(
+            functools.partial(
+                race,
+                width = int(body.width or 1024),
+                height = int(body.height or 1024),
+                steps = int(body.steps or steps),
+                guidance = float(guidance if body.guidance is None else body.guidance),
+                sizes = tuple(body.sizes or RACE_SIZES),
+                repeats = max(1, min(int(body.repeats), 20)),
+                accuracy = bool(body.accuracy),
+            )
+        )
+    except RaceRefused as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return {"race": report, "request_batching": backend.request_batching()}
 
 
 async def _batched_openai_images(

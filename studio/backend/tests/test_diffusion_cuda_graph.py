@@ -2418,3 +2418,106 @@ def test_real_cuda_real_warmup_matches_eager_bit_for_bit(monkeypatch):
         assert module.runs == steps + cg.WARMUP_ITERS + 1
     finally:
         handle.disable()
+
+
+# ---------------------------------------------------------------- batched (coalesced) graph keys
+
+
+@side_stream
+def test_a_users_coalesced_call_never_records_a_batched_graph(stub_torch):
+    handle = _armed()
+    with cg.batch_rows(2):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle.stats["captures"] == 0
+    assert handle.stats["batch_eager"] == 1
+    assert handle.cache == {}
+
+
+@side_stream
+def test_a_race_records_batch_sizes_two_and_four_next_to_size_one(stub_torch):
+    handle = _armed()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    with cg.batch_rows(3, capture = True):
+        handle(_t((3, 4)), timestep = _t((3,)), return_dict = False)
+    with cg.batch_rows(4, capture = True):
+        handle(_t((4, 4)), timestep = _t((4,)), return_dict = False)
+    assert handle.stats["captures"] == 3
+    assert handle.stats["batch_captures"] == 2
+    assert sorted(handle._batched.values()) == [2, 4]
+    assert handle.describe()["batched_graphs"] == [2, 4]
+    # A recorded batch size replays inside a user's call (no recording needed).
+    before = handle.stats["replays"]
+    with cg.batch_rows(2):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle.stats["replays"] == before + 1
+
+
+@side_stream
+def test_a_full_cache_never_evicts_a_size_one_graph_for_a_batch(stub_torch):
+    handle = cg.GraphedForward(_FakeDiT(), max_graphs = 2).enable()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    handle(_t((1, 8)), timestep = _t((1,)), return_dict = False)
+    keys = set(handle.cache)
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert set(handle.cache) == keys
+    assert handle.stats["batch_eager"] == 1 and handle.stats["evictions"] == 0
+
+
+@side_stream
+def test_out_of_memory_recording_a_batch_drops_only_the_batched_graphs(stub_torch):
+    module = _FakeDiT()
+    handle = _armed(module)
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle.stats["batch_captures"] == 1
+    stub_torch._records["graph_error"] = RuntimeError(
+        "CUDA out of memory. Tried to allocate 2.00 GiB"
+    )
+    with cg.batch_rows(4, capture = True):
+        out = handle(_t((4, 4)), timestep = _t((4,)), return_dict = False)
+    assert out[0].value[0] == "out"
+    assert handle.poisoned is False
+    assert handle.stats["batch_capture_failures"] == 1
+    assert len(handle.cache) == 1 and not handle._batched, "only the size-1 graph is left"
+    assert handle._batched_off
+    replays = handle.stats["replays"]
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["replays"] == replays + 1, "the size-1 graph still replays"
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle.stats["batch_eager"] == 1, "no more batched recordings on this load"
+
+
+@side_stream
+def test_a_size_one_capture_failure_still_poisons(stub_torch):
+    stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory")
+    handle = _armed()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned is True
+
+
+@side_stream
+def test_the_batched_pool_budget_refuses_a_recording(stub_torch, monkeypatch):
+    handle = _armed()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    handle.stats["pool_bytes"] = 512 * 2**20
+    monkeypatch.setenv(cg.BATCH_GRAPH_POOL_ENV, "600")
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle.stats["batch_captures"] == 0 and handle.stats["batch_eager"] == 1
+    monkeypatch.setenv(cg.BATCH_GRAPH_POOL_ENV, "2048")
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle.stats["batch_captures"] == 1
+
+
+@side_stream
+def test_a_plain_multi_image_request_keeps_todays_graph_rules(stub_torch):
+    """No batch_rows context (one user's batch_size=2): records as before."""
+    handle = _armed()
+    handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle.stats["captures"] == 1 and handle.stats["batch_captures"] == 0
