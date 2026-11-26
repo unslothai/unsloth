@@ -1185,3 +1185,83 @@ def test_pp_fold_keeps_length_dependent_rope_per_batch():
     for rank, res in enumerate(_spawn("env", 2, {"UNSLOTH_PP_SIZE": "2"}, **kw)):
         _close(res, ref, what = rank)  # folded: step 1 grad norm 0.79173 vs 0.79219
         assert res["fold"] == {}, res["fold"]
+
+
+def test_pp_pack_plan(checkout_unsloth):
+    from unsloth.models import pp_env
+
+    # Equal rows pack as they are; the length groups cost the same, so packing is not chosen there.
+    assert pp_env._pack_plan([100] * 8, 1, 2, 1, None)[:3] == (900, 8, 100)
+    lengths = [510, 300, 250, 200, 180, 150, 100, 60]
+    cost, m, width, where = pp_env._pack_plan(lengths, 1, 2, 1, None)
+    groups = pp_env._fold_cost(pp_env._fold_plan(lengths, 1, 2, 1, None), lengths, 2)
+    # Whole documents in rows no longer than the longest one (what the unfolded step held).
+    assert (cost, m, width) == (2550, 4, 510) and cost < groups == 3020
+    load = [sum(x for x, b in zip(lengths, where) if b == i) for i in range(m)]
+    assert max(load) <= width and sorted(set(where)) == list(range(m)), load
+    # GPipe's in-flight cap bounds the micro-batch count: 41 tokens do not fit 2 rows of at most 9.
+    assert pp_env._pack_plan([9, 8, 8, 5, 4, 3, 2, 2], 1, 2, 1, 2) is None
+    assert pp_env._pack_plan([9, 8, 8, 5, 4, 3, 2, 2], 3, 2, 1, 2)[1:3] == (2, 27)
+    # Packed rows: documents back to back, positions restart per document and for the padding tail, the
+    # first label of every document ignored.
+    rows = [
+        (3, torch.tensor([[1, 2, 3]]), torch.tensor([[1, 2, 3]]), {}),
+        (2, torch.tensor([[4, 5]]), torch.tensor([[4, 5]]), {}),
+        (1, torch.tensor([[6]]), torch.tensor([[6]]), {}),
+    ]
+    ids, labels, extra = pp_env._stack_packed(rows, 2, 4, [0, 1, 1], 2)
+    assert ids.tolist() == [[1, 2, 3, 0], [4, 5, 6, 0]]
+    assert labels.tolist() == [[-100, 2, 3, -100], [-100, 5, -100, -100]]
+    assert extra["position_ids"].tolist() == [[0, 1, 2, 0], [0, 1, 0, 0]]
+    # Left padding / non-default positions are not one plain document per row.
+    masked = (2, rows[1][1], rows[1][2], {"attention_mask": torch.tensor([[0, 1]])})
+    shifted = (2, rows[1][1], rows[1][2], {"position_ids": torch.tensor([[3, 4]])})
+    assert (
+        pp_env._plain_rows(rows)
+        and not pp_env._plain_rows([masked])
+        and not pp_env._plain_rows([shifted])
+    )
+
+
+@needs_pipelining
+@pytest.mark.parametrize(
+    "world,env,bs,ga,ref_bs",
+    [
+        (2, {}, 1, 8, 1),
+        (2, {}, 2, 4, 2),
+        (2, {"UNSLOTH_PP_SCHEDULE": "1f1b"}, 1, 4, 1),
+        (4, {}, 1, 4, 2),
+        (4, {"UNSLOTH_FSDP2": "1"}, 1, 4, 2),
+    ],
+    ids = ["bs1_ga8", "bs2_ga4", "bs1_ga4_1f1b", "pp2_x_ddp2_bs1_ga4", "pp2_x_fsdp2_bs1_ga4"],
+)
+def test_pp_fold_packs_documents_matches_one_process(world, env, bs, ga, ref_bs):
+    # Failing before: each window's rows ran in length groups padded to their longest. Now the window's
+    # documents are packed back to back into equal-length rows (positions restarting per document, so the
+    # attention keeps them apart) whenever that is cheaper: every logged loss, grad norm and the adapter still
+    # equal one process. UNSLOTH_PP_PACK=0 keeps the length groups.
+    kw = dict(bs = bs, ga = ga, steps = 2, evaluate = False, post = False, varlen = True)
+    ref = _ref(ref_bs, **{k: v for k, v in kw.items() if k != "bs"})
+    base = {"UNSLOTH_PP_SIZE": "2", **env}
+    for pack in (True, False):
+        run_env = base if pack else {**base, "UNSLOTH_PP_PACK": "0"}
+        for rank, res in enumerate(_spawn("env", world, run_env, **kw)):
+            stats = res["fold"]
+            assert stats["windows"] == 2 and stats["batches"] == 2 * ga, stats
+            if pack:
+                # Engaged where cheaper than the length groups (each packed window is one schedule step).
+                assert stats.get("packed", 0) >= 1, stats
+            else:
+                assert stats.get("packed") == 0 and stats["schedule_steps"] >= 2, stats
+            _close(res, ref, what = (pack, rank))
+            _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"], atol = 5e-5)
+
+
+@needs_pipelining
+def test_pp_fold_does_not_pack_length_dependent_rope():
+    # Dynamic NTK RoPE keeps one schedule step per batch: no fold, so no packing either.
+    kw = dict(bs = 2, ga = 4, steps = 2, evaluate = False, post = False, varlen = True)
+    for rank, res in enumerate(
+        _spawn("env", 2, {"UNSLOTH_PP_SIZE": "2"}, arch = "llama_dynamic_rope", **kw)
+    ):
+        assert res["fold"] == {}, res["fold"]
