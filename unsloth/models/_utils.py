@@ -7077,6 +7077,13 @@ def patch_gradient_accumulation_fix(Trainer):
 
             ep_trainer_setup(self)  # expert parallel: clipping, fp16 skip sync, 1-GPU adapter saves
             try:
+                from .portable_resume import install_portable_resume
+
+                # One GPU / DDP: a tensor / pipeline / expert parallel checkpoint's name-keyed optimizer.pt.
+                install_portable_resume(self)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: layout-portable resume not installed ({e})")
+            try:
                 from ._jit_checkpoint import install_jit_checkpoint_agreement
                 install_jit_checkpoint_agreement(self)
             except Exception as e:

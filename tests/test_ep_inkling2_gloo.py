@@ -321,6 +321,8 @@ def _resume_arms(rank, tmp, trainer_cls, peft, data, trainer_args, ep_native, tp
     bad = os.path.join(tmp, "bad")
     if rank == 0:
         shutil.copytree(ckpt, bad)
+        # Without the 1-GPU optimizer.pt (an older Unsloth): another layout cannot be resharded from it.
+        os.remove(os.path.join(bad, "optimizer.pt"))
     dist.barrier()
     path = os.path.join(bad, ep_native._CKPT_DIR, f"rank{rank:05d}.pt")
     payload = torch.load(path, weights_only = False)

@@ -26,8 +26,9 @@ forward that computes its experts without that call (a fused / decode-only path)
 E / ep experts. The 4-bit expert stacks reuse the tensor parallel expert-index slicing: bitwise the same bytes.
 Collective: every rank must run the same number of MoE forwards; generate defaults to synced_gpus = True, so ranks
 that finish first keep stepping. save_model writes the 1-GPU adapter (expert LoRA gathered). Trainer checkpoints
-add each rank's trainable tensors and optimizer state (unsloth_ep/rankNNNNN.pt): resume_from_checkpoint restores
-them on the same layout. Merged / GGUF exports are refused under expert parallel."""
+add each rank's trainable tensors and optimizer state (unsloth_ep/rankNNNNN.pt), which resume_from_checkpoint restores
+on the same layout, and the 1-GPU optimizer.pt, which resumes on another layout or one GPU (portable_resume.py).
+Merged / GGUF exports are refused under expert parallel."""
 
 from __future__ import annotations
 
@@ -864,10 +865,18 @@ def _save_rank_state(model, optimizer, directory):
     tpn._agree_write(write)
 
 
+class EPLayoutChanged(ValueError):
+    """The checkpoint's rank state was written on another expert parallel layout (or this rank has none)."""
+
+
+class _EPMissingRankState(FileNotFoundError, EPLayoutChanged):
+    pass
+
+
 def _read_rank_state(model, directory):
     path = _rank_path(directory)
     if not os.path.exists(path):
-        raise FileNotFoundError(
+        raise _EPMissingRankState(
             f"Unsloth: {directory} has no expert parallel rank state ({path}); it was not written under expert "
             "parallel, so its expert optimizer state cannot be restored."
         )
@@ -879,12 +888,12 @@ def _read_rank_state(model, directory):
     member = {k: want.pop(k) for k in ("ep_rank", "ep_members")}
     saved_member = {k: saved.pop(k) for k in ("ep_rank", "ep_members") if k in saved}
     if saved != want:
-        raise ValueError(
+        raise EPLayoutChanged(
             f"Unsloth: the checkpoint {directory} was written with expert parallel layout {saved}, "
             f"not this run's {want}; resume with the same world size and ep."
         )
     if saved_member and saved_member != member:
-        raise ValueError(
+        raise EPLayoutChanged(
             f"Unsloth: {path} was written by expert parallel rank {saved_member.get('ep_rank')} of the group "
             f"{saved_member.get('ep_members')}, but this rank is {member['ep_rank']} of {member['ep_members']}: "
             "the expert shards and their optimizer state belong to other experts. Resume on the same rank "
@@ -1055,23 +1064,80 @@ def ep_trainer_setup(trainer):
 
     trainer.save_model = ep_save_model
     # Checkpoints: the adapter is the 1-GPU one (save_model above); each rank also writes its own trainable
-    # tensors (local expert shards) and its optimizer state, and a resume loads them back on the same layout.
+    # tensors (local expert shards) and its optimizer state, and a resume loads them back on the same layout;
+    # on another layout the 1-GPU adapter and optimizer.pt are resharded (portable_resume.py).
     save_optim = trainer._save_optimizer_and_scheduler
     load_optim = trainer._load_optimizer_and_scheduler
     load_weights = trainer._load_from_checkpoint
 
+    from . import portable_resume
+
     def ep_save_optimizer_and_scheduler(output_dir):
         out = save_optim(output_dir)
         _save_rank_state(model, trainer.optimizer, output_dir)
+        # The Trainer's optimizer.pt holds rank 0's experts only: replaced by the 1-GPU form (collective), which
+        # also resumes on another layout or one GPU.
+        portable, why = (
+            portable_resume.portable_optimizer_state(model, trainer.optimizer)
+            if trainer.optimizer is not None
+            else (None, None)
+        )
+        if why is not None:
+            # Kept as the Trainer wrote it (the scheduler load reads both files); one GPU refuses it.
+            _tpn()._print_rank0(
+                f"Unsloth: {output_dir} resumes only on the layout it was saved on: the optimizer state of "
+                f"{why} is not written in the 1-GPU form."
+            )
+        elif trainer.optimizer is not None:
+            _tpn()._agree_write(
+                lambda: portable_resume.write_portable_optimizer(output_dir, portable)
+            )
         return out
 
+    resume_mode = {}
+
+    def mode_of(checkpoint):
+        """ "rank" (the saved layout: per-rank state) or "portable" (another layout: the 1-GPU adapter and
+        optimizer.pt resharded); collective, every rank decides alike."""
+        if checkpoint not in resume_mode:
+            error = None
+            try:
+                _read_rank_state(model, checkpoint)
+            except (FileNotFoundError, ValueError) as exc:
+                error = exc
+            if portable_resume._agree(error is None):
+                resume_mode[checkpoint] = "rank"
+            elif portable_resume._agree(
+                error is None or isinstance(error, EPLayoutChanged)
+            ) and portable_resume.portable_available(checkpoint):
+                _tpn()._print_rank0(
+                    f"Unsloth: {checkpoint} was written on another parallel layout; resuming from its 1-GPU "
+                    "adapter and optimizer state, resharded."
+                )
+                resume_mode[checkpoint] = "portable"
+            else:
+                raise error or ValueError(
+                    f"Unsloth: another rank cannot resume its expert parallel state from {checkpoint} (see that "
+                    "rank's error)."
+                )
+        return resume_mode[checkpoint]
+
     def ep_load_from_checkpoint(resume_from_checkpoint, model_ = None):
-        _load_rank_weights(model, resume_from_checkpoint)
+        if mode_of(resume_from_checkpoint) == "portable":
+            portable_resume.portable_load_weights(model, resume_from_checkpoint)
+        else:
+            _load_rank_weights(model, resume_from_checkpoint)
 
     def ep_load_optimizer_and_scheduler(checkpoint):
-        out = load_optim(checkpoint)
-        if checkpoint is not None:
-            _load_rank_optimizer(model, trainer.optimizer, checkpoint)
+        if checkpoint is None:
+            return load_optim(checkpoint)
+        if mode_of(checkpoint) == "portable":
+            return portable_resume.ep_load_portable(
+                load_optim, model, trainer.optimizer, checkpoint
+            )
+        # The scheduler from the Trainer's own load, the optimizer from this rank's state.
+        out = portable_resume.ep_load_scheduler_only(load_optim, trainer.optimizer, checkpoint)
+        _load_rank_optimizer(model, trainer.optimizer, checkpoint)
         return out
 
     if getattr(trainer.args, "load_best_model_at_end", False) and getattr(
