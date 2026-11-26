@@ -41,6 +41,7 @@ _ENV_KEYS = (
     "UNSLOTH_PP_SIZE",
     "UNSLOTH_CP_SIZE",
     "UNSLOTH_CP_BACKEND",
+    "UNSLOTH_EP_SIZE",
     "UNSLOTH_PP_MICROBATCHES",
     "UNSLOTH_PP_SCHEDULE",
     "UNSLOTH_FSDP2",
@@ -572,9 +573,18 @@ def _case_train(
             if grads:
                 return
             target = trainer.model
+            from unsloth.models import ep_native
+
+            ep_mesh = ep_native._mesh(target)
             for name, p in target.named_parameters():
                 if p.requires_grad and p.grad is not None:
-                    grads[name] = _full(p.grad)
+                    if ep_mesh is not None and getattr(p, ep_native._EP, None) is not None:
+                        # Expert parallel: this rank's experts only; the 1-GPU tensor is gathered (collective).
+                        grads[name] = _full(
+                            ep_native._gather_expert(p, ep_mesh.get_group(), p.grad)
+                        )
+                    else:
+                        grads[name] = _full(p.grad)
 
     args = trl.SFTConfig(
         output_dir = os.path.join(tmp, "out"),
@@ -772,8 +782,13 @@ def _case_train(
         assert autocast_seen == {False}, ("a GPU cell ran under autocast", autocast_seen)
     logs = [h for h in trainer.state.log_history if "loss" in h]
     is_tp = tp_native.is_tensor_parallel(trainer.model)
+    from unsloth.models import ep_native
+
+    is_ep = ep_native.is_expert_parallel(trainer.model)
     if is_tp:
         state = tp_native.tp_full_state_dict(trainer.model, adapters_only = True)
+    elif is_ep:
+        state = ep_native.ep_full_adapter_state_dict(trainer.model, adapter = mode != "full")
     else:
         state = {
             k: _full(v)
@@ -795,6 +810,7 @@ def _case_train(
         if manager is None
         else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
         "is_tp": is_tp,
+        "is_ep": is_ep,
         "stage": None if stage is None else int(stage.stage_index),
         "seen_lengths": sorted(seen_lengths),
         "autocast_seen": sorted(autocast_seen),

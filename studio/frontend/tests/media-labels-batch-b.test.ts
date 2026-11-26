@@ -14,7 +14,7 @@ for (const path of ["features/images/images-page.tsx", "features/video/video-pag
     const select = src.slice(src.indexOf('label="GPU"'));
     const hint = select.slice(0, select.indexOf("value={selectedGpu}"));
     assert.match(hint, /Multi-GPU means the cards inside this one computer/);
-    assert.match(hint, /cannot combine two machines/);
+    assert.match(hint, /two machines \(for example two DGX Sparks\)[^"]*is not part of this release/);
     // Automatic placement does use a second card, so the hint must not say the model never spans cards.
     assert.doesNotMatch(hint, /never split across cards/);
   });

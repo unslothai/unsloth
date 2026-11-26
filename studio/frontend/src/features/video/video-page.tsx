@@ -65,6 +65,7 @@ import {
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
 import { VideoRestylePanel } from "./restyle-panel";
+import { checkMediaCodecsOnce, desktopMissingMediaCodecPackages } from "./media-codec-notice";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
 import { useFullInstallBringsVideo } from "@/hooks/use-full-install-upgrade";
@@ -225,6 +226,7 @@ import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-a
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
@@ -1289,6 +1291,20 @@ export function VideoPage({
     hardware.videoUnsupportedReason === "pytorch_not_installed";
 
   useEffect(() => {
+    if (!active || !isTauri) return;
+    void checkMediaCodecsOnce(desktopMissingMediaCodecPackages, (command) => {
+      toast.warning(translate("desktopShell.mediaCodecs.title"), {
+        description: translate("desktopShell.mediaCodecs.description", { command }),
+        duration: Infinity,
+        action: {
+          label: translate("desktopShell.mediaCodecs.copy"),
+          onClick: () => void copyToClipboard(command),
+        },
+      });
+    });
+  }, [active]);
+
+  useEffect(() => {
     if (active && hardware.loaded && hardware.videoSupported === false) {
       onInitialReady?.();
     }
@@ -1960,6 +1976,11 @@ function VideoGenerator({
   // Select "match source" only after the staged keyframe passes the aspect-ratio check, and only for a family
   // whose keyframes do not keep the chosen canvas.
   const autoMatchSource = keyframeSelectsMatchSource(status?.defaults);
+  // Memoised so handleGenerate never sends a stale matchedResolution (it updates a render after a frame swap).
+  const generateCanvas = useMemo(
+    () => requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource),
+    [autoMatchSource, matchedResolution, sourceSized, videoSize],
+  );
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
     const has = canvasSource != null;
@@ -4086,7 +4107,7 @@ function VideoGenerator({
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        ...requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource),
+        ...generateCanvas,
         num_frames: numFrames,
         fps,
         steps,
@@ -4144,8 +4165,7 @@ function VideoGenerator({
     negativePrompt,
     guidance,
     seed,
-    videoSize,
-    sourceSized,
+    generateCanvas,
     numFrames,
     fps,
     steps,
@@ -4264,7 +4284,7 @@ function VideoGenerator({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: Studio cannot combine two machines (for example two DGX Sparks) for one clip."
+          hint="Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one clip is not part of this release."
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[

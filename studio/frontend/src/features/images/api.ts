@@ -74,6 +74,8 @@ export interface DiffusionStatus {
   baked_loras?: string[] | null;
   // The {id, weight} pairs the load baked in (int8 / fp8 builds); absent on older backends.
   baked_lora_specs?: LoraSpecInput[] | null;
+  // Whether the attached LoRA set is folded into the weights, and why not; null without LoRAs or on older backends.
+  lora_fuse?: string | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
@@ -95,8 +97,6 @@ export interface DiffusionStatus {
   supports_lora?: boolean;
   // Why supports_lora is false, shown in the LoRA slot when no reload would turn LoRA on.
   lora_unavailable_reason?: string | null;
-  /** Whether an unchanged LoRA set was folded into the weights, else why not; null without active LoRAs. */
-  lora_fusion?: { fused: boolean; skipped_reason?: string | null } | null;
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
   // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).

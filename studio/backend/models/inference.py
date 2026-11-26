@@ -6495,12 +6495,6 @@ class DiffusionStatusResponse(BaseModel):
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
     )
-    lora_fusion: Optional[Dict[str, Any]] = Field(
-        None,
-        description = "LoRA fusion for the active set, null when no LoRA is active: {fused: bool, skipped_reason: "
-        "str|null}. skipped_reason says why the set is not folded into the weights (not opted in, offloaded "
-        "denoiser, or baked into quantized weights); null when fused or when the next repeat render folds it.",
-    )
     precision_options: Optional[Dict[str, Optional[str]]] = Field(
         None,
         description = "Explicit transformer precision (int8, fp8, nvfp4, mxfp8) -> why a request for it would be "
@@ -6618,6 +6612,11 @@ class DiffusionStatusResponse(BaseModel):
         default_factory = list,
         description = "The baked adapters as the load requested them, [{id, weight}]; empty when none. The "
         "Images page compares a LoRA selection against it to tell whether Generate needs a reload first",
+    )
+    lora_fuse: Optional[str] = Field(
+        None,
+        description = "Whether the attached LoRA set is folded into the denoiser weights: fused | pending | "
+        "disabled | bit_exact (speed mode off) | offload | quantized | unsupported; null without LoRAs",
     )
     transformer_cache_stats: Optional[dict] = Field(
         None,

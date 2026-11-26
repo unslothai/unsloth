@@ -4,16 +4,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import {
-  runningTrainingSelection,
-  shownTrainingSelection,
-  trainingRunSelection,
-} from "../src/features/images/train/diffusion-train-restore.ts";
+import { runningTrainingSelection, trainingRunSelection } from "../src/features/images/train/diffusion-train-restore.ts";
 
 const families = [
   { name: "flux.1", base_repos: ["black-forest-labs/FLUX.1-dev"] },
   { name: "moss-image", base_repos: ["OpenMOSS/MOSS-Image"] },
   { name: "ltx-2.5", base_repos: ["Lightricks/LTX-2.5-Diffusers"] },
+  { name: "z-image", base_repos: ["Tongyi-MAI/Z-Image-Turbo"] },
 ];
 // Shape of /training/status a few seconds into an LTX-2.5 run (Colab L4 capture).
 const loading = {
@@ -54,44 +51,85 @@ test("the train panel seeds the form from the running job", () => {
     new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(src, /shownTrainingSelection\(status, families, dismissedJobId\)/);
+  assert.match(src, /runningTrainingSelection\(status, families/);
 });
 
-// NVIDIA feedback p.40: after a restart the form read FLUX.1-dev beside a completed or resumed Z-Image run.
-const zimage = [...families, { name: "z-image", base_repos: ["Tongyi-MAI/Z-Image"] }];
-const completed = { active: false, status: "completed", job_id: "z1", family: "z-image", base_model: "Tongyi-MAI/Z-Image" };
+// A Z-Image-Turbo run resumed from a checkpoint that has finished: the backend keeps this status until the next start.
+const finishedZImage = {
+  active: false,
+  status: "completed",
+  job_id: "c0ffee11",
+  family: "z-image",
+  base_model: "Tongyi-MAI/Z-Image-Turbo",
+};
 
-test("a finished run the panel still shows seeds the form; a dismissed or idle one does not", () => {
-  assert.deepEqual(shownTrainingSelection(completed, zimage, null), {
+test("a finished run seeds an untouched form, not the FLUX.1-dev default", () => {
+  for (const st of ["completed", "stopped", "error"]) {
+    assert.deepEqual(
+      runningTrainingSelection({ ...finishedZImage, status: st }, families, { formUntouched: true }),
+      { familyName: "z-image", baseModel: "Tongyi-MAI/Z-Image-Turbo" },
+      st,
+    );
+  }
+});
+
+test("a finished run leaves a form the user changed alone", () => {
+  assert.equal(runningTrainingSelection(finishedZImage, families, { formUntouched: false }), null);
+  assert.equal(
+    runningTrainingSelection({ ...finishedZImage, status: "idle" }, families, { formUntouched: true }),
+    null,
+  );
+});
+
+test("a resumed run's record names its family and base", () => {
+  assert.deepEqual(trainingRunSelection({ family: null, base_model: "Tongyi-MAI/Z-Image-Turbo" }, families), {
     familyName: "z-image",
-    baseModel: "Tongyi-MAI/Z-Image",
+    baseModel: "Tongyi-MAI/Z-Image-Turbo",
   });
-  assert.equal(shownTrainingSelection({ ...completed, status: "stopped" }, zimage, null)?.familyName, "z-image");
-  assert.equal(shownTrainingSelection(completed, zimage, "z1"), null);
-  assert.equal(shownTrainingSelection({ ...completed, status: "idle" }, zimage, null), null);
-  // A running job is still followed.
-  assert.equal(shownTrainingSelection({ ...loading }, families, null)?.familyName, "ltx-2.5");
+  assert.equal(trainingRunSelection({ family: "nope", base_model: "x/y" }, families), null);
 });
 
-test("a run record (resume or history view) maps to its family and base", () => {
-  assert.deepEqual(trainingRunSelection({ family: null, base_model: "Tongyi-MAI/Z-Image" }, zimage), {
-    familyName: "z-image",
-    baseModel: "Tongyi-MAI/Z-Image",
-  });
-  assert.equal(trainingRunSelection({ family: "z-image", base_model: "me/z-finetune" }, zimage)?.baseModel, "me/z-finetune");
-  assert.equal(trainingRunSelection(null, zimage), null);
-});
-
-test("resuming and opening a run from history point the form at that run", () => {
+test("the train panel seeds from finished runs and from the resumed run's detail", () => {
   const src = readFileSync(
     new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
     "utf8",
   );
-  const open = src.slice(src.indexOf("const openPrevRun = useCallback("));
-  assert.match(open.slice(0, 400), /const run = trainingRunSelection\(detail, families\);\s*if \(run\) followRun\(run\);/);
-  const resume = src.slice(src.indexOf("const onResume = useCallback("));
+  assert.match(src, /runningTrainingSelection\(status, families, \{\s*formUntouched: presetsSettled && !modelPickedByUser\.current/);
+  const resume = src.slice(src.indexOf("const onResume"), src.indexOf("const onStop"));
+  assert.ok(
+    resume.indexOf("trainingRunSelection(detail, families)") > -1 &&
+      resume.indexOf("trainingRunSelection(detail, families)") < resume.indexOf("startDiffusionTraining("),
+    "onResume sets family and base from detail before starting",
+  );
+});
+
+test("a restored named preset keeps its model when a finished run's status arrives", () => {
+  const src = readFileSync(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  const apply = src.slice(src.indexOf("const applyPresetParams"), src.indexOf("setFamilyName(params.familyName)"));
+  assert.match(apply, /if \(owned\) \{[^}]*modelPickedByUser\.current = true/);
+});
+
+test("a finished run waits for the stored preset before seeding the form", () => {
+  const src = readFileSync(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /useState\(!savedPresets\)/);
+  assert.match(src, /if \(presets\.presetsReady\) onReady\(\)/);
+  assert.match(src, /onReady=\{markPresetsSettled\}/);
+});
+
+test("opening a run from history points an untouched form at it, never over a user's pick", () => {
+  const src = readFileSync(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  const open = src.slice(src.indexOf("const openPrevRun = useCallback("), src.indexOf("const viewLossHistory"));
   assert.match(
-    resume.slice(0, resume.indexOf("const onStop")),
-    /await startDiffusionTraining\(payload\);[\s\S]*const run = trainingRunSelection\(detail, families\);\s*if \(run\) followRun\(run\);/,
+    open,
+    /if \(!modelPickedByUser\.current\) \{\s*const opened = trainingRunSelection\(detail, families\);\s*if \(opened\) applyRunSelection\(opened\);/,
   );
 });

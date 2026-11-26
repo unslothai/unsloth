@@ -72,30 +72,6 @@ def denoisers_resident(offload_policy: Any, memory_mode: Any, denoisers: list) -
     return all(not _moves_with_hooks(m) and _on_card(m) for m in denoisers)
 
 
-SKIP_NOT_OPTED_IN = (
-    "LoRA fusion is opt-in: start Studio with UNSLOTH_DIFFUSION_LORA_FUSE=1 to fold an unchanged LoRA set into "
-    "the weights"
-)
-SKIP_OFFLOADED = (
-    "LoRA fusion skipped: the denoiser is offloaded, and folded weights must stay on the GPU"
-)
-SKIP_QUANT_BAKED = "The LoRA set is baked into the quantized weights at load"
-
-
-def lora_fusion_skip_reason(
-    pipe: Any, offload_policy: Any, memory_mode: Any, denoisers: list
-) -> Optional[str]:
-    """Why an unchanged LoRA set is NOT folded into ``pipe``'s denoisers, or None when it may be. The one decision
-    behind both the fold and the status, so what the status says is what the render did."""
-    if getattr(pipe, "_unsloth_loras_baked", False):
-        return SKIP_QUANT_BAKED  # quantised bakes keep their own path
-    if not enabled():
-        return SKIP_NOT_OPTED_IN
-    if not denoisers_resident(offload_policy, memory_mode, denoisers):
-        return SKIP_OFFLOADED  # offloaded or streamed denoiser weights move every render
-    return None
-
-
 def _lora_layers(module: Any) -> list:
     return [
         m

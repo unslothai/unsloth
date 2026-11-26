@@ -3104,3 +3104,17 @@ def test_block_rebinds_hooked_layers_of_a_second_model(monkeypatch):
         layer = model.layers[0].train()
         torch.testing.assert_close(layer(x), layer.proj(x) + x)
         assert calls == [1]
+
+
+def test_mask_rebuilt_in_inference_mode_is_safe_for_training():
+    M = _load()
+    M._MATERIALISED[0] = None
+    layer = _MaskDecoderLayer().train()
+    hidden = torch.zeros(2, 6, 8)
+    M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1] * 6, [1] * 4 + [0] * 2])})
+    with torch.inference_mode():
+        M._normalise_mask(layer, hidden, {"attention_mask": None})
+    mask = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    weight = torch.randn(8, 8, requires_grad = True)
+    (((hidden + 1) @ weight) * mask[:, :, None]).sum().backward()
+    assert weight.grad is not None and not mask.is_inference()
