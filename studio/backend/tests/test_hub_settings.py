@@ -317,9 +317,32 @@ def test_route_saves_and_reports(client, store):
         "datasets_server_follows_endpoint": True,
         "source": "huggingface",
         "active_source": "huggingface",
+        "page_base": None,
+        "page_base_relay": None,
     }
-    assert client.get("/hub").json() == body
+    reported = client.get("/hub").json()
+    assert reported == {**body, "page_base": MIRROR, "page_base_relay": reported["page_base_relay"]}
+    # Built like /api/health's hub_proxy, which keys the browser's relay endpoint.
+    from hub import endpoint_proxy
+
+    assert reported["page_base_relay"] == endpoint_proxy.relay_path(
+        endpoint_proxy.HUB_PREFIX, MIRROR, "https://huggingface.co"
+    )
     assert os.environ["HF_DATASETS_SERVER"] == MIRROR
+
+
+def test_page_base_follows_what_the_relay_lets_this_client_reach(client, store, monkeypatch):
+    loopback = "http://127.0.0.1:9000"
+    assert (
+        client.put(
+            "/hub", json = {"hf_endpoint": loopback, "datasets_server_follows_endpoint": False}
+        ).status_code
+        == 200
+    )
+    monkeypatch.setattr("utils.client_ip.client_ip", lambda request: "203.0.113.9")
+    assert client.get("/hub").json()["page_base"] is None
+    monkeypatch.setattr("utils.client_ip.client_ip", lambda request: "127.0.0.1")
+    assert client.get("/hub").json()["page_base"] == loopback
 
 
 def test_only_the_owner_reads_the_endpoint(client, monkeypatch):
