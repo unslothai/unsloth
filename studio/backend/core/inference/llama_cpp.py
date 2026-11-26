@@ -43404,8 +43404,11 @@ class LlamaCppBackend:
                     return
 
                 # Unsloth calls in a batch with a client call do not run: the model repeats them.
+                # Only tools offered this round: a forced choice narrows them to one.
                 _client_calls = client_tool_calls_in(
-                    tool_calls, client_tool_names, tool_controller.resolved_tool_name
+                    tool_calls,
+                    (client_tool_names or frozenset()) & _enabled_tool_names,
+                    tool_controller.resolved_tool_name,
                 )
                 if _client_calls and not has_structured_tc:
                     # Textual repeats collapse and cap as Unsloth calls do below.

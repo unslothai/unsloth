@@ -220,6 +220,23 @@ def test_a_healed_client_tool_name_goes_back_to_the_caller(monkeypatch):
     assert len(payloads) == 1
 
 
+def test_a_forced_tool_choice_hands_back_only_the_forced_client_tool(monkeypatch):
+    forced = {"type": "function", "function": {"name": "mcp_homeassistant__GetLiveContext"}}
+    backend, _payloads = _backend(
+        monkeypatch,
+        [
+            [_tool_call("mcp_homeassistant__call_action", {}, "call_action"), _done()],
+            [_tool_call("mcp_homeassistant__GetLiveContext", {}, "call_ha"), _done()],
+        ],
+    )
+    _executed(monkeypatch)
+
+    events = _loop(backend, tool_choice = forced)
+
+    handed_back = [e for e in events if e["type"] == "client_tool_calls"]
+    assert [call["id"] for e in handed_back for call in e["tool_calls"]] == ["call_ha"]
+
+
 def test_client_tool_results_continue_the_loop(monkeypatch):
     backend, payloads = _backend(
         monkeypatch, [[_sse({"content": "The living room light is on."}), _done()]]
