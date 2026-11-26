@@ -366,3 +366,28 @@ def test_documents_indexed_before_the_upgrade_stay_current_until_the_server_chan
     assert config.embedding_identity_matches(stored, embeddings.embedding_identity(name))
     _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
     assert not config.embedding_identity_matches(stored, embeddings.embedding_identity(name))
+
+
+def test_a_re_embed_from_the_old_server_is_not_written_after_the_connection_moves(
+    rag_conn, monkeypatch
+):
+    from core.rag import chunking, store
+
+    name = "connection:Scheduler/bge-m3"
+    old = embeddings.embedding_identity(name)
+    scope = store.kb_scope("kb_a")
+    rag_conn.execute(
+        "INSERT INTO documents(id, scope, filename, sha256, status, created_at, embedding_model) "
+        "VALUES ('d1', ?, 'a.txt', 'h1', 'completed', '2026-01-01', 'stale')",
+        (scope,),
+    )
+    store.add_lexical_chunks(rag_conn, scope, "d1", [chunking.Chunk("a", 1, None, 0, 0, 0, 1)])
+    rag_conn.commit()
+    monkeypatch.setattr(config, "effective_embedding_model", lambda fresh = False: name)
+    write = lambda: store.replace_document_vectors(
+        rag_conn, "d1", "stale", ["d1:0"], [[1.0, 0.0]], old, name
+    )
+    _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
+    assert not write()
+    _edit(monkeypatch, _PROVIDERS[0])
+    assert write()
