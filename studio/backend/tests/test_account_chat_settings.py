@@ -1202,6 +1202,40 @@ def test_sidebar_sections_cancelled_placements_keep_the_concurrent_order(client)
     assert result.json()["sections"]["research"]["name"] == "Research"
 
 
+def test_sidebar_sections_only_replays_drag_intent_that_survives_the_batch(client):
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        order,
+        base = None,
+        placements = (),
+    ):
+        layout = {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys(order, "work"),
+            "rowOrder": {"work": list(order)},
+        }
+        moves = [
+            {"sectionId": "work", "id": row, "targetId": target, "edge": edge}
+            for row, target, edge in placements
+        ]
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    base = save("initial", "abcd")
+    peer = save("peer", "acbd", base, [("b", "c", "bottom")])
+    assert peer["rowOrder"]["work"] == list("acbd")
+    saved = save(
+        "batch", "abdc", base, [("b", "a", "top"), ("b", "a", "bottom"), ("d", "c", "top")]
+    )
+    assert saved["rowOrder"]["work"] == list("adcb")
+
+
 @pytest.mark.parametrize(
     ("initial", "first", "second", "expected", "sort"),
     [

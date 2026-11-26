@@ -30,6 +30,19 @@ def _merge_order(primary: list[str], other: list[str]) -> list[str]:
     return list(dict.fromkeys(result))
 
 
+def _unchanged_rows(base, layout):
+    positions = {row: index for index, row in enumerate(layout)}
+    unchanged = set()
+    furthest = -1
+    for index, row in enumerate(base):
+        position = positions[row]
+        # Equal positions only preserve order when the same rows precede them.
+        if index == position and furthest < index:
+            unchanged.add(row)
+        furthest = max(furthest, position)
+    return unchanged
+
+
 def _edited_order(
     saved,
     base,
@@ -43,19 +56,18 @@ def _edited_order(
         moves = [move for move in moves if move.get("afterUnpin")]
     elif not importing and not switched_to_manual:
         common = set(base).intersection(layout)
-        reordered = [key for key in base if key in common] != [
-            key for key in layout if key in common
-        ]
-        if not reordered:
-            # Membership edits can carry cancelled drags between unchanged rows.
+        common_base = [key for key in base if key in common]
+        common_layout = [key for key in layout if key in common]
+        if moves:
+            unchanged = _unchanged_rows(common_base, common_layout)
             moves = [
                 move
                 for move in moves
                 if move.get("afterUnpin")
-                or move["id"] not in common
+                or move["id"] not in unchanged
                 or move["targetId"] not in common
             ]
-        elif not moves:
+        elif common_base != common_layout:
             return _merge_order(layout, saved)
     if moves:
         if saved == base and (switched_to_manual or set(saved).issubset(layout)):
