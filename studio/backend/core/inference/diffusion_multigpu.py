@@ -3511,6 +3511,7 @@ class CfgParallelRouter:
             "batch_split_skip": None,
             "sequence_splits": 0,
             "sequence_split_skip": None,
+            "sequence_split_released": None,
         }
         # why this load's calls are never split by tokens (set once a split failed), else None
         self.sequence_split_off: Optional[str] = None
@@ -4804,6 +4805,39 @@ def install_cfg_parallel(
         if logger is not None:
             logger.info("diffusion.multigpu: CFG-parallel not armed (%s)", reason)
     return reason
+
+
+def release_sequence_split_replica(
+    pipe: Any,
+    reason: str,
+    logger: Any = None,
+) -> bool:
+    """A load whose default request is unguided got its replica for token splits only. Once the denoiser is compiled
+    (Auto's deferred profile), no call splits, so free the second card's copy and stop splitting; an even batch still
+    builds one again when it needs it, as without the split. True when a replica was released."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return False
+    request = default_request(pipe)
+    if router is None or router.replica is None or request is None or request.guided is not False:
+        return False
+    router.sequence_split_off = reason
+    router.stats["sequence_split_skip"] = reason
+    router.stats["sequence_split_released"] = reason
+    router.drop_replica()
+    if router.secondary.type == "cuda":
+        with contextlib.suppress(Exception):
+            from .diffusion_cuda_graph import outside_capture
+            with outside_capture(), _device_context(router.secondary):
+                _torch().cuda.empty_cache()
+    if logger is not None:
+        logger.info(
+            "diffusion.multigpu: token-split replica on %s released (%s); one card from here",
+            router.secondary,
+            reason,
+        )
+    return True
 
 
 def invalidate_cfg_replica(

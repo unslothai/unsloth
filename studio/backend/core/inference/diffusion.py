@@ -16237,6 +16237,14 @@ class DiffusionBackend:
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
         object.__setattr__(state, "speed_auto_compiled", bool(speed_applied.get("compiled")))
+        if speed_applied.get("compiled"):
+            # compiled calls never split by tokens: an unguided load's replica would only hold a second copy
+            from .diffusion_multigpu import release_sequence_split_replica
+            release_sequence_split_replica(
+                state.pipe,
+                "Auto speed compiled the denoiser on the 3rd image; compiled calls are not split by tokens",
+                logger,
+            )
         object.__setattr__(
             state, "cuda_graphs", tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
         )

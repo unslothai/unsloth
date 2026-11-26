@@ -323,3 +323,71 @@ def test_a_failing_replica_reruns_the_step_on_the_source_and_stops_splitting():
     assert torch.equal(out, ref)
     assert router.stats["sequence_splits"] == 0
     assert "replica card lost" in (router.sequence_split_off or "")
+
+
+class _Pipe:
+    pass
+
+
+def _engaged_split(guided_default):
+    """A load whose router split single-image steps by tokens, its default request recorded as ``guided_default``."""
+    model = _model()
+    router, built = _router(model)
+    pipe = _Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    mg.note_default_request(pipe, guided = guided_default, steps = 4)
+    _loop(model)
+    assert router.replica is not None and router.stats["sequence_splits"] == STEPS - 1
+    return model, router, built, pipe
+
+
+def test_auto_compile_upgrade_releases_an_unguided_token_split_replica():
+    # Auto's deferred profile compiles the denoiser on the 3rd image: compiled calls never split, so the second
+    # card's copy goes and later steps run on the source, as without the split
+    model, router, built, pipe = _engaged_split(False)
+    assert mg.release_sequence_split_replica(pipe, "compiled on the 3rd image")
+    status = router.describe()
+    assert router.replica is None and status["replica_built"] is False
+    assert status["sequence_split_released"] == "compiled on the 3rd image"
+    assert status["sequence_split_skip"] == "compiled on the 3rd image"
+    splits = router.stats["sequence_splits"]
+    # a later single-image render: no rebuild, no split
+    _loop(model, steps = 2)
+    assert len(built) == 1 and router.replica is None
+    assert router.stats["sequence_splits"] == splits
+
+
+def test_compile_upgrade_keeps_a_guided_loads_replica_and_a_load_without_one():
+    _, router, _, pipe = _engaged_split(True)
+    assert not mg.release_sequence_split_replica(pipe, "compiled")
+    assert router.replica is not None and router.stats["sequence_split_released"] is None
+
+    model = _model()
+    idle, built = _router(model)
+    pipe2 = _Pipe()
+    mg._CFG_ROUTERS[pipe2] = idle
+    mg.note_default_request(pipe2, guided = False, steps = 4)
+    assert not mg.release_sequence_split_replica(pipe2, "compiled")
+    assert (
+        idle.sequence_split_off is None and idle.stats["sequence_split_skip"] is None and not built
+    )
+    assert not mg.release_sequence_split_replica(_Pipe(), "compiled")  # no router at all
+
+
+def test_the_deferred_speed_profile_releases_the_token_split_replica_once_compiled():
+    import ast
+    import pathlib
+
+    src = pathlib.Path(mg.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "_engage_deferred_profile"
+    )
+    calls = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "release_sequence_split_replica"
+    ]
+    assert len(calls) == 1
