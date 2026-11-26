@@ -47,10 +47,17 @@ def _shard_entries() -> list:
 
 
 def _shards() -> dict:
-    """{shard name: (roots, ignores)} parsed out of both jobs' matrices."""
-    shards = {}
+    """{shard name: (roots, ignores)} parsed out of both jobs' matrices. The parts of a split shard (entries
+    with `split: k/n` and one selection) collect the same files, so they count as one shard here."""
+    shards, names = {}, set()
     for entry in _shard_entries():
-        assert entry["shard"] not in shards, f"shard {entry['shard']} is defined twice"
+        assert entry["shard"] not in names, f"shard {entry['shard']} is defined twice"
+        names.add(entry["shard"])
+        name = entry["shard"]
+        if entry.get("split"):
+            name = "split: " + " ".join(entry["selection"].split())
+            if name in shards:
+                continue
         roots, ignores = [], []
         tokens = entry["selection"].split()
         index = 0
@@ -65,7 +72,7 @@ def _shards() -> dict:
             else:
                 roots.append(token.rstrip("/"))
             index += 1
-        shards[entry["shard"]] = (roots, ignores)
+        shards[name] = (roots, ignores)
     return shards
 
 
@@ -357,7 +364,9 @@ def _selection_text(shard: str | None = None) -> str:
     return " ".join(
         " ".join(entry["selection"].split())
         for entry in _shard_entries()
-        if shard is None or entry["shard"] == shard
+        if shard is None
+        or entry["shard"] == shard
+        or (entry.get("split") and shard == "split: " + " ".join(entry["selection"].split()))
     )
 
 
@@ -366,3 +375,38 @@ def _shard_pytest_step() -> dict:
         if "${{ matrix.selection }}" in str(step.get("run", "")):
             return step
     raise AssertionError("the sharded pytest step is gone from repo-cpu-tests")
+
+
+class TestASplitShardRunsEveryPartOnce:
+    """A slow shard grows by runners: entries sharing one selection with `split: 1/n` .. `split: n/n` each run one
+    part of it (tests/_shared/shard_split.py, under UNSLOTH_TEST_SPLIT set from the matrix at job level)."""
+
+    def _groups(self):
+        groups = {}
+        for entry in _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["strategy"][
+            "matrix"
+        ]["include"]:
+            if entry.get("split"):
+                groups.setdefault(" ".join(entry["selection"].split()), []).append(entry)
+        return groups
+
+    def test_every_part_of_each_split_shard_is_there_once(self):
+        groups = self._groups()
+        assert groups, "no shard is split any more; drop this class with the mechanism"
+        for selection, entries in groups.items():
+            specs = sorted(entry["split"] for entry in entries)
+            n = len(entries)
+            assert specs == sorted(f"{k}/{n}" for k in range(1, n + 1)), (selection, specs)
+            assert len({entry.get("workers", 4) for entry in entries}) == 1, selection
+
+    def test_the_job_passes_the_part_to_pytest(self):
+        env = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"].get("env") or {}
+        assert env.get("UNSLOTH_TEST_SPLIT") == "${{ matrix.split || '' }}"
+        backend = _workflow(_SHARD_JOBS[0][0])["jobs"][_SHARD_JOBS[0][1]]
+        assert "UNSLOTH_TEST_SPLIT" not in str(
+            backend.get("env")
+        ), "Backend CI shards are never split"
+
+    def test_the_conftest_applies_the_split(self):
+        text = (_TESTS_DIR / "conftest.py").read_text(encoding = "utf-8")
+        assert "from shard_split import select" in text and "select(config, items)" in text

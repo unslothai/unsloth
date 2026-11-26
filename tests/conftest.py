@@ -105,8 +105,12 @@ def _fresh_new_mapper_cache():
 
 @pytest.hookimpl(trylast = True)
 def pytest_collection_modifyitems(config, items):
-    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py. Under UNSLOTH_TEST_SPLIT=k/n only
+    part k of the collected tests runs (tests/_shared/shard_split.py)."""
+    from shard_split import select
     from xdist_group_check import check
+
+    select(config, items)
     check(config, items)
 
 

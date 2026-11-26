@@ -26,6 +26,9 @@ pytestmark = [
     # One worker runs the module-scoped `runs` (two driver processes, each with its ranks and zygotes),
     # not every worker that draws one of its tests: three at once ran a 16 GB runner out of memory.
     pytest.mark.xdist_group("rank_zygote"),
+    # The module fixture starts two driver processes, each importing unsloth in its ranks and zygotes: on a busy
+    # 4 vCPU runner that is several minutes, more than the shard's per-test 330 s.
+    pytest.mark.timeout(900),
 ]
 
 

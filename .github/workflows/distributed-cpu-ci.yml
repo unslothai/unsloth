@@ -96,6 +96,9 @@ jobs:
       # keeps plain spawns: fsdp2's ranks never run the conftest, so a fork saves only the torch import,
       # and on staging the shard was no faster for it.
       UNSLOTH_TEST_RANK_ZYGOTE: ${{ matrix.rank_zygote || '1' }}
+      # A shard listed as name-1 .. name-n with `split: k/n` runs part k of its selection
+      # (tests/_shared/shard_split.py): the slow shards grow by runners instead of past the cap.
+      UNSLOTH_TEST_SPLIT: ${{ matrix.split || '' }}
       UNSLOTH_TEST_RANK_ZYGOTE_STATS: /tmp/unsloth_rank_zygote_stats
       PYTEST_ADDOPTS: --durations=40
     strategy:
@@ -113,7 +116,15 @@ jobs:
           # onwards is about 55% of the measured time, everything else about 45%. Each glob
           # must match a file, or bash hands pytest the literal pattern
           # (tests/test_ci_repo_cpu_shards.py checks both).
-          - shard: fsdp2
+          - shard: fsdp2-1
+            split: 1/2
+            rank_zygote: '0'
+            selection: >-
+              tests/test_fsdp2_[!n]*.py
+              tests/test_fsdp2_n[!a]*.py
+              tests/test_fsdp2_native_[abc]*.py
+          - shard: fsdp2-2
+            split: 2/2
             rank_zygote: '0'
             selection: >-
               tests/test_fsdp2_[!n]*.py
@@ -122,7 +133,12 @@ jobs:
           # fsdp2-native then ran up to 1752 s of the cap (2026-11-26), so it is split by file name again:
           # d to r is 46% of its measured test time (881 of 1896 s on 4 workers), s onwards 54%. The
           # letters are spelled out so the split does not depend on the runner's collation.
-          - shard: fsdp2-native
+          - shard: fsdp2-native-1
+            split: 1/2
+            selection: >-
+              tests/test_fsdp2_native_[defghijklmnopqr]*.py
+          - shard: fsdp2-native-2
+            split: 2/2
             selection: >-
               tests/test_fsdp2_native_[defghijklmnopqr]*.py
           - shard: fsdp2-native-sz
@@ -139,18 +155,54 @@ jobs:
           # (1510 of 2573 s measured), and gloo hit the cap at 287 tests on 2026-11-25. They get a
           # shard of their own; test_c[!p]* keeps test_context_parallel_*, and a test_cp[!_]* gloo
           # file matches neither and is reported dropped.
-          - shard: gloo
+          - shard: gloo-1
+            split: 1/4
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
-          - shard: gloo-cp-files
+          - shard: gloo-2
+            split: 2/4
+            selection: >-
+              tests/test_[!cdfimpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
+              tests/test_f[!s]*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-3
+            split: 3/4
+            selection: >-
+              tests/test_[!cdfimpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
+              tests/test_f[!s]*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-4
+            split: 4/4
+            selection: >-
+              tests/test_[!cdfimpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
+              tests/test_f[!s]*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-cp-files-1
+            split: 1/2
+            selection: >-
+              tests/test_cp_*gloo*.py
+          - shard: gloo-cp-files-2
+            split: 2/2
             selection: >-
               tests/test_cp_*gloo*.py
           # Gloo hit its 2100 s cap after 17886, 17930, DeepSeek-V4.1 tests; non-native TP files
           # split off.
-          - shard: gloo-tp-env
+          - shard: gloo-tp-env-1
+            split: 1/3
+            selection: >-
+              tests/test_tp_[!n]*gloo*.py
+          - shard: gloo-tp-env-2
+            split: 2/3
+            selection: >-
+              tests/test_tp_[!n]*gloo*.py
+          - shard: gloo-tp-env-3
+            split: 3/3
             selection: >-
               tests/test_tp_[!n]*gloo*.py
           # Issue 16407 grew the cp gloo file to a third of the shard; each gloo test spawns 2 to 8
@@ -160,7 +212,18 @@ jobs:
           # file's test time (379 of 1015 s measured with 2 workers), moved to test_parallel_cp_pipeline_gloo.py
           # and run beside it, also on 2 workers. A test_parallel_c[!p]* or test_parallel_cp_[!cp]* gloo file
           # matches neither shard and is reported dropped.
-          - shard: gloo-cp
+          - shard: gloo-cp-1
+            split: 1/3
+            workers: 2
+            selection: >-
+              tests/test_parallel_cp_c*gloo*.py
+          - shard: gloo-cp-2
+            split: 2/3
+            workers: 2
+            selection: >-
+              tests/test_parallel_cp_c*gloo*.py
+          - shard: gloo-cp-3
+            split: 3/3
             workers: 2
             selection: >-
               tests/test_parallel_cp_c*gloo*.py
@@ -179,11 +242,22 @@ jobs:
           # spawning 2 to 4 ranks each oversubscribe the runner. test_pp_env_gloo.py is 64% of the
           # shard's test time (1681 of 2640 s measured), so it gets a runner of its own. Any other
           # test_pp_e* or test_pp[!_]* gloo file matches neither shard and is reported dropped.
-          - shard: gloo-pp
+          - shard: gloo-pp-1
+            split: 1/2
             selection: >-
               tests/test_pp_[!e]*gloo*.py
               tests/test_pp_env_[!g]*gloo*.py
-          - shard: gloo-pp-env
+          - shard: gloo-pp-2
+            split: 2/2
+            selection: >-
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-env-1
+            split: 1/2
+            selection: >-
+              tests/test_pp_env_gloo.py
+          - shard: gloo-pp-env-2
+            split: 2/2
             selection: >-
               tests/test_pp_env_gloo.py
     steps:
