@@ -237,3 +237,27 @@ def test_the_status_card_is_the_physical_id_the_ui_picks(monkeypatch):
 
     monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", broken)
     assert diffusion_device.physical_gpu_id_for_ordinal(0) is None
+
+
+def test_h3_fp8_stays_selectable_where_its_stored_fallback_runs(monkeypatch):
+    """MiniMax-H3 runs its hosted fp8 codes stored where torchao's fp8 GEMM fails, so a cached fp8 probe failure must
+    not disable fp8 for it; other families keep the verdict."""
+    from core.inference import video_minimax_h3_native_quant as h3
+
+    tq._SMOKE_CACHE[("fp8", "cuda:0")] = False
+    target = _target(0, monkeypatch = monkeypatch)
+    monkeypatch.setattr(h3, "h3_hosted_fp8_storage_host", lambda target: True)
+    assert (
+        tq.precision_options("minimax-h3", None, "cuda", target = target, offload = False)["fp8"]
+        is None
+    )
+    assert tq.precision_options("no-such-family", None, "cuda", target = target, offload = False)["fp8"]
+    # Without the stored-fp8 host (no float8 storage, a non-bf16 card), the torchao verdict stands for H3 too.
+    monkeypatch.setattr(h3, "h3_hosted_fp8_storage_host", lambda target: False)
+    assert tq.precision_options("minimax-h3", None, "cuda", target = target, offload = False)["fp8"]
+
+
+def test_the_h3_load_check_and_the_status_share_one_host_rule(monkeypatch):
+    from core.inference import video_minimax_h3_native_quant as h3
+    monkeypatch.setattr(h3, "h3_hosted_fp8_storage_host", lambda target: False)
+    assert h3.h3_hosted_fp8_native(SimpleNamespace(device = "cuda", dtype = None)) is False

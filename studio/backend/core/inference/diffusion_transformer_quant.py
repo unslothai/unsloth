@@ -884,6 +884,7 @@ def torchao_probe_governs(
     model_kind: Optional[str] = "pipeline",
     offload: Optional[bool] = None,
     modular: bool = False,
+    family: Optional[str] = None,
 ) -> bool:
     """Whether an explicit ``scheme`` on ``target`` stands or falls on the torchao smoke probe. False when the load
     could take a native path that skips the probe, mirroring the image and video precision checks: a ROCm / stubbed
@@ -905,6 +906,11 @@ def torchao_probe_governs(
             and native_offload_host(target)
         ):
             return False
+        if scheme == TQ_FP8 and str(family or "").strip().lower() == "minimax-h3":
+            # MiniMax-H3 runs its hosted fp8 codes stored where torchao's fp8 GEMM fails (the video precision check).
+            from .video_minimax_h3_native_quant import h3_hosted_fp8_storage_host
+            if h3_hosted_fp8_storage_host(target):
+                return False
         return True
     except Exception:  # noqa: BLE001 -- see the docstring
         return False
@@ -1004,7 +1010,12 @@ def precision_options(
             elif family and family_denies_scheme(family, scheme, base_repo):
                 options[scheme] = _denied_precision_reason(family, scheme, base_repo)
             elif _probed_unusable(scheme, card) and torchao_probe_governs(
-                scheme, target, model_kind = model_kind, offload = offload, modular = modular
+                scheme,
+                target,
+                model_kind = model_kind,
+                offload = offload,
+                modular = modular,
+                family = family,
             ):
                 options[scheme] = (
                     f"{scheme.upper()} failed this GPU's kernel probe: the GEMM this scheme needs did not run here"
