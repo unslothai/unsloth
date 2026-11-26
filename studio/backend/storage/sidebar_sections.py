@@ -154,6 +154,19 @@ def _edited_order(
             # Manual sections display unranked rows before their saved order.
             unranked = [row for row in layout if row not in ranked]
             primary = unranked + saved
+            if len(unranked) > 1:
+                prefix = set(unranked)
+                candidates = [
+                    move
+                    for move in moves
+                    if move["id"] not in prefix or move["targetId"] not in prefix
+                ]
+                if len(candidates) < len(moves):
+                    # The submitted prefix already includes its moves. Keep them only if
+                    # they are needed to place an unranked row among the old ranks.
+                    local = _merge_order(unranked + [row for row in base if row in visible], layout)
+                    if _replay_placements(local, candidates) == layout:
+                        moves = candidates
         order = _replay_placements(_merge_order(primary, layout), moves)
         if saved == base:
             ranked = set(saved)

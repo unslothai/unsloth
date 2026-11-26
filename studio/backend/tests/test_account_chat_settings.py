@@ -1267,7 +1267,36 @@ def test_sidebar_sections_keeps_unranked_chats_before_a_drag_with_an_unseen_page
     assert response.json()["rowOrder"]["work"] == ["c", "b", "a", "p"]
 
 
-def test_sidebar_sections_keeps_unranked_chats_during_concurrent_manual_reorders(client):
+@pytest.mark.parametrize(
+    ("unranked", "local_order", "placements", "merged_order"),
+    [
+        ("c", "cbade", [("b", "a", "top")], "cbaed"),
+        ("cfg", "cgfabde", [("c", "f", "bottom"), ("f", "g", "bottom")], "cgfabed"),
+        (
+            "cfg",
+            "cgfbade",
+            [("c", "f", "bottom"), ("b", "a", "top"), ("f", "g", "bottom")],
+            "cgfbaed",
+        ),
+        (
+            "cfg",
+            "cfagbde",
+            [("c", "f", "bottom"), ("f", "g", "bottom"), ("g", "a", "bottom")],
+            "cfagbed",
+        ),
+        ("cfg", "fagcbde", [("g", "a", "bottom"), ("c", "g", "bottom")], "fagcbed"),
+    ],
+    ids = [
+        "unranked-first",
+        "unranked-drags",
+        "disjoint-drags",
+        "mixed-anchors",
+        "dependent-anchors",
+    ],
+)
+def test_sidebar_sections_keeps_unranked_chats_during_concurrent_manual_reorders(
+    client, unranked, local_order, placements, merged_order
+):
     path = "/chat/sidebar-sections"
 
     def send(
@@ -1293,7 +1322,10 @@ def test_sidebar_sections_keeps_unranked_chats_during_concurrent_manual_reorders
     )
     after_filing = send(
         "file-chat",
-        {**initial, "sectionByChatId": {**initial["sectionByChatId"], "c": "work"}},
+        {
+            **initial,
+            "sectionByChatId": {**initial["sectionByChatId"], **dict.fromkeys(unranked, "work")},
+        },
         initial,
     )
     peer = send(
@@ -1306,11 +1338,14 @@ def test_sidebar_sections_keeps_unranked_chats_during_concurrent_manual_reorders
     assert peer["sectionByChatId"]["c"] == "work"
     saved = send(
         "local",
-        {**after_filing, "rowOrder": {"work": list("cbade")}},
+        {**after_filing, "rowOrder": {"work": list(local_order)}},
         after_filing,
-        [{"sectionId": "work", "id": "b", "targetId": "a", "edge": "top"}],
+        [
+            {"sectionId": "work", "id": row, "targetId": anchor, "edge": edge}
+            for row, anchor, edge in placements
+        ],
     )
-    assert saved["rowOrder"]["work"] == list("cbaed")
+    assert saved["rowOrder"]["work"] == list(merged_order)
 
 
 @pytest.mark.parametrize(
