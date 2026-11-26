@@ -446,6 +446,11 @@ def krea2_fused_qkv(root: Any, state: dict) -> dict:
             for name in _KREA2_QKV:
                 out[f"{attn}{name}.{suffix}"] = value
             continue
+        if suffix == "dora_scale":
+            # diffusers' Krea-2 loader filters every ``dora_scale`` key, so a split one would load as plain LoRA.
+            raise ValueError(
+                f"{key}: a fused q/k/v DoRA saved as dora_scale is not supported (the magnitudes would be dropped)"
+            )
         if suffix not in ("lora_B.weight", "lora_B.bias") + _MAGNITUDE_SUFFIXES:
             raise ValueError(f"{key}: a fused q/k/v tensor this loader cannot split")
         widths = _krea2_qkv_widths(root, _strip(attn))

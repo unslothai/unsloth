@@ -258,6 +258,22 @@ def test_a_zero_delta_sibling_with_a_zero_bias_is_dropped():
     assert not any(".to_k." in k for k in kept) and len(kept) == 2
 
 
+def test_a_fused_qkv_dora_scale_is_refused_not_loaded_as_plain_lora(tmp_path):
+    # diffusers filters dora_scale out of a Krea-2 file, so splitting it would silently drop the trained magnitudes.
+    attn, width, q, kv = ATTNS[0]
+    path = tmp_path / "dora_scale.safetensors"
+    save_file(
+        {
+            f"transformer.{attn}to_qkv.lora_A.weight": _ints(RANK, width, seed = 1),
+            f"transformer.{attn}to_qkv.lora_B.weight": _ints(q + 2 * kv, RANK, seed = 2),
+            f"transformer.{attn}to_qkv.dora_scale": _ints(q + 2 * kv, 1, seed = 3).abs() + 1.0,
+        },
+        str(path),
+    )
+    with pytest.raises(ValueError, match = "dora_scale is not supported"):
+        lf.load_adapter(_Pipe(), str(path), "a", "krea-2")
+
+
 def test_a_fused_qkv_with_the_wrong_rows_is_refused(tmp_path):
     attn, width, q, kv = ATTNS[0]
     path = tmp_path / "bad.safetensors"
