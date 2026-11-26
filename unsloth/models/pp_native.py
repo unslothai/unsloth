@@ -1143,13 +1143,16 @@ def _refuse_uncarried_router_aux(ctx, kwargs):
     if requested is None:
         requested = getattr(ctx, "output_router_logits", None)
     if not _router_aux_off(inner, text, requested):
-        raise ValueError(
-            _uncarried_router_aux_message(
-                inner,
-                "output_router_logits is on with router_aux_loss_coef = "
-                f"{_router_aux_coef_of(inner, text)}",
+        what = f"output_router_logits is on with router_aux_loss_coef = {_router_aux_coef_of(inner, text)}"
+        schedule = getattr(ctx, "uncarried_schedule", None)
+        if schedule is not None:
+            raise ValueError(
+                f"Unsloth: pipeline parallelism split {type(inner).__name__} (mixture-of-experts) with schedule = "
+                f"{schedule!r} and its router auxiliary loss off, but {what}: the loss is carried between stages "
+                f"with schedule = {' / '.join(map(repr, _PP_MOE_AUX_SCHEDULES))} (one stage per rank) only. "
+                "Turn it off (router_aux_loss_coef = 0.0 in SFTConfig) or use one of those schedules."
             )
-        )
+        raise ValueError(_uncarried_router_aux_message(inner, what))
     if hasattr(text, "output_router_logits"):
         kwargs["output_router_logits"] = False
 
@@ -1769,6 +1772,9 @@ class _StageContext:
         # Per-step request (None: config decides); pp_env._router_aux_request.
         self.output_router_logits = None
         self.uncarried_moe = None
+        self.uncarried_schedule = (
+            None  # an aux-off split on a schedule that does not carry the aux loss
+        )
         self.ple = None
         self.ple_input = None
         self.ple_output = None
@@ -3285,6 +3291,15 @@ def apply_pipeline_parallel(
         )
     parts = _find_parts(model)
     moe = _refuse_unsupported(model, parts, text_only = config.text_only)
+    aux_off_route = False
+    if (
+        moe is not None
+        and (schedule not in _PP_MOE_AUX_SCHEDULES or stages_per_rank != 1)
+        and _router_aux_off(parts.inner, _text_config(model))
+    ):
+        # Aux loss off: nothing to carry on this schedule, as for an uncarried family; the stage forward refuses
+        # if it is turned on after the split.
+        moe, aux_off_route = None, True
     if moe is not None and (schedule not in _PP_MOE_AUX_SCHEDULES or stages_per_rank != 1):
         raise ValueError(
             f"Unsloth: pipeline parallelism over a mixture-of-experts model ({type(parts.inner).__name__}) "
@@ -3389,7 +3404,10 @@ def apply_pipeline_parallel(
             # Dropped: hold only the stubs, so the towers' GPU memory is freed.
             parts = pp_stage.parts = dataclasses.replace(parts, towers = stubs)
     if moe is None:
-        pp_stage.ctx.uncarried_moe = _uncarried_moe_owner(model, parts)
+        pp_stage.ctx.uncarried_moe = (
+            parts.inner if aux_off_route else _uncarried_moe_owner(model, parts)
+        )
+        pp_stage.ctx.uncarried_schedule = schedule if aux_off_route else None
     if moe is not None:
         # This stage's routers report their logits into the context while its forward runs.
         pp_stage.ctx.moe = moe

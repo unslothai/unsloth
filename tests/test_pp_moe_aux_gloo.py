@@ -341,7 +341,28 @@ def _case_refusals(rank, world, tmp):
     return out
 
 
-CASES = {"parity": _case_parity, "refusals": _case_refusals}
+def _case_aux_on_after_split(rank, world, tmp, family):
+    """An aux-off split on interleaved1f1b (no carry) refuses once the aux loss is turned on (TRL does after it)."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
+    model = build(family = family, aux = False, coef = 1.0, lora = True)
+    pp = ppn.apply_pipeline_parallel(model, mesh, n_microbatches = 4, schedule = "interleaved1f1b")
+    out = {"guarded": pp.ctx.uncarried_moe is not None, "moe": pp.ctx.moe is not None}
+    model.base_model.model.config.output_router_logits = True
+    try:
+        ppn._refuse_uncarried_router_aux(pp.ctx, {})
+        out["refused"] = None
+    except ValueError as exc:
+        out["refused"] = str(exc)
+    return out
+
+
+CASES = {
+    "parity": _case_parity,
+    "refusals": _case_refusals,
+    "aux_on_after_split": _case_aux_on_after_split,
+}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -493,8 +514,13 @@ FAMILY_CELLS = {
     "gpipe_mask_coef1": dict(coef = 1.0),
     "1f1b_lora_coef1": dict(coef = 1.0, lora = True, schedule = "1f1b"),
     "gpipe_lora_aux_off": dict(aux = False, coef = 1.0, lora = True),
+    # A multi-stage schedule does not carry the aux loss: with it off the split takes the no-carry route.
+    "interleaved1f1b_lora_aux_off": dict(
+        aux = False, coef = 1.0, lora = True, schedule = "interleaved1f1b", n_mb = 4
+    ),
 }
 FAMILIES = (
+    "qwen3_moe",
     "mixtral",
     "olmoe",
     "qwen2_moe",
@@ -542,3 +568,10 @@ def test_pp2_moe_aux_families_match_gradient_accumulation(family, cell):
     if "aux_effect" in results[0]:
         assert results[0]["aux_effect"] > 1e-3, results[0]["aux_effect"]
     print(family, cell, {r["stage"]: r["diffs"] for r in results}, results[0].get("aux_effect"))
+
+
+@pytest.mark.parametrize("family", ("qwen3_moe", "mixtral"))
+def test_pp2_aux_off_split_on_interleaved_refuses_aux_turned_on(family):
+    for r in _spawn("aux_on_after_split", 2, family = family):
+        assert r["guarded"] and not r["moe"], r
+        assert "with schedule = 'interleaved1f1b'" in (r["refused"] or ""), r
