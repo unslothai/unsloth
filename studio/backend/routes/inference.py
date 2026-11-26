@@ -8784,17 +8784,21 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     )
     from utils.openai_auto_switch_settings import (
         model_override_load_kwargs,
+        resolve_fit_max_seq_length,
         resolve_override_for_load,
         stored_gpu_index_kind,
     )
 
     load_path, variant = request.model_path, request.gguf_variant
-    alias = _snapshot_repo_or_self(load_path, require_cache = True)
+    alias = request._override_alias_id or _snapshot_repo_or_self(load_path, require_cache = True)
     # A row may be keyed by the snapshot path; the scan also warms the index local_target_is_gguf reads.
     ref = f"{load_path}:{variant}" if variant else load_path
-    local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
-        resolve_local_gguf, ref
-    )
+    # Set only by a caller that already resolved the on-disk copy; a second resolution can pick another row.
+    local = None
+    if not request._override_alias_id:
+        local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
+            resolve_local_gguf, ref
+        )
     if local:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
@@ -8820,6 +8824,24 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
             fill.pop(name, None)
+        if "max_seq_length" not in sent:
+            from core.inference.llama_server_args import parse_gpu_layers_override
+
+            # The saved context depends on placement (--fit sizes it under manual auto layers); a sent -ngl wins, as in the loader.
+            try:
+                parsed = parse_gpu_layers_override(request.llama_extra_args)
+            except ValueError:
+                parsed = None
+            layers = request.gpu_layers if parsed is None else parsed
+            placed = {
+                **override,
+                "gpu_memory_mode": request.gpu_memory_mode,
+                "gpu_layers": layers if layers >= 0 else None,
+            }
+            context = resolve_fit_max_seq_length(placed, is_gguf = is_gguf)
+            fill.pop("max_seq_length", None)
+            if context is not None:
+                fill["max_seq_length"] = context
     # A filled gpu_ids would strip the sent --device / --main-gpu (_gpu_ids_own_placement).
     if _extra_args_set_any_flag(request.llama_extra_args, _DEVICE_FLAGS):
         fill.pop("gpu_ids", None)

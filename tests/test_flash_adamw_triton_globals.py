@@ -15,6 +15,7 @@ import pathlib
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 triton = pytest.importorskip("triton")
 
@@ -30,7 +31,7 @@ def _load_flash_adamw():
 
 def _build_kernel(module):
     module._VARIANCE_UPDATE_KERNEL = None
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if has_real_cuda() else "cpu"
     var = torch.zeros(8, dtype = torch.float32, device = device)
     grad = torch.ones(8, dtype = torch.bfloat16, device = device)
     # Without a GPU the launch fails after the kernel is built; only the kernel object is checked.
@@ -51,7 +52,7 @@ def test_variance_kernel_names_resolve_from_module_globals():
     assert fn.__globals__.get("tl") is triton.language
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
 def test_variance_kernel_matches_fp32_reference():
     module = _load_flash_adamw()
     module._VARIANCE_UPDATE_KERNEL = None

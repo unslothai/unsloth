@@ -3873,6 +3873,27 @@ def test_fields_the_load_sent_beat_the_saved_ones(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "saved, sent, context",
+    [
+        ({"gpu_memory_mode": "manual"}, {"gpu_memory_mode": "auto"}, 4096),
+        ({"gpu_memory_mode": "manual"}, {"gpu_memory_mode": "manual", "gpu_layers": 20}, 4096),
+        ({}, {"gpu_memory_mode": "manual"}, 0),
+        ({}, {"gpu_memory_mode": "manual", "llama_extra_args": ["-ngl", "0"]}, 4096),
+        (
+            {},
+            {"gpu_memory_mode": "manual", "gpu_layers": 20, "llama_extra_args": ["-ngl", "auto"]},
+            0,
+        ),
+    ],
+)
+def test_the_saved_context_follows_the_placement_the_load_sent(monkeypatch, saved, sent, context):
+    _saved(monkeypatch, {"max_seq_length": 4096, **saved})
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True, **sent)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert filled.max_seq_length == context
+
+
+@pytest.mark.parametrize(
     "sent, saved, kept",
     [
         (True, ["--split-mode", "tensor", "-cmoe"], ["-cmoe"]),
