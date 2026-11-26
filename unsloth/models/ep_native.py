@@ -315,7 +315,8 @@ def _ep_expert_chunk(shard, prior, dense, got_x, row, ic, wc):
 
 
 def _ep_experts_chunked(shard, prior, dense, got_x, row, ic, wc, rows):
-    from torch.utils.checkpoint import checkpoint
+    # torch's own: smart GC's replacement would offload each chunk and drop closed-over expert LoRA grads.
+    checkpoint = _tpn()._torch_checkpoint()
 
     y_got = None
     for start in range(0, row.numel(), rows):
