@@ -495,3 +495,16 @@ def baked_lora_specs(pipe: Any) -> list[dict]:
     if pipe is None or not getattr(pipe, LORAS_BAKED_ATTR, False):
         return []
     return [{"id": i, "weight": w} for (i, w) in getattr(pipe, BAKED_SPECS_ATTR, ()) or ()]
+
+
+# ``lora_fuse`` status of a video load (the images status field, one value here): every video LoRA merges into the
+# dense bf16 denoiser at load, so a load with adapters is always fused.
+LORA_FUSE_BAKED = "baked"
+
+
+def lora_fuse_status(pipe: Any) -> Optional[str]:
+    """``baked`` when the load merged adapters into the denoiser, else None. Never raises."""
+    try:
+        return LORA_FUSE_BAKED if baked_lora_names(pipe) else None
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None

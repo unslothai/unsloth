@@ -8550,6 +8550,11 @@ class VideoStatusResponse(BaseModel):
         default_factory = list,
         description = "The baked adapters as the load requested them, [{id, weight}]; empty when none",
     )
+    lora_fuse: Optional[str] = Field(
+        None,
+        description = "Whether the load's LoRA set is folded into the denoiser weights, as the images status reports "
+        "it: baked (merged into the bf16 denoiser at load, the only video LoRA path); null without LoRAs",
+    )
     lora_refusal: Optional[str] = Field(
         None,
         description = "Why a reload of this model with VideoLoadRequest.loras would be refused (GGUF or "

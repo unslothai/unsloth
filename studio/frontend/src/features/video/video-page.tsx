@@ -196,6 +196,7 @@ import {
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
 import { clipPrecisionSelection } from "@/lib/clip-precision";
+import { loraFuseLabel } from "@/features/images/lib/lora-fuse";
 import { reseedAction } from "@/lib/failed-load-reseed";
 import {
   activePrecisionDenials,
@@ -789,6 +790,7 @@ function BuildRow({ label, value, badge }: { label: string; value: string; badge
 function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
+  const loraFuse = loraFuseLabel(status.lora_fuse);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -825,6 +827,13 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {loraFuse ? (
+        <BuildRow
+          label="LoRA"
+          value={loraFuse.label}
+          badge={<InfoHint>{loraFuse.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={

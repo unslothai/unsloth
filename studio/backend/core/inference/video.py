@@ -18039,6 +18039,7 @@ class VideoBackend:
             ),
             "baked_loras": video_lora.baked_lora_names(getattr(state, "pipe", None)),
             "baked_lora_specs": video_lora.baked_lora_specs(getattr(state, "pipe", None)),
+            "lora_fuse": video_lora.lora_fuse_status(getattr(state, "pipe", None)),
             # Structural refusal only (kind, two experts); the transformer_quant refusal depends on the next load.
             "lora_refusal": video_lora.load_refusal(fam, state.kind, None),
             **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
