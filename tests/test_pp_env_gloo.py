@@ -928,7 +928,6 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
         (2, 4, "1", None, "llama"),
         (2, 1, None, "1f1b", "llama"),
         (1, 4, None, None, "gemma3"),
-        (1, 2, "2", "interleaved1f1b", "llama"),
         (2, 2, "2", "interleaved1f1b", "llama"),
     ],
     ids = [
@@ -937,7 +936,6 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
         "mb1",
         "bs1_1f1b_padded",
         "gemma3_ga1_bs4",
-        "interleaved1f1b_ga1_bs2",
         "interleaved1f1b_ga2_bs2_unfolded",
     ],
 )
@@ -950,7 +948,9 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arc
         pytest.skip("gpipe with 1 micro-batch over 2 stages needs torch >= 2.13")
     # bs1_1f1b_padded: 1F1B needs 2 micro-batches, so the 1-row batch gets a fully masked filler row.
     # gemma3_ga1_bs4: the Gemma3_(270M) notebook's shape (scaled tied embedding, sliding layers).
-    ref = _ref(bs, ga = ga, evaluate = False, post = False, arch = arch)
+    # interleaved1f1b: one GA 2 case (stage layout, schedule, no fold, parity) over 2 steps keeps the gloo-pp shard short.
+    steps = 2 if schedule == "interleaved1f1b" else 3
+    ref = _ref(bs, ga = ga, steps = steps, evaluate = False, post = False, arch = arch)
     env = {"UNSLOTH_PP_SIZE": "2"}
     if mb:
         env["UNSLOTH_PP_MICROBATCHES"] = mb
@@ -959,7 +959,7 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arc
     if schedule == "interleaved1f1b":
         env["UNSLOTH_PP_KEEP_REPLICA"] = "0"  # the whole-model replica needs one stage per rank
     for rank, res in enumerate(
-        _spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False, arch = arch)
+        _spawn("env", 2, env, bs = bs, ga = ga, steps = steps, evaluate = False, post = False, arch = arch)
     ):
         if schedule == "interleaved1f1b":
             # 4 layers over 2 ranks x 2 stages: rank r keeps stages r and r + 2
