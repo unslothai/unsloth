@@ -16276,6 +16276,49 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         return _build_rag_autoinject(conversation, rag_scope)
 
 
+_ATTACHMENT_OVERVIEW = re.compile(
+    r"^\s*(?:please\s+)?(?:summari[sz]e|compare|contrast|review|analy[sz]e)\s+"
+    r"(?:(?P<quantifier>all|both|each)(?: of)?(?: the| these)? |"
+    r"(?:these |the )?(?P<two>two) |"
+    r"(?:the |these )(?=attached ))(?:attached )?"
+    r"(?:files|docs|documents|attachments|pdfs|reports)\b",
+    re.IGNORECASE,
+)
+
+
+def _cover_thread_attachments(query, thread_id, thread_docs, hits, top_k, document_opening):
+    """Keep one hit per attachment and preserve any project hits."""
+    if not thread_docs or not 1 < len(thread_docs) <= top_k:
+        return None
+    request = _ATTACHMENT_OVERVIEW.search(query)
+    if not request or (
+        len(thread_docs) != 2
+        and (request.group("two") or (request.group("quantifier") or "").lower() == "both")
+    ):
+        return None
+    covered = set()
+    required, extra = [], []
+    for hit in hits:
+        document = hit.get("documentId")
+        if document in covered:
+            extra.append(hit)
+        else:
+            required.append(hit)
+            if document in thread_docs:
+                covered.add(document)
+    missing = thread_docs - covered
+    if not missing or len(required) + len(missing) > max(top_k, len(hits)):
+        return None
+    for document in sorted(missing):
+        opening = document_opening(scope_thread_id = thread_id, document_id = document)
+        if not opening:
+            return None
+        required.append(opening[0])
+    remaining = max(top_k, len(hits)) - len(required)
+    # render_sources renumbers citations in place. The ranked fallback must remain intact.
+    return [dict(hit) for hit in required + extra[:remaining]], len(required)
+
+
 def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if not enabled and not whole_doc_requested:
@@ -16485,6 +16528,19 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
+        try:
+            covered = _cover_thread_attachments(
+                query, thread_id, thread_docs, found[1] if found else [], top_k, document_opening
+            )
+        except Exception:
+            logger.warning("RAG attachment coverage failed", exc_info = True)
+            covered = None
+        if covered:
+            candidates, keep_first = covered
+            found = _trim(
+                render_sources(candidates), candidates, budget if not enabled else None,
+                keep_first = keep_first,
+            ) or found
         if not found:
             logger.info("RAG auto-inject: no matching passage; skipping")
             return None

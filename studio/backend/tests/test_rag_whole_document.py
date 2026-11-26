@@ -1300,3 +1300,54 @@ def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path
     assert "Revenue rose" in injected
     assert "xyzzy-sentinel" in injected
     assert injected.count("<chunk id=") == doc["num_chunks"]
+
+
+@pytest.mark.parametrize(
+    "query, include_second",
+    [
+        ("Summarize both attached documents.", True),
+        ("Compare the attached documents.", True),
+        ("What does alpha say about both reports?", False),
+    ],
+)
+def test_attachment_overviews_cover_both_files_without_discarding_project_hits(
+    rag_conn, monkeypatch, query, include_second
+):
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "a", "alpha.txt", "h1", ["Alpha opening"], tokens = [8000])
+    _add_doc(rag_conn, scope, "b", "bravo.txt", "h2", ["Bravo opening"], tokens = [8000])
+    hits = [
+        {"chunkId": "a1", "documentId": "a", "text": "Strong alpha match"},
+        {"chunkId": "a2", "documentId": "a", "text": "Next alpha match"},
+        {"chunkId": "p", "documentId": "p", "text": "Related project match"},
+    ]
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits))
+
+    text = _injected_text(inf_tools.build_rag_autoinject(
+        _convo(query), {"thread_id": "t1", "project_id": "p1", "default_top_k": 3}
+    ))
+    assert "Strong alpha match" in text and "Related project match" in text
+    assert ("Bravo opening" in text) is include_second
+    assert ("Next alpha match" in text) is not include_second
+
+
+def test_an_opening_that_does_not_fit_preserves_existing_citation_ids(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "a", "alpha.txt", "h1", ["Alpha opening"], tokens = [8000])
+    _add_doc(rag_conn, scope, "b", "bravo.txt", "h2", ["Bravo opening"], tokens = [8000])
+    hits = [
+        {"chunkId": "a1", "documentId": "a", "text": "Alpha item"},
+        {"chunkId": "a2", "documentId": "a", "text": "Another alpha item"},
+    ]
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits))
+    monkeypatch.setattr(inf_tools, "_text_token_cost", lambda text, _: 2048 if "Bravo opening" in text else 100)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize both attached documents."),
+        {"thread_id": "t1", "autoinject": False, "context_length": 2048},
+    )
+    event = next(event for event in result["events"] if event["type"] == "tool_end")
+    text, sources = event["result"].split(inf_tools.RAG_SOURCES_SENTINEL)
+    assert re.findall(r'<chunk id="(\d+)"', text) == ["1", "2"]
+    assert [source["citationId"] for source in json.loads(sources)] == [1, 2]
+    assert "Bravo opening" not in text
