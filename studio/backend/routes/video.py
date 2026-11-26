@@ -884,6 +884,8 @@ async def _queue_page_video(
         clip_key = display.clip_key,
         steps = display.steps,
         arrival = arrival,
+        pinned_model = display.pinned_model,
+        payload_bytes = _payload_bytes(request.model_dump()),
     )
     try:
         _enqueue_video(entry)
@@ -895,15 +897,35 @@ async def _queue_page_video(
     )
 
 
+_QUEUED_MODEL_CHANGED_MSG = (
+    "The video model changed while this clip was queued, so it was not rendered on the new one. "
+    "Generate it again."
+)
+
+
+def _resident_identity(status: dict, state) -> tuple:
+    """What a queued clip was judged against: the resident build, not just its family."""
+    return (
+        status.get("repo_id"),
+        status.get("model_kind"),
+        status.get("gguf_variant"),
+        status.get("h3_task"),
+        getattr(getattr(state, "family", None), "name", None),
+    )
+
+
 async def _start_page_video(
     request: VideoGenerateRequest,
     current_subject: str,
     hf_token: Optional[str],
     video_id: str,
     queued_account: Optional[AccountContext] = None,
+    pinned_model: Optional[tuple] = None,
 ) -> None:
     """The Video page's start: switch if asked, authorize, reserve the engine. Raises the HTTP
-    refusal; a busy engine is VIDEO_GENERATION_BUSY_MSG, which the queue waits out."""
+    refusal; a busy engine is VIDEO_GENERATION_BUSY_MSG, which the queue waits out.
+    ``pinned_model`` is the resident a queued clip was admitted on: another one is refused, and
+    the reservation is pinned to the state checked, so a swap in between is caught too."""
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import maybe_auto_switch_media_model
     from core.inference.video import get_video_backend, video_failure_detail
@@ -974,8 +996,16 @@ async def _start_page_video(
     # Authorize the reservation-pinned token: a gap load must not render weights of another account.
     for attempt in range(2):
         expected_state = None
-        if account_access.managed_account():
+        if account_access.managed_account() or pinned_model is not None:
             status, expected_state = await asyncio.to_thread(backend.generation_snapshot)
+            # Nothing resident is the not-loaded refusal below, not a changed model.
+            if (
+                pinned_model is not None
+                and expected_state is not None
+                and _resident_identity(status, expected_state) != pinned_model
+            ):
+                raise HTTPException(status_code = 409, detail = _QUEUED_MODEL_CHANGED_MSG)
+        if account_access.managed_account():
             await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
         try:
             await asyncio.to_thread(
@@ -2615,6 +2645,11 @@ VIDEO_QUEUE_POLL_S = 2.0
 VIDEO_QUEUE_MAX = 64
 VIDEO_QUEUE_MAX_PER_ACCOUNT = 32
 VIDEO_QUEUE_IDLE_CONFLICTS = 12
+# Waiting requests keep their inline media (reference clips and images, soundtracks, continuation
+# video) in memory until they start, so the queue also caps the bytes it holds. An account with
+# nothing waiting is always admitted, so one large request is never refused for its own size.
+VIDEO_QUEUE_MAX_BYTES = 1024 * 1024 * 1024
+VIDEO_QUEUE_MAX_BYTES_PER_ACCOUNT = 384 * 1024 * 1024
 _VIDEO_WAIT_CODES = ("model_busy", "model_loading", "gpu_busy")
 # A queued Video page clip that ended before it started, kept so the page can tell its owner.
 _PAGE_OUTCOMES_MAX = 20
@@ -2651,6 +2686,10 @@ class _QueuedVideo:
     # When its request arrived: the queue keeps arrival order even when a later request was
     # admitted first.
     arrival: int = 0
+    # A Video page clip's resident at admission (_resident_identity); its start refuses another.
+    pinned_model: Optional[tuple] = None
+    # Request bytes this entry holds (inline media included), for the queue's memory budget.
+    payload_bytes: int = 0
 
     @property
     def shown_prompt(self) -> Optional[str]:
@@ -2818,13 +2857,25 @@ def queued_video_count() -> int:
     return len(_VIDEO_QUEUE)
 
 
+def _payload_bytes(value) -> int:
+    """Bytes of the strings a request holds: its inline media dominate."""
+    if isinstance(value, (str, bytes)):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(_payload_bytes(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_payload_bytes(v) for v in value)
+    return 0
+
+
 def _enqueue_video(entry: _QueuedVideo) -> None:
     """Admit ``entry`` behind everything waiting, or raise _VideoQueueFull. No await inside, so
     two requests on the loop cannot pass a cap together."""
     from core.inference import video_queue
 
     account_id = entry.account.account_id
-    waiting = sum(1 for queued in _VIDEO_QUEUE if queued.account.account_id == account_id)
+    mine = [queued for queued in _VIDEO_QUEUE if queued.account.account_id == account_id]
+    waiting = len(mine)
     if waiting >= VIDEO_QUEUE_MAX_PER_ACCOUNT or len(_VIDEO_QUEUE) >= VIDEO_QUEUE_MAX:
         full = (
             f"{VIDEO_QUEUE_MAX_PER_ACCOUNT} videos are already waiting for this account"
@@ -2832,6 +2883,19 @@ def _enqueue_video(entry: _QueuedVideo) -> None:
             else f"{VIDEO_QUEUE_MAX} videos are already waiting"
         )
         raise _VideoQueueFull(f"{full} in Unsloth Studio; create this one once some have started.")
+    held_mine = sum(queued.payload_bytes for queued in mine)
+    held_all = sum(queued.payload_bytes for queued in _VIDEO_QUEUE)
+    if mine and held_mine + entry.payload_bytes > VIDEO_QUEUE_MAX_BYTES_PER_ACCOUNT:
+        raise _VideoQueueFull(
+            "This account's waiting videos already hold "
+            f"{VIDEO_QUEUE_MAX_BYTES_PER_ACCOUNT // (1024 * 1024)} MB of prompts and reference "
+            "media in Unsloth Studio; create this one once some have started."
+        )
+    if _VIDEO_QUEUE and held_all + entry.payload_bytes > VIDEO_QUEUE_MAX_BYTES:
+        raise _VideoQueueFull(
+            f"The waiting videos already hold {VIDEO_QUEUE_MAX_BYTES // (1024 * 1024)} MB of "
+            "prompts and reference media in Unsloth Studio; create this one once some have started."
+        )
     video_queue.order.joined(account_id, _VIDEO_QUEUE, _entry_account_id)
     later = next(
         (i for i, queued in enumerate(_VIDEO_QUEUE) if queued.arrival > entry.arrival), None
@@ -2891,6 +2955,7 @@ class _PageQueueDisplay:
     seconds: str
     clip_key: tuple
     steps: Optional[int]
+    pinned_model: Optional[tuple] = None
 
 
 def _page_queue_display(request: VideoGenerateRequest) -> _PageQueueDisplay:
@@ -2917,11 +2982,14 @@ def _page_queue_display(request: VideoGenerateRequest) -> _PageQueueDisplay:
             headers = problem_headers("not_loaded", kind = "video"),
         )
     fam = None
+    pinned = None
     if resident_renders and status.get("loaded"):
         if account_access.managed_account():
             account_access.require_media_generation_access(status, "video")
-        state = backend.generation_snapshot()[1]
+        snapshot, state = backend.generation_snapshot()
         fam = getattr(state, "family", None)
+        # Judged on this resident: the start refuses another one rather than render on it.
+        pinned = _resident_identity(snapshot, state) if state is not None else None
         if fam is not None:
             try:
                 _refuse_page_request_for(
@@ -2948,6 +3016,7 @@ def _page_queue_display(request: VideoGenerateRequest) -> _PageQueueDisplay:
         seconds = seconds,
         clip_key = (getattr(fam, "name", None), width, height, frames),
         steps = steps,
+        pinned_model = pinned,
     )
 
 
@@ -3205,6 +3274,9 @@ async def _queue_openai_video(
         clip_key = clip[0],
         steps = clip[1],
         arrival = arrival,
+        payload_bytes = _payload_bytes(
+            [body.model_dump(), reference, list(inputs.reference_audios or [])]
+        ),
     )
     try:
         _enqueue_video(entry)
@@ -3321,6 +3393,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> str:
                     entry.hf_token,
                     entry.id,
                     queued_account = entry.account,
+                    pinned_model = entry.pinned_model,
                 )
             else:
                 start = _start_openai_video(

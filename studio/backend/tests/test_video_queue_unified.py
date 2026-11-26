@@ -547,3 +547,60 @@ def test_a_queued_api_clip_that_cannot_start_reports_why_on_the_queue(client, ba
     _drain()
     [job] = client.get(QUEUE).json()["jobs"]
     assert (job["video_id"], job["status"], job["source"]) == (queued["id"], "failed", "api")
+
+
+def test_a_queued_page_clip_never_renders_on_a_model_swapped_in_while_it_waited(
+    client, backend, prompts
+):
+    import types
+
+    from core.inference.video_families import detect_video_family
+
+    def _resident(repo):
+        backend._state = types.SimpleNamespace(
+            family = detect_video_family("Lightricks/LTX-2"),
+            h3_task = None,
+            engine = "diffusers",
+            repo_id = repo,
+        )
+
+    _resident("unsloth/LTX-2.3-GGUF")
+    running = _busy(client, backend)
+    page = client.post(PAGE, json = {"prompt": "judged on the first model"}).json()
+    assert page["status"] == "queued"
+    _finish_running(client, backend, running)
+    _resident("someone/other-ltx-build")
+    _drain()
+    assert [row["prompt"] for row in prompts] == ["running"]
+    [job] = client.get(QUEUE).json()["jobs"]
+    assert (job["video_id"], job["status"]) == (page["video_id"], "failed")
+    assert "model changed" in job["error"]
+    # The same resident it was judged on still renders it.
+    running = _busy(client, backend, "again")
+    page = client.post(PAGE, json = {"prompt": "same model"}).json()
+    _finish_running(client, backend, running)
+    _drain()
+    _wait_idle(backend)
+    assert [row["prompt"] for row in prompts][-1] == "same model"
+
+
+def test_the_queue_caps_the_bytes_waiting_requests_hold(client, backend, monkeypatch):
+    monkeypatch.setattr(video_routes, "VIDEO_QUEUE_MAX_BYTES_PER_ACCOUNT", 3000)
+    monkeypatch.setattr(video_routes, "VIDEO_QUEUE_MAX_BYTES", 5000)
+    big = "x" * 2000
+    _busy(client, backend)
+    # An account with nothing waiting is admitted whatever its size.
+    assert client.post(PAGE, json = {"prompt": big}).json()["status"] == "queued"
+    over = client.post(PAGE, json = {"prompt": big})
+    assert over.status_code == 429 and "MB" in over.json()["detail"]
+    api_over = client.post("/v1/videos", json = {"prompt": big})
+    assert api_over.status_code == 429
+    assert api_over.json()["error"]["code"] == "rate_limit_exceeded"
+    assert client.post(PAGE, json = {"prompt": "small"}).json()["status"] == "queued"
+    # The total: another account is refused once the queue holds the process's share.
+    video_routes._VIDEO_QUEUE[0].account = _OTHER
+    video_routes._VIDEO_QUEUE[0].payload_bytes = 4000
+    total = client.post(PAGE, json = {"prompt": big})
+    assert total.status_code == 429 and "The waiting videos" in total.json()["detail"]
+    assert len(video_routes._VIDEO_QUEUE) == 2
+    backend.gate.set()
