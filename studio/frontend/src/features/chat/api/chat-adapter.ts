@@ -2097,6 +2097,26 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
+/** Counting cannot price current audio or the earlier recording replayed by an audio GGUF. */
+export function hasUncountableChatAudio(
+  messages: RunMessages,
+  includePendingAudio = true,
+): boolean {
+  if (findLatestUserAudioBase64(messages, includePendingAudio)) return true;
+  const state = useChatRuntimeStore.getState();
+  const checkpoint = state.params.checkpoint;
+  if (
+    !isServedByLlamaCpp({
+      loadedIsGguf: state.loadedIsGguf,
+      activeGgufVariant: state.activeGgufVariant,
+      activeNativePathToken: state.activeNativePathToken,
+      checkpoint,
+    }) ||
+    !state.models?.find((model) => model.id === checkpoint)?.hasAudioInput
+  ) return false;
+  return previousAudioTurn(pruneOutboundHistory(messages, true), false) !== undefined;
+}
+
 /** Clips after the first, for extra_audio_base64. Undefined when empty so text turns stay durable. */
 export function findLatestUserExtraAudioBase64(
   messages: RunMessages,

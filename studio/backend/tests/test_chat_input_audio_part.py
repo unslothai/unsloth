@@ -226,6 +226,21 @@ def test_the_count_route_refuses_an_audio_part_the_way_it_refuses_the_field():
     assert "audio" in response.json()["detail"]
 
 
+def test_the_count_route_refuses_extra_audio_without_a_primary_clip():
+    with _count_tokens_client() as client:
+        response = client.post(
+            "/chat/count_tokens",
+            json = {
+                "model": "default",
+                "messages": [{"role": "user", "content": "listen"}],
+                "extra_audio_base64": [AUDIO_B64],
+            },
+        )
+
+    assert response.status_code == 503
+    assert "containing audio" in response.json()["detail"]
+
+
 def test_the_count_route_refuses_an_unmodelled_part_like_the_completion_does():
     with _count_tokens_client() as client:
         response = client.post(
