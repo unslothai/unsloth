@@ -439,21 +439,25 @@ _HEADLESS_ARCHS = frozenset(
 # common.h LLM_FFN_EXPS_REGEX / LLM_FFN_DENSE_REGEX: what -cmoe, -ncmoe and -ncffn push.
 FFN_EXPS_OVERRIDE = r"\.ffn_(up|down|gate|gate_up)_(ch|)exps"
 FFN_DENSE_OVERRIDE = r"\.ffn_(up|down|gate)\."
-_FFN_EXPS_RE = re.compile(FFN_EXPS_OVERRIDE)
-# std::regex (ECMAScript) bracket classes Python spells differently.
+# The expert matrices llama_moe_cache_layer_experts reads; their scales do not decide caching.
+_CACHED_EXPERT_RE = re.compile(r"^blk\.\d+\.ffn_(gate_up|gate|up|down)_exps\.weight$")
+# Every class std::regex_traits<char>::lookup_classname knows, in the ASCII Python spells them.
 _POSIX_CLASSES = {
     "alnum": "a-zA-Z0-9",
     "alpha": "a-zA-Z",
     "blank": r" \t",
+    "cntrl": r"\x00-\x1f\x7f",
     "digit": "0-9",
     "d": "0-9",
+    "graph": r"\x21-\x7e",
     "lower": "a-z",
+    "print": r"\x20-\x7e",
+    "punct": r"!-/:-@\[-`{-~",
     "space": r"\s",
     "s": r"\s",
     "upper": "A-Z",
-    "xdigit": "0-9A-Fa-f",
     "w": r"\w",
-    "punct": r"!-/:-@\[-`{-~",
+    "xdigit": "0-9A-Fa-f",
 }
 _POSIX_CLASS_RE = re.compile(r"\[:([a-z]+):\]")
 
@@ -487,7 +491,8 @@ class WeightPlacement:
     # Largest group of host weights one layer's ops read; CUDA/Vulkan/Metal copy them to the device
     # to run a micro-batch of >= 32 tokens, into the compute buffer.
     host_staging_bytes: int
-    # False when a CPU override is a pattern Python cannot read like std::regex; it is skipped.
+    # False when an override is a pattern Python cannot read like std::regex; it is skipped, so the
+    # device figure may be off in either direction.
     resolved: bool
     # A tied head on another device than token_embd: a second resident copy the file size misses.
     duplicate_bytes: int = 0
@@ -526,8 +531,7 @@ def place_weights(
         regex = _std_regex(pattern)
         if regex is not None:
             compiled.append((regex, on_host))
-        elif on_host:
-            # llama.cpp refuses a pattern std::regex cannot compile, so only a CPU one can differ.
+        else:
             resolved = False
 
     def on_host_by_override(name: str) -> Optional[bool]:
@@ -578,7 +582,7 @@ def place_weights(
         else:
             host += size
             staged[group] = staged.get(group, 0) + size
-        if name in blocks and layer_on_gpu and _FFN_EXPS_RE.search(name):
+        if name in blocks and layer_on_gpu and _CACHED_EXPERT_RE.match(name):
             entry = experts.setdefault(blocks[name], [0, False])
             if on_device:
                 entry[1] = True

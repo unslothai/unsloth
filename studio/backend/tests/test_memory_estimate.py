@@ -709,7 +709,7 @@ _ATTN_BYTES = 64 * 64 * 4
 _EXPS_BYTES = 8 * 128 * 64 * 4 + 8 * 64 * 64 * 4
 
 
-def _write_moe_gguf_with_tensors(tmp_path: Path) -> str:
+def _write_moe_gguf_with_tensors(tmp_path: Path, scales: bool = False) -> str:
     """A small MoE GGUF whose tensor table is the whole file, so the estimate places each tensor."""
     import numpy as np
     from gguf import GGUFWriter
@@ -728,6 +728,11 @@ def _write_moe_gguf_with_tensors(tmp_path: Path) -> str:
             f"blk.{b}.ffn_gate_up_exps.weight", np.zeros((8, 128, 64), dtype = np.float32)
         )
         writer.add_tensor(f"blk.{b}.ffn_down_exps.weight", np.zeros((8, 64, 64), dtype = np.float32))
+        if scales:
+            for proj in ("gate_up", "down"):
+                writer.add_tensor(
+                    f"blk.{b}.ffn_{proj}_exps.scale", np.zeros((8,), dtype = np.float32)
+                )
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
@@ -738,9 +743,13 @@ def _write_moe_gguf_with_tensors(tmp_path: Path) -> str:
 class TestExpertOffloadIsPlaced:
     """#19795: -ot / --n-cpu-moe experts on the CPU leave the GPU figure, priced per tensor."""
 
+    @pytest.fixture(params = [False], ids = ["plain"])
+    def scales(self, request):
+        return request.param
+
     @pytest.fixture
-    def estimate(self, monkeypatch, tmp_path):
-        moe = _write_moe_gguf_with_tensors(tmp_path)
+    def estimate(self, monkeypatch, tmp_path, scales):
+        moe = _write_moe_gguf_with_tensors(tmp_path, scales = scales)
         config = SimpleNamespace(identifier = "local/moe", gguf_file = moe, is_gguf = True)
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
         monkeypatch.setattr(
@@ -848,6 +857,25 @@ class TestExpertOffloadIsPlaced:
         # "auto" is the fitter's to size; a pinned Manual launch runs no fitter.
         auto = estimate(llama_extra_args = [*ot, "--moe-cache-mib", "auto"])
         assert auto.gpu_bytes == base.gpu_bytes
+
+    @pytest.mark.parametrize("scales", [True], ids = ["scaled"], indirect = True)
+    def test_expert_scales_left_on_the_gpu_keep_the_layer_cached(self, estimate):
+        # llama.cpp's MoE cache checks the expert matrices only, not their .scale tensors.
+        ot = ["-ot", r"blk\.[0-1]\.ffn_.*_exps\.weight=CPU"]
+        base = estimate(llama_extra_args = ot)
+        resp = estimate(llama_extra_args = [*ot, "--moe-cache-mib", "64"])
+        assert resp.gpu_bytes == base.gpu_bytes + 2 * _EXPS_BYTES
+
+    def test_a_vulkan_launch_keeps_the_gpu_with_no_layers(self, estimate, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a: True))
+        resp = estimate(gpu_layers = 0, llama_extra_args = ["-ot", r"token_embd\.weight=Vulkan0"])
+        assert resp.gpu_bytes == _EMBD_BYTES
+
+    def test_a_device_pattern_python_cannot_compile_keeps_the_note(self, estimate):
+        resp = estimate(llama_extra_args = ["-ot", "blk(=CUDA0"])
+        assert resp.moe_offload_unmodelled is True
 
 
 class TestEstimateMemoryRoute:

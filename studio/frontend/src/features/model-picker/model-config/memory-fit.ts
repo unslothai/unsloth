@@ -395,7 +395,7 @@ export function resolveMemoryAdvisory(
   if (estimate.moeOffloadUnmodelled && !verdicts.cpuOnly) {
     return {
       tone: "muted",
-      text: "Expert layers on the CPU are not reflected here. GPU usage may be lower.",
+      text: "A tensor override is not reflected here, so GPU usage may be higher or lower.",
     };
   }
   if (verdicts.cpuOnly) {

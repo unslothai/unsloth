@@ -16194,8 +16194,8 @@ def _gguf_memory_breakdown(
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
     # Each tensor where llama.cpp puts it: --n-cpu-moe and -ot keep weights of GPU layers on the host,
     # and an -ot naming a device puts weights there even with --gpu-layers 0, while the child sees a
-    # GPU: Manual zero layers hides them unless a --device pin, tensor mode or a GPU projector keeps
-    # them (_zero_offload_keeps_gpu_visible).
+    # GPU: Manual zero layers hides CUDA/ROCm cards unless a --device pin, tensor mode or a GPU
+    # projector keeps them (_zero_offload_keeps_gpu_visible); a Vulkan launch never hides them.
     placement = None
     placement_unmodelled = False
     _pl_gpu_visible = device_pin_governs or not (
@@ -16203,7 +16203,8 @@ def _gguf_memory_breakdown(
     )
     if _pl_gpu_visible and gpu_fraction == 0.0 and gpu_memory_mode == "manual":
         _pl_gpu_visible = bool(
-            LlamaCppBackend._cmd_has_gpu_device_pin(_lt_extras, _lt_env)
+            LlamaCppBackend._is_vulkan_backend()
+            or LlamaCppBackend._cmd_has_gpu_device_pin(_lt_extras, _lt_env)
             or tensor_parallel
             or companion_bytes > host_companion_bytes
         )
@@ -16234,11 +16235,9 @@ def _gguf_memory_breakdown(
             _pl_overrides,
             architecture = getattr(probe, "_architecture", None),
         )
-        # Without a tensor table the share below prices every weight of a GPU layer on the GPU.
+        # Without a tensor table the share below ignores every override.
         placement_unmodelled = (
-            not placement.resolved
-            if placement is not None
-            else gpu_fraction > 0.0 and any(on_host for _pattern, on_host in _pl_overrides)
+            not placement.resolved if placement is not None else bool(_pl_overrides)
         )
     # --moe-cache-mib N: a GPU copy of up to N MiB of the host experts of GPU layers.
     moe_cache_bytes = 0

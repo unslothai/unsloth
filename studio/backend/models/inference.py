@@ -1504,8 +1504,8 @@ class EstimateMemoryResponse(BaseModel):
     )
     moe_offload_unmodelled: bool = Field(
         False,
-        description = "True when a CPU tensor override (-ot, --n-cpu-moe) could not be placed: "
-        "no readable tensor table, or a pattern Python cannot read. The GPU figure reads high.",
+        description = "True when a tensor override (-ot, --n-cpu-moe) could not be placed: "
+        "no readable tensor table, or a pattern Python cannot read. The GPU figure may be off.",
     )
     lookup_table_bytes: int = Field(
         0,
@@ -1628,7 +1628,7 @@ class MemoryEstimate(BaseModel):
     layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
     moe_offload_unmodelled: bool = Field(
-        False, description = "A tensor override could not be placed, so the GPU figure reads high"
+        False, description = "A tensor override could not be placed, so the GPU figure may be off"
     )
     lookup_table_bytes: int = Field(
         0, description = "Lookup-only tables in the model file, never charged to the GPU"

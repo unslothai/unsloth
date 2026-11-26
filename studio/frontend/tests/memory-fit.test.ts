@@ -219,7 +219,7 @@ test("the floor notes outrank every verdict, in their own order", () => {
   assert.match(drafter.advisory?.text ?? "", /remote draft model or vision component/);
   const moe = fit({ moeOffloadUnmodelled: true, gpuBytes: 8 * GB, totalBytes: 900 * GB }, {});
   assert.equal(moe.advisory?.tone, "muted");
-  assert.match(moe.advisory?.text ?? "", /Expert layers/);
+  assert.match(moe.advisory?.text ?? "", /tensor override is not reflected/);
 });
 
 test("the floor marker follows either unsizable case", () => {
