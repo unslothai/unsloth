@@ -4913,6 +4913,44 @@ def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
     return pread_safetensors(convert_to = dtype, keep = keep, every_shard = every)
 
 
+def _clip_chunk_count(tokenizer: Any, prompt: str) -> Optional[int]:
+    """77-token CLIP windows the prompt fills (75 content tokens each); None when it cannot be counted."""
+    if not callable(tokenizer):
+        return None
+    ids = tokenizer(prompt, add_special_tokens = False, truncation = False)["input_ids"]
+    return max(1, -(-len(ids) // 75))
+
+
+def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
+    """What a prompt must share with its batch neighbours to render as it would alone; None = never batch it.
+
+    MiniMax-H3-Image loops per image when resident, so a batch gains nothing. Qwen-Image-2.1 builds its RoPE
+    layout from row 0, so only equal prompt token lengths match. FLUX.1 / Kontext pad T5 to one bucket (256 or
+    512) per call. SD / SDXL weight and chunk prompts per call, so weighting and the 77-token chunk count must
+    agree."""
+    from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME
+    from .diffusion_prompt_weighting import has_prompt_syntax
+    from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS, _prompt_tokens
+    from .diffusion_text_length import FLUX_T5_FAMILIES, flux_t5_sequence_length
+
+    name = getattr(family, "name", None)
+    if name == MINIMAX_H3_IMAGE_FAMILY_NAME:
+        return None
+    try:
+        if type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS:
+            tokens = _prompt_tokens(pipe, prompt)
+            return None if tokens is None else ("qwen-image-2.1 tokens", tokens)
+        if name in FLUX_T5_FAMILIES:
+            bucket = flux_t5_sequence_length(getattr(pipe, "tokenizer_2", None), [prompt])
+            return None if bucket is None else ("t5 bucket", bucket)
+        if getattr(family, "textual_inversion", None) is not None:
+            chunks = _clip_chunk_count(getattr(pipe, "tokenizer", None), prompt)
+            return None if chunks is None else ("clip", has_prompt_syntax(prompt), chunks)
+    except Exception:  # noqa: BLE001 - a prompt that cannot be measured renders alone
+        return None
+    return ()
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -17863,6 +17901,9 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return None
+        prompt_key = coalesce_prompt_key(state.family, state.pipe, prompt)
+        if prompt_key is None:
+            return None
         private = bool(has_loras)
         if not private and getattr(state.family, "textual_inversion", None) is not None:
             # Embeddings come from the leader's folder and match triggers in every member's prompt.
@@ -17870,7 +17911,7 @@ class DiffusionBackend:
                 private = bool(diffusion_embeddings.list_embeddings())
             except Exception:  # noqa: BLE001 - an unreadable folder may still hold one
                 private = True
-        return (), private
+        return prompt_key, private
 
     @contextmanager
     def generation_rider(self, cancel: threading.Event):

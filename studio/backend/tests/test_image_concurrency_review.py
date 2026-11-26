@@ -34,7 +34,9 @@ def _real_plan(backend, family):
     """Bind the real engine's coalesce_plan onto the fake, over a stand-in load state."""
     from core.inference.diffusion import DiffusionBackend
 
-    backend._state = types.SimpleNamespace(family = family, pipe = None)
+    backend._state = types.SimpleNamespace(
+        family = family, pipe = types.SimpleNamespace(tokenizer = _words)
+    )
     backend.coalesce_plan = types.MethodType(DiffusionBackend.coalesce_plan, backend)
 
 
@@ -85,9 +87,76 @@ def test_the_engine_plan_marks_loras_and_owned_embeddings_private(monkeypatch):
     assert engine.coalesce_plan("a fox", False) == ((), False)
     assert engine.coalesce_plan("a fox", True) == ((), True)
     engine._state = types.SimpleNamespace(
-        family = types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl"), pipe = None
+        family = types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl"),
+        pipe = types.SimpleNamespace(tokenizer = _words),
     )
     monkeypatch.setattr(embeddings, "list_embeddings", lambda kind = None: [])
     assert engine.coalesce_plan("a fox", False)[1] is False
     monkeypatch.setattr(embeddings, "list_embeddings", lambda kind = None: ["x"])
     assert engine.coalesce_plan("a fox", False)[1] is True
+
+
+def _words(text, **_kwargs):
+    return {"input_ids": list(range(len(text.split())))}
+
+
+def _qwen21_pipe():
+    transformer = type("QwenImage21Transformer2DModel", (), {})()
+    return types.SimpleNamespace(
+        transformer = transformer, prompt_template_t2i = "{}", tokenizer = _words
+    )
+
+
+def test_minimax_h3_image_never_batches():
+    from core.inference.diffusion import coalesce_prompt_key
+    family = types.SimpleNamespace(name = "minimax-h3-image")
+    assert coalesce_prompt_key(family, None, "a fox") is None
+
+
+def test_qwen_image_21_groups_only_equal_prompt_token_lengths():
+    from core.inference.diffusion import coalesce_prompt_key
+
+    family = types.SimpleNamespace(name = "qwen-image-2.1")
+    pipe = _qwen21_pipe()
+    short, same, longer = ("a red fox", "a blue car", "a red fox in deep snow")
+    assert coalesce_prompt_key(family, pipe, short) == coalesce_prompt_key(family, pipe, same)
+    assert coalesce_prompt_key(family, pipe, short) != coalesce_prompt_key(family, pipe, longer)
+
+
+def test_flux1_groups_only_members_in_the_same_t5_bucket():
+    from core.inference.diffusion import coalesce_prompt_key
+    for name in ("flux.1", "flux.1-kontext"):
+        family = types.SimpleNamespace(name = name)
+        pipe = types.SimpleNamespace(tokenizer_2 = _words)
+        short = coalesce_prompt_key(family, pipe, "a fox")
+        assert short == coalesce_prompt_key(family, pipe, "a cat on a mat")
+        assert short != coalesce_prompt_key(family, pipe, " ".join(["word"] * 300))
+
+
+def test_sdxl_groups_only_matching_weighting_and_chunk_count():
+    from core.inference.diffusion import coalesce_prompt_key
+
+    family = types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl")
+    pipe = types.SimpleNamespace(tokenizer = _words)
+    plain = coalesce_prompt_key(family, pipe, "a red fox")
+    assert plain == coalesce_prompt_key(family, pipe, "a blue car")
+    assert plain != coalesce_prompt_key(family, pipe, "a (red:1.3) fox")
+    assert plain != coalesce_prompt_key(family, pipe, " ".join(["word"] * 80))
+
+
+def test_qwen_image_21_members_of_different_lengths_render_apart_through_the_route(studio):
+    app, backend, _saved = studio
+    _real_plan(backend, types.SimpleNamespace(name = "qwen-image-2.1"))
+    backend._state.pipe = _qwen21_pipe()
+    posts = [
+        ("/v1/images/generations", "alice", _openai("a red fox")),
+        ("/v1/images/generations", "bob", _openai("a red fox in deep snow")),
+        ("/v1/images/generations", "carol", _openai("a blue car")),
+    ]
+    responses = _post_while_rendering(app, backend, posts, waiting = 3)
+    assert all(r.status_code == 200 for r in responses)
+    [call] = _batched_calls(backend)
+    assert sorted(call["prompts"]) == ["a blue car", "a red fox"]
+    assert [c["prompt"] for c in backend.calls if c["prompts"] is None] == [
+        "a red fox in deep snow"
+    ]
