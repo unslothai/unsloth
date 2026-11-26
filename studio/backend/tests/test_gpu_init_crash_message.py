@@ -1831,3 +1831,21 @@ class TestHipRocrSegfaultRetriesBundleOnly:
         assert launches[1][1]["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
         assert _fit_mode(launches[1][0]) == "on"
         assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+
+def test_cpu_replay_keeps_studio_thread_cap_after_removing_gpu_tuning():
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    env = {"UNSLOTH_CPU_THREADS": "8", "OMP_NUM_THREADS": "2", "OMP_WAIT_POLICY": "PASSIVE"}
+    replay = LlamaCppBackend._cpu_isolated_replay(
+        ["llama-server", "-m", "m.gguf", "--threads", "2"],
+        env,
+        {},
+        drop_full_offload_threads = True,
+    )
+
+    assert replay is not None
+    assert replay.count("--threads") == 1
+    assert replay[replay.index("--threads") + 1] == "8"
+    assert env["OMP_NUM_THREADS"] == "8"
+    assert "OMP_WAIT_POLICY" not in env
