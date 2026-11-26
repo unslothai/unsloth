@@ -1816,8 +1816,15 @@ def vocoder_deterministic_enabled() -> bool:
     return (os.environ.get(VOCODER_DETERMINISTIC_ENV) or "").strip().lower() not in _SWITCH_OFF
 
 
+# The flag is process-global, so overlapping scopes share it: the first entry saves it, the last exit restores it.
+_DETERMINISTIC_LOCK = threading.Lock()
+_deterministic_depth = 0
+_deterministic_saved = False
+
+
 @contextlib.contextmanager
 def _deterministic_cudnn(mel_spec: Any) -> Iterator[None]:
+    global _deterministic_depth, _deterministic_saved
     import torch
 
     cudnn = torch.backends.cudnn
@@ -1825,16 +1832,22 @@ def _deterministic_cudnn(mel_spec: Any) -> Iterator[None]:
         getattr(getattr(mel_spec, "device", None), "type", None) != "cuda"
         or getattr(torch.version, "hip", None)
         or _is_compiling()
-        or cudnn.deterministic
         or not vocoder_deterministic_enabled()
     ):
         yield
         return
-    cudnn.deterministic = True
+    with _DETERMINISTIC_LOCK:
+        if _deterministic_depth == 0:
+            _deterministic_saved = bool(cudnn.deterministic)
+            cudnn.deterministic = True
+        _deterministic_depth += 1
     try:
         yield
     finally:
-        cudnn.deterministic = False
+        with _DETERMINISTIC_LOCK:
+            _deterministic_depth -= 1
+            if _deterministic_depth == 0:
+                cudnn.deterministic = _deterministic_saved
 
 
 def _is_compiling() -> bool:

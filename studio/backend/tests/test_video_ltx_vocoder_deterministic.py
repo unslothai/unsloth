@@ -89,3 +89,32 @@ def test_the_installed_forward_enters_the_scope(monkeypatch):
         out = voc(mel)
     assert len(entered) == 1 and entered[0] is mel
     assert out.shape == (1, 2, 18)
+
+
+def test_overlapping_calls_keep_the_flag_until_the_last_exits():
+    import threading
+
+    a_in, b_in, a_out = threading.Event(), threading.Event(), threading.Event()
+    seen = {}
+
+    def call_a():
+        with L._deterministic_cudnn(_cuda_like()):
+            a_in.set()
+            b_in.wait(5)
+        a_out.set()
+
+    def call_b():
+        a_in.wait(5)
+        with L._deterministic_cudnn(_cuda_like()):
+            b_in.set()
+            a_out.wait(5)
+            seen["b_after_a_exit"] = torch.backends.cudnn.deterministic
+
+    threads = [threading.Thread(target = call_a), threading.Thread(target = call_b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert seen["b_after_a_exit"] is True
+    assert torch.backends.cudnn.deterministic is False
+    assert L._deterministic_depth == 0
