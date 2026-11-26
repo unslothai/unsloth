@@ -1035,6 +1035,9 @@ CFG_REPLICA_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_CFG_REPLICA_PLACEMENT"
 REPLICA_MIN_GAIN = 1.05
 # The 1 GiB reserve already holds a block working set up to that size.
 _REPLICA_BASE_RESERVE_MIB = 1024
+# A step split by tokens over two cards, as a share of the one-card step (two swaps per attention included). Kaggle
+# 2x T4 PCIe: Wan 2.2 5B 1.70-1.79x (0.56-0.59).
+SEQUENCE_SPLIT_STEP_SHARE = 0.6
 
 
 def cfg_replica_placement_mode() -> str:
@@ -1055,6 +1058,8 @@ class DefaultRequest:
     steps: Optional[int] = None
     tokens: Optional[int] = None
     why: str = ""
+    # joint-sequence denoisers (FLUX.2): the prompt's tokens beside ``tokens`` image tokens
+    text_tokens: Optional[int] = None
 
 
 _DEFAULT_REQUESTS: "weakref.WeakKeyDictionary[Any, DefaultRequest]" = weakref.WeakKeyDictionary()
@@ -1067,6 +1072,7 @@ def note_default_request(
     steps: Optional[int] = None,
     tokens: Optional[int] = None,
     why: str = "",
+    text_tokens: Optional[int] = None,
 ) -> None:
     if pipe is None:
         return
@@ -1076,6 +1082,7 @@ def note_default_request(
             steps = int(steps) if steps else None,
             tokens = int(tokens) if tokens else None,
             why = str(why or ""),
+            text_tokens = int(text_tokens) if text_tokens else None,
         )
 
 
@@ -1302,11 +1309,16 @@ def price_replica_layout(
     primary_stream_s: float,
     steps: int,
     encoder_stream_s: float = 0.0,
+    sequence_split: bool = False,
 ) -> tuple[float, float]:
     """(replica layout, alternative) seconds per render: steps x ``compute + primary stream`` vs steps x
     ``branches x compute``; ``encoder_stream_s`` = encoders the alternative keeps resident, streamed once per render."""
     branches = 2 if guided else 1
-    replica = int(steps) * (float(compute_s) + float(primary_stream_s)) + float(encoder_stream_s)
+    # ``sequence_split``: an unguided step runs half its tokens on the replica (diffusion_sequence_parallel)
+    share = SEQUENCE_SPLIT_STEP_SHARE if sequence_split and not guided else 1.0
+    replica = int(steps) * (share * float(compute_s) + float(primary_stream_s)) + float(
+        encoder_stream_s
+    )
     alternative = int(steps) * branches * float(compute_s)
     return replica, alternative
 
@@ -1319,6 +1331,7 @@ def choose_replica_layout(
     steps: int,
     encoder_stream_s: float = 0.0,
     min_gain: float = REPLICA_MIN_GAIN,
+    sequence_split: bool = False,
 ) -> tuple[bool, float, float]:
     replica, alternative = price_replica_layout(
         guided = guided,
@@ -1326,6 +1339,7 @@ def choose_replica_layout(
         primary_stream_s = primary_stream_s,
         steps = steps,
         encoder_stream_s = encoder_stream_s,
+        sequence_split = sequence_split,
     )
     return replica > 0 and alternative >= float(min_gain) * replica, replica, alternative
 
@@ -1414,6 +1428,37 @@ _ALTERNATIVE_LABELS = {
 }
 
 
+def _sequence_split_layout_refusal(denoiser: Any, request: Any, selection: Any) -> Optional[str]:
+    """Why a replica would not split the unguided default request by tokens (diffusion_sequence_parallel), or None.
+    Only joint-sequence classes (FLUX.2) take a replica for it, and only when the default request's own size (image
+    plus text tokens, recorded at load) clears the threshold: an unknown size keeps the other layouts."""
+    from . import diffusion_sequence_parallel as sp
+
+    name = type(denoiser).__name__
+    if sp.mode() == "off":
+        return f"{sp.SP_ENV}=0"
+    if sp.read_plan(type(denoiser)) is None:
+        return f"{name} has no checked sequence-parallel plan"
+    if name not in sp.SP_JOINT_PREFIX:
+        return f"{name} takes a replica for guided steps only"
+    # Speed optims run before placement: a compiled denoiser is already visible here, and every call refuses the split.
+    from .diffusion_cfg_batch import compiled_denoiser, per_call_scaled
+
+    compiled = compiled_denoiser(denoiser)
+    if compiled is not None:
+        return f"compiled submodules ({compiled}) never split by tokens"
+    # each token half would take its own activation amax (dynamic NVFP4): the router refuses every such call
+    scaled = per_call_scaled(denoiser)
+    if scaled is not None:
+        return f"per-call activation scaling ({scaled}) never splits by tokens"
+    if not request.tokens or not request.text_tokens:
+        return "the default request's token count is unknown"
+    tokens = int(request.tokens) + int(request.text_tokens)
+    if sp.mode() != "force" and tokens < sp.MIN_TOKENS:
+        return f"the default request has {tokens} tokens, under {sp.MIN_TOKENS}"
+    return None
+
+
 def replica_layout(
     pipe: Any,
     plan: Any,
@@ -1445,10 +1490,12 @@ def replica_layout(
     if request is None or request.guided is None:
         return None, None
     if not request.guided and mode != "force":
-        return None, (
-            f"the default request runs one denoiser branch per step ({request.why or 'no CFG'}): a copy would only "
-            "split even batches"
-        )
+        why_not = _sequence_split_layout_refusal(denoiser, request, selection)
+        if why_not is not None:
+            return None, (
+                f"the default request runs one denoiser branch per step ({request.why or 'no CFG'}): a copy would "
+                f"only split even batches ({why_not})"
+            )
     if getattr(pipe, "transformer_2", None) is not None:
         return None, "two-expert denoiser"
     refusal = replica_layout_refusal(denoiser)
@@ -1473,11 +1520,33 @@ def replica_layout(
         return None, f"replica card unknown ({type(exc).__name__})"
     if partner is None:
         return None, f"no card for a replica ({why})"
+    if not request.guided:
+        # the router refuses the same pairs at every call
+        from . import diffusion_sequence_parallel as sp
+
+        probes = probe_devices((int(selection.primary), int(partner)))
+
+        def probed(device: Any) -> Optional[tuple]:
+            probe = probes.get(device.index)
+            return (probe.name,) if probe is not None and probe.name else None
+
+        unpaired = sp.pair_refusal(
+            f"cuda:{int(selection.primary)}",
+            f"cuda:{int(partner)}",
+            type(denoiser).__name__,
+            identify = probed,
+        )
+        if unpaired is not None:
+            return None, f"no token split on this pair ({unpaired})"
     label = _ALTERNATIVE_LABELS.get(alternative, alternative)
     if alternative == "one_card" or mode == "force":
+        runs = (
+            "the default request is guided, so each step runs its second branch on the replica at the same time"
+            if request.guided
+            else "the default request has one branch per step, so each step runs half its tokens on the replica"
+        )
         return (
-            f"one card plus a CFG replica on cuda:{partner} ({need} MiB fits there; the default request is guided, "
-            "so each step runs its second branch on the replica at the same time)"
+            f"one card plus a CFG replica on cuda:{partner} ({need} MiB fits there; {runs})"
             + (
                 ""
                 if alternative == "one_card"
@@ -1535,6 +1604,7 @@ def replica_layout(
         primary_stream_s = stream_s,
         steps = steps,
         encoder_stream_s = encoders_s,
+        sequence_split = not request.guided,
     )
     with contextlib.suppress(TypeError):
         _MODE_ESTIMATES[pipe] = {
@@ -1559,9 +1629,14 @@ def replica_layout(
         f"tokens ({h2d:.1f} GiB/s, {float(tflops):.0f} TFLOPS measured)"
     )
     if take:
+        runs = (
+            "the default request is guided, so the replica runs the second branch beside the first"
+            if request.guided
+            else "the default request has one branch per step, so the replica runs half of each step's tokens"
+        )
         return (
-            f"one card plus a CFG replica on cuda:{partner}: the default request is guided, so the replica runs the "
-            f"second branch beside the first; predicted {priced}; {CFG_REPLICA_PLACEMENT_ENV}=0 keeps the {label}"
+            f"one card plus a CFG replica on cuda:{partner}: {runs}; predicted {priced}; "
+            f"{CFG_REPLICA_PLACEMENT_ENV}=0 keeps the {label}"
         ), None
     return None, f"predicted slower or within {REPLICA_MIN_GAIN:.2f}x: {priced}"
 
@@ -1926,11 +2001,16 @@ def refine_plan_for_multigpu(
                 rejected.append(PlacementCandidate("cfg_replica", why))
             return False
         label = _ALTERNATIVE_LABELS.get(alternative, alternative)
+        request = default_request(pipe)
+        per_step = (
+            "half of each step's tokens on each card"
+            if request is not None and request.guided is False
+            else "one forward per guided step instead of two"
+        )
         rejected.append(
             PlacementCandidate(
                 alternative,
-                f"the {label} would fit, but the CFG replica layout is predicted faster (one forward per guided step "
-                "instead of two)",
+                f"the {label} would fit, but the CFG replica layout is predicted faster ({per_step})",
             )
         )
         _record_decision(
@@ -3781,6 +3861,7 @@ class CfgParallelRouter:
             "batch_split_skip": None,
             "sequence_splits": 0,
             "sequence_split_skip": None,
+            "sequence_split_released": None,
         }
         # why this load's calls are never split by tokens (set once a split failed), else None
         self.sequence_split_off: Optional[str] = None
@@ -4100,11 +4181,13 @@ class CfgParallelRouter:
         if self.sequence_split_off is not None:
             self.stats["sequence_split_skip"] = self.sequence_split_off
             return None
-        why = sp.refusal(module, sp.call_tokens(module, latent))
+        why = sp.refusal(module, sp.call_tokens(module, latent, kwargs))
         if why is None and (args or _holds_opaque_tensors((args, kwargs))):
             why = "positional or opaque inputs"
-        if why is None and self.secondary.type != self.primary.type:
-            why = "the replica is on another device type"
+        if why is None:
+            why = sp.call_refusal(module, kwargs)
+        if why is None:
+            why = sp.pair_refusal(self.primary, self.secondary, type(module).__name__)
         if why is None:
             if self._split_scaled is None:
                 from .diffusion_cfg_batch import per_call_scaled
@@ -4149,8 +4232,23 @@ class CfgParallelRouter:
                 devices = (self.primary, self.secondary),
             )
         except Exception as exc:  # noqa: BLE001 - the step reruns whole on the source; no later step splits
-            self.sequence_split_off = f"a split call failed ({type(exc).__name__}: {exc})"[:300]
+            from .diffusion_batched import is_oom_error
+
+            cause = exc.__cause__ if isinstance(exc, sp.SequenceParallelError) else None
+            shown = cause if cause is not None else exc
+            self.sequence_split_off = f"a split call failed ({type(shown).__name__}: {shown})"[:300]
             self.stats["sequence_split_skip"] = self.sequence_split_off
+            if is_oom_error(exc):
+                # out of memory on either card: free the replica's copy too, so the rerun (and anything after it) runs
+                # with the memory main would have; an OOM in the rerun reaches the caller as on main
+                self.stats["replica_failures"] += 1
+                self.drop_replica()
+                with contextlib.suppress(Exception):
+                    from .diffusion_cuda_graph import outside_capture
+                    for card in (self.secondary, self.primary):
+                        if card.type == "cuda":
+                            with outside_capture(), _device_context(card):
+                                _torch().cuda.empty_cache()
             if self.logger is not None:
                 self.logger.warning(
                     "diffusion.multigpu: sequence-parallel step failed (%s); this load runs its single calls on %s",
@@ -5142,6 +5240,39 @@ def install_cfg_parallel(
         if logger is not None:
             logger.info("diffusion.multigpu: CFG-parallel not armed (%s)", reason)
     return reason
+
+
+def release_sequence_split_replica(
+    pipe: Any,
+    reason: str,
+    logger: Any = None,
+) -> bool:
+    """A load whose default request is unguided got its replica for token splits only. Once the denoiser is compiled
+    (Auto's deferred profile), no call splits, so free the second card's copy and stop splitting; an even batch still
+    builds one again when it needs it, as without the split. True when a replica was released."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return False
+    request = default_request(pipe)
+    if router is None or router.replica is None or request is None or request.guided is not False:
+        return False
+    router.sequence_split_off = reason
+    router.stats["sequence_split_skip"] = reason
+    router.stats["sequence_split_released"] = reason
+    router.drop_replica()
+    if router.secondary.type == "cuda":
+        with contextlib.suppress(Exception):
+            from .diffusion_cuda_graph import outside_capture
+            with outside_capture(), _device_context(router.secondary):
+                _torch().cuda.empty_cache()
+    if logger is not None:
+        logger.info(
+            "diffusion.multigpu: token-split replica on %s released (%s); one card from here",
+            router.secondary,
+            reason,
+        )
+    return True
 
 
 def invalidate_cfg_replica(
