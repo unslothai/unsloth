@@ -39,6 +39,8 @@ LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
 LOCAL_DATASETS_ROOT = LazyPath(recipe_datasets_root)
 DATASET_UPLOAD_DIR = LazyPath(dataset_uploads_root)
 _REUSE_LOCK = threading.Lock()
+_PANDAS_JSON_MAX_MB = 8
+_PANDAS_JSON_CONVERSION_LOCK = threading.Lock()
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -518,8 +520,9 @@ def _native_upload_dataset_response(
     account_path(grant.canonical_path)
     filename, stored_path, max_bytes, max_label = _upload_destination(grant.canonical_path.name)
     _validate_json_columns_upload(stored_path, json_columns)
-    if grant.size_bytes is not None and grant.size_bytes > max_bytes:
-        raise _upload_too_large(max_label)
+    input_bytes, input_label = _json_columns_input_limit(max_bytes, max_label, json_columns)
+    if grant.size_bytes is not None and grant.size_bytes > input_bytes:
+        raise _upload_too_large(input_label)
 
     partial_path = _partial_upload_path(stored_path)
     written = 0
@@ -528,8 +531,8 @@ def _native_upload_dataset_response(
         with open(grant.canonical_path, "rb") as source, open(partial_path, "wb") as target:
             while chunk := source.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
-                if written > max_bytes:
-                    raise _upload_too_large(max_label)
+                if written > input_bytes:
+                    raise _upload_too_large(input_label)
                 target.write(chunk)
         upload_complete = True
     except OSError as exc:
@@ -569,9 +572,10 @@ async def upload_dataset_response(
         file.filename or "dataset_upload"
     )
     _validate_json_columns_upload(stored_path, json_columns)
+    input_bytes, input_label = _json_columns_input_limit(max_bytes, max_label, json_columns)
     declared_size = getattr(file, "size", None)
-    if isinstance(declared_size, int) and declared_size > max_bytes:
-        raise _upload_too_large(max_label)
+    if isinstance(declared_size, int) and declared_size > input_bytes:
+        raise _upload_too_large(input_label)
 
     partial_path = _partial_upload_path(stored_path)
     written = 0
@@ -580,8 +584,8 @@ async def upload_dataset_response(
         with open(partial_path, "wb") as f:
             while chunk := await file.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
-                if written > max_bytes:
-                    raise _upload_too_large(max_label)
+                if written > input_bytes:
+                    raise _upload_too_large(input_label)
                 await asyncio.to_thread(f.write, chunk)
         upload_complete = True
     finally:
@@ -604,6 +608,14 @@ def _validate_json_columns_upload(path: Path, json_columns: bool) -> None:
         raise HTTPException(status_code = 400, detail = "Pandas column import requires a .json file.")
 
 
+def _json_columns_input_limit(max_bytes: int, max_label: str, json_columns: bool) -> tuple[int, str]:
+    # Decoding a column object keeps every cell in memory until the transpose is written.
+    pandas_limit = upload_limit_bytes(_PANDAS_JSON_MAX_MB)
+    if json_columns and pandas_limit < max_bytes:
+        return pandas_limit, f"{upload_limit_label(_PANDAS_JSON_MAX_MB)} for pandas column JSON"
+    return max_bytes, max_label
+
+
 def _unique_json_object(items):
     result = dict(items)
     if len(result) != len(items):
@@ -619,34 +631,12 @@ def _finish_upload(
 
     converted_path = partial_path.with_suffix(".rows.part")
     try:
-        with partial_path.open(encoding = "utf-8-sig") as source:
-            columns = json.load(source, object_pairs_hook = _unique_json_object)
-        if not isinstance(columns, dict) or not columns:
-            raise ValueError("Expected an object containing named columns.")
-        index = next(iter(columns.values()))
-        if not isinstance(index, dict) or not index:
-            raise ValueError("Expected a non-empty object of row indices in each column.")
-        if any(
-            not isinstance(values, dict) or values.keys() != index.keys()
-            for values in columns.values()
-        ):
-            raise ValueError("Every column must contain the same row indices.")
-
-        # Write regular row-oriented JSON so preview and every trainer share the existing loader.
-        with converted_path.open("wb") as target:
-            target.write(b"[")
-            for position, key in enumerate(index):
-                row = {name: values[key] for name, values in columns.items()}
-                encoded = json.dumps(
-                    row, ensure_ascii = False, allow_nan = False, separators = (",", ":")
-                ).encode("utf-8")
-                if target.tell() + len(encoded) + (1 if position else 0) + 1 > max_bytes:
-                    raise _upload_too_large(max_label)
-                if position:
-                    target.write(b",")
-                target.write(encoded)
-            target.write(b"]")
-        return _publish_upload(converted_path, stored_path)
+        with _PANDAS_JSON_CONVERSION_LOCK:
+            _write_pandas_json_rows(partial_path, converted_path, max_bytes, max_label)
+        destination = stored_path.with_suffix(".jsonl")
+        if len(destination.name.encode("utf-8")) > 255:
+            destination = destination.with_name(f"{destination.stem[:-1]}.jsonl")
+        return _publish_upload(converted_path, destination)
     except (ValueError, RecursionError) as exc:
         raise HTTPException(status_code = 400, detail = f"Invalid pandas column JSON. {exc}") from exc
     finally:
@@ -654,6 +644,30 @@ def _finish_upload(
             partial_path.unlink(missing_ok = True)
         with suppress(OSError):
             converted_path.unlink(missing_ok = True)
+
+
+def _write_pandas_json_rows(
+    source_path: Path, converted_path: Path, max_bytes: int, max_label: str
+) -> None:
+    with source_path.open(encoding = "utf-8-sig") as source:
+        columns = json.load(source, object_pairs_hook = _unique_json_object)
+    if not isinstance(columns, dict) or not columns:
+        raise ValueError("Expected an object containing named columns.")
+    index = next(iter(columns.values()))
+    if not isinstance(index, dict) or not index:
+        raise ValueError("Expected a non-empty object of row indices in each column.")
+    if any(not isinstance(values, dict) or values.keys() != index.keys() for values in columns.values()):
+        raise ValueError("Every column must contain the same row indices.")
+
+    with converted_path.open("wb") as target:
+        for key in index:
+            row = {name: values[key] for name, values in columns.items()}
+            encoded = json.dumps(
+                row, ensure_ascii = False, allow_nan = False, separators = (",", ":")
+            ).encode("utf-8")
+            if target.tell() + len(encoded) + 1 > max_bytes:
+                raise _upload_too_large(max_label)
+            target.write(encoded + b"\n")
 
 
 def _file_digest(path: Path) -> str:

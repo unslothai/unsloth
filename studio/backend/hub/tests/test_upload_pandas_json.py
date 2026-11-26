@@ -54,6 +54,48 @@ def test_ordinary_json_upload_preserves_file_contents(isolate_upload_dir):
     assert Path(response.stored_path).read_bytes() == source
 
 
+def test_pandas_default_column_name_is_preserved(isolate_upload_dir):
+    from datasets import load_dataset
+
+    response = asyncio.run(
+        datasets_route.upload_dataset(
+            UploadFile(BytesIO(b'{"0":{"1":"hello","2":"hi"}}'), filename = "pandas.json"),
+            native_path_lease = None,
+            current_subject = "test-user",
+            json_columns = True,
+        )
+    )
+    path = Path(response.stored_path)
+    preview, _ = datasets_route.local._load_local_preview_slice(
+        dataset_path = path,
+        train_split = "train",
+        preview_size = 2,
+    )
+    expected = [{"0": "hello"}, {"0": "hi"}]
+    assert preview.to_list() == expected
+    assert load_dataset("json", data_files = str(path), split = "train").to_list() == expected
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_pandas_input_limit_leaves_no_partial_upload(isolate_upload_dir, monkeypatch, declared):
+    source = b'{"0":{"0":"' + b"a" * 1_050_000 + b'"}}'
+    monkeypatch.setattr(datasets_route.local, "get_upload_limit_mb", lambda: 2)
+    monkeypatch.setattr(datasets_route.local, "_PANDAS_JSON_MAX_MB", 1)
+    with pytest.raises(HTTPException, match = "upload too large") as exc:
+        asyncio.run(
+            datasets_route.upload_dataset(
+                UploadFile(
+                    BytesIO(source), filename = "pandas.json", size = len(source) if declared else None
+                ),
+                native_path_lease = None,
+                current_subject = "test-user",
+                json_columns = True,
+            )
+        )
+    assert exc.value.status_code == 413
+    assert list(isolate_upload_dir.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "source",
     [
