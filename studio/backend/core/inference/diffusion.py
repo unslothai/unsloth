@@ -2108,10 +2108,11 @@ def _release_render_on_unload(method):
     return wrapped
 
 
-def _is_warmup_render(count_before: int, deferred_before: bool, deferred_after: bool) -> bool:
-    """True for the first generation of a load, or the one where the deferred speed tier engaged (it compiles inline):
-    its elapsed time includes one-time compile, kernel tuning and graph capture, not the steady-state render time."""
-    return count_before == 0 or (deferred_before and not deferred_after)
+def _is_warmup_render(count_before: int, deferred_engaged: bool) -> bool:
+    """True for the first generation of a load, or the one where the deferred speed profile actually engaged (it
+    compiles inline): its elapsed time includes one-time compile, kernel tuning and graph capture, not the
+    steady-state render time. A declined or failed deferred profile stays eager, so it is not a warm-up."""
+    return count_before == 0 or bool(deferred_engaged)
 
 
 @dataclass
@@ -15952,15 +15953,16 @@ class DiffusionBackend:
             except Exception:  # noqa: BLE001 - reset is best-effort, never fail a generation
                 pass
 
-    def _engage_deferred_speed(self, state: _LoadState) -> None:
-        """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off."""
+    def _engage_deferred_speed(self, state: _LoadState) -> bool:
+        """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off.
+        True only when the profile engaged (this render compiles inline); False when it was skipped or declined."""
         object.__setattr__(state, "speed_deferred", False)
         if getattr(getattr(state, "pipe", None), "_unsloth_unet_streamed", False):
             logger.info(
                 "diffusion.speed: deferred profile skipped (the UNet streams leaf by leaf; its weights must stay "
                 "under the offload hooks)"
             )
-            return
+            return False
         short = _deferred_profile_headroom_short(state)
         if short is not None:
             # declined before anything is patched: this load keeps rendering exactly as speed_mode=off
@@ -15976,7 +15978,7 @@ class DiffusionBackend:
                 entry["reason"] = (
                     f"auto: compiled profile declined, it does not fit on the card ({short})"
                 )
-            return
+            return False
         plan = state.deferred_static_plan
         object.__setattr__(state, "deferred_static_plan", None)
         tc = (state.resolved or {}).get("transformer_cache")
@@ -16017,6 +16019,7 @@ class DiffusionBackend:
         drop_displaced_cfg_router(
             state.pipe, "the deferred speed profile replaced the denoiser's forward", logger
         )
+        return True
 
     # Outside load_pipeline (3rd generation): its own probe scope, so one OOM is not re-probed by plan and apply.
     @rocm_probe_load_scoped
@@ -16418,7 +16421,7 @@ class DiffusionBackend:
                 # The first render of a load (and the one that engages the deferred compile) pays one-time warm-up:
                 # torch.compile, kernel autotuning and CUDA graph capture where enabled. The Recipe labels its time.
                 warmup_count_before = state.generation_count
-                warmup_deferred_before = bool(state.speed_deferred)
+                deferred_engaged = False
                 # Deferred speed auto compiles on the 3rd image, but never with LoRA (compile rejects LoRA).
                 lora_requested = _has_active_lora(loras)
                 # Stay eager while prior adapters are attached: compiling would bake them in.
@@ -16439,7 +16442,7 @@ class DiffusionBackend:
                     and not loras_attached
                 ):
                     try:
-                        self._engage_deferred_speed(state)
+                        deferred_engaged = self._engage_deferred_speed(state) is True
                     except Exception as exc:  # noqa: BLE001 - speed is best-effort
                         logger.warning(
                             "diffusion.speed: deferred engagement failed, staying eager: %s",
@@ -17759,9 +17762,7 @@ class DiffusionBackend:
                     "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
                     "inpaint_padding": inpaint_padding_applied,
                     "cfg_interval_end": cfg_interval_applied,
-                    "warmup_render": _is_warmup_render(
-                        warmup_count_before, warmup_deferred_before, bool(state.speed_deferred)
-                    ),
+                    "warmup_render": _is_warmup_render(warmup_count_before, deferred_engaged),
                 }
                 if upscale_model and workflow == "upscale":
                     result["upscale_model"] = upscale_model
