@@ -201,12 +201,21 @@ def test_typed_tool_arguments_pick_the_right_training_family(patched):
     # Qwen3.6 writes JSON true / null, Qwen3.5 Python True / None; integer-only probes miss it.
     if not (hasattr(trl_utils, "qwen3_6_chat_template") and hasattr(trl_utils, "qwen3_5_think_chat_template")):
         pytest.skip("this TRL lacks the Qwen3.5 / 3.6 templates")
-    module, _ = patched
+    module, originals = patched
     tokenizer = _tokenizer(PLAIN)
-    for name in ("qwen3_6_chat_template", "qwen3_5_think_chat_template"):
+    names = ("qwen3_6_chat_template", "qwen3_5_think_chat_template")
+    for name, other in (names, names[::-1]):
         edited = "{#- Chat template fixes by Unsloth #}\n" + getattr(trl_utils, name)
         found = [n for n, _ in module._matching_families(trl_utils, tokenizer, edited, "conversation")]
-        assert found == [name]
+        assert name in found and other not in found
+        # TRL >= 1.18 also ships qwen3_6_v2: same conversations, same training template as qwen3_6.
+        trainings = set()
+        for match in found:
+            known = getattr(trl_utils, match)
+            training = originals["get_training_chat_template"](_tokenizer(known))
+            trainings.add(known if training is None else training)
+        assert len(trainings) == 1
+        assert trl_utils.get_training_chat_template(_tokenizer(edited)) == trainings.pop()
 
 
 def _child_accepts(processing_class, originals):

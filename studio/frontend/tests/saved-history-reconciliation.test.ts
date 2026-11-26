@@ -66,6 +66,131 @@ test("ordinary saved assistant text reconciles into the open export", () => {
   assert.equal(text, "New saved checkpoint");
 });
 
+for (const savedText of ["Partial reply", "Finished reply"]) {
+  test(`a saved completion clears a stale interruption with text "${savedText}"`, () => {
+    const runtime = assistantRuntime("assistant-1", "Partial reply");
+    runtime.status = { type: "incomplete", reason: "error" };
+    const exported = {
+      messages: [{
+        parentId: "user-1",
+        message: {
+          ...runtime,
+          metadata: {
+            ...runtime.metadata,
+            custom: { incomplete: { reason: "interrupted" }, localView: true },
+          },
+        },
+      }],
+    };
+
+    const { changed, messages } = reconcileOrdinarySavedMessagesInExport(
+      exported,
+      [storedAssistant("assistant-1", savedText)],
+      { editingMessageId: null },
+    );
+
+    assert.equal(changed, true);
+    assert.deepEqual(messages[0].message.content, [{ type: "text", text: savedText }]);
+    assert.deepEqual(messages[0].message.status, { type: "complete", reason: "unknown" });
+    assert.equal(messages[0].message.metadata.custom?.incomplete, undefined);
+    assert.equal(messages[0].message.metadata.custom?.localView, true);
+  });
+}
+
+test("a saved interruption becomes visible without a new text delta", () => {
+  const runtime = assistantRuntime("assistant-1", "Partial reply");
+  const stored = {
+    ...storedAssistant("assistant-1", "Partial reply"),
+    metadata: { incomplete: { reason: "interrupted" as const } },
+  };
+  const { changed, messages } = reconcileOrdinarySavedMessagesInExport(
+    { messages: [{ parentId: "user-1", message: runtime }] },
+    [stored],
+    { editingMessageId: null },
+  );
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages[0].message.status, { type: "incomplete", reason: "error" });
+  assert.deepEqual(messages[0].message.metadata.custom?.incomplete, stored.metadata.incomplete);
+});
+
+test("an older checkpoint cannot clear an interruption on a longer reply", () => {
+  const runtime = assistantRuntime("assistant-1", "Partial reply");
+  const message = {
+    ...runtime,
+    status: { type: "incomplete", reason: "error" } as const,
+    metadata: { ...runtime.metadata, custom: { incomplete: { reason: "interrupted" } } },
+  };
+  const { changed, messages } = reconcileOrdinarySavedMessagesInExport(
+    { messages: [{ parentId: "user-1", message }] },
+    [storedAssistant("assistant-1", "Partial")],
+    { editingMessageId: null },
+  );
+
+  assert.equal(changed, false);
+  assert.equal(messages[0].message, message);
+});
+
+test("history refresh leaves the active chat's running repository alone", () => {
+  let exported = false;
+  const view = {
+    threadListItem: () => ({ getState: () => ({ remoteId: "thread-1" }) }),
+    thread: () => ({
+      getState: () => ({ isRunning: true, messages: [] }),
+      export: () => {
+        exported = true;
+        return {
+          messages: [{
+            parentId: "user-1",
+            message: assistantRuntime("assistant-1", "Old reply"),
+          }],
+        };
+      },
+      import: () => assert.fail("must not import into a live repository"),
+    }),
+  };
+  const changed = reconcileOrdinarySavedMessagesInView(
+    view,
+    "thread-1",
+    [storedAssistant("assistant-1", "New reply")],
+    { editingMessageId: null, toThreadMessage: () => assert.fail("nothing to append") },
+  );
+  assert.equal(changed, false);
+  assert.equal(exported, false);
+});
+
+for (const runningAtRead of [true, false]) {
+  test(`${runningAtRead ? "a read begun mid-run leaves" : "an idle read updates"} the finished reply status`, () => {
+    let imported: { messages: { message: { status?: unknown } }[] } | undefined;
+    const view = {
+      threadListItem: () => ({ getState: () => ({ remoteId: "thread-1" }) }),
+      thread: () => ({
+        getState: () => ({ isRunning: false, messages: [] }),
+        export: () => ({
+          messages: [{ parentId: "user-1", message: assistantRuntime("assistant-1", "Final reply") }],
+        }),
+        import: (data: typeof imported) => {
+          imported = data;
+        },
+      }),
+    };
+    const checkpoint = {
+      ...storedAssistant("assistant-1", "Final reply"),
+      metadata: { incomplete: { reason: "interrupted" as const } },
+    };
+    const changed = reconcileOrdinarySavedMessagesInView(view, "thread-1", [checkpoint], {
+      editingMessageId: null,
+      toThreadMessage: () => assert.fail("nothing to append"),
+      runningAtRead,
+    });
+    assert.equal(changed, !runningAtRead);
+    assert.deepEqual(
+      imported?.messages[0].message.status,
+      runningAtRead ? undefined : { type: "incomplete", reason: "error" },
+    );
+  });
+}
+
 test("a running assistant message is not reconciled", () => {
   const runtime = assistantRuntime("assistant-1", "Old checkpoint");
   runtime.status = { type: "running" };

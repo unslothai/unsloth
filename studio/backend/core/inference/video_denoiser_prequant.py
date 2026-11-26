@@ -69,6 +69,11 @@ def denoiser_prequant_sources(
 
         if nvfp4_blocked(wanted):
             return None
+        from .video_dmd import dmd_timesteps
+
+        if dmd_timesteps(base_repo) is not None:
+            # A DMD student (any copy or local path) never takes its base model's hosted denoiser.
+            return None
         from .diffusion_prequant import resolve_prequant_source
         from .video_families import video_family_prequant_task_specific
 

@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import functools
+import sys
+import threading
 import types
 import weakref
 from typing import Iterator, Optional
@@ -160,12 +163,15 @@ def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
                 return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
             if model_type in _ULYSSES_HYBRID_PACKING_MODEL_TYPES:
                 return _ULYSSES_HYBRID_PACKING_MODEL_TYPES[model_type]
+            if model_type in INKLING2_MODEL_TYPES:
+                return INKLING2_MODEL_TYPES[model_type]
         return None
     for module in model.modules():
         if (
             type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
             or is_ulysses_kimi_delta(module)
             or is_ulysses_lightning(module)
+            or is_ulysses_inkling2_attention(module)
         ):
             return type(module).__name__
     return None
@@ -365,6 +371,15 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_inkling2 import (
+    INKLING2_LAYER_TYPES,
+    INKLING2_MODEL_TYPES,
+    check_inkling2_heads,
+    is_ulysses_inkling2_attention,
+    is_ulysses_inkling2_conv,
+    wrap_inkling2_attention_forward,
+    wrap_inkling2_conv_forward,
+)
 from .utils.ulysses_deepseek import (
     DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
     wrap_deepseek_attention_forward,
@@ -376,6 +391,11 @@ from .utils.ulysses_hybrid import (
     is_hf_registry_attention,
     is_ulysses_mixer,
     wrap_ulysses_mixer_forward,
+)
+
+# Inkling 2: sliding window / full attention with relative bias and sinks (utils/ulysses_inkling2.py).
+_ULYSSES_OWN_MASK_LAYER_TYPES.update(
+    {model_type: INKLING2_LAYER_TYPES for model_type in INKLING2_MODEL_TYPES}
 )
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
@@ -421,7 +441,7 @@ def _hybrid_config_blocker(model) -> Optional[str]:
     config = getattr(model, "config", None)
     # vision_config is allowed (Qwen3.5 ships one); image / video batches are refused in _prepare_inputs.
     text_config = getattr(config, "text_config", None) or config
-    if getattr(text_config, "output_router_logits", False):
+    if getattr(text_config, "output_router_logits", False) and _cp_router_aux_target(model) is None:
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
         return "the MoE router auxiliary loss (output_router_logits)"
     if any(
@@ -432,6 +452,186 @@ def _hybrid_config_blocker(model) -> Optional[str]:
         # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
         return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
     return None
+
+
+# Each cp rank sees only its shard's router logits: _cp_load_balancing_loss sums the statistics over the cp group.
+def _cp_router_aux_enabled() -> bool:
+    import os
+    return os.environ.get("UNSLOTH_CP_ROUTER_AUX", "1") != "0"
+
+
+def _causal_lm(model):
+    if not isinstance(model, torch.nn.Module):
+        return None
+    for module in model.modules():
+        if "router_aux_loss_coef" in vars(module):
+            return module
+    return None
+
+
+def _forward_functions(owner):
+    """Zoo's compiled CausalLM forward delegates to a module-level `<Class>_forward`."""
+    found, todo = (
+        [],
+        [(owner.__dict__.get("forward"), 1), (getattr(type(owner), "forward", None), 1)],
+    )
+    while todo:
+        fn, depth = todo.pop(0)
+        for _ in range(8):
+            fn = getattr(fn, "__func__", fn)
+            code = getattr(fn, "__code__", None)
+            if code is None:
+                break
+            if fn not in found:
+                found.append(fn)
+                scope = getattr(fn, "__globals__", None) or {}
+                if depth > 0:
+                    todo.extend(
+                        (scope[name], depth - 1)
+                        for name in code.co_names
+                        if name.endswith("_forward") and callable(scope.get(name))
+                    )
+            fn = getattr(fn, "__wrapped__", None)
+    return found
+
+
+def _forward_globals(owner):
+    # TRL's fused-head forward names load_balancing_loss_func without defining it: skip such globals.
+    for fn in _forward_functions(owner):
+        if "load_balancing_loss_func" in fn.__code__.co_names and callable(
+            fn.__globals__.get("load_balancing_loss_func")
+        ):
+            return fn.__globals__
+    return None
+
+
+def _cp_router_aux_target(model):
+    """(globals, original load_balancing_loss_func) of the CausalLM forward, or None."""
+    if not _cp_router_aux_enabled():
+        return None
+    inner = _causal_lm(model)
+    config = getattr(inner, "config", None)
+    text = getattr(config, "text_config", None) or config
+    family = str(getattr(text, "model_type", "") or "").removesuffix("_text")
+    from .parallel_capabilities import CP_ROUTER_AUX_FAMILIES
+
+    if inner is None or family not in CP_ROUTER_AUX_FAMILIES:
+        return None
+    scope = _forward_globals(inner)
+    if scope is None:
+        return None
+    original = scope.get("load_balancing_loss_func")
+    original = getattr(original, "_unsloth_cp_original", original)
+    num_experts = getattr(inner, "num_experts", None)
+    top_k = getattr(inner, "num_experts_per_tok", None)
+    if not callable(original) or not isinstance(num_experts, int) or not isinstance(top_k, int):
+        return None
+    from .models.pp_native import _statistics_match_transformers
+
+    if not _statistics_match_transformers(None, num_experts, top_k, reference = original):
+        return None
+    return scope, original
+
+
+class _SumOverGroup(torch.autograd.Function):
+    """All-reduce (sum) whose backward also sums: each shard gets the gradient of all peers' terms."""
+
+    @staticmethod
+    def forward(ctx, x, group):
+        ctx.group = group
+        out = x.detach().clone()
+        dist.all_reduce(out, group = group)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        grad = grad.contiguous().clone()
+        dist.all_reduce(grad, group = ctx.group)
+        return grad, None
+
+
+def _cp_load_balancing_loss(original):
+    @functools.wraps(original)
+    def load_balancing_loss_func(
+        gate_logits,
+        num_experts = None,
+        top_k = 2,
+        attention_mask = None,
+    ):
+        manager = _ACTIVE_MANAGER
+        scale = getattr(manager, "router_aux_scale", None)
+        if (
+            scale is None
+            or manager.size <= 1
+            or not isinstance(gate_logits, tuple)
+            or not gate_logits
+        ):
+            return original(gate_logits, num_experts, top_k, attention_mask)
+        if not manager.in_training_step:
+            # The 1 / cp offsets the world-size factor training_step puts on the loss; evaluation has none.
+            scale = 1.0
+        from .models.pp_native import _load_balancing_from_statistics, _router_statistics
+
+        if torch.is_grad_enabled() and not any(g.requires_grad for g in gate_logits):
+            # Reentrant checkpointing runs the layers under no_grad: the loss would add a value but no gradient.
+            raise ValueError(
+                "Unsloth: context parallelism forms the router auxiliary loss over the cp group only with "
+                "gradient checkpointing off, Unsloth's checkpointing (use_gradient_checkpointing = 'unsloth', "
+                "which checkpoints MoE models non-reentrantly) or gradient_checkpointing_kwargs = "
+                "{'use_reentrant': False}; reentrant checkpointing would drop its gradient. Or train without "
+                "the auxiliary loss (router_aux_loss_coef = 0.0 in SFTConfig)."
+            )
+        rows = gate_logits[0].shape[0]
+        if attention_mask is not None and (
+            not isinstance(attention_mask, torch.Tensor)
+            or attention_mask.dim() != 2
+            or attention_mask.numel() != rows
+        ):
+            raise ValueError(
+                "Unsloth: context parallelism forms the router auxiliary loss from a 2-D [batch, seq] attention "
+                f"mask of the shard's {rows} tokens, got "
+                f"{tuple(attention_mask.shape) if isinstance(attention_mask, torch.Tensor) else type(attention_mask).__name__}."
+            )
+        # The tokens context parallel appended to reach the cp multiple are not in the one-process batch.
+        real = manager.real_token_mask(rows)
+        mask = None if attention_mask is None else attention_mask.reshape(1, -1).ne(0)
+        if real is not None:
+            real = real.reshape(1, -1).to(gate_logits[0].device)
+            mask = real if mask is None else mask.to(real.device) & real
+        stats = _router_statistics(gate_logits, num_experts, top_k, mask)
+        stats = _SumOverGroup.apply(stats, manager.mesh.get_group())
+        return _load_balancing_from_statistics(stats, num_experts) * scale
+
+    load_balancing_loss_func._unsloth_cp_original = original
+    return load_balancing_loss_func
+
+
+def _router_aux_scale(trainer, size: int) -> float:
+    """Zoo's forward and TRL >= 1.15 already average peers; a plain forward would count it per peer: 1 / cp."""
+    from .models.pp_env import _compute_loss_adds_router_aux
+
+    inner = _causal_lm(getattr(trainer, "model", None))
+    if inner is not None and any(
+        "unsloth_ga_scale_aux_loss" in fn.__code__.co_names for fn in _forward_functions(inner)
+    ):
+        return 1.0
+    compute_loss = getattr(type(trainer), "compute_loss", None)
+    if getattr(compute_loss, "_unsloth_cpu", False) and _compute_loss_adds_router_aux(compute_loss):
+        return 1.0
+    return 1.0 / size
+
+
+def _install_cp_router_aux(trainer, manager) -> None:
+    """Under Ulysses cp, form the router aux loss over the cp group; no-op otherwise."""
+    if not getattr(trainer, "_unsloth_cp_router_aux", False):
+        return
+    target = _cp_router_aux_target(getattr(trainer, "model", None))
+    if target is None or manager.backend != "ulysses":
+        raise RuntimeError("Unsloth: the context parallel router auxiliary loss lost its target.")
+    scope, original = target
+    if getattr(scope.get("load_balancing_loss_func"), "_unsloth_cp_original", None) is not original:
+        scope["load_balancing_loss_func"] = _cp_load_balancing_loss(original)
+    manager.router_aux_scale = _router_aux_scale(trainer, manager.size)
 
 
 def _runs_every_expert(block) -> bool:
@@ -612,6 +812,8 @@ def _supports_context_parallel(
         return not _stateful_mixers(model)
     if backend != "ulysses" or _hybrid_config_blocker(model) is not None:
         return False
+    if _inkling2_model(model):
+        return _inkling2_ulysses_ready(model)
     mixers = _stateful_mixers(model)
     if mixers:
         # Hybrids: the family-specific linear attention forwards, and their HF full attention layers.
@@ -624,9 +826,57 @@ def _supports_context_parallel(
     return generic and _generic_hf_attention(model)
 
 
+def _inkling2_model(model) -> bool:
+    return isinstance(model, torch.nn.Module) and any(
+        is_ulysses_inkling2_attention(m) for m in model.modules()
+    )
+
+
+def _inkling2_loss_takes_kwargs(model) -> bool:
+    """The Inkling 2 CausalLM / ConditionalGeneration forward passes its **kwargs to self.loss_function."""
+    import inspect
+
+    seen = set()
+    while model is not None and id(model) not in seen:
+        seen.add(id(model))
+        if type(model).__name__.startswith("Inkling2") and _inkling2_model(model):
+            try:
+                source = inspect.getsource(inspect.unwrap(type(model).forward))
+            except (OSError, TypeError):
+                return False
+            return any(
+                "self.loss_function(" in line and "**kwargs)" in line
+                for line in source.splitlines()
+            )
+        getter = getattr(model, "get_base_model", None)
+        model = getter() if callable(getter) else getattr(model, "module", None)
+    return False
+
+
+def _inkling2_ulysses_ready(model) -> bool:
+    """Inkling 2: every text attention layer is the Inkling 2 attention (Ulysses forward over head shards) and
+    every stateful mixer is one of its short convolutions (halo exchange on the sequence shard)."""
+    modules = _attention_modules(model)
+    return (
+        bool(modules)
+        and all(is_ulysses_inkling2_attention(m) for m in modules)
+        and all(is_ulysses_inkling2_conv(m) for m, _ in _stateful_mixers(model))
+    )
+
+
 def _check_stateful_mixers(model, backend, size) -> None:
     mixers = _stateful_mixers(model)
     if not mixers:
+        return
+    if backend == "ulysses" and _inkling2_model(model):
+        unsupported = sorted(
+            {type(m).__name__ for m, _ in mixers if not is_ulysses_inkling2_conv(m)}
+        )
+        if unsupported:
+            raise NotImplementedError(
+                f"Unsloth: Ulysses context parallelism on Inkling 2 does not support {unsupported}."
+            )
+        check_inkling2_heads(model, size)
         return
     if backend != "ulysses":
         kinds = sorted({type(m).__name__ for m, _ in mixers})
@@ -661,6 +911,12 @@ def _decoder_layer_pre_forward_hook(_module, module_args, module_kwargs):
 class ContextParallelManager:
     backend = "ring"
     rotate_method = "allgather"
+    router_aux_scale = (
+        None  # set by _install_cp_router_aux: the router aux loss is formed over the cp group
+    )
+    in_training_step = (
+        False  # inside Trainer.training_step (the loss there is multiplied by the world size)
+    )
 
     def __init__(
         self,
@@ -716,6 +972,11 @@ class ContextParallelManager:
             for module, _ in _stateful_mixers(model):
                 if is_ulysses_mixer(module):
                     wrap_ulysses_mixer_forward(module, get_cp_manager)
+            # Inkling 2's short convolutions (attention k / v and the residual stream) take a halo from the
+            # previous shard; nested ones inside a key / value projection are walked too.
+            for name, module in model.named_modules():
+                if not _in_media_tower(name) and is_ulysses_inkling2_conv(module):
+                    wrap_inkling2_conv_forward(module, get_cp_manager)
             # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
             generic = not _uses_unsloth_attention(model)
             for name, module in model.named_modules() if generic else ():
@@ -726,7 +987,9 @@ class ContextParallelManager:
             for name, module in model.named_modules():
                 if _in_media_tower(name):
                     continue
-                if (
+                if name.endswith("self_attn") and is_ulysses_inkling2_attention(module):
+                    wrap_inkling2_attention_forward(module, get_cp_manager)
+                elif (
                     name.endswith("self_attn")
                     and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
                 ):
@@ -786,7 +1049,7 @@ class ContextParallelManager:
                 raise ValueError(
                     f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {seq_len} tokens."
                 )
-        if inputs.get("output_router_logits"):
+        if inputs.get("output_router_logits") and getattr(self, "router_aux_scale", None) is None:
             raise ValueError(
                 "Unsloth: context parallelism does not support the MoE router auxiliary loss "
                 "(output_router_logits): it is a product of per-sequence means, not a sum over shards."
@@ -1262,14 +1525,16 @@ def _cp_scaler_start(trainer, accelerator) -> None:
 
 
 def _model_parallel_axes(model) -> list:
-    """The tensor / pipeline parallel axes a trainer would combine with context parallelism: from
-    UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (read without building anything) or a model split by hand."""
+    """The tensor / pipeline / expert parallel axes a trainer would combine with context parallelism: from
+    UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_EP_SIZE (read without building anything) or a model split by
+    hand."""
     import os
 
     axes = []
     for name, what in (
         ("UNSLOTH_PP_SIZE", "pipeline parallel"),
         ("UNSLOTH_TP_SIZE", "tensor parallel"),
+        ("UNSLOTH_EP_SIZE", "expert parallel"),
     ):
         raw = str(os.environ.get(name, "")).strip()
         try:
@@ -1282,6 +1547,7 @@ def _model_parallel_axes(model) -> list:
             axes.append(f"{what} ({name}={raw})")
     if isinstance(model, torch.nn.Module):
         try:
+            from .models.ep_native import is_expert_parallel
             from .models.pp_native import is_pipeline_parallel
             from .models.tp_native import is_tensor_parallel
         except Exception:
@@ -1290,6 +1556,8 @@ def _model_parallel_axes(model) -> list:
             axes.append("pipeline parallel (apply_pipeline_parallel)")
         if is_tensor_parallel(model) and not any(a.startswith("tensor") for a in axes):
             axes.append("tensor parallel (apply_tensor_parallel)")
+        if is_expert_parallel(model) and not any(a.startswith("expert") for a in axes):
+            axes.append("expert parallel (apply_expert_parallel)")
     return axes
 
 
@@ -1356,7 +1624,8 @@ def _refuse_model_parallel_cp(
         check_layout(alone, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config)
         return
 
-    layout = _composed_layout(size) if all("UNSLOTH_" in a for a in axes) else None
+    composable = all("UNSLOTH_" in a and not a.startswith("expert") for a in axes)
+    layout = _composed_layout(size) if composable else None
     if layout is not None:
         from .parallel_capabilities import check_layout
 
@@ -1367,7 +1636,7 @@ def _refuse_model_parallel_cp(
         return
     env_cp = str(os.environ.get("UNSLOTH_CP_SIZE", "")).strip()
     hint = ""
-    if not env_cp and all("UNSLOTH_" in a for a in axes):
+    if not env_cp and composable:
         hint = (
             f' To compose them, put cp in the launch layout instead: UNSLOTH_PARALLEL="...,cp={size}" or '
             f"UNSLOTH_CP_SIZE={size} beside the other variables, so the mesh is built with a cp axis."
@@ -1601,20 +1870,37 @@ def _check_native_fsdp2_reduces_over_cp(model, manager) -> None:
         )
 
 
-def _refuse_router_aux_loss_after_init(trainer, size: int) -> None:
+def _refuse_router_aux_loss_after_init(
+    trainer,
+    size: int,
+    backend: Optional[str] = None,
+    rl: bool = False,
+) -> None:
     """TRL's SFTTrainer / DPOTrainer set output_router_logits on the config inside their __init__ (from the
     architecture's router_aux_loss_coef unless router_aux_loss_coef = 0.0). A load balancing loss computed per
-    sequence shard is not the one-process objective; this catches what the pre-init registry check predicted."""
+    sequence shard is not the one-process objective; this catches what the pre-init registry check predicted.
+    SFT on a family _cp_load_balancing_loss covers under Ulysses (no tp / pp) is marked for it instead."""
     from .parallel_capabilities import Query, _moe, check
 
-    moe, aux = _moe(getattr(trainer, "model", None))
+    model = getattr(trainer, "model", None)
+    moe, aux = _moe(model)
     # DPO passes output_router_logits per forward instead of writing the config: read the trainer's switch too.
     aux = aux or bool(getattr(trainer, "aux_loss_enabled", False))
-    if moe and aux:
-        check(
-            Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)),
-            cells = False,
-        )
+    if not (moe and aux):
+        return
+    layout = _composed_layout(size)
+    if (
+        not rl
+        and backend == "ulysses"
+        and (layout is None or (layout.tp == 1 and layout.pp == 1))
+        and _cp_router_aux_target(model) is not None
+    ):
+        trainer._unsloth_cp_router_aux = True
+        return
+    check(
+        Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)),
+        cells = False,
+    )
 
 
 def _check_cp_runtime(self, size: int, backend: str) -> None:
@@ -1790,7 +2076,11 @@ def _check_cp_trainer(
         and (getattr(accelerator, "num_processes", 2) or 2) > 1
     ):
         # Unused trainable towers break DDP (find_unused_parameters = False for reentrant checkpointing).
+        # Native FSDP2 also reports MULTI_* to accelerate, but it reduces only the gradients that exist.
+        from .models.fsdp2_native import is_native_fsdp2
         for model in models:
+            if allow_fsdp2 and is_native_fsdp2(model):
+                continue
             unused = _trainable_media_tower_parameters(model)
             if unused:
                 raise NotImplementedError(
@@ -1935,7 +2225,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 _unbind_instance_methods(self)
             return
         _check_cp_runtime(self, size, backend)
-        _refuse_router_aux_loss_after_init(self, size)
+        _refuse_router_aux_loss_after_init(self, size, backend)
         # These recompute loss outside our forward from sharded labels, losing cross-shard targets.
         if (
             getattr(self.args, "label_smoothing_factor", 0)
@@ -1946,6 +2236,12 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 "Unsloth: context parallelism needs loss_type = 'nll' without "
                 "label_smoothing_factor or compute_loss_func."
             )
+        if getattr(
+            self, "model_accepts_loss_kwargs", True
+        ) is False and _inkling2_loss_takes_kwargs(getattr(self, "model", None)):
+            # Inkling 2 declares accepts_loss_kwargs = False but hands **kwargs (num_items_in_batch, shift_labels)
+            # to its loss_function: the sharded loss must be a sum over the global token count.
+            self.model_accepts_loss_kwargs = True
         if getattr(self, "model_accepts_loss_kwargs", True) is False:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs a model whose forward accepts loss kwargs "
@@ -1976,6 +2272,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             **({"layout": layout} if layout is not None else {}),
         )
         _check_native_fsdp2_reduces_over_cp(self.model, manager)
+        _install_cp_router_aux(self, manager)
         self._context_parallel_manager = manager
         if "_unsloth_cp_bound_methods" not in self.__dict__:
             _bind_instance_methods(self, cp_methods)
@@ -2113,8 +2410,14 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 window = _optimizer_window(self),
             )
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
-        with manager.apply(inputs) if manager else contextlib.nullcontext():
+        if manager is None:
             return original_training_step(self, model, inputs, *args, **kwargs)
+        manager.in_training_step = True
+        try:
+            with manager.apply(inputs):
+                return original_training_step(self, model, inputs, *args, **kwargs)
+        finally:
+            manager.in_training_step = False
 
     if has_total_train_batch_size:
 
@@ -2222,7 +2525,8 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     if manager is None or manager is not module._unsloth_cp_rl_manager:
         stack.append(None)
         return None
-    if args or kwargs.get("past_key_values") is not None or kwargs.get("input_ids") is None:
+    has_cache = kwargs.get("past_key_values") is not None or kwargs.get("cache") is not None
+    if args or has_cache or kwargs.get("input_ids") is None:
         raise NotImplementedError(
             "Unsloth: DPO / GRPO context parallelism shards keyword input_ids training forwards "
             "only (no positional inputs, inputs_embeds or KV cache)."
@@ -2246,14 +2550,389 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     # blocks on that rank alone.
     if "attention_mask" in kwargs:
         kwargs["attention_mask"] = None
-    stack.append(seq_len)
+    # Claimed by this call alone: a second or nested call of the same decoder gathers every state.
+    selection = getattr(_LAST_HIDDEN, "selection", None)
+    if selection is not None and selection.decoder is module:
+        selection.decoder = None
+        # The first call claims on every rank (the vote needs all of them), but only the call the audited
+        # forward makes itself may truncate: a helper or callback it runs first that calls the decoder
+        # (and may index its hidden_states) votes for every state instead.
+        if (
+            selection.caller is not None
+            and _direct_caller_code(sys._getframe(1)) is not selection.caller
+        ):
+            selection.allowed = False
+    else:
+        selection = None
+    stack.append((seq_len, selection))
     return args, kwargs
 
 
-def _rl_decoder_post_hook(module, args, kwargs, output):
-    seq_len = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
-    if seq_len is None:
+def _direct_caller_code(frame):
+    # The code object that called the module: the first frame above torch's own call machinery
+    # (Module._wrapped_call_impl / _call_impl, compile wrappers).
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name != "torch" and not name.startswith("torch."):
+            return frame.f_code
+        frame = frame.f_back
+    return None
+
+
+class _LastHiddenSelection:
+    __slots__ = ("decoder", "allowed", "truncated", "caller")
+
+    def __init__(
+        self,
+        decoder,
+        allowed = True,
+        caller = None,
+    ):
+        self.decoder = decoder
+        # Code object the claiming decoder call must come from directly (None: any caller).
+        self.caller = caller
+        # This rank's own verdict. The decoder call still claims the selection when it is False, so every
+        # rank reaches the same vote; the vote then keeps every state on all of them.
+        self.allowed = bool(allowed)
+        self.truncated = False
+
+
+# Per thread: a forward on another thread never sees this caller's selection, so whether a decoder call
+# gathers one state or all of them cannot depend on thread timing, which differs between ranks.
+_LAST_HIDDEN = threading.local()
+
+
+@contextlib.contextmanager
+def last_hidden_state_only(
+    decoder,
+    allowed = True,
+    caller = None,
+) -> Iterator[_LastHiddenSelection]:
+    """For a caller that asks for output_hidden_states only to read the last one (GRPO's hidden-state
+    forward): the next call of ``decoder`` on this thread gathers that state alone, not all L + 1 layers
+    to full length. ``decoder = None`` selects nothing (and hides an enclosing selection). The yielded
+    selection's ``truncated`` says whether the decoder did return only the last state. ``allowed = False``
+    claims the decoder call without truncating: it votes against truncation on every rank. With ``caller``
+    (a code object) the claiming call votes against truncation unless that code made it directly."""
+    selection = _LastHiddenSelection(decoder, allowed, caller)
+    previous = getattr(_LAST_HIDDEN, "selection", None)
+    _LAST_HIDDEN.selection = selection
+    try:
+        yield selection
+    finally:
+        _LAST_HIDDEN.selection = previous
+
+
+# Forwards audited to read nothing but the decoder's last state and to hand its hidden_states tuple on untouched.
+_PASSTHROUGH_MARKER = "_unsloth_cp_hidden_states_passthrough"
+_PASSTHROUGH_AUDIT = {}  # code object -> {decoder attribute names: verdict}
+
+
+# The decoder output fields a forward may read anywhere: none of them is (or holds) the hidden-state tuple.
+# Enumerated from the Llama / Qwen2 / Qwen3 / Gemma / Gemma3 / Mistral (and Qwen3-MoE) CausalLM forwards
+# on transformers 4.57 and 5.x (5.x names the cache ``cache``).
+_FREE_OUTPUT_FIELDS = frozenset(
+    ("last_hidden_state", "past_key_values", "cache", "attentions", "router_logits")
+)
+_NESTED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+# Reach a local by name (locals()["outputs"]) past the checks below.
+_INTROSPECTION = frozenset(("locals", "vars", "globals", "eval", "exec"))
+
+
+def _decoder_output_passthrough(function, attrs) -> bool:
+    """Strict allowlist check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned
+    to a plain name, and every read of that name is one of
+      ``name.last_hidden_state`` / ``.past_key_values`` / ``.cache`` / ``.attentions`` / ``.router_logits``
+      (a field read, not called or written), ``name[0]``, or
+      ``name.hidden_states`` as the ``hidden_states =`` keyword of the ModelOutput constructor the forward
+      itself returns.
+    Any other use (slices, other subscripts, methods, aliasing, passing the output on, starred unpacking,
+    reads from a nested scope or comprehension) and any ``hidden_states`` string: False."""
+    import inspect
+    import textwrap
+
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    except Exception:
+        return False
+    if not tree.body or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    forward = tree.body[0]
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+        if isinstance(node, ast.Constant) and node.value == "hidden_states":
+            return False
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _INTROSPECTION
+        ):
+            return False
+
+    def decoder_call(node):
+        func = getattr(node, "func", None)
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(func, ast.Attribute)
+            and func.attr in attrs
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "self"
+        )
+
+    def in_nested_scope(node):
+        node = parents.get(node)
+        while node is not None and node is not forward:
+            if isinstance(node, _NESTED_SCOPES):
+                return True
+            node = parents.get(node)
+        return node is None
+
+    names = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in attrs
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            call = parents.get(node)
+            if not (isinstance(call, ast.Call) and call.func is node):
+                return False  # the decoder handed on whole
+            owner = parents.get(call)
+            if (
+                isinstance(owner, ast.Assign)
+                and len(owner.targets) == 1
+                and isinstance(owner.targets[0], ast.Name)
+            ):
+                names.add(owner.targets[0].id)
+            elif isinstance(owner, ast.AnnAssign) and isinstance(owner.target, ast.Name):
+                names.add(owner.target.id)
+            else:
+                return False  # returned or consumed in place
+    if not names:
+        return False
+
+    def output_class(func):
+        # The callee resolved in the forward's own module: only a ModelOutput subclass counts.
+        path = []
+        while isinstance(func, ast.Attribute):
+            path.append(func.attr)
+            func = func.value
+        if not isinstance(func, ast.Name):
+            return False
+        try:  # getsource above read the innermost function: resolve in its module
+            scope = inspect.unwrap(function).__globals__
+        except Exception:
+            return False
+        if func.id not in scope:
+            return False
+        value = scope[func.id]
+        try:
+            for attr in reversed(path):
+                value = getattr(value, attr)
+            from transformers.utils import ModelOutput
+        except Exception:
+            return False
+        return isinstance(value, type) and issubclass(value, ModelOutput)
+
+    def returned_hidden_states(use):
+        # ``hidden_states = outputs.hidden_states`` straight into the ModelOutput the forward returns.
+        keyword = parents.get(use)
+        if not (isinstance(keyword, ast.keyword) and keyword.arg == "hidden_states"):
+            return False
+        call = parents.get(keyword)
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(parents.get(call), ast.Return)
+            and output_class(call.func)
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and names.intersection(node.names):
+            return False
+        if isinstance(node, ast.Attribute) and node.attr == "hidden_states":
+            value = node.value
+            if not (
+                isinstance(value, ast.Name)
+                and value.id in names
+                and isinstance(node.ctx, ast.Load)
+                and returned_hidden_states(node)
+            ):
+                return False
+        if not (isinstance(node, ast.Name) and node.id in names):
+            continue
+        if in_nested_scope(node):
+            return False
+        use = parents.get(node)
+        if isinstance(node.ctx, ast.Store):
+            # Only as the target of its own decoder call.
+            if isinstance(use, ast.Assign) and use.targets == [node] and decoder_call(use.value):
+                continue
+            if isinstance(use, ast.AnnAssign) and use.target is node and decoder_call(use.value):
+                continue
+            return False
+        if not isinstance(node.ctx, ast.Load):
+            return False  # del
+        if isinstance(use, ast.Attribute) and use.value is node and isinstance(use.ctx, ast.Load):
+            caller = parents.get(use)
+            if isinstance(caller, ast.Call) and caller.func is use:
+                return False  # a method, never a field read
+            if use.attr in _FREE_OUTPUT_FIELDS or use.attr == "hidden_states":
+                continue  # hidden_states was checked above
+            return False
+        if (
+            isinstance(use, ast.Subscript)
+            and use.value is node
+            and isinstance(use.ctx, ast.Load)
+            and isinstance(use.slice, ast.Constant)
+            and type(use.slice.value) is int
+            and use.slice.value == 0
+        ):
+            continue
+        return False
+    return True
+
+
+_SAFE_WRAPPER_CODES = None
+
+
+def _safe_forward_wrappers() -> frozenset:
+    """Code objects of the transformers forward decorators that return the wrapped forward's output
+    unchanged (can_return_tuple at most calls .to_tuple() on it, deprecate_kwarg renames kwargs). Found by
+    decorating a probe, so a wrapper matches by code identity, not by name."""
+    global _SAFE_WRAPPER_CODES
+    if _SAFE_WRAPPER_CODES is not None:
+        return _SAFE_WRAPPER_CODES
+
+    def probe(self, *args, **kwargs):
         return None
+
+    codes = set()
+    try:
+        from transformers.utils.generic import can_return_tuple
+        codes.add(can_return_tuple(probe).__code__)
+    except Exception:
+        pass
+    try:
+        from transformers.utils.deprecation import deprecate_kwarg
+        codes.add(deprecate_kwarg("_unsloth_probe", version = "0.0.0")(probe).__code__)
+    except Exception:
+        pass
+    _SAFE_WRAPPER_CODES = frozenset(codes)
+    return _SAFE_WRAPPER_CODES
+
+
+def _cp_text_decoder(model):
+    # The one CP-attached text decoder held directly by ``model``, and the attribute names holding it. Module
+    # structure only: attach_rl_hooks runs on every rank, so this is the same on all of them.
+    manager = get_cp_manager()
+    if manager is None or model is None:
+        return None, None
+    decoders = _decoders(model)
+    if len(decoders) != 1 or getattr(decoders[0], "_unsloth_cp_rl_manager", None) is not manager:
+        return None, None
+    decoder = decoders[0]
+    attrs = frozenset(name for name, child in model._modules.items() if child is decoder)
+    if not attrs:
+        return None, None
+    return decoder, attrs
+
+
+def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
+    """The decoder a GRPO hidden-state forward of ``model`` may scope with last_hidden_state_only(), or
+    None (gather every state). Only the one CP-attached text decoder held directly by ``model``, and only
+    when ``forward`` is marked or audited to pass the hidden states through without reading them: a forward
+    that reads an intermediate state before returning would get the wrong tensor otherwise. The verdict on
+    ``forward`` is rank-local (a wrapper installed on one rank changes it): last_hidden_state_scope() votes
+    on it over the CP group."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return None
+    return decoder if _forward_passthrough(forward, attrs) else None
+
+
+def last_hidden_state_scope(
+    model,
+    forward,
+    requested = False,
+):
+    """last_hidden_state_only() for GRPO's hidden-state forward of ``model``. The decoder call is claimed
+    from module structure alone, the same on every rank, so all ranks reach one vote; this rank's verdicts
+    (the caller asked for the states itself, ``forward`` fails the passthrough audit) only make that vote
+    keep every state, never skip it on one rank while a peer enters it."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return last_hidden_state_only(None)
+    allowed = not requested and _forward_passthrough(forward, attrs)
+    # Bound to the audited function: only the decoder call it makes itself may be the truncated one.
+    caller = _audited_code(forward)
+    return last_hidden_state_only(decoder, allowed = allowed and caller is not None, caller = caller)
+
+
+def _audited_code(forward):
+    # The code object of the innermost function _forward_passthrough audits.
+    function = getattr(forward, "__func__", forward)
+    for _ in range(16):
+        if not hasattr(function, "__wrapped__"):
+            break
+        function = function.__wrapped__
+    function = getattr(function, "__func__", function)
+    return getattr(function, "__code__", None)
+
+
+def _forward_passthrough(forward, attrs) -> bool:
+    function = getattr(forward, "__func__", forward)
+    chain = [function]
+    while hasattr(chain[-1], "__wrapped__") and len(chain) < 16:
+        chain.append(chain[-1].__wrapped__)
+    # Only the innermost function is audited: every wrapper around it must be a known one that hands the
+    # output back as is. functools.wraps copies the marker outward, so it cannot vouch for a wrapper either.
+    safe = _safe_forward_wrappers()
+    if hasattr(chain[-1], "__wrapped__") or any(
+        getattr(f, "__code__", None) not in safe for f in chain[:-1]
+    ):
+        return False
+    if any(getattr(f, _PASSTHROUGH_MARKER, False) for f in chain):
+        return True
+    inner = getattr(chain[-1], "__func__", chain[-1])
+    try:
+        key = inner.__code__
+    except AttributeError:
+        return False
+    cached = _PASSTHROUGH_AUDIT.setdefault(key, {})
+    if attrs not in cached:
+        cached[attrs] = _decoder_output_passthrough(inner, attrs)
+    return bool(cached[attrs])
+
+
+def _truncation_agreed(module, hidden, manager, allowed) -> bool:
+    """True on every rank when every rank allows the truncation and no rank has a forward hook after the CP
+    post hook on ``module`` (such a hook reads output["hidden_states"] by index). Agreed over the CP group,
+    so a rank-local hook or forward verdict cannot make the peers enter different gathers."""
+    hooks = list(module._forward_hooks)
+    mine = getattr(module, "_unsloth_cp_rl_post_hook_id", None)
+    later = mine not in hooks or hooks.index(mine) != len(hooks) - 1
+    flag = torch.tensor([int(later or not allowed)], dtype = torch.int32, device = hidden.device)
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = manager.group)
+    return not bool(flag.item())
+
+
+def _rl_decoder_post_hook(module, args, kwargs, output):
+    entry = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
+    if entry is None:
+        return None
+    seq_len, selection = entry
     manager = module._unsloth_cp_rl_manager
     last = output[0]
 
@@ -2272,8 +2951,16 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
             )
         return (hidden, *output[1:])
     output[next(iter(output.keys()))] = hidden
-    if layers is not None:
-        # GRPO's hidden-state forward asks for these and reads the last one (the same tensor as above).
+    if (
+        layers is not None
+        and selection is not None
+        and len(layers)
+        and _truncation_agreed(module, last, manager, selection.allowed)
+    ):
+        # Only the last state is read: every other layer would be one more all-gather and a full-length copy.
+        output["hidden_states"] = (hidden if layers[-1] is last else _full(layers[-1]),)
+        selection.truncated = True
+    elif layers is not None:
         output["hidden_states"] = tuple(
             hidden if layer is last else _full(layer) for layer in layers
         )
@@ -2299,7 +2986,8 @@ def attach_rl_hooks(manager, model) -> None:
         decoder._unsloth_cp_rl_stack = []
         if not getattr(decoder, "_unsloth_cp_rl_hooked", False):
             decoder.register_forward_pre_hook(_rl_decoder_pre_hook, with_kwargs = True)
-            decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            handle = decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            decoder._unsloth_cp_rl_post_hook_id = handle.id
             decoder._unsloth_cp_rl_hooked = True
     manager.attach_attention_hooks(model)
 
@@ -2349,9 +3037,11 @@ class _OnDevice:
 
 def _broadcast_from_group_root(obj, manager, device):
     """CP rank 0 sends its object (tensors through CPU) so every peer scores the same samples."""
-    payload = [_map_leaves(obj, _OnDevice)]
     group = manager.group
-    dist.broadcast_object_list(payload, src = dist.get_global_rank(group, 0), group = group)
+    src = dist.get_global_rank(group, 0)
+    # Peers overwrite their payload with the root's, so only the root copies its tensors to the host.
+    payload = [_map_leaves(obj, _OnDevice) if dist.get_rank() == src else None]
+    dist.broadcast_object_list(payload, src = src, group = group)
     return _map_leaves(
         payload[0],
         lambda x: x.restore(device),
@@ -2591,7 +3281,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 "Unsloth: DPO / GRPO context parallelism needs context_parallel_backend = 'ulysses'."
             )
         _check_cp_runtime(self, size, backend)
-        _refuse_router_aux_loss_after_init(self, size)
+        _refuse_router_aux_loss_after_init(self, size, backend, rl = True)
         _check_rl_config(self, kind)
         ref_model = getattr(self, "ref_model", None)
         _check_cp_trainer(self, size, backend, [self.model, ref_model])

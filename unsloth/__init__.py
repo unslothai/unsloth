@@ -266,12 +266,20 @@ if _IS_MLX:
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
             fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
+            fix_transformers_mistral_regex_hub_error as _fix_mistral_hub,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
         _fix_vocab_paths()
-        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
+        _fix_mistral_hub()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths, _fix_mistral_hub
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_gemma4_string_tool_arguments as _fix_gemma4_tool_args
+        _fix_gemma4_tool_args()
+        del _fix_gemma4_tool_args
     except Exception:
         pass
     try:
@@ -401,20 +409,44 @@ if _IS_MLX:
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
     def _mlx_from_pretrained(*args, **kwargs):
+        # CUDA's vLLM options and defaults; zoo's loader takes none of them.
+        fast_inference = kwargs.pop("fast_inference", False)
+        gpu_memory_utilization = kwargs.pop("gpu_memory_utilization", 0.5)
+        max_lora_rank = kwargs.pop("max_lora_rank", 64)
         # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
         # Not for full finetuning: zoo trains any non-bf16 target in float32, doubling weight memory.
         try:
             bound = _inspect.signature(FastMLXModel.from_pretrained).bind_partial(*args, **kwargs)
-            full_finetuning = bound.arguments.get("full_finetuning", False)
+            bound.apply_defaults()
+            options = bound.arguments
         except Exception:
-            full_finetuning = kwargs.get("full_finetuning", False)
+            options = {"max_seq_length": 2048, "random_state": 3407, **kwargs}
+        full_finetuning = options.get("full_finetuning", False)
         if not full_finetuning and not is_bfloat16_supported():
             if len(args) > 2:
                 if args[2] is None:
                     args = (*args[:2], "float16", *args[3:])
             elif kwargs.get("dtype") is None:
                 kwargs["dtype"] = "float16"
-        return FastMLXModel.from_pretrained(*args, **kwargs)
+        model, tokenizer = FastMLXModel.from_pretrained(*args, **kwargs)
+        try:
+            from unsloth_zoo.mlx import vllm_utils
+        except ImportError:  # a zoo build older than vllm-metal support keeps MLX generation
+            vllm_utils = None
+
+        # fast_inference uses vLLM (vllm-metal) when it is installed, else zoo's batched MLX generation.
+        if vllm_utils is not None and vllm_utils.use_vllm(fast_inference):
+            engine = vllm_utils.load_vllm(
+                model,
+                max_seq_length = options["max_seq_length"],
+                gpu_memory_utilization = gpu_memory_utilization,
+                max_lora_rank = max_lora_rank,
+                enable_lora = not full_finetuning,
+                seed = options["random_state"],
+            )
+            vllm_utils.attach_vllm_engine(model, engine)
+            model.load_lora = _types.MethodType(vllm_utils.load_lora, model)
+        return model, tokenizer
 
     class FastLanguageModel:
         @staticmethod
@@ -2273,6 +2305,12 @@ if _IS_MLX:
 
 else:
     try:
+        from .import_fixes import snapshot_cudnn_sdpa_before_import as _snapshot_cudnn_sdpa
+        _snapshot_cudnn_sdpa()
+        del _snapshot_cudnn_sdpa
+    except Exception:
+        pass
+    try:
         # GPU path: load everything from _gpu_init
         from ._gpu_init import *
         from ._gpu_init import __version__
@@ -2289,6 +2327,12 @@ else:
         from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
         _fix_dsv41()
         del _fix_dsv41
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_gemma4_string_tool_arguments as _fix_gemma4_tool_args
+        _fix_gemma4_tool_args()
+        del _fix_gemma4_tool_args
     except Exception:
         pass
 
@@ -2323,7 +2367,7 @@ else:
 
     if any(
         os.environ.get(_name, "").strip() not in ("", "1")
-        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     ):
         from .models.tp_env import (
             install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
@@ -2389,11 +2433,6 @@ try:
 except Exception:
     pass
 
-from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
-
-_uninstall_metadata_cache(_metadata_cache_token)
-del _uninstall_metadata_cache, _metadata_cache_token
-
 # GPU backend only: the CPU backend (and MLX) never loads unsloth.kernels, and sets no compile cache tag.
 if not globals().get("_IS_CPU_BACKEND", True):
     try:
@@ -2402,6 +2441,27 @@ if not globals().get("_IS_CPU_BACKEND", True):
         del _sync_tag
     except Exception:
         pass
+
+# Last, after every import that may pull in vLLM (import_fixes.restore_cudnn_sdpa_after_import).
+if not globals().get("_IS_CPU_BACKEND", True):
+    try:
+        from .import_fixes import restore_cudnn_sdpa_after_import as _restore_cudnn_sdpa
+        _restore_cudnn_sdpa()
+        del _restore_cudnn_sdpa
+    except Exception:
+        pass
+    # Zoo's fused forward and mask patch only for models Unsloth loads or trains.
+    try:
+        from unsloth_zoo.fused_losses.forward_install import require_model_marker as _require_marker
+        _require_marker()
+        del _require_marker
+    except Exception:
+        pass
+
+from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
+
+_uninstall_metadata_cache(_metadata_cache_token)
+del _uninstall_metadata_cache, _metadata_cache_token
 
 from ._import_gc import restore_gc_threshold as _restore_gc_threshold
 

@@ -5,6 +5,7 @@
 be the ones a /v1 request that omits them would get."""
 
 import asyncio
+import inspect
 import os
 import sys
 
@@ -95,7 +96,12 @@ def test_a_kept_model_resolves_against_its_own_slot(monkeypatch):
 
     monkeypatch.setattr(inference_routes, "_llama_cpp_backend", _Unloaded())
 
-    async def route(requested):
+    real = inference_routes._route_to_extra_slot
+    calls = []
+
+    # Bound against the real router, so a new parameter there cannot turn this into a TypeError.
+    async def route(*args, **kwargs):
+        calls.append(inspect.signature(real).bind(*args, **kwargs).arguments)
         inference_routes.routed_slot.set(SimpleNamespace(llama = _LoadedQwen()))
 
     monkeypatch.setattr(inference_routes, "_route_to_extra_slot", route)
@@ -111,3 +117,5 @@ def test_a_kept_model_resolves_against_its_own_slot(monkeypatch):
     assert got == inference_config.resolve_effective_sampling(
         "unsloth/Qwen3-4B-GGUF", {}, thinking = False
     )
+    # Reading defaults is not a use of the kept model: it must not refresh its eviction order.
+    assert [call.get("touch", True) for call in calls] == [False]

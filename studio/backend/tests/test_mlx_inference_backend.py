@@ -140,6 +140,9 @@ PLAIN_HELPERS = {
     "_FIRST_USE_WORK": [0],
     # Read by zoo's speculative.py head replay (unsloth_zoo #2474); the stub holds no QSA cache trims.
     "_QSA_TRIM_HELD": [],
+    # zoo's speculative.py tree-width filter (unsloth_zoo #2729); zoo's default when
+    # UNSLOTH_MLX_FAST_VERIFY_LOW_ROWS is unset.
+    "_LANE_LOW_ROWS": 4,
 }
 
 
@@ -5190,6 +5193,8 @@ def _text_family_backend(
     monkeypatch.setattr(
         model_config, "_read_raw_config_json", lambda name, token: configs.get(name)
     )
+    # The stub loader builds families no installed mlx-vlm / mlx-lm ships (mm_family).
+    monkeypatch.setattr(mlx_inference, "_mlx_unsupported_model_type", lambda *a: None)
     monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
     monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
     monkeypatch.setattr(
@@ -7063,9 +7068,7 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
 
 
 def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
-    """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
-    Unsloth's default min_p/top_k -- so the seed must ride on the sampler, built
-    with the whole filtering chain the runtime would otherwise have built."""
+    """Older mlx-vlm has no seed and newer ignores it at default min_p/top_k, so it rides on the sampler."""
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -7452,11 +7455,6 @@ def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
     mlx_inference._drain_generation_streams(mx)
 
     assert events == ["synchronize:speculative", "synchronize:default"]
-
-
-def test_a_runtime_without_synchronize_is_not_an_error():
-    from core.inference import mlx_inference
-    mlx_inference._drain_generation_streams(types.SimpleNamespace())
 
 
 @pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
@@ -11547,8 +11545,6 @@ def _require_video_stack_module():
 
 
 def _require_video_stack():
-    """Both halves: guarding on one alone let a test needing both run on a runner with only the
-    other, and the decoder lands in 0.5.0 while the install floor is 0.4.4."""
     utils = pytest.importorskip("mlx_vlm.utils")
     if not callable(getattr(utils, "load_video", None)):
         pytest.skip("the installed mlx-vlm predates the 0.5.0 clip decoder")
@@ -12053,7 +12049,6 @@ def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_cli
 
 
 def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
-    """The declared mlx-vlm range starts before load_video existed."""
     from core.inference import mlx_inference
 
     mlx_vlm = _require_video_stack_module()

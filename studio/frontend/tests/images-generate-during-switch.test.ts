@@ -74,9 +74,16 @@ test("the Images page tracks every pick and gates the button on it", () => {
   assert.match(page, /if \(!external && quantRevert\.current\) \{/);
 });
 
-test("the backend refuses an image generate while a load is in flight", () => {
+test("the backend never runs an image generate while a load is in flight", () => {
+  // Since #18626 a generate during a published load's tail waits that tail out; one that cannot (the pipeline is
+  // not published yet, or the tail outlasts the cap) is still refused with the in-flight 409.
   const routes = readText("../../backend/routes/inference.py");
-  assert.match(routes, /if await asyncio\.to_thread\(_image_load_in_flight\):\s*raise HTTPException\(\s*status_code = 409/);
+  const branch = routes.match(
+    /if await asyncio\.to_thread\(_image_load_in_flight\):\n([\s\S]*?)\n    global _direct_image_runs/,
+  );
+  assert.ok(branch, "the in-flight branch before a run is admitted is gone");
+  assert.match(branch[1], /await _wait_image_load_tail\(/);
+  assert.match(branch[1], /raise HTTPException\(\s*status_code = 409,\s*detail = IMAGE_LOAD_IN_FLIGHT_MSG/);
 });
 
 test("a pick whose page went hidden mid-plan is taken back, so Generate cannot stay held", () => {

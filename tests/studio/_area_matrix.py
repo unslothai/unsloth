@@ -553,6 +553,7 @@ NOT_AREAS = {
     "dropdown-menu-trigger:Run settings for this model": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
     "select-trigger:Inference engine": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
     "message-timing-trigger:Message timing": "a hover readout on the reply the stream area streamed; the seeded turns carry no timing",
+    "popover-trigger:Files in this chat": "new in #19172, so the base arm has no control to open; its inventory is built in the chat render every area already measures",
 }
 
 # Keyboard shortcuts (features/settings/lib/keyboard-shortcuts.ts): the area that measures what it
@@ -758,6 +759,7 @@ class Api:
                 "is_gguf": False,
             },
             "/api/chat/settings": {"settings": {}},
+            "/api/rag/knowledge-bases": {"knowledgeBases": [], "ragAvailable": True},
         }
 
     def handle(self, route) -> None:

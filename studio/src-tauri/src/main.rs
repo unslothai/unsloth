@@ -50,6 +50,7 @@ mod process_identity;
 mod shell_path;
 mod staged_update;
 mod studio_home;
+mod tcp_listeners;
 mod update;
 mod voice_typing;
 mod webview_permissions;
@@ -1084,7 +1085,9 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     let window = app.get_webview_window("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
-    window.with_webview(|webview| {
+    let handle = app.handle().clone();
+    // Runs synchronously here (setup is on the main thread), before any command is served.
+    window.with_webview(move |webview| {
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
@@ -1094,6 +1097,11 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
             );
             if !linux_webkit::smooth_scrolling_enabled(policy_never) {
                 settings.set_enable_smooth_scrolling(false);
+            }
+            // Not compositing paints on the CPU, also when WebKit turned it off itself (no variable).
+            let launch = handle.state::<gpu_rendering::LaunchState>();
+            if policy_never && launch.note_cpu_painting() {
+                info!("GPU rendering: WebKitGTK is not compositing; cpu_painting=true");
             }
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
@@ -2415,6 +2423,13 @@ fn main() {
             appimage_webkit::mode_label(|name| std::env::var_os(name))
         );
     }
+    #[cfg(target_os = "linux")]
+    if appimage_webkit::host_lacks_audio_sink() {
+        warn!(
+            "GStreamer has no autoaudiosink plugin: WebKitGTK aborts a page on its first audio or \
+             video. Install GStreamer's good plugins (gst-plugins-good, gstreamer1.0-plugins-good)."
+        );
+    }
     #[cfg(target_os = "macos")]
     macos_event_guard::install();
 
@@ -2437,7 +2452,7 @@ fn main() {
         }
         let (major, minor, micro) = webkit_rendering.webkit_version;
         info!(
-            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} cpu_painting={}",
+            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} hardware_gl={} cpu_painting={}",
             gpu_setting.as_str(),
             if webkit_rendering.gpu_path.is_some() { "gpu" } else { "default-or-cpu" },
             webkit_rendering
@@ -2447,6 +2462,11 @@ fn main() {
             webkit_rendering.env_override.unwrap_or("none"),
             gpu_fallback_active,
             gpu_child.supervised,
+            match webkit_rendering.hardware_gl {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "unchecked",
+            },
             webkit_rendering.cpu_painting,
         );
     }
@@ -2515,6 +2535,7 @@ fn main() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            appimage_webkit::missing_media_codec_packages,
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
             browser_webview::browser_view_open_background,

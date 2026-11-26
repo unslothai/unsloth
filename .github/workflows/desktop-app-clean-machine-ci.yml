@@ -800,6 +800,33 @@ jobs:
           python3 tests/studio/appimage_media_pipeline_probe.py
           python3 tests/studio/appimage_portability_smoke.py
 
+      - name: Relaunch on a host GStreamer without autoaudiosink
+        if: github.event_name == 'pull_request' && matrix.expect_mode == 'host'
+        env:
+          APPIMAGE_PATH: ${{ github.workspace }}/dl/Unsloth.AppImage
+          APPIMAGE_SMOKE_ART_DIR: ${{ github.workspace }}/logs/appimage-portability/no-autoaudiosink
+          APPIMAGE_DISPLAY_BACKEND: ${{ matrix.display_backend }}
+          # WebKitGTK aborts a page on its first media element without it: the probe exits 4.
+          APPIMAGE_EXPECTED_WEBKIT_MODE: ${{ github.event_name == 'pull_request' && 'bundled' || '' }}
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          set -euo pipefail
+          mapfile -t plugins < <(find /usr -name libgstautodetect.so -path '*/gstreamer-1.0/*')
+          if [[ ${#plugins[@]} -eq 0 ]]; then
+            echo "::error::host GStreamer has no libgstautodetect.so to hide"
+            exit 1
+          fi
+          hidden="$(mktemp -d)"
+          for index in "${!plugins[@]}"; do
+            mkdir "$hidden/$index"
+            mv "${plugins[$index]}" "$hidden/$index/"
+          done
+          python3 tests/studio/appimage_portability_smoke.py
+          grep -F 'runtime=bundled (reason: probe exit 4)' "$APPIMAGE_SMOKE_ART_DIR/app-stdout.log"
+          for index in "${!plugins[@]}"; do
+            mv "$hidden/$index/libgstautodetect.so" "${plugins[$index]}"
+          done
+
       - name: Relaunch with the other WebKitGTK runtime
         if: github.event_name == 'pull_request' && matrix.host_webkit
         env:
@@ -1059,14 +1086,22 @@ jobs:
       - name: Silent install
         shell: pwsh
         run: |
-          # By architecture, not position: '-' sorts before '.', so -First 1 would take the ARM64 installer.
+          # By name, not position: '-' sorts before '.', so -First 1 would take the ARM64 installer.
           $all = @(Get-ChildItem dl/*.exe)
           $arm = @($all | Where-Object { $_.Name -match '(?i)-arm64\.exe$' })
-          $wanted = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { $arm }
-                    else { @($all | Where-Object { $_.Name -notmatch '(?i)-arm64\.exe$' }) }
-          # A change in shipped architectures is a packaging change to report, not to guess through.
-          if ($wanted.Count -ne 1) {
-            Write-Host "::error::expected exactly one $env:PROCESSOR_ARCHITECTURE installer in the release, found $($wanted.Count) (assets: $($all.Name -join ', '))"
+          $x64 = @($all | Where-Object { $_.Name -match '(?i)-x64\.exe$' })
+          $universal = @($all | Where-Object { $_.Name -ieq 'Unsloth-Desktop-Windows.exe' })
+          if ($all.Count -eq 3 -and $arm.Count -eq 1 -and $x64.Count -eq 1 -and $universal.Count -eq 1) {
+            # Since #18621: native x64 and ARM64 installers plus Unsloth-Desktop-Windows.exe, which runs the
+            # one for this machine. The release notes send every Windows user to it, so install that.
+            $wanted = $universal
+          } elseif ($all.Count -eq 2 -and $arm.Count -eq 1 -and $x64.Count -eq 0) {
+            # Older releases: the unsuffixed installer is the x64 one.
+            $wanted = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { $arm }
+                      else { @($all | Where-Object { $_.Name -notmatch '(?i)-arm64\.exe$' }) }
+          } else {
+            # A change in shipped installers is a packaging change to report, not to guess through.
+            Write-Host "::error::unrecognised set of Windows installers in the release (assets: $($all.Name -join ', '))"
             exit 1
           }
           $exe = $wanted[0].FullName
@@ -1080,6 +1115,15 @@ jobs:
                    Select-Object -First 1
           if (-not $found) { Write-Host '::error::no installed executable found'; exit 1 }
           Write-Host "installed: $($found.FullName)"
+          # The universal installer picks the payload; the installed app must be this machine's build.
+          $bytes = [IO.File]::ReadAllBytes($found.FullName)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          $expected = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 0xAA64 } else { 0x8664 }
+          if ($machine -ne $expected) {
+            Write-Host ("::error::installed app is PE machine 0x{0:X4}, expected 0x{1:X4} for {2}" -f $machine, $expected, $env:PROCESSOR_ARCHITECTURE)
+            exit 1
+          }
           "APP_EXE=$($found.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Run the bundled installer, the path first launch takes

@@ -282,6 +282,9 @@ export function buildQuantSizeLabels(
   return out;
 }
 
+export const MOE_GGUF_ADAPTER_HINT =
+  "This adapter trains MoE expert weights. If your llama.cpp cannot convert those yet, the export stops and says so; the full-model GGUF export works either way.";
+
 export function getEstimatedSize(
   method: ExportMethod | null,
   quantLevels: string[],

@@ -128,10 +128,12 @@ def _checksum(weight):
         size = flat.element_size()
         if size == 2:
             flat = flat.view(torch.int16)
-        elif size == 4:
-            flat = flat.view(torch.int32)
         elif size == 1:
             flat = flat.view(torch.uint8)
+        else:
+            # 4 bytes as one int32 word, 8-byte dtypes (float64) as two: the bits, never a value conversion
+            # (float64 weights below 1 in magnitude all converted to 0, so every such weight matched).
+            flat = flat.view(torch.int32)
         total = 0
         for start in range(0, flat.numel(), _CHUNK):
             part = flat[start : start + _CHUNK].to(torch.int64).remainder_(_PRIME)
@@ -170,7 +172,25 @@ def _rewritten(quantizer, weight):
     if not isinstance(record, _RoundRecord) or record.state is None:
         quantizer.__dict__[_RECORD] = _adopted_record(weight, state)
         return False
-    return state != record.state and not _same_rounded_values(record, weight, state)
+    if state == record.state and not _unversioned_write(record, weight, state):
+        return False
+    return not _same_rounded_values(record, weight, state)
+
+
+def _unversioned_write(record, weight, state):
+    """An inference tensor has no version counter: an in place write (a reload under inference mode) keeps its
+    (pointer, None) state, so compare its values with the rounding checksum instead. False when it cannot tell."""
+    if (
+        state is None
+        or state[1] is not None
+        or not isinstance(record, _RoundRecord)
+        or record.checksum is None
+    ):
+        return False
+    try:
+        return list(_checksum(weight)) != list(record.checksum[1])
+    except Exception:
+        return False
 
 
 def _adopted_record(weight, state):
@@ -247,6 +267,11 @@ def _round_into(module, quantizer, weight):
     return True
 
 
+def _recipe(quantizer):
+    """The fake quantizer's type and config (dtype, granularity, mapping, ...): which grid its weight was rounded to."""
+    return f"{type(quantizer).__name__}:{getattr(quantizer, 'config', None)!r}"
+
+
 def _mark_rounded(module, state_dict, prefix, local_metadata):
     """state_dict hook on a rounded module: mark its weight as rounded while it still holds the rounded values."""
     quantizer = module._modules.get("weight_fake_quantizer")
@@ -267,7 +292,7 @@ def _mark_rounded(module, state_dict, prefix, local_metadata):
     try:
         if record.checksum is None or record.checksum[0] != state:
             record.checksum = (state, _checksum(weight))
-        local_metadata[_META] = record.checksum[1]
+        local_metadata[_META] = tuple(record.checksum[1]) + (_recipe(quantizer),)
     except Exception:
         pass
 
@@ -293,10 +318,14 @@ def _before_load(
     try:
         same = incoming.shape == weight.shape
         if same:
-            # The rounded weight state_dict() marked, unchanged since (any edit or replacement changes the
-            # checksum; checked before any dtype cast, which the checksum includes), still exact in this
-            # module's dtype, or the rounded values this module already holds.
-            marked = isinstance(marker, (tuple, list)) and list(_checksum(incoming)) == list(marker)
+            # The state_dict marker holds a checksum taken before any dtype cast (any edit or
+            # replacement changes it) and the fake quantization recipe; a marked weight counts as
+            # rounded only if still exact in this dtype or already held, and values rounded on
+            # another grid (int8 into int4) do not count.
+            marked = isinstance(marker, (tuple, list)) and list(marker) == [
+                *_checksum(incoming),
+                _recipe(quantizer),
+            ]
             converted = incoming.to(device = weight.device, dtype = weight.dtype)
             if marked and converted.dtype != incoming.dtype:
                 marked = torch.equal(converted.to(incoming.dtype), incoming.to(converted.device))
@@ -315,7 +344,7 @@ def _after_load(module, incompatible_keys):
     same, before = info
     weight = module._parameters.get("weight")
     state = _weight_state(weight)
-    if state == before:
+    if state == before and not _unversioned_write(quantizer.__dict__.get(_RECORD), weight, state):
         return  # not written (for example a failed shape check)
     if same:
         # Rounded values (another prepared model's state_dict, or this model's own): already on the grid. int8 /

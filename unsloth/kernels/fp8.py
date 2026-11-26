@@ -18,6 +18,7 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+from typing import List
 from unsloth_zoo.utils import Version
 
 from .indexing import long_indexing
@@ -140,16 +141,20 @@ except:
 
 def _import_torchao_blockwise_gemm():
     # torchao <= 0.17 ships blockwise_fp8_gemm under prototype; 0.18 moved it to torchao.kernel.
+    # A class is not the kernel: on Windows ROCm without torchao, unsloth_zoo stubs every torchao
+    # import with sentinel classes, and calling one raises "blockwise_fp8_gemm() takes no arguments".
     try:
         from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
             blockwise_fp8_gemm,
         )
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     try:
         from torchao.kernel.blockwise_quantization import blockwise_fp8_gemm
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     logger.info("Unsloth: Could not find torchao blockwise_fp8_gemm")
@@ -760,7 +765,7 @@ def w8a8_block_fp8_matmul_triton(
     B: torch.Tensor,
     As: torch.Tensor,
     Bs: torch.Tensor,
-    block_size: list[int],
+    block_size: List[int],
     output_dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     """Block-wise FP8 matmul."""
@@ -1011,7 +1016,7 @@ def torchao_block_matmul(
     weight_q: torch.Tensor,
     act_scale: torch.Tensor,
     weight_scale: torch.Tensor,
-    block_size: list[int],
+    block_size: List[int],
     output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     # torchao's kernel indexes in int32 too, so route launches past 2**31 elements to the int64 one.

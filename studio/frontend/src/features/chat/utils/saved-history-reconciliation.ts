@@ -4,7 +4,10 @@
 import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
 
 import type { MessageRecord } from "../types";
-import { restoredAssistantStatus } from "./continuation";
+import {
+  readIncompleteInfo,
+  restoredAssistantStatus,
+} from "./continuation";
 import { resolveSavedBranchHead } from "./message-order";
 import {
   generationNeedsRecovery,
@@ -80,7 +83,11 @@ export function shouldReconcileOrdinaryStoredAssistant(options: {
 
   const storedKey = contentProjectionKey(stored.content);
   const runtimeKey = contentProjectionKey(runtime.content);
-  return storedKey !== runtimeKey;
+  return (
+    storedKey !== runtimeKey ||
+    readIncompleteInfo({ custom: storedMeta })?.reason !==
+      readIncompleteInfo({ custom: runtimeMeta })?.reason
+  );
 }
 
 export function reconcileOrdinarySavedMessagesInExport(
@@ -106,19 +113,34 @@ export function reconcileOrdinarySavedMessagesInExport(
     }
 
     const imported = recoveredContentToImport(item.message.content, stored.content);
-    if (contentProjectionKey(imported) === contentProjectionKey(item.message.content)) {
+    const runtimeKey = contentProjectionKey(item.message.content);
+    if (
+      imported === item.message.content &&
+      contentProjectionKey(stored.content) !== runtimeKey
+    ) {
+      // The stored snapshot is behind the view. Keep the newer reply and its status together.
+      return item;
+    }
+
+    const custom = runtimeCustom(item.message);
+    const incomplete = readIncompleteInfo({ custom: stored.metadata });
+    const statusChanged = incomplete?.reason !== readIncompleteInfo({ custom })?.reason;
+    if (!statusChanged && contentProjectionKey(imported) === runtimeKey) {
       return item;
     }
 
     changed = true;
-    const custom = runtimeCustom(item.message);
-    const status = restoredAssistantStatus({ custom });
+    const nextCustom = statusChanged
+      ? { ...custom, incomplete: incomplete ?? undefined }
+      : custom;
+    const status = restoredAssistantStatus({ custom: nextCustom });
     return {
       ...item,
       message: {
         ...item.message,
         content: imported as ThreadMessage["content"],
         status,
+        metadata: { ...item.message.metadata, custom: nextCustom },
       } as ThreadMessage,
     };
   });
@@ -165,7 +187,10 @@ export function appendExternalStoredTurns(
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
   import: (data: ExportedMessageRepository) => void;
-  getState?: () => { messages: readonly { composer?: { isEditing?: boolean } }[] };
+  getState?: () => {
+    isRunning?: boolean;
+    messages: readonly { composer?: { isEditing?: boolean } }[];
+  };
 };
 
 type ReconcileView = {
@@ -181,15 +206,18 @@ export function reconcileOrdinarySavedMessagesInView(
     editingMessageId: string | null;
     toThreadMessage: (record: MessageRecord) => ThreadMessage;
     idsAtRead?: ReadonlySet<string>;
+    // A read begun mid-run predates its final save; the idle-gated watcher re-reads after.
+    runningAtRead?: boolean;
   },
 ): boolean {
-  if (view.threadListItem().getState().remoteId !== threadId) {
+  if (options.runningAtRead || view.threadListItem().getState().remoteId !== threadId) {
     return false;
   }
   try {
     const thread = view.thread();
-    // An import resets an open prompt-edit composer and loses its draft.
-    if (thread.getState?.().messages.some((message) => message.composer?.isEditing)) {
+    // Import replaces the whole repository, including the live run or open prompt edit.
+    const state = thread.getState?.();
+    if (state?.isRunning || state?.messages.some((message) => message.composer?.isEditing)) {
       return false;
     }
     const exported = thread.export();

@@ -254,3 +254,10 @@ def test_an_in_place_git_update_probes_the_shell_again(monkeypatch, tmp_path):
     runtime.write_bytes(b"msys-new-and-longer")
     mxc_probe.probe(str(bash), execution_kind = "terminal")
     assert len(calls) == 2
+
+
+@pytest.fixture(autouse = True)
+def _dacl_capable_pin(monkeypatch):
+    # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
+    from core.inference import mxc_runtime
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)

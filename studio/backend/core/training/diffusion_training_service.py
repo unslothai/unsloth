@@ -209,7 +209,12 @@ def _resume_fields(
 ) -> dict[str, Any]:
     """Derived from disk; write_error is sticky and blocks resume; started_at and ended_at fence off bundles from other runs. Never raises."""
     try:
+        from core.training.account_jobs import account_path
         from core.training.diffusion_checkpoint import describe_resume_state
+
+        # The scan probes (and may rename inside) output_dir: keep a managed record in its workspace.
+        account_path(output_dir)
+        account_path(source_checkpoint)
         state = describe_resume_state(
             output_dir,
             status = status,
@@ -372,6 +377,8 @@ def _idle_state() -> dict[str, Any]:
         "base_model": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
+        # block_swap as resolved by the trainer (blocks swapped, host / pinned GiB); None when it did not run.
+        "block_swap": None,
         # Newest checkpoint-<N> path and step; why it failed to save (Resume tooltip); resumed-from step.
         "checkpoint_path": None,
         "checkpoint_step": None,
@@ -646,11 +653,10 @@ class DiffusionTrainingService:
         reason: str,
         timeout: float = 30.0,
     ):
-        """Ask a running trainer to give back the GPU memory it holds only for speed (the DiT nf4 dequant
-        cache) before another Studio model loads on the card; it caches nothing until the block exits,
-        then re-sizes from what is free. Waits at most ``timeout`` for the acknowledgement (the trainer
-        answers between steps) and proceeds either way, as the load did before. Yields True if the
-        trainer acknowledged. No-op when nothing is training."""
+        """Trainer gives back GPU memory held only for speed (DiT nf4 dequant cache) before a model
+        loads; caches nothing until the block exits, then re-sizes from free memory; waits up to
+        timeout for an ack (answered between steps), proceeds either way; yields True if acked;
+        no-op when nothing trains."""
         waiter = self._send_vram_request("lend")
         acked = False
         if waiter is not None:
@@ -1223,6 +1229,13 @@ class DiffusionTrainingService:
                         else f"Preparing ({stage})..."
                     ),
                 )
+            elif etype == "block_swap":
+                swap = {
+                    k: ev.get(k)
+                    for k in ("swapped_blocks", "total_blocks", "host_gib", "pinned_gib")
+                    if _finite_or_none(ev.get(k)) is not None
+                }
+                s["block_swap"] = swap or None
             elif etype == "warning":
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))

@@ -305,6 +305,10 @@ def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter
         / "0123456789abcdef"
     )
     snapshot.mkdir(parents = True)
+    # The repo id is restored only for a base that is in a Hub cache, not one merely named like a snapshot.
+    hf_cache_settings = types.ModuleType("utils.hf_cache_settings")
+    hf_cache_settings.known_hf_hub_caches = lambda: [tmp_path / "cache"]
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", hf_cache_settings)
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
     adapter_path = checkpoint / "adapter_config.json"

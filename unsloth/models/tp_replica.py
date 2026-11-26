@@ -161,7 +161,8 @@ def _merge_workspace(items):
     """Peak GPU bytes to merge one CPU-staged 4-bit projection (save.py _merge_lora)."""
     peak = 0
     for p, _ in items:
-        if not tpn._is_dtensor(p):
+        # Expert stacks are gathered (in _workspace), never merged as a Linear4bit projection.
+        if not tpn._is_dtensor(p) and p._unsloth_tp_layout[0] != tpn.EXPERT_STACK:
             numel = p.data.numel() * p.data.element_size() * 2 * p._unsloth_tp_layout[3]
             peak = max(peak, _bytes(p) + numel * (2 + 4 + 4))
     return max(_workspace(items), peak)
@@ -212,6 +213,8 @@ def _full_params4bit(weight, base, group, device, keep):
     import bitsandbytes as bnb
 
     style, parts, rank, tp = weight._unsloth_tp_layout
+    if style == tpn.EXPERT_STACK:
+        return _full_expert_params4bit(weight, base, group, device, keep, tp)
     state = weight.quant_state
     blocksize = state.blocksize
     out_local, in_local = state.shape
@@ -267,6 +270,33 @@ def _full_params4bit(weight, base, group, device, keep):
     if device.type == "cpu" and weight.device.type != "cpu":
         # CPU-staged export replica: save.py _merge_lora dequantizes it on its original GPU.
         full._unsloth_tp_stage_device = weight.device
+    return full
+
+
+def _full_expert_params4bit(weight, base, group, device, keep, tp):
+    """The whole 4-bit expert stack: every rank's experts (packed bytes and float32 absmax) in expert order."""
+    import bitsandbytes as bnb
+
+    state = weight.quant_state
+    codes = _gather_cat(weight.data.reshape(-1), 0, group, tp)
+    absmax = _gather_cat(state.absmax.float().reshape(-1), 0, group, tp)
+    if not keep:
+        return None
+    shape = torch.Size((state.shape[0] * tp,) + tuple(state.shape[1:]))
+    full = torch.Tensor._make_subclass(type(weight), codes.to(device).unsqueeze(-1), False)
+    for attr, value in weight.__dict__.items():
+        if attr != "_unsloth_tp_layout":
+            full.__dict__[attr] = value
+    full.quant_state = bnb.functional.QuantState(
+        absmax = absmax.to(device),
+        shape = shape,
+        code = state.code.to(device),
+        blocksize = state.blocksize,
+        quant_type = state.quant_type,
+        dtype = state.dtype,
+    )
+    full.module = base
+    full._original_shape = shape
     return full
 
 
@@ -400,7 +430,8 @@ def _switch_to_one_gpu(root, replica):
     for region in plan.regions if plan is not None else ():
         module = region.module
         replica.set(module, "_unsloth_tp_gathered", True)  # the region hooks pass through
-        owners = [module] + [o for o, _, _ in getattr(region, "child_params", ())]
+        owners = [module] + [o for o, *_ in getattr(region, "child_params", ())]
+        owners += [o for o, _ in getattr(region, "local_attrs", ())]
         for owner in {id(o): o for o in owners}.values():
             # The region module's head counts, and its sharded children's sizes (Gated DeltaNet conv1d channels).
             saved = owner.__dict__.get("_unsloth_tp_saved_attrs")

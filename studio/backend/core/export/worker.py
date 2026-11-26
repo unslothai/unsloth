@@ -183,14 +183,16 @@ def _offline_window_if_unreachable(step = "loading"):
     saved_marker: list = []  # [prior value] once this window marked HF offline as auto-set
     force_ctx = None
     try:
-        from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+        from utils.transformers_version import hf_endpoint_unreachable
+        from utils.utils import hf_env_offline
+
         probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
             "0",
             "false",
             "no",
             "off",
         )
-        if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
+        if not hf_env_offline() and probe_enabled and hf_endpoint_unreachable():
             logger.warning("Hugging Face endpoint unreachable; %s offline", step)
             # Only the Hub is known to be down: mark this offline as ours so a required kernel
             # install (GitHub / PyPI) is still allowed; an operator's HF offline never enters here.
@@ -450,10 +452,10 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit: bnb 4-bit hits unvalidated expert paths.
     if load_in_4bit:
-        from utils.transformers_version import latest_tier_active_for
+        from utils.transformers_version import latest_tier_forces_16bit
 
         # Plain token: the sentinel reads no cache offline, misses the sidecar and leaves 4-bit on.
-        if latest_tier_active_for(checkpoint_path, hf_token or None):
+        if latest_tier_forces_16bit(checkpoint_path, hf_token or None):
             load_in_4bit = False
             logger.info(
                 "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -513,6 +515,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,
+            adapter_free = bool(cmd.get("adapter_free")),
         )
 
         _send_response(
@@ -749,6 +752,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
         quiet_progress_bars = False,
     )
+
+    # REAP calibration loads a Hub dataset in this process: its card may not name host paths either.
+    from utils.security.hub_data_files import install as guard_hub_data_files
+
+    guard_hub_data_files()
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 

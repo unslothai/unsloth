@@ -476,6 +476,45 @@ def test_training_dropout_is_detected():
     assert dps._dropout_active(off) is False
 
 
+@pytest.mark.parametrize("warm_training", [True, False])
+def test_prefix_share_declines_dropout_added_by_peft(monkeypatch, warm_training):
+    peft = pytest.importorskip("peft")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_TOKR", "1.0")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "0")
+    rng = random.Random(8)
+    ids, mask, _ = _batch([_rand_tokens(rng, 30)], [_rand_tokens(rng, 5)], [_rand_tokens(rng, 6)])
+
+    base = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    adapter = peft.get_peft_model(
+        base, peft.LoraConfig(r = 2, target_modules = ["0"], lora_dropout = 0.0)
+    )
+    state = dps._HookState(adapter.get_base_model())
+    monkeypatch.setattr(base, dps._STATE, state, raising = False)
+
+    def shares_prefix():
+        result = dps._pre_hook(base, (), {"input_ids": ids, "attention_mask": mask})
+        state.pending.clear()
+        return result is not None
+
+    adapter.train(warm_training)
+    assert shares_prefix()
+
+    adapter.add_adapter(
+        "with_dropout", peft.LoraConfig(r = 2, target_modules = ["0"], lora_dropout = 0.5)
+    )
+    adapter.set_adapter("with_dropout")
+    base[0].lora_dropout["with_dropout"].train()
+    assert not shares_prefix()
+
+    adapter.eval()
+    assert shares_prefix()
+
+    adapter.set_adapter("default")
+    adapter.delete_adapter("with_dropout")
+    adapter.train()
+    assert shares_prefix()
+
+
 def test_length_dependent_rope_declines():
     from types import SimpleNamespace as NS
 
@@ -543,3 +582,21 @@ def test_verify_with_hidden_states_on_another_device(monkeypatch):
     assert dps.LAST_VERIFY["max_rel"] == 0.0
     keep = am.to(device = got.device, dtype = torch.bool)
     torch.testing.assert_close(got[keep], want[keep], rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("zero3", [False, True])
+def test_collective_forwards_decline(monkeypatch, zero3):
+    # Under ZeRO-3 a rank-local flex compile failure reruns that rank's forward alone, so its
+    # all-gathers stop lining up with the other ranks'. Decline the shared forward there.
+    import torch.distributed as dist
+    import unsloth_zoo.temporary_patches.utils as zoo_utils
+
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 2)
+    monkeypatch.setattr(zoo_utils, "zero3_partitioned_training", lambda *a, **k: zero3)
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE", "1")
+    model = torch.nn.Linear(2, 2)
+    model._unsloth_dpo_prefix_share_eligible = True
+    monkeypatch.setattr(pgk, "_COMPILE_FAILURE", None)
+    assert dps._model_eligible(model, torch.device("cuda", 0)) is (not zero3)

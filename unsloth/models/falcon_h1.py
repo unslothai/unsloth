@@ -11,6 +11,7 @@
 
 from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
+from ._cache_kwarg import pop_cache_kwarg
 import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
@@ -503,17 +504,11 @@ def _FalconH1_fast_forward_inference(
         bsz, q_len, hd = X.shape
         assert q_len == 1
         # Get saved buffers to reduce memory movement
-        residual = torch.empty(
-            (bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
-        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
+        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = X.device)
+        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = X.device)
         XX, XX2 = _XX[0], _XX[1]
-        variance = torch.empty(
-            (bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
-        temp_mlp = torch.empty(
-            (2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
+        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = X.device)
+        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = X.device)
         temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
         seq_len = past_key_values[0][0].shape[-2]
         if bsz != 1:
@@ -620,6 +615,8 @@ def _fast_prepare_inputs_for_generation(
     **kwargs,
 ):
     # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
+    # transformers 5.24 generate passes the cache as `cache`; the fast forward reads past_key_values.
+    past_key_values = pop_cache_kwarg(kwargs, past_key_values)
     empty_past_kv = past_key_values is None
 
     # Slice input_ids to unprocessed tokens, except with input_embeds or synced-GPU overflow.

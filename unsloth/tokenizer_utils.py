@@ -1120,6 +1120,12 @@ def _load_correct_tokenizer(
         token = token,
         trust_remote_code = trust_remote_code,
     )
+    from .models.loader_utils import _resolved_revision
+
+    # Only the AutoTokenizer loads take it; the repairs and _mark_loaded_revision keep the plain ref.
+    revision_for_transformers = _resolved_revision(
+        tokenizer_name, revision, token, cache_dir = cache_dir
+    )
     _name_lower = tokenizer_name.lower()
     # These return the fast tokenizer unread by the slow one, so skip the slow load; the post-load fixes repair the fast backend.
     if (
@@ -1129,7 +1135,7 @@ def _load_correct_tokenizer(
         or "phi-4" in _name_lower
     ):
         fast_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
         )
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
@@ -1138,7 +1144,7 @@ def _load_correct_tokenizer(
     fast_tokenizer = None
     if _TRANSFORMERS_V5:
         fast_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
         )
         _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
         if _slow_load_copies_fast(fast_tokenizer) and _same_tokenization_as_own_copy(
@@ -1158,7 +1164,7 @@ def _load_correct_tokenizer(
             legacy = False,
             from_slow = True,
             cache_dir = cache_dir,
-            revision = revision,
+            revision = revision_for_transformers,
             **_load_kwargs,
         )
     except:
@@ -1169,7 +1175,7 @@ def _load_correct_tokenizer(
     load_fast = fast_tokenizer is None
     if load_fast:
         fast_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
         )
     # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
     if slow_tokenizer is not None:
@@ -1653,6 +1659,31 @@ def _repair_string_template(tokenizer, chat_template, is_sharegpt):
     return None
 
 
+# Chat templates that render nothing for add_generation_prompt ON PURPOSE, keyed on their own
+# marker tokens (all must be present) so a genuinely broken template still gets the warning.
+# Inkling 2 (inkling2 / inkling2_loop): transformers' own examples call
+# apply_chat_template(add_generation_prompt = True) and the model emits `<|message_model|>`
+# itself; appending that marker would make it start a second turn header.
+_TEMPLATES_WITHOUT_GENERATION_PROMPT = {
+    "Inkling 2": (
+        "<|message_user|>",
+        "<|message_model|>",
+        "<|end_message|>",
+        "<|content_text|>",
+    ),
+}
+
+
+def _template_without_generation_prompt_by_design(chat_template):
+    """Family name when `chat_template` is a known template with no generation prompt by design, else None."""
+    if not isinstance(chat_template, str) or "add_generation_prompt" in chat_template:
+        return None
+    for family, markers in _TEMPLATES_WITHOUT_GENERATION_PROMPT.items():
+        if all(marker in chat_template for marker in markers):
+            return family
+    return None
+
+
 def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     """Entry point for a string chat_template. Runs the no==yes diagnostic, attempts repair if needed, and returns the (possibly patched) template. On repair failure the behavior is controlled by UNSLOTH_STRICT_CHAT_TEMPLATE: warn + return original (default) or raise RuntimeError (strict)."""
     name = getattr(tokenizer, "name_or_path", "unknown")
@@ -1700,6 +1731,15 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
         return chat_template
 
     if no != yes:
+        return chat_template
+
+    family = _template_without_generation_prompt_by_design(chat_template)
+    if family is not None:
+        # Not broken: the model writes its own turn marker, so neither repair nor warn.
+        logger.info(
+            f"Unsloth: `{name}` uses the {family} chat template, which has no "
+            "add_generation_prompt block by design; the model emits its own turn marker."
+        )
         return chat_template
 
     # no == yes: the template ignores add_generation_prompt, so try to repair. It may have the block while the output does not change, the "wasn't provided correctly" case.

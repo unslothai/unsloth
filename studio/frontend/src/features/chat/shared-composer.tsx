@@ -195,6 +195,7 @@ import {
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker";
+import { managedEngineFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
@@ -207,6 +208,7 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   fetchGgufStagedMetadata,
   getInferenceStatus,
+  LoadModelError,
   loadModel,
   unloadModel,
   validateModel,
@@ -1844,7 +1846,12 @@ export function SharedComposer({
           savedContextPin(ownConfig) ??
           unpinnedLoadContext(
             targetIsGguf,
-            isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason),
+            isServedByMlx(
+              targetIsGguf,
+              platform.deviceType,
+              platform.chatOnlyReason,
+              platform.mlxInference,
+            ),
             DEFAULT_MAX_SEQ_LENGTH,
           );
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
@@ -1854,6 +1861,7 @@ export function SharedComposer({
           targetIsGguf,
           platform.deviceType,
           platform.chatOnlyReason,
+          platform.mlxInference,
         );
         const effectiveSpeculativeType = resolveSpeculativeType(
           ownConfig.speculativeType,
@@ -2157,6 +2165,7 @@ export function SharedComposer({
                 targetIsGguf,
                 platform.deviceType,
                 platform.chatOnlyReason,
+                platform.mlxInference,
               ),
               requestedContextLength: compareMaxSeqLength,
             });
@@ -2386,6 +2395,9 @@ export function SharedComposer({
             id: toastId,
             description:
               failure instanceof Error ? failure.message : "Unknown error",
+            action: failure instanceof LoadModelError
+              ? managedEngineFailureLogsAction(failure.detail)
+              : undefined,
             duration: cancelled ? 5000 : 4000,
           },
         );

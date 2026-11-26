@@ -336,10 +336,11 @@ def test_the_cuda_repair_still_runs_without_the_request(stack, monkeypatch):
     assert probed["ran"] is True
 
 
-def test_windows_is_not_swapped_by_the_request_alone(stack, monkeypatch):
-    """Windows picks the wheel in install.ps1 and _ensure_expected_torch_flavor restores it, so
-    honouring the request only in Python would install ROCm and have it reverted."""
+def test_windows_is_not_swapped_by_a_declared_arch_alone(stack, monkeypatch):
+    """UNSLOTH_FORCE_ROCM_TORCH swaps a Windows NVIDIA host only for an AMD card the probes see:
+    a stale UNSLOTH_ROCM_GFX_ARCH must not replace working CUDA torch."""
     monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1151")
     monkeypatch.setattr(stack, "IS_WINDOWS", True)
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
@@ -347,14 +348,16 @@ def test_windows_is_not_swapped_by_the_request_alone(stack, monkeypatch):
     monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
     monkeypatch.setattr(stack, "_explicit_unknown_family_torch_index_url", lambda: None)
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
-    detected = {"ran": False}
+    monkeypatch.delenv("UNSLOTH_EXPECTED_TORCH_TAG", raising = False)
+    # The override answers the arch; with it hidden, no hardware probe finds an AMD card.
     monkeypatch.setattr(
         stack,
         "_detect_windows_gfx_arch",
-        lambda *a, **k: (detected.__setitem__("ran", True), "gfx1151")[1],
+        lambda *a, **k: os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or None,
     )
+    assert stack._windows_forced_rocm_is_viable() is False
     stack._ensure_rocm_torch()
-    assert detected["ran"] is False
+    assert os.environ["UNSLOTH_ROCM_GFX_ARCH"] == "gfx1151"
 
 
 def _nvidia_wins(env: str, stubs: str) -> bool:

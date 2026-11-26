@@ -19,8 +19,7 @@ _MARGIN_BYTES = 3 << 29
 _PIN_RESERVE_MIN_BYTES = 4 << 30
 _PIN_RESERVE_FRACTION = 0.15
 STREAMER_ATTR = "_unsloth_te_streamer"
-# "Type: message" of the last failed setup; the exception itself would keep its traceback's frames
-# (the pipeline, its encoders, a half-built streamer) alive.
+# Only the "Type: message" string: the exception would keep its traceback frames alive.
 LAST_ERROR: Optional[str] = None
 
 
@@ -109,7 +108,9 @@ class _Registered:
 
                 # A prefetch still in flight reads the registered range.
                 self.stream.synchronize()
-                torch.cuda.cudart().cudaHostUnregister(self.ptr)
+                if int(torch.cuda.cudart().cudaHostUnregister(self.ptr)) != 0:
+                    from core.inference.host_pinning import consume_cuda_error
+                    consume_cuda_error()
             except Exception:  # noqa: BLE001
                 pass
             self.ptr = None

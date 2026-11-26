@@ -118,10 +118,21 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
+def _statements(tree: ast.AST):
+    """Every node except expressions and what lies below them. The imports, assignments and
+    defs collected below are statements, and an expression never contains a statement, so this
+    finds the same ones as ast.walk while skipping most of a module's nodes."""
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(c for c in ast.iter_child_nodes(node) if not isinstance(c, ast.expr))
+
+
 def _subprocess_names(tree: ast.AST) -> set[str]:
     """Names subprocess is reachable under here, e.g. `import subprocess as _sp`."""
     names = set()
-    for node in ast.walk(tree):
+    for node in _statements(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "subprocess":
@@ -141,7 +152,7 @@ def _subprocess_aliases(tree: ast.AST, names: set[str]) -> set[str]:
         )
 
     aliases: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _statements(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
             aliases.update(a.asname or a.name for a in node.names if a.name in _SUBPROCESS_CALLS)
         elif isinstance(node, ast.Assign) and _is_bound(node.value):
@@ -263,7 +274,7 @@ def _path_class_names(tree: ast.AST) -> set[str]:
     call site, and a module-wide guess flags valid calls on an instance that happens to share the
     name in another scope."""
     names = set(_PATH_CLASSES)
-    for node in ast.walk(tree):
+    for node in _statements(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "pathlib":
             for alias in node.names:
                 if alias.name in _PATH_CLASSES:

@@ -1849,7 +1849,10 @@ def test_a_continued_adapter_resume_under_the_latest_runtime_is_refused_before_l
     }
     assert exact_resume_requires_current_4bit(stored) is True
 
-    with patch("utils.transformers_version.latest_tier_active_for", return_value = True):
+    with (
+        patch("utils.transformers_version.latest_tier_active_for", return_value = True),
+        patch("utils.transformers_version._load_config_json", return_value = None),
+    ):
         with pytest.raises(ExactResumeResourcesUnavailable, match = "original 4-bit"):
             effective_training_load_in_4bit(
                 {"load_in_4bit": True, "resume_expected_model": expected}, "/adapter", None

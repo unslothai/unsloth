@@ -49,6 +49,7 @@ class _RefTarget:
         assert w_view.dim() == 3 and w_view.dtype in (torch.bfloat16, torch.float16)
         self.w, self.a, self.b, self.scale = w_view, a, b, float(scale)
         self.folded = False
+        self.restoring = False
 
     def delta(self):
         return (self.b[0].double() @ self.a[0].double()).float() * self.scale
@@ -394,8 +395,7 @@ def test_short_calls_and_threshold(monkeypatch):
     assert fold._min_tokens() == 64
 
 
-def test_threshold_follows_the_call_plan(monkeypatch):
-    # Inside generate_scope() graphs are allowed, but the call's plan decides what this call decodes with.
+def _package_modules(monkeypatch):
     # Both modules under one stand-in package, so the fold's relative import of _decode_graphs resolves.
     pkg_name = "_unsloth_models_under_test"
     pkg = types.ModuleType(pkg_name)
@@ -409,6 +409,12 @@ def test_threshold_follows_the_call_plan(monkeypatch):
         loaded[name] = importlib.util.module_from_spec(spec)
         monkeypatch.setitem(sys.modules, spec.name, loaded[name])
         spec.loader.exec_module(loaded[name])
+    return loaded
+
+
+def test_threshold_follows_the_call_plan(monkeypatch):
+    # Inside generate_scope() graphs are allowed, but the call's plan decides what this call decodes with.
+    loaded = _package_modules(monkeypatch)
     G, fold = loaded["_decode_graphs"], loaded["_lora_fold_generate"]
     monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", raising = False)
     monkeypatch.setattr(G, "ENABLED", True)
@@ -421,6 +427,42 @@ def test_threshold_follows_the_call_plan(monkeypatch):
     with G.plan_scope("graph"):
         assert fold._min_tokens() == 512
     assert fold._min_tokens() == 128
+    # RL rollouts keep the eager threshold under graphed decode too.
+    monkeypatch.setattr(G, "ENABLED", True)
+    with G.plan_scope("graph"), G.rl_generation():
+        assert fold._min_tokens() == 128
+        monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "64")
+        assert fold._min_tokens() == 64
+        monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS")
+    with G.plan_scope("graph"):
+        assert fold._min_tokens() == 512
+    # Plain / Studio generate() scopes count as rl_depth for the graph default, not as rollouts.
+    with G.plan_scope("graph"), G.generate_scope(), G.studio_generation():
+        assert fold._min_tokens() == 512
+        with G.rl_generation():
+            assert fold._min_tokens() == 128
+        assert fold._min_tokens() == 512
+
+
+def test_rollouts_with_caller_callbacks_keep_the_graphs_threshold(monkeypatch):
+    # Caller code inside the fold (a logits processor entering disable_adapter(), a streamer waiting on
+    # another generate()) keeps the graphs threshold, as plain generate() does.
+    loaded = _package_modules(monkeypatch)
+    G, fold = loaded["_decode_graphs"], loaded["_lora_fold_generate"]
+    monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", raising = False)
+    monkeypatch.setattr(G, "ENABLED", True)
+    with G.plan_scope("graph"), G.rl_generation():
+        assert fold._min_tokens({"max_new_tokens": 256}) == 128
+        assert fold._min_tokens({"logits_processor": []}) == 128
+        assert fold._min_tokens({"stopping_criteria": None}) == 128
+        for name in (
+            "streamer",
+            "logits_processor",
+            "stopping_criteria",
+            "prefix_allowed_tokens_fn",
+        ):
+            value = object() if name == "streamer" else [lambda *a: None]
+            assert fold._min_tokens({name: value}) == 512, name
 
 
 def test_other_threads_wait_for_restore(_clean):
@@ -736,16 +778,76 @@ def _with_blocks(path, name):
 def test_every_generate_path_is_wrapped(path, name):
     calls, withs = _with_blocks(path, name)
     assert calls
+    # The FlashAttention bypass has no OOM redo, so no retry argument.
+    wants = (
+        "_lora_fold_generate(self, args, kwargs, retry=retry)",
+        "_lora_fold_generate(self, args, kwargs)",
+    )
     for call in calls:
         owner = [w for w in withs if any(c is call for c in ast.walk(w))]
         assert owner, f"{name}: _old_generate outside a with block"
         items = [ast.unparse(item.context_expr) for item in owner[-1].items]
-        assert "_lora_fold_generate(self, args, kwargs)" in items, items
-        assert items.index("_lora_fold_generate(self, args, kwargs)") > items.index(
-            "_get_inference_mode_context_manager(self)"
-        )
+        # Either a with item, or (llama) the per-attempt fold handed to generate_with_fallback.
+        folds = [
+            ast.unparse(k.value.body)
+            for k in ast.walk(owner[-1])
+            if isinstance(k, ast.keyword) and k.arg == "fold" and isinstance(k.value, ast.Lambda)
+        ]
+        if folds:
+            assert folds == [wants[0]], folds
+            at = len(items)
+        else:
+            at = next((items.index(w) for w in wants if w in items), None)
+            assert at is not None, items
+        assert at > items.index("_get_inference_mode_context_manager(self)")
         eager = [i for i, item in enumerate(items) if "eager_scope()" in item]
-        assert all(items.index("_lora_fold_generate(self, args, kwargs)") > i for i in eager), items
+        assert all(at > i for i in eager), items
+
+
+def test_oom_redo_runs_unfolded_after_the_restore(monkeypatch, _clean):
+    # Llama: the graphed attempt's fold is undone before the eager redo, and the redo does not fold.
+    loaded = _package_modules(monkeypatch)
+    G, G_fold = loaded["_decode_graphs"], loaded["_lora_fold_generate"]
+    monkeypatch.setattr(G_fold, "_exact_api", lambda: _clean)
+    monkeypatch.setattr(G, "graphable", lambda m: True)
+    monkeypatch.setattr(G, "release_for_training", lambda m, force = False: True)
+    model = _make(MODELS[0])
+    before = _bits(model)
+    seen = []
+
+    def generate(**kw):
+        folded = any(m.merged_adapters for m in model.modules() if hasattr(m, "merged_adapters"))
+        seen.append((folded, _same_bits(before, _bits(model))))
+        if len(seen) == 1:
+            raise torch.cuda.OutOfMemoryError("graphed attempt")
+        return "ok"
+
+    kw = {"max_new_tokens": 32}
+    with torch.inference_mode(), pytest.warns(UserWarning, match = "ran out of GPU memory"):
+        out = G.generate_with_fallback(
+            model, generate, True, (), kw,
+            fold = lambda retry: G_fold.lora_fold_generate(model, (), kw, retry = retry),
+        )  # fmt: skip
+    assert out == "ok"
+    assert seen == [(True, False), (False, True)]
+    assert _clean.folds == 1 and _clean.unfolds == 1
+    assert G_fold.stats()["refused"] == {"oom_retry": 1}
+    assert _same_bits(before, _bits(model))
+
+
+def test_fastmodel_oom_redo_runs_unfolded():
+    tree = ast.parse((ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8"))
+    fn = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "unsloth_base_fast_generate"
+    )
+    runs = [
+        ast.unparse(n)
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_run"
+    ]
+    assert "_run(_eager_scope(), 'eager', retry=True)" in runs, runs
 
 
 def test_restore_unfolds_one_bounded_fold_group_at_a_time(_clean, monkeypatch):
@@ -858,3 +960,58 @@ def test_fold_that_overflows_is_undone_and_refused(_clean):
     fold.reset_stats()
     engaged, _ = _generate(model)
     assert engaged is True and fold.stats()["refused"] == {}
+
+
+def test_restore_out_of_memory_frees_and_retries(_clean, monkeypatch):
+    # An OOM inside the unfold before any weight changed: decode memory is freed and the unfold rerun.
+    model = _make(MODELS[0])
+    before = _bits(model)
+    real, calls = _clean.exact_unfold, []
+
+    def oom_once(targets, stream = None):
+        calls.append(len(targets))
+        if len(calls) == 1:
+            raise torch.cuda.OutOfMemoryError("store upload")
+        return real(targets, stream)
+
+    monkeypatch.setattr(_clean, "exact_unfold", oom_once)
+    engaged, out = _generate(model, 20)
+    assert engaged is True and out.shape[1] > 20
+    assert len(calls) == 2 and fold._POISONED is None
+    assert _same_bits(before, _bits(model))
+    assert fold.stats()["restored"] == 1
+    assert _generate(model, 16)[0] is True
+
+
+def test_restore_out_of_memory_after_restoring_started_poisons(_clean, monkeypatch):
+    # Past the zoo's restoring mark a rerun would subtract the delta twice: poisoned as before.
+    model = _make(MODELS[0])
+
+    def oom_mid_restore(targets, stream = None):
+        targets[0].restoring = True
+        raise torch.cuda.OutOfMemoryError("escapes")
+
+    monkeypatch.setattr(_clean, "exact_unfold", oom_mid_restore)
+    with pytest.raises(RuntimeError, match = "Reload the model"):
+        _generate(model, 20)
+    assert fold._POISONED is not None
+
+
+def test_fp16_fold_past_the_headroom_limit_is_refused(_clean):
+    # Finite after the fold but at 2**12 or more: refused, the unfolded LoRA path runs.
+    model = _make(MODELS[0], dtype = torch.float16)
+    module = next(m for m in model.modules() if hasattr(m, "lora_A") and "default" in m.lora_A)
+    with torch.no_grad():
+        module.lora_A["default"].weight.zero_()
+        module.lora_B["default"].weight.zero_()
+        module.lora_A["default"].weight[0, 0] = 48
+        module.lora_B["default"].weight[0, 0] = 48  # 48 * 48 * scaling 2 = 4608: finite in fp16
+    before = _bits(model)
+    engaged, _ = _generate(model)
+    assert engaged is False
+    assert fold.stats()["refused"] == {"fold_nonfinite": 1}, fold.stats()
+    assert _same_bits(before, _bits(model))
+    with torch.no_grad():
+        module.lora_B["default"].weight[0, 0] = 20  # 1920
+    fold.reset_stats()
+    assert _generate(model)[0] is True

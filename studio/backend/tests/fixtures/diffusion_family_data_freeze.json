@@ -88,7 +88,8 @@
     "default": 2,
     "max": 3,
     "steps": 20
-   }
+   },
+   "nvidia/Qwen-Image-Flash": null
   },
   "qwen-image-2.1": {
    "Qwen/Qwen-Image-2.1": {
@@ -105,7 +106,10 @@
    "Qwen/Qwen-Image-Layered": null
   },
   "sdxl": {
-   "stabilityai/stable-diffusion-xl-base-1.0": null
+   "stabilityai/stable-diffusion-xl-base-1.0": {
+    "max": 2,
+    "steps": 25
+   }
   },
   "wan2.1-t2v-1.3b": {
    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": null
@@ -449,8 +453,8 @@
    "vae_fused_encoder": true
   },
   "krea-2": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -473,7 +477,7 @@
    "vae_fused_encoder": true
   },
   "minimax-h3": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
@@ -592,7 +596,9 @@
   "wan2.2-ti2v-5b": {
    "cudnn_benchmark": false,
    "filter_reduction_configs": false,
-   "filter_reduction_configs_archs": [],
+   "filter_reduction_configs_archs": [
+    "gfx1151"
+   ],
    "vae_fused_encoder": true
   },
   "z-image": {
@@ -1445,7 +1451,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1461,8 +1467,8 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "FLUX.1-schnell-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/FLUX.1-schnell-FP8",
     "convrot_spec": [
      0,
      []
@@ -4566,6 +4572,10 @@
     "max": 3,
     "steps": 25
    },
+   "stabilityai/stable-diffusion-xl-base-1.0": {
+    "max": 2,
+    "steps": 25
+   },
    "wan-ai/wan2.2-ti2v-5b-diffusers": {
     "default": 2,
     "max": 3,
@@ -4833,6 +4843,7 @@
    ]
   },
   "int8_family_convrot_default_on": [
+   "flux.1",
    "flux.2-klein",
    "flux.3-klein",
    "flux.3-klein-base",
@@ -4843,6 +4854,7 @@
    "z-image"
   ],
   "int8_family_convrot_filename": {
+   "flux.1": "FLUX.1-schnell-INT8-ConvRot.safetensors",
    "flux.2-klein": "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
    "flux.3-klein": "flux-3-image-klein-INT8-ConvRot.safetensors",
    "moss-image": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
@@ -4851,6 +4863,7 @@
    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors"
   },
   "int8_family_convrot_repo": {
+   "flux.1": "unsloth/FLUX.1-schnell-FP8",
    "flux.2-klein": "unsloth/FLUX.2-klein-4B-FP8",
    "flux.3-klein": "unsloth/flux-3-image-klein-FP8",
    "moss-image": "unsloth/MOSS-Image-SFT-FP8",
@@ -5027,6 +5040,7 @@
    "black-forest-labs/flux.2-dev",
    "black-forest-labs/flux.2-klein-4b",
    "black-forest-labs/flux.2-klein-9b",
+   "black-forest-labs/flux.2-klein-9b-kv",
    "black-forest-labs/flux.2-klein-base-4b",
    "black-forest-labs/flux.2-klein-base-9b",
    "circlestone-labs/anima-base-v1.0-diffusers",
@@ -5041,6 +5055,7 @@
    "krea/krea-2-turbo",
    "lodestones/chroma1-hd",
    "minimaxai/minimax-h3-image",
+   "nvidia/qwen-image-flash",
    "openmoss-team/moss-image-base",
    "openmoss-team/moss-image-sft",
    "qwen/qwen-image",
@@ -5055,6 +5070,8 @@
    "tongyi-mai/z-image-turbo"
   ],
   "trusted_video_repos": [
+   "fastvideo/fastwan2.1-t2v-1.3b-diffusers",
+   "fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",
    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
    "lightricks/ltx-2",

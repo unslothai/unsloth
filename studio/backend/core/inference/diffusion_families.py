@@ -15,7 +15,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence, Union
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
@@ -190,10 +190,15 @@ class DiffusionFamily:
     # (lowercased id substring, max_condition_images) for a family whose checkpoints take different counts; first
     # match wins, none keeps ``max_condition_images``.
     max_condition_images_variants: tuple[tuple[str, int], ...] = field(default_factory = tuple)
+    # (id substring with separators folded, pipeline class) for a checkpoint of this family that needs another
+    # diffusers pipeline than ``pipeline_class``; first match wins. See ``family_pipeline_class``.
+    pipeline_class_variants: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Same config, different weights: a GGUF of one must never get the base's transformer of another.
     checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
+    # Area each reference (primary included) is resized to; non-zero makes the guard price every reference at it.
+    reference_area: int = 0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
@@ -205,10 +210,13 @@ class DiffusionFamily:
     supports_torch_compile: bool = True
     # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
     cudnn_benchmark: bool = True
-    # Pin inductor's reduction-config filter on every arch (``filter_reduction_configs``) or only on the listed (major,
-    # minor) archs (``filter_reduction_configs_archs``); both unset = inductor's pick. Same two fields on VideoFamily.
+    # Pin inductor's reduction-config filter on every arch (``filter_reduction_configs``) or only on the listed CUDA
+    # (major, minor) archs / ROCm gfx names (``filter_reduction_configs_archs``); both unset = inductor's pick. Same two
+    # fields on VideoFamily.
     filter_reduction_configs: bool = False
-    filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
+    filter_reduction_configs_archs: tuple[Union[tuple[int, int], str], ...] = field(
+        default_factory = tuple
+    )
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -252,6 +260,10 @@ class DiffusionFamily:
     # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
     mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Configs of an ``fp16_incompatible`` family that render clean in MLX float16; others use bfloat16 on M1 / M2.
+    mlx_fp16_configs: tuple[str, ...] = field(default_factory = tuple)
+    # (mflux config, bits): min bits for requantizing dense GGUF tensors; unlisted configs take the 0 / 8 / 4 ladder.
+    mlx_min_dense_bits: tuple[tuple[str, int], ...] = field(default_factory = tuple)
     # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
@@ -431,6 +443,7 @@ _SMALL_DIT_LARGE_BASES = frozenset(
     {
         "black-forest-labs/flux.2-klein-9b",
         "black-forest-labs/flux.2-klein-base-9b",
+        "black-forest-labs/flux.2-klein-9b-kv",
     }
 )
 
@@ -532,6 +545,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.1-dev",
         profile = FamilyProfile(
             auto_prefer = _GATED_AUTO_PREFER,
+            # Hosted rotated int8 build for schnell only (every quantized Linear, group 256, read back from the file's
+            # metadata). Group 0: quantizing at load stays plain int8, and until the file is on the repo the plain
+            # hosted int8 file behind it still loads; dev / Krea-dev keep their plain variant files.
+            int8_convrot = ConvRotSpec(
+                group = 0,
+                suffixes = (),
+                filename = "FLUX.1-schnell-INT8-ConvRot.safetensors",
+                repo = "unsloth/FLUX.1-schnell-FP8",
+                default_on = True,
+            ),
             preview_factors = "flux1",
             # Auto static step skip, measured vs the no-skip render (PR #12652); dev: every 2 is 0.29 LPIPS on a
             # dense-texture prompt, so max only.
@@ -618,6 +641,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 hosted_plain = True,
             ),
             preview_factors = "flux2",
+            # The KV checkpoint is no base or variant here (its GGUFs take the 9B's companions), but its own repo
+            # loads as a pipeline and its quantised files tag it as their base.
+            trusted_repos = ("black-forest-labs/flux.2-klein-9b-kv",),
             auto_static_skip = (
                 (
                     "black-forest-labs/flux.2-klein-base-4b",
@@ -661,6 +687,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "black-forest-labs/FLUX.2-klein-base-9B",
             "black-forest-labs/FLUX.2-klein-base-4B",
         ),
+        # FLUX.2 klein 9B KV (same FLUX Non-Commercial licence and gate as klein 9B) is a different model, not a
+        # runtime mode: it was trained with reference tokens that attend only to themselves and are modulated at a
+        # fixed timestep 0, so their K/V do not change across steps and Flux2KleinKVPipeline computes them once, on
+        # step 0. Stock klein 4B / 9B reference tokens attend to the noisy image and take the step's timestep, so
+        # caching them there would change the model. Its weights through Flux2KleinPipeline would run the stock
+        # bidirectional path instead of the one it was trained for. A KV GGUF / single file keeps the 9B as its base on
+        # purpose: config, text encoder, VAE and scheduler are byte-identical, and the 9B's come from the ungated mirror
+        # while the KV repo is gated with no mirror; only the pipeline class follows the file.
+        pipeline_class_variants = (("klein9bkv", "Flux2KleinKVPipeline"),),
         # Train the undistilled bases, then preview their adapters on the matching 4-step models. Both vendor ids
         # resolve through the ungated mirrors at fetch time.
         trainable = True,
@@ -681,6 +716,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Flux2KleinPipeline takes reference image(s) via `image`, so it exposes a "reference" workflow atop
         # text-to-image. Inpaint but no img2img.
         reference = True,
+        reference_area = 1024 * 1024,
+        # References are denoised, never decoded: measured denoise slope x 1.2 margin / 8192 MiB per MP ~= 0.133.
+        condition_pixel_weight = 0.135,
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
@@ -1052,6 +1090,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
+        # Qwen-Image-Flash was distilled on its shipped static shift-3 grid (sigmas 1, .9, .75, .5): keep it.
+        comfy_flow_shift_variants = (("qwen-image-flash", None),),
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
@@ -1069,6 +1109,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # Policy ``qwen2512_m120_attn8_v1``, 2512 only: Qwen/Qwen-Image keeps its nvfp4 deny.
             ("qwen/qwen-image-2512", "nvfp4", "unsloth/Qwen-Image-2512-NVFP4"),
         ),
+        # A distilled student: the base's artifacts hold the teacher's weights, so it quantizes its own.
+        prequant_excluded_bases = ("nvidia/qwen-image-flash",),
+        named_variant_bases = ("nvidia/Qwen-Image-Flash",),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         # int8 ConvRot by default: ComfyUI loads qwen_2.5_vl_7b_fp8_scaled, but our layerwise fp8
@@ -1298,6 +1341,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = "rescale_post_norm",
         mlx_model_config = "z-image-turbo",
         mlx_model_config_by_base = (("Tongyi-MAI/Z-Image", "z-image"),),
+        # Turbo renders clean in MLX float16 on M1 / M2; the undistilled base overflows it (NaN, black image).
+        mlx_fp16_configs = ("z-image-turbo",),
+        # Base requantized to 4-bit gives ~16x too large velocity (uniform cyan grid); Turbo is clean at 4 bits.
+        mlx_min_dense_bits = (("z-image", 8),),
         # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
@@ -1311,6 +1358,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "Krea 2",
         pipeline_class = "Krea2Pipeline",
+        # Every arch: a cold compile cache benchmarks near-tied reduction configs and keeps the winner, so fresh Studio
+        # homes rendered one seed two ways (A100 INT8 1024 px, 12 prompts, LPIPS 0.146 mean); the filter pins one.
+        filter_reduction_configs = True,
+        # cudnn.benchmark's per-process VAE conv pick decoded one fixed latent 3 ways over 3 fresh L4 homes; off, all
+        # matched, and the first render skips ~1.5 s of conv benchmarking.
+        cudnn_benchmark = False,
         transformer_class = "Krea2Transformer2DModel",
         base_repo = "krea/Krea-2-Turbo",
         prequant_repos = (
@@ -1610,7 +1663,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "sdxl",
         textual_inversion = "sdxl",
         label = "SDXL",
-        profile = FamilyProfile(preview_factors = "sdxl"),
+        profile = FamilyProfile(
+            preview_factors = "sdxl",
+            # The static skip on the whole U-Net output (taylor1), measured on a T4, fp16, 1024^2, CFG 7, 8 prompts:
+            # every-2 at 25 steps mean LPIPS 0.059 vs the full render at 1.49x (every-3: 0.115 at 1.77x, over the
+            # max bar; 13 plain steps: 0.303 at 1.77x). Base checkpoint only: sdxl-turbo runs 1 step.
+            auto_static_skip = (
+                ("stabilityai/stable-diffusion-xl-base-1.0", (("max", 2), ("steps", 25))),
+            ),
+        ),
         # ~1.8% slower warm, but compiled-UNet renders then match across servers (ComfyUI's default)
         cudnn_benchmark = False,
         pipeline_class = "StableDiffusionXLPipeline",
@@ -2069,7 +2130,7 @@ def retired_copy_loads_from_disk(source: Optional[str], *, companion: bool = Fal
             excluded_components = ("transformer",) if companion else (),
             fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
         )
-    except (OSError, StopIteration):
+    except (OSError, UnicodeDecodeError, StopIteration):
         return False
 
 
@@ -2153,6 +2214,19 @@ def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optiona
         if plain and plain in identity:
             return None
     return None
+
+
+# A gated base whose every component but the denoiser is byte-identical to another base's (LFS sha256). A GGUF or
+# single file of it brings its own denoiser, so it takes the rest from that base, whose ungated mirror needs no grant.
+_COMPANION_BASES: dict[str, str] = {
+    "black-forest-labs/flux.2-klein-9b-kv": "black-forest-labs/FLUX.2-klein-9B",
+}
+
+
+def companion_base(base: Optional[str]) -> Optional[str]:
+    """The base a GGUF / single file of ``base`` reads its non-denoiser components from; ``base`` itself unless
+    listed in ``_COMPANION_BASES``."""
+    return _COMPANION_BASES.get((base or "").strip().lower(), base)
 
 
 def canonical_base(repo_id: Optional[str]) -> str:
@@ -2364,6 +2438,8 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("qwen-image-edit-2509", 20, 4.0),
     ("qwen-image-edit", 40, 4.0),
     ("qwen-image-2512", 50, 4.0),
+    # NVIDIA's DMD2 student: 4 steps at CFG 1 (its teacher's CFG 4 is distilled in), on its shipped shift-3 grid.
+    ("qwen-image-flash", 4, 1.0),
     ("qwen-image", 20, 4.0),
     # diffusers Z-Image g = ComfyUI cfg - 1 (pos + g * (pos - neg)).
     ("z-image", 25, 3.0),
@@ -2415,6 +2491,21 @@ def _first_variant(rows: Any, identifiers: tuple[Optional[str], ...]) -> Optiona
             if row[0] in needle:
                 return row
     return None
+
+
+def family_pipeline_class(fam: Any, *identifiers: Optional[str]) -> Optional[str]:
+    """The diffusers pipeline class for the checkpoint ``identifiers`` name (repo id, resolved base, file name):
+    the first ``pipeline_class_variants`` key any of them spells with separators folded, else ``pipeline_class``."""
+    default = getattr(fam, "pipeline_class", None)
+    rows = getattr(fam, "pipeline_class_variants", ()) or ()
+    if not rows:
+        return default
+    for identifier in identifiers:
+        needle = "".join(c for c in (identifier or "").lower() if c.isalnum())
+        for key, pipeline_class in rows:
+            if key and key in needle:
+                return pipeline_class
+    return default
 
 
 def family_for_checkpoint(fam: Any, *identifiers: Optional[str]) -> Any:
@@ -2472,7 +2563,13 @@ def _first_checkpoint_variant(
 def transformer_variant_differs_from_base(
     fam: Any, base: Optional[str], *identifiers: Optional[str]
 ) -> bool:
-    """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown."""
+    """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown. A checkpoint that
+    runs its own pipeline class (``pipeline_class_variants``: klein 9B KV) differs from any base that does not, even
+    when it borrows that base's companions: its DiT is another model and must never be replaced by the base's."""
+    if getattr(fam, "pipeline_class_variants", ()) and family_pipeline_class(
+        fam, *identifiers
+    ) != family_pipeline_class(fam, base):
+        return True
     keys = getattr(fam, "checkpoint_variants", ())
     if keys:
         base_key = _first_checkpoint_variant(keys, (base,))
@@ -2621,6 +2718,8 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImageControlNetPipeline": "0.36.0",
     "QwenImageEditPlusPipeline": "0.36.0",
     "Flux2KleinPipeline": "0.37.0",
+    # Absent from the 0.37.1 wheel's diffusers/__init__.py, exported by 0.38.0's.
+    "Flux2KleinKVPipeline": "0.38.0",
     "ZImageInpaintPipeline": "0.37.0",
     "LTX2Pipeline": "0.37.0",
     # Absent from the 0.36.0 wheel's diffusers/__init__.py, exported by 0.37.0's.
@@ -3567,6 +3666,7 @@ _FLUX2_BASE_INNER_DIM = {
     "black-forest-labs/flux.2-klein-base-4b": 3072,
     "black-forest-labs/flux.2-klein-9b": 4096,
     "black-forest-labs/flux.2-klein-base-9b": 4096,
+    "black-forest-labs/flux.2-klein-9b-kv": 4096,
     "black-forest-labs/flux.2-dev": 6144,
 }
 

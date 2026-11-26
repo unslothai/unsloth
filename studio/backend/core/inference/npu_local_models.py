@@ -17,11 +17,15 @@ import json
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from core.export.q4nx import SOURCE_FILE
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 LOCAL_PREFIX = "local-"
 LOCAL_SIZE = "q4nx"
@@ -176,7 +180,13 @@ def base_of(folder: Path) -> Optional[str]:
 def _own_file(path: Path) -> bool:
     """A plain file inside the acting account: a link could hand over another account's weights."""
     from utils.paths.storage_roots import within_account
-    return path.is_file() and not path.is_symlink() and within_account(path)
+
+    # Not is_file(): Python 3.14 reads a denied file as missing; PermissionError skips the folder.
+    try:
+        mode = path.lstat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return stat.S_ISREG(mode) and within_account(path)
 
 
 def _size(path: Path) -> int:
@@ -231,8 +241,11 @@ def find_local_models(root: Path) -> list[LocalQ4nx]:
         )
         if "model.q4nx" in files:
             dirs[:] = []
-            if within_account(path):
-                found.append(_describe(path, root))
+            try:
+                if within_account(path):
+                    found.append(_describe(path, root))
+            except OSError as exc:
+                logger.warning("Skipping converted NPU model folder %s: %s", path, exc)
         elif len(path.parts) - base_depth >= _MAX_DEPTH:
             dirs[:] = []
     return sorted(found, key = lambda model: model.display.lower())
@@ -257,16 +270,19 @@ def account_local_models() -> list[LocalQ4nx]:
     # A GGUF export with Q4NX on registers its save folder; the conversion sits in npu-q4nx under it.
     candidates = (c for f in _registered_folders() for c in (f, f / EXPORT_SUBFOLDER))
     for folder in candidates:
-        key = os.path.normcase(str(folder.resolve()))
-        if (
-            key not in seen
-            and not folder.is_symlink()
-            and not _is_junction(folder)
-            and (folder / "model.q4nx").is_file()
-            and within_account(folder)
-        ):
-            seen.add(key)
-            found.append(_describe(folder, exports_root()))
+        try:
+            key = os.path.normcase(str(folder.resolve()))
+            if (
+                key not in seen
+                and not folder.is_symlink()
+                and not _is_junction(folder)
+                and (folder / "model.q4nx").is_file()
+                and within_account(folder)
+            ):
+                seen.add(key)
+                found.append(_describe(folder, exports_root()))
+        except OSError as exc:
+            logger.warning("Skipping scan folder %s for converted NPU models: %s", folder, exc)
     return sorted(found, key = lambda model: model.display.lower())
 
 

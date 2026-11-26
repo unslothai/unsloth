@@ -198,7 +198,7 @@ def test_mlx_install_respects_platform_mode_and_pins(
         no_torch = no_torch,
         shared_base = shared_base,
     )
-    enabled = platform == "macos_arm" and not no_torch
+    enabled = platform == "macos_arm"
     assert len(calls) == int(enabled)
     if platform.startswith("macos"):
         # Slots: no-torch runtime deps, two mac-arm (MLX step + re-resolve), diffusers 11c everywhere,
@@ -324,7 +324,7 @@ def test_pin_floor_is_revisited_whenever_the_pins_move():
     assert _repair_specs() == {
         "mlx": "==0.32.4",
         "mlx-lm": ">=0.31.3,<=0.32.2",
-        "mlx-vlm": ">=0.4.4,<=0.8.0",
+        "mlx-vlm": ">=0.6.4,<=0.8.1",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
@@ -509,7 +509,32 @@ def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
         "mlx-lm",
     }
     (pin,) = stack._MLX_DIFFUSION_PINS
-    assert pin.startswith("mflux==0.22.")
+    # The exact version the engine accepts at runtime, not a literal here that every mflux bump has to chase.
+    version, compatible = _engine_mflux_versions()
+    assert pin == f"mflux=={version}"
+    assert version in compatible
+
+
+def _engine_mflux_versions():
+    """MFLUX_VERSION for this interpreter and MFLUX_COMPATIBLE_VERSIONS from the MLX engine, read from its source:
+    the module needs numpy, which the installer tests do not."""
+    path = (
+        Path(stack.__file__).resolve().parent
+        / "backend"
+        / "core"
+        / "inference"
+        / "mlx_diffusion_convert.py"
+    )
+    values = {}
+    for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            values[node.targets[0].id] = node.value
+    pick = values["MFLUX_VERSION"]
+    if isinstance(pick, ast.IfExp):  # "<new>" if sys.version_info >= (3, N) else "<old>"
+        floor = ast.literal_eval(pick.test.comparators[0])
+        pick = pick.body if sys.version_info >= floor else pick.orelse
+    compatible = values["MFLUX_COMPATIBLE_VERSIONS"]
+    return ast.literal_eval(pick), set(ast.literal_eval(compatible.args[0]))
 
 
 @pytest.mark.parametrize("platform", ["macos_arm", "macos_intel", "linux", "windows"])

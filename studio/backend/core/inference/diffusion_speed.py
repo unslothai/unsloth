@@ -193,14 +193,17 @@ def snapshot_backend_flags() -> Optional[dict]:
 
 
 def release_rocm_tunableop(pipe: Any) -> None:
-    """Unload: drop this pipe's TunableOp claim (process-global, so not in snapshot_backend_flags)."""
-    mod = sys.modules.get(f"{__package__}.diffusion_rocm_tunableop")
-    if mod is None or pipe is None:
+    """Unload: drop this pipe's TunableOp and MIOpen db claims (process-global, so not in snapshot_backend_flags)."""
+    if pipe is None:
         return
-    try:
-        mod.release(pipe)
-    except Exception:  # noqa: BLE001 - teardown is best effort
-        pass
+    for name in ("diffusion_rocm_tunableop", "diffusion_rocm_miopen_db"):
+        mod = sys.modules.get(f"{__package__}.{name}")
+        if mod is None:
+            continue
+        try:
+            mod.release(pipe)
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
 
 
 def restore_backend_flags(state: Optional[dict]) -> None:
@@ -571,6 +574,14 @@ def apply_speed_optims(
                 rocm_tunableop.install_for_pipe(pipe, getattr(target, "device", None), logger)
         except Exception as exc:  # noqa: BLE001 - keep torch's default GEMM pick
             _warn(logger, "rocm tunableop", exc)
+        try:
+            from . import diffusion_rocm_miopen_db as rocm_miopen_db
+            if mode == SPEED_OFF:
+                rocm_miopen_db.uninstall(pipe)
+            else:
+                rocm_miopen_db.install_for_pipe(pipe, getattr(target, "device", None), logger)
+        except Exception as exc:  # noqa: BLE001 - keep MIOpen's own solver pick
+            _warn(logger, "rocm miopen db", exc)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
@@ -1379,10 +1390,17 @@ def _compile_repeated_blocks(
             return _compile_unet_blocks(unet, unet_kwargs, logger)
         try:
             unet.compile(**unet_kwargs)
-            return True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "unet whole-module compile", exc)
             return False
+        try:
+            # A static step skip in the forward slot decides in front of the compiled call: inside a fullgraph trace
+            # its dynamo-disabled frames leave no compiled frame (torch 2.13+ raises on the first render).
+            from .diffusion_step_skip import front_compiled_call
+            front_compiled_call(unet)
+        except Exception as exc:  # noqa: BLE001 - the compile stands; only the skip placement failed
+            _warn(logger, "static skip in front of the compiled unet", exc)
+        return True
     # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
     engaged = False
     for transformer in dits:

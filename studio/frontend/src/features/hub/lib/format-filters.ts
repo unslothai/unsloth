@@ -68,6 +68,43 @@ export function isMlxId(id: string, hintedIsMlx?: boolean): boolean {
   return MLX_NAME_RE.test(leaf);
 }
 
+export function cachedRepoIsMlx(repo: {
+  repo_id: string;
+  tags?: readonly string[] | null;
+  library_name?: string | null;
+}): boolean {
+  return isMlxId(
+    repo.repo_id,
+    hasMlxCardTag({ tags: repo.tags, libraryName: repo.library_name }),
+  );
+}
+
+export function namedOrTaggedMlx(model: {
+  names: readonly string[];
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+  omlx?: boolean;
+}): boolean {
+  return (
+    hasMlxCardTag(model) ||
+    Boolean(model.omlx) ||
+    model.names.some((name) => isMlxId(name))
+  );
+}
+
+export function localRowIsMlx(row: {
+  id: string;
+  display_name?: string | null;
+  model_id?: string | null;
+  path?: string | null;
+  source?: string | null;
+}): boolean {
+  return namedOrTaggedMlx({
+    names: [row.id, row.display_name ?? "", row.model_id ?? "", row.path ?? ""],
+    omlx: row.source === "omlx",
+  });
+}
+
 export function detectResultFormat(result: {
   id: string;
   isGguf: boolean;

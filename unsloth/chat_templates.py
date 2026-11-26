@@ -365,10 +365,10 @@ mistral_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
         "{% if messages[1]['role'] == 'user' %}"\
-            "{{ '[INST] ' + messages[0]['content'] + ' ' + messages[1]['content'] + ' [/INST]' }}"\
+            "{{ ' [INST] ' + messages[0]['content'] + '\n\n' + messages[1]['content'] + ' [/INST]' }}"\
             "{% set loop_messages = messages[2:] %}"\
         "{% else %}"\
-            "{{ '[INST] ' + messages[0]['content'] + ' [/INST]' }}"\
+            "{{ ' [INST] ' + messages[0]['content'] + ' [/INST]' }}"\
             "{% set loop_messages = messages[1:] %}"\
         "{% endif %}"\
     "{% else %}"\
@@ -376,9 +376,9 @@ mistral_template = \
     "{% endif %}"\
     "{% for message in loop_messages %}"\
         "{% if message['role'] == 'user' %}"\
-            "{{ '[INST] ' + message['content'] + ' [/INST]' }}"\
+            "{{ ' [INST] ' + message['content'] + ' [/INST]' }}"\
         "{% elif message['role'] == 'assistant' %}"\
-            "{{ message['content'] + eos_token }}"\
+            "{{ ' ' + message['content'] + eos_token }}"\
         "{% else %}"\
             "{{ raise_exception('Only user and assistant roles are supported!') }}"\
         "{% endif %}"\
@@ -617,6 +617,8 @@ phi3_template = \
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
         "{{ '<|assistant|>\n' }}"\
+    "{% else %}"\
+        "{{ eos_token }}"\
     "{% endif %}"
 
 # Ollama from https://www.ollama.com/library/phi3
