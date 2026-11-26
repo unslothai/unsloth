@@ -8704,6 +8704,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
+                image_marker = _image_placeholder(self._tokenizer, self._processor),
             )
         except Exception as exc:
             if images is None or has_tool_history:
