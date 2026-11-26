@@ -9,6 +9,7 @@ from utils.datasets.dataset_utils import format_dataset
 
 SHAREGPT_ROLES = {"system": "system", "user": "human", "assistant": "gpt"}
 
+
 class _Tokenizer:
     chat_template = "{{ messages }}"
     eos_token = "</s>"
