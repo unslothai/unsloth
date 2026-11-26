@@ -388,7 +388,7 @@ class TestPreLaunch:
         backend = _backend()
         cards = [(0, 8 * _MIB), (1, 8 * _MIB)]
         monkeypatch.setattr(
-            LlamaCppBackend, "_integrated_cuda_probe_is_free", staticmethod(lambda: True)
+            LlamaCppBackend, "_integrated_cuda_probe_is_free", staticmethod(lambda: False)
         )
         monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
         monkeypatch.setattr(

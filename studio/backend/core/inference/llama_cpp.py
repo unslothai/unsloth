@@ -17055,11 +17055,13 @@ class LlamaCppBackend:
             gpus = [] if child_has_no_gpu else list(reachable_gpus or ())
             if not gpus and not child_has_no_gpu:
                 return None  # an unread GPU probe looks GPU-less; never refuse on it
-            # An integrated or unified-memory GPU's "VRAM" is host RAM, already priced elsewhere.
+            # An integrated or unified-memory GPU reports dedicated plus shared host memory as its
+            # own (a 64 GB Windows-on-Arm part shows about 110 GB), so its free figure is never a
+            # VRAM credit, and this check leaves those loads to the unified-memory paths. Probed
+            # here even when uncached: this runs once, right before a model load.
             try:
                 unified = set(self._rocm_unified_memory_gpu_ids())
-                if self._integrated_cuda_probe_is_free():
-                    unified |= set(self._integrated_cuda_gpu_ids())
+                unified |= set(self._integrated_cuda_gpu_ids())
             except Exception:  # noqa: BLE001 -- unknown is not unified
                 unified = set()
             if {row[0] for row in gpus} & unified:
