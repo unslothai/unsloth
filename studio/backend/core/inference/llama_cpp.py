@@ -3249,6 +3249,19 @@ def _fit_reasoning_effort_to_template(
     return _clamp_reasoning_effort_to_levels(effort, allowed) or effort
 
 
+def _thinking_off_effort(chat_template: Optional[str]) -> str:
+    """Inkling ignores enable_thinking and starts its effort ladder at an off level; others keep the smallest budget."""
+    from core.inference.chat_template_helpers import replays_reasoning_content
+
+    if (
+        chat_template
+        and "enable_thinking" not in chat_template
+        and replays_reasoning_content(None, template = chat_template)
+    ):
+        return "none"
+    return "low"
+
+
 def _rendered_chat_template(backend) -> Optional[str]:
     # getattr: test doubles skip __init__ and borrow backend methods unbound.
     return getattr(backend, "_chat_template_override", None) or getattr(
@@ -10078,7 +10091,12 @@ class LlamaCppBackend:
         if self._reasoning_style == "reasoning_effort":
             effort = _fit_reasoning_effort_to_template(
                 _rendered_chat_template(self),
-                effort or ("high" if enable_thinking else "low"),
+                effort
+                or (
+                    "high"
+                    if enable_thinking
+                    else _thinking_off_effort(_rendered_chat_template(self))
+                ),
                 thinking_off = not effort and not enable_thinking,
             )
             return _coerce_reasoning_effort(
@@ -10241,7 +10259,7 @@ class LlamaCppBackend:
                 elif enable_thinking is not None:
                     kwargs["reasoning_effort"] = _fit_reasoning_effort_to_template(
                         _template,
-                        "high" if enable_thinking else "low",
+                        "high" if enable_thinking else _thinking_off_effort(_template),
                         thinking_off = not enable_thinking,
                     )
             else:

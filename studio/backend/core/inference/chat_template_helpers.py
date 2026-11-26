@@ -2970,7 +2970,21 @@ def apply_chat_template_for_generation(
     if reasoning_kwargs:
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
-    if reasoning_effort is not None:
+    if enable_thinking is False and reasoning_effort is None:
+        from core.inference.llama_cpp import _thinking_off_effort
+
+        # Swapped, not added: a processor rejecting enable_thinking would otherwise drop "none" with it.
+        def _off(kw: dict) -> dict:
+            template = "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools")))
+            if "enable_thinking" not in kw or _thinking_off_effort(template) != "none":
+                return kw
+            return {
+                **{k: v for k, v in kw.items() if k != "enable_thinking"},
+                "reasoning_effort": "none",
+            }
+
+        attempts = [_off(kw) for kw in attempts]
+    if any("reasoning_effort" in kw for kw in attempts):
         from core.inference.llama_cpp import _fit_reasoning_effort_to_template
 
         # Fit per attempt: sanitizing or a tools-less retry can switch tool_use to default.
@@ -2979,7 +2993,7 @@ def apply_chat_template_for_generation(
                 **kw,
                 "reasoning_effort": _fit_reasoning_effort_to_template(
                     "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools"))),
-                    reasoning_effort,
+                    kw["reasoning_effort"],
                 ),
             }
             if "reasoning_effort" in kw
