@@ -194,6 +194,40 @@ if triton is not None:
         tl.store(S1 + i, q1.to(tl.uint8), valid)
         tl.store(S2 + i, q2.to(tl.uint8), valid)
 
+    @triton.jit(do_not_specialize = ["N", "SEED"])
+    def _bnb_adam32bit_kernel(
+        P,
+        G,
+        S1,
+        S2,
+        N,
+        SEED,
+        BETA1,
+        BETA2,
+        EPS_C2,  # correction2 * eps
+        STEP_SIZE,  # -lr * correction2 / correction1
+        DECAY,  # 1 - lr * weight_decay
+        HAS_DECAY: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        # bitsandbytes' kOptimizer32bit2State (Adam / AdamW, float32 states: small weights and the embeddings the
+        # Trainer keeps at 32-bit state) with the weight read and written as bfloat16, rounded stochastically.
+        i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        valid = i < N
+        g = tl.load(G + i, valid, 0).to(tl.float32)
+        s1 = tl.load(S1 + i, valid, 0)
+        s2 = tl.load(S2 + i, valid, 0)
+        s1 = s1 * BETA1 + ((1.0 - BETA1) * g)
+        s2 = s2 * BETA2 + ((1.0 - BETA2) * (g * g))
+        p = tl.load(P + i, valid, 0).to(tl.float32)
+        p = p + STEP_SIZE * (s1 / (tl.sqrt(s2) + EPS_C2))
+        if HAS_DECAY:
+            p = p * DECAY
+        r0, _, _, _ = tl.randint4x(SEED, i)
+        tl.store(P + i, _round_bf16(p, r0), valid)
+        tl.store(S1 + i, s1, valid)
+        tl.store(S2 + i, s2, valid)
+
 
 _BLOCK = 1024
 _BNB_BLOCK = 256
@@ -263,6 +297,24 @@ def _bnb_launch(p, g, state, step, config, seed):
     step_size = (-_f32(lr) * correction2) / correction1
     decay = 1.0 - _f32(lr) * _f32(weight_decay)
     n = p.numel()
+    if state["state1"].dtype == torch.float32:
+        with torch.cuda.device(p.device):
+            _bnb_adam32bit_kernel[_grid(n)](
+                p,
+                g,
+                state["state1"],
+                state["state2"],
+                n,
+                seed,
+                beta1,
+                beta2,
+                float(correction2 * _f32(eps)),
+                float(step_size),
+                float(decay),
+                HAS_DECAY = weight_decay > 0.0,
+                BLOCK = _BLOCK,
+            )
+        return
     with torch.cuda.device(p.device):
         _bnb_adam8bit_kernel[((n + _BNB_BLOCK - 1) // _BNB_BLOCK,)](
             p,
@@ -339,14 +391,19 @@ def _bnb_fused_step(optimizer, group, p, gindex, pindex, seed):
         return False
     n = p.numel()
     blocks = (n + _BNB_BLOCK - 1) // _BNB_BLOCK
-    for key, dtype, size in (
-        ("state1", torch.uint8, n),
-        ("state2", torch.uint8, n),
-        ("absmax1", torch.float32, blocks),
-        ("absmax2", torch.float32, blocks),
-        ("qmap1", torch.float32, 256),
-        ("qmap2", torch.float32, 256),
-    ):
+    if torch.is_tensor(state.get("state1")) and state["state1"].dtype == torch.float32:
+        # 32-bit state: weights under min_8bit_size, and embeddings the Trainer overrides to optim_bits = 32
+        expected = (("state1", torch.float32, n), ("state2", torch.float32, n))
+    else:
+        expected = (
+            ("state1", torch.uint8, n),
+            ("state2", torch.uint8, n),
+            ("absmax1", torch.float32, blocks),
+            ("absmax2", torch.float32, blocks),
+            ("qmap1", torch.float32, 256),
+            ("qmap2", torch.float32, 256),
+        )
+    for key, dtype, size in expected:
         value = state.get(key)
         if (
             not torch.is_tensor(value)

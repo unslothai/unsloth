@@ -548,10 +548,10 @@ def _bnb_train(
     sr,
     monkeypatch,
     fused,
-    cls_name = "AdamW8bit",
     steps = 30,
     weight_decay = 0.01,
     nan_step = None,
+    cls_name = "AdamW8bit",
 ):
     bnb = pytest.importorskip("bitsandbytes")
     monkeypatch.setenv("UNSLOTH_BF16_SR_FUSED_BNB", "1" if fused else "0")
@@ -562,6 +562,8 @@ def _bnb_train(
         torch.nn.Parameter((torch.randn(s, device = "cuda", generator = g) * 0.02).to(torch.bfloat16))
         for s in shapes
     ]
+    start = [p.detach().clone() for p in params]
+    first = []
     opt = getattr(bnb.optim, cls_name)(params, lr = 1e-4, weight_decay = weight_decay)
     assert sr.enable_bf16_stochastic_rounding(opt, seed = 7, verbose = False) == len(params)
     for step in range(steps):
@@ -571,43 +573,75 @@ def _bnb_train(
             if step == nan_step:
                 p.grad.view(-1)[7] = float("nan")
                 p.grad.view(-1)[-1] = float("inf")
+        if step == 0:
+            first = [p.grad.clone() for p in params]
         opt.step()
-    return params, opt
+    return params, opt, start, first
 
 
+@pytest.mark.parametrize("steps", [1, 30])
 @pytest.mark.parametrize("weight_decay", [0.0, 0.01])
-@pytest.mark.parametrize("nan_step", [None, 3])
+@pytest.mark.parametrize("nan_step", [None, 0])
 def test_bitsandbytes_8bit_adam_one_kernel_matches_the_float32_copy_route(
-    sr, monkeypatch, weight_decay, nan_step
+    sr, monkeypatch, steps, weight_decay, nan_step
 ):
-    """8-bit blockwise AdamW on a bfloat16 weight in one kernel: the 8-bit states and absmax are bitwise
-    bitsandbytes' own (its CUDA kernel stepping the float32 copy), and the weights match the float32-copy route
-    with the same Philox draws except where the two float32 updates differ in the last bits; there the draw can
-    pick the other neighbour, so those weights sit about one bfloat16 step apart."""
-    fused, opt = _bnb_train(sr, monkeypatch, True, weight_decay = weight_decay, nan_step = nan_step)
-    assert (
-        opt.__dict__.get("_unsloth_sr_bnb_fused_steps") == 4 * 30
-    )  # the 1000-element weight has 32-bit state
-    assert opt.__dict__.get("_unsloth_sr_triton_rounds") == 30
-    ref, ref_opt = _bnb_train(sr, monkeypatch, False, weight_decay = weight_decay, nan_step = nan_step)
+    """8-bit blockwise AdamW on a bfloat16 weight in one kernel. The 8-bit states and absmax are bitwise
+    bitsandbytes' own (its CUDA kernel stepping the float32 copy). The weights use the same Philox draws as the
+    float32-copy route, so they agree except where the two float32 updates differ in the last bits and the draw
+    falls between them: after one step those weights are adjacent bfloat16 values; later steps add the same
+    update to both, so the few that differ stay a few bfloat16 steps apart, unbiased."""
+    fused, opt, start, first = _bnb_train(sr, monkeypatch, True, steps, weight_decay, nan_step)
+    # every weight takes one kernel: the 1000-element one has bitsandbytes' 32-bit state
+    assert opt.__dict__.get("_unsloth_sr_bnb_fused_steps") == 5 * steps
+    assert opt.__dict__.get("_unsloth_sr_triton_rounds", 0) == 0
+    ref, ref_opt, _, _ = _bnb_train(sr, monkeypatch, False, steps, weight_decay, nan_step)
     assert ref_opt.__dict__.get("_unsloth_sr_bnb_fused_steps", 0) == 0
-    for a, b in zip(fused, ref):
+    for a, b, w0, g0 in zip(fused, ref, start, first):
         state_a, state_b = opt.state[a], ref_opt.state[b]
-        assert state_a["step"] == state_b["step"] == 30
+        assert state_a["step"] == state_b["step"] == steps
         for key in ("state1", "state2", "absmax1", "absmax2"):
             if key in state_b and state_b[key] is not None:
                 x, y = state_a[key], state_b[key]
-                same = (x == y) | (x.isnan() & y.isnan()) if x.is_floating_point() else x == y
-                assert same.all(), (tuple(a.shape), key, x.dtype, int((~same).sum()))
-        if (
-            state_b["state1"].dtype == torch.uint8
-        ):  # bitsandbytes' 32-bit state kernel does not skip NaN
-            assert torch.isfinite(a).all()
-        differ = _bnb_ordered(a) != _bnb_ordered(b)
-        assert differ.float().mean() < 2e-3
-        # one bfloat16 step at the larger magnitude (floored where the update itself, lr = 1e-4, dominates)
-        scale = torch.maximum(a.float().abs(), b.float().abs()).clamp_min(1e-4)
-        assert ((a.float() - b.float()).abs() <= 2 * scale * 2**-7).all()
+                if x.dtype == torch.uint8 or key.startswith("absmax"):  # 8-bit state: bitwise
+                    same = (x == y) | (x.isnan() & y.isnan())
+                    assert same.all(), (tuple(a.shape), key, int((~same).sum()))
+                else:  # 32-bit moments: the same float32 arithmetic, up to the order of contraction
+                    assert torch.equal(x.isfinite(), y.isfinite())
+                    x, y = x[x.isfinite()], y[y.isfinite()]
+                    worst = float((x - y).abs().max() / y.abs().max())
+                    assert worst < 1e-5, (tuple(a.shape), key, worst)
+        eight_bit = state_b["state1"].dtype == torch.uint8
+        if eight_bit:
+            assert torch.isfinite(
+                a
+            ).all()  # the 8-bit kernel leaves a weight with a NaN / Inf gradient alone
+        assert torch.equal(a.isnan(), b.isnan())  # the 32-bit kernel does not, in either route
+        if eight_bit and steps == 1:
+            skipped = ~torch.isfinite(g0)
+            assert torch.equal(a.detach()[skipped], w0[skipped])
+        finite = ~a.isnan() & torch.isfinite(g0)
+        a, b, w0, g0 = (t.detach()[finite].float() for t in (a, b, w0, g0))
+        assert (a != b).float().mean() < 5e-3
+        if steps == 1:
+            # AdamW's first step in float64 from zero state, then the weight is one of its two bfloat16
+            # neighbours (bitsandbytes' own kernel forms its bias corrections with __powf, a few 1e-5 off here)
+            g = g0.double()
+            exact = w0.double() - 1e-4 * (0.1 * g / 0.1) / (
+                (0.001 * g * g).sqrt() / 0.001**0.5 + 1e-8
+            )
+            exact = exact * (1 - 1e-4 * weight_decay)
+            ulp = exact.abs().clamp_min(1e-30) * 2**-7
+            assert ((a.double() - exact).abs() <= ulp * 1.01 + 1e-12).all(), tuple(a.shape)
+        else:
+            # later steps add the same update to both: a weight that once took the other neighbour stays about one
+            # bfloat16 step from it; near zero, where that step is far below the update, it random-walks a few
+            # steps, unbiased and small against the updates' own movement (steps * lr)
+            tol = 2 * torch.maximum(a.abs(), b.abs()) * 2**-7 + 0.05 * steps * 1e-4
+            assert ((a - b).abs() <= tol).all(), (
+                tuple(a.shape),
+                float(((a - b).abs() / tol).max()),
+            )
+            assert abs(float((a - b).mean())) < 1e-7
 
 
 def test_bitsandbytes_8bit_adam_one_kernel_takes_a_transposed_gradient(sr, monkeypatch):
@@ -646,6 +680,32 @@ def test_bitsandbytes_8bit_adam_one_kernel_keeps_no_float32_copy(sr, monkeypatch
     assert peaks[True] < p.numel()
 
 
+def test_bitsandbytes_32bit_state_override_takes_one_kernel(sr, monkeypatch):
+    """The Trainer keeps embeddings at 32-bit state under 8-bit AdamW (GlobalOptimManager override): those, the
+    largest weights, take the one-kernel route too, with no float32 weight / gradient copy."""
+    bnb = pytest.importorskip("bitsandbytes")
+    emb = torch.nn.Embedding(4096, 1024, device = "cuda", dtype = torch.bfloat16)
+    manager = bnb.optim.GlobalOptimManager.get_instance()
+    manager.register_module_override(emb, "weight", {"optim_bits": 32})
+    try:
+        opt = bnb.optim.AdamW8bit(emb.parameters(), lr = 1e-4)
+        sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+        p = emb.weight
+        p.grad = (torch.randn(p.shape, device = "cuda") * 1e-3).to(torch.bfloat16)
+        opt.step()
+        assert opt.state[p]["state1"].dtype == torch.float32
+        torch.cuda.synchronize()
+        base = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        opt.step()
+        torch.cuda.synchronize()
+    finally:
+        manager.initialize()  # the override is process-wide: keep it out of later tests
+    assert torch.cuda.max_memory_allocated() - base < p.numel()
+    assert opt.__dict__.get("_unsloth_sr_bnb_fused_steps") == 2
+    assert opt.__dict__.get("_unsloth_sr_triton_rounds", 0) == 0
+
+
 def test_bitsandbytes_8bit_adam_launch_failure_falls_back(sr, monkeypatch, capsys):
     bnb = pytest.importorskip("bitsandbytes")
     monkeypatch.delenv("UNSLOTH_BF16_SR_FUSED_BNB", raising = False)
@@ -653,6 +713,9 @@ def test_bitsandbytes_8bit_adam_launch_failure_falls_back(sr, monkeypatch, capsy
     opt = bnb.optim.AdamW8bit([p], lr = 1e-3)
     sr.enable_bf16_stochastic_rounding(opt, verbose = False)
     assert sr._bnb_triton_ok(p.device)
+    p.grad = torch.zeros_like(p)
+    opt.init_state(opt.param_groups[0], p, 0, 0)
+    assert opt.state[p]["state1"].dtype == torch.uint8
 
     class Broken:
         def __getitem__(self, grid):
