@@ -35279,7 +35279,10 @@ async def produce_openai_chat_completions(
             # Derive confirm from permission_mode for CLI-forced loops; a non-stream ask/auto is rejected below.
             _effective_confirm = _permission_mode_confirm(payload)
             # Bypass, or auto with only always-safe tools, never prompts, so no stream is required.
-            if _confirm_gate_has_no_channel(payload, _ui_events, _catalog_names(tools_to_use)):
+            # A client-only catalogue runs nothing here, so there is nothing to approve.
+            if tools_to_use and _confirm_gate_has_no_channel(
+                payload, _ui_events, _catalog_names(tools_to_use)
+            ):
                 raise _reject(
                     400,
                     openai_error_body(

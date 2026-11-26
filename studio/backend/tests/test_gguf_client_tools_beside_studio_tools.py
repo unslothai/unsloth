@@ -534,3 +534,22 @@ def test_count_tokens_prices_client_tools_beside_studio_tools(monkeypatch):
         "web_search",
         "mcp_homeassistant__GetLiveContext",
     ]
+
+
+def test_client_only_catalogue_needs_no_approval_channel(monkeypatch):
+    backend = _RecordingToolBackend()
+    client = _route_client(monkeypatch, backend)
+
+    async def no_studio_tools(payload, **_kwargs):
+        return []
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", no_studio_tools)
+    request = {**_request(stream = False), "enabled_tools": [], "permission_mode": "ask"}
+
+    response = client.post("/chat/completions", json = request)
+
+    assert response.status_code == 200, response.text
+    assert [tool["function"]["name"] for tool in backend.kwargs["tools"]] == [
+        "mcp_homeassistant__GetLiveContext"
+    ]
+    assert response.json()["choices"][0]["finish_reason"] == "tool_calls"
