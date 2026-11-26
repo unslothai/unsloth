@@ -958,6 +958,8 @@ class HubSettingsResponse(BaseModel):
     datasets_server_follows_endpoint: bool
     source: Literal["huggingface", "modelscope"]
     active_source: Literal["huggingface", "modelscope"]
+    # GET only: the Hub's web origin for links this client opens, None where only the relay reaches it.
+    page_base: Optional[str] = None
 
 
 class HubSourceNoticeResponse(BaseModel):
@@ -2225,8 +2227,17 @@ def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
 
 # Owner only: the endpoint can name a private address that other accounts' clients must not learn.
 @_owner_settings_router.get("/hub", response_model = HubSettingsResponse)
-def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
-    return _hub_settings_response(get_hub_settings())
+def get_hub(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> HubSettingsResponse:
+    from utils.client_ip import client_ip
+    from utils.hf_endpoint import browser_hf_endpoint, endpoint_is_reachable_by
+
+    response = _hub_settings_response(get_hub_settings())
+    endpoint = browser_hf_endpoint()
+    if active_source() == "huggingface" and endpoint_is_reachable_by(endpoint, client_ip(request)):
+        response.page_base = endpoint
+    return response
 
 
 @_owner_settings_router.put("/hub", response_model = HubSettingsResponse)

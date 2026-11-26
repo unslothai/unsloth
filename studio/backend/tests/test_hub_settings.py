@@ -317,9 +317,24 @@ def test_route_saves_and_reports(client, store):
         "datasets_server_follows_endpoint": True,
         "source": "huggingface",
         "active_source": "huggingface",
+        "page_base": None,
     }
-    assert client.get("/hub").json() == body
+    assert client.get("/hub").json() == {**body, "page_base": MIRROR}
     assert os.environ["HF_DATASETS_SERVER"] == MIRROR
+
+
+def test_page_base_follows_what_the_relay_lets_this_client_reach(client, store, monkeypatch):
+    loopback = "http://127.0.0.1:9000"
+    assert (
+        client.put(
+            "/hub", json = {"hf_endpoint": loopback, "datasets_server_follows_endpoint": False}
+        ).status_code
+        == 200
+    )
+    monkeypatch.setattr("utils.client_ip.client_ip", lambda request: "203.0.113.9")
+    assert client.get("/hub").json()["page_base"] is None
+    monkeypatch.setattr("utils.client_ip.client_ip", lambda request: "127.0.0.1")
+    assert client.get("/hub").json()["page_base"] == loopback
 
 
 def test_only_the_owner_reads_the_endpoint(client, monkeypatch):
