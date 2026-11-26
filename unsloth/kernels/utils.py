@@ -2098,7 +2098,28 @@ def addmm_(
 # The rank-r product is written first and the base GEMM accumulates onto it (cuBLAS reads it in the
 # epilogue of a compute-bound GEMM), instead of a separate read-modify-write pass over the whole output.
 # UNSLOTH_LORA_FUSED_PASSES=0 restores the base-then-LoRA order everywhere.
-LORA_FUSED_PASSES = os.environ.get("UNSLOTH_LORA_FUSED_PASSES", "1") != "0"
+_LORA_FUSED_PASSES_ENV = os.environ.get("UNSLOTH_LORA_FUSED_PASSES")
+LORA_FUSED_PASSES = (_LORA_FUSED_PASSES_ENV or "1") != "0"
+
+
+def match_vllm_lora_rounding():
+    """RL with vLLM rollouts: use the base-then-LoRA order, so the trainer scores the policy vLLM sampled.
+
+    vLLM rounds the base GEMM output to bf16 before adding the LoRA term, and merged rollouts fold
+    s * B @ A into bf16 weights. Both drop LoRA updates below half a bf16 step. The fused order lets the
+    base GEMM accumulate onto the LoRA term; where cuBLAS does that in fp32 (A100, L4, CPU; not B200) the
+    trainer keeps those updates, its policy runs ahead of the sampler's as the adapter grows, and the
+    trainer / rollout logprob gap grows with it. The gradient math is unchanged, only where the forward
+    rounds. Process-wide, and an explicit UNSLOTH_LORA_FUSED_PASSES wins. Returns whether the fused order is off."""
+    global LORA_FUSED_PASSES
+    if _LORA_FUSED_PASSES_ENV is None and LORA_FUSED_PASSES:
+        LORA_FUSED_PASSES = False
+        print(
+            "Unsloth: vLLM rollouts add LoRA after rounding the base output to bf16, so the trainer now does too "
+            "(UNSLOTH_LORA_FUSED_PASSES=1 keeps the fused order)."
+        )
+    return not LORA_FUSED_PASSES
+
 
 try:
     from torch.distributed.tensor import DTensor as _LORA_DTENSOR
