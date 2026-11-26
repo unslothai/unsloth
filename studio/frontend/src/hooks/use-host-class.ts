@@ -38,3 +38,8 @@ export function useNvfp4DiffusionKnown(): boolean {
 export function useDenseQuantSchemes(): readonly string[] {
   return useGpuInfo().denseQuantSchemes;
 }
+
+/** CUDA cards /api/system reports; dense_quant_schemes is the intersection over all of them. */
+export function useGpuDeviceCount(): number {
+  return useGpuInfo().deviceCount;
+}

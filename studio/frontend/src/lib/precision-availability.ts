@@ -14,6 +14,8 @@ export interface PrecisionAvailabilityContext {
   denseQuantSupported: boolean;
   /** /api/system dense_quant_schemes. Empty is unknown (older backend, MPS, CPU), never "nothing loads". */
   denseQuantSchemes: readonly string[];
+  /** CUDA cards on the host: with more than one the list is their intersection, not the selected card's. */
+  gpuCount?: number;
   /** The family the pick loads as, or null when it is not known before the load. */
   family: string | null | undefined;
   denials: TransformerQuantDenials | null | undefined;
@@ -36,7 +38,14 @@ export function precisionUnavailableReason(value: string, ctx: PrecisionAvailabi
     if (reason) return reason;
   }
   const schemes = ctx.denseQuantSchemes.map(norm).filter(Boolean);
-  if (ctx.denseQuantSupported && schemes.length > 0 && LADDER_SCHEMES.has(scheme) && !schemes.includes(scheme)) {
+  const singleCard = (ctx.gpuCount ?? 1) <= 1;
+  if (
+    ctx.denseQuantSupported &&
+    singleCard &&
+    schemes.length > 0 &&
+    LADDER_SCHEMES.has(scheme) &&
+    !schemes.includes(scheme)
+  ) {
     return `${scheme.toUpperCase()} did not pass this GPU and PyTorch build's quantize and matmul check, or the card lacks its kernels.`;
   }
   return null;

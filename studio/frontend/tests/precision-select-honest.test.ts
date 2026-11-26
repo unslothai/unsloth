@@ -59,6 +59,9 @@ test("a ladder scheme the host did not report is disabled, an empty or non-CUDA 
   assert.deepEqual(precisionDisabledReasons(OPTIONS, { ...windows, denseQuantSupported: false }), {});
   assert.equal(precisionUnavailableReason("auto", windows), null);
   assert.equal(precisionUnavailableReason("none", windows), null);
+  // Several cards: the list is their intersection, so it says nothing about the card the load picks.
+  assert.deepEqual(precisionDisabledReasons(OPTIONS, { ...windows, gpuCount: 2 }), {});
+  assert.deepEqual(Object.keys(precisionDisabledReasons(OPTIONS, { ...windows, gpuCount: 1 })).sort(), ["fp8", "mxfp8"]);
 });
 
 test("the family comes from the explicit override, else the resident model", () => {
@@ -85,6 +88,10 @@ test("a recipe restores the precision it ran with, and leaves the select alone w
   assert.equal(recipeTextEncoderQuant({ text_encoder_quant: "fp8_dynamic" }), "fp8_dynamic");
   assert.equal(recipeTextEncoderQuant({ text_encoder_quant: "off" }), "none");
   assert.equal(recipeTextEncoderQuant({ text_encoder_quant: null }), null);
+  // A dense pipeline records a dense encoder as null: restore Dense, or a quantized pick would stay.
+  assert.equal(recipeTextEncoderQuant({ text_encoder_quant: null, model_kind: "pipeline" }), "none");
+  assert.equal(recipeTextEncoderQuant({ text_encoder_quant: null, model_kind: "gguf" }), null);
+  assert.equal(recipeTextEncoderQuant({ model_kind: "pipeline" }), null);
 });
 
 test("a recipe from another model is offered as a reload, the resident one is not", () => {
@@ -144,7 +151,18 @@ test("Images Restore puts back the precision and offers a different model as a r
   assert.match(action, /ggufVariant: ggufQuantLabel\(image\.gguf_filename\)/);
   assert.match(action, /claimImageRecipe\(\)\.commit\(\);\s*restoreSettingsRef\.current\?\.\(image, exactCaption, "vary"\);/);
   assert.match(src, /restoreSettingsRef\.current = restoreSettings;/);
+  // An explicit Load model in Download only mode switches to Load and runs once handleModelSelect reads it.
+  assert.match(action, /if \(modelSelectionActionRef\.current === "download"\) \{\s*pendingRestorePick\.current = run;\s*setModelSelectionAction\("load"\);/);
+  assert.match(src, /if \(modelSelectionAction !== "load" \|\| !pendingRestorePick\.current\) return;/);
 });
+
+for (const page of ["images/images-page.tsx", "video/video-page.tsx"]) {
+  test(`${page}: a multi-GPU host's scheme intersection never disables Precision`, () => {
+    const src = readSrc(`features/${page}`);
+    assert.match(src, /const gpuCount = useGpuDeviceCount\(\);/);
+    assert.match(src, /denseQuantSchemes,\s*gpuCount,\s*family: pickFamily\(/);
+  });
+}
 
 // Runs the video page's restoreClipBuild for real, with the page's state setters and toast stubbed.
 function videoRestoreClipBuild(status: unknown) {

@@ -115,6 +115,7 @@ import {
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
   useDenseQuantSchemes,
+  useGpuDeviceCount,
   useHostClass,
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
@@ -1866,6 +1867,7 @@ export function ImagesPage({
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const gpuCount = useGpuDeviceCount();
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
@@ -2215,6 +2217,7 @@ export function ImagesPage({
   const precisionAvailability = {
     denseQuantSupported: hostClass === "dense-quant",
     denseQuantSchemes,
+    gpuCount,
     family: pickFamily(familyOverride, Boolean(status?.loaded), status?.family),
     denials: status?.transformer_quant_denials,
   };
@@ -3143,6 +3146,17 @@ export function ImagesPage({
   const restoreSettingsRef = useRef<
     ((image: GalleryImage, exactCaption?: boolean, via?: "restore" | "import" | "vary") => void) | null
   >(null);
+  // A restore's Load model is an explicit load: in Download only mode it switches the picker to Load first and
+  // runs on the next render, once handleModelSelect reads the new mode.
+  const modelSelectionActionRef = useRef(modelSelectionAction);
+  modelSelectionActionRef.current = modelSelectionAction;
+  const pendingRestorePick = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (modelSelectionAction !== "load" || !pendingRestorePick.current) return;
+    const run = pendingRestorePick.current;
+    pendingRestorePick.current = null;
+    run();
+  }, [modelSelectionAction]);
   const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore") => {
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0 (the base pass's, or Hires CFG's for the refine pass); do not
@@ -3276,22 +3290,30 @@ export function ImagesPage({
               action: {
                 label: "Load model",
                 onClick: () => {
-                  handleModelSelectRef.current?.(reloadModel, {
-                    source: "hub",
-                    isLora: false,
-                    isDiffusion: true,
-                    ...(image.model_kind === "gguf" && image.gguf_filename
-                      ? {
-                          isGguf: true,
-                          ggufFilename: image.gguf_filename,
-                          ggufVariant: ggufQuantLabel(image.gguf_filename),
-                        }
-                      : {}),
-                  });
-                  // The pick seeds its model's recommended steps / size; the image's recipe outranks them, now and
-                  // when the load lands ("vary" re-applies the form silently).
-                  claimImageRecipe().commit();
-                  restoreSettingsRef.current?.(image, exactCaption, "vary");
+                  const run = () => {
+                    handleModelSelectRef.current?.(reloadModel, {
+                      source: "hub",
+                      isLora: false,
+                      isDiffusion: true,
+                      ...(image.model_kind === "gguf" && image.gguf_filename
+                        ? {
+                            isGguf: true,
+                            ggufFilename: image.gguf_filename,
+                            ggufVariant: ggufQuantLabel(image.gguf_filename),
+                          }
+                        : {}),
+                    });
+                    // The pick seeds its model's recommended steps / size; the image's recipe outranks them, now and
+                    // when the load lands ("vary" re-applies the form silently).
+                    claimImageRecipe().commit();
+                    restoreSettingsRef.current?.(image, exactCaption, "vary");
+                  };
+                  if (modelSelectionActionRef.current === "download") {
+                    pendingRestorePick.current = run;
+                    setModelSelectionAction("load");
+                  } else {
+                    run();
+                  }
                 },
               },
             }

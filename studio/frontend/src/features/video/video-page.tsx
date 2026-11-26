@@ -190,6 +190,7 @@ import {
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
   useDenseQuantSchemes,
+  useGpuDeviceCount,
   useHostClass,
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
@@ -1376,6 +1377,7 @@ function VideoGenerator({
   const { pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const gpuCount = useGpuDeviceCount();
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
@@ -1502,6 +1504,7 @@ function VideoGenerator({
   const precisionAvailability = {
     denseQuantSupported: hostClass === "dense-quant",
     denseQuantSchemes,
+    gpuCount,
     family: pickFamily(familyOverride, Boolean(status?.loaded), status?.family),
     denials: status?.transformer_quant_denials,
   };

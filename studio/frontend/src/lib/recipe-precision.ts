@@ -46,9 +46,12 @@ export function recipeTransformerQuant(recipe: RecipeBuild): TransformerQuantCho
   return engaged === null && recipe.model_kind === "pipeline" ? "none" : null;
 }
 
-/** The Text encoder precision a recipe ran with; null leaves the select alone (no engaged value on record). */
+/** The Text encoder precision a recipe ran with: its engaged scheme, or Dense for a dense pipeline that ran none.
+ * Null leaves the select alone (GGUF / connection runs, records older than the field). */
 export function recipeTextEncoderQuant(recipe: RecipeBuild): TextEncoderQuantChoice | null {
   const engaged = recipe.text_encoder_quant;
+  // A dense pipeline records a dense encoder as null: that is Dense, not unknown.
+  if (engaged === null && recipe.model_kind === "pipeline") return "none";
   if (typeof engaged !== "string" || !engaged.trim()) return null;
   const picked = choice(TEXT_ENCODER_QUANT_CHOICES, engaged);
   return picked === "auto" ? null : picked;
