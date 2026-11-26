@@ -325,9 +325,68 @@ def _group_layout(
     return (out, every_key) if with_keys else out
 
 
+_PORTABLE_ENV = "UNSLOTH_PORTABLE_RESUME"  # 1: always write the 1-GPU optimizer.pt, 0: never
+_PORTABLE_MAX_GB_ENV = "UNSLOTH_PORTABLE_RESUME_MAX_GB"
+_PORTABLE_MAX_FRACTION = (
+    0.05  # trainable share of the model below which the 1-GPU form is always written
+)
+_PORTABLE_MAX_GB = 2.0  # else: written while its float32 Adam moments stay under this
+
+
+def _logical_numel(p):
+    """Elements of this rank's part of `p`; a bitsandbytes 4-bit weight counts its unpacked elements."""
+    shape = getattr(getattr(p, "quant_state", None), "shape", None)
+    if shape is not None:
+        return int(torch.Size(shape).numel())
+    return int(_local(p).numel())
+
+
+def portable_size_decision(model):
+    """Collective (one all-reduce, before any gather): (write, why). The 1-GPU optimizer state is gathered onto
+    rank 0's host memory, cheap for LoRA but the whole model's float32 Adam moments for full finetuning (64 GiB
+    at 8B), so it is written only when the trainable parameters are at most 5% of the model or their moments fit
+    UNSLOTH_PORTABLE_RESUME_MAX_GB (2). UNSLOTH_PORTABLE_RESUME=1 / 0 forces it on / off. Sums over ranks count
+    replicated parameters once per rank, which only errs towards skipping."""
+    value = os.environ.get(_PORTABLE_ENV, "").strip().lower()
+    force_on, force_off = value in ("1", "true", "yes", "on"), value in ("0", "false", "no", "off")
+    trainable = total = 0
+    for p in model.parameters():
+        n = _logical_numel(p)
+        total += n
+        if p.requires_grad:
+            trainable += n
+    try:
+        budget = float(os.environ.get(_PORTABLE_MAX_GB_ENV, _PORTABLE_MAX_GB)) * 2**30
+    except ValueError:
+        budget = _PORTABLE_MAX_GB * 2**30
+    counts = [float(trainable), float(total), float(force_on), float(force_off)]
+    dist = _dist()
+    if dist is not None:
+        from .tp_native import _flag_device
+
+        t = torch.tensor(counts, dtype = torch.float64, device = _flag_device())
+        dist.all_reduce(t)
+        counts = t.tolist()
+    trainable, total, force_on, force_off = counts
+    if force_off:
+        return False, f"this run ({_PORTABLE_ENV}=0)"
+    if force_on:
+        return True, None
+    moments = 8.0 * trainable  # float32 exp_avg + exp_avg_sq
+    if trainable <= _PORTABLE_MAX_FRACTION * total or moments <= budget:
+        return True, None
+    return False, (
+        f"{trainable / 1e6:,.0f}M trainable parameters ({100 * trainable / max(total, 1):.0f}% of the model, about "
+        f"{moments / 2**30:,.1f} GiB of float32 Adam moments on rank 0; {_PORTABLE_ENV}=1 writes it anyway)"
+    )
+
+
 def portable_optimizer_state(model, optimizer):
     """Collective (every rank): the 1-GPU optimizer state keyed by parameter name on global rank 0 (None on the
-    others), or (None, why) on every rank when this optimizer's state cannot be mapped."""
+    others), or (None, why) on every rank when it is not written (too large, or not convertible)."""
+    write, why = portable_size_decision(model)
+    if not write:
+        return None, why
     dist = _dist()
     inner = _inner(optimizer)
     names = {id(p): n for n, p in model.named_parameters()}
@@ -355,7 +414,9 @@ def portable_optimizer_state(model, optimizer):
             union.setdefault(n, {}).update(keys)
             owner.setdefault(n, rank)
     rank = _rank()
-    mine = {}
+    # Rank 0 keeps the names it owns (every name under tensor / expert parallel); another owner (a pipeline stage)
+    # keeps only its own, then sends them one parameter at a time. Non-owners drop each gathered tensor at once.
+    merged, held = {}, {}
     for n, p in _trainables(model):
         keys = union.get(n)
         if keys is None:
@@ -374,20 +435,20 @@ def portable_optimizer_state(model, optimizer):
                 value = entry.get(key)
                 if value is None:
                     continue
-            full[key] = value.cpu() if torch.is_tensor(value) else value
+            if owner[n] == rank:
+                full[key] = value.cpu() if torch.is_tensor(value) else value
         if owner[n] == rank:
-            mine[n] = full
-    if dist is None:
-        parts = [mine]
-    else:
-        parts = [None] * dist.get_world_size() if rank == 0 else None
-        dist.gather_object(mine, parts, dst = 0)
+            (merged if rank == 0 else held)[n] = full
+    if dist is not None:
+        for n in sorted(n for n, r in owner.items() if r != 0):
+            if rank == owner[n]:
+                dist.send_object_list([held.pop(n)], dst = 0)
+            elif rank == 0:
+                box = [None]
+                dist.recv_object_list(box, src = owner[n])
+                merged[n] = box[0]
     if rank != 0:
         return None, None
-    merged = {}
-    for part in parts:
-        for n, entry in part.items():
-            merged.setdefault(n, entry)
     param_groups = [{**hyper, "params": group_names} for hyper, group_names, _ in groups]
     return {"state": merged, "param_groups": param_groups}, None
 

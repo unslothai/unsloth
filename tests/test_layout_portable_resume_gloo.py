@@ -615,3 +615,117 @@ def test_one_process_checkpoint_with_modules_to_save_resumes_under_tensor_parall
         src["losses"],
     )
     _close(got, tp_ref, "one -> tp2, modules_to_save", grads = False)
+
+
+def _case_save_gate(
+    rank,
+    world,
+    tmp,
+    full,
+    max_gb,
+    rank_r = 4,
+    overrides = None,
+    repeats = 0,
+):
+    """apply_tensor_parallel on tp 2 (LoRA, or full finetuning), one AdamW step, then the Trainer checkpoint
+    save: how many gathers the portable optimizer.pt ran, whether it was written, and (repeats) ms per save."""
+    import time
+    import types
+
+    from test_tp_native_oracle import LLAMA, build, tpn
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import portable_resume
+
+    if max_gb is not None:
+        os.environ["UNSLOTH_PORTABLE_RESUME_MAX_GB"] = str(max_gb)
+    gathers = [0]
+    full_value = portable_resume._full_value
+
+    def counted(*args, **kwargs):
+        gathers[0] += 1
+        return full_value(*args, **kwargs)
+
+    portable_resume._full_value = counted
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    model = build(LLAMA, overrides, lora = not full, r = rank_r, lora_alpha = 2 * rank_r).train()
+    if full:
+        for p in model.parameters():
+            p.requires_grad_(True)
+    tpn.apply_tensor_parallel(model, mesh)
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr = 1e-3)
+    ids = torch.randint(0, 64, (2, 8), generator = torch.Generator().manual_seed(0))
+    model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
+    optimizer.step()
+    trainer = types.SimpleNamespace(
+        model = model,
+        optimizer = optimizer,
+        lr_scheduler = None,
+        args = types.SimpleNamespace(should_save = rank == 0),
+    )
+    directory = os.path.join(tmp, f"ckpt_{int(full)}_{rank_r}")
+    tpn._tp_save_optimizer_and_scheduler(trainer, directory)
+    out = {
+        "gathers": gathers[0],
+        "written": os.path.isfile(os.path.join(directory, "optimizer.pt")),
+        "trainable": sum(p.numel() for p in params),
+    }
+    if repeats:
+        import torch.distributed as dist
+        for env in ("0", "1"):
+            os.environ["UNSLOTH_PORTABLE_RESUME"] = env
+            times = []
+            for _ in range(repeats):
+                dist.barrier()
+                start = time.perf_counter()
+                tpn._tp_save_optimizer_and_scheduler(trainer, directory)
+                times.append(1000 * (time.perf_counter() - start))
+            out[f"ms_{env}"] = sorted(times)
+        out["portable_mb"] = os.path.getsize(os.path.join(directory, "optimizer.pt")) / 2**20
+    return out
+
+
+def _gate_worker(rank, world, port, tmp, kwargs):
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port), RANK = str(rank), WORLD_SIZE = str(world)
+    )
+    for key in _ENV_KEYS + ("UNSLOTH_PORTABLE_RESUME", "UNSLOTH_PORTABLE_RESUME_MAX_GB"):
+        os.environ.pop(key, None)
+    torch.set_num_threads(2)
+    import torch.distributed as dist
+
+    dist.init_process_group("gloo", rank = rank, world_size = world)
+    try:
+        res = _case_save_gate(rank, world, tmp, **kwargs)
+    except Exception as exc:
+        import traceback
+        res = {"error": f"{type(exc).__name__}: {exc}"[:2000] + traceback.format_exc()[-6000:]}
+    torch.save(res, os.path.join(tmp, f"gate_{rank}.pt"))
+    dist.destroy_process_group()
+
+
+def _run_gate(tmp, **kwargs):
+    ctx = multiprocessing.get_context("spawn")
+    port = _free_port()
+    procs = [ctx.Process(target = _gate_worker, args = (r, 2, port, tmp, kwargs)) for r in range(2)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(600)
+    assert [p.exitcode for p in procs] == [0, 0]
+    results = [torch.load(os.path.join(tmp, f"gate_{r}.pt"), weights_only = False) for r in range(2)]
+    for r in results:
+        assert "error" not in r, r["error"]
+    return results
+
+
+@pytest.mark.parametrize("full", [False, True], ids = ["lora", "full_finetuning"])
+def test_portable_optimizer_is_skipped_for_full_finetuning(full, tmp_path):
+    """tp 2 save: LoRA (a small share of the model) gathers and writes the 1-GPU optimizer.pt; full finetuning
+    over the byte budget (set to 1 KiB here, a tiny model's moments) gathers nothing and writes none."""
+    for rank, r in enumerate(_run_gate(str(tmp_path), full = full, max_gb = 2**-20)):
+        if full:
+            assert r["gathers"] == 0 and not r["written"], (rank, r)
+        else:
+            assert r["gathers"] > 0 and r["written"], (rank, r)
