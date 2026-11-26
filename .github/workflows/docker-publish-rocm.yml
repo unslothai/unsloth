@@ -279,7 +279,7 @@ jobs:
 
       # Checked here, not in prepare: a newer v* can land while this run builds, and re-running an
       # older release must not roll :latest/:studio back.
-      - name: Is this the newest v* release
+      - name: Resolve whether this is the newest v* tag
         id: newest_release
         env:
           TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
@@ -407,7 +407,7 @@ jobs:
 
       # Checked here, not in prepare: a newer v* can land while this run builds, and re-running an
       # older release must not roll :latest/:studio back.
-      - name: Is this the newest v* release
+      - name: Resolve whether this is the newest v* tag
         id: newest_release
         env:
           TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
