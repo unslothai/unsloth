@@ -30855,6 +30855,7 @@ def _plan_external_compaction(
             cut = cloud_compaction.tail_start(
                 plan.body, estimate_message_tokens_without_unpriced_media, 0
             )
+        cut = cloud_compaction.keep_request_reference(plan.body, cut)
         if cut > plan.covered:
             plan.cut = cut
             plan.to_summarise = plan.body[plan.covered : cut]

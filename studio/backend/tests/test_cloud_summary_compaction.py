@@ -1449,3 +1449,28 @@ def test_a_prompt_the_fit_cannot_shrink_below_the_threshold_still_fits_with_its_
     prompt = ri._external_token_counter(ri.ChatCompletionRequest(messages = chat), None)(chat)
     assert prompt > _SMALL_TRIGGER["compaction_threshold"]
     assert prompt + sent["max_tokens"] <= _SMALL_TRIGGER["context_window"]
+
+
+@pytest.mark.parametrize("force", [None, "manual"])
+def test_an_image_edit_reference_before_the_newest_turn_is_not_summarised(force):
+    from models.inference import ChatCompletionRequest
+
+    chat = _long_chat(turns = 2, turn = "word " * 40)
+    reference = {
+        "role": "assistant",
+        "content": [{"type": "image_generation_call", "id": "ig_1", "response_id": "resp_1"}],
+    }
+    chat.insert(len(chat) - 1, reference)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "latest"}],
+        provider_type = "openai",
+        model = "gpt-5-nano",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 2_000,
+        max_tokens = 256,
+    )
+    tools = [{"type": "function", "function": {"name": "t", "description": "d " * 3_000}}]
+    plan = ri._plan_external_compaction(chat, payload, tools = tools, force = force)
+    assert plan.to_summarise == chat[1:-2]
+    kept = cloud_compaction.apply_summary(chat, _SUMMARY, plan.cut)
+    assert kept[-2:] == [reference, chat[-1]]

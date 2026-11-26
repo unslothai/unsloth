@@ -372,6 +372,20 @@ def tail_start(body: list[dict], count_message: Callable[[dict], int], tail_toke
     return start
 
 
+def keep_request_reference(body: list[dict], cut: int) -> int:
+    """The image-edit reference sent just before the newest user turn belongs to this request."""
+    if cut <= 0 or cut >= len(body) or body[cut].get("role") != "user":
+        return cut
+    if any(message.get("role") == "user" for message in body[cut + 1 :]):
+        return cut
+    previous = body[cut - 1]
+    parts = previous.get("content")
+    if previous.get("role") == "assistant" and isinstance(parts, list):
+        if any(isinstance(p, dict) and p.get("type") == "image_generation_call" for p in parts):
+            return cut - 1
+    return cut
+
+
 def tail_token_budget(prompt_budget_tokens: Optional[int]) -> int:
     if not prompt_budget_tokens or prompt_budget_tokens <= 0:
         return TAIL_TOKENS
