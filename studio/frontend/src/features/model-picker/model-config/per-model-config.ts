@@ -203,6 +203,16 @@ export function engineSelection(
   return engine === "auto" ? { engine } : { engine, chatTemplateOverride: null };
 }
 
+/** Managed engines reject gguf_variant, which also carries MLX precision folders. */
+export function withoutManagedEngineForVariant(
+  config: PerModelConfig,
+  hasCheckpointVariant: boolean,
+): PerModelConfig {
+  return hasCheckpointVariant && config.engine && config.engine !== "auto"
+    ? { ...config, engine: "auto" }
+    : config;
+}
+
 /** Native-audio checkpoints load on Apple Silicon without MLX; `loadedIsMlx` null means not loaded. */
 export function residentIsServedByMlx(
   isGguf: boolean,

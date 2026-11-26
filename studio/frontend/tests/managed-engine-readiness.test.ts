@@ -15,7 +15,7 @@ const {
   supportsPrecision,
   supportsKvCacheDtype,
 } = await import("../src/features/model-picker/api/engines.ts");
-const { engineSelection, normalizePerModelConfig } = await import(
+const { engineSelection, normalizePerModelConfig, withoutManagedEngineForVariant } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
@@ -164,4 +164,19 @@ test("picking vLLM or SGLang drops an MLX chat template, Default keeps it", () =
   assert.deepEqual(engineSelection("vllm"), { engine: "vllm", chatTemplateOverride: null });
   assert.deepEqual(engineSelection("sglang"), { engine: "sglang", chatTemplateOverride: null });
   assert.deepEqual(engineSelection("auto"), { engine: "auto" });
+});
+
+test("checkpoint variants use Default even with a saved managed engine", () => {
+  for (const engine of ["vllm", "sglang"] as const) {
+    const saved = normalizePerModelConfig({
+      engine,
+      chatTemplateOverride: "custom template",
+    });
+    assert.equal(withoutManagedEngineForVariant(saved, false), saved);
+    assert.deepEqual(withoutManagedEngineForVariant(saved, true), {
+      ...saved,
+      engine: "auto",
+    });
+    assert.equal(saved.engine, engine);
+  }
 });

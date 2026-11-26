@@ -250,6 +250,7 @@ import {
   storedSpeculativeAuto,
   subscribeAdvancedSettingsOpen,
   sameEngramPrecision,
+  withoutManagedEngineForVariant,
 } from "../model-config/per-model-config";
 import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
@@ -2876,6 +2877,7 @@ export function ModelConfigPage({
     (s) => s.maxContextLength,
   );
   const configId = target.configId ?? target.id;
+  const hasCheckpointVariant = Boolean(target.ggufVariant);
   const targetIsNpu = isNpuModelId(target.id);
   const npuName = useNpuDisplayName(targetIsNpu ? target.id : null);
   const npuCatalogVision = useNpuCatalogStore(
@@ -2934,9 +2936,11 @@ export function ModelConfigPage({
     () => resolveInitial(),
     [configId, target.ggufVariant, loadedConfig, initialConfig],
   );
-  const configState =
+  const configState = withoutManagedEngineForVariant(
     draftSnapshot?.config ??
-    reconcileConfigGpuSelection(initialFallback.config, isDiffusion, gpuDevices);
+      reconcileConfigGpuSelection(initialFallback.config, isDiffusion, gpuDevices),
+    hasCheckpointVariant,
+  );
   const remember = draftSnapshot?.remember ?? initialFallback.remembered;
   const savedRemember =
     draftSnapshot?.savedRemember ?? initialFallback.remembered;
@@ -4025,7 +4029,10 @@ export function ModelConfigPage({
     // The peer's focused input commits into the shared draft during this click.
     const liveDraftConfig = readModelConfigDraft(draftKey)?.config;
     const baseConfig = liveDraftConfig
-      ? reconcileConfigGpuSelection(liveDraftConfig, resolvedIsDiffusion, gpuDevices)
+      ? withoutManagedEngineForVariant(
+          reconcileConfigGpuSelection(liveDraftConfig, resolvedIsDiffusion, gpuDevices),
+          hasCheckpointVariant,
+        )
       : config;
     const peerChanged = !perModelConfigsEqual(baseConfig, config);
     const committedConfig =
@@ -4506,7 +4513,7 @@ export function ModelConfigPage({
         hasSavedSettings={savedRemember}
       />
       <div className="space-y-5">
-        {!target.isGguf && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
+        {!target.isGguf && !hasCheckpointVariant && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update(engineSelection(engine))} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
         {/* LoRA adapters keep the precision they were trained in, so they get no switch. */}

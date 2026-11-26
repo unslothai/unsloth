@@ -464,6 +464,16 @@ def test_diffusion_capability_labeled_image_video_gen():
         assert "matchesHubCapability" in on_device
 
 
+def test_run_settings_hides_managed_engines_for_checkpoint_variants():
+    """The variant picker also sends ggufVariant for MLX precision folders."""
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "const hasCheckpointVariant = Boolean(target.ggufVariant);" in page
+    assert re.search(
+        r"\{!target\.isGguf && !hasCheckpointVariant && [^{}]+\( <InferenceEnginePicker\b",
+        page,
+    )
+
+
 def test_active_model_config_round_trips_gpu_fields():
     """The active model's config must carry the GPU Memory knobs (GGUF only) so a
     sidebar reload cannot silently reset manual GPU settings, and "Remember
