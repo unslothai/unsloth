@@ -3613,11 +3613,14 @@ def native_load_optimizer(model, optimizer, path_or_state):
     if not isinstance(state, dict):
         state = _load_full_optimizer_state(state)
     from .fsdp2_bnb_optim import rename_optimizer_state_for
+    from .portable_resume import as_named_state
 
-    # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
-    rename_optimizer_state_for(_inner_optimizer(optimizer), state)
     root = _native_root(model)
     inner = _inner_optimizer(optimizer)
+    # One GPU's optimizer.pt (keyed by position, bitsandbytes 8-bit codes) keyed by FQN, float32 Adam moments.
+    state = as_named_state(root, inner, state)
+    # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
+    rename_optimizer_state_for(inner, state)
     unstepped = _unstepped_optimizer_params(root, inner, state)
     # torch refuses a trainable parameter without saved state, and strict = False would keep the
     # fresh init state for it. Hiding these (requires_grad off) leaves them stateless, as saved.
@@ -4438,23 +4441,11 @@ def _check_checkpoint_tables(root, checkpoint):
         raise ValueError(error)
 
 
-def native_load_model_checkpoint(model, checkpoint):
-    """Collective: load a Trainer checkpoint's weights (PEFT adapter or full model, as save_model wrote
-    them) into a natively sharded model with `set_model_state_dict(full_state_dict)`. PEFT's saved keys
-    drop the adapter name; it is put back for each trainable parameter. Raises if a trainable parameter
-    has no saved tensor (the resume would silently keep the fresh value)."""
-    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
-
-    root = _native_root(model)
-    _check_checkpoint_tables(
-        root, checkpoint
-    )  # before any read: a refused checkpoint changes nothing
-    n_loaded = _native_load_hf_sharded(root, checkpoint)
-    if n_loaded is not None:
-        _print_rank0(
-            f"Unsloth: native FSDP2 resumed {n_loaded} tensors from {checkpoint} (sharded read)."
-        )
-        return n_loaded
+def checkpoint_state_by_name(root, checkpoint):
+    """(mapped, legacy_lora_b, is_adapter): a Trainer checkpoint's weights (PEFT adapter or full model, as
+    save_model wrote them) keyed by `root`'s parameter / persistent buffer names, full (1-GPU) tensors on the
+    CPU. PEFT's saved keys drop the adapter name; it is put back for each trainable parameter. Raises if a
+    trainable parameter has no saved tensor (the resume would silently keep the fresh value)."""
     adapters = []
     active = getattr(root, "active_adapters", None)
     if isinstance(active, (list, tuple)):
@@ -4529,6 +4520,27 @@ def native_load_model_checkpoint(model, checkpoint):
             f"Unsloth: native FSDP2 resume found no saved tensor for {len(missing)} parameters "
             f"(e.g. {missing[0]}) in {checkpoint}."
         )
+    return mapped, legacy_lora_b, is_adapter
+
+
+def native_load_model_checkpoint(model, checkpoint):
+    """Collective: load a Trainer checkpoint's weights (PEFT adapter or full model, as save_model wrote
+    them) into a natively sharded model with `set_model_state_dict(full_state_dict)`. PEFT's saved keys
+    drop the adapter name; it is put back for each trainable parameter. Raises if a trainable parameter
+    has no saved tensor (the resume would silently keep the fresh value)."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+
+    root = _native_root(model)
+    _check_checkpoint_tables(
+        root, checkpoint
+    )  # before any read: a refused checkpoint changes nothing
+    n_loaded = _native_load_hf_sharded(root, checkpoint)
+    if n_loaded is not None:
+        _print_rank0(
+            f"Unsloth: native FSDP2 resumed {n_loaded} tensors from {checkpoint} (sharded read)."
+        )
+        return n_loaded
+    mapped, legacy_lora_b, is_adapter = checkpoint_state_by_name(root, checkpoint)
     n_loaded = len(mapped)  # set_model_state_dict may add entries to the dict it is given
     set_model_state_dict(
         root,

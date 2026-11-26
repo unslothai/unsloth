@@ -453,6 +453,15 @@ def _case_optimizer_round_trip(rank, world, tmp):
         "scheduler": fresh.lr_scheduler.state_dict() == trainer.lr_scheduler.state_dict()
         and trainer.lr_scheduler.last_epoch == 1,
         "files": sorted(os.listdir(directory)),
+        # The 1-GPU optimizer.pt (keyed by parameter name, every expert), not rank 0's own state.
+        "portable_names": sorted(
+            n
+            for g in torch.load(os.path.join(directory, "optimizer.pt"), weights_only = True)[
+                "param_groups"
+            ]
+            for n in g["params"]
+        ),
+        "trainable_names": sorted(n for n, p in model.named_parameters() if p.requires_grad),
     }
 
 
@@ -633,4 +642,5 @@ def test_optimizer_checkpoint_round_trip_from_the_rank_state():
     assert all(r is not None and r["error"] is None for r in results), results
     for r in results:
         assert r["optim"] and r["scheduler"], r
-        assert "optimizer.pt" not in r["files"], r  # rank 0's state lives in its rank file
+        # rank 0's state lives in its rank file; optimizer.pt is the 1-GPU form (portable_resume.py)
+        assert r["portable_names"] == r["trainable_names"], r
