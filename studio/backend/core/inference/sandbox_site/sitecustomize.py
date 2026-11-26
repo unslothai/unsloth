@@ -6,7 +6,6 @@ in try/except so a failure never breaks the interpreter; no redirect onto existi
 
 import builtins
 import io
-import json
 import os
 import sys
 
@@ -132,10 +131,25 @@ def _sidecar_path(cwd):
     return os.path.join(cwd, _REMAP_SIDECAR)
 
 
+def _stdlib_json():
+    """The stdlib json, imported on first use (json pulls re and enum: most of the shim's startup), else None.
+
+    A json already in sys.modules that is not the stdlib copy (a chat-planted json.py) is never used: the sidecar is
+    best effort, so it is skipped instead."""
+    module = sys.modules.get("json")
+    if module is None:
+        import json as module  # _StdlibLazyFinder answers it with the stdlib copy
+    origin = getattr(module, "__file__", None) or ""
+    return module if origin and _is_stdlib_file(origin) else None
+
+
 def _load_sidecar(cwd):
     """Return the persisted ``source -> healed target`` map, or {} on any error
     (missing/corrupt/foreign sidecar degrades to in-process-only behaviour)."""
     try:
+        json = _stdlib_json()
+        if json is None:
+            return {}
         with open(_sidecar_path(cwd), encoding = "utf-8") as fh:
             data = json.load(fh)
     except Exception:  # noqa: BLE001 - a bad sidecar must never break user code
@@ -150,6 +164,9 @@ def _record_sidecar(cwd, source, target):
         if data.get(source) == target:
             return
         data[source] = target
+        json = _stdlib_json()
+        if json is None:
+            return
         tmp = _sidecar_path(cwd) + ".tmp"
         with open(tmp, "w", encoding = "utf-8") as fh:
             json.dump(data, fh)
@@ -232,14 +249,11 @@ def _remap(path, notify = True):
 
 
 def _install():
-    import pathlib
-
     original_open = builtins.open
     original_io_open = io.open
     original_os_open = os.open
     original_makedirs = os.makedirs
     original_mkdir = os.mkdir
-    original_path_mkdir = pathlib.Path.mkdir
 
     def _open(
         file,
@@ -278,25 +292,48 @@ def _install():
             return original_os_open(mapped, flags, mode)
         return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
 
-    def _path_mkdir(self, *args, **kwargs):
-        # pathlib probes unpatched os.stat on FileExistsError; remap up front for exist_ok.
-        mapped = _remap(self)
-        target = self if mapped is self else self.__class__(mapped)
-        return original_path_mkdir(target, *args, **kwargs)
+    def _patch_pathlib(pathlib):
+        original_path_mkdir = pathlib.Path.mkdir
+
+        def _path_mkdir(self, *args, **kwargs):
+            # pathlib probes unpatched os.stat on FileExistsError; remap up front for exist_ok.
+            mapped = _remap(self)
+            target = self if mapped is self else self.__class__(mapped)
+            return original_path_mkdir(target, *args, **kwargs)
+
+        # Python < 3.11: pathlib's _NormalAccessor captured the original io.open; repoint it.
+        accessor = getattr(pathlib, "_NormalAccessor", None)
+        if accessor is not None and hasattr(accessor, "open"):
+            accessor.open = staticmethod(_io_open)
+            # Imported after the os patches, it captured them (a plain function binds as a method); give it the
+            # originals it captured when the shim imported pathlib before patching.
+            originals = {
+                _mkdir: original_mkdir,
+                _makedirs: original_makedirs,
+                _os_open: original_os_open,
+            }
+            for name, value in list(vars(accessor).items()):
+                if value in originals:
+                    setattr(accessor, name, staticmethod(originals[value]))
+        # Path.mkdir calls os.mkdir per part; patch both, since exist_ok/parents need Path.mkdir.
+        pathlib.Path.mkdir = _path_mkdir
 
     builtins.open = _open
     # pathlib.Path.open / write_text / read_text call io.open directly, so patch both.
     io.open = _io_open
-    # Python < 3.11: pathlib's _NormalAccessor captured the original io.open; repoint it.
-    accessor = getattr(pathlib, "_NormalAccessor", None)
-    if accessor is not None and hasattr(accessor, "open"):
-        accessor.open = staticmethod(_io_open)
     # Path.touch() and other low-level opens call os.open directly, so patch it too.
     os.open = _os_open
     os.makedirs = _makedirs
-    # Path.mkdir calls os.mkdir per part; patch both, since exist_ok/parents need Path.mkdir.
     os.mkdir = _mkdir
-    pathlib.Path.mkdir = _path_mkdir
+    if "pathlib" in sys.modules:
+        _patch_pathlib(sys.modules["pathlib"])
+    else:
+        # pathlib is 2-8 ms of every launch: patched on its first import instead (_StdlibLazyFinder).
+        global _pending_pathlib_patch
+        _pending_pathlib_patch = _patch_pathlib
+
+
+_pending_pathlib_patch = None
 
 
 try:
@@ -578,6 +615,102 @@ try:
     from importlib.machinery import PathFinder as _PathFinder
 finally:
     sys.path[:] = _saved_path
+
+
+def _is_stdlib_file(path):
+    base = os.path.join(os.path.normcase(os.path.realpath(sys.base_prefix)), "")
+    real = os.path.normcase(os.path.realpath(path))
+    return real.startswith(base) and "site-packages" not in real and "dist-packages" not in real
+
+
+class _StdlibLazyFinder:
+    """Answers the first import of json and of pathlib with the stdlib copy (pathlib with Path.mkdir patched).
+
+    The shim used to import both eagerly at startup (json pulls re and enum: most of its startup time), which also
+    meant a later `import json` / `import pathlib` got the stdlib copy even with a json.py in the cwd. Same modules,
+    same place, same patches, only later: their own imports run against the stdlib alone, as they did at startup.
+    Removes itself once both are answered."""
+
+    def __init__(self, names):
+        self._names = set(names)
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if name not in self._names:
+            return None
+        self._names.discard(name)
+        if not self._names:
+            try:
+                sys.meta_path.remove(self)
+            except ValueError:
+                pass
+        spec = _PathFinder.find_spec(name, _stdlib_paths())
+        if spec is None or spec.loader is None:
+            return spec
+        patch = _pending_pathlib_patch if name == "pathlib" else None
+        spec.loader = _StdlibLoader(spec.loader, patch)
+        return spec
+
+
+class _StdlibFirst:
+    """Top-level names answered from the stdlib when it has them; anything else falls through untouched."""
+
+    def __init__(self):
+        self._paths = _stdlib_paths()
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if path is not None or "." in name:
+            return None
+        return _PathFinder.find_spec(name, self._paths)
+
+
+class _StdlibLoader:
+    def __init__(self, loader, patch):
+        self._loader = loader
+        self._patch = patch
+
+    def create_module(self, spec):
+        return self._loader.create_module(spec)
+
+    def exec_module(self, module):
+        # Its own top-level imports (re, enum, fnmatch, ...) resolve stdlib-first, as at startup. Not a sys.path
+        # swap: another thread importing meanwhile still finds everything, at worst the stdlib copy of a name.
+        first = _StdlibFirst()
+        sys.meta_path.insert(0, first)
+        try:
+            self._loader.exec_module(module)
+        finally:
+            try:
+                sys.meta_path.remove(first)
+            except ValueError:
+                pass
+            # The real loader on the module, as an eager import left it (linecache, inspect, resources).
+            module.__loader__ = self._loader
+            if getattr(module, "__spec__", None) is not None:
+                module.__spec__.loader = self._loader
+        if self._patch is None:
+            return
+        try:
+            self._patch(module)
+        except Exception:  # noqa: BLE001 - a broken shim must never break user code
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+_lazy = [n for n in ("json", "pathlib") if n not in sys.modules]
+if _lazy:
+    sys.meta_path.insert(0, _StdlibLazyFinder(_lazy))
 
 
 def _win_folder(csidl, name, env, default):

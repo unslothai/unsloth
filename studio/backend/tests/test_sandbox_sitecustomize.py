@@ -587,3 +587,118 @@ def test_a_raw_connect_to_a_name_resolving_to_a_metadata_host_is_refused(monkeyp
         mod._metadata_connect_hook("socket.connect", (None, ("alias.test", 80)))
     assert mod._metadata_connect_hook("socket.connect", (None, ("plain.test", 80))) is None
     assert mod._metadata_connect_hook("socket.connect", (None, ("127.0.0.1", 80))) is None
+
+
+def _child(
+    code,
+    cwd,
+    *,
+    shim = True,
+    flags = (),
+):
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    if shim:
+        env["PYTHONPATH"] = str(_SHIM.parent)
+    proc = subprocess.run(
+        [sys.executable, *flags, "-c", code],
+        cwd = cwd,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def test_the_shim_imports_neither_json_nor_pathlib_at_startup(tmp_path):
+    """They pull re, enum, functools and more: most of every sandboxed Python launch. Loaded on first use instead."""
+    code = "import sys; print(' '.join(sorted(sys.modules)))"
+    with_shim = set(_child(code, tmp_path).split())
+    without = set(_child(code, tmp_path, shim = False).split())
+    assert "sitecustomize" in with_shim
+    added = with_shim - without
+    assert not added & {"json", "pathlib", "re", "enum"}, sorted(added)
+
+
+@pytest.mark.skipif(
+    os.path.exists("/mnt/data"),
+    reason = "the host has a real /mnt/data, which the shim never shadows",
+)
+@pytest.mark.parametrize(
+    "spelling", ["import pathlib\nP = pathlib.Path", "from pathlib import Path as P"]
+)
+def test_path_mkdir_is_remapped_when_pathlib_is_imported_after_startup(tmp_path, spelling):
+    code = (
+        f"{spelling}\n"
+        "import os, sys\n"
+        "P('/mnt/data/made/inner').mkdir(parents = True, exist_ok = True)\n"
+        "print(os.path.isdir('made/inner'), 'pathlib._local' in sys.modules or True)\n"
+    )
+    assert _child(code, tmp_path).split()[0] == "True"
+    assert (tmp_path / "made" / "inner").is_dir()
+
+
+def test_modules_that_import_pathlib_get_the_patched_one(tmp_path):
+    code = "import zipfile, pathlib\nprint(pathlib.Path.mkdir.__qualname__)\n"
+    assert "_path_mkdir" in _child(code, tmp_path)
+
+
+@pytest.mark.parametrize("name", ["json", "pathlib"])
+def test_a_planted_copy_in_the_cwd_does_not_replace_the_stdlib_module(tmp_path, name):
+    """As when the shim imported both at startup: `import json` / `import pathlib` still answer with the stdlib."""
+    (tmp_path / f"{name}.py").write_text("raise SystemExit('planted copy ran')\n")
+    code = (
+        f"import {name}, sys, sysconfig, os\n"
+        f"stdlib = os.path.realpath(sysconfig.get_paths()['stdlib'])\n"
+        f"print(os.path.realpath({name}.__file__).startswith(stdlib))\n"
+    )
+    assert _child(code, tmp_path) == "True"
+
+
+def test_the_lazy_finder_resolves_from_the_stdlib_and_hands_back_the_real_loader(tmp_path):
+    code = (
+        "import sys\n"
+        "finder = sys.meta_path[0]\n"
+        "print(type(finder).__name__)\n"
+        "import pathlib, json\n"
+        "print(type(pathlib.__loader__).__name__, type(json.__spec__.loader).__name__)\n"
+        "print(any(type(f).__name__ == '_StdlibLazyFinder' for f in sys.meta_path))\n"
+    )
+    first, loaders, still_there = _child(code, tmp_path).splitlines()
+    assert first == "_StdlibLazyFinder"
+    assert "_StdlibLoader" not in loaders
+    assert still_there == "False"
+
+
+def test_the_sidecar_round_trips_in_a_child_without_json_preloaded(tmp_path):
+    """The basename heal persists through the sidecar, which now imports json on first use."""
+    code = (
+        "with open('/no/such/dir/healed.txt', 'w') as fh: fh.write('x')\n"
+        "import json\n"
+        "print(json.load(open('.unsloth_sandbox_remap.json')))\n"
+    )
+    out = _child(code, tmp_path)
+    assert "/no/such/dir/healed.txt" in out and "healed.txt" in out
+    assert (tmp_path / "healed.txt").read_text() == "x"
+
+
+def test_the_sidecar_is_skipped_when_a_planted_json_is_already_loaded(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    planted = types.ModuleType("json")
+    planted.__file__ = str(tmp_path / "json.py")
+    planted.load = planted.dump = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("planted json used")
+    )
+    monkeypatch.setitem(sys.modules, "json", planted)
+    assert mod._stdlib_json() is None
+    assert mod._load_sidecar(str(tmp_path)) == {}
+    mod._record_sidecar(str(tmp_path), "/a/b.txt", str(tmp_path / "b.txt"))
+    assert not (tmp_path / ".unsloth_sandbox_remap.json").exists()
