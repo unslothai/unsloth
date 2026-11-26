@@ -1,0 +1,227 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""How much of a LoRA update survives a quantized merged export.
+
+The FP8 / FP4 exports merge the adapter at 16 bit and then re-quantize, so a small update can round
+away entirely (arXiv 2611.32064 reports 93% of the update norm lost in a mixed FP8 / NVFP4 release).
+On a few sampled LoRA layers this compares the exported change D = Q(W + dW) - Q(W) with dW, using a
+reference quantizer of the export's weight format. The norm ratio ||D|| / ||dW|| alone cannot show a
+loss: once dW is below the rounding step, D is a scatter of whole-step flips and its norm is several
+times ||dW||. The survival reported is cos(D, dW), the share of the exported change that follows the
+update (1 = the update itself, 0 = rounding noise). Read-only: nothing on the model changes."""
+
+import math
+
+import torch
+
+__all__ = ["lora_quant_survival", "report_lora_quant_survival", "SURVIVAL_WARN_BELOW"]
+
+SURVIVAL_WARN_BELOW = 0.5
+_MAX_LAYERS = 8
+_MAX_ROWS = 256
+
+_FP8_MAX = 448.0
+_FP4_MAX = 6.0
+_FP4_GRID = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+
+# llm-compressor scheme / torchao kind -> reference weight format.
+_SCHEME_FORMATS = {
+    "FP8_DYNAMIC": "fp8_channel",
+    "FP8": "fp8_tensor",
+    "FP8_BLOCK": "fp8_block",
+    "MXFP8": "mxfp8",
+    "MXFP4": "mxfp4",
+    "MXFP4A16": "mxfp4",
+    "NVFP4": "nvfp4",
+    "NVFP4A16": "nvfp4",
+    "torchao_fp8": "fp8_channel",
+}
+
+
+def _fp8(x):
+    return x.clamp(-_FP8_MAX, _FP8_MAX).to(torch.float8_e4m3fn).to(torch.float32)
+
+
+def _fp4(x):
+    grid = torch.tensor(_FP4_GRID, dtype = torch.float32, device = x.device)
+    mag = x.abs().clamp(max = _FP4_MAX)
+    idx = (mag.unsqueeze(-1) - grid).abs().argmin(dim = -1)
+    return grid[idx] * x.sign()
+
+
+def _blocks(x, size):
+    rows, cols = x.shape
+    pad = (-cols) % size
+    if pad:
+        x = torch.nn.functional.pad(x, (0, pad))
+    return x.view(rows, -1, size), cols
+
+
+def _pow2_scale(amax, emax):
+    # OCP MX: shared scale 2^(floor(log2(amax)) - emax of the element format).
+    exp = torch.floor(torch.log2(amax.clamp(min = 2.0**-126))) - emax
+    return torch.exp2(exp)
+
+
+def _quantize(w, fmt, global_amax):
+    """Fake-quantize a [rows, cols] fp32 tensor; scales only from w itself, except the NVFP4 global scale."""
+    if fmt == "fp8_tensor":
+        scale = (global_amax / _FP8_MAX).clamp(min = 1e-12)
+        return _fp8(w / scale) * scale
+    if fmt == "fp8_channel":
+        scale = (w.abs().amax(dim = 1, keepdim = True) / _FP8_MAX).clamp(min = 1e-12)
+        return _fp8(w / scale) * scale
+    if fmt == "fp8_block":
+        rows, cols = w.shape
+        pr, pc = (-rows) % 128, (-cols) % 128
+        x = torch.nn.functional.pad(w, (0, pc, 0, pr))
+        x = x.view(x.shape[0] // 128, 128, x.shape[1] // 128, 128)
+        scale = (x.abs().amax(dim = (1, 3), keepdim = True) / _FP8_MAX).clamp(min = 1e-12)
+        out = (_fp8(x / scale) * scale).view(rows + pr, cols + pc)
+        return out[:rows, :cols]
+    if fmt in ("mxfp4", "mxfp8"):
+        x, cols = _blocks(w, 32)
+        amax = x.abs().amax(dim = -1, keepdim = True)
+        if fmt == "mxfp4":
+            scale = _pow2_scale(amax, 2)
+            out = _fp4(x / scale) * scale
+        else:
+            scale = _pow2_scale(amax, 8)
+            out = _fp8(x / scale) * scale
+        return out.flatten(1)[:, :cols]
+    if fmt == "nvfp4":
+        # Per-tensor fp32 scale, then per-16 e4m3 block scales.
+        global_scale = (global_amax / (_FP8_MAX * _FP4_MAX)).clamp(min = 1e-12)
+        x, cols = _blocks(w, 16)
+        block = _fp8(x.abs().amax(dim = -1, keepdim = True) / _FP4_MAX / global_scale)
+        scale = (block * global_scale).clamp(min = 1e-12)
+        out = _fp4(x / scale) * scale
+        return out.flatten(1)[:, :cols]
+    raise ValueError(f"unknown format {fmt}")
+
+
+def _lora_layers(model):
+    for name, module in model.named_modules():
+        lora_A, lora_B = getattr(module, "lora_A", None), getattr(module, "lora_B", None)
+        base = getattr(module, "base_layer", None)
+        if not isinstance(lora_A, torch.nn.ModuleDict) or not isinstance(
+            lora_B, torch.nn.ModuleDict
+        ):
+            continue
+        if base is None or not isinstance(getattr(base, "weight", None), torch.Tensor):
+            continue
+        adapters = [
+            a for a in getattr(module, "active_adapters", []) or [] if a in lora_A and a in lora_B
+        ]
+        if len(adapters) != 1 or getattr(module, "fan_in_fan_out", False):
+            continue
+        adapter = adapters[0]
+        # DoRA merges through a magnitude rescale this check does not model.
+        if adapter in (getattr(module, "lora_magnitude_vector", None) or {}):
+            continue
+        yield name, module, base, adapter
+
+
+def _base_weight(base):
+    weight = base.weight
+    quant_state = getattr(weight, "quant_state", None)
+    if quant_state is not None:
+        from bitsandbytes.functional import dequantize_4bit
+        dtype = getattr(quant_state, "dtype", torch.bfloat16)
+        return dequantize_4bit(weight.data, quant_state).to(dtype)
+    if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return None
+    return weight.data
+
+
+@torch.no_grad()
+def lora_quant_survival(
+    model,
+    scheme,
+    max_layers = _MAX_LAYERS,
+    max_rows = _MAX_ROWS,
+):
+    """[(layer name, cos(D, dW), ||D|| / ||dW||)] for up to `max_layers` evenly spaced LoRA layers, or None
+    when the format is not modelled or no plain 2-D LoRA layer is found."""
+    fmt = _SCHEME_FORMATS.get(scheme)
+    if fmt is None:
+        return None
+    layers = list(_lora_layers(model))
+    if not layers:
+        return None
+    if len(layers) > max_layers:
+        step = len(layers) / max_layers
+        layers = [layers[int(i * step)] for i in range(max_layers)]
+    out = []
+    for name, module, base, adapter in layers:
+        W = _base_weight(base)
+        if W is None or W.dim() != 2:
+            continue
+        A = module.lora_A[adapter].weight
+        B = module.lora_B[adapter].weight
+        scaling = (
+            module.scaling[adapter] if isinstance(getattr(module, "scaling", None), dict) else 1.0
+        )
+        if A.dim() != 2 or B.dim() != 2 or B.shape[0] != W.shape[0] or A.shape[1] != W.shape[1]:
+            continue
+        # The export writes the merge in the model's 16-bit dtype before it quantizes.
+        merge_dtype = W.dtype if W.dtype in (torch.float16, torch.bfloat16) else torch.bfloat16
+        rows = min(W.shape[0], max_rows)
+        w = W[:rows].to(torch.float32)
+        dW = (
+            B[:rows].to(torch.float32, copy = True) @ A.to(device = B.device, dtype = torch.float32)
+        ) * scaling
+        dW = dW.to(w.device)
+        dW_norm = dW.norm().item()
+        if not math.isfinite(dW_norm) or dW_norm == 0.0:
+            continue
+        merged = (w + dW).to(merge_dtype).to(torch.float32)
+        before = w.to(merge_dtype).to(torch.float32)
+        global_amax = W.abs().amax().to(torch.float32)
+        merged_amax = torch.maximum(global_amax, merged.abs().amax())
+        q_delta = _quantize(merged, fmt, merged_amax) - _quantize(before, fmt, global_amax)
+        q_norm = q_delta.norm().item()
+        cosine = (q_delta * dW).sum().item() / (q_norm * dW_norm) if q_norm > 0.0 else 0.0
+        out.append((name.removeprefix("base_model.model."), max(cosine, 0.0), q_norm / dW_norm))
+    return out or None
+
+
+def _median(values):
+    values = sorted(values)
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else 0.5 * (values[mid - 1] + values[mid])
+
+
+def report_lora_quant_survival(
+    model,
+    scheme,
+    log = print,
+    warn = None,
+):
+    """Log the median survival of the sampled layers and warn below SURVIVAL_WARN_BELOW. Never raises;
+    returns the median, or None when nothing was measured."""
+    warn = warn or log
+    try:
+        ratios = lora_quant_survival(model, scheme)
+    except Exception as error:
+        log(f"Unsloth: could not estimate how much of the LoRA update survives {scheme}: {error!r}")
+        return None
+    if not ratios:
+        return None
+    median = _median([c for _, c, _ in ratios])
+    norm_ratio = _median([n for _, _, n in ratios])
+    worst = ", ".join(f"{n} {c:.0%}" for n, c, _ in sorted(ratios, key = lambda x: x[1])[:3])
+    log(
+        f"Unsloth: LoRA survival under {scheme}: about {median:.0%} of the exported weight change follows "
+        f"the update (median of {len(ratios)} sampled layers, change / update norm {norm_ratio:.2f}x; "
+        f"lowest: {worst})."
+    )
+    if median < SURVIVAL_WARN_BELOW:
+        warn(
+            f"Unsloth: most of the LoRA update is lost to {scheme} rounding: about {median:.0%} survives, the "
+            "rest of the exported change is rounding noise. "
+            "The exported weights may not reproduce the fine-tune: evaluate the export, or use merged_16bit "
+            "/ GGUF instead."
+        )
+    return median
