@@ -39218,6 +39218,48 @@ async def upload_sandbox_file(
     return saved
 
 
+_SANDBOX_DOWNLOAD_SECRET = _secrets.token_bytes(32)
+_SANDBOX_DOWNLOAD_TTL = 300
+
+
+def _sandbox_download_id(session_id: str, filename: str) -> str:
+    return _hashlib.sha256(json.dumps([session_id, filename]).encode()).hexdigest()
+
+
+def _sandbox_download_signature(payload: str) -> str:
+    return _hmac.new(_SANDBOX_DOWNLOAD_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
+
+
+def _sandbox_download_account(token: str, session_id: str, filename: str):
+    try:
+        target, expiration, signature = token.rsplit(".", 2)
+        payload = f"{target}.{expiration}"
+        if int(expiration) <= int(time.time()) or not _hmac.compare_digest(
+            signature.encode(), _sandbox_download_signature(payload).encode()
+        ):
+            return None
+    except ValueError:
+        return None
+    return media_link_account(target, _sandbox_download_id(session_id, filename))
+
+
+@router.post("/sandbox-download-link")
+async def create_sandbox_download_link(
+    session_id: str = Query(max_length = 4096),
+    filename: str = Query(max_length = 4096),
+    current_subject: str = Depends(get_current_subject),
+):
+    from starlette.concurrency import run_in_threadpool
+
+    await run_in_threadpool(_sandbox_regular_file, session_id, filename)
+    target = media_link_target(_sandbox_download_id(session_id, filename))
+    payload = f"{target}.{int(time.time()) + _SANDBOX_DOWNLOAD_TTL}"
+    return JSONResponse(
+        {"token": f"{payload}.{_sandbox_download_signature(payload)}"},
+        headers = {"Cache-Control": "no-store"},
+    )
+
+
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
 async def serve_sandbox_file(
     session_id: str,
@@ -39225,6 +39267,7 @@ async def serve_sandbox_file(
     request: Request,
     token: Optional[str] = None,
     session: Optional[str] = None,
+    download_token: Optional[str] = None,
 ):
     """
     Serve a file a tool call created in this chat's sandbox.
@@ -39234,16 +39277,23 @@ async def serve_sandbox_file(
     or image/svg+xml would be same-origin script execution. nosniff plus a
     Content-Disposition filename is what makes serving them safe.
 
-    Accepts auth via an Authorization header or a query token. Unsloth uses an
-    authenticated fetch and object URL; query auth remains for older clients.
+    Accepts authenticated fetches, older query auth, and file-scoped download links.
     """
+    from starlette.concurrency import run_in_threadpool
+
     # ── Authentication (header or query param) ──────────────────
-    await _authenticate_header_or_query(request, token)
+    account = None
+    if download_token is None:
+        await _authenticate_header_or_query(request, token)
+    else:
+        account = await run_in_threadpool(
+            _sandbox_download_account, download_token, session or session_id, filename
+        )
+        if account is None:
+            raise HTTPException(status_code = 401, detail = "Invalid or expired download link")
 
     # ── Filename sanitization + path containment ────────────────
     import stat as _stat
-
-    from starlette.concurrency import run_in_threadpool
 
     safe_filename = os.path.basename(filename)
 
@@ -39273,7 +39323,11 @@ async def serve_sandbox_file(
             raise
         return handle, info.st_size
 
-    handle, size = await run_in_threadpool(_open_checked)
+    handle, size = (
+        await run_in_threadpool(_open_checked)
+        if account is None
+        else await run_in_threadpool(run_as, account, _open_checked)
+    )
     head_only = getattr(request, "method", "GET").upper() == "HEAD"
     if head_only:
         # FastAPI adds no HEAD to GET routes; nothing is read since artifacts can be huge.

@@ -179,3 +179,53 @@ def test_a_volume_without_hard_links_still_never_replaces_unless_asked(
     )
     assert tools.save_sandbox_upload(session, "report.xlsx", [b"upload"])["replaced"] is False
     assert (workdir / "report.xlsx").read_bytes() == b"upload"
+
+
+def test_sandbox_download_link_is_bound_to_the_session_file_and_expiry(tools, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from routes import inference
+
+    session = "legacy/download/thread"
+    name = "résumé.txt"
+    tools.save_sandbox_upload(session, name, [b"test"])
+    monkeypatch.setattr(inference.time, "time", lambda: 1000)
+    link = asyncio.run(inference.create_sandbox_download_link(session, name, "u"))
+    assert link.headers["cache-control"] == "no-store"
+    token = json.loads(link.body)["token"]
+    assert inference._sandbox_download_account(token, session, "other.txt") is None
+    assert inference._sandbox_download_account(token, "other-thread", name) is None
+
+    async def download():
+        response = await inference.serve_sandbox_file(
+            "_", name, SimpleNamespace(method = "GET"), session = session, download_token = token
+        )
+        assert response.status_code == 200
+        assert response.headers["content-length"] == "4"
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    assert asyncio.run(download()) == b"test"
+    monkeypatch.setattr(inference.time, "time", lambda: 1000 + inference._SANDBOX_DOWNLOAD_TTL)
+    assert inference._sandbox_download_account(token, session, name) is None
+
+
+@pytest.mark.parametrize("token", [None, "older-client-token"])
+def test_sandbox_download_keeps_existing_authentication(tools, monkeypatch, token):
+    from types import SimpleNamespace
+
+    from routes import inference
+
+    request = SimpleNamespace(method = "HEAD")
+    tools.save_sandbox_upload("thread-download", "report.txt", [b"test"])
+    authenticated = []
+
+    async def authenticate(actual_request, actual_token):
+        authenticated.append((actual_request, actual_token))
+
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", authenticate)
+    response = asyncio.run(
+        inference.serve_sandbox_file("thread-download", "report.txt", request, token = token)
+    )
+    assert response.status_code == 200
+    assert authenticated == [(request, token)]

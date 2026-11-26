@@ -1,29 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthToken } from "@/features/auth";
+import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
-import { downloadUrlStreaming } from "@/lib/native-files";
+import { downloadShortLivedUrl } from "@/lib/native-files";
 
 import { sandboxFilePath, sandboxRoutePrefix } from "./sandbox-files";
 
-// Streamed to disk rather than buffered: artifacts can be gigabytes. The bearer goes in the query.
+// Stream directly to disk: artifacts can be gigabytes.
 export async function saveSandboxFile(
   sessionId: string,
   name: string,
   saveAs = name,
 ): Promise<void> {
   const path = sandboxFilePath(sessionId, name);
-  // The URL bearer is never refreshed, so authFetch refreshes first; the HEAD confirms the file.
-  const probe = await authFetch(apiUrl(path), { method: "HEAD" });
-  if (!probe.ok) throw new Error(`Download refused (${probe.status})`);
-  const token = getAuthToken();
-  const separator = path.includes("?") ? "&" : "?";
-  // Absolute: the native command rejects a relative URL.
-  const url = apiUrl(
-    token ? `${path}${separator}token=${encodeURIComponent(token)}` : path,
-  );
-  await downloadUrlStreaming(url, saveAs);
+  await downloadShortLivedUrl(saveAs, async () => {
+    const query = new URLSearchParams({ session_id: sessionId, filename: name });
+    const response = await authFetch(apiUrl(`/api/inference/sandbox-download-link?${query}`), {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error(`Download refused (${response.status})`);
+    const { token } = (await response.json()) as { token: string };
+    const separator = path.includes("?") ? "&" : "?";
+    return apiUrl(`${path}${separator}download_token=${encodeURIComponent(token)}`);
+  });
 }
 
 /** Relative names in this chat's folder; [] when nothing has been written yet. */
