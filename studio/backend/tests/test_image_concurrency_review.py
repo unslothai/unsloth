@@ -272,10 +272,7 @@ def test_a_stop_during_a_teardown_reaches_only_the_callers_queued_requests():
         threads = [threading.Thread(target = queued(name), daemon = True) for name in events]
         for thread in threads:
             thread.start()
-        deadline = __import__("time").monotonic() + 5
-        while len(engine._queued_generate_cancels) < 2:
-            assert __import__("time").monotonic() < deadline
-            threading.Event().wait(0.01)
+        _wait_until(lambda: len(engine._queued_generate_cancels) >= 2)
         assert engine.cancel_generate(expected_account = "bob") is True
         assert events["bob"].is_set() and not events["alice"].is_set()
     for thread in threads:
@@ -508,12 +505,13 @@ def test_the_route_keeps_finished_images_from_a_failed_call(studio):
     assert sorted(record["account"] for record in saved) == ["alice", "bob", "carol"]
 
 
-def _wait_until(predicate, timeout = 5.0):
-    import time
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        assert time.monotonic() < deadline, "condition never held"
+def _wait_until(predicate, polls = 1000):
+    """Poll until predicate holds, failing after a fixed number of 5 ms waits (no clock comparison)."""
+    for _ in range(polls):
+        if predicate():
+            return
         threading.Event().wait(0.005)
+    assert predicate(), "condition never held"
 
 
 def _hold_slot(engine):
