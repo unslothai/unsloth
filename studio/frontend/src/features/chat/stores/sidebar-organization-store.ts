@@ -5,7 +5,10 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
-import { sidebarOrganizationStorage } from "./sidebar-organization-storage.ts";
+import {
+  sidebarOrganizationStorage,
+  sidebarOrganizationStorageChanged,
+} from "./sidebar-organization-storage.ts";
 
 export type SidebarOrganizeBy = "project" | "list";
 export type SidebarChatSort = "updated" | "manual";
@@ -554,3 +557,9 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
 );
 
 syncAcrossWindows(useSidebarOrganizationStore);
+
+export function reconcilePersistedSidebarOrganization(): void {
+  if (sidebarOrganizationStorageChanged(SIDEBAR_ORGANIZATION_STORAGE_KEY)) {
+    void useSidebarOrganizationStore.persist.rehydrate();
+  }
+}

@@ -20,7 +20,7 @@ import { isBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { applySidebarLayout, observeSidebarLayout, sidebarLayout, type SidebarLayout } from "../sidebar-layout";
 import {
-  SIDEBAR_ORGANIZATION_STORAGE_KEY,
+  reconcilePersistedSidebarOrganization,
   useSidebarOrganizationStore as store,
 } from "../stores/sidebar-organization-store";
 
@@ -56,6 +56,8 @@ export function useSidebarSectionsSync(): void {
       if (request || !allowed()) return;
       const session = ensureAuthSessionMark();
       const current = () => allowed() && session === getAuthSessionMark();
+      // The storage event for a peer's newer edit may still be queued.
+      reconcilePersistedSidebarOrganization();
       const state = store.getState();
       const base = state.syncedLayout;
       const layout = sidebarLayout(state);
@@ -80,7 +82,6 @@ export function useSidebarSectionsSync(): void {
         if (edit !== state.pendingLayoutEdit || (!edit && state.orderMoves?.length)) {
           store.setState({ pendingLayoutEdit: edit, orderMoves: undefined });
         }
-        const cached = localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY);
         const response = await authFetch("/api/chat/sidebar-sections", {
           signal: controller.signal,
           ...(edit && {
@@ -98,9 +99,7 @@ export function useSidebarSectionsSync(): void {
         } });
         if (!response.ok) {
           if (response.status === 422 && edit && current()) {
-            if (cached !== localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY)) {
-              store.persist.rehydrate();
-            }
+            reconcilePersistedSidebarOrganization();
             const now = store.getState();
             if (now.pendingLayoutEdit?.id === edit.id) {
               // Validation rejected the write before applying it. Keep the visible edits retryable.
@@ -123,10 +122,7 @@ export function useSidebarSectionsSync(): void {
         const remote: SidebarLayout = await response.json();
         if (!current()) return;
 
-        // A peer's storage event may still be queued when the response arrives.
-        if (cached !== localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY)) {
-          store.persist.rehydrate();
-        }
+        reconcilePersistedSidebarOrganization();
         const now = store.getState();
         if (now.syncedLayout !== base || now.pendingLayoutEdit?.id !== edit?.id) {
           schedule();

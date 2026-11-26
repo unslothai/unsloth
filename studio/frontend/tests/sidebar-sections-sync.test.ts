@@ -68,11 +68,11 @@ function mount(
   hook.useSidebarSectionsSync();
 }
 
-function writeFromPeer(update: Record<string, unknown>) {
+function writeFromPeer(update: Record<string, unknown>, notify = true) {
   const key = stores.SIDEBAR_ORGANIZATION_STORAGE_KEY;
   const saved = JSON.parse(localStorage.getItem(key) ?? "{}");
   localStorage.setItem(key, JSON.stringify({ ...saved, state: { ...saved.state, ...update } }));
-  window.dispatchEvent(Object.assign(new Event("storage"), { key }));
+  if (notify) window.dispatchEvent(Object.assign(new Event("storage"), { key }));
 }
 
 test("a large saved sidebar keeps its pending sync operation within browser storage quota", () => {
@@ -236,6 +236,37 @@ test("a surviving peer uploads a mirrored edit that never acquired a pending ope
   await setImmediate();
   assert.equal(posts.length, 1);
   assert.deepEqual(posts[0].layout.sectionByChatId, { chat: "research" });
+});
+
+test("a refresh preserves a peer filing whose storage event has not arrived", async (t) => {
+  let now = 1_000;
+  t.mock.method(Date, "now", () => now);
+  const initial = {
+    ...layouts.sidebarLayout(store.getInitialState()),
+    sections: { research: { name: "Research", sort: "manual" as const } },
+    sectionOrder: ["pinned", "research", "projects"],
+  };
+  const posts: Edit[] = [];
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return Response.json(initial);
+    const post: Edit = JSON.parse(String(init.body));
+    posts.push(post);
+    return Response.json(post.layout);
+  });
+  await setImmediate();
+
+  store.getState().renameCustomSection("research", "Notes");
+  writeFromPeer({ sectionByChatId: { chat: "research" } }, false);
+  await setImmediate();
+  assert.equal(store.getState().sectionByChatId.chat, "research");
+  assert.equal(posts.length, 0);
+
+  now += 30_001;
+  window.dispatchEvent(new Event("focus"));
+  await setImmediate();
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].layout.sectionByChatId, { chat: "research" });
+  assert.equal(posts[0].layout.sections.research.name, "Notes");
 });
 
 test("a reorder during the initial load uses an edit instead of a legacy import", async (t) => {
