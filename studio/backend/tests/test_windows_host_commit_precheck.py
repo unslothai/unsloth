@@ -13,7 +13,10 @@ import sys
 import pytest
 
 from core.inference import diffusion_memory
+import core.inference.llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import LlamaCppBackend
+
+_REAL_COMMIT_READER = llama_cpp_module._windows_host_commit_headroom_mib
 
 _GB = 1024**3
 _MIB = 1024
@@ -112,6 +115,10 @@ class TestPreLaunch:
 
     def test_fake_commit_headroom_is_read_when_not_passed(self, windows, monkeypatch):
         monkeypatch.setattr(diffusion_memory, "_windows_commit_headroom_mib", lambda: 8 * _MIB)
+        # conftest stubs the module-level reader; restore the real one, which asks diffusion_memory.
+        monkeypatch.setattr(
+            llama_cpp_module, "_windows_host_commit_headroom_mib", _REAL_COMMIT_READER
+        )
         msg = _backend()._windows_host_commit_refusal(
             _cmd("--no-mmap"), _CARD, {}, avail_mib = 96 * _MIB
         )
@@ -297,6 +304,23 @@ class TestPreLaunch:
         # Mapped, the same experts are file-backed and charge no commit.
         assert backend._windows_host_commit_refusal(_cmd(*extra), _CARD, env, **kwargs) is None
 
+    def test_cpu_experts_and_a_layer_count_take_their_union(self, windows):
+        # 40 GB, 32 GB of experts, --cpu-moe -ngl 20 of 40: 32 GB + half of the other 8 stay behind.
+        backend = _backend(model_gb = 40, kv_gb = 0)
+        backend._n_layers = 40
+        backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 32 * _GB)
+        cmd = _cmd("--no-mmap", "--cpu-moe", "-ngl", "20")
+        kwargs = dict(avail_mib = 96 * _MIB)
+        assert backend._windows_host_commit_refusal(
+            cmd, _CARD, {}, commit_headroom_mib = 37 * _MIB, **kwargs
+        )
+        assert (
+            backend._windows_host_commit_refusal(
+                cmd, _CARD, {}, commit_headroom_mib = 39 * _MIB, **kwargs
+            )
+            is None
+        )
+
     def test_flash_attention_off_does_not_price_v_twice(self, windows):
         # The estimator floors V at f16 with flash attention off: the q4_0-K figure is the cache.
         backend = _backend()
@@ -320,6 +344,23 @@ class TestPreLaunch:
         backend._kv_layer_weights = lambda *a, **k: [0] * 20 + [1] * 15
         assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
         assert backend._windows_host_kv_share(20 / 35, 35, 8, {}) == 0
+
+    def test_integrated_or_unified_gpus_are_left_alone(self, windows, monkeypatch):
+        kwargs = dict(avail_mib = 4 * _MIB, commit_headroom_mib = 4 * _MIB)
+        backend = _backend()
+        cards = [(0, 8 * _MIB), (1, 8 * _MIB)]
+        monkeypatch.setattr(
+            LlamaCppBackend, "_integrated_cuda_probe_is_free", staticmethod(lambda: True)
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
+        )
+        assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), cards, {}, **kwargs) is None
+        monkeypatch.setattr(
+            LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set())
+        )
+        assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), cards, {}, **kwargs)
 
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (

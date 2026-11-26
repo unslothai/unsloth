@@ -4414,6 +4414,12 @@ _WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB = 2048
 _WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB = 4096
 
 
+def _windows_host_commit_headroom_mib() -> Optional[int]:
+    """Commit headroom for the pre-launch host check; module-level so tests stub the real reading."""
+    from .diffusion_memory import _windows_commit_headroom_mib
+    return _windows_commit_headroom_mib()
+
+
 def _windows_private_memory(pid: int) -> Optional[tuple[int, int]]:
     """(PrivateUsage, PrivateWorkingSetSize) in bytes; None when unreadable (needs Windows 10 1809+).
     psutil's uss and wset both count mmap'd GGUF pages, which would hide untouched commit."""
@@ -17045,6 +17051,15 @@ class LlamaCppBackend:
             gpus = [] if child_has_no_gpu else list(reachable_gpus or ())
             if not gpus and not child_has_no_gpu:
                 return None  # an unread GPU probe looks GPU-less; never refuse on it
+            # An integrated or unified-memory GPU's "VRAM" is host RAM, already priced elsewhere.
+            try:
+                unified = set(self._rocm_unified_memory_gpu_ids())
+                if self._integrated_cuda_probe_is_free():
+                    unified |= set(self._integrated_cuda_gpu_ids())
+            except Exception:  # noqa: BLE001 -- unknown is not unified
+                unified = set()
+            if {row[0] for row in gpus} & unified:
+                return None
             try:
                 lazy = self._lazy_read_host_bytes(
                     model_path,
@@ -17069,14 +17084,14 @@ class LlamaCppBackend:
             n_layers = getattr(self, "_n_layers", None)
             # Experts pinned to the CPU never take VRAM, however much is free.
             cpu_experts = self._windows_cpu_expert_bytes(model_path, argv, _env, n_layers)
-            free_vram_bytes = min(free_vram_bytes, max(0, resident - cpu_experts))
-            # Layers a hand-set count leaves on the CPU, attention and KV included.
+            gpu_eligible = max(0, resident - cpu_experts)
+            # Layers a hand-set count leaves on the CPU, attention and KV included; of the layers
+            # it offloads, CPU-pinned experts still stay behind (the union, not the larger cap).
             cpu_layer_share = 0.0
             if requested is not None and requested >= 0 and n_layers:
-                free_vram_bytes = min(
-                    free_vram_bytes, resident * min(requested, n_layers) // n_layers
-                )
+                gpu_eligible = gpu_eligible * min(requested, n_layers) // n_layers
                 cpu_layer_share = max(0, n_layers - requested) / n_layers
+            free_vram_bytes = min(free_vram_bytes, gpu_eligible)
             spill = max(0, resident - free_vram_bytes)
             _, reserves_ram = resolve_effective_memory_state(
                 argv, _env, auto_unmapped = auto_unmapped
@@ -17139,8 +17154,7 @@ class LlamaCppBackend:
             if avail_mib is None:
                 avail_mib = self._available_system_memory_mib()
             if commit_headroom_mib is None:
-                from .diffusion_memory import _windows_commit_headroom_mib
-                commit_headroom_mib = _windows_commit_headroom_mib()
+                commit_headroom_mib = _windows_host_commit_headroom_mib()
             return self._windows_host_commit_refusal_message(
                 private, avail_mib, commit_headroom_mib
             )
