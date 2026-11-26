@@ -3448,6 +3448,7 @@ def get_hardware_info(
 
     body = {
         "gpu": get_gpu_summary(),
+        "device_backend": _backend_label(get_device()),
         "versions": get_package_versions(),
         # Export capability + torch-aware reason; the Export UI grays out with the message.
         **export_capability(),

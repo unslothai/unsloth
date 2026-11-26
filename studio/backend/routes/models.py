@@ -2595,14 +2595,23 @@ async def get_model_config(
             except Exception:
                 pass
 
-            # Fallback: raw config.json (declarative fields only) -- must never run a repo's auto_map.
-            if max_position_embeddings is None:
+            selected_snapshot = prefer_local_cache and inspection_target != model_name
+            cached_bnb_4bit = False
+            # Read declarative fields from the same snapshot the worker will use. Never run a repo's auto_map.
+            if selected_snapshot or max_position_embeddings is None:
                 try:
                     from utils.transformers_version import _load_config_json
                     from types import SimpleNamespace
 
                     _cfg = _load_config_json(inspection_target, hf_token = hf_token)
-                    if _cfg is not None:
+                    if selected_snapshot and isinstance(_cfg, dict):
+                        quant = _cfg.get("quantization_config")
+                        cached_bnb_4bit = (
+                            isinstance(quant, dict)
+                            and quant.get("quant_method") == "bitsandbytes"
+                            and quant.get("load_in_4bit", quant.get("_load_in_4bit")) is True
+                        )
+                    if max_position_embeddings is None and _cfg is not None:
 
                         def _to_ns(d):
                             if isinstance(d, dict):
@@ -2654,9 +2663,10 @@ async def get_model_config(
                 # Keyed on the target, not the flag: an anonymous caller's bare repo id sizes as None.
                 model_size_bytes = (
                     _get_snapshot_model_size_bytes(inspection_target)
-                    if prefer_local_cache and inspection_target != model_name
+                    if selected_snapshot
                     else _get_model_size_bytes(model_name, hf_token)
                 ),
+                cached_bnb_4bit = cached_bnb_4bit,
             )
 
     try:

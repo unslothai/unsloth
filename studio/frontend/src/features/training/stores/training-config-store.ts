@@ -512,6 +512,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     modelSizeBytes,
                     patch.contextLength ?? get().contextLength,
                     controller.signal,
+                  modelDetails.cached_bnb_4bit === true,
                   )
                 : null;
 
