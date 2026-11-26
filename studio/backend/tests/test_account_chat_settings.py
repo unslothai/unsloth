@@ -1442,6 +1442,50 @@ def test_sidebar_sections_honors_an_unpin_drop_into_the_old_section(client, anch
     assert saved["rowOrder"]["a"] == initial["rowOrder"]["a"]
 
 
+def test_sidebar_sections_replays_the_last_drag_of_a_just_unpinned_chat(client):
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    base = save(
+        "initial",
+        {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys("abcd", "work"),
+            "rowOrder": {"work": list("abcd")},
+        },
+    )
+    peer = save(
+        "peer",
+        {**base, "rowOrder": {"work": list("cad")}},
+        base,
+        [{"sectionId": "work", "id": "c", "targetId": "a", "edge": "top"}],
+    )
+    assert peer["rowOrder"]["work"] == list("cad")
+    unpin = {
+        "sectionId": "work",
+        "id": "b",
+        "targetId": "c",
+        "edge": "bottom",
+        "afterUnpin": True,
+        "unpinKind": "chat",
+    }
+    later = {"sectionId": "work", "id": "b", "targetId": "a", "edge": "bottom"}
+    saved = save("local", base, base, [unpin, later])
+    assert saved["rowOrder"]["work"] == list("cabd")
+
+
 @pytest.mark.parametrize(
     ("initial", "first", "second", "expected", "sort"),
     [

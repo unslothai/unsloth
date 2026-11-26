@@ -58,6 +58,16 @@ def _replay_placements(order, moves):
     return order
 
 
+def _mark_later_unpin_placements(moves):
+    unpinned = set()
+    for move in moves:
+        if move.get("afterUnpin"):
+            unpinned.add(move["id"])
+        elif move["id"] in unpinned:
+            move = {**move, "afterUnpin": True}
+        yield move
+
+
 def _discard_undone_runs(base, layout, moves, common):
     runs = [list(group) for _, group in groupby(moves, key = lambda move: move["id"])]
     if all(len(run) == 1 for run in runs):
@@ -91,6 +101,8 @@ def _edited_order(
     switched_to_manual = False,
     unranked_first = False,
 ):
+    if any(move.get("afterUnpin") for move in moves):
+        moves = list(_mark_later_unpin_placements(moves))
     if base == layout and not switched_to_manual:
         moves = [move for move in moves if move.get("afterUnpin")]
     elif not importing and not switched_to_manual:
