@@ -16281,7 +16281,9 @@ _ATTACHMENT_OVERVIEW = re.compile(
     r"(?:(?P<quantifier>all|both|each)(?: of)?(?: the| these)? |"
     r"(?:these |the )?(?P<two>two) |"
     r"(?:the |these )(?=attached ))(?:attached )?"
-    r"(?:files|docs|documents|attachments|pdfs|reports)\b",
+    r"(?:files|docs|documents|attachments|pdfs|reports)\b"
+    r"|^\s*what\s+are\s+(?:these|the attached)\s+"
+    r"(?:files|docs|documents|attachments|pdfs|reports)\s+about\s*\??\s*$",
     re.IGNORECASE,
 )
 

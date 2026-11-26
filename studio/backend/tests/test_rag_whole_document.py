@@ -1307,6 +1307,7 @@ def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path
     [
         ("Summarize both attached documents.", True),
         ("Compare the attached documents.", True),
+        ("What are these documents about?", True),
         ("What does alpha say about both reports?", False),
     ],
 )
