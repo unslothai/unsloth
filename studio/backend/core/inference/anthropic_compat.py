@@ -411,8 +411,18 @@ def anthropic_messages_to_openai(
                         }
                     )
 
-            for tr in tool_results:
-                result.append(tr)
+            # Some local templates render result bodies without IDs. A complete
+            # parallel batch must follow the order of the assistant's calls.
+            if len(tool_results) > 1 and result and result[-1].get("role") == "assistant":
+                calls = result[-1].get("tool_calls") or []
+                by_id = {item["tool_call_id"]: item for item in tool_results}
+                call_ids = [call["id"] for call in calls]
+                if (
+                    len(call_ids) == len(by_id) == len(tool_results)
+                    and set(call_ids) == by_id.keys()
+                ):
+                    tool_results = [by_id[call_id] for call_id in call_ids]
+            result.extend(tool_results)
 
             if has_image:
                 result.append({"role": "user", "content": user_parts})
