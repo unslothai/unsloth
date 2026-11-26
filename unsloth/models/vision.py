@@ -32,6 +32,7 @@ _ROPE_LAYOUT_KEYS = ("rope_theta", "partial_rotary_factor", "mrope_section", "mr
 def _apply_user_rope_scaling(config, rope_scaling):
     """Put the caller's rope_scaling (e.g. YaRN) on the text config before the model is built.
     Returns the dict applied (flat), or None for a per-layer-type layout."""
+    from ..import_fixes import assign_rope_scaling
     from .llama import _rope_scaling_as_dict, _user_rope_scaling
 
     target = config.get_text_config() if hasattr(config, "get_text_config") else config
@@ -83,7 +84,7 @@ def _apply_user_rope_scaling(config, rope_scaling):
     )
     layout = {key: existing[key] for key in _ROPE_LAYOUT_KEYS if key in existing}
     applied = {**layout, **_user_rope_scaling(target, scaling)}
-    target.rope_scaling = applied
+    assign_rope_scaling(target, applied)
     return dict(applied)
 
 
@@ -244,6 +245,7 @@ from ..kernels import (
 )
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..kernels.rope_embedding import register_split_model
+from ._cache_kwarg import get_cache_kwarg
 from ._utils import (
     __version__,
     importlib_version,
@@ -295,8 +297,12 @@ from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from . import _decode_graphs, _generic_decode_graphs, _flex_decode
+from .inkling2 import inkling2_owns_modelopt_quantization
 from .loader_utils import (
     _bnb_bits_requested,
+    explain_weight_conversion_error,
+    _kwargs_with_resolved_revision,
+    _resolved_revision,
     vlm_gradient_checkpointing_reentrant,
     set_deepspeed_moe_leaf_modules,
     fsdp2_requested,
@@ -895,6 +901,22 @@ def _unsloth_generate_accepts_kwarg(model, key):
         except (TypeError, ValueError, AttributeError):
             pass
     return key in model_args
+
+
+def _router_logits_off_for_generate(model, kwargs):
+    """generate never needs the MoE aux loss; TRL < 1.18 leaves config.output_router_logits on after SFT, and a hybrid
+    model then feeds generate's per-layer-type attention_mask dict to load_balancing_loss_func. Explicit kwarg kept."""
+    if "output_router_logits" in kwargs:
+        return
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    if not (
+        getattr(text, "output_router_logits", False)
+        or getattr(config, "output_router_logits", False)
+    ):
+        return
+    if _unsloth_generate_accepts_kwarg(model, "output_router_logits"):
+        kwargs["output_router_logits"] = False
 
 
 def _is_scaled_word_embedding_forward(cls, forward):
@@ -1810,7 +1832,7 @@ class _NonFlexGenerate:
             else:
                 decode = scope.steps > 0
             scope.steps += 1
-            static = _static_cache(kwargs.get("past_key_values"))
+            static = _static_cache(get_cache_kwarg(kwargs))
             ids = args[0] if args else kwargs.get("input_ids")
             batch = ids.shape[0] if isinstance(ids, torch.Tensor) and ids.dim() >= 1 else None
             scope._set(decode, static, batch)
@@ -2138,7 +2160,7 @@ def _static_cache_bytes(
     from transformers import StaticCache
 
     config = model.config
-    if getattr(config, "is_encoder_decoder", False) or kwargs.get("past_key_values") is not None:
+    if getattr(config, "is_encoder_decoder", False) or get_cache_kwarg(kwargs) is not None:
         return None
     text_config = config.get_text_config(decoder = True)
     # transformers fills a caller config's unset fields from the model's before its defaults.
@@ -2378,8 +2400,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     bsz = input_ids.shape[0]
 
     FastBaseModel.for_inference(self)
+    _router_logits_off_for_generate(self, kwargs)
     dtype = _get_dtype(dtype_from_config(self.config))
-    do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
+    # Stamped by from_pretrained: the env var stays "1" after one float32 mixed precision load, so it only answers for unstamped models.
+    do_bfloat16_mixed_precision = getattr(self, "_unsloth_bfloat16_mixed_precision", None)
+    if do_bfloat16_mixed_precision is None:
+        do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
@@ -2475,6 +2501,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
+    # The caller's cache: transformers 5.24 spells it cache=, past_key_values= is its deprecated alias.
+    # Inline, not a helper: tests exec this function's source with a hand-built namespace.
+    _caller_cache = kwargs.get("cache")
+    if _caller_cache is None:
+        _caller_cache = kwargs.get("past_key_values")
     # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
     # Inline, not a helper: tests exec this function's source with a hand-built namespace.
     unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
@@ -2483,7 +2514,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     )
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None and not rejects_cache_fields:
+        if _caller_cache is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
             with (
@@ -2530,19 +2561,24 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
     # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
     generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
-    if kwargs.get("past_key_values") is not None or any(
+    if _caller_cache is not None or any(
         (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
         for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
     ):
         cache_implementation = None
     # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
-    force_dynamic_cache = kwargs.get(
-        "past_key_values"
-    ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
+    force_dynamic_cache = _caller_cache is None and _needs_bidirectional_multimodal_mask(
+        self, kwargs
+    )
     # A static cache is sized for the longest reply up front, so on a tight or unified memory
     # device it can OOM where a growing cache would not (#2590).
     if not force_dynamic_cache and cache_implementation is not None:
         force_dynamic_cache = _static_cache_does_not_fit(self, input_ids, kwargs)
+    # synced_gpus (expert parallel sets it; ZeRO-3 callers too): a rank that finishes first keeps running forwards
+    # until every rank is done, past the static cache sized for its own prompt + max_new_tokens (the mask and the
+    # keys then disagree by one slot). A growing cache takes those extra steps.
+    if not force_dynamic_cache and cache_implementation is not None and kwargs.get("synced_gpus"):
+        force_dynamic_cache = True
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
@@ -2585,7 +2621,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     def _eager_scope():
         return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
 
-    def _run(scope, plan):
+    def _run(
+        scope,
+        plan,
+        retry = False,
+    ):
         with (
             _NonFlexGenerate(self, flex_decode = not _wants_attentions(self, kwargs)),
             decode_scope,
@@ -2593,7 +2633,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
-            _lora_fold_generate(self, args, kwargs),
+            # retry: the eager redo after an OOM runs unfolded.
+            _lora_fold_generate(self, args, kwargs, retry = retry),
         ):
             out = self._old_generate(*args, **kwargs)
             if isinstance(scope, _GraphDecodeSteps):
@@ -2624,7 +2665,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                     _clear_generation_caches(self)
                     _generic_decode_graphs.set_rng_state(rng)
                     with _decode_graphs.eager_scope():
-                        output = _run(_eager_scope(), "eager")
+                        output = _run(_eager_scope(), "eager", retry = True)
     finally:
         _clear_generation_caches(self)
 
@@ -2636,7 +2677,7 @@ def unsloth_nested_fast_generate(self, *args, **kwargs):
     Relies on the parent's inference mode/autocast; outside a parent call (or with a caller cache) it is stock."""
     if (
         not torch.is_inference_mode_enabled()
-        or kwargs.get("past_key_values") is not None
+        or get_cache_kwarg(kwargs) is not None
         or "cache_implementation" in kwargs
         or kwargs.get("generation_config") is not None
         # FlashAttention builds no mask for unpadded rows, so a static cache's empty slots would be attended.
@@ -3456,6 +3497,7 @@ _TEXT_BATCH_KEYS = frozenset(
         "labels",
         "position_ids",
         "past_key_values",
+        "cache",
         "use_cache",
         "output_attentions",
         "output_hidden_states",
@@ -4036,6 +4078,9 @@ class FastBaseModel:
         text_intent = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         user_config = kwargs.pop("config", None)
         user_rope_scaling = kwargs.pop("rope_scaling", None)
         if auto_config is None and user_config is not None:
@@ -4120,7 +4165,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         _text_key_mapping = None
         if text_only and hasattr(auto_config, "vision_config"):
@@ -4397,7 +4442,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         backfill_fp8_modules_to_convert(
             auto_config,
@@ -4474,6 +4519,8 @@ class FastBaseModel:
         _explicit_bnb_4bit = user_quantization_config is not None and (
             quantization_config_selects_bnb_4bit(user_quantization_config)
         )
+        # Read before the call below drops the marker; merged exports never had it and plan from the repo as before.
+        _inkling2_modelopt = inkling2_owns_modelopt_quantization(auto_config)
         _checked_4bit, _checked_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config,
             load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
@@ -4543,6 +4590,12 @@ class FastBaseModel:
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
         _planner_config_reason = "text_only loads a decoder the repo config does not describe"
+        # Inkling 2: the planner refuses config.json's "modelopt" quantization; auto_config has that marker dropped.
+        if _planner_config is None and _inkling2_modelopt:
+            _planner_config = auto_config
+            _planner_config_reason = (
+                "this unsloth_zoo cannot plan from the resolved Inkling 2 config"
+            )
         # Re-quantized packed checkpoint: config.json would size it as compressed-tensors and refuse bnb flags.
         if _planner_config is None and compressed_tensors_prepared_config(auto_config) is not None:
             _planner_config = auto_config
@@ -4737,6 +4790,7 @@ class FastBaseModel:
                     "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
                 )
 
+        bfloat16_mixed_precision = False
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
             if do_forced_float32 and not SUPPORTS_BFLOAT16:
@@ -4758,6 +4812,7 @@ class FastBaseModel:
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+                    bfloat16_mixed_precision = True
             elif dtype == torch.float32:
                 print("Unsloth: Using float32 full finetuning.")
             else:
@@ -4786,7 +4841,7 @@ class FastBaseModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
-                    revision = _revision,
+                    revision = _resolved_revision(model_name, _revision, token, local_files_only),
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import (
@@ -4876,7 +4931,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
@@ -4943,14 +4998,20 @@ class FastBaseModel:
                                 kwargs.get("quantization_config"), model_config
                             ),
                         ):
-                            model = auto_model.from_pretrained(
-                                model_name,
-                                config = model_config,
-                                device_map = device_map,
-                                token = token,
-                                trust_remote_code = trust_remote_code,
-                                **kwargs,
-                            )
+                            try:
+                                model = auto_model.from_pretrained(
+                                    model_name,
+                                    config = model_config,
+                                    device_map = device_map,
+                                    token = token,
+                                    trust_remote_code = trust_remote_code,
+                                    **_kwargs_with_resolved_revision(model_name, kwargs, token),
+                                )
+                            except RuntimeError as error:
+                                explained = explain_weight_conversion_error(error)
+                                if explained is None:
+                                    raise
+                                raise explained from error
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
                         disarm_fp8_to_nf4(model_config)
@@ -5268,6 +5329,10 @@ class FastBaseModel:
         # Functional load chain (AutoProcessor -> get_auto_processor -> manual VLM fallback); offline is already forced upstream, and the error is surfaced for the retry.
         def _acquire_processor(lfo):
             _err = None  # underlying load failure (used by the entry-point retry)
+            # For the transformers loads only; get_auto_processor and the fallback keep the plain ref.
+            _tok_rev = _resolved_revision(
+                tokenizer_name, _tokenizer_revision, token, lfo, kwargs.get("cache_dir")
+            )
             if (whisper_language and whisper_task) or auto_model.__name__.endswith(
                 "ForConditionalGeneration"
             ):
@@ -5281,7 +5346,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
-                        revision = _tokenizer_revision,
+                        revision = _tok_rev,
                     )
                 except Exception as _e:
                     _tok = None
@@ -5297,7 +5362,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
-                            revision = _tokenizer_revision,
+                            revision = _tok_rev,
                         )
                     except Exception:
                         _tok = None
@@ -5312,7 +5377,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
-                            revision = _tokenizer_revision,
+                            revision = _tok_rev,
                         )
                 except Exception as _e:
                     _err = _e
@@ -5473,7 +5538,10 @@ class FastBaseModel:
         # Inkling 2 wraps its attention Linears: map the usual LoRA names onto them.
         from .inkling2 import patch_inkling2_model
 
-        patch_inkling2_model(model)
+        if patch_inkling2_model(model):
+            # Its language attention is eager only upstream; route it through flex (UNSLOTH_INKLING2_FLEX=0 keeps eager).
+            from .inkling2_flex import enable_inkling2_flex
+            enable_inkling2_flex(model)
 
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})
@@ -5620,6 +5688,7 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        model = _mark_bfloat16_mixed_precision(model, bfloat16_mixed_precision)
         if _explicit_flex:
             setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.
@@ -5696,7 +5765,7 @@ class FastBaseModel:
         # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
         if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
             layers_to_transform = [layers_to_transform]
-        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+        if _is_full_finetuning(model):
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
@@ -6246,7 +6315,7 @@ class FastBaseModel:
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
-        full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
+        full_finetuning = _is_full_finetuning(model)
 
         if type(float32_mixed_precision) is bool:
             pass
@@ -6336,11 +6405,15 @@ class FastBaseModel:
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 
-            def _gc_enable_reentrant(**kwargs):
-                gc_kwargs = kwargs.get("gradient_checkpointing_kwargs", {}) or {}
+            # TRL's unwrap_model_for_generation re-enables with gradient_checkpointing_enable(kwargs) positionally.
+            def _gc_enable_reentrant(
+                gradient_checkpointing_kwargs = None,
+                *args,
+                **kwargs,
+            ):
+                gc_kwargs = dict(gradient_checkpointing_kwargs or {})
                 gc_kwargs["use_reentrant"] = True
-                kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
-                return _original_gc_enable(**kwargs)
+                return _original_gc_enable(gc_kwargs, *args, **kwargs)
 
             model.gradient_checkpointing_enable = _gc_enable_reentrant
 

@@ -67,6 +67,7 @@ class Query:
     direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
     # tp_native's refusal at q.tp ranks; "" when it shards or the model is already split (_tp_blocker).
     tp_blocker: str = ""
+    ep_blocker: str = ""
     mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
     cp_backend: Optional[str] = None  # ulysses, ring (resolved)
@@ -76,6 +77,7 @@ class Query:
     tp: int = 1
     pp: int = 1
     cp: int = 1
+    ep: int = 1  # UNSLOTH_EP_SIZE
     fsdp2: bool = False
     vllm: bool = False
     pp_schedule: Optional[str] = None  # gpipe, 1f1b, interleaved
@@ -110,6 +112,22 @@ class Rule:
 
 def _rl(q):
     return q.trainer in ("dpo", "grpo", "other_rl")
+
+
+# UNSLOTH_CP_ROUTER_AUX=0 turns cp router aux off (refused again).
+CP_ROUTER_AUX_FAMILIES = ("qwen3_moe",)
+
+
+def _cp_router_aux_formed(q) -> bool:
+    import os
+    return (
+        os.environ.get("UNSLOTH_CP_ROUTER_AUX", "1") != "0"
+        and q.trainer == "sft"
+        and q.family in CP_ROUTER_AUX_FAMILIES
+        and q.cp_backend == "ulysses"
+        and q.tp == 1
+        and q.pp == 1
+    )
 
 
 RULES = (
@@ -228,11 +246,15 @@ RULES = (
         "one stage per rank in v1",
         "pp_schedule=gpipe or 1f1b",
     ),
-    # Kept: flex backward cannot run on CPU (no parity evidence) and generic would lose block sparsity.
+    # Kept: flex backward cannot run on CPU (no parity evidence) and generic would lose block sparsity. Inkling 2's
+    # own flex (models/inkling2_flex.py) is the exception: its Ulysses path builds the mask over the whole sequence
+    # after the head exchange (utils/ulysses_inkling2.py), measured with flex's reference math on CPU.
     Rule(
         "cp x attention",
         "context parallel with flex attention block masks",
-        lambda q: q.cp > 1 and q.attention in ("flex", "flex_sparse"),
+        lambda q: q.cp > 1
+        and q.attention in ("flex", "flex_sparse")
+        and not (q.family in ("inkling2", "inkling2_loop") and q.cp_backend == "ulysses"),
         "the BlockMask is built for the whole sequence, not for the rank-local (permuted) shard",
         "attention sdpa / flash, or drop cp",
     ),
@@ -253,7 +275,7 @@ RULES = (
     Rule(
         "MoE x pp / cp",
         "the MoE router auxiliary loss (output_router_logits) under context parallel",
-        lambda q: q.moe and q.router_aux_loss and q.cp > 1,
+        lambda q: q.moe and q.router_aux_loss and q.cp > 1 and not _cp_router_aux_formed(q),
         "the load balancing loss is a product of whole-batch means; per shard pieces would be summed wrong "
         "(pipeline parallel carries the router statistics between stages, context parallel does not yet). "
         "TRL's SFTTrainer turns it on from the architecture's router_aux_loss_coef by default",
@@ -267,6 +289,16 @@ RULES = (
         "reads the local tensors would orthogonalize the shards",
         "torch.optim.Muon (it steps DTensor shards as whole matrices), adamw_torch / adamw_8bit, or DDP "
         "(dp without fsdp) for another Muon",
+    ),
+    Rule(
+        "fsdp2 x optimizer",
+        "Adafactor under native FSDP2",
+        lambda q: q.fsdp2 and "adafactor" in q.optim,
+        "Adafactor factors each weight's second moment into whole-row and whole-column means, and "
+        "every rank holds only a shard of the weight: transformers' and torch's Adafactor both fail "
+        "at the first step on DTensor shards",
+        "adamw_torch / adamw_torch_fused / adamw_8bit / paged_adamw_8bit, or DDP (dp without fsdp) "
+        "for Adafactor",
     ),
     Rule(
         "fsdp2 x memory",
@@ -293,11 +325,47 @@ RULES = (
         "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
     Rule(
+        "pp x model",
+        "pipeline parallel composed with tensor / data parallel on Inkling 2 (inkling2, inkling2_loop)",
+        lambda q: q.pp > 1
+        and (q.tp > 1 or q.dp > 1 or q.fsdp2)
+        and q.family in ("inkling2", "inkling2_loop"),
+        "Inkling 2's pipeline stages (models/inkling2.py Inkling2PipelineAdapter) run on a pp-only mesh; pp x tp is "
+        "refused at from_pretrained, pp x dp at the first pipeline step",
+        'one axis at a time: UNSLOTH_PARALLEL="pp=N", "tp=N" (tp dividing the head counts), "dp=N" (DDP) or '
+        '"fsdp=1" (native FSDP2), or device_map = "balanced" in one process',
+    ),
+    Rule(
         "pp / tp x vLLM",
         "pipeline / tensor parallel with vLLM (fast_inference)",
         lambda q: (q.pp > 1 or q.tp > 1) and q.vllm,
         "vLLM needs the whole model on each rank",
         "fast_inference = False, or drop tp / pp",
+    ),
+    Rule(
+        "ep x vLLM",
+        "expert parallel with vLLM (fast_inference)",
+        lambda q: q.ep > 1 and q.vllm,
+        "the vLLM LoRA sync gathers only DTensor adapters, and each rank holds its own experts' LoRA as local "
+        "parameters, so vLLM would get one rank's slice",
+        "fast_inference = False, or drop ep (DDP / UNSLOTH_FSDP2=1)",
+    ),
+    # Repeats parallel_env.parse_parallel_spec and ep_native.apply_expert_parallel, for the variables set alone.
+    Rule(
+        "ep x tp / pp / cp / fsdp2",
+        "expert parallel with tensor / pipeline / context parallel or native FSDP2",
+        lambda q: q.ep > 1 and (q.tp > 1 or q.pp > 1 or q.cp > 1 or q.fsdp2),
+        "expert parallel v1 shards the experts over data parallel ranks that each hold the rest of the model "
+        "whole (models/ep_native.py refuses the composition)",
+        "ep alone, or drop ep (tp / pp / cp / UNSLOTH_FSDP2=1)",
+    ),
+    Rule(
+        "ep x model",
+        "expert parallel on models with no MoE block expert parallel can shard",
+        lambda q: q.ep > 1 and bool(q.ep_blocker),
+        "models/ep_native.py apply_expert_parallel shards fused expert stacks by expert index and refuses a model "
+        "with none (its reason follows the layout below)",
+        "drop ep (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
 )
 
@@ -684,7 +752,60 @@ _PACKED_ULYSSES = (
     "[gemma3-eager-True|qwen3-sdpa-True]"
 )
 _PACKED_COMPILED = _GLOO + "test_block_compile_packed_rows_under_cp_match_one_process"
+# Inkling 2 (Mini: inkling2_loop, Small: inkling2): sliding / full attention with relative bias and sinks after the
+# Ulysses exchange, short convolutions with a halo from the previous shard (utils/ulysses_inkling2.py).
+_INKLING2_CP = "tests/test_ulysses_inkling2_gloo.py::test_inkling2_ulysses_matches_one_process"
+_INKLING2_CP_MATCH = {
+    "trainer": ("sft",),
+    "family": ("inkling2", "inkling2_loop"),
+    "hybrid": (True,),
+    "multimodal": (False, True),
+    "windowed": (True,),
+    "mode": ("lora", "qlora", "full"),
+    "packing": (False,),
+    "cp_backend": ("ulysses",),
+    "dp": (1,),
+    "cp": (2,),
+    "tp": (1,),
+    "pp": (1,),
+    # flex: Inkling 2's own FlexAttention (enable_inkling2_flex, the default on sm80+), read from the text config.
+    "attention": ("sdpa", "eager", "flex"),
+    "compile": ("eager",),
+    "memory": ("none", "gc", "unsloth_offload"),
+    "kernels": (False,),
+    "loss": ("standard",),
+    "vllm": (False,),
+    "moe": (True,),
+    "router_aux_loss": (False,),
+    "block_swap": (False,),
+}
+_INKLING2_CP_FSDP2 = (
+    "tests/test_ulysses_inkling2_fsdp2_gloo.py::test_inkling2_ulysses_fsdp2_matches_one_process"
+)
 CELLS = (
+    Cell(
+        "Inkling 2 (attention + short convolutions, MoE) x Ulysses cp (DDP), eager",
+        {**_INKLING2_CP_MATCH, "fsdp2": (False,)},
+        parity = _INKLING2_CP,
+        engagement = _INKLING2_CP
+        + " (one Ulysses attention per layer and pass over the whole sequence, four halo convolutions per layer; "
+        "test_inkling2_ulysses_without_halo_misses_one_process)",
+        compile = "eager: Inkling 2 trains eager (UNSLOTH_COMPILE_DISABLE=partial), the exchange runs outside compile",
+        note = "QLoRA and Unsloth's offloaded checkpoint: SFTTrainer on a tiny Inkling-2-Mini fake, 2x T4 "
+        "(outputs of the PR); Inkling 2 flex: the mini-flex case (flex's reference math on CPU); dp > 1 and "
+        "packing are not measured for this family",
+    ),
+    Cell(
+        "Inkling 2 x Ulysses cp x native FSDP2 (dp_shard x cp), eager",
+        {**_INKLING2_CP_MATCH, "fsdp2": (True,)},
+        parity = _INKLING2_CP_FSDP2,
+        engagement = _INKLING2_CP_FSDP2
+        + " (FSDP2 shards over the cp group, the Ulysses exchanges and halos run inside the sharded layers)",
+        compile = "eager: Inkling 2 trains eager (UNSLOTH_COMPILE_DISABLE=partial), the exchange runs outside compile",
+        note = "the FSDP2 sharded 4-bit quantize-on-load shards over the same ranks, so each cp rank holds half of "
+        "the 4-bit weights; real Inkling-2-Mini QLoRA on 2x T4 in the PR; Inkling 2 flex: the mini-flex-lora case "
+        "(flex's reference math on CPU)",
+    ),
     Cell(
         "cp x native FSDP2 (dp_shard x cp), eager",
         {**_CP_DP, "fsdp2": (True,), "compile": ("eager",), "dp": (1, 2), "cp": (2,)},
@@ -842,10 +963,17 @@ _MOE_PRECISION = {
 }
 _ONE = (1,)
 _MOE_MODES = {
-    "ddp": {"dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
-    "fsdp2": {"dp": (2, 4, 8), "fsdp2": (True,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
-    "cp": {"dp": (1, 2, 4), "fsdp2": (False,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
-    "fsdp2_cp": {"dp": (1, 2, 4), "fsdp2": (True,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
+    "ddp": {"dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE, "ep": _ONE},
+    "fsdp2": {"dp": (2, 4, 8), "fsdp2": (True,), "cp": _ONE, "tp": _ONE, "pp": _ONE, "ep": _ONE},
+    "cp": {"dp": (1, 2, 4), "fsdp2": (False,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE, "ep": _ONE},
+    "fsdp2_cp": {
+        "dp": (1, 2, 4),
+        "fsdp2": (True,),
+        "cp": (2, 4, 8),
+        "tp": _ONE,
+        "pp": _ONE,
+        "ep": _ONE,
+    },
     # Pipeline parallel carries the router auxiliary loss on a pp-only mesh, one stage per rank (gpipe / 1f1b),
     # and refuses it under reentrant checkpointing (models/pp_native.py).
     "pp": {
@@ -856,8 +984,10 @@ _MOE_MODES = {
         "pp": (2, 4, 8),
         "pp_schedule": ("gpipe", "1f1b"),
         "memory": ("none",),
+        "ep": _ONE,
     },
-    "tp": {"tp": (2, 4, 8)},
+    "tp": {"tp": (2, 4, 8), "ep": _ONE},
+    "ep": {"ep": (2, 4, 8), "dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
 }
 _MOE_COMMON = {
     "trainer": ("sft",),
@@ -877,6 +1007,13 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+_MOE_CP_AUX = "tests/test_cp_router_aux_gloo.py::test_router_aux_loss_under_cp_matches_one_process"
+_MOE_CP_AUX_GC = (
+    "lora+experts",
+    "cp",
+)  # the aux row that also ran Unsloth's (non-reentrant) checkpoint
+_EP_FAMILY = "tests/test_ep_moe_families_gloo.py::test_ep_family_matches_one_process"
+_INKLING2_EP = "tests/test_ep_inkling2_gloo.py::"
 # Native DeepSeek-V4.1 (no router aux): cut where no group state crosses, engram tables on the owning stage.
 _DSV41_PP = (
     "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
@@ -885,6 +1022,12 @@ _DSV41_PP = (
 _GPT_OSS_PP = (
     "tests/test_pp_moe_aux_off_gloo.py::"
     "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation"
+)
+# Inkling 2 (Mini and Small): pp2 gpipe / 1f1b vs one-process gradient accumulation, bitwise. The Mini cuts after
+# the loop carry a block attention residual stack of 2 and 3 entries; every case counts stage forward calls.
+_INKLING2_PP = "tests/test_pp_inkling2_gloo.py::test_pp2_inkling2_mini_matches_one_process"
+_INKLING2_PP_ENGAGED = (
+    "tests/test_pp_inkling2_gloo.py::test_pp2_inkling2_mini_cut_after_the_loop_matches_one_process"
 )
 _GPT_OSS_PP_CASES = {
     "lora": "gpt_oss_lora_logits_off_1f1b|gpt_oss_lora_logits_off_gpipe_gc",
@@ -982,6 +1125,16 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "full", False, "cp"): (_MOE_TEST + "[full-cp2]",) * 2
     + (_MOE_COMPILE + "[full]",),
+    ("qwen3_moe", "lora+experts", True, "cp"): (
+        _MOE_CP_AUX
+        + "[lora-cp2|lora-cp2-right_pad|lora-cp2-empty_shard|lora-cp2-cp_pad|lora-dp2_cp2-right_pad]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", True, "fsdp2_cp"): (_MOE_CP_AUX + "[lora-fsdp2_cp2]",) * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "full", True, "cp"): (_MOE_CP_AUX + "[full-cp2-right_pad]",) * 2
+    + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", True, "ddp"): (_MOE_AUX_TEST,) * 2
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", True, "fsdp2"): (_MOE_AUX_TEST,) * 2
@@ -1078,10 +1231,16 @@ _MOE_EVIDENCE = {
     )
     * 2
     + ("eager: no compiled region",),
+    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process.
+    **{
+        (family, "lora+experts", False, "ep"): (_EP_FAMILY + f"[{family}]",) * 2
+        + ("eager: no compiled region",)
+        for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss")
+    },
 }
 
 
-# Cells table only; a real model is read by structure (_direct_params, _tp_blocker).
+# Cells table only; a real model is read by structure (_direct_params, _tp_blocker, _ep_blocker).
 _DIRECT_PARAM_FAMILIES = ("gpt_oss",)
 _TP_BLOCKED_FAMILIES = {
     "deepseek_v2": "multi-head latent attention (MLA, kv_lora_rank)",
@@ -1089,17 +1248,32 @@ _TP_BLOCKED_FAMILIES = {
     "deepseek_v32": "multi-head latent attention (MLA, kv_lora_rank)",
     "olmoe": "q_norm / k_norm normalize all heads' features, not one head",
 }
+# From tp_native.expert_shard_problem on transformers 5.24.
+_EP_BLOCKED_FAMILIES = {
+    "jetmoe": "its experts forward takes (layer_input,), not (hidden_states, top_k_index, top_k_weights)",
+    "longcat_flash": "zero / identity experts: the experts module has no integer num_experts",
+    "hunyuan_v1_moe": "the experts module has no integer num_experts",
+}
 
 
 def _moe_note(family, precision, aux, mode):
+    if mode == "ep":
+        if family in _EP_BLOCKED_FAMILIES:
+            return f"refused by the ep x model rule (models/tp_native.py: {_EP_BLOCKED_FAMILIES[family]})"
+        return "expert parallel runs (models/ep_native.py); no gloo parity run covers this cell yet"
     if mode == "tp":
         if family in _DIRECT_PARAM_FAMILIES:
             return "refused by the tp x model rule (its attention owns the sinks parameter)"
         if family in _TP_BLOCKED_FAMILIES:
             return f"refused by the tp x model rule (models/tp_native.py: {_TP_BLOCKED_FAMILIES[family]})"
         return "tensor parallel MoE runs (models/tp_native.py, its own gloo tests); no registry parity row yet"
-    if aux and mode == "cp":
-        return "refused by the MoE x pp / cp rule (aux-loss injection first)"
+    if aux and mode in ("cp", "fsdp2_cp"):
+        if family in CP_ROUTER_AUX_FAMILIES:
+            return "no gloo parity run for this precision with the router aux loss on under cp yet"
+        return (
+            "refused by the MoE x pp / cp rule: cp forms the router aux loss from summed statistics only for "
+            + ", ".join(CP_ROUTER_AUX_FAMILIES)
+        )
     if mode == "pp":
         if family == "gpt_oss" and aux:
             return (
@@ -1165,7 +1339,21 @@ def _moe_cells():
                         if text_only:
                             match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
-                        if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
+                        if mode in ("cp", "fsdp2_cp") and aux:
+                            # HF checkpointing did not run with the aux loss under cp; Unsloth's did for one row.
+                            gc = (precision, mode) == _MOE_CP_AUX_GC
+                            match = {
+                                **match,
+                                "memory": ("none", "unsloth_offload") if gc else ("none",),
+                            }
+                            if gc:
+                                note = (
+                                    _MOE_CP_AUX
+                                    + "[lora-cp2-unsloth_nonre_gc] (Unsloth checkpoints MoE models "
+                                    "with the aux loss on non-reentrantly; reentrant checkpointing is refused at "
+                                    "the first forward)"
+                                )
+                        elif mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
                             match = {**match, "memory": _WITH_UNSLOTH_GC}
                             case = f"{precision.split('+')[0]}-{mode}2"  # lora-cp2, lora-fsdp2_cp2, full-cp2
                             note = (
@@ -1239,6 +1427,101 @@ class _AboveOne:
         return iter(("2+",))
 
 
+# Layouts that shipped before the registry (pp x tp, pp x dp, dp x tp), as their gloo runs train them: the HF
+# Trainer on a tiny Llama, LoRA, fp32, eager attention, no checkpointing, UNSLOTH_PP_SIZE / UNSLOTH_TP_SIZE /
+# UNSLOTH_FSDP2 from the environment, one stage per rank.
+_LEGACY = {
+    "trainer": ("trainer",),
+    "family": ("llama",),
+    "hybrid": (False,),
+    "multimodal": (False,),
+    "windowed": (False,),
+    "mode": ("lora",),
+    "packing": (False,),
+    "cp": _ONE,
+    "attention": ("eager",),
+    "compile": ("eager",),
+    "memory": ("none",),
+    "kernels": (False,),
+    "loss": ("standard",),
+    "vllm": (False,),
+    "moe": (False,),
+    "tiled": (False,),
+    "block_swap": (False,),
+}
+_PP_ENV = "tests/test_pp_env_gloo.py::"
+_PP_PARITY = _PP_ENV + "test_pp_env_trainer_matches_one_process"
+_PP_ENGAGED = "tests/test_pp_env_engagement_gloo.py::test_pp_env_composed_axis_engages"
+_PP_API = "tests/test_pp_fsdp2_gloo.py::"
+_TP_ENV = "tests/test_tp_env_gloo.py::"
+_TP_PARITY = _TP_ENV + "test_env_tp2_x_dp2_trainer_matches_one_process"
+_TP_RESUME = _TP_ENV + "test_env_tp_checkpoint_resume_equals_uninterrupted"
+_LEGACY_EAGER = "eager: no compiled region"
+_LEGACY_NOTE = (
+    "not measured here: SFTTrainer / TRL trainers, other families, QLoRA, sdpa / flash attention, gradient "
+    "checkpointing, block compile, Unsloth's fast kernels, sizes above 2"
+)
+_PP_ONLY = {"pp": (2,), "pp_schedule": ("1f1b",)}
+_LEGACY_CELLS = (
+    Cell(
+        "pp x tp (one stage per rank), eager",
+        {**_LEGACY, **_PP_ONLY, "dp": _ONE, "tp": (2,), "fsdp2": (False,)},
+        parity = _PP_PARITY + "[pp2_x_tp2]",
+        engagement = _PP_ENGAGED
+        + "[pp2_x_tp2] (stage 1 runs on stage 0's rows, tp DTensor shards on each stage); "
+        + _PP_ENV
+        + "test_pp_env_tensor_peers_train_on_one_batch",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE
+        + "; direct API (gpipe, llama / qwen3 / gemma3): "
+        + _PP_API
+        + "test_pp2_x_tp2_matches_one_process",
+    ),
+    Cell(
+        "pp x dp (DDP), eager",
+        {**_LEGACY, **_PP_ONLY, "dp": (2,), "tp": _ONE, "fsdp2": (False,)},
+        parity = _PP_PARITY + "[pp2_x_ddp2]",
+        engagement = _PP_ENGAGED
+        + "[pp2_x_ddp2] (stage 1 runs on stage 0's rows, dp replicas on different rows)",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE
+        + "; resume: "
+        + _PP_ENV
+        + "test_pp_env_checkpoint_resume_equals_uninterrupted[pp2_x_ddp2]",
+    ),
+    Cell(
+        "pp x dp (native FSDP2), eager",
+        {**_LEGACY, **_PP_ONLY, "dp": (2,), "tp": _ONE, "fsdp2": (True,)},
+        parity = _PP_PARITY + "[pp2_x_fsdp2_dp2]",
+        engagement = _PP_ENGAGED
+        + "[pp2_x_fsdp2_dp2] (stage 1 runs on stage 0's rows, FSDP2 shards over dp, replicas on different rows)",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE
+        + "; direct API (gpipe / 1f1b, llama / qwen3 / gemma3): "
+        + _PP_API
+        + "test_pp2_x_fsdp2_dp2_matches_one_process",
+    ),
+    Cell(
+        "dp x tp (DDP), eager",
+        {**_LEGACY, "pp": _ONE, "dp": (2,), "tp": (2,), "fsdp2": (False,)},
+        parity = _TP_PARITY + "[ddp_dp2]",
+        engagement = _TP_PARITY
+        + "[ddp_dp2] (tp sharded, the DDP mesh averages over dp, tp peers on the same rows, dp replicas "
+        "on different ones)",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE + "; resume: " + _TP_RESUME + "[tp2_ddp_dp2]",
+    ),
+    Cell(
+        "dp (native FSDP2) x tp, eager",
+        {**_LEGACY, "pp": _ONE, "dp": (2,), "tp": (2,), "fsdp2": (True,)},
+        parity = _TP_PARITY + "[fsdp2_dp2]",
+        engagement = _TP_PARITY
+        + "[fsdp2_dp2] (tp sharded, native FSDP2 over dp, tp peers on the same rows, dp replicas on "
+        "different ones)",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE + "; resume: " + _TP_RESUME + "[tp2_fsdp2_dp2]",
+    ),
+)
 # The refusal names the knob to turn off: dropping an axis is not the fix for a swapped model.
 _NO_BLOCK_SWAP = (
     "; load with offload_layers = 0 (and get_peft_model(offload_layers = 0)) to run this layout"
@@ -1247,6 +1530,60 @@ CELLS = (
     CELLS
     + _moe_cells()
     + (
+        # Inkling 2 (no router auxiliary loss): the stage boundary carries hidden states plus the block attention
+        # residual stack, Inkling-2-Mini's looped layers stay on one stage (models/inkling2.py
+        # Inkling2PipelineAdapter); pp-only mesh, text only.
+        Cell(
+            "Inkling 2 x pp",
+            {
+                "family": ("inkling2", "inkling2_loop"),
+                "moe": (True,),
+                "pp": (2, 4, 8),
+                "pp_schedule": ("gpipe", "1f1b"),
+                "dp": _ONE,
+                "tp": _ONE,
+                "cp": _ONE,
+                "fsdp2": (False,),
+                "mode": ("lora", "qlora"),
+                "router_aux_loss": (False,),
+                "packing": (False,),
+                "vllm": (False,),
+                "block_swap": (False,),
+                "compile": ("eager",),
+                "memory": ("none", "gc", "unsloth_gc", "unsloth_offload"),
+            },
+            _INKLING2_PP,
+            _INKLING2_PP_ENGAGED,
+            "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
+        ),
+    )
+    + _LEGACY_CELLS
+    + (
+        Cell(
+            "Inkling 2 x ep",
+            {
+                "family": ("inkling2", "inkling2_loop"),
+                "moe": (True,),
+                "ep": (2, 4, 8),
+                "dp": (2, 4, 8),
+                "tp": _ONE,
+                "pp": _ONE,
+                "cp": _ONE,
+                "fsdp2": (False,),
+                "mode": ("lora", "qlora"),
+                "router_aux_loss": (False,),
+                "packing": (False,),
+                "vllm": (False,),
+                "block_swap": (False,),
+                "compile": ("eager",),
+            },
+            _INKLING2_EP
+            + "test_ep_lora_matches_one_process + "
+            + _INKLING2_EP
+            + "test_ep_four_bit_experts_quantized_on_load",
+            _INKLING2_EP + "test_ep_env_trainer_matches_one_process",
+            "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
+        ),
         Cell(
             "block swap x tp",
             {"block_swap": (True,), "tp": _AboveOne()},
@@ -1348,7 +1685,9 @@ def check(query: Query, cells: bool = True) -> None:
 
 def _describe(q: Query) -> str:
     parts = [
-        f"{name} {getattr(q, name)}" for name in ("pp", "dp", "cp", "tp") if getattr(q, name) > 1
+        f"{name} {getattr(q, name)}"
+        for name in ("pp", "dp", "cp", "tp", "ep")
+        if getattr(q, name) > 1
     ]
     if q.cp > 1 and q.cp_backend:
         parts.append(f"cp_backend {q.cp_backend}")
@@ -1360,6 +1699,7 @@ def _describe(q: Query) -> str:
         + f", trainer {q.trainer}"
         + (f", model {q.family}" if q.family else "")
         + (f"; models/tp_native.py: {q.tp_blocker}" if q.tp > 1 and q.tp_blocker else "")
+        + (f"; models/ep_native.py: {q.ep_blocker}" if q.ep > 1 and q.ep_blocker else "")
     )
 
 
@@ -1482,6 +1822,32 @@ def _tp_blocker(model, tp) -> str:
     return ""
 
 
+def _ep_blocker(model, ep) -> str:
+    """Why apply_expert_parallel would refuse `model` at `ep` ranks, "" if it shards. Strings and
+    structureless models fall back to _EP_BLOCKED_FAMILIES."""
+    if not isinstance(ep, int) or ep <= 1 or model is None:
+        return ""
+    family = model if isinstance(model, str) else _model_traits(model)[0]
+    if not callable(getattr(model, "named_modules", None)):
+        return _EP_BLOCKED_FAMILIES.get(family, "")
+    try:
+        from .models import ep_native, tp_native
+        if ep_native.is_expert_parallel(model):
+            return ""
+        problems = [
+            tp_native.expert_shard_problem(block, ep)
+            for block in tp_native.moe_blocks_with_experts(model)
+        ]
+    except Exception:
+        return _EP_BLOCKED_FAMILIES.get(family, "")
+    if any(problem is None for problem in problems):
+        return ""
+    reasons = (
+        "; ".join(sorted({str(p) for p in problems})[:3]) or "no module has an `experts` child"
+    )
+    return f"no shardable MoE block ({reasons})"
+
+
 def _low_precision(model) -> Optional[str]:
     """Return "fp8" if fp8 LoRA is requested / attached or torchao Float8Linear layers exist, else None."""
     stack, seen = [model], set()
@@ -1549,8 +1915,17 @@ def _compile_mode(model):
     return "eager"
 
 
-def _attention(model, packing):
+def _attention(
+    model,
+    packing,
+    inkling2_cp = False,
+):
     config = getattr(model, "config", None)
+    if inkling2_cp:
+        # enable_inkling2_flex routes only the text attention through flex; the outer config stays eager.
+        text = getattr(config, "text_config", None) or config
+        if getattr(text, "_attn_implementation", None) == "unsloth_inkling2_flex":
+            return "flex"
     impl = str(getattr(config, "_attn_implementation", None) or "sdpa")
     if impl.startswith("flex"):
         return "flex"
@@ -1566,8 +1941,12 @@ def _memory(model, args):
     except Exception:
         fn = None
     name = getattr(fn, "__name__", "")
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
+
     gc = bool(getattr(args, "gradient_checkpointing", False)) or bool(
-        getattr(model, "is_gradient_checkpointing", False)
+        _is_activation_checkpointing(model)
     )
     if not gc:
         return "none"
@@ -1750,6 +2129,7 @@ def query_from(
         # check runs before: the released behaviour, not a refusal.
         packing = False
     kernels = _kernels(model)
+    cp_size = cp if cp is not None else getattr(layout, "cp", 1)
     return Query(
         trainer = _trainer_kind(trainer_cls),
         family = family,
@@ -1758,6 +2138,7 @@ def query_from(
         windowed = windowed,
         direct_params = _direct_params(model),
         tp_blocker = _tp_blocker(model, getattr(layout, "tp", 1)),
+        ep_blocker = _ep_blocker(model, getattr(layout, "ep", 1)),
         mode = mode,
         packing = packing,
         cp_backend = backend,
@@ -1766,13 +2147,16 @@ def query_from(
         dp = getattr(layout, "dp", 1),
         tp = getattr(layout, "tp", 1),
         pp = getattr(layout, "pp", 1),
-        cp = cp if cp is not None else getattr(layout, "cp", 1),
+        cp = cp_size,
+        ep = getattr(layout, "ep", 1),
         fsdp2 = bool(getattr(layout, "fsdp2", False)),
         vllm = bool(
             getattr(model, "vllm_engine", None) is not None or getattr(args, "use_vllm", False)
         ),
         pp_schedule = getattr(layout, "schedule", None) if getattr(layout, "pp", 1) > 1 else None,
-        attention = _attention(model, packing),
+        attention = _attention(
+            model, packing, inkling2_cp = cp_size > 1 and family in ("inkling2", "inkling2_loop")
+        ),
         compile = _compile_mode(model),
         memory = _memory(model, args),
         kernels = kernels,

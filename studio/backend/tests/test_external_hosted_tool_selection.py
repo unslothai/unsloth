@@ -21,6 +21,9 @@ def _drive(coro):
 class _FakeExternalClient:
     last: dict = {}
 
+    async def served_context_window(self, model):
+        return None
+
     def __init__(self, **kwargs):
         _FakeExternalClient.last = {"ctor": kwargs}
         self.provider_type = kwargs.get("provider_type")
@@ -35,6 +38,9 @@ class _FakeExternalClient:
 
     async def served_chat_template(self, model):
         return None
+
+    async def serves_ollama(self):
+        return False
 
     async def served_model_reads_images(self, model):
         return None

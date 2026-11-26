@@ -49,6 +49,7 @@ mod process_identity;
 mod shell_path;
 mod staged_update;
 mod studio_home;
+mod tcp_listeners;
 mod update;
 mod webview_permissions;
 mod windows_job;
@@ -2420,6 +2421,13 @@ fn main() {
             appimage_webkit::mode_label(|name| std::env::var_os(name))
         );
     }
+    #[cfg(target_os = "linux")]
+    if appimage_webkit::host_lacks_audio_sink() {
+        warn!(
+            "GStreamer has no autoaudiosink plugin: WebKitGTK aborts a page on its first audio or \
+             video. Install GStreamer's good plugins (gst-plugins-good, gstreamer1.0-plugins-good)."
+        );
+    }
     #[cfg(target_os = "macos")]
     macos_event_guard::install();
 
@@ -2525,6 +2533,7 @@ fn main() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            appimage_webkit::missing_media_codec_packages,
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
             browser_webview::browser_view_open_background,

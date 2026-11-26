@@ -24,6 +24,7 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { useHubFeed } from "@/features/hub/hooks/use-hub-feed";
+import { useOnboardingStore } from "@/features/onboarding/store";
 import { browserAccountKey } from "@/lib/account-transition";
 import { BulbIcon } from "@/lib/bulb-icon";
 import {
@@ -153,6 +154,8 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
 }) => {
   const source = useComposerModelPickerSource();
   const dismissed = useSyncExternalStore(subscribe, readDismissed, () => true);
+  // Beside the onboarding dialog's edge it read as a doubled border.
+  const onboarding = useOnboardingStore((s) => s.pages !== null);
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState(0);
   const openPickerOnClose = useRef(false);
@@ -164,7 +167,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
 
   return (
     <>
-      {!dismissed && (
+      {!dismissed && !onboarding && (
         <div
           className={cn(
             "flex justify-center px-2 fade-in slide-in-from-bottom-2 animate-in duration-500",

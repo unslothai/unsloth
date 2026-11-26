@@ -39,6 +39,12 @@ export function TransformersUpgradeDialog() {
   const upgrade = useTransformersUpgradeDialogStore((s) => s.upgrade);
   const phase = useTransformersUpgradeDialogStore((s) => s.phase);
   const errorMessage = useTransformersUpgradeDialogStore((s) => s.errorMessage);
+  const autoInstallNotice = useTransformersUpgradeDialogStore(
+    (s) => s.autoInstallNotice,
+  );
+  const installBlocked = useTransformersUpgradeDialogStore(
+    (s) => s.installBlocked,
+  );
   const trustRemoteCodeFallback = useTransformersUpgradeDialogStore(
     (s) => s.trustRemoteCodeFallback,
   );
@@ -52,6 +58,7 @@ export function TransformersUpgradeDialog() {
     upgrade,
     phase,
     trustRemoteCodeFallback,
+    installBlocked,
   });
   const installing = phase === "installing";
 
@@ -88,6 +95,8 @@ export function TransformersUpgradeDialog() {
                       {fromMain ? " (development build)" : ""}. Updating takes
                       about a minute.
                     </>
+                  ) : installBlocked ? (
+                    <>, which needs a newer transformers release.</>
                   ) : devOnly ? (
                     <>
                       , which only the transformers development build supports.
@@ -101,6 +110,12 @@ export function TransformersUpgradeDialog() {
                     : null}
                 </AlertDialogDescription>
               </div>
+
+              {autoInstallNotice && phase !== "error" ? (
+                <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  {autoInstallNotice}
+                </p>
+              ) : null}
 
               {phase === "error" && errorMessage ? (
                 <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">

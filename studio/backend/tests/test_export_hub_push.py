@@ -1121,6 +1121,7 @@ def test_merged_push_into_a_folder_with_a_stale_report_uploads_none(tmp_path, mo
     export_dir = tmp_path / "export-torchao-fp8"
     export_dir.mkdir(parents = True)
     (export_dir / "reap_report.json").write_text('{"kept_experts": {}}')
+    _age(export_dir)  # an earlier export's report
     success, message, output_path = backend.export_merged_model(
         str(tmp_path / "export"),
         compressed_method = "torchao_fp8",

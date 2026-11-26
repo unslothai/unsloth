@@ -204,6 +204,14 @@ def _device_of(pipe: Any):
     return dev if dev is not None and getattr(dev, "type", "") == "cuda" else None
 
 
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        from .diffusion_vae_oom import is_oom
+        return is_oom(exc)
+    except Exception:  # noqa: BLE001
+        return "out of memory" in str(exc).lower()
+
+
 def _probed(
     proc: Any,
     stock_area,
@@ -211,7 +219,7 @@ def _probed(
     device,
     logger: Any = None,
 ) -> bool:
-    """The device's probe verdict, running the probe (Triton compile + two images) once per device."""
+    """The device's probe verdict, running the probe (Triton compile + two images) once per device (an OOM is retried)."""
     key = str(device)
     ok = _PROBED.get(key)
     if ok is None:
@@ -221,9 +229,12 @@ def _probed(
                 try:
                     ok = _probe(proc, stock_area, stock_pre, device)
                 except Exception as exc:  # noqa: BLE001 - probe failure: CPU path for this device
-                    ok = False
                     if logger is not None:
                         logger.warning("diffusion.ref_preprocess: probe failed on %s: %s", key, exc)
+                    if _is_oom(exc):
+                        # transient (e.g. memory pressure at load): CPU path now, probe again next request
+                        return False
+                    ok = False
                 _PROBED[key] = ok
                 if logger is not None:
                     logger.info(

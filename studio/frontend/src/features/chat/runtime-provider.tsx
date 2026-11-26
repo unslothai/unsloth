@@ -1527,7 +1527,7 @@ function scheduleGenerationRecovery(
     const carried = stored.carried;
     // Keyed exactly as the live stream (toolConfirmationScopeId) so cards are the same.
     const toolRecovery = createGenerationToolRecovery(carried, runId, cursor, {
-      register: (partId, approvalId, sessionId) =>
+      register: (partId, approvalId, sessionId, toolName) =>
         useChatRuntimeStore
           .getState()
           .setToolConfirmation(
@@ -1538,6 +1538,8 @@ function scheduleGenerationRecovery(
             threadId,
             undefined,
             runId,
+            undefined,
+            toolName,
           ),
       resolve: (partId) =>
         useChatRuntimeStore.getState().clearToolConfirmation(partId),
@@ -1818,6 +1820,8 @@ function scheduleGenerationRecovery(
                     store.setLiveDecode(threadId, progress.decode);
                   } else if (progress?.phase === "compacting") {
                     store.setLiveCompacting(threadId, true);
+                  } else if (progress?.phase === "compaction_failed") {
+                    store.setLiveCompacting(threadId, false);
                   }
                   // A frame can end the replay: show what it rebuilt, or a replayed tool result stays hidden.
                   if (update.run.status !== lastPublishedStatus) {

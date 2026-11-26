@@ -8,7 +8,7 @@ per element than the same conv below that size; measured on the LTX-2.3 decoder 
 5 clip sizes. Splitting such a call into Conv2d calls, one per temporal tap with time folded into the batch, summed in
 fp32 with the bias added once, decodes 1920x1088x121 about 1.8x faster and closer to a CPU fp32 decode. Below 2 GiB
 the stock Conv3d is faster, and Linux ROCm has no cliff, so only Windows ROCm installs it and only calls over 2 GiB
-take it. UNSLOTH_VIDEO_VAE_ROCM_PERTAP=0 turns it off (read per call).
+outside autocast take it. UNSLOTH_VIDEO_VAE_ROCM_PERTAP=0 turns it off (read per call).
 """
 
 from __future__ import annotations
@@ -95,12 +95,28 @@ def pertap_conv3d(
     return out
 
 
+# fp16 stays: a synthetic cancelling pair can overflow a tap, but the real LTX-2.3 fp16 decode on gfx1151 is finite
+# and 2.4x faster per tap (35.7 vs 87.0 s, 7.1 GiB lower peak).
+ENGAGE_DTYPES = ("bfloat16", "float16", "float32")
+
+
+def _autocast_on(torch: Any, device_type: str) -> bool:
+    try:
+        return bool(torch.is_autocast_enabled(device_type))
+    except TypeError:  # torch < 2.4: no device_type argument
+        return bool(torch.is_autocast_enabled())
+
+
 def _pertap_eligible(conv: Any, x: Any) -> bool:
     import torch
 
-    if pertap_disabled() or torch.compiler.is_compiling():
+    # is_compiling first: a traced env read guards on the env value and recompiles when it flips
+    if torch.compiler.is_compiling() or pertap_disabled():
         return False
     if x.dim() != 5 or x.device.type not in ENGAGE_DEVICE_TYPES or isinstance(conv.padding, str):
+        return False
+    # autocast: stock returns the autocast dtype, the per-tap output keeps x's dtype
+    if str(x.dtype).rsplit(".", 1)[-1] not in ENGAGE_DTYPES or _autocast_on(torch, x.device.type):
         return False
     if torch.is_grad_enabled() and (x.requires_grad or conv.weight.requires_grad):
         return False

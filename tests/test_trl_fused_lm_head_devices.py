@@ -35,6 +35,8 @@ NAMES = (
     "_spans_several_devices",
     "_first_tensor_device",
     "_ApplyOnInputDevice",
+    "_bf16_autocast_fused_forward",
+    "_keep_bf16_autocast_on_fused_forward",
     "patch_trl_fused_lm_head_devices",
 )
 
@@ -47,7 +49,7 @@ class _Outputs(OrderedDict):
 
 def _load():
     src = open(RL_SOURCE_PATH, encoding = "utf-8").read()
-    ns = {"torch": torch, "functools": functools, "sys": sys}
+    ns = {"torch": torch, "functools": functools, "sys": sys, "types": types}
     for node in ast.parse(src).body:
         if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in NAMES:
             exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)

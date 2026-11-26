@@ -33,6 +33,22 @@ export function fixedLayerContextPin({
     : null;
 }
 
+/** What the Auto context field quotes for a resident GGUF: `loaded` is the window the next load
+ *  keeps (unchanged settings, or a fixed-layer reload pin); otherwise `refits` names the loaded
+ *  window that Auto will fit again. */
+export function autoContextQuote({
+  atBaseline,
+  activeLoadedContext,
+  fixedLayerPin,
+}: {
+  atBaseline: boolean;
+  activeLoadedContext: number | null;
+  fixedLayerPin: number | null;
+}): { loaded: number | null; refits: number | null } {
+  const loaded = atBaseline ? activeLoadedContext : fixedLayerPin;
+  return { loaded, refits: loaded == null ? activeLoadedContext : null };
+}
+
 export function resolveMlxServedWindow(
   loadedContext: number | null,
   fittedContext: number | null,

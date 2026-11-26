@@ -423,7 +423,10 @@ def test_full_finetuning_early_return_applies_checkpoint_skip(path):
         node
         for node in ast.walk(fn)
         if isinstance(node, ast.If)
-        and "UNSLOTH_ENABLE_FULL_FINETUNING" in ast.get_source_segment(src, node.test)
+        and any(
+            token in ast.get_source_segment(src, node.test)
+            for token in ("UNSLOTH_ENABLE_FULL_FINETUNING", "_is_full_finetuning")
+        )
         and isinstance(node.body[-1], ast.Return)
     ]
     assert branches, f"full finetuning early return not found in {path}"

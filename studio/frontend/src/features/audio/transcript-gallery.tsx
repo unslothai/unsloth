@@ -63,6 +63,7 @@ import { getTranscript } from "./transcribe-api";
 import {
   TRANSCRIPT_EXPORT_FORMATS,
   type TranscriptExportFormat,
+  needsSavedTimings,
 } from "./transcript-export";
 import {
   type TranscriptSource,
@@ -99,13 +100,12 @@ export function TranscriptExportItems({
   });
 }
 
-// The list carries counts only, so timed formats fetch the full record.
 async function downloadRecord(
   record: TranscriptRecord,
   format: TranscriptExportFormat,
 ): Promise<void> {
   let full = record;
-  if ((record.segment_count ?? 0) > 0) {
+  if (needsSavedTimings(format, record)) {
     try {
       full = await getTranscript(record.id);
     } catch (error) {

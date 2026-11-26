@@ -28,6 +28,7 @@ import type {
   SamplerType,
   SeedSourceType,
 } from "../types";
+import { swapSeedSourceType } from "../utils/config-factories";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import {
@@ -37,7 +38,6 @@ import {
 } from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
-import { makeUnstructuredUploadUid } from "../utils/config-factories";
 import {
   centerModelInfraNodes,
   optimizeModelInfraEdgeHandles,
@@ -438,34 +438,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         nextSourceType = "github_repo";
       }
 
-      const nextConfig: typeof existing = {
-        ...existing,
-        seed_source_type: nextSourceType,
-        hf_repo_id: "",
-        hf_subset: "",
-        hf_split: "",
-        hf_path: "",
-        hf_token: "",
-        hf_endpoint: "",
-        local_file_name: "",
-        unstructured_upload_uid:
-          nextSourceType === "unstructured" ? makeUnstructuredUploadUid() : "",
-        unstructured_file_ids: [],
-        unstructured_file_names: [],
-        unstructured_file_sizes: [],
-        resolved_paths: [],
-        seed_columns: [],
-        seed_drop_columns: [],
-        seed_preview_rows: [],
-        unstructured_chunk_size: "1200",
-        unstructured_chunk_overlap: "200",
-        github_repo_slug: "",
-        github_token: "",
-        github_limit: "100",
-        github_item_types: ["issues", "pulls"],
-        github_include_comments: true,
-        github_max_comments_per_item: "30",
-      };
+      const nextConfig = swapSeedSourceType(existing, nextSourceType);
       return {
         configs: {
           ...state.configs,

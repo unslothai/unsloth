@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Optional, Sequence
+from typing import Any, BinaryIO, Callable, Iterable, Optional, Sequence
 
 from core.inference import audio_cpp_spec_packages as spec_packages
 from core.inference.audio_cpp_option_table import (
@@ -30,6 +30,7 @@ from core.inference.audio_cpp_option_table import (
     rules_for,
 )
 from loggers import get_logger
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -157,6 +158,14 @@ class SeparationSpec:
     """Changing overlap_option restarts the server"""
 
     overlap_option: Optional[str] = None
+    goal: str = "stems"
+    # An s2s answer carries one top-level audio and no named outputs; its file gets this id.
+    output: Optional[str] = None
+    # Apollo refuses any rate but 44.1 kHz; a 48 kHz filter keeps the top of the band.
+    rate: int = 44100
+    # Bandwidths an upscaler's input_sample_rate takes; unset, it is the source's (UniverSR reads
+    # the prepared file's rate otherwise, which no bandwidth matches).
+    input_rates: tuple[int, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -369,7 +378,7 @@ def _bindings_for(
     if task == "asr":
         return {"transcribe": WorkflowBinding("asr", "transcriptions", None, ("audio",))}
     if task == "sep":
-        return {"separate": WorkflowBinding("sep", "tasks", None, ("audio",))}
+        return {"separate": WorkflowBinding(server_task or "sep", "tasks", None, ("audio",))}
     return {}
 
 
@@ -646,8 +655,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     # Both need a reference clip on every run (mira_tts/session.cpp, sopro_tts/session.cpp).
     AudioCppFamily("mira_tts", "tts", speaks = False, clone = CloneSpec("unused")),
     AudioCppFamily("sopro_tts", "tts", speaks = False, clone = CloneSpec("unused")),
-    # Its spec lists only tts, yet every run needs a reference clip (xtts_v2: "voice cloning
-    # requires a reference WAV").
+    # Spec lists only tts, yet each run needs a reference clip (xtts_v2 needs a reference WAV).
     AudioCppFamily("xtts_v2", "tts", speaks = False, clone = CloneSpec("unused")),
     # Plain tts fails with "VieNeu-TTS TTS requires a voice": the voices its package ships are
     # reference codes the runtime does not pick up by name.
@@ -710,16 +718,50 @@ _CONVERT_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
+_SPEAKERS = SeparationSpec(goal = "speakers")
+_ISOLATE_VOICE = SeparationSpec(goal = "voice", output = "voice", rate = 48000)
+_RESTORE = SeparationSpec(goal = "restore", output = "restored")
+_RESTORE_48K = SeparationSpec(goal = "restore", output = "restored", rate = 48000)
+
 _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("htdemucs", "sep", separation = SeparationSpec()),
     AudioCppFamily("htdemucs_6stems", "sep", separation = SeparationSpec()),
     AudioCppFamily("bs_roformer", "sep", separation = SeparationSpec("num_overlap")),
     AudioCppFamily("mel_band_roformer", "sep", separation = SeparationSpec("num_overlap")),
+    AudioCppFamily("tf_gridnet", "sep", separation = _SPEAKERS),
+    # SS splits two speakers; the SE and SR files are s2s (with_variant picks by file name).
+    AudioCppFamily("mossformer2", "sep", separation = _SPEAKERS),
+    AudioCppFamily("voice_isolator", "sep", server_task = "s2s", separation = _ISOLATE_VOICE),
+    AudioCppFamily("apollo", "sep", server_task = "s2s", separation = _RESTORE),
+    *(
+        AudioCppFamily(name, "sep", server_task = "s2s", separation = _RESTORE_48K)
+        for name in ("sidon", "audiosr")
+    ),
+    AudioCppFamily(
+        "universr",
+        "sep",
+        server_task = "s2s",
+        separation = replace(_RESTORE_48K, input_rates = (8000, 12000, 16000, 24000)),
+    ),
 )
 
 
 # Table families can be newer than some runtimes, so the runtime check still applies to them.
-_RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts", "xtts_v2", "zonos3"))
+_RUNTIME_GATED_FAMILIES = frozenset(
+    (
+        "mira_tts",
+        "sopro_tts",
+        "xtts_v2",
+        "zonos3",
+        "voice_isolator",
+        "sidon",
+        "apollo",
+        "audiosr",
+        "universr",
+        "mossformer2",
+        "tf_gridnet",
+    )
+)
 
 _MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
 PACKAGE_INCOMPLETE = "This repository does not publish every file this model package needs."
@@ -982,9 +1024,20 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
             (("sortformer_diar", "sortformer_diar_v2", "nemotron_3_diar"), "Speaker diarization"),
             (("pulsevad", "silero_vad", "marblenet_vad"), "Voice activity detection"),
             (("muscriptor", "sheetsage2"), "Music transcription"),
-            (("apollo", "audiosr", "universr", "personaplex"), "Speech-to-speech"),
         )
         for name in names
+    ),
+    AudioCppFamily(
+        "personaplex",
+        "",
+        unsupported = "PersonaPlex is a voice conversation model, which Unsloth Studio does not "
+        "support yet.",
+    ),
+    AudioCppFamily(
+        "sam_audio",
+        "",
+        unsupported = "SAM Audio needs a prompt marking the sound to keep, which Unsloth Studio "
+        "cannot give it yet.",
     ),
     # Its spec says ASR, but it answers with a description of the audio, not what was said.
     AudioCppFamily(
@@ -1053,6 +1106,14 @@ def _spec_music(tasks: Sequence[str], request: Optional[list]) -> MusicSpec:
     return MusicSpec(tuple(modes))
 
 
+def _enhances(spec: Optional[dict]) -> bool:
+    """An s2s spec that filters one recording (audio_enhancement), not a voice chat or a prompted
+    separation: only that kind runs on Separate."""
+    capabilities = (spec or {}).get("capabilities")
+    s2s = capabilities.get("s2s") if isinstance(capabilities, dict) else None
+    return isinstance(s2s, list) and "audio_enhancement" in s2s
+
+
 def _family_from_spec_tasks(
     family: str,
     spec: Optional[dict],
@@ -1071,8 +1132,8 @@ def _family_from_spec_tasks(
     request = request if isinstance(request, list) else None
     # One page set per family. Speech first (with Clone when the spec clones), then music, then
     # transcription; a clone-only family loads as a cloning session and offers Clone alone.
-    for token in ("tts", "vdes", "gen", "asr", "clon", "sep"):
-        if token not in tokens:
+    for token in ("tts", "vdes", "gen", "asr", "clon", "sep", "s2s"):
+        if token not in tokens or (token == "s2s" and not _enhances(spec)):
             continue
         if runtime_knows_family(family) is False:
             return AudioCppFamily(
@@ -1096,6 +1157,8 @@ def _family_from_spec_tasks(
             return AudioCppFamily(family, "music", server_task = "gen", music = music)
         if token == "sep":
             return AudioCppFamily(family, "sep", separation = SeparationSpec())
+        if token == "s2s":
+            return AudioCppFamily(family, "sep", server_task = "s2s", separation = _RESTORE)
         return AudioCppFamily(family, "asr", server_task = "asr")
     if tokens:
         what = _TASK_NAMES.get(tokens[0])
@@ -1474,10 +1537,6 @@ class RepoFile:
     sha256: str = field(default = "", compare = False)
 
 
-def hub_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def _hub_cache() -> Path:
     from utils.hf_cache_settings import active_hf_hub_cache
     return Path(active_hf_hub_cache())
@@ -1503,7 +1562,7 @@ def snapshot_dirs(repo_id: str, hub_cache: Optional[Path] = None) -> list[Path]:
         return snapshot_dirs(match.name[len("models--") :].replace("--", "/"), root)
     try:
         main_sha = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         main_sha = ""
 
     def order(p: Path) -> tuple[int, float]:
@@ -1570,7 +1629,7 @@ def list_files(
     from hub.utils.hf_tokens import normalize_token
 
     token = normalize_token(hf_token) if hf_token is not False else None
-    use_hub = network and not hub_offline()
+    use_hub = network and not hf_env_offline()
     key = (repo_id.lower(), folder.lower(), hashlib.sha1(str(token).encode()).hexdigest()[:8])
     if use_hub:
         with _listing_lock:
@@ -1751,8 +1810,7 @@ def _package_variants(
 
 
 def _local_package_complete(spec: Optional[dict], local_path: str) -> bool:
-    """False when a local GGUF belongs to a package of several GGUFs and is not its primary, or one
-    of the package's files is not beside it."""
+    """False when a local GGUF isn't its package's primary, or a package file is not beside it."""
     path = Path(local_path)
     split = [
         p
@@ -1776,10 +1834,9 @@ def _local_package_complete(spec: Optional[dict], local_path: str) -> bool:
 def spec_package_variants(
     spec: Optional[dict], repo_id: Optional[str], folder: str, files: Sequence[RepoFile]
 ) -> Optional[list[AudioCppVariant]]:
-    """The variants of a repo whose runtime spec lays it out as packages of several files (weights
-    split over GGUFs, or a GGUF with files it reads beside it), recommended first. None when the
-    spec gives this repo no such package: its GGUFs then load one by one. Empty when the repo lacks
-    a file of every package."""
+    """Variants of a repo with multi-file packages in its runtime spec (weights split over GGUFs, or
+    a GGUF with side files), recommended first; None when the spec gives the repo no package (its
+    GGUFs then load one by one); empty when the repo lacks a file of every package."""
     every = spec_packages.spec_packages(spec)
     packages = spec_packages.packages_for_repo(every, repo_id or "", AUDIO_CPP_REPO, folder)
     if not packages and len(recommended_gguf_files(spec)) > 1:
@@ -1952,6 +2009,19 @@ CONVERT_DRIVEN_OPTIONS = frozenset(
         "style_ref_text",
     }
 )
+# Options the runtime opens host files from, though their names do not end in _file, _path or _dir:
+# a clip path (Vevo2), WAV paths per speaker (VibeVoice, MOSS-TTSD) and JSON rows that name clips
+# (Audio8, Fish Audio, Plapre). Most are typed string, so the name is what keeps them out of a run.
+FILE_OPTIONS = frozenset(
+    {
+        "target_voice",
+        "voice_samples",
+        "multi_reference_cond",
+        "references",
+        "previous_takes",
+        "pronunciations",
+    }
+)
 _RENDERABLE_TYPES = frozenset({"bool", "int", "float", "string", "enum"})
 _MAX_STRING_OPTION = 4000
 
@@ -2086,6 +2156,8 @@ def _clean_option(raw: Any) -> Optional[dict]:
         return None
     if name in _STUDIO_DRIVEN_OPTIONS or name.endswith(("_file", "_path", "_dir")):
         return None
+    if name in FILE_OPTIONS:
+        return None
     option: dict[str, Any] = {
         "name": name,
         "type": kind,
@@ -2119,11 +2191,50 @@ def _clean_option(raw: Any) -> Optional[dict]:
     return option
 
 
+class SeparationOptionsError(ValueError):
+    """A Separate run asked for an option the loaded model does not take."""
+
+
+def separation_options(
+    options: Optional[dict],
+    *,
+    server_task: Optional[str],
+    family: Optional[str],
+    offered: Sequence[dict],
+    label: str,
+) -> Optional[dict]:
+    """A Separate run's options, checked against the loaded model: an s2s filter takes the spec
+    options Separate offers (``offered``), as validate_options keeps them, the values the run
+    sends; a separation family takes only its overlap. SeparationOptionsError says why not."""
+    if not options:
+        return None
+    if server_task == "s2s":
+        names = {o.get("name") for o in offered if isinstance(o, dict)}
+        for name in options:
+            if name not in names:
+                raise SeparationOptionsError(f"Unknown option '{name}'.")
+        return validate_options([o for o in offered if isinstance(o, dict)], options) or None
+    policy = FAMILIES.get(family or "")
+    if policy is None or policy.separation is None or not policy.separation.overlap_option:
+        raise SeparationOptionsError(f"{label} has no separation options.")
+    for name in options:
+        if name != "num_overlap":
+            raise SeparationOptionsError(f"Unknown option '{name}'.")
+    value = options["num_overlap"]
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
+        raise SeparationOptionsError("num_overlap must be a whole number from 1 to 8.")
+    return {"num_overlap": value}
+
+
 def option_schema(
     policy: AudioCppFamily, spec: Optional[dict], embedded: Optional[dict]
 ) -> tuple[dict, ...]:
     """MiniMax Music 3 and YuE2 show a Studio-side list: their specs carry dozens of knobs and the published GGUFs embed a stale copy"""
-    if policy.task == "sep":
+    if (
+        policy.task == "sep"
+        and policy.default_server_task != "s2s"
+        and policy.family not in VARIANT_TASKS
+    ):
         return ()
     if policy.options:
         source = {"options": {"request": list(policy.options)}}
@@ -2352,11 +2463,30 @@ class AudioCppModel:
                 **variant.session_options,
             }
         changes = _ace_step_variant(self, variant) if self.family == "ace_step" else {}
+        if self.family in VARIANT_TASKS:
+            changes = VARIANT_TASKS[self.family](variant)
         model = replace(self, variant = variant, model_options = model_options, **changes)
+        if model.task == "sep" and model.server_task != "s2s":
+            return replace(model, options = (), option_hidden = {})
         options, hidden = apply_option_rules(
             model.family, _rule_text(model), model.spec_options, Path(variant.primary).name
         )
         return replace(model, options = options, option_hidden = hidden)
+
+
+def _mossformer2_variant(variant: AudioCppVariant) -> dict[str, Any]:
+    """SS splits two speakers (sep); SE enhances and SR upscales speech, which only s2s runs
+    ("MossFormer2 SE/SR supports offline s2s")."""
+    name = Path(variant.primary).name.lower()
+    for token, separation in (("se", _ISOLATE_VOICE), ("sr", _RESTORE_48K)):
+        if re.search(rf"(^|[-_]){token}([-_.]|$)", name):
+            return {"server_task": "s2s", "separation": separation}
+    return {"server_task": "sep", "separation": _SPEAKERS}
+
+
+VARIANT_TASKS: dict[str, Callable[[AudioCppVariant], dict[str, Any]]] = {
+    "mossformer2": _mossformer2_variant,
+}
 
 
 def _rule_text(model: "AudioCppModel") -> str:
@@ -2623,7 +2753,7 @@ def _probe_header(
         header = None
         if local is not None:
             header = read_local_header(local)
-        elif network and not hub_offline() and ref.repo_id:
+        elif network and not hf_env_offline() and ref.repo_id:
             header = read_remote_header(ref.repo_id, f.path, hf_token, size = f.size or None)
         if header is None:
             continue
@@ -3051,6 +3181,19 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _download_job_offline() -> bool:
+    """The download job's own Hub client decides, so read its env with huggingface_hub's rule (no strip, HF_HUB_OFFLINE first)."""
+    try:
+        from huggingface_hub.constants import ENV_VARS_TRUE_VALUES
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        env = get_hf_cache_paths().child_env()
+        value = env.get("HF_HUB_OFFLINE") or env.get("TRANSFORMERS_OFFLINE")
+        return bool(value) and value.upper() in ENV_VARS_TRUE_VALUES
+    except Exception:  # noqa: BLE001
+        return hf_env_offline()
+
+
 def _fetches_gguf(
     repo_id: str,
     path: str,
@@ -3066,7 +3209,7 @@ def _fetches_gguf(
     except Exception:  # noqa: BLE001 - an unreadable cache is one to fetch into
         snapshots = []
     on_disk = any((snapshot / path).is_file() for snapshot in snapshots)
-    if hub_offline():
+    if _download_job_offline():
         return not on_disk
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
@@ -3104,7 +3247,7 @@ def _refuse_stale_download(
     checked = [model]
     for companion in model.companions:
         try:
-            found = resolve(companion.id, companion.variant, hf_token, network = not hub_offline())
+            found = resolve(companion.id, companion.variant, hf_token, network = not hf_env_offline())
         except Exception:  # noqa: BLE001 - the planner reports a companion it cannot find
             found = None
         if found is not None:
@@ -3151,7 +3294,7 @@ def refuse_stale_download(
             rows.setdefault(row, []).append(name)
     elif is_umbrella_id(identifier):
         return
-    network = not hub_offline()
+    network = not hf_env_offline()
     for row, names in sorted(rows.items()):
         try:
             model = resolve(row, None if names else variant, hf_token, network = network)
@@ -3181,7 +3324,7 @@ def download_target(
     """Maps an umbrella folder id to the real repo and path-qualified variant key the downloader uses."""
     if not is_umbrella_id(identifier):
         return None
-    model = resolve(identifier, variant, hf_token, network = not hub_offline())
+    model = resolve(identifier, variant, hf_token, network = not hf_env_offline())
     if model is None or not model.repo_id or not model.variant.primary:
         return None
     if persist:

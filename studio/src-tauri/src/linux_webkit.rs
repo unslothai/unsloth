@@ -59,9 +59,9 @@ const APPLIED_WORKAROUND: &str = "UNSLOTH_WEBKIT_RENDERER_WORKAROUND";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // Proprietary and open nvidia modules publish this; nouveau does not and is unaffected.
 const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
-// Composited WebKit leaked a sync_file per frame on 580.173.02 and 580.178.04 (#10214, #10795),
-// not on 610.43.02 or 615.71.09. Older or unreadable branches keep compositing off.
-const NVIDIA_COMPOSITING_MIN_BRANCH: u32 = 610;
+// Composited WebKit leaks a sync_file per frame on every tested 580 driver, open or proprietary
+// (#10214, #10795); 590, 595, 610 and 615 do not. Older or unreadable branches stay off.
+const NVIDIA_COMPOSITING_MIN_BRANCH: u32 = 590;
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
 const NVIDIA_APPIMAGE_X11_REASON: &str = "NVIDIA driver loaded (AppImage on X11)";
@@ -76,7 +76,7 @@ const COMPOSITING_FORCED_REASON: &str = "compositing workaround requested by the
 const GPU_OFF_REASON: &str = "GPU rendering off (setting)";
 const GPU_ON_REASON: &str = "GPU rendering on (setting)";
 const GPU_ON_OLD_NVIDIA_REASON: &str =
-    "GPU rendering on (setting), held off: NVIDIA drivers before 610 leak with compositing on X11";
+    "GPU rendering on (setting), held off: NVIDIA drivers before 590 leak with compositing on X11";
 const GPU_UNSAFE_REASON: &str = "GPU rendering crashed at launch on this host before";
 const NVIDIA_WAYLAND_GPU_REASON: &str = "NVIDIA driver loaded (Wayland session, WebKitGTK 2.54.2+)";
 const FORCE_DMABUF_REASON: &str = "DMA-BUF renderer requested by the environment (Wayland session)";
@@ -976,7 +976,7 @@ mod tests {
         let composited = RenderingWorkaround::ForceSharedMemoryOnNvidia;
         let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
-        for branch in [610, 615, 700] {
+        for branch in [590, 595, 610, 615, 700] {
             assert_eq!(
                 plan_on_nvidia_branch(appimage, branch),
                 RenderingPlan::Apply(
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn older_or_unreadable_nvidia_branches_keep_compositing_off_everywhere() {
         let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
-        for branch in [0, 470, 580, 595, 609] {
+        for branch in [0, 470, 580, 589] {
             assert_eq!(
                 plan_on_nvidia_branch(native, branch),
                 RenderingPlan::Apply(
@@ -1089,12 +1089,12 @@ mod tests {
             };
             for vars in [X11_HOST, appimage_x11] {
                 assert_eq!(
-                    plan(vars, 595, GpuRendering::Auto),
+                    plan(vars, 580, GpuRendering::Auto),
                     expected,
                     "Auto {version:?}"
                 );
                 assert_eq!(
-                    plan(vars, 595, GpuRendering::On),
+                    plan(vars, 580, GpuRendering::On),
                     expected,
                     "On {version:?}"
                 );
@@ -2249,7 +2249,7 @@ mod tests {
         let appimage_x11: &[(&str, &str)] =
             &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         for vars in [X11_HOST, appimage_x11] {
-            for branch in [0, 580, 609] {
+            for branch in [0, 580, 589] {
                 assert_eq!(
                     plan_with_setting_on_branch(
                         vars,
@@ -2274,7 +2274,7 @@ mod tests {
             old_nvidia_driver_warning(Some(0), false).as_deref(),
             Some("unknown")
         );
-        assert_eq!(old_nvidia_driver_warning(Some(610), false), None);
+        assert_eq!(old_nvidia_driver_warning(Some(590), false), None);
         assert_eq!(old_nvidia_driver_warning(Some(580), true), None);
         assert_eq!(old_nvidia_driver_warning(None, false), None);
     }
@@ -2619,7 +2619,7 @@ mod tests {
             (2, 54, 1),
             WEBKIT_2_54,
         ] {
-            for branch in [0, 580, 609, 610, 615] {
+            for branch in [0, 580, 589, 590, 595, 615] {
                 for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
                     let inputs = gpu(setting, false);
                     let plan =
@@ -2637,7 +2637,7 @@ mod tests {
                     );
                     assert_eq!(
                         cpu_painting,
-                        branch < 610 || setting == GpuRendering::Off,
+                        branch < 590 || setting == GpuRendering::Off,
                         "WebKit {version:?}, NVIDIA {branch}, {setting:?}"
                     );
                 }

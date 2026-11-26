@@ -25,6 +25,7 @@ TEXT_TRIM_ENV = "UNSLOTH_DIFFUSION_KREA2_TEXT_TRIM"
 CLASS_NAME = "Krea2Transformer2DModel"
 BUCKET = 128
 _HOOK_ATTR = "_unsloth_krea2_text_trim_hook"
+_POST_HOOK_ATTR = "_unsloth_krea2_text_trim_post_hook"
 _MEMO_ATTR = "_unsloth_krea2_text_trim_memo"
 _MEMO_MAX = 4  # the CFG branches of one render, and the last render's
 _OFF = ("0", "off", "false", "no")
@@ -73,9 +74,10 @@ def _columns(
     mask: Any,
     text_len: int,
     floor: int = 0,
+    prefix: bool = False,
 ) -> Optional[tuple]:
-    """(column index, every kept column valid for every row) or None when nothing would be dropped. One host read.
-    ``floor``: keep at least this many rows (the longer branch of a CFG pair, so both stack)."""
+    """(column index, all kept columns valid, key starts) or None when nothing would be dropped. ``floor``: min rows
+    (the longer CFG branch, so both stack). ``prefix``: [B, rows] index with each row's pads first, plus pad counts."""
     import torch
 
     mb = mask.bool()
@@ -84,22 +86,36 @@ def _columns(
     rows = max(bucket_length(valid, text_len), int(floor))
     if valid == 0 or rows >= text_len:
         return None
+    if prefix:
+        counts = [int(c) for c in mb.sum(dim = 1).tolist()]
+        index = torch.stack(
+            [
+                torch.cat(
+                    (
+                        (~mb[b]).nonzero().squeeze(1)[: rows - counts[b]],
+                        mb[b].nonzero().squeeze(1),
+                    )
+                )
+                for b in range(mb.shape[0])
+            ]
+        )
+        starts = [rows - c for c in counts]
+        return index, all(x == 0 for x in starts), starts
     index = keep.nonzero().squeeze(1)
     if rows > valid:
         # masked columns fill the bucket: masked keys, outputs sliced away, the same as the padding they replace
         index = torch.cat((index, (~keep).nonzero().squeeze(1)[: rows - valid]))
     index = index.sort().values
-    return index, bool(mb.index_select(1, index).all().item())
+    return index, bool(mb.index_select(1, index).all().item()), None
 
 
 def _trim(
     module: Any, states: Any, mask: Any, position_ids: Any, image_len: int
 ) -> Optional[tuple]:
-    """(states, mask or None, position_ids) on the kept rows, or None to run the call as given.
-
-    Calls sharing one ``position_ids`` tensor (the CFG branches of a render) keep the same row count, the longest any of
-    them needs, and all keep their mask once any of them needs one, so the CFG router can still stack them: a branch
-    seen later that widens either re-trims the others once."""
+    """Returns (states, mask or None, position_ids) on the kept rows, or None to run the call as
+    given; calls sharing one position_ids tensor (CFG branches) keep the longest row count any
+    needs and the mask once one does, so the CFG router can stack them; a later wider branch
+    re-trims the others once."""
     memo = module.__dict__.setdefault(_MEMO_ATTR, [])
     srcs = (states, mask, position_ids)
     pos_key = (position_ids,)
@@ -114,16 +130,17 @@ def _trim(
     if hit is not None and hit[0] >= group and (hit[1] or not masked):
         return hit[2] or None
     plan = None
+    prefix = _prefix_on(module)
     if group < text_len:
-        plan = _columns(mask, text_len, group)
+        plan = _columns(mask, text_len, group, prefix)
     if plan is not None and not bool((position_ids[:text_len] == 0).all().item()):
         plan = None  # text rows off the rotary origin: dropping one would move the others' phases
     if plan is None:
         held["rows"] = text_len  # this branch runs padded: so do the others of its group
         _store(memo, srcs, (text_len, True, ()))
         return None
-    index, all_valid = plan
-    rows = int(index.shape[0])
+    index, all_valid, starts = plan
+    rows = int(index.shape[-1])
     held["rows"] = max(group, rows)
     if not all_valid:
         held["masked"] = masked = True
@@ -134,14 +151,34 @@ def _trim(
         pos = torch.cat((position_ids[:rows], position_ids[text_len:]))
         # one tensor per length: a CFG pair passes the same object, which the CFG router batches without a compare
         held[rows] = pos
+    if index.dim() == 2:
+        import torch
+        batch = torch.arange(index.shape[0], device = index.device)[:, None]
+        kept_states, kept_mask = states[batch, index], mask[batch, index]
+    else:
+        kept_states, kept_mask = states.index_select(1, index), mask.index_select(1, index)
     out = (
-        states.index_select(1, index),
-        mask.index_select(1, index) if keep_mask else None,
+        kept_states,
+        kept_mask if keep_mask else None,
         pos,
         text_len - rows,
+        list(starts) if starts is not None else None,
     )
     _store(memo, srcs, (rows, keep_mask, out))
     return out
+
+
+def _prefix_on(module: Any) -> bool:
+    from . import diffusion_krea2_prefix_kv as prefix_kv
+    return prefix_kv.installed(module)
+
+
+def _plan_prefix(module: Any, starts: Optional[list]) -> None:
+    try:
+        from . import diffusion_krea2_prefix_kv as prefix_kv
+        prefix_kv.set_plan(module, starts if _prefix_on(module) else None)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _pre_hook(module: Any, args: tuple, kwargs: dict) -> tuple:
@@ -149,6 +186,7 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> tuple:
     try:
         import torch
 
+        _plan_prefix(module, None)
         if args or not enabled():
             return args, kwargs
         states = kwargs.get("encoder_hidden_states")
@@ -176,12 +214,20 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> tuple:
             kwargs["encoder_attention_mask"],
             kwargs["position_ids"],
             skipped,
+            starts,
         ) = out
+        _plan_prefix(module, starts)
         _CALLS[0] += 1
         _ROWS_SKIPPED[0] += int(skipped)
         return args, kwargs
     except Exception:  # noqa: BLE001 - optimisation only: the padded call still runs
+        _plan_prefix(module, None)
         return args, kwargs
+
+
+def _post_hook(module: Any, args: tuple, kwargs: dict, output: Any) -> None:
+    """Clear the plan so a later hook-less call (direct ``forward``) runs masked."""
+    _plan_prefix(module, None)
 
 
 def installed(transformer: Any) -> bool:
@@ -189,13 +235,14 @@ def installed(transformer: Any) -> bool:
 
 
 def uninstall(transformer: Any) -> None:
-    handle = getattr(transformer, _HOOK_ATTR, None)
-    if handle is not None:
-        handle.remove()
-        try:
-            delattr(transformer, _HOOK_ATTR)
-        except AttributeError:
-            pass
+    for attr in (_HOOK_ATTR, _POST_HOOK_ATTR):
+        handle = getattr(transformer, attr, None)
+        if handle is not None:
+            handle.remove()
+            try:
+                delattr(transformer, attr)
+            except AttributeError:
+                pass
     if transformer is not None:
         transformer.__dict__.pop(_MEMO_ATTR, None)
         transformer.__dict__.pop(_MEMO_ATTR + "_pos", None)
@@ -222,6 +269,11 @@ def install_for_pipe(
             logger.warning("diffusion.krea2: text trim unavailable: %s", exc)
         return False
     object.__setattr__(transformer, _HOOK_ATTR, handle)
+    try:
+        post = transformer.register_forward_hook(_post_hook, with_kwargs = True, always_call = True)
+        object.__setattr__(transformer, _POST_HOOK_ATTR, post)
+    except Exception:  # noqa: BLE001
+        pass
     if logger is not None:
         logger.info(
             "diffusion.krea2: text rows trimmed to the valid prompt (multiples of %d of 512)",

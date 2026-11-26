@@ -42,9 +42,8 @@ EOS, PAD = 2, 0
 
 
 class FakeEngine:
-    """Decodes one token per step per running request; request i stops (EOS) after lengths[i] tokens.
-    Rows in length_stop end at their length without EOS (a length / context limit); same_tokens makes every
-    non-EOS token 7, so different rows can hold the same completion."""
+    """One token per step; request i stops (EOS) after lengths[i]; length_stop rows end at their
+    length without EOS; same_tokens makes non-EOS tokens 7, so rows can match."""
 
     def __init__(
         self,

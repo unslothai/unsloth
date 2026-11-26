@@ -290,11 +290,21 @@ def test_responses_probe_stops_at_the_total_budget(monkeypatch):
     assert time.monotonic() - started < 1.0
 
 
-def _saved_row(monkeypatch, tmp_path, *, has_key: bool):
+def _saved_row(
+    monkeypatch,
+    tmp_path,
+    *,
+    has_key: bool,
+    api_type: str = "chat_completions",
+):
     monkeypatch.setattr(providers_db, "studio_db_path", lambda: tmp_path / "studio.db")
     providers_db.reset_schema_state_for_tests()
     providers_db.create_provider(
-        id = "row", provider_type = "custom", display_name = "Local", base_url = "http://a.example/v1"
+        id = "row",
+        provider_type = "custom",
+        display_name = "Local",
+        base_url = "http://a.example/v1",
+        api_type = api_type,
     )
     monkeypatch.setattr(
         providers_route.credential_secrets, "provider_api_key_saved", lambda _id: has_key
@@ -317,6 +327,45 @@ def test_a_saved_key_stays_pinned_to_the_saved_base_url(monkeypatch, tmp_path):
         provider_type = "custom", provider_id = "row", base_url = "http://b.example/v1"
     )
     assert providers_route._bind_saved_provider_target(payload).base_url == "http://a.example/v1"
+
+
+def test_editing_a_saved_custom_row_tests_the_draft_api_format(mock_http, monkeypatch, tmp_path):
+    _saved_row(monkeypatch, tmp_path, has_key = True)
+    mock_http.state["handler"] = lambda request: (
+        httpx.Response(200, json = {"data": [{"id": "m"}]})
+        if request.url.path.endswith("/models")
+        else httpx.Response(404, json = {"error": {"message": "no such route"}})
+    )
+    result = _test(
+        ProviderTestRequest(
+            provider_type = "custom",
+            provider_id = "row",
+            api_type = "responses",
+            base_url = "http://b.example/v1",
+            model_id = "m",
+        )
+    )
+    assert not result.success
+    assert any(request.url.path.endswith("/responses") for request in mock_http)
+    assert all(request.url.host == "a.example" for request in mock_http)
+
+    mock_http.clear()
+    result = _test(ProviderTestRequest(provider_type = "custom", provider_id = "row", model_id = "m"))
+    assert result.success
+    assert not any(request.url.path.endswith("/responses") for request in mock_http)
+
+
+def test_the_saved_api_format_holds_without_an_edited_one(monkeypatch, tmp_path):
+    _saved_row(monkeypatch, tmp_path, has_key = True, api_type = "responses")
+    unsent = ProviderTestRequest(provider_type = "custom", provider_id = "row")
+    assert providers_route._bind_saved_provider_target(unsent).api_type == "responses"
+
+    row = providers_db.get_provider("row")
+    monkeypatch.setattr(providers_db, "get_own_provider", lambda _id: None)
+    monkeypatch.setattr(providers_db, "get_provider", lambda _id: row)
+    shared = unsent.model_copy(update = {"api_type": "chat_completions"})
+    assert "api_type" in shared.model_fields_set
+    assert providers_route._bind_saved_provider_target(shared).api_type == "responses"
 
 
 def test_base_url_validation_runs_off_the_event_loop(mock_http, monkeypatch):

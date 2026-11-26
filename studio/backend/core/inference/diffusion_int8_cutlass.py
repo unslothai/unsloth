@@ -137,9 +137,8 @@ def race_points(rows: Any = None) -> tuple:
 
 
 def slot(m: int, entry: dict) -> Optional[int]:
-    """The plan entry's tile for an ``m``-row call: below ``_LARGE_M`` the small race, from ``_HUGE_M`` the huge race
-    when the entry has one (None there keeps today's path), else the race at the call's row bucket, else the nearest
-    large race (the 4096-row one when nothing was recorded)."""
+    """Tile for an m-row call: the small race below _LARGE_M, the huge race from _HUGE_M (None if
+    unrecorded, keeping today's path), else the bucket race or nearest large (4096 if none)."""
     if m < _LARGE_M:
         return entry.get(min(_RACE_M))
     if m >= _HUGE_M and _RACE_M_HUGE in entry:
@@ -468,14 +467,32 @@ def _probe_tile(index: int, fam: int, tile: int, pairs: tuple) -> bool:
                 return False
         torch.cuda.synchronize(dev)
         return True
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if _is_oom(exc):
+            _PROBE_OOMS[0] += 1
         return False
 
 
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        import torch
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return "out of memory" in str(exc).lower()
+
+
+# Out-of-memory failures inside ``_probe_tile``, counted here: the allocator's num_ooms stays 0 under
+# PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync, which never fills the native allocator's stats.
+_PROBE_OOMS: list = [0]
 _PROBED: dict = {}
-# The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, these module sources and the
-# loaded library's bytes (``_probe_extra``): any change re-probes. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
-PROBE_PERSIST_SOURCES = ("diffusion_int8_cutlass.py", "diffusion_int8_gemm.py")
+# The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, this module's source, and
+# (``_probe_extra``) the loaded library's bytes plus the race code digest, which covers the probe's diffusion_int8_gemm
+# input (``tie_operands``): any change re-probes. Not the whole diffusion_int8_gemm.py: an unrelated edit there
+# would drop every stored tile verdict, and with it a returning card's stored races (``_cut_misses``).
+# UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+PROBE_PERSIST_SOURCES = ("diffusion_int8_cutlass.py",)
 _PROBE_STORE: list = [None]
 
 
@@ -546,15 +563,18 @@ def probed_tiles(index: int) -> tuple:
             else:
                 pairs = _scale_dtypes(fam)
                 ooms = _alloc_failures(index)
+                probe_ooms = _PROBE_OOMS[0]
                 ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
                 failed = [t for t in range(len(tiles(fam))) if t not in ok]
                 # a failure persists only when it repeats and nothing around it failed: one transient error, an
                 # out-of-memory on a full card or a broken context must not drop a tile for good
-                if (
-                    not any(_probe_tile(index, fam, t, pairs) for t in failed)
-                    and ooms is not None
-                    and _alloc_failures(index) == ooms
+                repeated = not any(_probe_tile(index, fam, t, pairs) for t in failed)
+                after = _alloc_failures(index)
+                if _PROBE_OOMS[0] != probe_ooms or (
+                    ooms is not None and after is not None and after != ooms
                 ):
+                    return ok  # out of memory: not kept in this process either, the next call probes again
+                if repeated and ooms is not None and after == ooms:
                     _store_tiles(index, fam, ok)
     except Exception:  # noqa: BLE001
         ok = ()

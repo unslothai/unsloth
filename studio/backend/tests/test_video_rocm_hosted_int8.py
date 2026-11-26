@@ -21,6 +21,7 @@ if str(BACKEND) not in sys.path:
 
 from core.inference import diffusion_native_hosted as NH  # noqa: E402
 from core.inference import diffusion_transformer_quant as tq  # noqa: E402
+from core.inference import rocm_bf16  # noqa: E402
 from core.inference import video as V  # noqa: E402
 from core.inference.diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE  # noqa: E402
 from core.inference.video_families import detect_video_family  # noqa: E402
@@ -51,13 +52,22 @@ def _host(
     rocm: bool,
     ready: bool = True,
     proven: bool = True,
+    arch: str = "gfx1151",
 ):
+    asked: list = []
+
+    def gfx_arch(_torch, ordinal):
+        asked.append(ordinal)
+        return arch
+
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", gfx_arch)
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: rocm)
     monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda ordinal = None: ready)
     monkeypatch.setattr(tq, "_rdna_compile_tier_proven", lambda target: proven)
     for env in ENVS:
         monkeypatch.delenv(env, raising = False)
+    return asked
 
 
 @pytest.fixture
@@ -109,6 +119,48 @@ def test_rocm_kill_switch_restores_weight_only(rocm, monkeypatch):
 def test_rocm_without_the_measured_w8a8_tier_keeps_weight_only(monkeypatch, ready, proven):
     _host(monkeypatch, rocm = True, ready = ready, proven = proven)
     assert V._video_rocm_hosted_scheme(_fam(), "int8", GPU_BF16) is None
+    assert V._video_int8_act(GPU_BF16, _fam(), "int8") is False
+
+
+@pytest.mark.parametrize(
+    "arch, engaged",
+    [("gfx1151", True), ("gfx1100", False), ("gfx1101", False), ("gfx1201", False), ("", False)],
+)
+def test_rocm_only_measured_archs_run_explicit_w8a8(monkeypatch, arch, engaged):
+    # W8A8 measured on gfx1151 only: other RDNA archs keep the weight-only build, resident and offloaded.
+    asked = _host(monkeypatch, rocm = True, arch = arch)
+    card = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 1)
+    assert (tq.rdna_video_explicit_w8a8_reason(card, "ltx-2.5", "int8") is not None) is engaged
+    assert (V._video_rocm_hosted_scheme(_fam(), "int8", card) == "int8") is engaged
+    assert V._video_int8_act(card, _fam(), "int8") is engaged
+    resident = V._video_rocm_hosted_spec(
+        _fam(),
+        target = card,
+        transformer_quant = "int8",
+        plan = RESIDENT,
+        kind = "pipeline",
+        source_dir = None,
+    )
+    offloaded = V._video_native_cache_spec(
+        _fam(),
+        target = card,
+        transformer_quant = "int8",
+        plan = STREAMED,
+        kind = "pipeline",
+        source_dir = None,
+    )
+    assert (resident is not None) is engaged
+    assert offloaded is None or bool(offloaded.get("act_int8")) is engaged
+    # the target card's own arch, by its ordinal (never the current device)
+    assert asked and set(asked) == {1}
+
+
+def test_rocm_unreadable_arch_keeps_weight_only(rocm, monkeypatch):
+    def boom(_torch, _ordinal):
+        raise RuntimeError("no properties")
+
+    monkeypatch.setattr(rocm_bf16, "_device_gfx_arch", boom)
+    assert tq.rdna_video_explicit_w8a8_reason(GPU_BF16, "ltx-2.5", "int8") is None
     assert V._video_int8_act(GPU_BF16, _fam(), "int8") is False
 
 

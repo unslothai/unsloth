@@ -184,7 +184,15 @@ test("both writers record which chat a parked call belongs to", () => {
   const provider = readSrc("features/chat/runtime-provider.tsx");
   assert.match(
     provider,
-    /\.setToolConfirmation\(\s*partId,\s*approvalId,\s*sessionId,\s*`\$\{sessionId \|\| "_default"\}:\$\{threadId\}`,\s*threadId,\s*undefined,\s*runId,\s*\)/,
+    /\.setToolConfirmation\(\s*partId,\s*approvalId,\s*sessionId,\s*`\$\{sessionId \|\| "_default"\}:\$\{threadId\}`,\s*threadId,\s*undefined,\s*runId,\s*undefined,\s*toolName,\s*\)/,
+  );
+});
+
+test("the live stream records which tool a parked call is for", () => {
+  // From the tool_start that parked it, not from the card: tool_start can reuse a card drawn for another call.
+  assert.match(
+    readSrc("features/chat/api/chat-adapter.ts"),
+    /\.setToolConfirmation\(\s*id,\s*approvalId,[^;]*?\bcancelId,\s*computerUseAsk\(toolEvent\.computer_use\),\s*toolEvent\.tool_name as string,\s*\)/,
   );
 });
 

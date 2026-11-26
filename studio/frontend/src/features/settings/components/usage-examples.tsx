@@ -481,7 +481,14 @@ function useExampleModelName(keylessOnly: boolean): string | null {
         : pick.id;
     };
     // The store keeps a checkpoint across unload and delete, so require the catalog to list it.
-    const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
+    const sameBase =
+      catalog?.filter((m) => sameBaseModelId(m.id, checkpoint ?? "")) ?? [];
+    // Two loaded quants of the repo: the selected one, not the first listed.
+    const entry =
+      sameBase.find(
+        (m) =>
+          ggufVariant && m.quant?.toLowerCase() === ggufVariant.toLowerCase(),
+      ) ?? sameBase[0];
     const backed =
       (!keylessOnly && catalog === null) ||
       (!!entry && (entry.loaded || (!keylessOnly && autoSwitch)));

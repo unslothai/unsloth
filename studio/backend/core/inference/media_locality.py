@@ -367,7 +367,7 @@ def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
             return pinned
         try:
             ref = (repo_dir / "refs" / candidate).read_text(encoding = "utf-8").strip()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         resolved = snapshots / ref if ref else None
         if resolved is not None and resolved.is_dir():
@@ -383,6 +383,11 @@ def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
 
 def _hosted_component_cached(source: str, subfolder: str, revision: str, variant: str) -> bool:
     """The loader pulls each repo a local modular index names, so those must be cached too."""
+    from utils.datasets.remote_images import is_network_share, private_sources_allowed
+
+    # The index came with a downloaded repo; touching a share it names signs in to that host (NTLM).
+    if is_network_share(source) and not private_sources_allowed():
+        return False
     local = Path(source).expanduser()
     try:
         if local.is_dir():

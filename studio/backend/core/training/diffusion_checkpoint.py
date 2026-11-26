@@ -88,7 +88,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("base_precision", "base precision"),
     # Record actual base precision: fp8/mxfp8 can fall back to bf16, so the request would look clean.
     ("base_precision_effective", "resolved base precision"),
-    # int8 is torchao weight-only or the W8A8 base (UNSLOTH_DIFFUSION_INT8_TRAIN): different base math, one name.
+    # int8 is the W8A8 base or torchao weight-only (UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only): different base math,
+    # one name.
     ("base_int8_kernel", "int8 base kernel"),
     # LoRAEMA uses the INCOMING decay with restored shadows, so a change makes a hybrid EMA.
     ("ema_decay", "EMA decay"),
@@ -1678,6 +1679,28 @@ def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+def recorded_int8_resume_kernel(path_value: Any) -> Optional[str]:
+    """The int8 base kernel ("w8a8" / "weight-only") a resumed bundle trained on, or None when it is unreadable or
+    did not train int8. A bundle without ``base_precision_effective`` counts as int8 when it requested int8, and one
+    without ``base_int8_kernel`` trained weight-only (both records postdate weight-only int8). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is None:
+                continue
+            effective = (saved.base_precision_effective or "").strip().lower()
+            requested = (saved.base_precision or "").strip().lower()
+            if effective == "int8" or (not effective and requested == "int8"):
+                return saved.base_int8_kernel or "weight-only"
+            return None
+    except Exception:  # noqa: BLE001 -- best effort; the identity check reports a real mismatch
+        pass
+    return None
+
+
 def recorded_bucketing(path_value: str) -> bool:
     """Whether the resumed bundle trained bucketed (pre-field or unreadable: False; preflight_resume refuses)."""
     try:
@@ -1849,7 +1872,25 @@ class LoadedCheckpoint:
         path = self._file(role)
         if path is None:
             return None
+        _refuse_pickle_on_old_torch(torch, path)
         return torch.load(str(path), map_location = "cpu", weights_only = True)
+
+
+def _refuse_pickle_on_old_torch(torch: Any, path: Path) -> None:
+    """Same rule as unsloth/import_fixes.py::refuse_pickle_checkpoint_on_old_torch (diffusion never
+    imports unsloth): torch < 2.6 runs code hidden in a .pt even with weights_only = True
+    (CVE-2025-32434), so a resume bundle is refused there instead of loaded."""
+    try:
+        from packaging.version import Version
+        old = Version(str(torch.__version__).split("+")[0]).release[:2] < (2, 6)
+    except Exception:  # noqa: BLE001 -- an unparsable version is a newer build, not an old one
+        return
+    if old:
+        raise ResumeError(
+            f"'{path.name}' is a pickled state file and torch {torch.__version__} can execute code "
+            "hidden in it even with weights_only = True (CVE-2025-32434). Upgrade to torch >= 2.6 "
+            "to resume this run."
+        )
 
 
 def load_checkpoint(path: str | os.PathLike[str]) -> LoadedCheckpoint:

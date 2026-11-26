@@ -16,6 +16,7 @@ import {
   type TranslateModelId,
   type TranslatePromptKind,
   isTranslateModelId,
+  migrateTranslateModelId,
   parseCustomTranslateModel,
   translateModelKey,
   translatePromptKind,
@@ -152,7 +153,7 @@ const suggestedTarget = () =>
     ? DEFAULT_TARGET_LANGUAGE
     : suggestedTargetLanguage(navigator.languages ?? []);
 
-/** Switching to Hy-MT2 drops a chat-only pick; the recent tabs keep it for the next chat model. */
+/** Switching to Hy-MT drops a chat-only pick; the recent tabs keep it for the next chat model. */
 function fitLanguages(prefs: TranslatePrefs): TranslatePrefs {
   if (!translatesWithDedicated(prefs)) return prefs;
   const fits = (code: string) => translatesLanguage(code, true);
@@ -171,6 +172,7 @@ function loadPrefs(): TranslatePrefs {
   const known = (code: unknown): code is string =>
     typeof code === "string" && findTranslateLanguage(code) !== undefined;
   const customModel = parseCustomTranslateModel(saved.customModel);
+  const savedModel = migrateTranslateModelId(saved.modelId);
   return fitLanguages({
     from: known(saved.from) ? saved.from : AUTO_SOURCE,
     target: known(saved.target) ? saved.target : suggestedTarget(),
@@ -181,11 +183,11 @@ function loadPrefs(): TranslatePrefs {
       ? saved.recentTargets.filter(known).slice(0, RECENT_LANGUAGES)
       : [],
     modelId:
-      isTranslateModelId(saved.modelId) &&
+      isTranslateModelId(savedModel) &&
       // The menu no longer offers "the model picked in Chat".
-      saved.modelId !== CHAT_TRANSLATE_MODEL &&
-      (saved.modelId !== CUSTOM_TRANSLATE_MODEL || customModel)
-        ? saved.modelId
+      savedModel !== CHAT_TRANSLATE_MODEL &&
+      (savedModel !== CUSTOM_TRANSLATE_MODEL || customModel)
+        ? savedModel
         : DEFAULT_TRANSLATE_MODEL,
     customModel,
     mode: TRANSLATE_MODES.includes(saved.mode as TranslateMode)

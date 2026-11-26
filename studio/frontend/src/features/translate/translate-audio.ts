@@ -3,6 +3,7 @@
 
 import {
   SttModelNotDownloadedError,
+  type TranscriptSegment,
   transcribeAudioBlob,
 } from "@/features/chat";
 import {
@@ -15,12 +16,15 @@ import {
 import type { useT } from "@/i18n";
 import { MAX_AUDIO_SIZE_LABEL, getAudioSizeError } from "@/lib/audio-utils";
 import { toast } from "@/lib/toast";
+import { segmentsToSrt } from "./translate-subtitles";
 
-/** The transcript of an audio file with the Voice settings model, as chat's audio upload makes it; null after a toast. */
+/** The transcript of an audio file with the Voice settings model, as chat's audio upload makes it; null after a toast.
+ *  With `timed`, an SRT file when the model reports segment timings. */
 export async function transcribeAudioFile(
   file: File,
   signal: AbortSignal,
   t: ReturnType<typeof useT>,
+  timed = false,
 ): Promise<string | null> {
   if (file.size === 0 || getAudioSizeError(file.size)) {
     toast.error(
@@ -45,9 +49,24 @@ export async function transcribeAudioFile(
   }
   const ggufVariant = sttModelVariant(model, settings.sttGgufVariant);
   try {
-    const text = applyDictationDictionary(
-      await transcribeAudioBlob(file, { model, ggufVariant, signal }),
-    ).trim();
+    let segments: TranscriptSegment[] = [];
+    const transcript = await transcribeAudioBlob(file, {
+      model,
+      ggufVariant,
+      signal,
+      onSegments: timed
+        ? (found) => {
+            segments = found;
+          }
+        : undefined,
+    });
+    const subtitles = segmentsToSrt(
+      segments.map((segment) => ({
+        ...segment,
+        text: applyDictationDictionary(segment.text),
+      })),
+    );
+    const text = subtitles ?? applyDictationDictionary(transcript).trim();
     if (!text) {
       toast.error(t("settings.voice.dictation.audioUploadNoSpeech"));
     }

@@ -1036,6 +1036,22 @@ def test_the_tool_loop_replays_a_resumed_thought_whole():
         continue_final_message = True,
     )
     assert conversation[1:] == [{"role": "assistant", "content": "I will search."}]
+    conversation = copy.deepcopy(_CUT_THOUGHT)
+    msg = {"role": "assistant", "content": "ok", "reasoning_content": "forecast."}
+    _append_raw_turn(conversation, msg, continue_final_message = True)
+    assert conversation[1] == {**msg, "reasoning_content": "\nThe user wants the forecast."}
+    # Resumed text with a saved thought: a new thought joins it instead of replacing it.
+    conversation = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "Paris is", "reasoning_content": "User wants Paris."},
+    ]
+    msg = {"role": "assistant", "content": " sunny.", "reasoning_content": "Need data."}
+    _append_raw_turn(conversation, msg, continue_final_message = True)
+    assert conversation[1] == {
+        "role": "assistant",
+        "content": "Paris is sunny.",
+        "reasoning_content": "User wants Paris.\nNeed data.",
+    }
 
 
 @pytest.mark.parametrize("gguf", [False, True], ids = ["safetensors", "gguf"])

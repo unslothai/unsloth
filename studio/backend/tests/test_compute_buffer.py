@@ -1652,8 +1652,7 @@ class TestComputeBufferInkling2:
         assert b._compute_buffer_ctx_bytes(65536, ub, ct, flash_attn = fa) >= dense * 65536
 
     def test_generic_path_underestimated_the_failed_load(self):
-        # Before inkling2 had its own branch it took the generic rate: 928 MiB for a load that
-        # needed 77531 MiB on the build without #385/#386.
+        # Generic rate gave 928 MiB; failed load needed 77531 MiB on builds lacking #385/#386.
         b = self._inkling2_mini(arch = "llama")
         assert self._total_mib(b, 800000, 512, "f16", True) < 1000
 

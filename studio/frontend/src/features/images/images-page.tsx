@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { modelErrorToast } from "@/lib/model-error-toast";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
@@ -365,6 +366,7 @@ import {
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
 import { collectGalleryWindow } from "./lib/gallery-window";
+import { promptBoundaryIds } from "./lib/prompt-boundaries";
 import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
@@ -444,7 +446,15 @@ import {
 } from "./lib/shift-choice";
 import { listDiffusionEmbeddings } from "./embeddings-api";
 import { addGalleryImageToProject, listDiffusionControlNets, moveGalleryImage } from "./images-page-api";
-import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
+import { EmbeddingsField, FastCfgField, ShiftField } from "./shift-embeddings-controls";
+import {
+  FAST_CFG_STORAGE_KEY,
+  fastCfgAvailable,
+  fastCfgEndFromRecipe,
+  fastCfgLabel,
+  fastCfgNotApplied,
+  fastCfgRequestFields,
+} from "./lib/fast-cfg";
 import { HiresControls, UpscaleModelField } from "./hires-controls";
 import {
   HIRES_OFF,
@@ -475,6 +485,7 @@ import {
   withEnhanceChoice,
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
+import { loraFuseLabel } from "./lib/lora-fuse";
 import {
   ENGINE_HINT,
   ENGINE_HINT_CPU_ONLY,
@@ -513,6 +524,7 @@ import {
   varyBlockedReason,
 } from "./lib/sd-controls";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
@@ -1503,6 +1515,9 @@ function RecipePopover({
           ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
+          {fastCfgLabel(image.cfg_interval_end) ? (
+            <RecipeRow label="Fast CFG" value={fastCfgLabel(image.cfg_interval_end) ?? ""} />
+          ) : null}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
             <RecipeRow
               label="Sampler"
@@ -1556,6 +1571,7 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
+  const loraFuse = loraFuseLabel(status.lora_fuse);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1607,6 +1623,13 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
           badge={<InfoHint>{placement.detail}</InfoHint>}
         />
       ) : null}
+      {loraFuse ? (
+        <BuildRow
+          label="LoRA"
+          value={loraFuse.label}
+          badge={<InfoHint>{loraFuse.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={
@@ -1635,7 +1658,7 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
   }
-  toast.error(text || fallback);
+  modelErrorToast(text || fallback);
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
@@ -1722,6 +1745,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite,
   dragging,
   cueEdge,
+  promptBoundary,
   actions,
 }: {
   image: GalleryImage;
@@ -1732,6 +1756,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite: boolean;
   dragging: boolean;
   cueEdge: StripDropCue["edge"] | null;
+  promptBoundary: boolean;
   actions: StripTileActionsBox;
 }) {
   const id = image.id;
@@ -1752,6 +1777,9 @@ const GalleryStripTile = memo(function GalleryStripTile({
       }}
       className={cn("group relative size-16 shrink-0", dragging && "opacity-40")}
     >
+      {promptBoundary && (
+        <span data-prompt-boundary aria-hidden="true" className="pointer-events-none absolute -left-1 top-2 bottom-2 w-px bg-border" />
+      )}
       {cueEdge && <StripDropLine edge={cueEdge} />}
       <button
         type="button"
@@ -2027,6 +2055,16 @@ export function ImagesPage({
   );
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
+  const [fastCfgOn, setFastCfgOn] = usePersistedToggle(FAST_CFG_STORAGE_KEY);
+  // A restored recipe's own stop, sent until the switch is touched (null: the preset).
+  const [fastCfgEnd, setFastCfgEnd] = useState<number | null>(null);
+  const changeFastCfg = useCallback(
+    (next: boolean) => {
+      setFastCfgOn(next);
+      setFastCfgEnd(null);
+    },
+    [setFastCfgOn],
+  );
   const oversizedOnce = useRef(false);
   // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
   const compareOnce = useRef<CompareRun | null>(null);
@@ -2170,6 +2208,7 @@ export function ImagesPage({
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
+  const promptBoundaries = useMemo(() => promptBoundaryIds(images), [images]);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
@@ -2516,6 +2555,8 @@ export function ImagesPage({
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
+  const fastCfgShown = fastCfgAvailable(status, effectiveGuidance, Boolean(external));
+  const cfgIntervalSupported = !external && status?.loaded === true && status.supports_cfg_interval === true;
   // The guidance a negative prompt needs: 0 with no model loaded or on an older backend, the old rule.
   const negativeMinGuidance =
     status?.loaded && status.negative_prompt_min_guidance !== undefined
@@ -3102,6 +3143,9 @@ export function ImagesPage({
     setHeight(restored.height);
     setBatchSize(image.batch_size ?? 1);
     setShiftValue(shiftFromRecipe(image));
+    const restoredFastCfgEnd = fastCfgEndFromRecipe(image);
+    setFastCfgOn(restoredFastCfgEnd !== null);
+    setFastCfgEnd(restoredFastCfgEnd);
     const m = matchAspect(restored.width, restored.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -3175,13 +3219,14 @@ export function ImagesPage({
       ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
       // Restored into the hidden control, which Generate omits: say so, as an import does.
       ...(via === "restore" ? detailerNotApplied(detail.enabled, detailerReady) : []),
+      ...(via === "restore" ? fastCfgNotApplied(image.cfg_interval_end, cfgIntervalSupported) : []),
     ];
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status, detailerReady]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -3305,6 +3350,7 @@ export function ImagesPage({
         ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
         ...tagged.notes,
         ...shiftNotApplied(recipe, shiftControl),
+        ...fastCfgNotApplied(recipe.cfg_interval_end, cfgIntervalSupported),
         ...hiresNotApplied(hiresFromRecipe(settings), status?.loaded ? status.hires : null),
         ...unknownRecipeKeys(recipe),
       ];
@@ -3371,7 +3417,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, detailerReady],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, cfgIntervalSupported, detailerReady],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -4786,6 +4832,12 @@ export function ImagesPage({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    if (modelLinkedFromOutside(wanted)) {
+      const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
+      void navigateSelf({ to: "/images", search: {}, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/images", search: linked, replace: true }));
+      return;
+    }
     // A Download only arrival owns nothing and must leave a staging load its claim.
     const downloadOnlyPick = modelSelectionAction === "download";
     const token = downloadOnlyPick ? undefined : pickGuard.claim();
@@ -5787,6 +5839,7 @@ export function ImagesPage({
           !controlnetEngaged,
         ),
         ...shiftRequestFields(shiftControl, shiftValue),
+        ...fastCfgRequestFields(fastCfgShown, fastCfgOn, fastCfgEnd),
         ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
         ...condFields,
         ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
@@ -5975,7 +6028,7 @@ export function ImagesPage({
           },
         });
       } else if (report)
-        toast.error(msg, { action: generationFailureLogsAction(msg) });
+        modelErrorToast(msg, { action: generationFailureLogsAction(msg) });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -5991,7 +6044,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
+  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, fastCfgShown, fastCfgOn, fastCfgEnd, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -6095,6 +6148,7 @@ export function ImagesPage({
       samplers: samplerOptions,
       samplerChoice,
       shift: shiftControl,
+      cfgInterval: cfgIntervalSupported,
       loraCapable,
       loras: loras
         .filter((l) => l.id.trim())
@@ -6111,7 +6165,7 @@ export function ImagesPage({
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, cfgIntervalSupported, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
@@ -6434,7 +6488,7 @@ export function ImagesPage({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool."
+          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool. Only cards in this machine are listed: using two machines (for example two DGX Sparks) for one job is not part of this release."
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
@@ -7560,6 +7614,7 @@ export function ImagesPage({
               </Field>
             )}
             <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
+            <FastCfgField available={fastCfgShown} enabled={fastCfgOn} onChange={changeFastCfg} />
             {hiresVisible(hiresCapability, workflow) ? (
               <HiresControls capability={hiresCapability} choice={hires} onChange={setHires} width={width} height={height} />
             ) : !external && workflow === "create" && status?.hires_unavailable_reason ? (
@@ -8001,6 +8056,7 @@ export function ImagesPage({
                   favorite={isFavorite(`image:${image.id}`)}
                   dragging={stripReorder.draggingId === image.id}
                   cueEdge={stripReorder.cue?.id === image.id ? stripReorder.cue.edge : null}
+                  promptBoundary={promptBoundaries.has(image.id)}
                   actions={stripTileActions}
                 />
               ))}

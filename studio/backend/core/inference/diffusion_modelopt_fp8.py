@@ -207,9 +207,8 @@ def hub_modelopt_root(
     local_files_only: bool = False,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """The cached snapshot root holding a Hub repo's ModelOpt transformer (its config read first, the shards fetched
-    only when that config is ModelOpt), for a load that was handed a hub id rather than a staged folder. None for a
-    local path, a repo without a ModelOpt transformer, or an unreachable Hub."""
+    """Cached snapshot root of a Hub repo's ModelOpt transformer (config read first, shards fetched
+    only if it is ModelOpt); None for local paths, non-ModelOpt repos or an unreachable Hub."""
     if not repo_id or Path(str(repo_id)).expanduser().exists():
         return None
     try:

@@ -111,6 +111,7 @@ import {
   QUANT_OPTIONS,
   buildQuantSizeLabels,
   getEstimatedSize,
+  MOE_GGUF_ADAPTER_HINT,
   mergedFormatPayload,
 } from "./constants";
 import {
@@ -448,6 +449,9 @@ export function ExportPage() {
     () => selectedModelData?.checkpoints ?? [],
     [selectedModelData],
   );
+  const moeExpertAdapter =
+    sourceMode === "checkpoint" &&
+    selectedModelData?.adapter_features?.moe_target_parameters === true;
 
   const baseModelName = selectedModelData?.base_model ?? "—";
   const isAdapter = !!selectedModelData?.peft_type;
@@ -759,7 +763,15 @@ export function ExportPage() {
     }
   };
 
-  const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
+  const estimateMethod =
+    exportMethod === "gguf" && ggufTarget === "lora" && effectiveIsAdapter
+      ? "lora"
+      : exportMethod;
+  // Expert LoRA scales with the expert count, so "~100 MB" would mislead.
+  const estimatedSize =
+    estimateMethod === "lora" && moeExpertAdapter
+      ? ""
+      : getEstimatedSize(estimateMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
   // Derived, not reset in an effect: an imatrix is calibrated for one model only.
@@ -1092,7 +1104,7 @@ export function ExportPage() {
         checkpointLabel: selectedExportSource,
         methodLabel,
         method: effectiveMethod,
-        quantLevels,
+        quantLevels: ggufAsLora ? [] : quantLevels,
         mergedFormats: exportMethod === "merged" ? selectedFormats : [],
         destination,
         reapLabel,
@@ -1871,6 +1883,11 @@ export function ExportPage() {
                                       ? "Adapter weights only; pick the on-disk format below."
                                       : "Standard PEFT adapter files. Pair with the base model at inference."}
                                 </div>
+                                {loraAsGguf && moeExpertAdapter && (
+                                  <div className="text-xs text-muted-foreground">
+                                    {MOE_GGUF_ADAPTER_HINT}
+                                  </div>
+                                )}
                               </div>
 
                               {!loraAsGguf && isMacHost && (
@@ -2036,6 +2053,11 @@ export function ExportPage() {
                                       ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
                                       : "Merges the adapter into the base model, then quantizes the full model to GGUF."}
                                   </div>
+                                  {ggufTarget === "lora" && moeExpertAdapter && (
+                                    <div className="text-xs text-muted-foreground">
+                                      {MOE_GGUF_ADAPTER_HINT}
+                                    </div>
+                                  )}
                                 </div>
                               )}
 
@@ -2220,7 +2242,7 @@ export function ExportPage() {
                     {showPanel && (
                       <ExportRunPanel
                         exportMethod={exportMethod}
-                        quantLevels={quantLevels}
+                        quantLevels={ggufAsLora ? [] : quantLevels}
                         checkpoint={selectedExportSource}
                         baseModelName={sourceBaseModelName}
                         isAdapter={sourceMode === "checkpoint" && isAdapter}

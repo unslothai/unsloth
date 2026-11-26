@@ -252,3 +252,36 @@ def test_repeated_split_calls_never_recompile(as_mps):
     assert G.stats["chunked_calls"] == 0  # counted in eager only: a traced bump guards on the value
     as_mps(q, k, v, attn_mask = mask)
     assert G.stats["chunked_calls"] == 1
+
+
+_COLD_PREFILL_TRACE = """
+import torch
+from torch._subclasses.fake_tensor import FakeTensorMode
+from core import _mps_sdpa_guard as G
+with FakeTensorMode():
+    q = torch.empty(2, 3, 32, 256, device = "mps")
+    fn = torch.compile(lambda q: q if G._prefill_serves(q, q, q, None) else q + 1, backend = "eager", fullgraph = True)
+    fn(q)
+print("TRACED")
+"""
+
+
+def test_cold_prefill_check_traces_under_fullgraph():
+    """The real prefill predicate (torch version parse included) traces under fullgraph=True in a fresh process,
+    before anything warmed the regex cache."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, PYTHONPATH = str(backend) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    env.pop("PYTORCH_MPS_DISABLE_PREFILL_ATTENTION", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", _COLD_PREFILL_TRACE],
+        cwd = str(backend),
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert proc.returncode == 0 and "TRACED" in proc.stdout, proc.stderr[-3000:]

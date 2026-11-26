@@ -14,6 +14,7 @@ from .store import (
     all_chunks_for_scope,
     conversation_archive_scope,
     kb_scope,
+    opening_chunks,
     project_scope,
     scope_token_estimate,
     thread_scope,
@@ -217,6 +218,7 @@ def search_knowledge_base_with_sources(
             k = top_k or config.TOP_K_HYBRID,
             model_name = model_name,
             mode = mode,
+            min_score = min_score,
         )
         hits = retrieval.filter_min_score(hits, min_score)
         rows = store_rows(conn, hits)
@@ -248,13 +250,15 @@ def search_for_autoinject(
     if scope is None:
         return None
     k = top_k or config.TOP_K_HYBRID
+    # Floor before cap: fused keyword-only hits carry no cosine and would take capped slots.
+    fused = mode == "hybrid" and min_dense_score is not None
     conn = rag_db.get_connection()
     try:
         hits = retrieval.retrieve_hybrid(
             conn,
             scope,
             query,
-            k = k,
+            k = config.TOP_K_LEXICAL + config.TOP_K_DENSE if fused else k,
             model_name = model_name,
             mode = mode,
         )
@@ -288,6 +292,39 @@ def _drop_chunk_overlap(text: str, start: int | None, prev_end: int | None) -> s
     return text[min(prev_end - start, len(text)) :].lstrip("\r\n")
 
 
+def _sources_in_order(rows) -> list[dict]:
+    sources: list[dict] = []
+    prev_page, prev_end = None, None
+    for i, r in enumerate(rows, 1):
+        page = (r["document_id"], r["source_page_index"])
+        text = r["text"] or ""
+        trimmed = (
+            _drop_chunk_overlap(text, r["page_char_start"], prev_end) if page == prev_page else text
+        )
+        sources.append(
+            {
+                "citationId": i,
+                "chunkId": r["id"],
+                "documentId": r["document_id"],
+                "filename": r["filename"] or "unknown",
+                "page": r["page_number"],
+                "text": trimmed,
+                "score": None,
+            }
+        )
+        prev_page, prev_end = page, r["page_char_end"]
+    return sources
+
+
+def document_opening(*, scope_thread_id: str, document_id: str) -> list[dict]:
+    conn = rag_db.get_connection()
+    try:
+        rows = opening_chunks(conn, thread_scope(scope_thread_id), config.CHUNK_TOKENS, document_id)
+    finally:
+        conn.close()
+    return _sources_in_order(rows)
+
+
 def whole_document_context(
     *, scope_thread_id: str | None = None, max_tokens: int
 ) -> tuple[str, list[dict]] | None:
@@ -312,26 +349,7 @@ def whole_document_context(
     if total > max_tokens:
         return None
 
-    sources: list[dict] = []
-    prev_page, prev_end = None, None
-    for i, r in enumerate(rows, 1):
-        page = (r["document_id"], r["source_page_index"])
-        text = r["text"] or ""
-        trimmed = (
-            _drop_chunk_overlap(text, r["page_char_start"], prev_end) if page == prev_page else text
-        )
-        sources.append(
-            {
-                "citationId": i,
-                "chunkId": r["id"],
-                "documentId": r["document_id"],
-                "filename": r["filename"] or "unknown",
-                "page": r["page_number"],
-                "text": trimmed,
-                "score": None,
-            }
-        )
-        prev_page, prev_end = page, r["page_char_end"]
+    sources = _sources_in_order(rows)
     rendered = render_sources(sources)
     if max(1, len(rendered) // 4) > max_tokens:
         return None

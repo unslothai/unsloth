@@ -240,6 +240,10 @@ export function RecipeStudioPage({
   const lastProcessedFitTickRef = useRef(0);
   const previousActiveViewRef = useRef<RecipeStudioView>("editor");
   const previousActiveExecutionIdRef = useRef<string | null>(null);
+  const watchedRunRef = useRef<{
+    id: string;
+    doneSeenAt: number | null;
+  } | null>(null);
   const pendingEditorTabFitRef = useRef(false);
   const forceEditorTabFitRef = useRef(false);
   const viewportMovedSinceAutoFitRef = useRef(true);
@@ -436,6 +440,7 @@ export function RecipeStudioPage({
 
   useEffect(() => {
     if (activeExecution) {
+      watchedRunRef.current = { id: activeExecution.id, doneSeenAt: null };
       setRecentCompletedExecution(null);
       return;
     }
@@ -448,7 +453,14 @@ export function RecipeStudioPage({
       setRecentCompletedExecution(null);
       return;
     }
-    const elapsedMs = Date.now() - latestCompleted.finishedAt;
+    // finishedAt is the server's finish; a run watched here counts from when this page saw it end.
+    const watched = watchedRunRef.current;
+    let doneAt = latestCompleted.finishedAt;
+    if (watched?.id === latestCompleted.id) {
+      watched.doneSeenAt ??= Date.now();
+      doneAt = watched.doneSeenAt;
+    }
+    const elapsedMs = Date.now() - doneAt;
     if (elapsedMs >= COMPLETE_ISLAND_VISIBLE_MS) {
       setRecentCompletedExecution(null);
       return;

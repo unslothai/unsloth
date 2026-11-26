@@ -102,6 +102,7 @@ import type {
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import { resolveSelectionUrlSync } from "./lib/selection-resolution";
+import { servedCheckpoint } from "./lib/model-identity";
 import { useHubInventory } from "./inventory";
 import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
 import {
@@ -484,11 +485,15 @@ export function ModelsPage() {
       } = {},
     ): Promise<void> => {
       const seq = ++residentStatusSeq.current;
-      const selected = useChatRuntimeStore.getState().params.checkpoint;
+      const { params, loadedModels, activeGgufVariant } =
+        useChatRuntimeStore.getState();
+      const selected = params.checkpoint;
       const read = Promise.all([
         getInferenceStatus(
           undefined,
-          selected && !isExternalModelId(selected) ? selected : undefined,
+          selected && !isExternalModelId(selected)
+            ? servedCheckpoint(loadedModels, selected, activeGgufVariant)
+            : undefined,
         ),
         readIdleUnloadArmed(),
       ])

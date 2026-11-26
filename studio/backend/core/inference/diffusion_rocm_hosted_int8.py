@@ -1,0 +1,217 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""An explicit int8 image pick on a ROCm RDNA card reads the family's hosted int8 ConvRot DiT as native W8A8 Linears.
+
+CUDA seeds that file as torchao tensors. ROCm has no torchao path (``native_quant_host``), so the planner kept the dense
+bf16 shards and the loader quantised them at load into the native W8A8 ConvRot build. The hosted file holds exactly
+that build (same layers, same g256 rotation, per-row int8 codes and float32 scales), so the same Linears are read from
+it instead (``diffusion_native_hosted.load_native_from_hosted``, which refuses any file that is not that build).
+
+Only a load whose runtime build would be W8A8 qualifies, since the hosted file is W8A8 only: an explicit int8 request on
+the compiled RDNA tier (``rdna_explicit_int8_reason``) for a family whose explicit or AUTO table measured W8A8
+(``rdna_explicit_w8a8`` / ``rdna_auto_w8a8``), or with ``UNSLOTH_NATIVE_INT8_ACT=1``. AUTO is never changed and
+weight-only families keep the dense shards. Only the target card's measured archs take the route
+(``ROCM_IMAGE_HOSTED_INT8_ARCHS``, gfx1151): other RDNA3 / RDNA4 cards keep the at-load build. Kill switch
+``UNSLOTH_ROCM_IMAGE_HOSTED_INT8=0``; ``UNSLOTH_NATIVE_INT8_ACT=0`` also keeps the old path. Torch-free at import."""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Optional
+
+ROCM_IMAGE_HOSTED_INT8_ENV = "UNSLOTH_ROCM_IMAGE_HOSTED_INT8"
+
+# gfx archs where the hosted W8A8 read was measured on hardware (gfx1151, Linux AMD CI). The RDNA W8A8 kernels accept
+# every gfx11xx / gfx12xx card, but no other arch has a speed or quality number, so they keep the at-load build.
+ROCM_IMAGE_HOSTED_INT8_ARCHS = frozenset({"gfx1151"})
+
+
+def rocm_image_hosted_int8_enabled() -> bool:
+    raw = (os.environ.get(ROCM_IMAGE_HOSTED_INT8_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def _target_arch_measured(target: Any) -> bool:
+    """Whether ``target``'s own card (its ordinal, not the current device) is a measured arch. Never raises."""
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return (
+            _device_gfx_arch(torch, getattr(target, "ordinal", None))
+            in ROCM_IMAGE_HOSTED_INT8_ARCHS
+        )
+    except Exception:  # noqa: BLE001 - an unreadable arch keeps the dense shards
+        return False
+
+
+def _hosted_convrot_file(fam: Any) -> Optional[str]:
+    profile = getattr(fam, "profile", None)
+    spec = getattr(profile, "int8_convrot", None) if profile is not None else None
+    if (
+        spec is None
+        or not getattr(spec, "filename", None)
+        or int(getattr(spec, "group", 0) or 0) <= 0
+    ):
+        return None
+    return str(spec.filename)
+
+
+def _is_convrot_safetensors(name: Any) -> bool:
+    # The torchao-layout ConvRot build only: not a plain / pickled int8 file, nor its alternate-layout twin.
+    return str(name or "").lower().endswith("-convrot.safetensors")
+
+
+def rocm_convrot_source(source: Any) -> Any:
+    """``source`` narrowed to its int8 ConvRot safetensors names, or None. The planner's header probe and the
+    loader's resolver both use it, so a mirror or cache holding only the plain int8 file cannot make the plan pick
+    the ConvRot file while the load resolves (and refuses) the plain one. Never raises."""
+    try:
+        if getattr(source, "kind", None) != "repo":
+            return None
+        from .diffusion_prequant import PrequantSource, candidate_filenames_of
+
+        names = [n for n in candidate_filenames_of(source) if _is_convrot_safetensors(n)]
+        if not names:
+            return None
+        declared = tuple(n for n in (getattr(source, "declared_filenames", ()) or ()) if n in names)
+        return PrequantSource(
+            kind = "repo",
+            location = str(source.location),
+            filename = names[0],
+            fallback_filenames = tuple(names[1:]),
+            declared_filenames = declared,
+        )
+    except Exception:  # noqa: BLE001 - unanswerable keeps the dense shards
+        return None
+
+
+def rocm_image_hosted_int8_reason(fam: Any, requested: Optional[str], target: Any) -> Optional[str]:
+    """Why an EXPLICIT int8 image request on this ROCm RDNA card reads the hosted int8 ConvRot DiT as native W8A8,
+    else None (the dense shards are quantised at load, as before). Host-level only: the caller still requires a
+    resident ``pipeline`` load on a compiling speed tier. Never raises."""
+    try:
+        if fam is None or not rocm_image_hosted_int8_enabled():
+            return None
+        from .diffusion_transformer_quant import (
+            TQ_INT8,
+            int8_convrot_enabled,
+            native_int8_act,
+            normalize_transformer_quant,
+            rdna_auto_w8a8_reason,
+            rdna_explicit_int8_reason,
+            rdna_explicit_w8a8_reason,
+        )
+
+        if normalize_transformer_quant(requested) != TQ_INT8:
+            return None
+        name = getattr(fam, "name", None)
+        if _hosted_convrot_file(fam) is None or not int8_convrot_enabled(name):
+            return None
+        if rdna_explicit_int8_reason(target, name) is None:
+            return None
+        if not _target_arch_measured(target):
+            return None
+        from .diffusion_native_quant import int8_rotation_group
+
+        if int(int8_rotation_group() or 0) <= 0:
+            return None
+        return (
+            rdna_explicit_w8a8_reason(target, name)
+            or rdna_auto_w8a8_reason(target, name)
+            or ("UNSLOTH_NATIVE_INT8_ACT=1 runs int8 W8A8" if native_int8_act(target) else None)
+        )
+    except Exception:  # noqa: BLE001 - unanswerable keeps the dense shards
+        return None
+
+
+def load_rocm_hosted_transformer(
+    fam: Any,
+    transformer_cls: Any,
+    base_repo: str,
+    source: Any,
+    *,
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    logger: Any = None,
+    compute_dtype: Any = None,
+    config_source: Optional[str] = None,
+    tag: str = "diffusion.rocm_hosted_int8",
+) -> Any:
+    """The native W8A8 denoiser read from ``source``'s hosted int8 ConvRot file, or None (the caller restores the
+    dense shards). ``compute_dtype``: see ``load_native_from_hosted`` (float16 on an fp16-only CUDA card).
+    ``config_source``: where the transformer config is read (default ``base_repo``). Raises only an allocation
+    failure."""
+    try:
+        from .diffusion_families import pinned_revision_kwargs
+        from .diffusion_native_cache import native_spec
+        from .diffusion_native_hosted import load_native_from_hosted
+        from .diffusion_prequant import _resolve_checkpoint_path
+        from .diffusion_transformer_quant import TQ_INT8
+
+        convrot = rocm_convrot_source(source)
+        if convrot is None:
+            if logger is not None:
+                logger.info(
+                    "%s: %s offers no int8 ConvRot safetensors build",
+                    tag,
+                    getattr(source, "location", None),
+                )
+            return None
+        path = _resolve_checkpoint_path(
+            convrot,
+            hf_token,
+            cache_dir,
+            local_files_only = local_files_only,
+            scheme = TQ_INT8,
+            logger = logger,
+        )
+        base_name = os.path.basename(str(path or "")).lower()
+        if not _is_convrot_safetensors(base_name):
+            if path is not None and logger is not None:
+                logger.info(
+                    "%s: %s is not an int8 ConvRot safetensors build",
+                    tag,
+                    base_name,
+                )
+            return None
+        name = getattr(fam, "name", None)
+        module = load_native_from_hosted(
+            path,
+            transformer_cls,
+            config_source or base_repo,
+            spec = native_spec(TQ_INT8, name, act_int8 = True),
+            family = name,
+            component = "transformer",
+            config_kwargs = {
+                "token": hf_token,
+                "cache_dir": cache_dir,
+                "local_files_only": local_files_only,
+                **(
+                    {}
+                    if config_source and os.path.isdir(str(config_source))
+                    else pinned_revision_kwargs(config_source or base_repo)
+                ),
+            },
+            base = base_repo,
+            logger = logger,
+            tag = tag,
+            keep_fp32 = True,
+            compute_dtype = compute_dtype,
+        )
+        if module is None:
+            return None
+        try:
+            module._unsloth_prequant_path = str(path)
+        except Exception:  # noqa: BLE001 - the artifact label only
+            pass
+        return module
+    except Exception as exc:  # noqa: BLE001 - a hosted problem keeps the dense build
+        from .diffusion_native_hosted import raise_if_allocation_failure
+
+        raise_if_allocation_failure(exc)
+        if logger is not None:
+            logger.warning("%s: hosted read skipped (%s)", tag, exc)
+        return None

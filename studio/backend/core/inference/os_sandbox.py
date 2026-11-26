@@ -714,8 +714,7 @@ def editable_source_roots() -> tuple[str, ...]:
 
 
 def model_library_roots() -> tuple[str, ...]:
-    """Registered model folders and the owner's trusted tool folders, which the approval gate reads silently;
-    NOT the whole read-silent set, which has /etc."""
+    """Model and trusted tool folders, read silently; not the whole read-silent set (/etc)."""
     try:
         from . import tool_path_approval
         from utils.paths.storage_roots import well_known_model_dirs
@@ -1450,6 +1449,16 @@ def _software_launch(plan: ToolLaunchPlan, record: ToolExecutionRecord) -> Prepa
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     """Unavailable hosts fall back in auto; unsafe workdirs and build failures refuse."""
+    try:
+        from utils.scan_memo import scan_memo
+    except ImportError:  # outside the backend (probe child, installer) there is no memo
+        return _prepare_tool_launch(plan)
+    # One scope per launch: the grant-root checks re-read HF homes and scan folders; nothing carries over.
+    with scan_memo():
+        return _prepare_tool_launch(plan)
+
+
+def _prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if plan.cancel_event is not None and plan.cancel_event.is_set():
         raise SandboxBuildError("execution cancelled before sandbox preparation")
     if plan.requested_mode not in TOOL_EXECUTION_MODES:

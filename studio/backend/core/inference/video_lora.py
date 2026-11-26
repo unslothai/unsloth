@@ -228,8 +228,7 @@ def _is_pair(lora_id: str) -> bool:
 
 
 def recommended_scheduler(pipe: Any) -> dict:
-    """Scheduler config overrides a baked step-distilled adapter asks for (lists where diffusers configs hold
-    lists), else ``{}``."""
+    """Scheduler overrides the baked step-distilled adapter wants (lists kept); {} when none."""
     from core.inference import diffusion_lora
 
     rows = diffusion_lora.recommended_scheduler(

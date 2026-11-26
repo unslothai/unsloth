@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AdaLN modulation precompute for FLUX.1 / Qwen-Image: the modulation Linears read only the timestep embedding,
-so they move to host and every request's rows are computed in one pass (each step at its own batch shape:
-bit-identical). Shared-modulation families (FLUX.2/3, Z-Image, Qwen-Image-2.1) save 1-4% and are skipped.
-
-UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: 0 / 1 / auto (default, on when offloaded / streamed / split).
-UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks each served row against the real module (eager only)."""
+"""AdaLN modulation precompute for FLUX.1 / Qwen-Image (Linears read only the timestep embedding,
+bit-identical); shared-modulation families save 1-4% and are skipped;
+UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: 0 / 1 / auto (on when offloaded / streamed / split);
+UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks rows against the real module (eager only)."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import inspect
 import os
@@ -973,14 +972,57 @@ def uninstall(
                 continue
             if target is not None and str(target) not in ("cpu", "meta"):
                 orig.to(target)
+        # recorded CUDA graphs read these buffers: they must outlive every graph of the pipe
+        held = (dict(st.layouts), dict(st.rows))
+        pipe = st.pipe_ref() if st.pipe_ref is not None else None
         st.rows.clear()
         st.layouts.clear()
     del model.__dict__[STATE_ATTR]
     if logger is not None:
         logger.info("diffusion.adaln_precompute: removed (%s)", reason or "requested")
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    _drop_graphs_then_free(model, pipe, held, torch)
     return True
+
+
+def _keep(_held: Any) -> None:
+    pass
+
+
+def _drop_graphs_then_free(model: Any, pipe: Any, held: tuple, torch: Any) -> None:
+    """Reset graphs over ``model`` before freeing ``held``; found via the model, as a bound workflow pipe lacks the handles."""
+    from .diffusion_cuda_graph import (
+        _holds_graphs,
+        recording_here,
+        release_when_capture_idle,
+        reset_all,
+        wrappers_over,
+    )
+
+    handles = list(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()) if pipe is not None else []
+    for wrapper in wrappers_over(model):
+        if not any(wrapper is h for h in handles):
+            handles.append(wrapper)
+
+    def drop(held = held) -> None:  # the default holds the buffers until this ran
+        if handles:
+            reset_all(handles)
+            for handle in handles:
+                if _holds_graphs(handle):
+                    # a reset that failed: the buffers live as long as the graph that may still replay them
+                    with contextlib.suppress(TypeError):
+                        weakref.finalize(handle, _keep, held)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    capturing = False
+    try:
+        capturing = bool(torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001
+        pass
+    if capturing or recording_here():
+        release_when_capture_idle(drop)
+    else:
+        drop()
 
 
 def bind_pipe(pipe: Any) -> None:

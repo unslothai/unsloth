@@ -18,6 +18,7 @@ compiles it at load, as before.
 from __future__ import annotations
 
 import ctypes
+import functools
 import glob
 import hashlib
 import json
@@ -1764,6 +1765,35 @@ def nvrtc() -> Any:
         except OSError as exc:
             errors.append(f"{name}: {exc}")
     raise RuntimeError("NVRTC not found: " + "; ".join(errors[:3]))
+
+
+@functools.lru_cache(maxsize = 1)
+def _nvrtc_supported_archs() -> Optional[frozenset]:
+    """The SM numbers (75, 80, ..., 121) the installed NVRTC can target (``nvrtcGetSupportedArchs``), or None when
+    NVRTC does not load or cannot say."""
+    try:
+        lib = nvrtc()
+        count = ctypes.c_int()
+        if lib.nvrtcGetNumSupportedArchs(ctypes.byref(count)) != 0 or count.value <= 0:
+            return None
+        archs = (ctypes.c_int * count.value)()
+        if lib.nvrtcGetSupportedArchs(archs) != 0:
+            return None
+        return frozenset(int(a) for a in archs)
+    except Exception:  # noqa: BLE001 - no NVRTC, or one too old to list its targets
+        return None
+
+
+def nvrtc_arch_supported(capability: Any) -> bool:
+    """Whether the installed NVRTC can compile the kernels for an arch of ``capability`` (they are built for the
+    card's own arch). False when NVRTC cannot say: callers gate only the nearest-family fallback on it, never a card
+    with its own measured config."""
+    archs = _nvrtc_supported_archs()
+    try:
+        sm = int(capability[0]) * 10 + int(capability[1])
+    except Exception:  # noqa: BLE001
+        return False
+    return archs is not None and sm in archs
 
 
 def nvrtc_version() -> tuple:

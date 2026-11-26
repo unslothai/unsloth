@@ -625,6 +625,78 @@ class TestListing:
         assert row.engram_ready == []
         assert row.downloaded is False
 
+    def _without_hub(self, monkeypatch, real_repo_snapshots):
+        from core.inference import engram_tables as et
+        from hub.services.models import gguf_variants as gv
+
+        # Offline, the cached tables and shards are found by walking the Hub cache.
+        monkeypatch.setattr(et, "repo_snapshots", real_repo_snapshots)
+
+        def unreachable(*a, **k):
+            raise OSError("Hugging Face unreachable")
+
+        monkeypatch.setattr(gv, "list_gguf_variants", unreachable)
+
+    @pytest.mark.parametrize("offline", [False, True])
+    def test_a_cache_only_listing_keeps_the_tables_the_hub_named(
+        self, repo, monkeypatch, real_repo_snapshots, offline
+    ):
+        import asyncio
+
+        from hub.services.models import gguf_variants as gv
+
+        repo(
+            "UD-IQ1_S/M-UD-IQ1_S-00001-of-00003.gguf",
+            "UD-IQ1_S/M-UD-IQ1_S-00002-of-00003.gguf",
+            "engram/M-engram-Q5_1.gguf_file",
+        )
+        self._row()
+        self._without_hub(monkeypatch, real_repo_snapshots)
+        response = asyncio.run(
+            gv.get_gguf_variants_response("Org/M-GGUF", prefer_local_cache = offline)
+        )
+        assert response.variants[0].engram_precision == "IQ4_NL"
+        # Only what loads without the Hub: the cached table and the quant's own.
+        assert [(t.precision, t.downloaded) for t in response.engram_tables] == [
+            ("Q5_1", True),
+            ("IQ4_NL", False),
+        ]
+        assert response.engram_supported is True
+
+    def test_a_complete_quant_offline_is_ready_with_its_own_table(
+        self, repo, monkeypatch, real_repo_snapshots
+    ):
+        repo(*self.SHARDS)
+        self._row()
+        self._without_hub(monkeypatch, real_repo_snapshots)
+        response, row = self._row()
+        assert row.engram_ready == ["IQ4_NL"]
+        assert [t.precision for t in response.engram_tables] == ["IQ4_NL"]
+
+    def test_the_own_table_is_judged_in_the_answering_snapshot_only(self, tmp_path, monkeypatch):
+        from core.inference import engram_tables as et
+        from hub.services.models import gguf_variants as gv
+
+        whole, swapped = tmp_path / "whole", tmp_path / "swapped"
+        for snapshot, shards in ((whole, self.SHARDS), (swapped, list(self.SHARDS)[:2])):
+            for name in shards:
+                (snapshot / name).parent.mkdir(parents = True, exist_ok = True)
+                (snapshot / name).write_bytes(b"\0")
+        monkeypatch.setattr(et, "repo_snapshots", lambda repo_id: [whole, swapped])
+        first = next(iter(self.SHARDS))
+        assert gv._all_shards_cached("Org/M-GGUF", first, None) is True
+        assert gv._all_shards_cached("Org/M-GGUF", first, str(swapped)) is False
+        assert gv._all_shards_cached("Org/M-GGUF", first, str(whole)) is True
+
+    def test_a_cache_only_listing_never_seen_online_names_no_tables(
+        self, repo, monkeypatch, real_repo_snapshots
+    ):
+        repo(*self.SHARDS)
+        self._without_hub(monkeypatch, real_repo_snapshots)
+        response, row = self._row()
+        assert response.engram_tables == []
+        assert row.engram_precision is None
+
 
 class TestManualQaFindings:
     def test_the_model_size_counts_the_table_llama_reads_not_the_quants_own(self, tmp_path):

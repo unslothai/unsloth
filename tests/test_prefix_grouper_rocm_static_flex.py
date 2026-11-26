@@ -23,10 +23,16 @@ KERNEL = (
 )
 
 
+_BASE_VERSION = str(torch.__version__).split("+")[0]
+# AMD SDK / Radeon wheel (repo.amd.com): torch.version.hip unset, ROCm tag only in __version__.
+_SDK_VERSION = _BASE_VERSION + "+rocm7.14.0"
+
+
 def _load(
     monkeypatch,
     hip,
     env = None,
+    version = None,
 ):
     compiles = []
 
@@ -39,6 +45,9 @@ def _load(
         return compiled
 
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    if version is None:
+        version = _BASE_VERSION + ("+rocm7.13.0" if hip else "+cu130")
+    monkeypatch.setattr(torch, "__version__", version)
     monkeypatch.setattr(torch, "compile", recording_compile)
     if env is None:
         monkeypatch.delenv("UNSLOTH_ROCM_FLEX_STATIC", raising = False)
@@ -83,9 +92,93 @@ def test_rocm_no_grad_and_cpu_calls_keep_the_dynamic_compile(monkeypatch):
     assert kernel._flex_attention_compiled(q, q, q)[1] is True
 
 
+def test_sdk_wheel_gradient_calls_compile_static(monkeypatch):
+    kernel, _ = _load(monkeypatch, None, version = _SDK_VERSION)
+    q = _operand()
+    assert kernel._flex_attention_compiled(q, q, q)[1] is False
+    assert kernel._small_smem_skip_reason(q) is None
+
+
 @pytest.mark.parametrize("hip, env", [(None, None), ("", None), ("7.13.0", "0")])
 def test_cuda_builds_and_the_opt_out_keep_the_dynamic_compile(monkeypatch, hip, env):
     kernel, compiles = _load(monkeypatch, hip, env)
     q = _operand()
     assert kernel._flex_attention_compiled(q, q, q)[1] is True
     assert all(kwargs.get("dynamic") is not False for _, kwargs in compiles)
+
+
+def _load_real_compile(monkeypatch):
+    # Real Dynamo; flex swapped for a differentiable math stand-in so the graphs run on CPU.
+    pytest.importorskip("unsloth_zoo.rocm_flex_static")
+    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.delenv("UNSLOTH_ROCM_FLEX_STATIC", raising = False)
+    name = "_pg_rocm_static_kernel_real_compile"
+    spec = importlib.util.spec_from_file_location(name, KERNEL)
+    kernel = importlib.util.module_from_spec(spec)
+    # Kept registered for the test: Dynamo looks the module up by name while tracing (torch 2.11).
+    monkeypatch.setitem(sys.modules, name, kernel)
+    spec.loader.exec_module(kernel)
+    graphs = []
+
+    def record(gm, inputs):
+        # Per graph: the sequence size (dim 2) of each 4-D tensor input.
+        graphs.append(
+            [
+                n.meta["example_value"].shape[2]
+                for n in gm.graph.nodes
+                if n.op == "placeholder"
+                and isinstance(n.meta.get("example_value"), torch.Tensor)
+                and n.meta["example_value"].dim() == 4
+            ]
+        )
+        return gm.forward
+
+    def math_flex(query, key, value, **kwargs):
+        scores = query @ key.transpose(-2, -1)
+        return scores.softmax(-1) @ value
+
+    kernel.flex_attention = math_flex
+    kernel._flex_attention_static = torch.compile(
+        kernel._rocm_static_flex_entry, backend = record, dynamic = False
+    )
+    # CPU tensors stand in for ROCm GPU tensors.
+    monkeypatch.setattr(
+        kernel,
+        "_uses_static_flex",
+        lambda q, k, v: torch.is_grad_enabled() and q.requires_grad,
+    )
+    torch._dynamo.reset()
+    return kernel, graphs, record
+
+
+def test_rocm_static_length_inside_an_enclosing_graph(monkeypatch):
+    # The dynamic = False compile is inlined into an enclosing graph, so without the trace-time
+    # specialization one symbolic graph served every padded length.
+    kernel, graphs, record = _load_real_compile(monkeypatch)
+
+    def call(t):
+        return kernel._flex_attention_compiled(t, t, t)
+
+    outer = torch.compile(call, fullgraph = True, dynamic = True, backend = record)
+    try:
+        for n in (128, 256, 384):
+            t = torch.randn(1, 2, n, 8, requires_grad = True)
+            outer(t).sum().backward()
+            assert t.grad is not None and torch.isfinite(t.grad).all()
+    finally:
+        torch._dynamo.reset()
+    # One graph per length, each with its length concrete (a symbol prints as s<N>).
+    assert [str(g[0]) for g in graphs] == ["128", "256", "384"], graphs
+
+
+def test_rocm_static_entry_ignores_a_callers_dynamic_marks(monkeypatch):
+    # mark_dynamic on an input wins over dynamic = False: the static entry got one symbolic graph.
+    kernel, graphs, _ = _load_real_compile(monkeypatch)
+    try:
+        for n in (128, 256, 384):
+            t = torch.randn(1, 2, n, 8, requires_grad = True)
+            torch._dynamo.mark_dynamic(t, 2)
+            kernel._flex_attention_compiled(t, t, t).sum().backward()
+    finally:
+        torch._dynamo.reset()
+    assert [str(g[0]) for g in graphs] == ["128", "256", "384"], graphs

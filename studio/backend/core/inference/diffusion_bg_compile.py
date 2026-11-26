@@ -978,9 +978,8 @@ def capture_suppressed() -> bool:
 
 @contextlib.contextmanager
 def no_capture():
-    """Neither record nor replay a CUDA graph in this context: a call split across two cards
-    (diffusion_sequence_parallel), whose two threads issue CUDA work at the same time, so a recording on either one
-    would wait out the other's hold (OUTSIDE_WAIT_S) on every call."""
+    """No CUDA graph record or replay: a two-card split call (diffusion_sequence_parallel) issues
+    CUDA work on two threads, so a recording would wait out the other's hold (OUTSIDE_WAIT_S)."""
     token = _NO_CAPTURE.set(True)
     try:
         yield

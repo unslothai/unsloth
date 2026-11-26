@@ -40,6 +40,7 @@ import type { ReactNode } from "react";
 import { DatasetPanel } from "../sections/dataset-section";
 import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
+import { GpusSection } from "../sections/gpus-section";
 import { ParamsSection } from "../sections/params-section";
 import { ConfigActions } from "./config-actions";
 import type { ParamMode } from "./training-param-mode";
@@ -370,6 +371,8 @@ export function TrainingWizard({
       >
         <ParamsSection mode={paramMode} />
       </SectionBox>
+
+      <GpusSection />
 
       <SectionBox
         title={t("studio.wizard.configTitle")}

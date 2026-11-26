@@ -611,3 +611,94 @@ def test_native_engine_refuses_a_generic_file_whose_base_repo_is_the_kv_repo():
     assert native_variant_reference_refusal(state) is None
     kv = dataclasses.replace(state, base_repo = KV_REPO)
     assert "Flux2KleinKVPipeline" in (native_variant_reference_refusal(kv) or "")
+
+
+STOCK_9B = "black-forest-labs/FLUX.2-klein-9B"
+GENERIC_REPO = "someone/FLUX.2-klein-GGUF"
+GENERIC_FILE = "model-Q8_0.gguf"
+
+
+def _resolve_pair(d, base_repo):
+    """``(resolved base, checkpoint base)`` for a generically named GGUF; the parent tree has only the first."""
+    base = d._resolve_base_repo(GENERIC_REPO, base_repo, _klein(), None, GENERIC_FILE)
+    checkpoint_of = getattr(d, "_checkpoint_base_of", None)
+    if checkpoint_of is None:
+        return base, base_repo
+    return base, checkpoint_of(GENERIC_REPO, base_repo, GENERIC_FILE)
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_a_generic_kv_file_keeps_its_kv_identity_through_the_companion_remap(monkeypatch, explicit):
+    """A generically named GGUF whose card tags (or whose caller names) the KV repo: the companions come from the stock
+    9B, but the checkpoint stays the KV model, so the pipeline pick, the dense-substitution guard and the advertised
+    workflows read the KV identity, not the remapped 9B base (the card-only case lost it entirely)."""
+    from core.inference import diffusion as d
+
+    monkeypatch.setattr(d, "_hf_base_model", lambda repo_id, token: KV_REPO)
+    monkeypatch.setattr(d, "_remember_companion_base", lambda repo_id, base: None)
+    fam = _klein()
+    base, checkpoint = _resolve_pair(d, KV_REPO if explicit else None)
+    assert base == STOCK_9B
+    assert checkpoint == KV_REPO
+    assert (
+        df.family_pipeline_class(fam, base, checkpoint, GENERIC_REPO, GENERIC_FILE)
+        == "Flux2KleinKVPipeline"
+    )
+    assert df.transformer_variant_differs_from_base(
+        fam, base, GENERIC_FILE, None, GENERIC_REPO, None, checkpoint
+    )
+    state = _kv_load_state(GENERIC_REPO, GENERIC_FILE)
+    state.checkpoint_base = checkpoint
+    assert d._state_workflows(state) == ["txt2img", "reference"]
+
+
+def test_a_stock_or_unremapped_base_records_no_checkpoint_base(monkeypatch):
+    from core.inference import diffusion as d
+    monkeypatch.setattr(d, "_remember_companion_base", lambda repo_id, base: None)
+    for tag in (STOCK_9B, None):
+        monkeypatch.setattr(d, "_hf_base_model", lambda repo_id, token, tag = tag: tag)
+        base, checkpoint = _resolve_pair(d, None)
+        assert checkpoint is None
+        assert df.family_pipeline_class(_klein(), base, GENERIC_REPO, GENERIC_FILE) == (
+            _klein().pipeline_class
+        )
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_the_queued_load_hands_load_pipeline_the_kv_identity(monkeypatch, explicit):
+    """The queued load replaces base_repo with the companion 9B before load_pipeline picks the class: the KV identity
+    must travel with it (it was dropped, so a generic KV file ran through the stock Flux2KleinPipeline)."""
+    from core.inference import diffusion as d
+
+    fam = _klein()
+    monkeypatch.setattr(d, "_hf_base_model", lambda repo_id, token: KV_REPO)
+    monkeypatch.setattr(d, "_remember_companion_base", lambda repo_id, base: None)
+    monkeypatch.setattr(d, "detect_family_for_pick", lambda *a, **k: fam)
+    # the loader-only shortcut right after the base resolution: hand load_pipeline the kwargs as resolved
+    monkeypatch.setattr(d, "MINIMAX_H3_IMAGE_FAMILY_NAME", fam.name)
+    seen = {}
+    be = d.DiffusionBackend()
+    monkeypatch.setattr(be, "load_pipeline", lambda **kwargs: seen.update(kwargs))
+    be._run_load(
+        repo_id = GENERIC_REPO,
+        gguf_filename = GENERIC_FILE,
+        base_repo = KV_REPO if explicit else None,
+        hf_token = None,
+    )
+    assert seen["base_repo"] == STOCK_9B
+    identity = seen.get("_checkpoint_base") or None
+    assert (
+        df.family_pipeline_class(fam, seen["base_repo"], identity, GENERIC_REPO, GENERIC_FILE)
+        == "Flux2KleinKVPipeline"
+    )
+
+
+def test_load_pipeline_reads_the_checkpoint_base_for_the_class_guard_and_state():
+    import inspect
+
+    from core.inference import diffusion as d
+
+    src = inspect.getsource(d.DiffusionBackend.load_pipeline)
+    assert "_checkpoint_base: Optional[str] = None" in src
+    assert "family_pipeline_class(fam, base, checkpoint_base, repo_id, gguf_filename)" in src
+    assert "checkpoint_base = checkpoint_base," in src

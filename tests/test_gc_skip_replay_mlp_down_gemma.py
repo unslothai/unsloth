@@ -498,3 +498,44 @@ def test_compile_warm_up_never_authorises_another_call(family, monkeypatch):
     assert torch.isfinite(seen[0]).all()
     torch.testing.assert_close(seen[0], expected, rtol = 1e-5, atol = 1e-6)
     assert fast_lora.MLP_DOWN_SKIP_STATS["skipped"] == 0
+
+
+@pytest.mark.parametrize("family", GUARD_FAMILIES)
+def test_mlp_call_override_keeps_down_projection(family, monkeypatch):
+    """An MLP class that overrides __call__ can transform mlp(x) outside its forward (here: square it), so the
+    layer output, and its backward, depend on the down projection: no skip there, in eager or compiled."""
+    model, inner, layer_cls = _model(family, monkeypatch)
+    mlp = inner.layers[1].mlp
+
+    class SquaredMLP(type(mlp)):
+        def __call__(self, *args, **kwargs):
+            return super().__call__(*args, **kwargs).square()
+
+    mlp.__class__ = SquaredMLP
+    base = _step(model, inner, skip = False)
+    head = _step(model, inner, skip = True)
+    assert fast_lora.MLP_DOWN_SKIP_STATS["skipped"] == N_LAYERS - 1
+    _assert_bitwise(base, head)
+    if fast_lora.TRACE_LORA_FUNCTIONS:
+        assert not fast_lora.block_skip_down_eligible(inner.layers[1], layer_cls.forward)
+        assert fast_lora.block_skip_down_eligible(inner.layers[0], layer_cls.forward)
+
+
+@pytest.mark.skipif(
+    not fast_lora.TRACE_LORA_FUNCTIONS,
+    reason = "block compile traces the fused LoRA MLP on torch >= 2.11",
+)
+@pytest.mark.parametrize("family", FAMILIES)
+def test_compiled_replay_with_lora_dropout_counts_no_skip(family, monkeypatch):
+    """LoRA dropout takes LoRA_MLP's branch that always runs the down projection: the compiled replay must
+    neither count a skip nor be compiled as one."""
+    model, inner, layer_cls = _model(family, monkeypatch, lora_dropout = 0.1)
+    assert not fast_lora.block_skip_down_eligible(inner.layers[0], layer_cls.forward)
+    _compiled_block(layer_cls, monkeypatch)
+    try:
+        replays = []
+        _step(model, inner, skip = True, replay_outputs = replays)
+        assert len(replays) == N_LAYERS and all(torch.isfinite(r).all() for r in replays)
+        assert fast_lora.MLP_DOWN_SKIP_STATS["skipped"] == 0
+    finally:
+        torch._dynamo.reset()

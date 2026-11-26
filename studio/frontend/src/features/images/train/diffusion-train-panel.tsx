@@ -123,8 +123,9 @@ import {
   diffusionBlockSwapSummary,
 } from "./diffusion-block-swap";
 import { useSystemInfo } from "@/hooks/use-system";
+import { diffusionTrainGuideUrl } from "./diffusion-train-guides";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
-import { runningTrainingSelection } from "./diffusion-train-restore";
+import { runningTrainingSelection, trainingRunSelection } from "./diffusion-train-restore";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 import {
   MediaGenerationPresetControl,
@@ -375,11 +376,13 @@ function TrainingPresetControl({
   currentParams,
   applyParams,
   readyRef,
+  onReady,
 }: {
   defaultParams: TrainingPresetParams;
   currentParams: TrainingPresetParams;
   applyParams: (params: TrainingPresetParams) => TrainingPresetParams;
   readyRef: { current: boolean };
+  onReady: () => void;
 }) {
   const presets = useMediaGenerationPresets({
     kind: "training",
@@ -390,7 +393,8 @@ function TrainingPresetControl({
   });
   useEffect(() => {
     readyRef.current = presets.presetsReady;
-  }, [presets.presetsReady, readyRef]);
+    if (presets.presetsReady) onReady();
+  }, [presets.presetsReady, readyRef, onReady]);
   return (
     <MediaGenerationPresetControl
       kind="training"
@@ -582,6 +586,8 @@ export function DiffusionTrainPanel({
   const precisionDirty = useRef(false);
   // `family` is a new object after every refreshInfo(), so track the base pick by name.
   const baseDirty = useRef(false);
+  // Set only by the user choosing a family or base; a finished run's status may seed the form until then.
+  const modelPickedByUser = useRef(false);
   const seededBaseFamily = useRef<string | null>(null);
 
   const [starting, setStarting] = useState(false);
@@ -846,6 +852,9 @@ export function DiffusionTrainPanel({
     ],
   );
   const presetsReadyRef = useRef(false);
+  // Seed from a finished run only after the stored preset applies, else applyPresetParams sees a user edit.
+  const [presetsSettled, setPresetsSettled] = useState(!savedPresets);
+  const markPresetsSettled = useCallback(() => setPresetsSettled(true), []);
   // Not every control sets a dirty ref (family, toggles), so any edit before presets settle counts.
   const editedBeforePresets = useRef(false);
   const trainRailRef = useRef<HTMLDivElement>(null);
@@ -891,7 +900,8 @@ export function DiffusionTrainPanel({
       lrScheduleDirty.current = owned;
       precisionDirty.current = owned;
       if (owned) {
-        // Neither a loaded model nor the family re-seed may replace the preset's base.
+        // Nothing may replace the preset's base: its hyperparameters were chosen for that model.
+        modelPickedByUser.current = true;
         seededFromLoaded.current = true;
         seededBaseFamily.current = params.familyName;
         baseDirty.current = true;
@@ -943,24 +953,33 @@ export function DiffusionTrainPanel({
     return () => window.clearInterval(id);
   }, [active, poll]);
 
+  const applyRunSelection = useCallback(
+    (run: { familyName: string; baseModel: string | null }) => {
+      seededFromLoaded.current = true;
+      seededBaseFamily.current = run.familyName;
+      setFamilyName(run.familyName);
+      if (run.baseModel) {
+        baseDirty.current = true;
+        const known = families.find((f) => f.name === run.familyName)?.base_repos.includes(run.baseModel);
+        setBaseChoice(known ? run.baseModel : CUSTOM_BASE);
+        if (!known) setCustomBase(run.baseModel);
+      }
+    },
+    [families, setFamilyName, setBaseChoice],
+  );
+
   // After a reload the page defaults to FLUX.1-dev; show the running job's family and base instead, once per job.
   const seededRunJob = useRef<string | null>(null);
   useEffect(() => {
     const jobKey = status?.job_id ?? "";
     if (seededRunJob.current === jobKey) return;
-    const run = runningTrainingSelection(status, families);
+    const run = runningTrainingSelection(status, families, {
+      formUntouched: presetsSettled && !modelPickedByUser.current,
+    });
     if (!run) return;
     seededRunJob.current = jobKey;
-    seededFromLoaded.current = true;
-    seededBaseFamily.current = run.familyName;
-    setFamilyName(run.familyName);
-    if (run.baseModel) {
-      baseDirty.current = true;
-      const known = families.find((f) => f.name === run.familyName)?.base_repos.includes(run.baseModel);
-      setBaseChoice(known ? run.baseModel : CUSTOM_BASE);
-      if (!known) setCustomBase(run.baseModel);
-    }
-  }, [status, families, setFamilyName, setBaseChoice]);
+    applyRunSelection(run);
+  }, [status, families, applyRunSelection, presetsSettled]);
 
   // The backend keeps the terminal status until the next start, so dismissal is local.
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
@@ -1467,6 +1486,9 @@ export function DiffusionTrainPanel({
       setResumingJobId(jobId);
       try {
         const detail = await getDiffusionTrainingRun(jobId);
+        // The resumed run trains the record's family and base, so the form shows them, not the page default.
+        const resumed = trainingRunSelection(detail, families);
+        if (resumed) applyRunSelection(resumed);
         const payload = buildDiffusionResumePayload(detail, {
           hfToken: hfApiToken(getHfToken()) || undefined,
         });
@@ -1488,7 +1510,7 @@ export function DiffusionTrainPanel({
         setResumingJobId(null);
       }
     },
-    [poll],
+    [poll, families, applyRunSelection],
   );
 
   const onStop = useCallback(
@@ -1990,7 +2012,16 @@ export function DiffusionTrainPanel({
                 Train a LoRA
               </h2>
               <p className="text-ui-12/snug text-muted-foreground">
-                Teach a model a new style or subject.
+                Teach a model a new style or subject.{" "}
+                <a
+                  href={diffusionTrainGuideUrl(familyName, info?.families)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Open the LoRA training guide in a new tab"
+                  className="text-primary underline"
+                >
+                  Guide
+                </a>
               </p>
             </div>
             {savedPresets ? (
@@ -1999,6 +2030,7 @@ export function DiffusionTrainPanel({
                 currentParams={currentPresetParams}
                 applyParams={applyPresetParams}
                 readyRef={presetsReadyRef}
+                onReady={markPresetsSettled}
               />
             ) : null}
           </div>
@@ -2007,7 +2039,13 @@ export function DiffusionTrainPanel({
             <FieldLabel hint="The architecture you are training. Each family brings its own bases, starting hyperparameters and VRAM floor.">
               Model family
             </FieldLabel>
-            <Select value={familyName} onValueChange={setFamilyName}>
+            <Select
+              value={familyName}
+              onValueChange={(v) => {
+                modelPickedByUser.current = true;
+                setFamilyName(v);
+              }}
+            >
               <SelectTrigger className={selectClass} aria-label="Model family">
                 <SelectValue />
               </SelectTrigger>
@@ -2030,6 +2068,7 @@ export function DiffusionTrainPanel({
               value={effectiveBase}
               onValueChange={(v) => {
                 baseDirty.current = true;
+                modelPickedByUser.current = true;
                 setBaseChoice(v);
               }}
             >
@@ -2050,7 +2089,10 @@ export function DiffusionTrainPanel({
                 value={customBase}
                 placeholder="Repo id or local folder"
                 spellCheck={false}
-                onChange={(e) => setCustomBase(e.target.value)}
+                onChange={(e) => {
+                  modelPickedByUser.current = true;
+                  setCustomBase(e.target.value);
+                }}
                 className="h-8 text-xs"
               />
             )}

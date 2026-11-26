@@ -1346,6 +1346,13 @@ export function AppSidebar() {
     setOpenMobile,
     state: sidebarState,
   } = useSidebar();
+  // On <html>, not a :has() over the thread, which would restyle it on every change.
+  const glassFrame = pinned && usesCustomTitlebar;
+  useEffect(() => {
+    const el = document.documentElement;
+    el.toggleAttribute("data-sidebar-glass-frame", glassFrame);
+    return () => el.removeAttribute("data-sidebar-glass-frame");
+  }, [glassFrame]);
   const navigate = useNavigate();
   const router = useRouter();
   const [rowNavigation] = useState(() =>
@@ -3527,7 +3534,6 @@ export function AppSidebar() {
     translate: {
       icon: AiTranslateIcon,
       label: t("shell.navigation.translate"),
-      badge: t("shell.navigation.newBadge"),
       active: pathname === "/translate",
       onClick: () => {
         navigateFromRow({ to: "/translate" });
@@ -6852,11 +6858,6 @@ export function AppSidebar() {
                     >
                       <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
                       <span>{t(tab.labelKey)}</span>
-                      {settingsTabId === "appearance" && (
-                        <Badge variant="accent" className="-my-0.5 ml-auto">
-                          {t("shell.navigation.newBadge")}
-                        </Badge>
-                      )}
                     </DropdownMenuItem>
                   );
                 })}

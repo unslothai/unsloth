@@ -20,7 +20,6 @@ STUDIO_SMOKES = (
     "studio-windows-api-smoke.yml",
     "studio-windows-inference-smoke.yml",
     "studio-windows-ui-smoke.yml",
-    "studio-windows-update-smoke.yml",
     "studio-mac-ui-smoke.yml",
 )
 

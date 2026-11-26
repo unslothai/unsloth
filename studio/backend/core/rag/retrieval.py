@@ -121,7 +121,12 @@ def _warn_once_on_untagged(conn: sqlite3.Connection) -> None:
         )
 
 
-def _rrf(rankings: list[list[Hit]], rrf_k: int, top_k: int) -> list[Hit]:
+def _rrf(
+    rankings: list[list[Hit]],
+    rrf_k: int,
+    top_k: int,
+    min_score: float = 0.0,
+) -> list[Hit]:
     fused: dict[str, float] = {}
     best: dict[str, Hit] = {}
     for ranking in rankings:
@@ -138,11 +143,11 @@ def _rrf(rankings: list[list[Hit]], rrf_k: int, top_k: int) -> list[Hit]:
                     cur.dense_score if cur.dense_score is not None else hit.dense_score
                 )
     out: list[Hit] = []
-    for cid, s in sorted(fused.items(), key = lambda kv: kv[1], reverse = True)[:top_k]:
+    for cid, s in sorted(fused.items(), key = lambda kv: kv[1], reverse = True):
         h = best[cid]
         h.score = s
         out.append(h)
-    return out
+    return filter_min_score(out, min_score)[:top_k]
 
 
 def retrieve_hybrid(
@@ -156,6 +161,7 @@ def retrieve_hybrid(
     lexical_query: str | None = None,
     lexical_k: int | None = None,
     dense_k: int | None = None,
+    min_score: float = 0.0,
 ) -> list[Hit]:
     """lexical_query changes only the FTS5 leg; the dense leg always encodes the natural-language query.
     lexical_k / dense_k size the legs (default TOP_K_LEXICAL / TOP_K_DENSE): fused output never exceeds their sum."""
@@ -168,8 +174,14 @@ def retrieve_hybrid(
     lexical = retrieve_lexical(
         conn, scope, query, lexical_k or config.TOP_K_LEXICAL, match_query = lexical_query
     )
-    dense = retrieve_dense(conn, scope, query, dense_k or config.TOP_K_DENSE, model_name = model_name)
-    return _rrf([lexical, dense], config.RRF_K, k)
+    try:
+        dense = retrieve_dense(
+            conn, scope, query, dense_k or config.TOP_K_DENSE, model_name = model_name
+        )
+    except embeddings.EmbeddingModelDownloadRequiredError as exc:
+        logger.info("hybrid search is keyword-only until the embedder is ready: %s", exc)
+        dense = []
+    return _rrf([lexical, dense], config.RRF_K, k, min_score)
 
 
 def filter_min_score(hits: list[Hit], min_score: float) -> list[Hit]:
