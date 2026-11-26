@@ -136,3 +136,37 @@ test("a reorder during the initial load uses an edit instead of a legacy import"
   }]);
   assert.equal(store.getState().sectionOrder[0], "projects");
 });
+
+test("an unrelated save drops moves that were undone while the last write was pending", async (t) => {
+  const posts: Edit[] = [];
+  const initial = {
+    ...layouts.sidebarLayout(store.getInitialState()),
+    sections: { research: { name: "Research", sort: "manual" as const } },
+    sectionOrder: ["pinned", "research", "projects"],
+  };
+  let resolveFirstPost!: (response: Response) => void;
+  const firstPost = new Promise<Response>((resolve) => {
+    resolveFirstPost = resolve;
+  });
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return Response.json(initial);
+    const post: Edit = JSON.parse(String(init.body));
+    posts.push(post);
+    return posts.length === 1 ? firstPost : Response.json(post.layout);
+  });
+  await setImmediate();
+  store.getState().renameCustomSection("research", "Notes");
+  await setImmediate();
+  store.getState().moveSection("projects", "pinned", "top");
+  store.getState().moveSection("projects", "research", "bottom");
+  const remoteOrder = ["projects", "pinned", "research"];
+  resolveFirstPost(Response.json({ ...posts[0].layout, sectionOrder: remoteOrder }));
+  await setImmediate();
+  assert.deepEqual(store.getState().sectionOrder, remoteOrder);
+
+  store.getState().renameCustomSection("research", "Drafts");
+  await setImmediate();
+  assert.equal(posts.length, 2);
+  assert.equal(posts[1].orderMoves, undefined);
+  assert.deepEqual(posts[1].layout.sectionOrder, remoteOrder);
+});

@@ -117,8 +117,13 @@ export function useSidebarSectionsSync(): void {
         }
         const update = applySidebarLayout(now, remote);
         const syncedLayout = JSON.stringify(sidebarLayout({ ...now, ...update }));
-        if (edit || base !== syncedLayout || sent !== syncedLayout) {
-          store.setState({ ...update, syncedLayout, pendingLayoutEdit: undefined });
+        if (edit || base !== syncedLayout || sent !== syncedLayout || now.orderMoves?.length) {
+          store.setState({
+            ...update,
+            syncedLayout,
+            pendingLayoutEdit: undefined,
+            orderMoves: undefined,
+          });
         }
       } catch {
         if (edit && current()) {

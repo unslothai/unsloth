@@ -1006,8 +1006,9 @@ def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client):
         ("", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc"),
         ("abcde", ("abdce", "d", "c", "top"), ("bcade", "a", "c", "bottom"), "bdcae"),
         ("apbc", ("bac", "b", "a", "top"), None, "bapc"),
+        ("abcd", ("cdba", "d", "c", "bottom"), None, "cdba"),
     ],
-    ids = ["independent", "first-manual-order", "moved-anchor", "unseen-page"],
+    ids = ["independent", "first-manual-order", "moved-anchor", "unseen-page", "sort-switch"],
 )
 def test_sidebar_sections_merge_concurrent_row_placements(client, initial, first, second, expected):
     from copy import deepcopy
@@ -1025,7 +1026,9 @@ def test_sidebar_sections_merge_concurrent_row_placements(client, initial, first
     common = save(
         "initial",
         {
-            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sections": {
+                "work": {"name": "Work", "sort": "updated" if expected == "cdba" else "manual"}
+            },
             "sectionByChatId": {key: "work" for key in set(first[0]) - {"p"}},
             "sectionByPageId": {"p": "work"} if "p" in initial else {},
             "rowOrder": {"work": list(initial)} if initial else {},
@@ -1035,6 +1038,7 @@ def test_sidebar_sections_merge_concurrent_row_placements(client, initial, first
     def place(operation_id, order_and_move):
         order, row, target, edge = order_and_move
         edited = deepcopy(common)
+        edited["sections"]["work"]["sort"] = "manual"
         edited["rowOrder"]["work"] = list(order)
         return save(
             operation_id,

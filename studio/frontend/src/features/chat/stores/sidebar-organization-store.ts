@@ -150,7 +150,7 @@ export interface SidebarOrganizationState {
   setChatSort: (value: SidebarChatSort) => void;
   setPinnedSort: (value: SidebarChatSort) => void;
   setProjectSort: (value: SidebarProjectSort) => void;
-  setManualOrder: (scope: string, ids: string[], place?: SidebarOrderPlacement) => void;
+  setManualOrder: (scope: string, ids: string[], placements?: SidebarOrderPlacement[]) => void;
   createCustomSection: (name: string) => string | null;
   renameCustomSection: (sectionId: string, name: string) => void;
   deleteCustomSection: (sectionId: string) => void;
@@ -386,13 +386,16 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       setChatSort: (value) => set({ chatSort: value }),
       setPinnedSort: (value) => set({ pinnedSort: value }),
       setProjectSort: (value) => set({ projectSort: value }),
-      setManualOrder: (scope, ids, place) =>
+      setManualOrder: (scope, ids, placements) =>
         set((state) => {
           const sectionId = customSectionIdOf(scope);
           return {
             manualOrder: { ...state.manualOrder, [scope]: ids },
-            ...(place && sectionId !== null && {
-              orderMoves: [...(state.orderMoves ?? []), { ...place, sectionId }],
+            ...(placements?.length && sectionId !== null && {
+              orderMoves: [
+                ...(state.orderMoves ?? []),
+                ...placements.map((place) => ({ ...place, sectionId })),
+              ],
             }),
           };
         }),

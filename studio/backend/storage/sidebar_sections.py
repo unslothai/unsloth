@@ -31,7 +31,9 @@ def _merge_order(primary: list[str], other: list[str]) -> list[str]:
 
 
 def _edited_order(saved, base, layout, importing, moves):
-    if moves:
+    if moves and base != layout:
+        if saved == base and set(saved).issubset(layout):
+            return _merge_order(layout, saved)
         order = _merge_order(saved, layout)
         for move in moves:
             row, target = move["id"], move["targetId"]
