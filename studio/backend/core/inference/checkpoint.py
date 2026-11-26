@@ -357,9 +357,7 @@ def _append_to_system(messages: list[dict], block: str) -> list[dict]:
 def _reset_keep_groups(messages: list[dict]) -> list[list[dict]]:
     """Previous exchange as a unit, then each live tool exchange, oldest first."""
     groups = group_turns(messages)
-    user_groups = [
-        index for index, group in enumerate(groups) if group[0].get("role") == "user"
-    ]
+    user_groups = [index for index, group in enumerate(groups) if group[0].get("role") == "user"]
     if not user_groups:
         return []
     newest = user_groups[-1]
