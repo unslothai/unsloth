@@ -17014,6 +17014,15 @@ class LlamaCppBackend:
             weights = []
         if len(weights) == n_layers and sum(weights) > 0:
             return sum(weights[:cpu_layers]) / sum(weights)
+        # Per-layer KV heads (hybrid models): layers with none allocate no growing cache.
+        heads = getattr(self, "_n_kv_heads_by_layer", None)
+        if isinstance(heads, (list, tuple)) and len(heads) == n_layers:
+            per_layer = [max(0, int(h or 0)) for h in heads]
+            shared = int(getattr(self, "_shared_kv_layers", None) or 0)
+            if 0 < shared < n_layers:
+                per_layer[n_layers - shared :] = [0] * shared
+            if sum(per_layer) > 0:
+                return sum(per_layer[:cpu_layers]) / sum(per_layer)
         allocating = n_layers - int(getattr(self, "_shared_kv_layers", None) or 0)
         if 0 < allocating < n_layers:
             return min(cpu_layers, allocating) / allocating

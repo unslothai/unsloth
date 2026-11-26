@@ -400,6 +400,18 @@ class TestPreLaunch:
         )
         assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), cards, {}, **kwargs)
 
+    def test_layers_without_kv_heads_hold_no_host_kv(self, windows):
+        # Hybrid layout [0, 0, 8, 4]: the two CPU layers have no attention, so no host KV.
+        backend = _backend(model_gb = 20, kv_gb = 24)
+        backend._n_layers, backend._n_kv_heads_by_layer = 4, [0, 0, 8, 4]
+        backend._kv_layer_weights = lambda *a, **k: []
+        assert backend._windows_host_kv_share(0.5, 4, 8, {}) == 0
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 8 * _MIB)
+        assert backend._windows_host_commit_refusal(_cmd("-ngl", "2"), _CARD, {}, **kwargs) is None
+        # Attention on the CPU side does count: [8, 4, 0, 0] keeps the whole cache there.
+        backend._n_kv_heads_by_layer = [8, 4, 0, 0]
+        assert backend._windows_host_commit_refusal(_cmd("-ngl", "2"), _CARD, {}, **kwargs)
+
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (
             _backend(model_gb = 20)._windows_host_commit_refusal(
