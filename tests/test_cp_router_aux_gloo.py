@@ -117,6 +117,25 @@ def test_router_aux_eval_loss_under_cp_matches_one_process(route, padding):
         )
 
 
+@pytest.mark.parametrize("padding", ["right", "odd"], ids = ["right_pad", "cp_pad"])
+def test_router_aux_eval_loss_under_cp_inside_no_grad_matches_one_process(padding):
+    """evaluate() called under torch.no_grad() still drops the cp-appended token from the router statistics."""
+    args = dict(bs = 2, ga = 1, steps = 2, eval_only = True, padding = padding, **_AUX)
+    (ref,) = _spawn("train", 1, {}, router_aux = True, eval_no_grad = True, **args)
+    assert "error" not in ref, ref
+    for rank, res in enumerate(
+        _spawn("train", 2, {}, cp = 2, router_aux = True, eval_no_grad = True, **args)
+    ):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["cp_aux_calls"] > 0, res
+        assert res["eval_loss"] == pytest.approx(ref["eval_loss"], rel = 1e-5), (
+            padding,
+            rank,
+            res["eval_loss"],
+            ref["eval_loss"],
+        )
+
+
 # Families beside qwen3_moe whose router aux loss cp forms from summed statistics (tiny random configs in
 # test_parallel_cp_compose_gloo._MOE_CONFIGS). gpt_oss has no sdpa attention in transformers: eager.
 _FAMILIES = {

@@ -1130,8 +1130,8 @@ class ContextParallelManager:
 
     def _note_real_tokens(self, local_ids, local) -> None:
         # Same-size forwards OR their masks: counting a pad as real is harmless, a real token as pad
-        # is not.
-        if not isinstance(local_ids, torch.Tensor) or not torch.is_grad_enabled():
+        # is not. Also under no_grad: evaluate() inside torch.no_grad() must not count the cp pads.
+        if not isinstance(local_ids, torch.Tensor):
             return
         masks = self.__dict__.setdefault("_real_token_masks", {})
         key = local_ids.numel()
