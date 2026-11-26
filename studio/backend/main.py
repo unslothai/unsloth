@@ -3445,6 +3445,7 @@ def get_hardware_info(
         export_capability,
         video_capability,
     )
+    from utils.hardware.hardware import _backend_label
 
     body = {
         "gpu": get_gpu_summary(),
