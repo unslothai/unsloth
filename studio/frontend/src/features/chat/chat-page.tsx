@@ -3456,7 +3456,7 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
-  // The Images pill can use the image or video model loaded in Unsloth. Re-read on mount,
+  // The Images pill can use the image or video model loaded in Unsloth. Re-read when Chat becomes active,
   // when any load settles (a chat load can evict them), when either is ejected, and on focus.
   useEffect(() => {
     let disposed = false;
@@ -3480,7 +3480,7 @@ export function ChatPage({
           );
       });
     };
-    refresh();
+    if (active) refresh();
     const unsubscribers = [
       subscribeModelLifecycle(({ loading }) => {
         if (!loading) refresh();
@@ -3496,7 +3496,7 @@ export function ChatPage({
       controller?.abort();
       for (const unsubscribe of unsubscribers) unsubscribe();
     };
-  }, []);
+  }, [active]);
   // Another tab can change the active model's pin (the pin store listens for the storage event),
   // and the normalization above reads the pin through a getState helper without subscribing, so
   // the composer kept the old level until a switch. Only the effort here: the pills and the rest

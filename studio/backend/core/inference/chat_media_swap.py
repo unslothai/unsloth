@@ -313,6 +313,8 @@ class RoundTrip:
                     await self._step("image_unloaded", self.media.unload())
                 except Exception as exc:  # noqa: BLE001 - chat reload evicts it anyway
                     logger.warning("chat image swap: image unload failed: %s", exc)
+            if unloaded:
+                await self.chat.prepare_restore(snap)
             await gate.aclose()
             if unloaded:
                 await self._restore(snap, kv)
@@ -347,6 +349,7 @@ class StudioChat:
 
     def __init__(self, subject: str):
         self.subject = subject
+        self._restore_owner: Optional[tuple[Optional[str], int]] = None
 
     @staticmethod
     def _llama():
@@ -433,6 +436,13 @@ class StudioChat:
             and getattr(llama, "_process", None) is snap.extra["process"]
         )
 
+    async def prepare_restore(self, snap: ChatSnapshot) -> None:
+        if snap.extra.get("transformers"):
+            from core.inference.gpu_arbiter import owner_snapshot
+
+            # Existing media can stay on other GPUs. Detect changes after releasing admission.
+            self._restore_owner = await asyncio.to_thread(owner_snapshot)
+
     async def reload(self, snap: ChatSnapshot, kv: Optional[dict]) -> None:
         from core.inference.llama_keepwarm import (
             end_in_process_request,
@@ -451,14 +461,18 @@ class StudioChat:
 
             request = _in_process_request()
 
-            def require_empty():
+            def require_unchanged():
                 from core.inference import gpu_arbiter, model_slots
-                if inference._loaded_slot_ident() or model_slots.busy() or gpu_arbiter.residents():
+                if (
+                    inference._loaded_slot_ident()
+                    or model_slots.busy()
+                    or gpu_arbiter.owner_snapshot() != self._restore_owner
+                ):
                     raise SwapUnavailable(
                         "Another model took the slot before chat could be restored."
                     )
 
-            inference.require_for_model_switch(request.scope, require_empty)
+            inference.require_for_model_switch(request.scope, require_unchanged)
             await inference.load_model_gated(
                 snap.launch,
                 request,

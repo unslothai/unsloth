@@ -143,8 +143,12 @@ test("readiness changes never clear the stored Images preference (D3)", () => {
   assert.ok(!/imageToolsEnabled:[^,]*localImageModelReady/.test(storeSource + chatPage));
 });
 
-test("chat-page refreshes readiness from both status routes and the lifecycle events", () => {
+test("chat-page refreshes readiness on route activation and media lifecycle events", () => {
   const chatPage = readSrc("features/chat/chat-page.tsx");
+  assert.ok(
+    /const refresh = \(\) => \{[\s\S]*?getDiffusionStatus\(current\.signal\)[\s\S]*?if \(active\) refresh\(\);[\s\S]*?\}, \[active\]\);/.test(chatPage),
+    "readiness refreshes when returning to a mounted Chat page",
+  );
   for (const needle of [
     "getDiffusionStatus(current.signal)",
     "getVideoStatus(current.signal)",

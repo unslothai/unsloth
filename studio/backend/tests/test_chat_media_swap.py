@@ -79,6 +79,9 @@ class FakeChat:
     async def is_resident(self, snap):
         return self.resident
 
+    async def prepare_restore(self, snap):
+        pass
+
     async def reload(self, snap, kv):
         self.log.add("chat.reload", snap.identity, snap.launch, kv)
         if self.reload_failures:
@@ -848,7 +851,8 @@ def test_beside_load_kept_only_after_a_finished_render(stopped):
     assert result == (swap.ERR_STOPPED if stopped else result) and chat.resident
 
 
-def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop):
+@pytest.mark.parametrize("video", ["absent", "kept", "replaced"])
+def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop, video):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from models.inference import LoadRequest, LoadResponse
@@ -865,7 +869,9 @@ def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop):
     )
     monkeypatch.setattr(swap, "_transformers_load", None)
     monkeypatch.setattr(gpu_arbiter, "owner_account", lambda owner: OWNER.account_id)
-    monkeypatch.setattr(gpu_residency, "current_policy", lambda: "off")
+    monkeypatch.setattr(
+        gpu_residency, "current_policy", lambda: "off" if video == "absent" else "fit"
+    )
     monkeypatch.setattr(media_switch_backends, "load_takes_the_gpu", lambda: True)
     monkeypatch.setattr(swap, "_media_busy", lambda: False)
     monkeypatch.setenv(swap.SWAP_MODEL_ENV, "local/image")
@@ -885,15 +891,27 @@ def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop):
         backend._proc = None
 
     async def restore(recipe, request, subject, **kwargs):
+        if video == "replaced":
+            gpu_arbiter._owner_epoch += 1
         inference._check_switch_precondition(request)
         assert recipe.max_seq_length == 4096
         load(recipe)
 
+    class Image(FakeImage):
+        async def load(self, name, should_abort):
+            if video != "absent":
+                # Fit evicts the chat on the image GPU and keeps the video on GPU 1.
+                evict()
+            await super().load(name, should_abort)
+
     monkeypatch.setattr(gpu_arbiter, "acquire_for", evict)
-    monkeypatch.setattr(gpu_arbiter, "residents", lambda: {})
+    kept_video = {gpu_arbiter.VIDEO: frozenset({1})} if video != "absent" else {}
+    monkeypatch.setattr(gpu_arbiter, "_owner", next(iter(kept_video), None))
+    monkeypatch.setattr(gpu_arbiter, "_residents", kept_video)
+    monkeypatch.setattr(gpu_arbiter, "_owner_epoch", 0)
     monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: backend.active_model_name)
     monkeypatch.setattr(inference, "load_model_gated", restore)
-    monkeypatch.setattr(swap, "StudioImage", lambda subject, render: FakeImage(log))
+    monkeypatch.setattr(swap, "StudioImage", lambda subject, render: Image(log))
     load(recipe)
     for enabled_tools in (["web_search", "generate_image"], ["generate_image"]):
         before = backend._proc
@@ -909,6 +927,11 @@ def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop):
             render_limit_s = 10,
             stop_render = lambda: None,
         )
+        assert gpu_arbiter.residents() == kept_video
+        if video == "replaced":
+            assert "Another model took the slot before chat could be restored" in result
+            assert backend.active_model_name is None
+            break
         assert result.startswith("Generated")
         assert backend.active_model_name == "text" and backend._proc is not before
         assert swap.chat_can_swap()
