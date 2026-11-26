@@ -197,9 +197,7 @@ def test_temporary_chat_compaction_keeps_transcript_in_memory(conn, sandbox):
 
     before = _branch()
     fitted = _with_block([before[0], before[-1]])
-    result = _archive_and_recall(
-        fitted, before, thread_id = THREAD, style = "inline", recall_done = True
-    )
+    result = _archive_and_recall(fitted, before, thread_id = THREAD, style = "inline", recall_done = True)
 
     assert result["conversation"] == fitted
     assert not list(sandbox.glob("transcript-*.md"))

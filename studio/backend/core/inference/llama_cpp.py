@@ -2298,7 +2298,6 @@ def _archive_and_recall(
         counts = {"archived_messages": archived}
         if conversation_archive.can_archive(thread_id):
             from core.inference import compaction_transcript
-
             transcript = compaction_transcript.write(thread_id, branch_messages or before)
             if transcript:
                 conversation = compaction_transcript.link_in_block(conversation, transcript)
