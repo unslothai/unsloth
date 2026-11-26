@@ -1977,6 +1977,9 @@ class InklingMessageNormalizer:
         self._think_open = False
         self._in_string = False
         self._escape = False
+        # [at, len] of each <think> written: the opener's offset in the output, then the body length.
+        self.thought_spans: list[list[int]] = []
+        self._emitted = 0
 
     def feed(self, text: str) -> str:
         self._buffer += text or ""
@@ -1989,6 +1992,7 @@ class InklingMessageNormalizer:
         output = self.drain()
         if self._think_open:
             output += _THINK_CLOSE
+            self._emitted += len(_THINK_CLOSE)
             self._think_open = False
         return output
 
@@ -2049,23 +2053,29 @@ class InklingMessageNormalizer:
                             key = len,
                         )
                     )
-                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)]))
+                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)], output))
                     self._buffer = held
                     break
                 index, marker = min(found)
-                output.append(self._body(self._buffer[:index]))
+                output.append(self._body(self._buffer[:index], output))
                 self._buffer = self._buffer[index + len(marker) :]
                 if self._think_open:
                     output.append(_THINK_CLOSE)
                     self._think_open = False
                 self._state = "header"
-        return "".join(output)
+        result = "".join(output)
+        self._emitted += len(result)
+        return result
 
-    def _body(self, text: str) -> str:
-        if self._state == "thought" and text and not self._think_open:
-            self._think_open = True
-            return _THINK_OPEN + text
-        return text
+    def _body(self, text: str, output: list) -> str:
+        if self._state != "thought" or not text:
+            return text
+        if self._think_open:
+            self.thought_spans[-1][1] += len(text)
+            return text
+        self._think_open = True
+        self.thought_spans.append([self._emitted + sum(map(len, output)), len(text)])
+        return _THINK_OPEN + text
 
     def _tool_call_end(self) -> int:
         """Index of the closer outside the call's JSON strings, or -1."""
@@ -2254,6 +2264,26 @@ class RecipientChannelNormalizer:
         return output
 
 
+class ThoughtSpans(str):
+    """A normalized snapshot carrying ``thought_spans``, so a literal ``<think>`` in it is never read as one."""
+
+    thought_spans: tuple = ()
+
+
+def with_thought_spans(
+    text: str,
+    normalizer,
+    prefix: str = "",
+) -> str:
+    # A prefilled prefix is text no span covers, so that snapshot keeps tag parsing.
+    spans = getattr(normalizer, "thought_spans", None)
+    if spans is None or prefix:
+        return text
+    snapshot = ThoughtSpans(text)
+    snapshot.thought_spans = tuple(map(tuple, spans))
+    return snapshot
+
+
 def make_reasoning_normalizer(
     markers: tuple[str, ...],
     *,
@@ -2292,6 +2322,7 @@ def normalize_reasoning_snapshots(
     prompt: Optional[str] = None,
     continued: bool = False,
     ended = None,
+    prefix: str = "",
 ):
     """Normalize prefix-monotonic cumulative streams; read ended after, so a stop-ended turn still
     closes."""
@@ -2314,7 +2345,7 @@ def normalize_reasoning_snapshots(
         raw_output = snapshot
         if delta:
             normalized_output += delta
-            yield normalized_output
+            yield with_thought_spans(normalized_output, normalizer, prefix)
 
     cancelled = (
         not (ended is not None and ended()) and cancel_event is not None and cancel_event.is_set()
@@ -2322,7 +2353,7 @@ def normalize_reasoning_snapshots(
     tail = normalizer.drain() if cancelled else normalizer.finish()
     if tail:
         normalized_output += tail
-        yield normalized_output
+        yield with_thought_spans(normalized_output, normalizer, prefix)
 
 
 def detect_think_prefill(

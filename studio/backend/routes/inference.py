@@ -4723,6 +4723,32 @@ def _sf_parse_think_markers(
     return _resolved_kwargs_think(None, resolved)
 
 
+def _sf_thought_ledger(
+    ledger: Optional[dict],
+    snapshot,
+    offset: int = 0,
+) -> Optional[dict]:
+    """Mirror a snapshot's thought spans into an extractor ledger, growing lengths in place; None until spans arrive."""
+    spans = getattr(snapshot, "thought_spans", None)
+    if spans is None:
+        return ledger
+    if ledger is None:
+        ledger = {"split": True}
+    seen = ledger.setdefault("spans", [])
+    for index, (at, length) in enumerate(spans):
+        if index < len(seen):
+            seen[index]["len"] = length
+            continue
+        entry = {"len": length}
+        if at + offset:
+            entry["at"] = at + offset
+            ledger.setdefault("later", []).append(entry)
+        else:
+            ledger.setdefault("wraps", []).append(entry)
+        seen.append(entry)
+    return ledger
+
+
 def _memory_tool_requested(payload) -> bool:
     """Saved memory may add a tool only when the caller has no client-owned contract."""
     if (
@@ -37281,7 +37307,7 @@ async def produce_openai_chat_completions(
 
     _sf_single_block = _response_format_constrains_decoding(payload)
 
-    def _new_sf_reasoning_extractor():
+    def _new_sf_reasoning_extractor(think_provenance = None):
         prefilled = _sf_reasoning_prefilled
         if _sf_continued_turn[0]:
             _sf_continued_turn[0] = False
@@ -37290,6 +37316,7 @@ async def produce_openai_chat_completions(
             parse_think_markers = _sf_parse_think,
             reasoning_prefilled = prefilled,
             single_block = _sf_single_block,
+            think_provenance = think_provenance,
         )
 
     cancel_event = _chat_cancel_event(request)
@@ -38323,6 +38350,8 @@ async def produce_openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
+                # Where the backend reports its thought, only that span is reasoning.
+                _sf_thoughts = None
                 # Worker thread: a blocking _gen_lock in compare mode would otherwise freeze the loop.
                 _DONE = object()  # sentinel for generator exhaustion
                 gen = generate()
@@ -38383,6 +38412,10 @@ async def produce_openai_chat_completions(
                         mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
+                    _ledger = _sf_thought_ledger(_sf_thoughts, cumulative, len(_sf_call_prefix))
+                    if _sf_thoughts is None and _ledger is not None and not prev_text:
+                        reasoning_extractor = _new_sf_reasoning_extractor(think_provenance = _ledger)
+                        _sf_thoughts = _ledger
                     if cumulative:
                         cumulative = _sf_call_prefix + cumulative
                     new_text = cumulative[len(prev_text) :]
@@ -38663,6 +38696,7 @@ async def produce_openai_chat_completions(
                             ),
                         )
                     raise HTTPException(status_code = 500, detail = _msg)
+                _thoughts = _sf_thought_ledger(None, full_text, len(_sf_call_prefix))
                 if full_text:
                     # The prefill alone is no call: an empty or cancelled reply stays empty.
                     full_text = _sf_call_prefix + full_text
@@ -38675,6 +38709,7 @@ async def produce_openai_chat_completions(
                         _sf_resumes_thought if _sf_continue else _sf_reasoning_prefilled
                     ),
                     single_block = _sf_single_block,
+                    think_provenance = _thoughts,
                 )
                 # Promotes text-form calls; an opt-in single nudge retry handles unparseable tool markup.
                 _msg = {"role": "assistant", "content": _visible_text}
