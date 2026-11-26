@@ -1762,7 +1762,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   // A compare send is idle between the two sequential runs; a re-list there swaps the pane threads mid-send.
   const [comparing, setComparing] = useState(false);
   const listedPairRef = useRef<string | null>(null);
-  const [model1, setModel1] = useState<CompareModelSelection>({
+  const restoredPairRef = useRef<string | null>(null);
+  const [model1Selection, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: loraModels.some(
       (lora) => lora.id === globalCheckpoint && lora.exportType === "lora",
@@ -1770,16 +1771,28 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     ggufVariant: globalGgufVariant ?? undefined,
     isDiffusion: globalIsDiffusion,
   });
-  const [model2, setModel2] = useState<CompareModelSelection>({
+  const [model2Selection, setModel2] = useState<CompareModelSelection>({
     id: "",
     isLora: false,
   });
+
+  const [model1, model2] = useMemo(() => {
+    const resolveLora = (selection: CompareModelSelection): CompareModelSelection =>
+      !selection.isLora && loraModels.some(
+        (lora) => lora.exportType === "lora" && modelIdsMatch(lora.id, selection.id),
+      )
+        ? { ...selection, isLora: true }
+        : selection;
+    return [resolveLora(model1Selection), resolveLora(model2Selection)] as const;
+  }, [loraModels, model1Selection, model2Selection]);
 
   useEffect(
     () =>
       registerComparePaneRunPreparer(pairId, async (pane, signal) => {
         const sel = pane === "model1" ? model1 : model2;
-        if (!sel.id) return;
+        if (restoredPairRef.current !== pairId || !sel.id) {
+          throw new Error("Choose a model for this comparison pane before running it.");
+        }
         const store = () => useChatRuntimeStore.getState();
         // A shared Send has already loaded this pane's model, so it is active here.
         await loadComparePaneModel(
@@ -1842,6 +1855,19 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
       .then((threads) => {
         if (!isActive) return;
         const pair = resolveComparePaneThreadIds(threads);
+        if (restoredPairRef.current !== pairId) {
+          restoredPairRef.current = pairId;
+          const restore = (threadId: string | undefined): CompareModelSelection => {
+            const thread = threads.find((candidate) => candidate.id === threadId);
+            return {
+              id: thread?.modelId ?? "",
+              isLora: false,
+              ggufVariant: thread?.modelGgufVariant ?? undefined,
+            };
+          };
+          if (pair.first) setModel1(restore(pair.first));
+          if (pair.second) setModel2(restore(pair.second));
+        }
         setModel1ThreadId(pair.first);
         setModel2ThreadId(pair.second);
         setPairSaved(Boolean(pair.first || pair.second));
