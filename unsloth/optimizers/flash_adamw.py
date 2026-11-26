@@ -276,7 +276,9 @@ def _variance_update(var, grad, beta2):
         _VARIANCE_UPDATE_KERNEL = kernel
     out = torch.empty_like(var)
     n = var.numel()
-    _VARIANCE_UPDATE_KERNEL[(triton.cdiv(n, 1024),)](var, grad, out, n, beta2, BLOCK = 1024)
+    _VARIANCE_UPDATE_KERNEL[(triton.cdiv(n, 1024),)](
+        var, grad, out, n, beta2, BLOCK = 1024, enable_fp_fusion = True
+    )
     return out
 
 
