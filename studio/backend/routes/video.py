@@ -904,13 +904,24 @@ _QUEUED_MODEL_CHANGED_MSG = (
 
 
 def _resident_identity(status: dict, state) -> tuple:
-    """What a queued clip was judged against: the resident build, not just its family."""
+    """What a queued clip was judged against: the resident build, not just its family. Adapters
+    baked in at load are part of the build: a reload with other LoRAs or weights is another model."""
+    from core.inference.video_lora import baked_lora_specs
+
+    try:
+        adapters = tuple(
+            (str(spec.get("id")), float(spec.get("weight") or 0.0))
+            for spec in baked_lora_specs(getattr(state, "pipe", None))
+        )
+    except Exception:  # noqa: BLE001 -- an unreadable pipe never blocks a start
+        adapters = ()
     return (
         status.get("repo_id"),
         status.get("model_kind"),
         status.get("gguf_variant"),
         status.get("h3_task"),
         getattr(getattr(state, "family", None), "name", None),
+        adapters,
     )
 
 

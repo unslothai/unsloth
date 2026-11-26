@@ -604,3 +604,36 @@ def test_the_queue_caps_the_bytes_waiting_requests_hold(client, backend, monkeyp
     assert total.status_code == 429 and "The waiting videos" in total.json()["detail"]
     assert len(video_routes._VIDEO_QUEUE) == 2
     backend.gate.set()
+
+
+def test_a_queued_page_clip_never_renders_with_adapters_baked_in_while_it_waited(
+    client, backend, prompts
+):
+    import types
+
+    from core.inference import video_lora
+    from core.inference.video_families import detect_video_family
+
+    def _resident(adapters):
+        pipe = types.SimpleNamespace()
+        setattr(pipe, video_lora.LORAS_BAKED_ATTR, bool(adapters))
+        setattr(pipe, video_lora.BAKED_SPECS_ATTR, tuple(adapters))
+        backend._state = types.SimpleNamespace(
+            family = detect_video_family("Lightricks/LTX-2"),
+            h3_task = None,
+            engine = "diffusers",
+            repo_id = "unsloth/LTX-2.3-GGUF",
+            pipe = pipe,
+        )
+
+    _resident([("org/style-lora", 1.0)])
+    running = _busy(client, backend)
+    page = client.post(PAGE, json = {"prompt": "judged with one adapter"}).json()
+    _finish_running(client, backend, running)
+    # Same repo, kind, quant, task and family: only the baked adapter weight changed.
+    _resident([("org/style-lora", 0.5)])
+    _drain()
+    assert [row["prompt"] for row in prompts] == ["running"]
+    [job] = client.get(QUEUE).json()["jobs"]
+    assert (job["video_id"], job["status"]) == (page["video_id"], "failed")
+    assert "model changed" in job["error"]
