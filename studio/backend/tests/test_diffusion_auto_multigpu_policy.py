@@ -14,6 +14,14 @@ T4 = "Tesla T4"
 TOTAL = 15360
 
 
+@pytest.fixture(autouse = True)
+def _linux_idle_limits(monkeypatch):
+    # the decision tables assert the Linux limits; the Windows tests below set win32 themselves
+    monkeypatch.setattr(mg.sys, "platform", "linux")
+    monkeypatch.delenv(mg.IDLE_USED_MIB_ENV, raising = False)
+    monkeypatch.delenv(mg.IDLE_UTIL_PCT_ENV, raising = False)
+
+
 def card(
     o,
     name = T4,
