@@ -122,8 +122,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on PR branches; on main cancel-in-progress is false, so a running run is never
-  # killed and only pending runs are replaced; see studio-backend-ci.yml.
+  # Latest-only on PR; on main cancel-in-progress is false, so running runs are never killed.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -268,8 +267,7 @@ jobs:
           echo "incomplete install correctly reported not-ready"
 
       - name: Update repairs an incomplete install
-        # `--local` bypasses the PyPI version compare; the non-local fast path is covered by
-        # tests/studio/install/test_setup_fast_path_guard.py.
+        # --local skips PyPI compare; see tests/studio/install/test_setup_fast_path_guard.py
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

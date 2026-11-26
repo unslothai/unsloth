@@ -139,7 +139,6 @@ def upload_destination(
             f"{scheme!r}, so {why} has no name the loader would ask for. Add the "
             "entry to the family table, or pass --upload-filename."
         )
-    # Check both directions: the declared name's extension must match the container.
     wanted = ".safetensors" if safetensors else ".pt"
     if not preferred.lower().endswith(wanted):
         reads_as = "a pickle" if safetensors else "safetensors"

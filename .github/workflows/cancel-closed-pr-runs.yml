@@ -53,8 +53,7 @@ jobs:
             [ "$n_open" = 0 ] || shared=1
           fi
 
-          # Take every list before cancelling: a cancelled run leaves the status filter that defines
-          # the result set, so cancelling mid-pagination would shift pages and skip runs.
+          # List all pages before cancelling; cancelling shifts the paginated result set.
           list="$RUNNER_TEMP/runs.tsv"; : > "$list"
           for st in queued waiting pending requested in_progress; do
             if ! gh api --paginate -X GET "repos/$REPO/actions/runs" \

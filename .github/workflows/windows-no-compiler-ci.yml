@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Checks the installer runs no compiler: audits 4688 process creation and fails on csc/vbc/cvtres or
-# a DLL dropped in temp; a positive control (one Add-Type) must fire both detectors first; shell leg
-# measures the released setup.ps1; desktop leg uses --local and needs the overlay in the log.
+# Fails on csc/vbc/cvtres (4688 audit) or a temp DLL; positive control (Add-Type) must fire both
+# detectors first; shell leg measures released setup.ps1; desktop leg needs --local and overlay.
 
 name: Windows No Compiler CI
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip drafts, so marking ready must start the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.ps1'

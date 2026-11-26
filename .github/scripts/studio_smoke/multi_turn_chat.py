@@ -58,8 +58,7 @@ PROMPTS = [
 
 
 def _server() -> tuple[str, str]:
-    """Returns (BASE_URL, TOKEN) from the environment, since each workflow boots its server on its
-    own port; read at call time, not import, so the checks run without a server or SDKs."""
+    """Read BASE_URL and TOKEN at call time, not import, so checks need no server or SDKs."""
     return os.environ["BASE_URL"], os.environ["TOKEN"]
 
 
@@ -146,8 +145,7 @@ def run_anthropic() -> list[str]:
     from anthropic import Anthropic
 
     BASE, KEY = _server()
-    # base_url must not include /v1 (the SDK appends it), and auth must go via default_headers
-    # because Unsloth only accepts Bearer, not x-api-key.
+    # base_url omits /v1 (SDK appends it); Unsloth accepts only Bearer via default_headers.
     client = Anthropic(
         base_url = BASE,
         api_key = "unused",

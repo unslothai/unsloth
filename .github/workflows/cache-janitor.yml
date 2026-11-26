@@ -133,8 +133,7 @@ permissions:
 jobs:
   prune:
     name: Prune superseded caches
-    # Arm label, not ubuntu-latest: merge bursts fill that queue and stalled this sweep for hours;
-    # it is API-only (gh, GNU date, awk, sed, sort), and the account job cap still applies.
+    # Arm, not ubuntu-latest: merge bursts stall that queue; API-only tools; job cap applies.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
@@ -281,10 +280,9 @@ jobs:
                 # and zoo SHA; PRs restore by prefix, so only the newest generation is read.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}$//'); fkeep=1 ;;
               pip-v2-*|uv-*|fe-dist-*)
-                # Strip only the trailing dependency hash, so the job name (pip-v2) or OS (uv,
-                # fe-dist) stays in the prefix and separate keys are not ranked as generations; a
-                # retired notebooks-colab prefix is drained to one entry by keep=1, then aged out by
-                # the 7-day idle timer.
+                # Strip only the trailing hash so job name (pip-v2) or OS (uv, fe-dist) stays in the
+                # prefix and separate keys are not ranked as generations; retired notebooks-colab
+                # prefix drains to one entry via keep=1, then ages out after 7 idle days.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{64}$//')
                 # fe-dist has no restore-keys, so exact reverts need keep older generations.
                 case "$key" in fe-dist-*) ;; *) fkeep=1 ;; esac ;;

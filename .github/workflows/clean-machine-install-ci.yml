@@ -98,8 +98,7 @@ on:
         default: tree
 
 concurrency:
-  # The event name stops a scheduled run and a push to main, which share a ref, from replacing each
-  # other as the one pending run, so a merge burst cannot drop the nightly.
+  # event_name keeps a scheduled run and a push to main from replacing each other as pending.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
   # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
@@ -236,15 +235,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-          # Empty on non-overlay legs and on installer_source=published.
           UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
         run: |
           set -a; . ./clean-machine.env; set +a
           set -o pipefail
           rc=0
           FLAGS="${{ matrix.flags }}"
-          # Strip CI/GITHUB_/RUNNER_ vars from the installer env; a consumer has none.
-          # Uses case, not sed: macOS BRE has no \| alternation.
+          # Strip CI/GITHUB_/RUNNER_ vars; use case, not sed, as macOS BRE lacks alternation.
           CLEAN_ENV=""
           for v in $(env | cut -d= -f1); do
             case "$v" in CI|GITHUB_*|RUNNER_*) CLEAN_ENV="$CLEAN_ENV -u $v" ;; esac
@@ -435,11 +432,9 @@ jobs:
             printf '%-8s %s\n' "$t" "$(command -v $t 2>/dev/null || echo ABSENT)"
           done | tee /tmp/container-baseline.txt
 
-      # Provision only the bootstrap transport; everything else stays absent.
       - name: Provision only the bootstrap transport
         run: |
-          # tar/gzip let overlay legs fetch source without git. Never both transports: the wget-only
-          # row must reach install.sh's wget branch.
+          # tar/gzip fetch source without git; never both, so wget-only rows still reach wget.
           if [ "${{ matrix.wget_only }}" = "true" ]; then
             pkgs="ca-certificates wget"
           else
@@ -511,7 +506,6 @@ jobs:
           # The editable overlay writes .egg-info into the source tree, so tester must own it.
           if [ -d ci-source ]; then chown -R tester ci-source; fi
 
-      # Prove elevation is truly unavailable, not merely uncalled.
       - name: Prove the unprivileged user genuinely cannot elevate
         if: matrix.nonroot
         run: |
@@ -720,7 +714,6 @@ jobs:
             exit 1
           fi
 
-      # Re-check curl after the install: wget must have carried every download.
       - name: Re-prove curl never appeared, and that wget carried the install
         if: matrix.wget_only && steps.install_nonroot.outcome == 'success'
         run: |

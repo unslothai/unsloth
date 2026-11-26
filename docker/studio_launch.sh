@@ -51,8 +51,7 @@ export UNSLOTH_STUDIO_STOP_WAIT_S=$(( 10#$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 
-# SSH login shells lack the `docker run -e` vars. Secrets excluded; values shlex.quote()d
-# because every login shell sources this file.
+# Login shells lack docker run -e vars; no secrets; values shlex.quote()d as shells source it.
 python - > /etc/profile.d/unsloth_env.sh <<'PY' || true
 import os, re, shlex
 keep   = re.compile(r"^(HF_|CUDA_|NCCL_|HSA_|HIP_|ROCM_|ROCR_|ROCBLAS_|JUPYTER_|UNSLOTH_|WANDB_|TRITON_)|^PATH$")
@@ -93,8 +92,7 @@ EOF
           && "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" != "1" \
           && "${_view_dir}" == "${_root_dir}/"* ]]; then
         _view_rel="${_view_dir#${_root_dir}/}"
-        # default_url must be set on BOTH ServerApp and LabApp. repr() via env, not heredoc
-        # interpolation, so quotes or backslashes in the path cannot break the config.
+        # Set default_url on ServerApp and LabApp; env, not heredoc, so quotes cannot break it.
         UNSLOTH_VIEW_REL="${_view_rel}" UNSLOTH_VIEW_DIR="${_view_dir}" \
         python - >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<'PY'
 import os

@@ -231,13 +231,11 @@ COLAB_STRICT_ORACLE_KEYS: dict[str, frozenset[str]] = {
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
 # ----- Compat tables. PRs add rows as new releases land. ----- #
 
-# Lockstep rows only: torchcodec 0.12+ is ABI-stable against torch >=2.11 and is handled by
-# the short-circuit in rule_inst_004_torchcodec_torch rather than by a row here.
+# Lockstep only; torchcodec 0.12+ ABI-stable on torch>=2.11, see rule_inst_004_torchcodec_torch
 TORCHCODEC_ABI_STABLE_TORCH = "2.11"
 TORCHCODEC_ABI_STABLE_CODEC = "0.12"
 
-# torch.minor -> compatible torchcodec minors, from the torchcodec README matrix.
-# Mirrors import_fixes._TORCH_TORCHCODEC_MINORS (test_torchcodec_torch_compat asserts equality).
+# Mirrors import_fixes._TORCH_TORCHCODEC_MINORS; test_torchcodec_torch_compat asserts equality.
 TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -1749,7 +1747,6 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 if body_levels:
                     body_levels[-1] = True
                     if keyword in ("then", "do"):
-                        # Condition complete: fold it, invert an until, and record the result.
                         model = test_models[-1]
                         if openers[-1] == "until" and model is not None:
                             model = not model
@@ -1798,8 +1795,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 arm_reached.pop()
                 cond_assumed.pop()
                 cond_models.pop()
-        # A level speaks only once its body has started: `if true` runs, `if false` never does,
-        # anything else may run. A false branch is inverted for else.
+        # Once body starts: if true runs, if false never runs, others may; else inverts false.
         active = [model for level, model in zip(body_levels, test_models) if level]
         if any(model is False for model in active):
             continue  # this branch can never be taken, so nothing in it runs
@@ -2888,7 +2884,6 @@ def scan_user_cells(nb: dict[str, Any], file: str) -> list[Finding]:
 
 # ----- DONT_UPDATE_EXCEPTIONS coverage ----- #
 POLICY_CLAUSES_DEFAULT = [
-    # (id, regex, applies_to_predicate_on_install_cell_text)
     (
         "torchao-floor",
         re.compile(r"torchao>=0\.16\.0"),
@@ -3245,8 +3240,7 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
             print(f"::notice::skipping {upstream_name}: {reason}")
             skipped.append(upstream_name)
         snapshot_dir.mkdir(parents = True, exist_ok = True)
-        # The set lands together or not at all; copy aside first, since restoring by rewrite needs
-        # the space the failure proved missing.
+        # Atomic: copy aside first; restoring by rewrite needs the space the failure lacked.
         preserved: dict[str, pathlib.Path] = {}
         for name in payloads:
             live = snapshot_dir / name

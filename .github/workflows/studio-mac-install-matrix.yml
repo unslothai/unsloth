@@ -66,8 +66,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on PR branches. On main, cancel-in-progress is false, so a running run is never
-  # killed and a newer push replaces only the pending one (see studio-backend-ci.yml).
+  # Latest-only on PR branches; on main nothing running is killed, pending runs are replaced.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

@@ -21,8 +21,7 @@ repos:
         entry: python scripts/run_ruff_format.py
         language: python
         types: [python]
-        # Mirrors ruff's [tool.ruff] extend-exclude so files ruff skips are not half-processed
-        # (caused churn); vendor/ is repeated since this hook does not read ruff's config.
+        # Mirror ruff extend-exclude (avoids churn); vendor/ repeats: hook ignores ruff config.
         exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$|^studio/backend/vendor/|^unsloth/_vendor/'
         # ruff-unsloth is ruff 0.6.9 patched for this repo (name = value kwargs, magic commas,
         # nested-import blank lines); rule changes need a new release; wheels are sha256-checked per

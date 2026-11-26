@@ -74,7 +74,6 @@ function Submit-ToCompiler {
         reason    = ''
     }
     try {
-        # Compile only; nothing is invoked.
         $null = [scriptblock]::Create($Text)
     } catch {
         $result.errorType = $_.Exception.GetType().FullName

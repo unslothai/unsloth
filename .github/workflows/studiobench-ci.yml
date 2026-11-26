@@ -238,9 +238,8 @@ jobs:
             --engine chromium \
             --out outputs/studiobench-ci
 
-      # THE GATE: every scheduled action must have ran=true and expect_ok, and an empty payload
-      # fails. image_upload is excused (the fixture loads no model, so the control is not
-      # mounted). --allow-slot-misses 2: a slow runner misses slots by design; keep it small.
+      # Gate: scheduled actions need ran=true and expect_ok; an empty payload fails. image_upload is
+      # excused (no model; its control is unmounted). --allow-slot-misses 2 for slow runners.
       - name: Every scheduled action ran
         run: |
           python -m tests.studio.studiobench \

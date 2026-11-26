@@ -298,9 +298,8 @@ jobs:
               sys.exit(1)
           PY
 
-      # --reps 2 is load-bearing: derive_unstable needs 2 observations, else the measured set is
-      # empty and scoring silently falls back to the declared list. --windowed-arm on both sides:
-      # a thread may mount only the rows near the reader; a fully mounted side is unaffected.
+      # --reps 2 is load-bearing: derive_unstable needs 2 observations, else scoring silently falls
+      # back to declared list; --windowed-arm on both sides (threads mount only near rows).
       - name: Drive both sides through one session
         timeout-minutes: 9
         run: |
@@ -443,9 +442,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Each (rung, action) the excuse could change must be decided by the null (else scoring falls
-      # back to the declared list); the null need not find differences; --min-reps must match the
-      # verdict; sweep/selftest/test_studiobench_null_audit.py covers both directions.
+      # Null must decide each rung/action an excuse may change (else scoring falls back to declared
+      # list); it need not find differences; --min-reps must match the verdict.
       - name: The null control decided the actions it exercised
         run: |
           python -m tests.studio.studiobench.sweep.ui_parity \
@@ -534,8 +532,7 @@ jobs:
           fi
           exit "$rc"
 
-      # Only on failure. Pairs come from the same session as the differing digests; re-driving
-      # the film would usually show two identical pages.
+      # Pairs come from the digests' own session; re-driving usually shows identical pages.
       - name: Draw the before/after pairs for what turned it red
         if: failure() || steps.verdict.outputs.declared_diff == 'true'
         env:

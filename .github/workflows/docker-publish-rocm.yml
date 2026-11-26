@@ -47,8 +47,7 @@ env:
   # the last ROCm with gfx906 kernels: the default base for rocm_gfx=gfx906
   GFX906_ROCM_VERSION: '6.3.4'
 
-# On main each RUN gets its own group so a pending run is not discarded. Never cancel in
-# progress: a half-pushed digest is worse than a briefly stale :latest.
+# Per-run group on main; never cancel, since a half-pushed digest is worse than stale :latest.
 concurrency:
   group: docker-publish-rocm-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.run_id || '' }}
   cancel-in-progress: false

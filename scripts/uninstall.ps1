@@ -252,7 +252,6 @@ Environment:
             $entries = @()
             try { $entries = @(Get-ChildItem -LiteralPath $temp -Force -ErrorAction Stop) } catch { continue }
             foreach ($entry in $entries) {
-                # Shape, not prefix.
                 if ($entry.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
                 if (-not ($entry.PSIsContainer)) { continue }
                 # A live owner keeps its directory, as in install.ps1's own sweep.
@@ -598,8 +597,7 @@ Environment:
         try { $norm = [System.IO.Path]::GetFullPath($(if ($norm) { $norm } else { $expanded })).TrimEnd('\','/') }
         catch { return $null }
         if (-not $norm) { return $null }
-        # A note must describe the tree it was found in (containment); explicit UNSLOTH_HOME skips this.
-        # Mirrors uninstall.sh and storage_roots._recorded_master_root().
+        # A note must describe its tree; explicit UNSLOTH_HOME skips it. Mirrors uninstall.sh.
         if ($noteStudio) {
             $here = $null
             try {

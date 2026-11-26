@@ -212,8 +212,7 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
     merge_lost=0
     stage_ok=1
     if ! : > "$STATE.tmp" 2>/dev/null; then
-        # Still unstageable, so $DEST itself is the problem; nothing is copied yet, so bail like the
-        # refresh child: leave the marker off and retry on the next start.
+        # Unstageable $DEST is the problem: nothing is copied yet, so leave the marker off.
         echo "[unsloth-nb] the sync state could not be staged in $DEST; leaving the sync marker off so the next start retries"
         stage_ok=0
     fi
@@ -243,8 +242,7 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
             populate_failed=$((populate_failed + 1))
         fi
     done < <(cd "$TEMPLATE" && find . -type f -print0)
-    # A retry must keep records the refresh already manages. -r, not just -f: an unreadable
-    # $STATE would silently contribute nothing.
+    # Retry keeps records: -r, not just -f, since an unreadable $STATE would contribute nothing.
     if [ "$stage_ok" = 1 ] && [ -f "$STATE" ] && [ ! -r "$STATE" ]; then
         echo "[unsloth-nb] the sync state in $DEST is unreadable; leaving it alone rather than republishing it without the records it holds"
         stage_ok=0
@@ -325,7 +323,6 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
         printf '%s\n' "$line" >> "$RS_TMP" || rs_ok=0
     done < "$STATE"
     if [ "$rs_ok" = 1 ]; then
-        # Loud, and drop the marker, like the sibling branch below.
         mv "$RS_TMP" "$STATE" 2>/dev/null || {
             echo "[unsloth-nb] the sync state could not be published in $DEST; keeping the previous state and dropping the sync marker so the next start retries"
             rm -f "$RS_TMP"
@@ -396,8 +393,7 @@ if ! : > "$TMPSTATE" 2>/dev/null; then
     exit 0
 fi
 updated=0; kept=0; unchanged=0; failed=0
-# Check every append: a lost record with `failed` at 0 publishes a truncated state and
-# advances the marker, stranding notebooks as user edits.
+# Check every append: a lost record with `failed` at 0 strands notebooks as user edits.
 record_tmpstate() {
     printf '%s  %s\n' "$1" "$2" >> "$TMPSTATE"
 }

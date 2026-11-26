@@ -46,8 +46,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # pyproject.toml is hand-kept per Python version or accelerator, and one version update rewrites
-    # every copy; version PRs stay off as for /studio/frontend, security PRs still open.
+    # Hand-kept pyproject.toml: one update rewrites every copy; version PRs off, security open.
     open-pull-requests-limit: 0
     cooldown:
       default-days: 7
@@ -62,8 +61,7 @@ updates:
       - dependency-name: "bitsandbytes"
       - dependency-name: "transformers"
       - dependency-name: "datasets"
-      # Also hand-kept: torchcodec per audio-torch extra (matched to each torch line), and
-      # huggingface-hub split by Python version (1.x needs 3.10+, 3.9 stays on 0.36.2).
+      # Hand-kept torchcodec (audio-torch extra); huggingface-hub 1.x on 3.10+, 0.36.2 on 3.9.
       - dependency-name: "torchcodec"
       - dependency-name: "huggingface-hub"
       # A major bump (huggingface-hub 2.x, pymupdf4llm 0.3 -> 1.x) needs its own review.
@@ -84,8 +82,7 @@ updates:
       default-days: 7
       semver-minor-days: 3
       semver-patch-days: 3
-    # gtk-rs GTK3 bindings are frozen at 0.18; newer glib/gdk-pixbuf break native_clipboard.rs.
-    # This also suppresses security PRs above 0.18, leaving alerts only.
+    # GTK3 held at 0.18: newer glib/gdk-pixbuf break native_clipboard.rs; security alerts only.
     ignore:
       - dependency-name: "glib"
         versions: [">= 0.19"]
@@ -98,12 +95,10 @@ updates:
       # gio: only the proxy resolver gtk builds; 0.19+ adds a second glib next to gtk's 0.18.
       - dependency-name: "gio"
         versions: [">= 0.19"]
-      # tauri-plugin-deep-link 2.6.2 builds rust-ini's ParseOption as a struct literal, so rust-ini
-      # 0.21.3 (new fields) breaks Linux (E0063); lift once deep-link builds against 0.21.3.
+      # deep-link 2.6.2 struct literal breaks rust-ini 0.21.3 (E0063, Linux); lift when fixed.
       - dependency-name: "rust-ini"
         versions: [">= 0.21.2"]
-      # windows-core must match the copy webview2-com and tauri build on (see Cargo.toml); a lone
-      # bump adds a second copy, so move it with webview2-com 0.62.
+      # Lone windows-core bumps add a second copy: move it with webview2-com 0.62 (Cargo.toml).
       - dependency-name: "windows-core"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:

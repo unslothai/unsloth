@@ -59,7 +59,6 @@
 #   UNSLOTH_ROCM_GFX_ARCH                   gfx arch override (e.g. gfx1151)
 set -euo pipefail
 
-# --rocm is ours only as the FIRST argument.
 ROCM=0
 [[ "${UNSLOTH_ROCM:-}" == "1" ]] && ROCM=1
 if [[ $# -gt 0 && "$1" == "--rocm" ]]; then
@@ -332,7 +331,6 @@ elif [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
         read -r -p "      Install it now with sudo (bash $INSTALLER)? [Y/n] " answer </dev/tty || answer=n
         answer="${answer:-y}"
     fi
-    # Without an installer on disk, never take the install branch.
     [[ -n "$INSTALLER" ]] || answer=n
     case "$answer" in
         1|[Yy]*)

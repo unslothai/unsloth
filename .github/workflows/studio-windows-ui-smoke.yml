@@ -88,7 +88,6 @@ jobs:
     name: Chat UI Tests
     runs-on: windows-latest
     timeout-minutes: 45
-    # Default to Git Bash; PowerShell steps override per step.
     defaults:
       run:
         shell: bash
@@ -200,8 +199,7 @@ jobs:
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
-          # install.ps1 runs as a CHILD process: its [Console]::Out output and setup.ps1's markers
-          # then reach Tee-Object. -Command because $ProgressPreference is not inherited.
+          # Child process: output to Tee-Object; -Command: $ProgressPreference not inherited
           $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
           # Timestamps go to the step log only; logs/install.log keeps raw output.
           $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -340,8 +338,7 @@ jobs:
           # suite can print its stuck wait; SIGKILL 60s later for native Windows processes.
           lane_timeout=1500
 
-          # System32\timeout.exe is also on PATH with different semantics, so require coreutils
-          # `timeout` (verified via --version) or fail loudly.
+          # System32 timeout.exe on PATH has different semantics; require coreutils timeout.
           lane_timeout_bin=""
           for candidate in /usr/bin/timeout timeout; do
             if "$candidate" --version >/dev/null 2>&1; then

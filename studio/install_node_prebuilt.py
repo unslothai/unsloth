@@ -1109,7 +1109,6 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
     asset = node_asset_name(version, host)
     log(f"target Node v{version} ({asset})")
 
-    # Keep an existing install only if it matches the pin (or pinning is opted out).
     pin = pin_to_keep(pins, version, asset, install_dir)
     allow_unverified = allow_unverified_node()
     may_keep = pin is not None or allow_unverified
@@ -1279,8 +1278,7 @@ def _report_access_denied(exc: OSError, install_dir: Path) -> int:
 
 
 def _within(path: str, root: Path) -> bool:
-    """Whether path is root or under it, by spelling alone; both sides come from the same
-    --install-dir string, and resolving links would need the access that was just denied."""
+    """Root-or-under check on --install-dir spellings; resolving links needs the denied access."""
     normalized = os.path.normcase(os.path.abspath(path))
     base = os.path.normcase(os.path.abspath(root))
     return normalized == base or normalized.startswith(base.rstrip(os.sep) + os.sep)

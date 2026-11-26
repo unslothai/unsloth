@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared core of the ggml prebuilt installers (verified downloads, safe extraction, install lock);
-callers pass an ops handle resolving names in their module first, so monkeypatches apply."""
+"""ggml installer core: verified downloads, safe extraction, install lock; monkeypatchable ops."""
 
 from __future__ import annotations
 
@@ -410,8 +409,7 @@ def is_retryable_url_error(exc: Exception) -> bool:
 
 
 def _http_error_retry_delay(exc: Exception) -> float | None:
-    """Recommended wait from rate-limit headers on a 403 or 429; None when no header is present or
-    the wait exceeds _RATE_LIMIT_WAIT_CAP_SECONDS, since the source build fallback is faster."""
+    """Rate-limit wait on 403/429; None if absent or over the cap (source build is faster)."""
     if not isinstance(exc, urllib.error.HTTPError):
         return None
     headers = getattr(exc, "headers", None)
@@ -738,8 +736,7 @@ def copy_response_body(
     progress: "DownloadProgress | None" = None,
     chunk_size: int = 1024 * 1024,
 ) -> int:
-    """Returns byte count, raising retryable StalledDownload or TruncatedDownload; a real
-    HTTPResponse uses read1 since read(n) waits for all n bytes, never reaching the stall check."""
+    """Byte count; retryable stall/truncation errors; read1 on HTTPResponse, as read(n) blocks."""
     per_receive = isinstance(response, http.client.HTTPResponse)
     read = response.read1 if per_receive else response.read
     downloaded = 0
@@ -1226,9 +1223,8 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
     def _try_repair_missing_slash(
         member_name: str, link_name: str, archive_names: set[str]
     ) -> str | None:
-        """Repairs mangled Mac llama.cpp symlinks (e.g. b9165, b9169) whose linkname drops the
-        separator and the basename's leading character; accepts only a unique match, returned
-        relative to the member's parent dir because callers join it onto target.parent."""
+        """Repairs Mac llama.cpp symlinks (e.g. b9165) that lost the separator and leading char;
+        unique match, relative to member's parent (callers join onto target.parent)."""
         if "/" not in member_name or "/" in link_name:
             return None
         top, _, _ = member_name.partition("/")
@@ -1454,8 +1450,7 @@ def install_lock_path(install_dir: Path) -> Path:
 
 # ── macOS version parsing ──
 def parse_macos_version(value: str | None) -> tuple[int, int] | None:
-    """Parses a macOS version as (major, minor), e.g. 14.7.1, 15.5 or bare 26; None when empty or
-    unparseable so callers defer to runtime validation rather than rejecting every prebuilt."""
+    """(major, minor) of macOS version; None if unparseable, deferring to runtime validation."""
     if not value:
         return None
     match = re.match(r"\s*(\d+)(?:\.(\d+))?", str(value))
@@ -2403,8 +2398,7 @@ def walk_back_stands(marker: dict[str, Any], host: Any, expected_release: str | 
 
 
 def walk_back_patch(marker: dict[str, Any], walk_back: WalkBack | None) -> dict[str, Any]:
-    """Marker keys a reused install must take from this run's walk-back: the fields that differ, or
-    None for each key still set once the plan no longer walks back."""
+    """Walk-back marker fields to patch; keys still set are None when there is no walk-back."""
     if walk_back is None:
         return {key: None for key in WALK_BACK_KEYS if marker.get(key) is not None}
     return {

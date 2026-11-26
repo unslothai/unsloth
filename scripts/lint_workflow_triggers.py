@@ -325,8 +325,7 @@ def _producer_steps(path: Path) -> dict:
                 and with_.get("key") is not None
                 and uses_value.strip().split("@")[0].casefold().startswith("actions/cache")
             ):
-                # Only for actions whose published key output is this input;
-                # a local action may emit its own key.
+                # Only actions/cache echoes its key input; a local action may emit its own key.
                 out[ident] = set(_CACHE_STEP_OUTPUTS)
                 continue
             body = mapping.get("run")

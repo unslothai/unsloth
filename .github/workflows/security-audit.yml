@@ -201,8 +201,7 @@ jobs:
           done
 
       - name: pip-audit (declared Python deps, no install)
-        # `-r` resolves via PyPI metadata without running install hooks.
-        # PIP_CONSTRAINT pins an older setuptools so legacy setup.py packages (openai-whisper) build.
+        # -r: no install hooks; PIP_CONSTRAINT pins old setuptools for legacy setup.py builds.
         continue-on-error: true
         env:
           PIP_CONSTRAINT: ${{ github.workspace }}/audit-reqs/build-constraints.txt
@@ -788,8 +787,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # ─────────────────────────────────────────────────────────────────────
   npm-scan-packages:
-    # npm counterpart: fetch each lockfile tarball directly (never `npm install`), verify
-    # integrity, extract with guards and pattern-scan. Stdlib-only; every tarball is hostile.
+    # Fetch and verify tarballs directly (no npm install); stdlib-only; tarballs are hostile.
     name: npm scan-packages (Unsloth frontend tarballs)
     runs-on: ubuntu-latest
     timeout-minutes: 30

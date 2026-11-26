@@ -34,7 +34,6 @@ _decode_trace_arg() {
   printf -v "$2" '%s' "$_decoded"
 }
 
-# Allowed git+ remotes from the requirement files in $UNSLOTH_ALLOW_GIT_FROM.
 _allowed_git_remotes() {
   for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
     [ -f "$_req" ] || { echo "::error::UNSLOTH_ALLOW_GIT_FROM names a missing file: $_req" >&2; continue; }

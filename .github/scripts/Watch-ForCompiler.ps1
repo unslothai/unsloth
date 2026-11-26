@@ -153,8 +153,7 @@ function Get-StudioTempSubtree {
         $entries = @()
         try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
         catch {
-            # Record unread dirs so the before/after diff can withhold them. Classify from the error,
-            # not Test-Path, which throws on ACL-denied dirs.
+            # Classify from the error, not Test-Path, which throws on ACL-denied dirs.
             if (Test-StudioPathIsGone -ErrorRecord $_) { continue }
             try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
             catch {
@@ -516,8 +515,7 @@ function Get-StudioCompilerEvents {
             $_.TimeCreated -ge $Since -and $_.TimeCreated -le $Until
         })
     } catch [System.Exception] {
-        # Get-WinEvent throws both on no matches and on an unreadable log; probe the log to tell them apart.
-        # Bind $_ before the probe, whose catch rebinds it.
+        # Probe to tell no-match from unreadable; bind $_ first, as the probe rebinds it.
         $reason = $_.Exception.Message
         $readable = $false
         try {
@@ -595,7 +593,6 @@ function Invoke-WithCompilerWatch {
 
     # Paths under a dir unread in either sweep are withheld from $left: they are not evidence either way.
     $unread = @($beforeScan.Unread + $afterScan.Unread | Sort-Object -Unique)
-    # Only roots whose watcher stayed healthy count as covered.
     $watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' (
         [string[]]@(
             $watch | ForEach-Object { $_.Root } | Where-Object {

@@ -55,7 +55,6 @@ mask_aside() {
 }
 
 # ── PATH scrub ────────────────────────────────────────────────────────────────
-# Keep only OS-default system dirs.
 scrub_path() {
   local keep out=""
   if [ "$OS" = "Darwin" ]; then

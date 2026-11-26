@@ -25,7 +25,6 @@ on:
       - 'tests/test_gc_skip_auto.py'
       - 'tests/test_native_resume_old_torch.py'
       - 'tests/test_ulysses_hybrid.py'
-      # Shared helpers, the conftest that loads them, and pytest's config.
       - 'tests/_*.py'
       - 'tests/_shared/**'
       - 'tests/conftest.py'
@@ -53,7 +52,6 @@ on:
       - 'tests/test_gc_skip_auto.py'
       - 'tests/test_native_resume_old_torch.py'
       - 'tests/test_ulysses_hybrid.py'
-      # Shared helpers, the conftest that loads them, and pytest's config.
       - 'tests/_*.py'
       - 'tests/_shared/**'
       - 'tests/conftest.py'
@@ -93,9 +91,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native FSDP2 gloo tests pushed the catch-all to its 2100 s cap, so they run beside it,
-          # split at native_d by file name; each glob must match a file or bash passes it literally
-          # (tests/test_ci_repo_cpu_shards.py checks both).
+          # Native FSDP2 gloo tests pushed the catch-all to its 2100 s cap; split by file name, each
+          # glob must match a file or bash passes it literally (test_ci_repo_cpu_shards.py).
           - shard: fsdp2
             selection: >-
               tests/test_fsdp2_[!n]*.py
@@ -104,10 +101,9 @@ jobs:
           - shard: fsdp2-native
             selection: >-
               tests/test_fsdp2_native_[!abc]*.py
-          # Other gloo suites (tensor, pipeline, context parallel, float8/fp8) also hit the 2100 s
-          # cap; --ignore cannot filter an explicit file root, so the globs do the split: they cover
-          # every gloo file except test_fs* and those starting with d, i, m, s or u, which are
-          # rest-2's (tests/test_[dimsu]*.py).
+          # Other gloo suites also hit the 2100 s cap; --ignore cannot filter an explicit file root,
+          # so globs split every gloo file except test_fs* and d/i/m/s/u starts, which are rest-2's
+          # (test_[dimsu]*.py).
           - shard: gloo
             selection: >-
               tests/test_[!dfimpstu]*gloo*.py

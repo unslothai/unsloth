@@ -390,8 +390,7 @@ def _version_pin(token):
     return m.group(1) if m else None
 
 
-# pip expands ${UPPERCASE} in requirements files, so `${PKG}==` would slip _KEEP.
-# Expanded for CLASSIFICATION only; kept lines stay verbatim.
+# pip expands ${UPPERCASE} refs, so ${PKG}== would slip _KEEP; expand only to classify.
 _ENV_REF_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
@@ -922,9 +921,8 @@ def _uninstall(tool, argv, i):
 
 
 def _positionals(argv):
-    """Returns (index, token) for each positional, skipping options and their values; a bare value
-    flag eats the next token, --flag=value does not; _VALUE_FLAGS is shared with the tail scanner
-    and checked against the real CLIs at build time by _selfcheck_value_flags()."""
+    """Returns (index, token) per positional, skipping options and values; a bare value flag eats
+    the next token, not --flag=value; build-time _selfcheck_value_flags() checks _VALUE_FLAGS."""
     out = []
     skip = False
     for i, tok in enumerate(argv):
@@ -940,12 +938,10 @@ def _positionals(argv):
 
 
 def _is_uv_pip_sync(argv):
-    """uv pip sync cannot be filtered safely: it uninstalls any package not in the file, so dropping
-    a protected one deletes it; --constraint never prevents removal."""
+    """uv pip sync is unfilterable: it removes unlisted packages; --constraint never stops that"""
     return [tok for _, tok in _positionals(argv)][:2] == ["pip", "sync"]
 
 
-# Options that install somewhere OTHER than the guarded venv.
 _DEST_DIR_FLAGS = {"--target", "-t", "--prefix"}
 # --root is a relocation prefix, not a destination: `--root /` still writes the venv.
 _DEST_ROOT_FLAGS = {"--root"}
@@ -1017,8 +1013,7 @@ def _installs_elsewhere(tool, argv):
     baked interpreter, so it keeps the protective behaviour. Environment variables
     count only for the tool that actually reads them; a flag is left unscoped because
     a tool that does not accept one fails loudly on it rather than silently."""
-    # pip uninstall has no --target/--prefix/--root and ignores their variables, so
-    # they still leave it pointed at the baked venv
+    # pip uninstall lacks --target/--prefix/--root; their env vars leave it on the baked venv.
     dest_env = not (tool == "pip" and _subcommand_index(tool, argv, "uninstall") is not None)
     dirs = _flag_values(argv, _DEST_DIR_FLAGS)
     dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if dest_env and os.environ.get(v)]
@@ -1074,8 +1069,7 @@ def main():
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 
-    # Runs after the install check, so a subcommand merely mentioning these is left alone; and after
-    # the destination bypass, so a group installed into another venv is not our problem.
+    # After the install and destination checks; a bare mention or other-venv group is skipped.
     if _flag_values(argv, _UNINSPECTABLE_TARGET_FLAGS):
         raise SystemExit(
             "[unsloth-nb] refusing an install whose targets this shim cannot read: "

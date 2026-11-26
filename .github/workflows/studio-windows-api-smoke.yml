@@ -72,8 +72,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on PR branches; on main cancel-in-progress is false, so a running run is never
-  # killed and only pending runs are replaced; see studio-backend-ci.yml.
+  # Latest-only on PR; on main cancel-in-progress is false, so running runs are never killed.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -103,8 +102,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # The unit-test steps run in the background since they only read the checkout; a wait step
-      # collects them, so a failure fails the job without blocking the API phase.
+      # Background unit steps (read-only checkout): failures fail the job, not the API phase.
       - name: uninstall.ps1 unit tests (argument guard, dual-install icon preserve)
         id: ps-uninstall-units
         background: true
@@ -369,8 +367,7 @@ jobs:
       # ---------------------------------------------------------------
       - name: First update should be a no-op (prebuilt already validated)
         id: update_first
-        # Runs even if the API phase failed, since each phase reports its own failure; it still
-        # needs green PowerShell units and an API phase that left nothing running.
+        # Runs even if the API phase failed; needs green PowerShell units and a clean API stop.
         if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.shim.outcome == 'success' && steps.api_stop.outcome == 'success' && steps.ps-uninstall-units.outcome == 'success' && steps.ps-modulepath-units.outcome == 'success' && steps.ps51-uninstall-guard.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -400,8 +397,7 @@ jobs:
         id: update_gguf_only
         if: ${{ !cancelled() && steps.update_first.outcome == 'success' }}
         run: |
-          # setup.ps1 must recover --no-torch from the manifest or it deletes its own venv. The skip
-          # line only prints when the dependency pass runs.
+          # setup.ps1 must recover --no-torch from the manifest or it deletes its own venv.
           if grep -q "running ordered dependency installation" logs/update.log \
              && ! grep -q "skipping direct PyTorch and Triton installation (no-torch mode)" logs/update.log; then
             echo "::error::studio update left no-torch mode; it would reinstall PyTorch."

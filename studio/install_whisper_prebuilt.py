@@ -880,9 +880,8 @@ def link_ggml_runtime(
     *,
     backend: str | None = None,
 ) -> list[str]:
-    """Hardlinks (not symlinks) to the llama ggml libraries keep the paired build alive across an
-    atomic swap of its install dir; copy only where linking is unsupported or crosses devices;
-    re-run on each install or update to track the pairing; returns sorted names."""
+    """Hardlink (not symlink) llama ggml libs so the paired build survives llama's dir swap; copy
+    only if unsupported or cross-device; re-run to track pairing; returns sorted names."""
     sources = _runtime_library_sources(llama_bin_dir, backend)
     if not any(source.name.startswith(("libggml", "ggml")) for source in sources):
         raise PrebuiltFallback(
@@ -1038,8 +1037,7 @@ def _runtime_file_records(
 
 
 def runtime_file_records(install_dir: Path, selection: Any) -> "dict[str, dict[str, Any]]":
-    """Hook for prebuilt_core.write_prebuilt_metadata recording the staged tree; slim bundles pass
-    their wired ggml filenames so the marker describes the hardlinks as well as the server."""
+    """Hook for write_prebuilt_metadata; slim bundles list wired ggml hardlinks in the marker."""
     is_slim = getattr(selection, "install_kind", None) == "slim"
     linked = selection.linked_libraries if is_slim else None
     runtime_dirs = getattr(selection, "linked_runtime_directories", None) if is_slim else None
@@ -1156,16 +1154,14 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 def existing_install_matches(
     install_dir: Path, host: HostInfo, selection: InstallSelection
 ) -> bool:
-    """True only if the server is executable (sidecar refuses non-executables) and slim wired ggml
-    libs exist; a deleted or moved llama dir breaks dictation while update reports current."""
+    """Needs an executable server and wired slim ggml libs; a moved llama dir breaks dictation."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
     return installed_tree_is_intact(install_dir, host)
 
 
 def kept_install_needs_settling(install_dir: Path) -> bool:
-    """Whether settle_kept_install has anything to write: a marker with no payload
-    record, or a slim marker missing either half of its pairing record."""
+    """Needs settling: marker has no payload record, or a slim marker lacks a pairing half."""
     marker = load_prebuilt_metadata(install_dir)
     if not marker:
         return False
@@ -1193,8 +1189,7 @@ def settle_kept_install(install_dir: Path) -> None:
 
 
 def _backfill_runtime_file_records(install_dir: Path) -> None:
-    """Backfills runtime_files on old markers from disk, so updates need not refetch the release,
-    manifest or checksums; never downloads, overwrites or raises."""
+    """Backfills runtime_files on old markers from disk; never downloads, overwrites or raises."""
     marker = load_prebuilt_metadata(install_dir)
     if not marker or marker.get("runtime_files"):
         return
@@ -1575,8 +1570,7 @@ def _release_plan_for_host(
         and first_bundle is not None
         and _installed_llama_is_ahead(first_bundle.manifest, host)
     ):
-        # llama.cpp ships before its paired whisper.cpp release; until then newest releases pair
-        # with an older llama.cpp, so a walk finds nothing and costs two fetches per release.
+        # Newest releases lag llama.cpp, so a walk finds nothing and costs two fetches each.
         assert first_error is not None
         raise first_error
 

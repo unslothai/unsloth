@@ -130,8 +130,7 @@ jobs:
 
       - name: Linux system deps
         if: runner.os == 'Linux'
-        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
-        # since short ones kill a slow but working mirror.
+        # Two long attempts: unbounded apt hangs cancel the job; short ones kill slow mirrors.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'

@@ -83,8 +83,7 @@ on:
 concurrency:
   # Group per workflow, ref and event; see studio-backend-ci.yml for the trade-off.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # PR branches are latest-only. On main, running runs finish and pending ones are cancelled, so a
-  # merge burst leaves only the tip; detection survives, per-commit attribution does not.
+  # Main cancels pending runs, so detection survives but per-commit attribution does not.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -97,8 +96,7 @@ jobs:
     # Do not tighten: a timeout is for hangs, and runner stalls would turn into red builds.
     timeout-minutes: 30
     strategy:
-      # Shard boundaries are the Unsloth instances: a boot, its password and its scripts stay
-      # on one runner. One Unsloth at a time per runner.
+      # One shard is one Unsloth: boot, password and scripts stay on one runner, one at a time.
       fail-fast: false
       matrix:
         # Must stay a list: test_chat_ui_shards_cover_everything reads it.
@@ -602,8 +600,7 @@ jobs:
           fi
           python tests/studio/playwright_tool_activity.py --json
 
-      # The backend log budget cannot see new frontend polling; only a browser can.
-      # Last in the shard: it idles two minutes and rotates the bootstrap password.
+      # Log budget misses frontend polling; last in shard, it rotates the bootstrap password.
       - name: Every polled path is declared in the log budget (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -621,7 +618,6 @@ jobs:
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
 
-      # Model-picker per-model-config regression on its own port.
       - name: Reset auth + boot Unsloth for model-config tests (port 18898)
         if: matrix.shard == 'extra'
         run: |

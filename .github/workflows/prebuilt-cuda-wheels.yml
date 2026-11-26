@@ -358,8 +358,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
           & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
 
-      # The Linux swap file's counterpart: windows-2022 has a fixed 2.9 GB page file (18.9 GB commit
-      # limit on 16 GB RAM). NtCreatePagingFile, so no reboot.
+      # windows-2022 has a fixed 2.9 GB page file; NtCreatePagingFile adds one without reboot.
       - name: Add a page file (Windows)
         if: runner.os == 'Windows'
         uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
@@ -426,8 +425,7 @@ jobs:
           TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
           PY_PLATFORM: ${{ matrix.py_platform }}
 
-      # mamba-ssm builds at -std=c++17 but torch 2.13 headers need C++20. The script asserts
-      # on the text it replaces, so an upstream fix fails loudly.
+      # mamba-ssm builds -std=c++17 but torch 2.13 needs C++20; upstream fixes trip the assert.
       - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
         if: matrix.patch == 'cxx20'
         run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
@@ -916,8 +914,7 @@ jobs:
           mv "$built" "dist/${WHEEL_NAME}"
           ls -l dist/
 
-      # An uncompressed fatbin still imports, so only its size gives it away (1.49 GB for
-      # flash-attn instead of ~280 MB). Gate it before anything is signed or published.
+      # Uncompressed fatbin still imports; gate on size before signing (1.49 GB, not ~280 MB).
       - name: Check the extension size
         working-directory: src
         env:

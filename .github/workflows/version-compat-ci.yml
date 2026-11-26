@@ -97,8 +97,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Text parsing and PyPI lookups on Python 3.12; Windows stays for native paths and shell;
-        # macOS dropped: it repeats Linux (same POSIX paths, LF checkout) on the scarcest pool.
+        # 3.12 for text/PyPI; Windows for native paths and shell; macOS dropped, repeats Linux.
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -186,8 +185,7 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        # Prefixed: this job checks the repo out under `unsloth/`.
-        # One literal name (tests/studio/test_pip_cache_naming.py), so no two lanes may share an interpreter.
+        # Checkout in unsloth/; literal name per lane, so no two lanes share an interpreter.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
           name: version-compat-spoof

@@ -90,8 +90,7 @@ concurrency:
   # only one pending run, so without this a merge burst silently drops the nightly:
   # cancel-in-progress protects the running run, never the pending one.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # PR branches keep only the latest run; on main a running run is never killed and a newer push
-  # replaces only the pending one (see studio-backend-ci.yml).
+  # PR: latest run only. Main: never kill a running run; a newer push replaces the pending one.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -116,9 +115,8 @@ jobs:
   connection:
     name: connection (${{ matrix.agents }})
     runs-on: ubuntu-latest
-    # Each agent keeps its 40 min bound; 270 = 5 agents x (40 + 1 kill grace) = 205, plus about 5
-    # cleanup and 60 setup (apt 15, GGUF download, install, health wait up to 15) and log upload; a
-    # hung shard still reports every agent.
+    # 270 = 5 x (40 min + 1 kill grace) = 205, plus ~65 min setup/cleanup; a hung shard still
+    # reports every agent.
     timeout-minutes: 270
     strategy:
       fail-fast: false
@@ -278,9 +276,8 @@ jobs:
           # (c) drive the agent via start.py and assert a reply.
           bash .github/scripts/agent-guides-drive.sh connection "$AGENT"
           SH
-          # Agent processes carry AGENT_RUN_ID and their own session (setsid), and both are killed
-          # after the agent, reaching nested timeouts in agent-guides-drive.sh; new home entries are
-          # removed and rc files restored.
+          # Agent processes carry AGENT_RUN_ID and a setsid session, killed after the agent (nested
+          # timeouts in agent-guides-drive.sh); new home entries removed, rc files restored.
           HOME_DIRS=("$HOME" "$HOME/.local" "$HOME/.local/bin" "$HOME/.local/share" "$HOME/.config" "$HOME/.cache")
           RC_FILES=(.bashrc .profile .bash_profile .zshrc)
           snapshot_home() {
@@ -301,8 +298,7 @@ jobs:
             done | sort | comm -13 "$1/home.before" - | while IFS= read -r entry; do
               # A new entry under a new dir is removed with its parent.
               [ -e "$entry" ] || [ -L "$entry" ] || continue
-              # Agents leave read-only trees (vibe's plugin cache); make them removable first. A
-              # leftover is a warning, never a reason to skip the agents after this one.
+              # chmod read-only trees (vibe plugin cache); leftovers warn, never skip agents.
               [ -L "$entry" ] || chmod -R u+rwX -- "$entry" 2>/dev/null
               rm -rf -- "$entry" 2>/dev/null || echo "::warning::could not remove $entry after the agent"
             done
@@ -326,7 +322,6 @@ jobs:
               # not end the step, so every call here tolerates "no such process".
               sids="$(ps -o sid= -p $(echo $pids | tr ' ' ',') 2>/dev/null | tr -d ' ' | sort -u || true)"
               for s in $sids; do
-                # Never this step's own session.
                 [ "$s" = "$(ps -o sid= -p $$ | tr -d ' ')" ] || pkill "-$sig" -s "$s" 2>/dev/null || true
               done
               kill "-$sig" $pids 2>/dev/null || true

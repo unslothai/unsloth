@@ -71,7 +71,6 @@ def _unquoted(line):
 # Shell separators: a marker right after one starts a command; elsewhere it is an argument.
 _SEG_RE = re.compile(r"\|\||&&|[;&|(){}`]")
 
-# Words that may stand in front of a command without changing what the command is.
 _CMD_PREFIXES = ("sudo", "env", "time", "nohup", "xargs", "then", "do", "else", "!")
 
 _PY_DASH_M = re.compile(r"^\S*python[0-9.]* -m ")

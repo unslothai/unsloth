@@ -82,8 +82,7 @@ def _strip_cell(cell):
 
 
 def _strip_intro(nb):
-    """Strips the Colab intro from the leading markdown block; cells[0] alone misses notebooks that
-    split badge and sentence, and the scan stops at the first non-markdown cell."""
+    """Strips the Colab intro from leading markdown cells (badge and sentence may be split)."""
     cells = nb.get("cells")
     if not isinstance(cells, list):
         return False
@@ -259,7 +258,6 @@ def migrate(state_path, dest):
         if _publish(tmp, path, before):
             changed += 1
         else:
-            # nothing landed, so take the record back off
             out[i] = line
             _write_state(state_path, out)
 

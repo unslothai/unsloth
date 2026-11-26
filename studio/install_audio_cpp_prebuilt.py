@@ -159,8 +159,7 @@ _GLIBC_MIN_OS = re.compile(r"glibc-(\d+)\.(\d+)")
 
 
 def _glibc_below(min_os: Optional[str]) -> Optional[str]:
-    """Host glibc if older than a bundle's min_os (glibc-2.35), else None; checked before download
-    so the start check does not fail after it; no manifest (a user-picked release) skips it."""
+    """Host glibc below min_os else None; pre-download so start cannot fail; no manifest skips."""
     if not sys.platform.startswith("linux") or not isinstance(min_os, str):
         return None
     floor = _GLIBC_MIN_OS.fullmatch(min_os.strip())
@@ -606,8 +605,7 @@ def resolve(
             repo,
             want,
             token = token,
-            # Trust follows the user's own repo/tag pick, so the in-app update can install the tag it
-            # offered from that repo too; the default fork release always publishes its index.
+            # User-picked repo/tag may be unindexed; the default fork release always has one.
             allow_unindexed = _user_picked_release(),
         )
     except core.ReleaseIntegrityError:
@@ -847,8 +845,7 @@ def _sweep_retired_trees(target: Path) -> None:
 
 
 def _retire_tree(target: Path, retired: Path) -> None:
-    """os.replace, or on EXDEV copy then remove: overlayfs will not rename an image-layer
-    directory, where the Docker image keeps audio.cpp (#17638)."""
+    """Copies aside on EXDEV: overlayfs cannot rename a Docker image layer dir (#17638)."""
     try:
         os.replace(target, retired)
         return
@@ -876,8 +873,7 @@ def _retire_tree(target: Path, retired: Path) -> None:
 
 
 def _is_unreadable(target: Path) -> bool:
-    """Whether target is unreadable to this account: an elevated run's mkdtemp tree is owned by
-    Administrators (#14052); renames fail too, so only an elevated shell can clear it."""
+    """Owned by Administrators (#14052): renames fail too; only an elevated shell clears it."""
     try:
         os.stat(target / OWNERSHIP_MARKER)
     except PermissionError:
@@ -1151,9 +1147,8 @@ def _refresh_kept_record(
 
 
 def _linux_cuda_runtime_available(major: Optional[int]) -> bool:
-    """Whether the CUDA libraries a line-``major`` Linux bundle links but does not ship (cudart,
-    cuBLAS, cuFFT) are in torch's nvidia-* wheels or on the system loader path. True off Linux,
-    where the bundle (or its cudart archive) carries them."""
+    """Whether the CUDA libs (cudart, cuBLAS, cuFFT) a major-line Linux bundle links but does not
+    ship are in torch's nvidia wheels or on the loader path; always True off Linux."""
     if not sys.platform.startswith("linux"):
         return True
     if major is None:
@@ -1201,9 +1196,8 @@ def smoke_test_staged_server(
     extra_dirs: Sequence[Path] = (),
     require_vulkan_device: bool = False,
 ) -> Optional[str]:
-    """Start the staged server once with ``--help``: a bundle this host cannot load (a newer glibc, a
-    missing DLL) raises here, before it replaces a working tree. Returns its ``--version`` text
-    (build and enabled backends) when it prints one."""
+    """Runs the staged server with --help: a bundle this host cannot load (newer glibc, missing DLL)
+    raises before a working tree is replaced; returns --version text or None."""
     env = _loader_env(server, extra_dirs)
     if require_vulkan_device:
         try:

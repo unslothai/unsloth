@@ -234,7 +234,6 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        # Prefixed: this job checks the repo out under `unsloth/`.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
           name: notebooks-api
@@ -297,7 +296,6 @@ jobs:
 
       - name: Save the pip cache
         if: always()
-        # Prefixed: this job checks the repo out under `unsloth/`.
         uses: ./unsloth/.github/actions/pip-cache-save
         with:
           dir: ${{ steps.pip-cache.outputs.dir }}
@@ -349,12 +347,10 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        # Prefixed: this job checks the repo out under `unsloth/`.
         uses: ./unsloth/.github/actions/pip-cache-restore
         timeout-minutes: 8
         with:
-          # `-cpu` suffix is load-bearing: a new prefix drops the old cumulative pip cache (pip never
-          # evicts and restore-keys re-save it). Do not bump the shared `v2` (cache-janitor glob).
+          # Keep -cpu and v2 (cache-janitor glob); a new prefix drops the cumulative pip cache.
           name: notebooks-colab-cpu
           # Everything the seed step reads, or the key cannot represent what the job installs.
           key-files: |
@@ -455,8 +451,7 @@ jobs:
             exit "$rc"
           fi
 
-          # One resolve for the whole pin set; the per-line fallback is best effort and a defect if
-          # reached. no_binary pins (sdist-only) override --only-binary per package.
+          # One resolve; no_binary overrides --only-binary; per-line fallback should never run.
           NO_BINARY="$(cat /tmp/seed_no_binary.txt)"
           BUILDABLE=()
           [ -n "$NO_BINARY" ] && BUILDABLE=(--no-binary="$NO_BINARY")

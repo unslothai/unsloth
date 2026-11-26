@@ -16,8 +16,7 @@ concurrency:
   # Event name in group keeps a scheduled run and a push to main from coalescing (both resolve to
   # refs/heads/main); queue: single keeps one pending run; a merge burst would drop the nightly.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on PR branches; on main cancel-in-progress is false so a running run is never
-  # killed, and a newer push replaces only the pending run (see studio-backend-ci.yml).
+  # PR: latest run only. Main: never kill a running run; a newer push replaces the pending one.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:

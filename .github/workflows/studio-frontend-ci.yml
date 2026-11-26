@@ -151,14 +151,12 @@ on:
       - 'scripts/lockfile_supply_chain_audit.py'
       - '.github/workflows/studio-frontend-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
-  # Staging repos dispatch this on `upstream-main` to seed their dependency caches
-  # (scripts/pr_review/staging_ci.py); see .github/actions/pip-cache-save.
+  # Staging repos dispatch on upstream-main to seed caches (scripts/pr_review/staging_ci.py).
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on PR branches; on main cancel-in-progress is false, so running runs are never
-  # killed and only the pending run is replaced; see studio-backend-ci.yml.
+  # PRs run latest-only; on main running runs are never killed (see studio-backend-ci.yml).
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -231,9 +229,8 @@ jobs:
             exit 1
           fi
 
-      # Runs first in every frontend lane so a long-chat typing regression fails within minutes;
-      # ratio, not timing: selector matching per keystroke, 200-turn over 40-turn chat, plus :has()
-      # budget; slow runners pass.
+      # Runs first to fail typing regressions within minutes; it checks the 200-turn over 40-turn
+      # chat ratio, not timing; slow runners pass.
       - name: Chromium for the long-chat typing gate
         working-directory: ${{ github.workspace }}
         shell: bash
@@ -299,8 +296,7 @@ jobs:
           LANES="$RUNNER_TEMP/lanes"
           rm -rf "$LANES"
           mkdir -p "$LANES"
-          # <name>.rc appears only when the lane has finished (written, then renamed), so the
-          # collector never reads a partial exit code. setsid: a lane outlives this step's shell.
+          # <name>.rc renamed into place (no partial reads); setsid: lanes outlive this shell.
           start_lane() {
             local name=$1
             { echo 'set -eo pipefail'; cat; } > "$LANES/$name.sh"
@@ -479,10 +475,9 @@ jobs:
             tests/studio/test_appearance_coverage.py \
             tests/studio/test_has_lint.py -q
 
-      # Render, DOM and stubbed-IPC checks, not timings, need only the page to settle: two groups
-      # run one after the other beside the lanes, each under timeout(1) with --kill-after outlasting
-      # the harness stop so Vite is not orphaned; frame and pacing checks stay serial after the
-      # lanes.
+      # Render/DOM checks need only the page to settle, not timings; two groups run in turn beside
+      # the lanes, each under timeout(1) with --kill-after outlasting the harness stop so Vite is
+      # not orphaned; frame/pacing serial after lanes.
       - name: Browser render and structure checks (two groups, one after the other)
         working-directory: ${{ github.workspace }}
         timeout-minutes: 25
@@ -532,8 +527,7 @@ jobs:
             trap stop_check EXIT
             trap 'exit 130' INT
             trap 'exit 143' TERM
-            # Vite's default cache dir: the fixture-config checks and pinned-chat server cannot be
-            # repointed, so every check sharing it stays in this sequential group.
+            # Default cache: fixture and pinned-chat servers cannot repoint it; run serially.
             unset VITE_TEST_CACHE_DIR
             # Structure, not timings: a long thread mounts only the rows near the reader, and
             # scrolling, jumping, copying and a streamed reply must not show it.
@@ -656,9 +650,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_nonmodal_menus.py
 
-      # Data settings stay apart from the shorter checks, each with its own cache. The step bound is
-      # the smaller one, leaving 25 minutes for earlier steps: a job timeout cancels and skips the
-      # failure-only artifact upload, so a hung check would leave no log.
+      # Step bound is the smaller one, leaving 25 min for earlier steps; a job timeout cancels and
+      # skips the failure-only upload, so a hung check leaves no log.
       - name: Browser smoke groups for data settings and frontend controls
         working-directory: ${{ github.workspace }}
         timeout-minutes: 15
@@ -758,10 +751,8 @@ jobs:
           SMOKE_FLICKER_ENGINES: chromium
         run: python3 tests/studio/playwright_code_block_flicker.py
 
-      # Two small sizes and one Chromium repetition only prove the fixture renders every content
-      # kind and the curve rises, all a PR gate can afford; the real three-engine, three-size,
-      # three-repetition run takes tens of minutes and belongs on a runner asked for it
-      # deliberately, not on every frontend PR.
+      # Two small sizes and one Chromium repeat render each content kind; the full run is too slow
+      # for PRs.
       - name: Browser smoke for heavy-thread interaction cost
         working-directory: ${{ github.workspace }}
         env:
@@ -1006,9 +997,8 @@ jobs:
         env:
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Checkout is the PR merge ref, whose first parent is the base tip this run merged onto.
-          # pull_request.base.sha does not move as main advances, so it would charge the PR with
-          # everything main merged since; the raw commit keeps parent lines in a depth-1 clone.
+          # Use the merge ref's first parent; pull_request.base.sha would charge the PR with later
+          # main merges.
           BASE_SHA="$EVENT_BASE_SHA"
           if [ "$(git cat-file -p HEAD | grep -c '^parent ')" = 2 ]; then
             BASE_SHA=$(git cat-file -p HEAD | awk '$1 == "parent" {print $2; exit}')
@@ -1101,7 +1091,6 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           mkdir -p logs
-          # each driver owns its Vite server, optimizer cache, and report
           PW_ENGINE=chromium PW_PORT=5420 PW_OUT=logs/data_settings_report.json \
             VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-data-chromium" \
             python tests/studio/playwright_data_settings.py > logs/data_settings_chromium.log 2>&1 &

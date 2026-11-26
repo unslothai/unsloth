@@ -124,11 +124,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 runs the full suite and 3.11 only files with a pre-3.12 sys.version_info branch;
-        # shards root at tests/ and differ only in ignores (--ignore=FILE does not filter explicit
-        # arguments); rest is the remainder, so new files land in one shard
-        # (test_ci_backend_pytest_shards.py); ranges are balanced against the 1500 s backstop, and
-        # test_diffusion* is split out since it is most of a-f.
+        # 3.13 runs the full suite, 3.11 only files with a pre-3.12 sys.version_info branch; shards
+        # differ only in ignores (--ignore=FILE does not filter explicit arguments); rest catches
+        # new files (test_ci_backend_pytest_shards.py); ranges balanced vs 1500 s backstop;
+        # test_diffusion* split out.
         include:
           - python: '3.13'
             scope: full
@@ -200,9 +199,8 @@ jobs:
             studio/backend/requirements/*.txt
 
       - name: Install bubblewrap, so the sandbox tests run instead of skipping
-        # Apt retries are bounded: 25 minutes covers both calls' 1450 s worst case; apt overlaps the
-        # pip install since they share nothing, and is collected before the first pytest step
-        # needing bwrap.
+        # Apt retries are bounded: 25 minutes covers both calls' 1450 s worst case; apt overlaps pip
+        # and is collected before the first bwrap-dependent pytest step.
         id: bubblewrap
         background: true
         timeout-minutes: 25
@@ -270,9 +268,8 @@ jobs:
         if: matrix.scope == 'full'
         working-directory: studio/backend
         # The one deselection needs a live llama.cpp process; -n 4 is order-independent;
-        # test_streaming_stripper runs serially below as wall-clock-bound files run isolated; GPU
-        # tests mock torch.cuda so run on CPU torch; outer timeout catches a wedged xdist controller
-        # that per-test --timeout cannot.
+        # wall-clock-bound files run serially below; GPU tests mock torch.cuda so run on CPU torch;
+        # outer timeout catches a wedged xdist controller that per-test --timeout cannot.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
           python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 \
@@ -294,7 +291,6 @@ jobs:
             -k 'not llama_cpp_load_progress_live'
 
       - name: Backend tests that cannot share a worker
-        # The twelve serial files, one process.
         if: matrix.scope == 'full' && matrix.shard == 'a-f'
         working-directory: studio/backend
         # Relative timing tests run serially in one process.
@@ -395,10 +391,9 @@ jobs:
               --ignore-glob=tests/test_fsdp2*.py
               --ignore-glob=tests/test_[!f]*gloo*.py
               --ignore-glob=tests/test_f[!s]*gloo*.py
-          # Shard rest-2 takes diffusion, kaggle and security plus top-level test_d/i/m/s/u files,
-          # since the catch-all ran near its cap; no gloo or fsdp2 file starts with d, i, m, s or u,
-          # so the glob cannot take a file another shard names (tests/test_ci_repo_cpu_shards.py
-          # checks it).
+          # rest-2 takes diffusion, kaggle, security and top-level test_d/i/m/s/u files as the
+          # catch-all neared its cap; no gloo or fsdp2 file starts with d, i, m, s or u, so the glob
+          # cannot take a file another shard names (tests/test_ci_repo_cpu_shards.py checks it).
           - shard: rest-2
             selection: >-
               tests/diffusion
@@ -480,8 +475,7 @@ jobs:
             echo "::error::.pre-commit-config.yaml no longer pins ruff-unsloth for ruff-format-with-kwargs"
             exit 1
           fi
-          # The wheel is a GitHub release asset; a 504 there is not retried by pip, so retry here.
-          # Those 504s come in bursts lasting minutes, so back off for about five minutes in total.
+          # Release asset 504s skip pip retries; bursts last minutes, so back off ~5 min total.
           for attempt in 1 2 3 4 5 6; do
             if pip install -r "$RUNNER_TEMP/ruff-unsloth.txt"; then
               break
@@ -579,8 +573,7 @@ jobs:
           [ "$found" -gt 0 ] || { echo "::error::no shell tests discovered under tests/sh"; exit 1; }
           export suite_logs
           suite_logs=$(mktemp -d "$RUNNER_TEMP/shell-suites.XXXXXX")
-          # Each suite already owns its fixtures. Keep its output and exit status
-          # separate, then collect every result even when another suite fails.
+          # Suites own fixtures; keep output and status apart; collect all even on failure.
           failed=0
           printf '%s\0' "${suites[@]}" | xargs -0 -P 4 -n 1 bash -c '
               s=$1

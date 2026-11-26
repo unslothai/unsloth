@@ -107,8 +107,7 @@ function Install-UnslothStudio {
     $script:UvExe = 'uv'
     $script:UvInstallDestDir = $null
     $script:StudioPrivateUvDir = $null
-    # Same reset reason: this caches a machine decision, so a policy change between runs, or a
-    # launcher replaced under a hash rule, would reuse the first probe.
+    # Reset each run so a policy change or a replaced launcher is re-probed, not reused.
     $script:ShimLaunchBlockedCache = $null
     $script:ShimLaunchBlockedPath = $null
 
@@ -360,8 +359,7 @@ function Install-UnslothStudio {
             } else {
                 $fso.GetFile($Path).ShortPath
             }
-            # A space-free alias is not necessarily a name that resolves (#11290). This value
-            # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
+            # Alias must resolve (#11290): a bogus one breaks UV_OVERRIDE and --find-links.
             if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
         } catch {}
         return $Path
@@ -790,9 +788,8 @@ function Install-UnslothStudio {
         $pip = ($Resolver -eq "pip")
         $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
         $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-        # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
-        # pip's and pip really reads it, so naming no index here matches what pip will
-        # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
+        # PIP_NO_INDEX is pip's own, so naming no index matches what pip does; UV_NO_INDEX is ours
+        # alone, honouring the operator.
         $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
         if ($noIndexRequested) { return @() }
         $default = $null
@@ -1536,8 +1533,7 @@ function Install-UnslothStudio {
     }
 
     # ── Usable temporary storage ──
-    # Windows never checks TMP/TEMP exist or are writable (#9140); downloads stage there; if it
-    # cannot hold a file, point both at our own directory, since children read the environment.
+    # Windows never checks TMP/TEMP are writable (#9140); if not, redirect both for children.
     function Test-StudioDirectoryUsable {
         param(
             [string]$Path,
@@ -1589,8 +1585,7 @@ function Install-UnslothStudio {
                 # scripts/uninstall.ps1 requires.
                 if ($stale.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
                 if ($stale.LastWriteTime -ge $cutoff) { continue }
-                # Reparse points are never ours: unlink without following. Not Remove-Item, which can
-                # throw unsuppressibly or walk through a junction on 5.1.
+                # Unlink reparse points, not Remove-Item (throws, or walks a junction on 5.1).
                 if ($stale.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
                     try { [System.IO.Directory]::Delete($stale.FullName, $false) } catch {}
                     continue
@@ -1709,8 +1704,7 @@ function Install-UnslothStudio {
         $script:StudioTempChecked = $true
         # TMP wins over TEMP; check IsNullOrEmpty since GetTempPath uses a whitespace TMP.
         $inherited = if (-not [string]::IsNullOrEmpty($env:TMP)) { $env:TMP } else { $env:TEMP }
-        # Resolve BEFORE probing: Test-Path and .NET resolve relative paths differently. Leave
-        # whitespace-only as is so the probe rejects it.
+        # Resolve before probing (relative paths differ); keep whitespace so probe rejects it.
         $absolute = $inherited
         if (-not [string]::IsNullOrWhiteSpace($inherited)) {
             try { $absolute = [System.IO.Path]::GetFullPath($inherited) } catch { $absolute = $inherited }
@@ -1915,9 +1909,8 @@ function Install-UnslothStudio {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
-        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
-        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
+        # GetFullPath anchors relative paths to [Environment]::CurrentDirectory, which Set-Location
+        # does not move, unlike Resolve-Path (PowerShell#10278, by design); fallback only.
         try {
             $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
         } catch {
@@ -1978,7 +1971,6 @@ function Install-UnslothStudio {
             Write-Verbose "Unsloth: path identity is inexact ($Reason); first install, taking every runtime lock."
             return
         }
-        # Only claim that the installer can continue.
         Write-StudioLine "[WARN] Could not resolve a path exactly ($Reason)." -ForegroundColor Yellow
         Write-StudioLine "       Continuing with the lexical resolver, which cannot recover a path's" -ForegroundColor Yellow
         Write-StudioLine "       stored casing or expand an 8.3 name, so paths are compared as written." -ForegroundColor Yellow
@@ -2177,8 +2169,7 @@ function Install-UnslothStudio {
             if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
             if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
         }
-        # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
-        # manage to split.
+        # An empty DACL, or one this could not split, is not evidence of anything.
         if ($seen -eq 0) { return $true }
         return $false
     }
@@ -2188,8 +2179,7 @@ function Install-UnslothStudio {
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         $sddl = ""
         try {
-            # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
-            # property access on types outside its allowed list, and the security descriptor is one.
+            # Constrained Language Mode blocks ACL property reads; use -ExpandProperty.
             $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
                 Select-Object -ExpandProperty Sddl)"
         } catch { return $false }
@@ -2302,8 +2292,7 @@ function Install-UnslothStudio {
             $isFile = $false
             try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
             if (-not $isFile) { continue }
-            # The venv interpreter runs here before the destination guard does, so only where that
-            # guard would let it run: the default layout, or a custom home that is already Unsloth's.
+            # Before the destination guard: only default layout or a home already Unsloth's.
             if ($venvCandidates -contains $candidate) {
                 $ours = $false
                 try {
@@ -2527,8 +2516,7 @@ function Install-UnslothStudio {
         # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
         if (-not $made) { return "" }
         if ($env:OS -eq "Windows_NT") {
-            # Until it is labelled a standard user can swap this directory for a junction: a link is
-            # never adopted, and cleanup never recurses through one into its target.
+            # Until labelled, users may swap in a junction: never adopt or recurse through one.
             $isLink = { try { "$((Get-Item -LiteralPath $dir -Force -ErrorAction Stop).Attributes)" -match 'ReparsePoint' } catch { $true } }
             $labelled = $false
             $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
@@ -2966,8 +2954,7 @@ function Install-UnslothStudio {
             Restore-StudioTempEnvironment
             throw "$envOverrideVar=$StudioHome is not writable."
         }
-        # A new custom root inherits its drive's ACL, often writable by all, letting another user
-        # swap executables; it gets the profile's access instead; existing folders keep theirs.
+        # New roots take the profile ACL; an inherited drive ACL lets others swap executables.
         if (-not $script:StudioEnvRootExisted) {
             try {
                 $rootAcl = New-Object System.Security.AccessControl.DirectorySecurity
@@ -3053,9 +3040,8 @@ function Install-UnslothStudio {
         } catch { return $false }
     }
 
-    # Only a root this run may take over (empty, or with an unambiguous marker); this
-    # authorizes a delete. Emptiness test inline (the helper is defined later); unreadable
-    # counts as occupied. Defined above its earliest reader.
+    # Only a root this run may take over (empty, or with an unambiguous marker), since this
+    # authorizes a delete; unreadable counts as occupied; defined above its earliest reader.
     $script:StudioInstallLockFileName = ".unsloth-install.lock"
 
     function Write-StudioRootOwnerMarker {
@@ -3137,8 +3123,7 @@ function Install-UnslothStudio {
         }
         # Removed first: Set-Content follows a symlink and would truncate its target.
         Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
-        # And only once gone, since that removal fails non-terminatingly. Get-Item -Force
-        # reports the link itself; Test-Path would follow it.
+        # Check after removal: Get-Item -Force sees the link itself; Test-Path would follow it.
         if ($null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)) {
             return
         }
@@ -3173,8 +3158,7 @@ function Install-UnslothStudio {
     function Test-StudioUvBucketName {
         param(
             [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name,
-            # Off by default: warmth counting bytes under `Archive-V0` that uv looks for at
-            # `archive-v0` picks a cache that cannot serve them. Only the write probe folds.
+            # Only the write probe folds: folding counts Archive-V0 bytes uv cannot serve.
             [switch]$Fold
         )
         # Whole name, as -v markers vary by kind; invariant case avoids the Turkish dotted I.
@@ -3186,8 +3170,7 @@ function Install-UnslothStudio {
         # \A and \z, not ^ and $: in .NET `$` also matches before a final newline, so
         # `archive-v1<LF>` passed here while the sh helper rejected it.
         if (-not ($suffix -match '\A[0-9]+\z')) { return $false }
-        # Every CacheBucket in uv 0.13.5 ($UvPinnedVersion) plus built-wheels; keep in step
-        # with install.sh on a pin bump.
+        # Mirrors uv 0.13.5 CacheBucket list plus built-wheels; match install.sh on pin bumps.
         return ($lower.Substring(0, $at) -in @(
             "archive", "binaries", "builds", "built-wheels", "environments", "files", "flat-index",
             "git", "interpreter", "osv", "python", "sdists", "simple", "wheels"))
@@ -3211,8 +3194,7 @@ function Install-UnslothStudio {
         try {
             foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($Cache)) {
                 $name = [System.IO.Path]::GetFileName($entry)
-                # Only check entries where a bucket should be: anything else is not uv's to write,
-                # and a mount point's root-owned lost+found must not condemn the cache.
+                # Skip non-bucket entries: a root-owned lost+found must not condemn the cache.
                 if (-not (Test-StudioUvBucketName -Name $name -Fold:$fold)) { continue }
                 # A file, or a link dangling or not, is an existing path to uv's own create,
                 # which answers "already exists", so uv refuses it.
@@ -3265,8 +3247,7 @@ function Install-UnslothStudio {
         return $false
     }
 
-    # Create AND fill for real: CreateDirectory succeeds on an existing unwritable dir, and the
-    # Studio cache may not exist yet, leaving the bucket probe nothing to walk.
+    # CreateDirectory succeeds on unwritable dirs; probe for real, as the cache may not exist.
     function Test-StudioUvCacheRootWritable {
         param([Parameter(Mandatory = $true)][string]$Cache)
         try {
@@ -3436,8 +3417,7 @@ function Install-UnslothStudio {
             "studio" {
                 if ($chosenCache) {
                     step "uv cache" "reusing this install's Unsloth Studio cache ($selectedCache)"
-                # Never about the directory we fall back to: the Studio cache can itself be the
-                # refused candidate, and naming it would claim a fallback that did not happen.
+                # The Studio cache may be the refused one, so never name it as a fallback.
                 } elseif ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$blockedCache) -and $blockedCache -ne $selectedCache) {
                     step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
                 } elseif ($scanBlocked -and [string]::IsNullOrWhiteSpace([string]$blockedCache)) {
@@ -3527,7 +3507,6 @@ function Install-UnslothStudio {
     function Get-ActiveCondaPrefixes {
         $prefixes = New-Object System.Collections.Generic.List[string]
         if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) { $prefixes.Add($env:CONDA_PREFIX) }
-        # Enumerated from CONDA_SHLVL with a ceiling, not a fixed list.
         $levels = 0
         if (-not [string]::IsNullOrWhiteSpace($env:CONDA_SHLVL)) {
             [void][int]::TryParse($env:CONDA_SHLVL, [ref]$levels)
@@ -3668,8 +3647,7 @@ function Install-UnslothStudio {
                     $kept.Add($entries[$i])
                 }
                 $alreadyPresent = $matchIndices.Count -gt 0
-                # Not $positionDowngraded: that request has to reposition an existing front entry.
-                # Already at the back is still a no-op, caught by the $newPath -ceq $rawPath check.
+                # Downgrades still reposition; the no-op is caught by the $newPath -ceq check.
                 if ($alreadyPresent -and $Position -eq 'Append' -and -not $positionDowngraded) {
                     return $false
                 }
@@ -3707,8 +3685,7 @@ function Install-UnslothStudio {
                     return $false
                 }
                 $regKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-                # Broadcast WM_SETTINGCHANGE via dummy env-var roundtrip.
-                # [NullString]::Value avoids PS 7.5+/.NET 9 $null-to-"" coercion.
+                # Env-var roundtrip sends WM_SETTINGCHANGE; NullString avoids .NET 9 coercion.
                 try {
                     $d = "UnslothPathRefresh_$([guid]::NewGuid().ToString('N').Substring(0,8))"
                     [Environment]::SetEnvironmentVariable($d, '1', 'User')
@@ -4013,8 +3990,7 @@ function Install-UnslothStudio {
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Master root: storage_roots.unsloth_home(); llama.cpp, node and whisper.cpp sit beside studio,
-    # so deriving them from $StudioHome would land one level below where resolvers look.
+    # Root: storage_roots.unsloth_home(); from StudioHome, llama.cpp lands one level too deep.
     function Get-MasterRootOverride {
         if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
         $value = $env:UNSLOTH_HOME.Trim()
@@ -4450,8 +4426,7 @@ function Install-UnslothStudio {
             Write-TauriLog "OUTPUT_CLEAR" $Label
             $collected = [System.Text.StringBuilder]::new()
             if ($script:UnslothVerbose) {
-                # Merge stderr into stdout without flipping $? (5.1 treats stderr records as errors).
-                # Redact per record, verbose mode included.
+                # Merge stderr without flipping $? on PS 5.1; redact each record in both modes.
                 & $Command 2>&1 | ForEach-Object {
                     [void]$collected.AppendLine("$_")
                     Write-UvDownloadMarker "$_"
@@ -4640,9 +4615,8 @@ function Install-UnslothStudio {
         }
     }
 
-    # Windows cannot be asked: AppLocker's cmdlets need an admin token and WDAC or Smart App Control
-    # expose nothing, so probe with --version; a denial fails CreateProcess synchronously at no
-    # cost, and a started process counts as not blocked even on timeout.
+    # AppLocker cmdlets need admin, WDAC/Smart App Control expose nothing, so probe --version:
+    # denial fails CreateProcess synchronously; a started process is not blocked, even on timeout.
     function Test-ShimLaunchBlocked {
         param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -4664,8 +4638,7 @@ function Install-UnslothStudio {
             $psi.RedirectStandardError = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
             try {
-                # Drain both pipes asynchronously BEFORE waiting, or a child filling one buffer deadlocks
-                # (PYTHONPROFILEIMPORTTIME can produce ~24 KB of stderr).
+                # Drain both pipes async before waiting, or a full buffer deadlocks the child.
                 $stdout = $proc.StandardOutput.ReadToEndAsync()
                 $stderr = $proc.StandardError.ReadToEndAsync()
                 if ($proc.WaitForExit(20000)) {
@@ -4748,8 +4721,7 @@ function Install-UnslothStudio {
             "rem denies it on managed machines; this file is the way through.",
             # The ownership marker; it gates a recursive delete, so it must be unmistakable.
             "rem $script:UnslothCmdShimMarker",
-            # With delayed expansion on (cmd /V:ON, or the machine-wide default) a '!'
-            # is eaten out of every argument. exit /b ends the scope, so nothing leaks.
+            # Delayed expansion (cmd /V:ON or machine-wide) eats '!'; exit /b ends the scope.
             "setlocal DisableDelayedExpansion",
             "`"$target`" -X utf8 -c `"$script:UnslothCliTrampoline`" %*",
             "@exit /b %errorlevel%"
@@ -4788,7 +4760,6 @@ function Install-UnslothStudio {
             if (Test-Path -LiteralPath $shimCmd -PathType Leaf) {
                 $existing = [System.IO.File]::ReadAllBytes($shimCmd)
                 if (@(Compare-Object $existing $desired -SyncWindow 0).Count -eq 0) { return }
-                # Warn when replacing a file that is not ours.
                 if (-not (Test-UnslothCmdShimFile -Path $shimCmd)) {
                     substep "replacing an unrecognised $shimCmd" "Yellow"
                 }
@@ -4836,8 +4807,7 @@ function Install-UnslothStudio {
         try {
             # Absolute path, so shortcut working-directory changes cannot break startup.
             $ManagedPythonPath = (Resolve-Path -LiteralPath $ManagedPythonPath).Path
-            # Escape for single-quoted embedding in generated launcher script.
-            # This prevents runtime variable expansion for paths containing '$'.
+            # Single-quote escape so '$' in paths does not expand in the generated launcher.
             $SingleQuotedPythonPath = $ManagedPythonPath -replace "'", "''"
             # Same escaping for the trampoline: it contains apostrophes of its own.
             $SingleQuotedTrampoline = $script:UnslothCliTrampoline -replace "'", "''"
@@ -4908,8 +4878,7 @@ function Install-UnslothStudio {
                 $_idBytes = New-Object byte[] 32
                 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($_idBytes)
                 $_studioRootId = -join ($_idBytes | ForEach-Object { $_.ToString('x2') })
-                # No-clobber: the desktop app mints the same id. Two-arg File.Move throws on an existing
-                # destination, so adopt it.
+                # Desktop may mint the same id; File.Move throws on existing file, so adopt it.
                 $_idTmp = $_studioIdFile + ".$PID.tmp"
                 [System.IO.File]::WriteAllText($_idTmp, $_studioRootId)
                 try {
@@ -5190,7 +5159,6 @@ exit 0
                     $launcherUnchanged =
                         (@(Compare-Object $existingLauncher $desiredLauncher -SyncWindow 0).Count -eq 0)
                 } catch {
-                    # Unreadable is not "unchanged"; fall through and rewrite it.
                     $launcherUnchanged = $false
                 }
             }
@@ -5266,7 +5234,6 @@ exit 0
                     } catch { $iconChanged = $true }
                 }
             } elseif ($preIconHash) {
-                # A previously present icon was removed or invalidated.
                 $iconChanged = $true
             }
 
@@ -5658,15 +5625,13 @@ exit 0
             }
             $null = [System.IO.Directory]::CreateDirectory($Path)
             $lockPath = Join-Path $Path $script:StudioInstallLockFileName
-            # A link at the lock path would point our exclusive handle at someone else's file: remove
-            # the link itself (checked with Get-Item -Force), never its target.
+            # Unlink the lock path itself, not its target: a planted link cannot redirect us.
             $existingLock = $null
             try {
                 $existingLock = Get-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
             } catch { $existingLock = $null }
             if ($existingLock -and
                 ($existingLock.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                # A link that will not go stops the install with a lock-creation error.
                 try {
                     Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
                 } catch {
@@ -5909,8 +5874,7 @@ exit 0
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
             return $script:StudioPythonProcessImageTable[$ProcessId]
         }
-        # Per-run PID snapshots: a reused PID reads stale; accepted.
-        # Queried once per run, not once per process: this is the slow rung.
+        # Per-run PID snapshots (WMI rung is slow); a reused PID reads stale; accepted.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}
             foreach ($row in @(Get-StudioWmiProcessImageRows)) {
@@ -5938,8 +5902,7 @@ exit 0
         # No root-relative fallback: with every path inexact it matched tails across drives.
         # SUBST is folded in Get-StudioLexicalPath instead.
 
-        # Block only confirmed executable identities: a command line or working
-        # directory that merely mentions the path is not proof of an open file.
+        # Only executable images prove an open file, not a command line naming the path.
         $studioScanProcesses = @(Get-Process -ErrorAction SilentlyContinue |
             Select-Object -Property Id, ProcessName)
         $studioScanImages = @{}
@@ -6085,9 +6048,8 @@ exit 0
         return ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on'))
     }
 
-    # Whether a venv to REUSE still matches the chosen interpreter: a migrated venv keeps whatever
-    # built it, which on Windows on ARM is native ARM64 CPython (#8495, #10875); a mismatch counts
-    # only with an x64 interpreter in hand, so ARM64-wheel hosts are left alone.
+    # A venv mismatches only with an x64 interpreter in hand, so ARM64-wheel hosts are kept; a
+    # migrated venv keeps its builder (native ARM64 CPython on Windows on ARM, #8495, #10875).
     function Test-StudioVenvArchMismatch {
         param(
             [Parameter(Mandatory = $true)][string]$VenvPython,
@@ -6106,8 +6068,7 @@ exit 0
         if ($tag -ne "win-arm64") { return $false }
         # Honoured here too, or a migrated ARM64 environment the user asked to keep is replaced.
         if (Test-Arm64PythonOptOut) {
-            # With an ARM64 interpreter the environment is not rebuilt on x64; with none, the
-            # reinstall has already moved it aside and the new one is x64.
+            # ARM64 Python keeps the env; otherwise it was moved aside and is rebuilt as x64.
             if ($SelectedPython -and $SelectedPython.Arch -eq "x86_64") {
                 substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, but no ARM64 Python is left on" "Yellow"
                 substep "this machine, so the new environment is built on x64; the ARM64 one is kept." "Yellow"
@@ -6183,8 +6144,7 @@ exit 0
     Write-TauriLog "STEP" "Installing uv package manager"
     # Below 0.13.4 uv's bundled roots still trust the compromised emSign CAs (GHSA-hq85-5cpj-mr62).
     $UvMinVersion = "0.13.4"
-    # The floor before that. A host that cannot download keeps a uv between the two, as install.sh
-    # does with UV_OFFLINE_MIN_VERSION: an offline install makes no TLS connections.
+    # Offline floor 0.8.16 (UV_OFFLINE_MIN_VERSION in install.sh); offline installs skip TLS.
     $UvOfflineMinVersion = "0.8.16"
 
     # Profile aliases/functions outrank PATH, so resolve a real executable. $null means none.
@@ -6197,8 +6157,7 @@ exit 0
 
     # Every uv in bare-token order (alias, then PATH), so the version gate can skip a stale one.
     function Get-UvExecutableCandidates {
-        # PowerShell resolves aliases before PATH, so follow an alias only to an Application and
-        # return its resolved path, skipping command discovery.
+        # Aliases outrank PATH, so follow one only to an Application and use its resolved path.
         $found = [System.Collections.Generic.List[string]]::new()
         $alias = Get-Command uv -CommandType Alias -ErrorAction SilentlyContinue
         while ($alias -and $alias.ResolvedCommand) {
@@ -6525,8 +6484,7 @@ exit 0
             substep "Install it from https://docs.astral.sh/uv/" "Yellow"
             return (Exit-InstallFailure "uv could not be installed")
         }
-        # The kept uv is below the floor: its bundled roots still trust the compromised emSign CA, so
-        # the Windows store decides instead. A download that failed while online lands here too.
+        # Below-floor uv trusts the compromised emSign CA, so the Windows store decides.
         if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = "1" }
         if (-not $env:UV_NATIVE_TLS) { $env:UV_NATIVE_TLS = "1" }
     }
@@ -7074,10 +7032,8 @@ exit 0
             } catch { }
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackDir = $null
-            # Distinct from "never started". Inactive alone cannot tell the two apart, and the
-            # ARM64 migration below reads it to decide whether it still has a tree to move.
+            # Distinct from never-started; inactive is ambiguous; ARM64 migration reads it.
             $script:StudioVenvRollbackDiscarded = $true
-            # Never report success when the tree survived.
             if (Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" -LinkAware) {
                 $script:StudioVenvDiscardSucceeded = $true
                 substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
@@ -7116,7 +7072,6 @@ exit 0
 
     function Test-StudioVenvRollbackMustBePreserved {
         param([Parameter(Mandatory = $true)][System.IO.FileSystemInfo]$Rollback)
-        # Preserve anything outside the installer's timestamp.PID[.suffix] format.
         if ($Rollback.Name -notmatch '^unsloth_studio\.rollback\.[0-9]{14}\.([0-9]+)(?:\.[0-9]+)?$') {
             return $true
         }
@@ -7210,15 +7165,13 @@ exit 0
         }
         $complete = $true
         foreach ($entry in @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop)) {
-            # Not $destination: PowerShell names are case-insensitive, so a local of that name would
-            # reassign the $Destination parameter and nest siblings under the previous name.
+            # Case-insensitive: a $destination local would clobber the $Destination parameter.
             $entryTarget = Join-Path $Destination $entry.Name
             if (-not (Test-Path -LiteralPath $entryTarget)) {
                 Move-Item -LiteralPath $entry.FullName -Destination $entryTarget -ErrorAction Stop
                 continue
             }
-            # Same relative path on both sides: recurse to reunite halves instead of overwriting.
-            # Junctions are leaves, never recursed through. Get-Item both sides for reliable Attributes.
+            # Recurse matching dirs; junctions are leaves; Get-Item for reliable Attributes.
             $entryItem = Get-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
             $targetItem = Get-Item -LiteralPath $entryTarget -Force -ErrorAction Stop
             $linked = (($entryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
@@ -7245,8 +7198,7 @@ exit 0
         # Shared with the marker restore: an interruption mid-commit cannot split the install.
         if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioVenvRollbackActive) { return }
-        # A restore puts the tree back at $VenvDir, so there is nothing left to preserve and
-        # the flag must not survive into any later rollback in the same run.
+        # Restore leaves nothing to preserve; the flag must not carry into a later rollback.
         $script:StudioVenvRollbackPreserve = $false
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
@@ -7543,7 +7495,6 @@ exit 0
             } else {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
                 if ($script:StudioVenvRollbackDiscarded) {
-                    # Discarded under --no-rollback, so there is nothing to preserve.
                     substep "the previous ARM64 environment was discarded by --no-rollback rather than kept;" "Yellow"
                     substep "the x64 environment is built fresh, and extra packages are not recoverable." "Yellow"
                 } else {
@@ -8411,18 +8362,15 @@ main()
         # pick cu126 on a cu128 host. One time budget across the loop (Get-Date: CLM refuses
         # Stopwatch). Candidates are enumerated before the clock starts.
         $smiCandidates = @(Get-NvidiaSmiCandidatePaths)
-        # Two budgets: the soft one only once a usable answer exists; only the hard one may end
-        # with nothing, since that means CPU-only PyTorch on a GPU host.
+        # Soft budget only after an answer; only the hard one may end empty (CPU-only torch).
         $probeDeadline = (Get-Date).AddSeconds(30)
         $probeHardDeadline = (Get-Date).AddSeconds(60)
         $firstListing = $null
         # Captured with the path: $script:NvidiaSmiWedged describes the LAST binary probed.
         $firstListingWedged = $false
         foreach ($p in $smiCandidates) {
-            # Only give up early when there is already something to fall back on.
             if ($null -ne $firstListing -and (Get-Date) -gt $probeDeadline) { break }
-            # With nothing found, keep going to the hard bound. Reporting no GPU is the expensive
-            # answer, so it has to be the one that costs the most before it is reached.
+            # With nothing found, scan to the hard bound: reporting no GPU must cost the most.
             if ((Get-Date) -gt $probeHardDeadline) { break }
             try {
                 if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
@@ -8440,7 +8388,6 @@ main()
         }
         if (-not $HasNvidiaSmi -and $firstListing) {
             $HasNvidiaSmi = $true; $NvidiaSmiExe = $firstListing
-            # Restore the wedged flag for the selected binary, not the last one probed.
             $script:NvidiaSmiWedged = $firstListingWedged
         }
     }
@@ -8474,8 +8421,7 @@ main()
         return $result
     }
 
-    # Mirrors windows_intel_gpu_in_registry(), but as a fallback: stale keys could install XPU
-    # torch without an Arc.
+    # Fallback to windows_intel_gpu_in_registry(); stale keys may pick XPU torch without Arc.
     function Get-IntelRegistryAdapterNames {
         $names = @()
         $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
@@ -8483,17 +8429,15 @@ main()
             $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
         } catch { return @() }
         foreach ($sub in $subs) {
-            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
-            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
+            # Guarded per subkey: one unreadable entry must not hide the adapters after it.
             try {
                 # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
                 if ("$($sub.PSChildName)" -match '^\d+$') {
                     $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
                     if ($props) {
                         $desc = "$($props.DriverDesc)"
-                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
-                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
-                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
+                        # Callers re-filter on Intel, so a VEN_8086 hit with a localized DriverDesc
+                        # is tagged, not dropped; XPU only for Arc / Data Center GPU names.
                         if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
                             $names += if ($desc -match '(?i)intel') { $desc }
                                       elseif ($desc) { "Intel $desc" }
@@ -8536,8 +8480,7 @@ main()
         return [pscustomobject]@{ Release = $versions[0] }
     }
 
-    # True when no healthy NVIDIA adapter reports an NVIDIA-shaped driver version (e.g. Microsoft Basic
-    # Display): no CUDA driver, so the host must keep CPU wheels and AMD / Intel detection.
+    # No healthy NVIDIA driver (e.g. Basic Display only): keep CPU wheels, check AMD / Intel.
     function Test-NvidiaAdapterWithoutNvidiaDriver {
         param($Scan = $null)
         if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
@@ -8818,8 +8761,7 @@ main()
         Write-StudioLine "[INFO] GGUF chat can already run on the AMD GPU: Settings > System > GGUF inference engine > Compute backend." -ForegroundColor Cyan
         Write-StudioLine ""
     }
-    # Name the card in the banner (name, compute_cap, driver in one query), honouring the
-    # visible-device mask. A mask of "" or -1 hides every device: keep vendor-only wording.
+    # Name the card unless the CUDA mask hides it ("" or -1 hides all); else vendor-only.
     $nvMaskHidesAll = Test-CudaMaskHidesNvidia
     if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
         try {
@@ -9030,8 +8972,7 @@ main()
                         $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } elseif ($ProbeAmdBesideNvidia -and $env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                         # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
                         $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
-                        # Market names, when amd-smi prints them, are indexed like the gfx tokens
-                        # above; banner only, the wheel arch never comes from here.
+                        # Market names index like gfx tokens; banner only, not the wheel arch.
                         $_smiNames = @([regex]::Matches($smiOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
                         if ($_smiGfxTokens.Count -gt 0) {
                             $ROCmGfxArch = if ($_smiVisIdx -lt $_smiGfxTokens.Count) { $_smiGfxTokens[$_smiVisIdx] } else { $_smiGfxTokens[0] }
@@ -9244,7 +9185,6 @@ main()
             substep "  Your current driver predates it; native Windows GPU is unaffected. Get it from AMD:" "Cyan"
             substep "    https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-2-2.html" "Cyan"
             substep "  Then reboot and run this installer inside an Ubuntu-24.04 WSL distro." "Cyan"
-            # No wsl.exe: point at the command that provisions WSL.
             $hasWsl = $false
             try { $hasWsl = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue) } catch {}
             if (-not $hasWsl) {
@@ -9339,8 +9279,7 @@ main()
     }
 
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
-    # Before the report chain: a WMI-named-only AMD adapter would otherwise hide a discrete Arc.
-    # $script:IsIntelXpu = XPU wheels suit it (Arc / Data Center only, not UHD / Iris Xe).
+    # Before the report chain: WMI-only AMD hides Arc; XPU wheels suit Arc/Data Center only.
     $HasIntelGpu = $false
     $IntelGpuLabel = $null
     # Reset each run: under `irm | iex` $script: is the caller's session and could carry a stale $true.
@@ -9352,8 +9291,7 @@ main()
             # @() wraps the WHOLE if: a one-element array unrolls to a String and += would concatenate.
             $_gpuNames = @(if ($_gpuScan.Ok) { $_gpuScan.Names } else { Get-IntelRegistryAdapterNames })
             $_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)"
-            # Non-English Windows names carry no ASCII "Intel": use the registry's PCI vendor id to RE-LABEL
-            # a WMI-reported adapter, never add one. Gated on no XPU match (hybrid: "Intel UHD" + localized Arc).
+            # Localized names lack Intel: relabel via PCI vendor id only; skip on XPU match.
             if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match $_xpuNameRe })) {
                 foreach ($_reg in @(Get-IntelRegistryAdapterNames)) {
                     foreach ($_wmiName in $_gpuNames) {
@@ -9718,8 +9656,7 @@ main()
         return $null
     }
 
-    # The torch build recorded in the selected wheel's cpp_lib.json: the resident torch for exact
-    # rows, the floor for the stable-ABI wheel (else a good 0.0.35 reinstalls every run).
+    # cpp_lib.json: resident torch for exact rows, stable-ABI floor (else 0.0.35 reinstalls).
     function Get-XformersExpectedTorchBuild {
         param([string]$Version, [string]$TorchVersion, [string]$CudaTag)
         if ($Version -eq $script:XformersStableAbiVersion) {
@@ -10096,8 +10033,7 @@ main()
             return @{ Path = $short; Temporary = $false }
         }
 
-        # No 8.3 name: copy to a space-free, writable directory (%TEMP% itself may hold the space).
-        # Built one at a time: under "Stop" a throwing element in an array literal aborts the install.
+        # No 8.3 name: space-free writable dir; build each alone (a throw under Stop aborts).
         $candidates = @()
         foreach ($produce in @(
             { [System.IO.Path]::GetTempPath() },
@@ -11006,8 +10942,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         Write-StudioLine "        Re-run the installer to rebuild the environment." -ForegroundColor Yellow
         return (Exit-InstallFailure "managed Python is missing at $VenvPython")
     }
-    # `irm | iex` runs in the caller's shell, so save/restore every handoff variable. Captures sit
-    # above the try so a finally never clears a value it never set.
+    # irm | iex shares the caller's session: capture above the try; restore only what was set.
     $previousSkipStudioBase = $env:SKIP_STUDIO_BASE
     $hadPreviousSkipStudioBase = ($null -ne $previousSkipStudioBase)
     # UNSLOTH_STUDIO_HOME only for env-override installs, or llama.cpp lands in the wrong place.

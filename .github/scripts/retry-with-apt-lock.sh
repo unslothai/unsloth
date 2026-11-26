@@ -75,9 +75,8 @@ release_apt_locks() {
   sleep 5
 }
 
-# GitHub's Ubuntu images use mirror+file:$APT_MIRRORS with azure.archive.ubuntu.com first; apt fails
-# over only on errors, so a trickling mirror (runner-images #14823) never trips Acquire::*::Timeout;
-# this probes each mirror once, fastest first, and a failed attempt demotes the leader.
+# apt fails over only on errors, so a trickling mirror (runner-images #14823) never trips
+# Acquire::*::Timeout; probe each mirror once, fastest first; a failed attempt demotes the leader.
 APT_MIRRORS="${APT_MIRRORS_FILE:-/etc/apt/apt-mirrors.txt}"
 MIRROR_PROBE_SECONDS="${APT_MIRROR_PROBE_SECONDS:-5}"
 

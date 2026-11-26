@@ -1,5 +1,4 @@
-# Advanced CodeQL (replaces default setup) with the same languages, query suite and threat model;
-# weekly and manual runs only, since PR pushes queued twice and main merges cached overlay bases
+# Replaces default setup; weekly/manual only: PR pushes queued twice; main merges cached bases
 name: CodeQL
 
 on:

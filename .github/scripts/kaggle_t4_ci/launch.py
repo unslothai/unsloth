@@ -459,7 +459,6 @@ def push(
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
                     return _pushed(False, "slug_mismatch", out, attempted)
-                # Record the kernel the moment it exists.
                 _inflight_add(attempted[-1])
                 return {"ok": True, "slug": attempted[-1], "attempts": attempted}
             if any(m in lowered for m in CAPACITY_MARKERS):

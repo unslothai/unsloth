@@ -503,8 +503,7 @@ function Test-PathUnderCondaPrefix {
     return $false
 }
 
-# A persistent prepend outlives the conda activation and would shadow conda's entries.
-# Mirrors install.ps1; parity in tests/python/test_installer_conda_path_guard.py.
+# Persistent prepend shadows conda; parity: tests/python/test_installer_conda_path_guard.py
 function Resolve-UserPathPosition {
     param(
         [ValidateSet('Append','Prepend')]
@@ -1703,8 +1702,7 @@ function Test-StudioSddlWritableByNonAdmin {
         if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
         if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
     }
-    # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
-    # manage to split.
+    # An empty DACL, or one this did not manage to split, is not evidence of anything.
     if ($seen -eq 0) { return $true }
     return $false
 }
@@ -1714,8 +1712,7 @@ function Test-StudioDirectoryIsAdminOnly {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
     $sddl = ""
     try {
-        # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
-        # property access on types outside its allowed list, and the security descriptor is one.
+        # CLM blocks property reads on the Acl type; use Select-Object -ExpandProperty instead.
         $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
             Select-Object -ExpandProperty Sddl)"
     } catch { return $false }
@@ -2416,8 +2413,7 @@ function Invoke-HnswBackfill {
     $global:LASTEXITCODE = 0
 }
 
-# Bounded python -c probe: a wedged torch import or Intel driver init would hang forever.
-# Both streams drain async; .Error keeps stderr since callers decide venv fate on it. Mirrors install.ps1.
+# Bounded probe: a wedged torch import or Intel driver init would hang; stderr kept in .Error.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
     # TimedOut separates "never answered" from "answered with a failure".
@@ -2452,7 +2448,6 @@ function Invoke-BoundedPythonProbe {
     }
 }
 
-# True only when an XPU torch build can drive an Intel GPU.
 function Test-TorchXpuAvailable {
     param([string]$PythonExe)
     if (-not $PythonExe) { return $false }
@@ -2583,8 +2578,7 @@ function Test-VenvTorchIsXpu {
     } catch { return $false }
 }
 
-# Read off disk, never imported: a faulted HIP runtime makes import fail, which wiped good venvs.
-# Labels are "+rocm"; "gfx" is accepted too in case a per-arch label appears.
+# Read off disk: a faulted HIP runtime fails import and wipes good venvs; labels +rocm or gfx.
 function Test-VenvTorchIsRocm {
     param([string]$VenvPath)
     if (-not $VenvPath) { return $false }
@@ -3142,8 +3136,7 @@ function Write-LlamaFailureLog {
         Write-StudioLine "   | $line" -ForegroundColor DarkGray
     }
 }
-# Plain step/substep text on the OS stdout handle. When redirected this is the ONLY sink:
-# the CLI runs us with *>&1, so also calling Write-Host printed every step twice.
+# Stdout is the only sink if redirected; CLI merges streams, so Write-Host doubled each step.
 function Write-StudioStdoutMirror {
     param([Parameter(Mandatory = $true)][string]$Line)
     try {
@@ -3298,7 +3291,6 @@ function Show-NpmRegistryHint {
 }
 
 # ─────────────────────────────────────────────
-# Banner
 # ─────────────────────────────────────────────
 Write-StudioLine ""
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
@@ -3355,9 +3347,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
-        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
-        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
+        # GetFullPath uses process CWD, which Set-Location does not move (PowerShell#10278);
+        # fallback only.
         try {
             $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
         } catch {
@@ -3645,8 +3636,7 @@ function Invoke-NvidiaSmiBounded {
 }
 
 # ── BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
-# nvidia-smi dirs in preference order, filtered to ones holding the binary (SysNative/ProgramW6432 for
-# 32-bit processes, DriverStore). System32 before legacy NVSMI, which may hold an older binary.
+# Candidate dirs holding nvidia-smi, System32 first; legacy NVSMI may hold an older binary.
 function Get-NvidiaSmiCandidatePaths {
     $dirs = @()
     # Current driver locations first, in BOTH process bitnesses, before any legacy one.
@@ -3715,8 +3705,7 @@ $script:NvidiaPresenceStaleGpuWheel = $null
 function Test-NvidiaSmiHasGpu {
     param([Parameter(Mandatory = $true)][string]$Exe)
     $out = Invoke-NvidiaSmiBounded $Exe @('-L')
-    # Assigned, not OR-ed: the fallback loop tries several paths, and what matters is
-    # whether the binary it settled on answered, not whether an earlier one hung.
+    # Assigned, not OR-ed: the binary it settled on matters, not an earlier one that hung.
     $script:NvidiaSmiWedged = ($LASTEXITCODE -eq 124)
     return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
 }
@@ -4233,7 +4222,6 @@ function Resolve-ShadowingGfxPick {
     param([AllowNull()][string]$Picked, [AllowNull()][string[]]$AllArches)
     if (-not $Picked) { return $Picked }
     function Test-GfxHasWheels { param([AllowNull()][string]$Arch) return [bool]($Arch -and ($archFamilyMap.ContainsKey($Arch) -or $multiArchGfx -contains $Arch)) }
-    # A selected device is honoured verbatim.
     if (Test-VisibleDevicesPinned) { return $Picked }
     if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
     $distinctArches = @($AllArches | Select-Object -Unique)
@@ -6264,9 +6252,8 @@ function Get-WoaDependencyIndexArgs {
     $pip = ($Resolver -eq "pip")
     $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
     $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-    # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
-    # pip's and pip really reads it, so naming no index here matches what pip will
-    # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
+    # Each variable follows its owner's rule: pip reads PIP_NO_INDEX itself, so naming no index
+    # matches pip; UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
     $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
     if ($noIndexRequested) { return @() }
     $default = $null
@@ -6409,8 +6396,7 @@ function Get-UvSafePath {
         } else {
             $fso.GetFile($Path).ShortPath
         }
-        # A space-free alias is not necessarily a name that resolves (#11290). This value
-        # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
+        # A space-free alias may not resolve (#11290); a bogus one breaks every later uv call.
         if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
     } catch {}
     return $Path
@@ -6895,8 +6881,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
             Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"
         }
-        # Rename, then delete: a rename is all-or-nothing, Remove-Item can stop half-way.
-        # pid plus timestamp plus suffix avoids name collisions.
+        # Rename first: Remove-Item can stop half-way; pid and timestamp avoid name clashes.
         $_staleStamp = Get-Date -Format 'yyyyMMddHHmmss'
         $_staleLeaf = "$_venvLeaf.stale-$_staleStamp-$PID"
         $_staleTry = 0
@@ -7283,10 +7268,9 @@ function Get-InstalledUvVerdict {
     return $verdict
 }
 
-# Try to use uv (much faster than pip), fall back to pip if unavailable
-# A uv on PATH below the floor is passed over like an installed one, and kept only when the
-# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
-# never downloads: it keeps the old uv, as before, behind the Windows trust store.
+# A uv on PATH below the floor is passed over, kept only if the download fails offline; a hang,
+# failure or no version counts as old; staged runs never download and keep the old uv behind the
+# Windows trust store.
 function Get-SetupPathUvTooOld {
     $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $pathUv) { return $null }
@@ -7351,8 +7335,7 @@ if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not $pathUvOld) {
     } catch { }
     # No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
     if ($pathUvOld -and -not $UseUv -and (Get-Command uv -ErrorAction SilentlyContinue)) { $UseUv = $true }
-    # Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the
-    # Windows store decides instead. A download that failed while online lands here too.
+    # Below-floor uv trusts compromised emSign CA; Windows store rules, incl. failed downloads.
     if ($UseUv -and -not $script:UvPinnedInstalled) {
         $activeUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($activeUv) {
@@ -8594,8 +8577,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     substep "skipping direct PyTorch and Triton installation (no-torch mode)." "Yellow"
 }
 
-# No unsloth.exe rename needed: install.ps1 runs the CLI through python.exe and the base is not
-# reinstalled. Duplicate metadata repair is wrapped in the CLI launcher transaction.
+# No unsloth.exe rename (CLI runs via python.exe); metadata repair is in launcher transaction.
 
 # ── Publish the torch flavor this run settled on ──
 # so install_python_stack.py can enforce it; PyPI's Windows torch wheel is +cpu.
@@ -9665,8 +9647,7 @@ if ($LocalLlamaCppLinked) {
 # ==========================================================================
 #  PHASE 3.4: Install the whisper.cpp prebuilt (dictation runtime)
 # ==========================================================================
-# Mirrors the llama.cpp prebuilt install; whisper releases are slim bundles reusing llama's ggml
-# runtime, so this runs after llama; never fatal, dictation falls back to Transformers STT.
+# After llama: whisper reuses its ggml runtime; never fatal, falls back to Transformers STT.
 $WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
 $WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
 # A user-configured whisper binary/dir or an explicit skip disables the managed install entirely.
@@ -9845,7 +9826,6 @@ if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
             try {
                 Invoke-SetupCommand { winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
             } catch { }
-            # Re-check after install
             foreach ($root in $OpenSslRoots) {
                 if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
                     $OpenSslRoot = $root

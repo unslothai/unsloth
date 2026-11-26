@@ -72,8 +72,7 @@ def clean_section(title):
 
 
 def parse_readme(readme_path):
-    """Ordered (section_label, filename) pairs, filename urldecoded; dedup per (section, file), not
-    global, as the README cross-lists notebooks on purpose."""
+    """Ordered (section, filename) pairs, urldecoded; dedup per section (README cross-lists)."""
     with open(readme_path, "r", encoding = "utf-8") as f:
         text = f.read()
 
@@ -176,8 +175,7 @@ def build_view(
 
 
 def _points_into(link, nb_real):
-    """Cleanup treats links into DEST/nb as ours, so a user's own symlink survives; realpath also
-    resolves broken links, so stale ones still count."""
+    """Links into DEST/nb are ours; realpath resolves broken links, so stale ones count."""
     try:
         target = os.path.realpath(link)
     except OSError:

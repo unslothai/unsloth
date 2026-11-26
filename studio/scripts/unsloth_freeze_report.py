@@ -292,9 +292,8 @@ def studio_backend_pids() -> list[int]:
 
 
 def stop_leftover_backend():
-    """Stops the backend a previous candidate left behind: an orphan still answers (attaching as
-    OwnedReady) but its log copier died with the app; only Unsloth processes are killed, never by
-    port alone."""
+    """Stops the backend a previous candidate left behind: an orphan still answers as OwnedReady,
+    but its log copier died with the app; kills only Unsloth processes, never by port alone."""
     for pid in studio_backend_pids():
         try:
             os.kill(pid, signal.SIGTERM)

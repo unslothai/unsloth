@@ -428,8 +428,7 @@ def _publish_json(
 
 @contextlib.contextmanager
 def _manifest_lock(root: Optional[Path] = None):
-    """Best-effort exclusive lock on LOCK_NAME that never raises: a filesystem that cannot lock runs
-    unserialised rather than failing; the deadline bounds retries, not one stalled syscall."""
+    """Non-raising lock on LOCK_NAME: no-lock mounts run unserialised; deadline bounds retries."""
     handle = None
     locked = False
     try:
@@ -806,8 +805,7 @@ def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
 
 
 def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
-    """Recorded no-torch mode, or None when no manifest key or marker exists; never read None as
-    False, or older installs get silently switched out of no-torch mode."""
+    """Recorded no-torch mode, None if unknown; never read None as False (old installs flip)."""
     manifest = read_manifest(root)
     if manifest is not None:
         value = manifest.get("no_torch")
@@ -824,9 +822,8 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
 
 
 def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
-    """Torch flavor recorded by the previous install, or None when unknown; never read None as cpu,
-    or a repair reinstalls over a deliberate build; no marker companion, as the manifest is
-    dropped each pass; a run whose setup script exported the flavor never reaches this."""
+    """Torch flavor, or None when unknown: never read None as cpu, or repairs clobber deliberate
+    builds; no marker, as the manifest drops each pass; setup-exported runs never reach this."""
     manifest = read_manifest(root)
     if manifest is None:
         return None

@@ -62,9 +62,8 @@ CXX11_ABI = "TRUE"
 # CUDA >= 12.4 driver to load, below the cu13 floor.
 NVCC_APPEND_FLAGS = "-Xfatbin -compress-all --compress-mode=size"
 
-# ccache hashes the nvcc command line, not NVCC_APPEND_FLAGS, and the Linux runners' ccache (4.5)
-# has no namespaces, so the flags' identity goes into the actions/cache key instead: a cache
-# saved before them would otherwise hand back uncompressed objects.
+# ccache hashes the nvcc command line, not NVCC_APPEND_FLAGS; Linux ccache 4.5 has no namespaces, so
+# the flags' identity goes into actions/cache key, or old caches return uncompressed objects.
 CCACHE_TAG = "fatbin-size-sass"
 
 # SASS targets per package (patch_cuda_targets.py trims each setup.py to these). causal-conv1d's
@@ -100,8 +99,7 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": "",
         "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
-        # Only causal-conv1d and mamba-ssm get extra torches: upstream wheels carry -lineinfo and
-        # every arch (205/351 MB vs ~30/55 ours); upstream flash-attn is already smaller.
+        # Extra torches only for causal-conv1d and mamba-ssm, whose upstream wheels are larger.
         "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
         "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
@@ -600,7 +598,6 @@ def _coverage(rows: list[dict]) -> str:
         by_torch.setdefault(row["torch"], set()).add(row["python"])
     groups: dict[tuple[str, ...], list[str]] = {}
     for torch in sorted(by_torch, key = lambda v: tuple(map(int, v.split(".")))):
-        # cp313 -> 3.13
         pythons = tuple(
             f"{cp[2]}.{cp[3:]}" for cp in sorted(by_torch[torch], key = lambda cp: int(cp[3:]))
         )

@@ -368,8 +368,7 @@ class CudaBundle(NamedTuple):
 
 
 def cuda_bundles_from_manifest(manifest: Any, *, system: str, machine: str) -> list[CudaBundle]:
-    """The manifest's CUDA bundles for this OS / arch. Entries without SM coverage (every
-    pre-split asset, and anything malformed) are skipped, never guessed at."""
+    """Entries without SM coverage (pre-split, malformed) are skipped, never guessed at."""
     os_token = _MANIFEST_OS.get(system.lower())
     arch_token = _MANIFEST_ARCH.get(machine.lower())
     assets = manifest.get("assets") if isinstance(manifest, dict) else None
@@ -407,8 +406,7 @@ def cuda_bundles_from_manifest(manifest: Any, *, system: str, machine: str) -> l
 
 
 def _jit_covers(bundle: CudaBundle, host_sms: Sequence[str]) -> bool:
-    """Every host SM either has SASS here or can JIT this bundle's PTX (a PTX target loads on any
-    SM at or above it). Only reached for a host no bundle covers natively, e.g. a newer card."""
+    """Host SM needs SASS or PTX at or below it; only for cards no bundle covers natively."""
     supported = set(bundle.supported_sms)
     return all(
         (sm in supported and bundle.min_sm <= int(sm) <= bundle.max_sm)
