@@ -412,20 +412,26 @@ def _writers_in_turn(
                 "Unsloth: the FSDP2 save failed on a rank that writes; see that rank's error."
             )
         return
-    if me in writers:
-        index = writers.index(me)
-        if index:
-            store.wait([keys[index - 1]], _save_timeout())
-        try:
-            action()
-        except BaseException as exc:
-            own = exc
-        store.set(keys[index], "done" if own is None else "failed:" + _failure_text(own))
-    store.wait(keys, _save_timeout())
-    if own is not None:
-        raise own
-    for r, key in zip(writers, keys):
-        value = store.get(key)
+    values = []
+    try:
+        if me in writers:
+            index = writers.index(me)
+            if index:
+                store.wait([keys[index - 1]], _save_timeout())
+            try:
+                action()
+            except BaseException as exc:
+                own = exc
+            store.set(keys[index], "done" if own is None else "failed:" + _failure_text(own))
+        store.wait(keys, _save_timeout())
+        if own is not None:
+            raise own
+        values = [store.get(key) for key in keys]
+    finally:
+        # Each rank of the world runs this as often (the group is the world or one of the 1-D
+        # sub-meshes that split it), so it counts toward rank 0's store guard like the others.
+        _handshake_done(dist, store)
+    for r, value in zip(writers, values):
         if value != b"done":
             detail = value.decode("utf-8", errors = "replace").removeprefix("failed:")
             raise WriterFailed(
