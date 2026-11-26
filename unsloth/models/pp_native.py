@@ -3033,7 +3033,7 @@ class PipelineParallel:
                     save_embedding_layers = kwargs.get("save_embedding_layers", "auto"),
                 )
                 local[adapter] = {
-                    k: (gather(v) if gather is not None else v).detach().cpu().clone()
+                    k: (gather(v) if gather is not None else v).detach().to("cpu", copy = True)
                     for k, v in selected.items()
                     if not k.startswith(self._foreign_prefixes)
                 }

@@ -4159,7 +4159,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
             "shape_padding"     : True,
-            "trace.enabled"     : False,"""
+            "trace.enabled"     : False,
+            "triton.cudagraphs" : False,"""
 
         if DEVICE_TYPE == "cuda":
             # TMA only if every visible card is sm90+ (compile options are process-wide); an
