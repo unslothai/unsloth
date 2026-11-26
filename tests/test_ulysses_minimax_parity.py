@@ -229,7 +229,8 @@ LIGHTNING_CASES = {
 
 
 def _spawn(fn, world, *args):
-    # Fork (spawn loses the CUDA spoof) unless a GPU backward ran: forks then refuse autograd.
+    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof. A real GPU host
+    # needs no spoof, and once this process ran a backward there, forked children refuse autograd.
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
     start_method = "fork" if not has_real_accelerator() or fork_can_backward() else "spawn"

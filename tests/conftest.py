@@ -75,7 +75,8 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_deleted_torch_config_entries():
-    """A test leaving a dynamo/inductor config entry deleted errors at its own teardown."""
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
     from torch_config_guard import check_after_test, install_delete_recorder
 
     install_delete_recorder()
