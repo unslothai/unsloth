@@ -5,30 +5,25 @@ import { useEffect } from "react";
 import { loadHubSettings } from "@/features/settings/api/hub-settings";
 import { setHubPageBase, useHubWebUrl, useMissingHubPageBase } from "@/lib/hf-endpoint";
 
-// Per endpoint: the store holds one base, so switching back to a mirror reapplies its answer.
-const answers = new Map<string, string | null>();
+// Nothing is kept past a lookup: the store holds the current mirror's base, and links that
+// mount together share one request.
+const pending = new Set<string>();
 
 /** `/api/health` hides an endpoint saved in Settings; the owner route names it where this browser
  * can reach it. Others keep the relay. */
 async function loadSavedPageBase(endpoint: string): Promise<void> {
-  if (answers.has(endpoint)) {
-    const known = answers.get(endpoint);
-    if (known) setHubPageBase(endpoint, known);
-    return;
-  }
-  answers.set(endpoint, null);
+  if (pending.has(endpoint)) return;
+  pending.add(endpoint);
   try {
     const { pageBase, pageBaseRelay } = await loadHubSettings();
-    // A save that landed first answers for the new endpoint; leave this one to ask again.
-    if (pageBase && !(pageBaseRelay && endpoint.endsWith(pageBaseRelay))) {
-      answers.delete(endpoint);
-      return;
+    // The route reads the current settings: a save that landed first answers for another relay.
+    if (pageBase && pageBaseRelay && endpoint.endsWith(pageBaseRelay)) {
+      setHubPageBase(endpoint, pageBase);
     }
-    answers.set(endpoint, pageBase);
-    if (pageBase) setHubPageBase(endpoint, pageBase);
   } catch {
-    // Not the owner, or offline: keep the relay URL now, and ask again when next needed.
-    answers.delete(endpoint);
+    // Not the owner, or offline: the relay URL stays until links next mount.
+  } finally {
+    pending.delete(endpoint);
   }
 }
 
