@@ -364,3 +364,126 @@ def test_a_batch_keeps_the_longest_arrival_prefix_that_fits(monkeypatch):
     results = asyncio.run(run())
     assert batches == [["a", "b", "b", "c"]]
     assert [r["images"] if r else None for r in results] == [["a"], ["b", "b"], ["c"], None]
+
+
+def _queue_members(specs, run_batch, **extra):
+    """Starts one request per (prompt, n) behind a running render, frees it, returns each result."""
+    rendering = {"on": True}
+
+    async def run():
+        tasks = [
+            asyncio.ensure_future(
+                batching.generate(
+                    "key",
+                    prompt,
+                    n,
+                    None,
+                    busy = lambda: rendering["on"],
+                    run_batch = run_batch,
+                    **extra,
+                )
+            )
+            for prompt, n in specs
+        ]
+        await _until(lambda: _waiting() == len(specs))
+        rendering["on"] = False
+        return await asyncio.gather(*tasks)
+
+    return asyncio.run(run())
+
+
+def _echo(prompts, seeds):
+    return {"images": list(prompts), "seeds": list(seeds), "seed": seeds[0]}
+
+
+def test_a_failed_call_keeps_the_images_that_finished():
+    calls = []
+
+    class Failed(RuntimeError):
+        pass
+
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
+        calls.append(list(prompts))
+        exc = Failed("CUDA error: device lost")
+        exc.finished = _echo(prompts[:2], seeds[:2])
+        raise exc
+
+    results = _queue_members(
+        [("a", 1), ("b", 1), ("c", 1)],
+        run_batch,
+        splittable = lambda exc: False,
+        salvage = lambda exc: getattr(exc, "finished", None),
+    )
+    assert calls == [["a", "b", "c"]]
+    assert [r["images"] if r else None for r in results] == [["a"], ["b"], None]
+
+
+def test_one_members_value_error_never_fails_the_others():
+    calls = []
+
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
+        calls.append(list(prompts))
+        if "bad" in prompts:
+            raise ValueError("bad is not a valid prompt for this model")
+        return _echo(prompts, seeds)
+
+    results = _queue_members(
+        [("a", 1), ("bad", 1), ("c", 1), ("d", 1)],
+        run_batch,
+        splittable = lambda exc: isinstance(exc, ValueError),
+    )
+    assert calls == [["a", "bad", "c", "d"], ["a", "bad"], ["c", "d"]]
+    # c and d keep a shared call; a and the bad request render alone, so only the bad one sees its error.
+    assert [r["images"] if r else None for r in results] == [None, None, ["c"], ["d"]]
+
+
+def test_a_blank_prompt_renders_alone_and_the_rest_still_batch():
+    calls = []
+
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
+        calls.append(list(prompts))
+        return _echo(prompts, seeds)
+
+    results = _queue_members([("a", 1), ("   ", 1), ("c", 1)], run_batch)
+    assert calls == [["a", "c"]]
+    assert [r["images"] if r else None for r in results] == [["a"], None, ["c"]]
+
+
+def test_the_route_keeps_finished_images_from_a_failed_call(studio):
+    app, backend, saved = studio
+    real_generate = backend.generate
+
+    def generate(**kwargs):
+        if kwargs.get("prompts") is None:
+            return real_generate(**kwargs)
+        done = real_generate(
+            **{**kwargs, "prompts": kwargs["prompts"][:2], "seeds": kwargs["seeds"][:2]}
+        )
+        exc = RuntimeError("CUDA error: an illegal memory access was encountered")
+        exc._unsloth_finished_images = {"images": done["images"], "seeds": done["seeds"]}
+        raise exc
+
+    backend.generate = generate
+    posts = [
+        ("/v1/images/generations", "alice", _openai("a fox")),
+        ("/v1/images/generations", "bob", _openai("a cat")),
+        ("/v1/images/generations", "carol", _openai("an owl")),
+    ]
+    responses = _post_while_rendering(app, backend, posts, waiting = 3)
+    assert all(r.status_code == 200 for r in responses)
+    # One partial batched call, then only the unfinished member renders again.
+    assert [c["prompts"] for c in backend.calls] == [["a fox", "a cat"], None]
+    assert backend.calls[1]["prompt"] == "an owl"
+    assert sorted(record["account"] for record in saved) == ["alice", "bob", "carol"]

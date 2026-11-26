@@ -56062,6 +56062,33 @@ async def _coalesced_image_generate(
     def cancelled(exc: BaseException) -> bool:
         return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
 
+    def splittable(exc: BaseException) -> bool:
+        """One member's input or size can cause these, so the batch splits by member instead of failing all."""
+        from core.inference.diffusion_batched import is_oom_error
+        from core.inference.diffusion_memory import unified_memory_refusal_code
+
+        return (
+            isinstance(exc, ValueError)
+            or unified_memory_refusal_code(exc) is not None
+            or is_oom_error(exc)
+        )
+
+    def salvage(exc: BaseException) -> Optional[dict]:
+        """The images a failed call finished, as a result its leading members can keep."""
+        finished = getattr(exc, "_unsloth_finished_images", None)
+        if not finished or not finished.get("images"):
+            return None
+        return {
+            "images": list(finished["images"]),
+            "seeds": list(finished.get("seeds") or []),
+            "seed": (finished.get("seeds") or [0])[0],
+            "repo_id": status.get("repo_id"),
+            "model_kind": status.get("model_kind"),
+            "gguf_filename": status.get("gguf_filename"),
+            "negative_prompt": generate_kwargs.get("negative_prompt") or None,
+            "workflow": "txt2img",
+        }
+
     sizes_of = getattr(backend, "coalesce_batch_sizes", None)
 
     def fits(total: int) -> bool:
@@ -56090,6 +56117,8 @@ async def _coalesced_image_generate(
             # A Stop from this account reaches its images while another account's call renders them.
             ride = (lambda: rider(stopped)) if rider is not None else None,
             fits = fits,
+            splittable = splittable,
+            salvage = salvage,
         )
         # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
         if result is None and stopped.is_set():

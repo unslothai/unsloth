@@ -17697,6 +17697,23 @@ class DiffusionBackend:
                 except BaseException:
                     if previewer is not None:
                         previewer.finish()
+                    failure = sys.exc_info()[1]
+                    # A failed batched call keeps the images that finished (in job order), so the requests they
+                    # belong to are not rendered again. Never after a Stop.
+                    if (
+                        isinstance(failure, Exception)
+                        and images
+                        and not cancel.is_set()
+                        and not layer_count
+                        and not latent_output
+                    ):
+                        try:
+                            failure._unsloth_finished_images = {
+                                "images": list(images),
+                                "seeds": list(per_image_seeds),
+                            }
+                        except Exception:  # noqa: BLE001 - an exception that takes no attributes keeps none
+                            pass
                     # A cancelled or failed render may already have generalised a reused graph, so the success path never sees the count grow: dirty it now.
                     try:
                         if (

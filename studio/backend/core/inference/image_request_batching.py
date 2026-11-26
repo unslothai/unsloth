@@ -78,10 +78,26 @@ def request_seeds(seed: Optional[int], n: int) -> list[int]:
     return [(base + i) & SEED_MASK for i in range(n)]
 
 
-def _split(result: dict[str, Any], members: list[_Member]) -> list[dict[str, Any]]:
+def _split(
+    result: dict[str, Any],
+    members: list[_Member],
+    *,
+    prefix: bool = False,
+) -> list[dict[str, Any]]:
+    """Each member's slice of a batched result, in order. ``prefix``: a failed call's finished images, so only
+    the leading members whose images all finished get a part."""
     images = list(result.get("images") or [])
     seeds = list(result.get("seeds") or [])
     wanted = sum(len(member.seeds) for member in members)
+    if prefix:
+        covered, total = [], 0
+        for member in members:
+            if total + len(member.seeds) > len(images):
+                break
+            total += len(member.seeds)
+            covered.append(member)
+        members, wanted = covered, total
+        images, seeds = images[:total], seeds[:total]
     if len(images) != wanted or (seeds and len(seeds) != wanted):
         raise ValueError(f"a batch of {wanted} images returned {len(images)}")
     if len({member.owner for member in members}) > 1:
@@ -117,6 +133,51 @@ def _fitting_prefix(members: list[_Member], fits: Callable[[int], bool]) -> list
         if fits(total):
             best = index + 1
     return members[:best]
+
+
+async def _render_group(
+    group: list[_Member],
+    run_batch: Callable[..., Awaitable[dict[str, Any]]],
+    shared_outcome: Callable[[BaseException], bool],
+    splittable: Optional[Callable[[BaseException], bool]],
+    salvage: Optional[Callable[[BaseException], Optional[dict[str, Any]]]],
+) -> dict[int, dict[str, Any]]:
+    """Renders ``group`` as one call; ``{id(member): part}`` for every member it rendered. A failure keeps the
+    images that finished; a refusal, a ValueError or an OOM splits the rest by member, so one member's error never
+    fails the others. Members left out render alone; only a shared outcome raises."""
+    group = [member for member in group if not member.future.done()]
+    if len(group) < 2:
+        return {}
+    prompts = [member.prompt for member in group for _ in member.seeds]
+    seeds = [s for member in group for s in member.seeds]
+    try:
+        result = await run_batch(prompts, seeds, owners = [member.owner for member in group])
+        return {id(m): part for m, part in zip(group, _split(result, group))}
+    except Exception as exc:  # noqa: BLE001 -- keep what finished, split what can be split
+        if shared_outcome(exc):
+            raise
+        done: dict[int, dict[str, Any]] = {}
+        finished = salvage(exc) if salvage is not None else None
+        if finished:
+            try:
+                parts = _split(finished, group, prefix = True)
+            except ValueError:  # noqa: PERF203 -- a malformed salvage keeps nothing
+                parts = []
+            done.update((id(m), part) for m, part in zip(group, parts))
+        rest = [member for member in group if id(member) not in done]
+        logger.info(
+            "images.batch_failed: %s; %d of %d requests kept their finished images",
+            exc,
+            len(done),
+            len(group),
+        )
+        if len(rest) > 1 and splittable is not None and splittable(exc):
+            middle = (len(rest) + 1) // 2
+            for half in (rest[:middle], rest[middle:]):
+                done.update(
+                    await _render_group(half, run_batch, shared_outcome, splittable, salvage)
+                )
+        return done
 
 
 def _close(batch: _Batch) -> None:
@@ -164,6 +225,8 @@ async def generate(
     check: Optional[Callable[[], None]] = None,
     ride: Optional[Callable[[], ContextManager[Any]]] = None,
     fits: Optional[Callable[[int], bool]] = None,
+    splittable: Optional[Callable[[BaseException], bool]] = None,
+    salvage: Optional[Callable[[BaseException], Optional[dict[str, Any]]]] = None,
 ) -> Optional[dict[str, Any]]:
     """None = render alone. ``key`` names no account, so any account joins; ``owner`` is the caller's.
     ``check`` raises when a joined member must leave (its own Stop); ``ride`` scopes it as rendering."""
@@ -204,34 +267,31 @@ async def generate(
             raise
         _close(batch)
         batch.fired = True
-        members = list(batch.members)
+        leader = batch.members[0]
+        # A blank prompt fails validation for the whole call: it renders alone and gets its own error.
+        if not leader.prompt.strip():
+            return None
+        members = [member for member in batch.members if member.prompt.strip()]
         if fits is not None:
             members = _fitting_prefix(members, fits)
         if len(members) <= 1:
             return None
-        prompts = [member.prompt for member in members for _ in member.seeds]
-        seeds = [s for member in members for s in member.seeds]
         logger.info(
             "images.batch: %d requests from %d accounts render as one call of %d images",
             len(members),
             len({member.owner for member in members}),
-            len(seeds),
+            sum(len(member.seeds) for member in members),
         )
         try:
-            parts = _split(
-                await run_batch(prompts, seeds, owners = [member.owner for member in members]),
-                members,
-            )
-        except Exception as exc:  # noqa: BLE001 -- fall back unless the outcome applies to every request
-            if shared_outcome(exc):
-                _share(exc, members[1:], owner)
-                raise
-            logger.info("images.batch_failed: %s; each request runs alone", exc)
-            return None
-        for member, part in zip(members[1:], parts[1:]):
-            if not member.future.done():
+            done = await _render_group(members, run_batch, shared_outcome, splittable, salvage)
+        except Exception as exc:
+            _share(exc, members[1:], owner)
+            raise
+        for member in members[1:]:
+            part = done.get(id(member))
+            if part is not None and not member.future.done():
                 member.future.set_result(part)
-        return parts[0]
+        return done.get(id(leader))
     finally:
         _close(batch)
         batch.fired = True
