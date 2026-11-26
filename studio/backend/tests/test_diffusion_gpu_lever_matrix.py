@@ -2491,6 +2491,21 @@ def test_incident_r5_18105_int8_gemm_race_at_the_long_row_bucket(monkeypatch):
         assert 16384 not in cut.race_points()
 
 
+def test_incident_r9_cutlass_winners_are_paired_with_todays_path(monkeypatch):
+    """R9: on the RTX 6000 Ada (300 W) the CUTLASS tiles won every MiniMax-H3 weight shape timed alone, so 313 int8
+    Linears ran them (R8: 52); the video step ran 6.13 s instead of 5.40 s at the same 291 W (SM clock 1240 -> 1035 MHz)
+    and H3-Image 2048^2 lost 5% the same way. The 16384-row race (the slot video row counts take) checks its sustained
+    winners in pairs with today's path, whose clock both set; image row counts keep their race as before."""
+    from core.inference import diffusion_int8_cutlass as cut
+    with clean_policy_env():
+        for rows in (16384, 19318):
+            assert cut.paired_for(rows), rows
+        for rows in (512, 4160, 4608):
+            assert not cut.paired_for(rows), rows
+        monkeypatch.setenv(cut.PAIRED_ENV, "0")
+        assert not cut.paired_for(16384)
+
+
 @pytest.mark.parametrize("steps", [1, 8, 20, 30])
 def test_incident_r4_17362_h3_steps_equal_evaluations(steps, monkeypatch):
     """R3 / R4, #17362: H3 video ran 19 denoiser passes for 20 requested steps (the tester's +1 to +4% was 1 to 5% behind

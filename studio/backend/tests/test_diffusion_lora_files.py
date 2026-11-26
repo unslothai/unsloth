@@ -547,7 +547,7 @@ def test_metadata_scales_follow_peft_patterns_and_yield_to_alpha_tensors():
     rs = lf.normalize_lora(state, "krea-2", dict(meta, use_rslora = True))
     assert torch.allclose(rs[stem + "wq.lora_B.weight"], b * 4.0)
     dora = lf.normalize_lora(state, "krea-2", dict(meta, use_dora = True))
-    assert dora[stem + "wq.lora_B.weight"] is b
+    assert torch.allclose(dora[stem + "wq.lora_B.weight"], b * 2.0)
     assert lf.normalize_lora(state, "krea-2")[stem + "wq.lora_B.weight"] is b
 
 
@@ -637,6 +637,39 @@ def test_kron_factor_pair_larger_than_any_layer_is_refused_before_multiplying():
         parts.update({f"lokr_{name}_a": a, f"lokr_{name}_b": b})
         with pytest.raises(ValueError, match = "larger than any layer"):
             lf._kron_factors(parts)
+
+
+def test_dora_metadata_scale_folded_into_b_matches_peft_scaling():
+    """A rewritten DoRA file loads at scaling 1 (no metadata reaches PEFT): B pre-scaled by lora_alpha / r must give
+    PEFT's own DoRA layer at that lora_alpha, magnitude unchanged."""
+    peft = pytest.importorskip("peft")
+    torch.manual_seed(0)
+    base = torch.nn.Linear(16, 12, bias = False)
+    x = torch.randn(3, 16)
+    a, b = torch.randn(4, 16) * 0.1, torch.randn(12, 4) * 0.1
+
+    def dora_layer(alpha, b_weight):
+        model = torch.nn.Sequential(torch.nn.Linear(16, 12, bias = False))
+        model[0].weight.data.copy_(base.weight.data)
+        cfg = peft.LoraConfig(
+            r = 4, lora_alpha = alpha, use_dora = True, target_modules = ["0"], init_lora_weights = False
+        )
+        model = peft.get_peft_model(model, cfg)
+        layer = model.base_model.model[0]
+        layer.lora_A["default"].weight.data.copy_(a)
+        layer.lora_B["default"].weight.data.copy_(b_weight)
+        return model, layer
+
+    ref, ref_layer = dora_layer(8, b)
+    meta = {"lora_alpha": 8, "r": 4, "use_dora": True}
+    folded_b = lf.normalize_lora({"m.lora_A.weight": a, "m.lora_B.weight": b}, "krea-2", meta)[
+        "m.lora_B.weight"
+    ]
+    got, got_layer = dora_layer(4, folded_b)  # lora_alpha == r: scaling 1, as a dict load gets
+    magnitude = ref_layer.lora_magnitude_vector["default"].weight.data.clone()
+    got_layer.lora_magnitude_vector["default"].weight.data.copy_(magnitude)
+    with torch.no_grad():
+        assert torch.allclose(ref(x), got(x), atol = 1e-6)
 
 
 def test_qwen21_fused_gate_up_splits_rows_gate_first_and_shares_a():

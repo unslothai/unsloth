@@ -34,6 +34,12 @@ if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
     _apply_debug_distributed_env()
     del _apply_debug_distributed_env
 
+# Also before any process group (torchrun, accelerate, the Trainer): NCCL reads it at the first communicator.
+from .nccl_env import apply_nccl_default_env as _apply_nccl_default_env
+
+_apply_nccl_default_env()
+del _apply_nccl_default_env
+
 # UNSLOTH_PARALLEL="dp=..,tp=..,pp=..,cp=.." -> UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_CP_SIZE / UNSLOTH_FSDP2,
 # before anything below reads those. A conflict with a variable set by hand raises here, on every rank.
 from .parallel_env import apply_parallel_env as _apply_parallel_env, parallelize
