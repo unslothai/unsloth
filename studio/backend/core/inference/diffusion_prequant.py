@@ -1114,9 +1114,9 @@ def _offline_local_build(
     try:
         if not (_LOCAL_FILES_ONLY.get() or hub_offline()):
             return None
-        from .diffusion_prequant_cache import CACHEABLE_SCHEMES, lookup
+        from .diffusion_prequant_cache import cacheable_scheme, lookup
 
-        if scheme not in CACHEABLE_SCHEMES:
+        if not cacheable_scheme(scheme, fam):
             return None
         if cached_checkpoint_path(hosted, online = False) is not None:
             return None
