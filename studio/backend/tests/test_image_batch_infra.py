@@ -700,3 +700,52 @@ def test_a_resident_load_with_a_measured_win_coalesces_at_the_winning_size_only(
     assert [len(call["prompts"]) for call in _batched_calls(backend)] == [2]
     assert len(_alone(backend)) == 1
     assert trace.snapshot()["call_sizes"] == {"2": 1}
+
+
+def test_members_a_batch_left_out_coalesce_again_behind_it():
+    """Admitted size 2, four requests waiting: two calls of two, nobody renders alone (the left-out pair waits for the
+    first call and then shares the next one)."""
+    state = {"blocker": True, "running": 0}
+    calls = []
+
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
+        calls.append(list(prompts))
+        state["running"] += 1
+        try:
+            await asyncio.sleep(0.2)
+        finally:
+            state["running"] -= 1
+        return {"images": list(prompts), "seeds": list(seeds), "seed": seeds[0]}
+
+    def busy():
+        return state["blocker"] or state["running"] > 0
+
+    async def run():
+        tasks = []
+        for prompt in ("a", "b", "c", "d"):
+            tasks.append(
+                asyncio.ensure_future(
+                    batching.generate(
+                        "k",
+                        prompt,
+                        1,
+                        None,
+                        busy = busy,
+                        run_batch = run_batch,
+                        fits = lambda total: total == 2,
+                    )
+                )
+            )
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.1)
+        state["blocker"] = False
+        return await asyncio.gather(*tasks)
+
+    results = asyncio.run(run())
+    assert sorted(map(sorted, calls)) == [["a", "b"], ["c", "d"]]
+    assert all(r is not None for r in results)
+    assert trace.snapshot()["counts"].get("rejoined", 0) >= 2

@@ -29,6 +29,12 @@ class _RunAlone(Exception):
     """Retry this request individually."""
 
 
+# A member a fired batch could not take (no admitted size): it may coalesce again, behind that batch.
+_LEFT_OUT_MSG = "left out"
+_LEFT_OUT = object()
+REJOIN_ROUNDS = 3
+
+
 @dataclass
 class _Member:
     prompt: str
@@ -224,6 +230,29 @@ async def generate(
     n: int,
     seed: Optional[int],
     *,
+    on_rejoin: Optional[Callable[[], None]] = None,
+    **kwargs: Any,
+) -> Optional[dict[str, Any]]:
+    """None = render alone. A member that a fired batch left out (its size was not admitted) coalesces again behind
+    that batch, at most ``REJOIN_ROUNDS`` times; ``on_rejoin`` runs first (the caller's busy signal then waits for the
+    generation running now). Keyword arguments as ``_generate_once``."""
+    for _ in range(REJOIN_ROUNDS + 1):
+        result = await _generate_once(key, prompt, n, seed, **kwargs)
+        if result is not _LEFT_OUT:
+            return result
+        trace.count("rejoined")
+        if on_rejoin is not None:
+            on_rejoin()
+    trace.fallback("left out of the call")
+    return None
+
+
+async def _generate_once(
+    key: Hashable,
+    prompt: str,
+    n: int,
+    seed: Optional[int],
+    *,
     busy: Callable[[], bool],
     run_batch: Callable[[list[str], list[int]], Awaitable[dict[str, Any]]],
     shared_outcome: Callable[[BaseException], bool] = lambda exc: False,
@@ -264,8 +293,10 @@ async def generate(
             try:
                 with ride() if ride is not None else nullcontext():
                     return await _await_member(batch, member, check)
-            except _RunAlone:
-                trace.fallback("left out of the call")
+            except _RunAlone as exc:
+                if exc.args == (_LEFT_OUT_MSG,):
+                    return _LEFT_OUT
+                trace.fallback("render failed, retried alone")
                 return None
         _close(batch)
     if not busy():
@@ -276,6 +307,7 @@ async def generate(
     batch.members.append(_Member(prompt, request_seeds(seed, n), loop.create_future(), owner))
     batch.images = n
     trace.count("led")
+    left_out: set = set()
     try:
         try:
             # Reserve the slot turn now so later arrivals cannot overtake the leader.
@@ -300,6 +332,16 @@ async def generate(
         members = [member for member in batch.members if member.prompt.strip()]
         if fits is not None:
             members = _fitting_prefix(members, fits)
+        taken = {id(member) for member in members} if len(members) > 1 else set()
+        left_out = {
+            id(member)
+            for member in batch.members[1:]
+            if id(member) not in taken and member.prompt.strip()
+        }
+        # Told now, not after the call: they coalesce again behind it while it runs.
+        for member in batch.members[1:]:
+            if id(member) in left_out and not member.future.done():
+                member.future.set_exception(_RunAlone(_LEFT_OUT_MSG))
         if len(members) <= 1:
             trace.fallback("no admitted batch size" if len(batch.members) > 1 else "nobody joined")
             return None
@@ -326,4 +368,6 @@ async def generate(
         batch.fired = True
         for member in batch.members[1:]:
             if not member.future.done():
-                member.future.set_exception(_RunAlone())
+                member.future.set_exception(
+                    _RunAlone(_LEFT_OUT_MSG) if id(member) in left_out else _RunAlone()
+                )

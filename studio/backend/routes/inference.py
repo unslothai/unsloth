@@ -56317,6 +56317,8 @@ async def _coalesced_image_generate(
             on_lead = on_lead,
             wait = wait,
             seeded_ok = seeded_ok,
+            # Left out of a fired batch: coalesce again behind the generation running now.
+            on_rejoin = arrived_behind.clear,
         )
         # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
         if result is None and stopped.is_set():
