@@ -49,7 +49,14 @@ def _edited_order(saved, base, layout, importing, moves):
     return _merge_order(saved, layout)
 
 
-def _merge(stored, base, layout, *, importing, order_moves = ()):
+def _merge(
+    stored,
+    base,
+    layout,
+    *,
+    importing,
+    order_moves = (),
+):
     # Null values are tombstones: a late browser import cannot restore a deletion or unfiling.
     sections = dict(stored.get("sections", {}))
     for key in base["sections"].keys() | layout["sections"].keys():
@@ -132,7 +139,14 @@ def get_sidebar_layout():
     return _visible(get_app_setting(_KEY, {}))
 
 
-def save_sidebar_layout(operation_id, base, layout, *, importing, order_moves = ()):
+def save_sidebar_layout(
+    operation_id,
+    base,
+    layout,
+    *,
+    importing,
+    order_moves = (),
+):
     with closing(get_connection()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (_KEY,)).fetchone()

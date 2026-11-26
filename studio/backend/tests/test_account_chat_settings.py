@@ -1015,7 +1015,12 @@ def test_sidebar_sections_merge_concurrent_row_placements(client, initial, first
 
     path = "/chat/sidebar-sections"
 
-    def save(operation_id, layout, base = None, moves = ()):
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
         response = client.post(
             path,
             json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
