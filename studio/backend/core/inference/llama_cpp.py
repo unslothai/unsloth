@@ -17073,9 +17073,18 @@ class LlamaCppBackend:
                 )
             except Exception:  # noqa: BLE001 -- no discount: mapped bytes are not refused anyway
                 lazy = 0
+            # Without draft-mtp llama.cpp never loads the embedded NextN/MTP blocks.
+            try:
+                unloaded = (
+                    0
+                    if _extra_args_requests_mtp(argv, _env)
+                    else int(self._unloaded_nextn_bytes(model_path) or 0)
+                )
+            except Exception:  # noqa: BLE001 -- unknown: no discount
+                unloaded = 0
             # Lazy-read tables stay mapped from disk and never take VRAM: price the rest, as the
             # host-RAM advisory does, so they neither spill nor pull KV onto the host.
-            resident = max(1, model_bytes - max(0, lazy))
+            resident = max(1, model_bytes - max(0, lazy) - max(0, unloaded))
             free_vram_bytes = sum(max(0, row[1]) for row in gpus) * 1024 * 1024
             # A hand-set layer count caps what the GPUs hold, whatever VRAM is free.
             try:

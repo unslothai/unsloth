@@ -350,6 +350,15 @@ class TestPreLaunch:
         cmd = _cmd("--no-mmap", "-ngl", "12")
         assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs)
 
+    def test_an_unloaded_mtp_head_is_not_priced(self, windows):
+        # 40 GB file with a 3 GB NextN head llama.cpp skips without draft-mtp: 7 GB stays behind.
+        backend = _backend(model_gb = 40, kv_gb = 0)
+        backend._unloaded_nextn_bytes = lambda _path: 3 * _GB
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 10 * _MIB)
+        assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), _CARD, {}, **kwargs) is None
+        cmd = _cmd("--no-mmap", "--spec-type", "draft-mtp")
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs)
+
     def test_flash_attention_off_does_not_price_v_twice(self, windows):
         # The estimator floors V at f16 with flash attention off: the q4_0-K figure is the cache.
         backend = _backend()
