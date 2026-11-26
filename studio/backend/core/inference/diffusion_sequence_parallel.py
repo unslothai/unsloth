@@ -231,7 +231,13 @@ def call_refusal(module: Any, kwargs: dict) -> Optional[str]:
     name = type(module).__name__
     for key in SP_UNSPLIT_INPUTS.get(name, ()):
         value = kwargs.get(key)
-        if value is not None and value is not False and value != 0 and value != {}:
+        unset = (
+            value is None
+            or value is False
+            or (isinstance(value, (int, float)) and value == 0)
+            or (isinstance(value, dict) and not value)
+        )
+        if not unset:
             return f"{key} is set"
     prefix = SP_JOINT_PREFIX.get(name)
     if prefix is None:

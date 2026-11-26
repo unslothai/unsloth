@@ -243,6 +243,9 @@ def test_a_reference_kv_cache_call_is_not_split():
     }
     assert sp.call_refusal(model, kw) == "kv_cache_mode is set"
     assert sp.call_refusal(model, {**kw, "kv_cache_mode": None, "num_ref_tokens": 0}) is None
+    assert sp.call_refusal(
+        model, {**kw, "kv_cache_mode": None, "num_ref_tokens": 0, "kv_cache": object()}
+    ) == ("kv_cache is set")
     assert (
         sp.call_refusal(
             model,
