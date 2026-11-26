@@ -5711,7 +5711,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # transformers <= 4.48 does not support logits_to_keep, so drop the logits here; see huggingface/trl#2770.
 
-    function = inspect.getsource(_get_per_token_logps_and_entropies)
+    function = _unsloth_wrap_hidden_states_section(
+        inspect.getsource(_get_per_token_logps_and_entropies)
+    )
     if trl_version < Version("1.7.0"):
         # TRL < 1.7.0 unpacks (logps, entropies) while TRL >= 1.7.0 unpacks (logps, entropies, aux_loss), so drop the third element to match. The regex tolerates comment/whitespace drift and fails loud rather than ship a 3-tuple to older TRL.
         new_function, n = re.subn(
@@ -5727,6 +5729,55 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
         function = new_function
     return function
+
+
+_SCORER_HIDDEN_STATES_REQUEST = (
+    'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0" if _unsloth_head_hooked else "1"'
+)
+_SCORER_HIDDEN_STATES_RESET = 'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"'
+
+
+def _unsloth_wrap_hidden_states_section(source):
+    """Put the scorer's hidden-states section in try / finally in the generated source, so a caught error
+    (an OOM retry, auto_find_batch_size) cannot leave UNSLOTH_RETURN_HIDDEN_STATES at "1" for later
+    generate / evaluate forwards. Done on the text so the template body keeps its indentation."""
+    lines = source.split("\n")
+    starts = [i for i, line in enumerate(lines) if line.strip() == _SCORER_HIDDEN_STATES_REQUEST]
+    if len(starts) != 1:
+        raise RuntimeError(
+            "Unsloth GRPO: expected one hidden-states request in _get_per_token_logps_and_entropies, "
+            f"found {len(starts)}; update _unsloth_wrap_hidden_states_section."
+        )
+    start = starts[0]
+    indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+    end = next(
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if lines[i] == indent + _SCORER_HIDDEN_STATES_RESET
+        ),
+        None,
+    )
+    if end is None:
+        raise RuntimeError(
+            "Unsloth GRPO: the hidden-states reset after the scorer section moved; "
+            "update _unsloth_wrap_hidden_states_section."
+        )
+    body = [("    " + line) if line.strip() else line for line in lines[start + 1 : end]]
+    wrapped = (
+        [indent + "_unsloth_prior_hidden_states = os.environ.get('UNSLOTH_RETURN_HIDDEN_STATES')"]
+        + [lines[start], indent + "try:"]
+        + (body if any(line.strip() for line in body) else [indent + "    pass"])
+        + [
+            indent + "finally:",
+            indent + "    if _unsloth_prior_hidden_states is None:",
+            indent + "        os.environ.pop('UNSLOTH_RETURN_HIDDEN_STATES', None)",
+            indent + "    else:",
+            indent
+            + "        os.environ['UNSLOTH_RETURN_HIDDEN_STATES'] = _unsloth_prior_hidden_states",
+        ]
+    )
+    return "\n".join(lines[:start] + wrapped + lines[end:])
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
