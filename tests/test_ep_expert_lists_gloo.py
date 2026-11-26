@@ -26,6 +26,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_sh
 
 from test_ep_moe_families_gloo import FAMILIES, _local_config, _rows, _sum_loss  # noqa: E402
 
+# A shared expert: runs on every token beside the routed experts (H to H).
+_SHARED = ("shared_expert", "shared_experts", "shared_mlp")
+SHARED_FAMILIES = ("qwen2_moe", "glm4_moe", "deepseek_v3", "qwen3_next", "hunyuan_v1_moe")
+
 LIST_FAMILIES = (
     "mixtral",
     "olmoe",
@@ -81,6 +85,7 @@ def _case_list_family(
     experts = None,
     gc = False,
     experts_and_router_only = False,
+    warm = False,
 ):
     import torch.distributed as dist
     from peft import get_peft_model_state_dict
@@ -89,6 +94,23 @@ def _case_list_family(
 
     build, tpn, epn = _modules()
     lists = epn._lists()
+    shared_calls = {"ref": 0, "ep": 0}
+
+    def count_shared(model, key):
+        # `warm`: one forward without gradients first (pass 1 learns which children it may skip), then count the
+        # shared expert calls of the measured forward / backward.
+        if not warm:
+            return
+        with torch.no_grad():
+            model(input_ids = rows[rank][0], use_cache = False)
+        for block in tpn.moe_blocks_with_experts(model):
+            for name in _SHARED:
+                child = block._modules.get(name)
+                if child is not None:
+                    child.register_forward_hook(
+                        lambda *a: shared_calls.__setitem__(key, shared_calls[key] + 1)
+                    )
+
     if config is not None:
         repo = _local_config(tmp, rank, config)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
@@ -101,8 +123,10 @@ def _case_list_family(
     vocab = tpn._text_config(ref).vocab_size
     rows = [_rows(vocab, r) for r in range(world)]
     n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
+    count_shared(ref, "ref")
     for ids, lab in rows:
         (_sum_loss(ref, ids, lab) / n).backward()
+    ref_calls = shared_calls["ref"]
     want = {k: p.grad.detach().clone() for k, p in ref.named_parameters() if p.grad is not None}
     want_loss = sum(float(_sum_loss(ref, i, lab).detach()) for i, lab in rows) / n
     want_norm = float(
@@ -114,9 +138,11 @@ def _case_list_family(
     epn.apply_expert_parallel(model, mesh)
     listed = lists.list_blocks(model)
     group = epn._mesh(model).get_group()
+    count_shared(model, "ep")
     ddp = DistributedDataParallel(model)
     loss = _sum_loss(ddp, *rows[rank]) * world / n
     loss.backward()
+    ep_calls = shared_calls["ep"]
     epn.ep_sync_expert_grads(model)
     value = loss.detach() / world
     dist.all_reduce(value)
@@ -164,6 +190,9 @@ def _case_list_family(
         "held": held,
         "range": (shard.lo, shard.hi, shard.experts),
         "calls": shard.calls,
+        # shared expert calls of one measured forward / backward: this rank's vs one process' per row batch
+        "shared_calls": (ep_calls, ref_calls / world),
+        "pass1_skips": {k: [n for n, _ in v] for k, v in getattr(shard, "skip", {}).items()},
     }
 
 
@@ -592,6 +621,21 @@ def test_ep_expert_lists_match_one_process(family):
 @pytest.mark.parametrize("family", ("mixtral", "qwen2_moe"))
 def test_ep_expert_lists_with_checkpointing_match_one_process(family):
     _check(_spawn("_case_list_family", gc = True, **_spec(family)), 2)
+
+
+@pytest.mark.parametrize("family", SHARED_FAMILIES)
+@pytest.mark.parametrize("gc", (False, True))
+def test_ep_expert_lists_run_the_shared_expert_once(family, gc):
+    """Pass 1 only records the expert calls: after the first forward it skips the shared expert, so one step calls
+    it as often as one process does (pass 1 used to run it too, discarding the result), with the same results."""
+    if gc and family not in ("qwen2_moe", "deepseek_v3"):
+        pytest.skip("checkpointing: two families are enough")
+    results = _spawn("_case_list_family", gc = gc, warm = True, **_spec(family))
+    _check(results, 2)
+    for r in results:
+        got, want = r["shared_calls"]
+        assert want > 0 and got == want, r["shared_calls"]
+        assert any(r["pass1_skips"].values()), r["pass1_skips"]
 
 
 def test_ep_expert_lists_three_ranks_one_without_experts():

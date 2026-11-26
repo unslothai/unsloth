@@ -242,21 +242,31 @@ def test_hunyuan_v1_moe_is_not_blocked_by_its_default_config():
     assert caps._ep_blocker(model, 2) == ""
     caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
     assert "refused" not in caps._moe_note("hunyuan_v1_moe", "lora", False, "ep")
-    assert "per-expert Linear lists" in caps._moe_note("gpt_oss", "qlora", False, "ep")
+    assert "refused" not in caps._moe_note("gpt_oss", "qlora", False, "ep")
     assert "refused" not in caps._moe_note("gpt_oss", "lora", False, "ep")
 
 
-def test_gpt_oss_4bit_is_blocked_by_family_and_16bit_is_not():
+def test_gpt_oss_4bit_is_planned_when_the_experts_split_evenly():
+    """load_in_4bit gpt-oss (zoo's per-expert Linear4bit lists) shards by expert: before a model loads, only an ep
+    that does not divide the released checkpoints' expert counts (32, 128) is refused."""
     assert caps._ep_blocker("gpt_oss", 2) == ""
     assert caps._ep_blocker("gpt_oss", 2, load_in_4bit = False) == ""
-    reason = caps._ep_blocker("gpt_oss", 2, load_in_4bit = True)
-    assert "per-expert Linear lists" in reason and "GptOssExpertsBnb4bit" in reason, reason
+    for ep in (2, 4, 8):
+        assert caps._ep_blocker("gpt_oss", ep, load_in_4bit = True) == "", ep
     assert caps._ep_blocker("gpt_oss", 1, load_in_4bit = True) == ""
     assert caps._ep_blocker("qwen3_moe", 2, load_in_4bit = True) == ""
+    assert caps._ep_blocker("gpt_oss", 3, load_in_4bit = False) == ""
+    reason = caps._ep_blocker("gpt_oss", 3, load_in_4bit = True)
+    assert "per-expert Linear lists" in reason and "32 experts over 3" in reason, reason
     message = _refusal(_ep_query(family = "gpt_oss", mode = "qlora", ep_blocker = reason))
     assert (
         message.startswith("Unsloth: ep x model: ") and "per-expert Linear lists" in message
     ), message
+    status, cell = caps.cell_status(_ep_query(family = "gpt_oss", mode = "qlora", attention = "eager"))
+    assert status == "supported" and cell.name == "MoE gpt_oss x qlora x aux off x ep", (
+        status,
+        cell,
+    )
 
 
 def test_gpt_oss_with_zoo_bnb4bit_experts_shards_by_structure():
