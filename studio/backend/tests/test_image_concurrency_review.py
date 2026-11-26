@@ -34,9 +34,7 @@ def _real_plan(backend, family):
     """Bind the real engine's coalesce_plan onto the fake, over a stand-in load state."""
     from core.inference.diffusion import DiffusionBackend
 
-    backend._state = types.SimpleNamespace(
-        family = family, pipe = types.SimpleNamespace(tokenizer = _words)
-    )
+    backend._state = types.SimpleNamespace(family = family, pipe = _clip_pipe())
     backend.coalesce_plan = types.MethodType(DiffusionBackend.coalesce_plan, backend)
 
 
@@ -88,7 +86,7 @@ def test_the_engine_plan_marks_loras_and_owned_embeddings_private(monkeypatch):
     assert engine.coalesce_plan("a fox", True) == ((), True)
     engine._state = types.SimpleNamespace(
         family = types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl"),
-        pipe = types.SimpleNamespace(tokenizer = _words),
+        pipe = _clip_pipe(),
     )
     monkeypatch.setattr(embeddings, "list_embeddings", lambda kind = None: [])
     assert engine.coalesce_plan("a fox", False)[1] is False
@@ -98,6 +96,26 @@ def test_the_engine_plan_marks_loras_and_owned_embeddings_private(monkeypatch):
 
 def _words(text, **_kwargs):
     return {"input_ids": list(range(len(text.split())))}
+
+
+class _ClipWords:
+    """A CLIP-shaped tokenizer: one id per word, a comma id, bos / eos."""
+
+    bos_token_id, eos_token_id, pad_token_id = 0, 1, None
+
+    def get_vocab(self):
+        return {",</w>": 2}
+
+    def __call__(self, text, **_kwargs):
+        return {
+            "input_ids": [
+                2 if word == "," else 10 + len(word) for word in text.replace(",", " , ").split()
+            ]
+        }
+
+
+def _clip_pipe(**extra):
+    return types.SimpleNamespace(tokenizer = _ClipWords(), text_encoder = object(), **extra)
 
 
 def _qwen21_pipe():
@@ -137,7 +155,7 @@ def test_sdxl_groups_only_matching_weighting_and_chunk_count():
     from core.inference.diffusion import coalesce_prompt_key
 
     family = types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl")
-    pipe = types.SimpleNamespace(tokenizer = _words)
+    pipe = _clip_pipe()
     plain = coalesce_prompt_key(family, pipe, "a red fox")
     assert plain == coalesce_prompt_key(family, pipe, "a blue car")
     assert plain != coalesce_prompt_key(family, pipe, "a (red:1.3) fox")
@@ -671,3 +689,138 @@ def test_a_coalesced_call_is_always_pinned_to_the_model_its_settings_were_read_f
     assert call["kwargs"]["expected_load"] == load_identity(
         status["repo_id"], status["base_repo"], status["family"]
     )
+
+
+def test_sdxl_groups_by_the_chunks_the_weighted_encode_actually_builds():
+    from core.inference.diffusion import coalesce_prompt_key
+
+    family = types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl")
+    pipe = _clip_pipe(tokenizer_2 = _ClipWords(), text_encoder_2 = object())
+    # Same raw token count and both weighted, but BREAK closes a chunk: two conditioning chunks against one.
+    assert coalesce_prompt_key(family, pipe, "a BREAK cat") != coalesce_prompt_key(
+        family, pipe, "a (cat)"
+    )
+    assert coalesce_prompt_key(family, pipe, "a (cat)") == coalesce_prompt_key(
+        family, pipe, "a (dog)"
+    )
+
+
+def test_a_random_subseed_variation_request_never_joins_a_batch(studio):
+    import httpx
+
+    app, backend, _saved = studio
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            backend.rendering = True
+            first = asyncio.ensure_future(
+                client.post(
+                    "/api/inference/images/generate",
+                    json = _create("a fox"),
+                    headers = {"x-test-account": "alice"},
+                )
+            )
+            await _until(lambda: _waiting() == 1)
+            variation = asyncio.ensure_future(
+                client.post(
+                    "/api/inference/images/generate",
+                    json = _create("a cat", batch_size = 2, variation_strength = 0.3),
+                    headers = {"x-test-account": "bob"},
+                )
+            )
+            await asyncio.sleep(0.3)
+            assert _waiting() == 1
+            backend.rendering = False
+            return await asyncio.gather(first, variation)
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses), [r.text[:200] for r in responses]
+    assert _batched_calls(backend) == []
+    [variation_call] = [c for c in backend.calls if c["prompt"] == "a cat"]
+    assert variation_call["batch_size"] == 2 and variation_call["seeds"] is None
+
+
+class _SlotBackend(_Backend):
+    """The fake engine over the real engine's slot line, so queued renders block in ``_generation_slot``."""
+
+    def __init__(self):
+        from core.inference.diffusion import DiffusionBackend
+
+        super().__init__()
+        self.engine = DiffusionBackend()
+        for name in (
+            "generation_holder",
+            "generation_waiter",
+            "generation_rider",
+            "reserve_slot_turn",
+            "release_slot_turn",
+            "slot_turn_ready",
+            "add_slot_listener",
+            "stop_waiting_work",
+        ):
+            setattr(self, name, getattr(self.engine, name))
+
+    def generate(self, **kwargs):
+        with self.engine._generation_slot(threading.Event()):
+            return super().generate(**kwargs)
+
+
+def test_a_reserved_batch_runs_even_when_queued_requests_hold_every_generate_worker(
+    studio, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import httpx
+
+    import core.inference.diffusion as diffusion_module
+    import core.inference.diffusion_engine_router as engine_router
+    import routes.inference as inference_routes
+
+    app, _fake, saved = studio
+    backend = _SlotBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: backend)
+    pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "test-generate")
+    monkeypatch.setattr(inference_routes, "_IMAGE_GENERATE_EXECUTOR", pool)
+    engine = backend.engine
+    release = _hold_slot(engine)
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+
+            def post(account, body):
+                return asyncio.ensure_future(
+                    client.post(
+                        "/v1/images/generations", json = body, headers = {"x-test-account": account}
+                    )
+                )
+
+            batch = [post("alice", _openai("a fox"))]
+            await _until(lambda: _waiting() == 1 and len(engine._slot_turns) == 1)
+            batch.append(post("bob", _openai("a cat")))
+            await _until(lambda: _waiting() == 2)
+            # Seeded requests never join: they take both generate workers and queue behind the batch's turn.
+            seeded = [
+                post("carol", _openai("an owl", seed = 5)),
+                post("dave", _openai("a hen", seed = 6)),
+            ]
+            await _until(lambda: len(engine._slot_turns) == 3)
+            release.set()
+            return await asyncio.wait_for(asyncio.gather(*batch, *seeded), timeout = 15)
+
+    try:
+        responses = asyncio.run(run())
+    finally:
+        release.set()
+        # Unstick any waiter a failing run left behind the reserved turn.
+        with engine._slot_turn_changed:
+            engine._slot_turns.clear()
+            engine._slot_turn_changed.notify_all()
+        pool.shutdown(wait = False, cancel_futures = True)
+    assert all(r.status_code == 200 for r in responses)
+    calls = [c["prompts"] or c["prompt"] for c in backend.calls]
+    assert calls[0] == ["a fox", "a cat"]
+    assert sorted(calls[1:]) == ["a hen", "an owl"]
+    assert len(saved) == 4

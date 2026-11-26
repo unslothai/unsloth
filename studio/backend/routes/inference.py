@@ -294,6 +294,9 @@ _CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inf
 # Queued renders wait for the one-render slot inside their thread; on the default executor they would hold every worker.
 _IMAGE_GENERATE_EXECUTOR_ENV = "UNSLOTH_DIFFUSION_GENERATE_EXECUTOR"
 _IMAGE_GENERATE_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "image-generate")
+# A coalesced batch's own call runs here: its slot turn is first in line, so it starts at once, while requests
+# queued behind that turn may hold every worker of the pool above.
+_IMAGE_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "image-batch")
 
 
 async def _image_generate_in_thread(func, /, *args, **kwargs):
@@ -308,6 +311,13 @@ async def _image_generate_in_thread(func, /, *args, **kwargs):
     loop = asyncio.get_running_loop()
     call = functools.partial(contextvars.copy_context().run, func, *args, **kwargs)
     return await loop.run_in_executor(_IMAGE_GENERATE_EXECUTOR, call)
+
+
+async def _image_generate_on_reserved_turn(func, /, *args, **kwargs):
+    """Runs a call that uses a reserved slot turn on its own pool, never behind the waiters it is ahead of."""
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, func, *args, **kwargs)
+    return await loop.run_in_executor(_IMAGE_BATCH_EXECUTOR, call)
 
 
 def _loaded_chat_template() -> Optional[str]:
@@ -53454,6 +53464,8 @@ def _plain_txt2img(request: DiffusionGenerateRequest, enhancement: Any, detailer
         and request.upscale_model is None
         and request.hires is None
         and request.variation_seed is None
+        # A random subseed repeats the base seed across the request's images: explicit per-member seeds would not.
+        and not request.variation_strength
         and request.xy is None
         and detailer is None
         and not getattr(enhancement, "captions", None)
@@ -56097,9 +56109,10 @@ async def _coalesced_image_generate(
             # The preview decodes row 0 of each forward, and an OOM split or an equal-length run can put another
             # account's image there: a batch shared across accounts shows no preview.
             call.update(_live_preview_kwarg(backend.generate, False))
+        runner = _image_generate_on_reserved_turn if "turn" in lead else _image_generate_in_thread
         with generation_ticket(ticket), _reserved_turn(lead.get("turn")):
             try:
-                return await _image_generate_in_thread(
+                return await runner(
                     backend.generate,
                     prompt = prompts[0],
                     prompts = prompts,
@@ -56201,7 +56214,7 @@ async def _coalesced_image_generate(
             # A leader that ends up alone renders in the place it held, not at the back of the line.
             if result is None and "turn" in lead and not stopped.is_set():
                 with _reserved_turn(lead["turn"]):
-                    result = await _image_generate_in_thread(
+                    result = await _image_generate_on_reserved_turn(
                         backend.generate, prompt = prompt, seed = seed, batch_size = n, **generate_kwargs
                     )
             return result

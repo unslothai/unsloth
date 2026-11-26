@@ -4943,12 +4943,21 @@ def slot_follow_up():
         _SLOT_FOLLOW_UP.reset(token)
 
 
-def _clip_chunk_count(tokenizer: Any, prompt: str) -> Optional[int]:
-    """77-token CLIP windows the prompt fills (75 content tokens each); None when it cannot be counted."""
-    if not callable(tokenizer):
+def _clip_chunk_counts(pipe: Any, prompt: str) -> Optional[tuple]:
+    """The conditioning chunks the weighted encode builds for ``prompt`` in each of the pipeline's CLIP encoders,
+    weighted and unweighted (BREAK and comma backtracking included): a batch pads every row to its longest, so
+    members must match exactly. None when there is no encoder to ask."""
+    from .diffusion_prompt_weighting import _encoders, tokenize_chunks
+
+    pairs = _encoders(pipe)
+    if not pairs:
         return None
-    ids = tokenizer(prompt, add_special_tokens = False, truncation = False)["input_ids"]
-    return max(1, -(-len(ids) // 75))
+    convert = getattr(pipe, "maybe_convert_prompt", None)
+    return tuple(
+        len(tokenize_chunks(prompt, tokenizer, weighted = weighted, convert = convert))
+        for tokenizer, _ in pairs
+        for weighted in (True, False)
+    )
 
 
 def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
@@ -4974,7 +4983,7 @@ def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
             bucket = flux_t5_sequence_length(getattr(pipe, "tokenizer_2", None), [prompt])
             return None if bucket is None else ("t5 bucket", bucket)
         if getattr(family, "textual_inversion", None) is not None:
-            chunks = _clip_chunk_count(getattr(pipe, "tokenizer", None), prompt)
+            chunks = _clip_chunk_counts(pipe, prompt)
             return None if chunks is None else ("clip", has_prompt_syntax(prompt), chunks)
     except Exception:  # noqa: BLE001 - a prompt that cannot be measured renders alone
         return None
