@@ -8,6 +8,7 @@ import contextlib
 import functools
 import inspect
 import os
+import re
 import sys
 import time
 import types
@@ -56,6 +57,9 @@ def _cudagraph_mode():
 _CPP_WRAPPER_MIN_TORCH = "2.14.0"
 
 
+_CPP_WRAPPER_AUTO_GPU = re.compile(r"\bL4\b")  # NVIDIA L4, not L40 / L40S
+
+
 def _cpp_wrapper_reason():
     """Why blocks keep Inductor's Python wrapper (None: they use the C++ one)."""
     value = os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "auto").strip().lower()
@@ -87,6 +91,17 @@ def _cpp_wrapper_reason():
 
     if shutil.which(os.environ.get("CXX") or "g++") is None:
         return "no C++ compiler"
+    # Auto mode only where it was measured to beat A/A + 5% s/step: Colab L4 -11.6% (Qwen3-4B QLoRA),
+    # -14.3% (Llama-3.2-3B LoRA). G4 (RTX PRO 6000) gave -4.3% / -6.3%, a tie, so other GPUs keep the
+    # Python wrapper unless UNSLOTH_BLOCK_CPP_WRAPPER=1.
+    try:
+        name = torch.cuda.get_device_name()
+    except Exception:
+        name = ""
+    if not _CPP_WRAPPER_AUTO_GPU.search(name or ""):
+        return (
+            f"auto mode is only on for GPUs measured to gain (NVIDIA L4), not {name or 'this GPU'}"
+        )
     return None
 
 
@@ -99,6 +114,31 @@ except ValueError:
     _CPP_WRAPPER_AFTER = 2000
 if os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "").strip() == "1":
     _CPP_WRAPPER_AFTER = 0
+# Auto mode builds the C++ region only if the run has enough optimizer steps left to win its cold build
+# back: L4 measured +55-70 s once (Qwen3-4B; +12 s Llama-3.2-3B) against 0.135-0.17 s saved per step,
+# so 70 s / 0.10 s = 700 steps is the conservative bar. A run whose steps left are unknown (no
+# Trainer.train in progress) keeps the Python wrapper.
+try:
+    _CPP_WRAPPER_MIN_REMAINING = max(
+        0, int(os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER_MIN_REMAINING", "700"))
+    )
+except ValueError:
+    _CPP_WRAPPER_MIN_REMAINING = 700
+
+
+def _cpp_wrapper_steps_left():
+    """Optimizer steps left in the Trainer.train in progress, else None."""
+    try:
+        from ._gc_train_scope import active_trainer_state
+        state = active_trainer_state()
+    except Exception:
+        return None
+    max_steps = getattr(state, "max_steps", 0) or 0
+    if max_steps <= 0:
+        return None
+    return max(0, max_steps - (getattr(state, "global_step", 0) or 0))
+
+
 # regions: block classes given a C++ wrapper region; fallbacks: classes whose C++ build failed.
 CPP_WRAPPER_STATS = {"regions": 0, "fallbacks": 0}
 # Non-empty once the C++ wrapper probe failed: no block of the process uses the C++ wrapper after that.
@@ -2753,6 +2793,17 @@ def _wrap(
             cpp["calls"] += 1
             if cpp["calls"] <= _CPP_WRAPPER_AFTER * len(cpp["layers"]):
                 return False
+            if _CPP_WRAPPER_AFTER > 0:  # auto: only a run that wins the cold build back
+                left = _cpp_wrapper_steps_left()
+                if left is None or left < _CPP_WRAPPER_MIN_REMAINING:
+                    # Not latched: a later, longer Trainer.train in this process can still switch.
+                    _rank0_note(
+                        "cpp_wrapper_short_run",
+                        "Unsloth: keeping Inductor's Python wrapper for the decoder blocks "
+                        f"({'steps left unknown' if left is None else f'{left} steps left'}; the C++ "
+                        f"wrapper's one-time build pays off from about {_CPP_WRAPPER_MIN_REMAINING}).",
+                    )
+                    return False
             why = _cpp_wrapper_probe(hidden_states.device)
             if why is not None:
                 cpp["on"] = False

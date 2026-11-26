@@ -54,6 +54,8 @@ def _load():
     # none); test_lazy_cpp_launch_reads_the_params_its_own_kernel_saved runs the real install.
     mod._real_install_cpp_wrapper_param_fix = mod._install_cpp_wrapper_param_fix
     mod._install_cpp_wrapper_param_fix = lambda: True
+    # A long Trainer run in progress; test_auto_switch_waits_for_enough_steps_left covers the gate.
+    mod._cpp_wrapper_steps_left = lambda: 10**6
     return mod
 
 
@@ -113,7 +115,22 @@ def test_reason_follows_the_switch_platform_torch_and_compiler(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.1+cu130")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA L4")
     assert M._cpp_wrapper_reason() is None
+    # Auto mode only on the GPU class measured to gain; forcing it on still works anywhere.
+    for name in (
+        "NVIDIA L40S",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "NVIDIA B200",
+        "Tesla T4",
+    ):
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a, n = name: n)
+        assert "measured to gain" in M._cpp_wrapper_reason(), name
+        monkeypatch.setenv("UNSLOTH_BLOCK_CPP_WRAPPER", "1")
+        assert M._cpp_wrapper_reason() is None
+        monkeypatch.delenv("UNSLOTH_BLOCK_CPP_WRAPPER")
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA L4")
     monkeypatch.setattr(shutil, "which", lambda name: None)
     assert M._cpp_wrapper_reason() == "no C++ compiler"
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
@@ -197,6 +214,64 @@ def test_cpp_region_waits_for_a_long_run(monkeypatch, capsys):
         for _ in range(4):
             fresh(x)
     assert "cpp" in calls, calls
+
+
+def test_auto_switch_waits_for_enough_steps_left(monkeypatch, capsys):
+    """Past the call threshold, auto mode builds the C++ region only if the Trainer run has enough
+    optimizer steps left to win the cold build back; unknown steps left keep the Python wrapper."""
+    monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
+    M = _load()
+    assert M._CPP_WRAPPER_MIN_REMAINING == 700
+    monkeypatch.setattr(M, "_CPP_WRAPPER_REASON", None)
+    monkeypatch.setattr(M, "_CPP_WRAPPER_AFTER", 1)
+    left = [None]
+    monkeypatch.setattr(M, "_cpp_wrapper_steps_left", lambda: left[0])
+    calls = []
+    monkeypatch.setattr(torch, "compile", _fake_compile(calls))
+    cls = _toy_class()
+    M._wrap(cls, dict(M._COMPILE_OPTIONS))
+    layer = cls()
+    x = torch.randn(2, 4, 8)
+    with torch.no_grad():
+        for steps_left in (None, 699):
+            left[0] = steps_left
+            calls.clear()
+            for _ in range(4):
+                layer(x)
+            assert set(calls) == {"python"} and M.CPP_WRAPPER_STATS["regions"] == 0, (
+                steps_left,
+                calls,
+            )
+        assert "keeping Inductor's Python wrapper" in capsys.readouterr().out
+        left[0] = 700  # not latched: a later, longer run still switches
+        calls.clear()
+        for _ in range(2):
+            layer(x)
+    assert calls[-1] == "cpp" and M.CPP_WRAPPER_STATS["regions"] == 1, calls
+
+
+def test_active_trainer_state_follows_trainer_train(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "_u_gc_train_scope", os.path.join(_DIR, "_gc_train_scope.py")
+    )
+    G = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(G)
+    seen = []
+
+    class State:
+        max_steps, global_step = 1000, 250
+
+    class Trainer:
+        state = State()
+
+        def train(self):
+            seen.append(G.active_trainer_state())
+            return "trained"
+
+    assert G.patch_trainer_train_gc_scope(Trainer)
+    assert G.active_trainer_state() is None
+    assert Trainer().train() == "trained"
+    assert seen == [Trainer.state] and G.active_trainer_state() is None
 
 
 def test_forcing_it_on_builds_at_once(monkeypatch):
