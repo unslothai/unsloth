@@ -818,15 +818,21 @@ def _owned_tensors(model: Any) -> list:
 
     seen: set = set()
     out: list = []
-    for module in model.modules():
-        if is_host_embedding(module):
-            continue
-        for table in (module._parameters, module._buffers):
-            for tensor in table.values():
-                if tensor is None or tensor.device.type != "cpu" or id(tensor) in seen:
-                    continue
-                seen.add(id(tensor))
-                out.append(tensor)
+    if not callable(getattr(model, "modules", None)):
+        # Not an nn.Module (no module walk): price every host tensor it exposes, as the pre-walk check did.
+        tables = [list(model.parameters()) + list(model.buffers())]
+    else:
+        tables = [
+            list(module._parameters.values()) + list(module._buffers.values())
+            for module in model.modules()
+            if not is_host_embedding(module)
+        ]
+    for table in tables:
+        for tensor in table:
+            if tensor is None or tensor.device.type != "cpu" or id(tensor) in seen:
+                continue
+            seen.add(id(tensor))
+            out.append(tensor)
     return out
 
 
