@@ -2934,7 +2934,9 @@ function VideoGenerator({
       if (pollInFlight) return;
       pollInFlight = true;
       try {
-        const p = await getVideoGenerateProgress();
+        // By id: the queue starts the next clip the moment ours ends, so the shared record can name
+        // a successor before this poll reads our outcome.
+        const p = await getVideoGenerateProgress(genVideoId.current ?? undefined);
         // The previous job's record can linger until ours takes the engine.
         if (!progressIsForVideo(p, genVideoId.current)) return;
         if (p.phase === "completed" || p.phase === "failed") {

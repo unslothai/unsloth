@@ -46,15 +46,27 @@ test("the queued label shows the place and the ETA rounded up to minutes", () =>
 test("a queue poll keeps waiting, starts, fails or clears", () => {
   const queued = queuedVideoNext([job("other", "queued"), job("v1", "queued", { queue_position: 2, eta_seconds: 90 })], "v1");
   assert.deepEqual(queued, { kind: "queued", job: { videoId: "v1", position: 2, etaSeconds: 90 } });
-  // Gone from the list, or "starting", means it renders now: switch to generate-progress.
+  // Gone from the list means it renders now: switch to generate-progress.
   assert.deepEqual(queuedVideoNext([job("other", "queued")], "v1"), { kind: "started" });
   assert.deepEqual(queuedVideoNext([], "v1"), { kind: "started" });
-  assert.deepEqual(queuedVideoNext([job("v1", "starting")], "v1"), { kind: "started" });
   assert.deepEqual(
     queuedVideoNext([job("v1", "failed", { error: "Video generation failed: OOM" })], "v1"),
     { kind: "failed", error: "Video generation failed: OOM" },
   );
   assert.deepEqual(queuedVideoNext([job("v1", "cancelled")], "v1"), { kind: "cancelled" });
+});
+
+test("a starting job keeps the queue poll until its start settles, queued again or failed", () => {
+  // The start can go back to "queued" (engine busy again) or end "failed" before it renders.
+  assert.deepEqual(queuedVideoNext([job("v1", "starting", { queue_position: 1, eta_seconds: 4 })], "v1"), {
+    kind: "queued",
+    job: { videoId: "v1", position: 1, etaSeconds: 4 },
+  });
+  assert.deepEqual(queuedVideoNext([job("v1", "queued", { queue_position: 1 })], "v1").kind, "queued");
+  assert.deepEqual(queuedVideoNext([job("v1", "failed", { error: "No video model loaded." })], "v1"), {
+    kind: "failed",
+    error: "No video model loaded.",
+  });
 });
 
 test("after a reload the oldest queued job is resumed, whatever its source", () => {
@@ -81,6 +93,7 @@ test("a progress record tagged with another job is not ours", () => {
 
 type VideoApi = {
   cancelVideoGeneration: (videoId?: string) => Promise<{ cancelled: boolean }>;
+  getVideoGenerateProgress: (videoId?: string) => Promise<{ video_id?: string | null }>;
   getVideoQueue: () => Promise<VideoQueueJob[]>;
 };
 
@@ -113,6 +126,17 @@ test("cancel sends the queued job's video_id; a bare cancel stops the render", a
   assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { video_id: "v1" });
   await api.cancelVideoGeneration();
   assert.equal(calls[1].init?.body, undefined);
+});
+
+test("the progress poll asks for its own clip by id, so a successor's record cannot hide its outcome", async () => {
+  const calls: { path: string; init?: RequestInit }[] = [];
+  const api = loadApi(calls, () => ({ active: false, phase: "completed", video_id: "a b" }));
+  await api.getVideoGenerateProgress("a b");
+  assert.equal(calls[0].path, "/api/inference/video/generate-progress?video_id=a%20b");
+  await api.getVideoGenerateProgress();
+  assert.equal(calls[1].path, "/api/inference/video/generate-progress");
+  const page = readSrc("features/video/video-page.tsx");
+  assert.match(page, /const p = await getVideoGenerateProgress\(genVideoId\.current \?\? undefined\);/);
 });
 
 test("the queue route returns the account's jobs", async () => {

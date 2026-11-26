@@ -324,8 +324,11 @@ export async function getVideoLoadProgress(
   );
 }
 
-export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress> {
-  return parseJson(await authFetch("/api/inference/video/generate-progress"));
+/** With `videoId`, a clip that already ended answers with its own outcome even after a
+ *  successor took the progress record. */
+export async function getVideoGenerateProgress(videoId?: string): Promise<VideoGenerateProgress> {
+  const query = videoId ? `?video_id=${encodeURIComponent(videoId)}` : "";
+  return parseJson(await authFetch(`/api/inference/video/generate-progress${query}`));
 }
 
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {

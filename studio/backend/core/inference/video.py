@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import collections
 import functools
 import inspect
 import os
@@ -6775,6 +6776,9 @@ class VideoBackend:
         self._generate_job_account: Optional[str] = None
         # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run
         self._gen_video_id: Optional[str] = None
+        # video_id -> (account, terminal record) of recent clips: a page whose clip ended while a
+        # successor took the single progress record still reads its own outcome.
+        self._gen_outcomes: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """Pins the device per worker thread: torch.cuda.set_device is thread-local, not set once at
@@ -15438,8 +15442,32 @@ class VideoBackend:
                 )
             # Under the lock, so a successor's start cannot be paired with this clip's time.
             _note_clip_finished(error is None, total)
+            if self._gen_video_id is not None:
+                self._gen_outcomes[self._gen_video_id] = (
+                    self._generate_job_account,
+                    dict(self._gen),
+                )
+                self._gen_outcomes.move_to_end(self._gen_video_id)
+                while len(self._gen_outcomes) > 64:
+                    self._gen_outcomes.popitem(last = False)
         # Outside the lock: the queue starts the next video as soon as this one ends.
         _wake_video_queue()
+
+    def generate_outcome(self, video_id: str, expected_account: Optional[str]) -> Optional[dict]:
+        """The terminal progress record of the clip ``video_id``, for the account that ran it."""
+        with self._lock:
+            kept = self._gen_outcomes.get(video_id)
+        if kept is None or kept[0] != expected_account:
+            return None
+        gen = dict(kept[1])
+        total = int(gen.get("total") or 0)
+        gen.update(
+            video_id = video_id,
+            active = False,
+            total_steps = total,
+            fraction = 1.0 if gen.get("phase") == "completed" else 0.0,
+        )
+        return gen
 
     @holds_inference
     @vram_budget_scope("video")

@@ -1015,10 +1015,20 @@ async def _start_page_video(
 
 
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)
-async def video_generate_progress(current_subject: str = Depends(get_current_subject)):
+async def video_generate_progress(
+    current_subject: str = Depends(get_current_subject),
+    video_id: Optional[str] = Query(None, max_length = 128),
+):
+    """``video_id`` names the caller's clip: once it has ended its own outcome answers, even after
+    a successor's progress replaced it (the queue starts the next clip at once)."""
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
+    outcome_of = getattr(backend, "generate_outcome", None)
+    if video_id and callable(outcome_of):
+        outcome = outcome_of(video_id, current_account_id())
+        if outcome is not None:
+            return VideoGenerateProgressResponse(**outcome)
     # The backend rechecks the owner under its lock; a successor can reserve mid-poll.
     reserved = _reserved_generation_account(backend)
     if reserved is not None:
@@ -2949,8 +2959,7 @@ def _note_page_outcome(
     status: str,
     error: Optional[str] = None,
 ) -> None:
-    if entry.kind != "page":
-        return
+    # Every kind: the Video page also follows API and chat clips it resumed after a reload.
     kept = _page_outcomes.setdefault(entry.account.account_id, [])
     kept.append(
         {
@@ -3218,8 +3227,8 @@ async def _create_or_queue_chat_video(
 
 def _fail_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
     error = _refusal_error(exc)
+    _note_page_outcome(entry, "failed", error["message"] or "Video generation failed.")
     if entry.kind == "page":
-        _note_page_outcome(entry, "failed", error["message"] or "Video generation failed.")
         return
     job = _VideoJob(
         id = entry.id,

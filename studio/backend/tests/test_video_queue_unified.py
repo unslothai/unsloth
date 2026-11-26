@@ -510,3 +510,40 @@ def test_a_request_on_its_way_into_the_queue_is_never_passed_by_a_later_one(
         _drain()
         _wait_idle(backend)
     assert [row["prompt"] for row in prompts] == ["running", "first-in", "second-in"]
+
+
+def test_a_finished_page_clip_reads_its_own_outcome_after_a_successor_starts(client, backend):
+    running = _busy(client, backend)
+    first = client.post(PAGE, json = {"prompt": "first page", "seed": 3}).json()
+    _queue(client, "successor")
+    _finish_running(client, backend, running)
+    backend.gate.clear()
+    _drain()
+    backend.gate.set()
+    _wait_idle(backend)
+    # The successor takes the progress record before the page's next poll.
+    backend.gate.clear()
+    _drain()
+    shared = client.get("/api/inference/video/generate-progress").json()
+    assert shared["active"] is True and shared["video_id"] != first["video_id"]
+    mine = client.get(
+        "/api/inference/video/generate-progress", params = {"video_id": first["video_id"]}
+    ).json()
+    assert mine["phase"] == "completed" and mine["video_id"] == first["video_id"]
+    assert mine["video"]["id"] == first["video_id"] and mine["video"]["seed"] == 3
+    with _client_as(_OTHER) as other:
+        theirs = other.get(
+            "/api/inference/video/generate-progress", params = {"video_id": first["video_id"]}
+        ).json()
+        assert theirs.get("video") is None and theirs.get("phase") != "completed"
+    backend.gate.set()
+
+
+def test_a_queued_api_clip_that_cannot_start_reports_why_on_the_queue(client, backend):
+    running = _busy(client, backend)
+    queued = _queue(client, "doomed api")
+    _finish_running(client, backend, running)
+    backend.loaded = False
+    _drain()
+    [job] = client.get(QUEUE).json()["jobs"]
+    assert (job["video_id"], job["status"], job["source"]) == (queued["id"], "failed", "api")

@@ -28,10 +28,11 @@ export type QueuedVideoNext =
   | { kind: "failed"; error: string | null }
   | { kind: "cancelled" };
 
-/** What a queue poll means for the job the page waits on. Absent or "starting" = it renders now. */
+/** What a queue poll means for the job the page waits on. Absent = it renders now. "starting" is
+ *  still waiting: that attempt can go back to "queued" or end "failed" without ever rendering. */
 export function queuedVideoNext(jobs: VideoQueueJob[], videoId: string): QueuedVideoNext {
   const job = jobs.find((j) => j.video_id === videoId);
-  if (!job || job.status === "starting") return { kind: "started" };
+  if (!job) return { kind: "started" };
   if (job.status === "failed") return { kind: "failed", error: job.error };
   if (job.status === "cancelled") return { kind: "cancelled" };
   return {
