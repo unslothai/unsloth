@@ -3,7 +3,10 @@
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda, has_real_cuda_or_xpu  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 transformers = pytest.importorskip("transformers")
 omni_config = pytest.importorskip(

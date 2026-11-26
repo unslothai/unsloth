@@ -12,7 +12,9 @@ import torch
 
 pytestmark = [
     pytest.mark.slow,
-    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "fast inference needs a CUDA or XPU device"),
+    pytest.mark.skipif(
+        not has_real_cuda_or_xpu(), reason = "fast inference needs a CUDA or XPU device"
+    ),
 ]
 
 DEVICE = accelerator_device_type()

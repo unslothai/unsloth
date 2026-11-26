@@ -30,7 +30,9 @@ def test_gpu_generation_smoke():
     dtype = torch.bfloat16 if accelerator_module().is_bf16_supported() else torch.float32
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-        model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype = dtype).to(accelerator_device_type())
+        model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype = dtype).to(
+            accelerator_device_type()
+        )
     except Exception as exc:
         pytest.skip(f"could not fetch/load {MODEL_ID}: {exc}")
 

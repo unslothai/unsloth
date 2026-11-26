@@ -15,9 +15,7 @@ from real_accelerator import (
 
 torch = pytest.importorskip("torch")
 
-pytestmark = pytest.mark.skipif(
-    not has_real_cuda_or_xpu(), reason = "importing unsloth needs a GPU"
-)
+pytestmark = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "importing unsloth needs a GPU")
 
 DEVICE = accelerator_device_type()
 

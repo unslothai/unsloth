@@ -69,9 +69,7 @@ def test_addmm_keeps_autograd_with_grad_enabled():
 
 # bf16 only where Unsloth trains in it (compute capability 8+, or XPU); T4 trains in fp16.
 DTYPES = [torch.float16] + (
-    [torch.bfloat16]
-    if DEVICE != "cuda" or torch.cuda.get_device_capability()[0] >= 8
-    else []
+    [torch.bfloat16] if DEVICE != "cuda" or torch.cuda.get_device_capability()[0] >= 8 else []
 )
 
 

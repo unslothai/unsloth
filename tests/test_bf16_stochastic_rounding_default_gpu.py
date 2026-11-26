@@ -11,7 +11,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from real_accelerator import has_real_cuda_or_xpu  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 if not has_real_cuda_or_xpu():
     pytest.skip("needs a GPU (import unsloth)", allow_module_level = True)

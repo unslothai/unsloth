@@ -93,7 +93,9 @@ def _skip_triton_on_cpu(device, path):
 
 
 def _rng_state(device):
-    return accelerator_module().get_rng_state() if device == DEVICE != "cpu" else torch.get_rng_state()
+    return (
+        accelerator_module().get_rng_state() if device == DEVICE != "cpu" else torch.get_rng_state()
+    )
 
 
 def _run(fn, model, X0, seed, device):

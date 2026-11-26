@@ -11,7 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda_or_xpu  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.models.loader_utils import _dequantize_bitsandbytes_for_full_finetuning
 

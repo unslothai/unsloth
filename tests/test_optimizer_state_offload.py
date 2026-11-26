@@ -24,7 +24,12 @@ import types
 
 import pytest
 import torch
-from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda, has_real_cuda_or_xpu
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(_ROOT, "unsloth", "optimizers", "state_offload.py")
@@ -562,7 +567,9 @@ def _q_galore(monkeypatch):
         package.__path__ = path
         monkeypatch.setitem(sys.modules, name, package)
     device_type = types.ModuleType("unsloth_zoo.device_type")
-    device_type.device_synchronize = torch.xpu.synchronize if DEVICE == "xpu" else torch.cuda.synchronize
+    device_type.device_synchronize = (
+        torch.xpu.synchronize if DEVICE == "xpu" else torch.cuda.synchronize
+    )
     monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.device_type", device_type)
     for name in ("q_galore_projector", "q_galore_adamw"):

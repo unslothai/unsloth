@@ -103,7 +103,6 @@ def _cuda_or_xpu_is_available():
     except ImportError:
         return False
     from real_accelerator import has_real_cuda_or_xpu  # tests/_shared, via tests/conftest.py
-
     return has_real_cuda_or_xpu()
 
 

@@ -8,7 +8,9 @@ import sys
 import textwrap
 
 import pytest
-from real_accelerator import has_real_cuda_or_xpu  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 pytestmark = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "bitsandbytes needs a GPU")
 

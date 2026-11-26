@@ -1581,7 +1581,9 @@ def test_kl_regularization_needs_a_lora_clef(clef_checkpoint, tmp_path):
         DecisionTrainer(model = model, args = _args(tmp_path), train_dataset = [], kl_weight = 0.1)
 
 
-@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU")
+@pytest.mark.skipif(
+    not has_real_cuda_or_xpu(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU"
+)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
     if dtype == torch.bfloat16 and not accelerator_module().is_bf16_supported(

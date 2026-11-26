@@ -92,9 +92,7 @@ def test_a_tag_only_rocm_wheel_keeps_the_row_major_copy(monkeypatch):
     assert seen[-1].is_contiguous()
 
 
-@pytest.mark.skipif(
-    not has_real_cuda_or_xpu(), reason = "needs a CUDA GPU (cuBLASLt int8) or an XPU"
-)
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA GPU (cuBLASLt int8) or an XPU")
 @pytest.mark.parametrize(
     "m,k,n", [(4384, 7168, 5376), (4128, 5376, 7168), (17, 64, 32), (1024, 14336, 5376)]
 )

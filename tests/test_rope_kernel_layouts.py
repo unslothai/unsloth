@@ -196,9 +196,7 @@ def test_rope_contiguous_qk_input_rotates_in_place(with_ids):
 
 
 # Host-side tiling arithmetic that never touches the device: kept on the original CUDA gate.
-_NEEDS_CUDA = pytest.mark.skipif(
-    not has_real_cuda(), reason = "Triton RoPE kernel needs CUDA"
-)
+_NEEDS_CUDA = pytest.mark.skipif(not has_real_cuda(), reason = "Triton RoPE kernel needs CUDA")
 
 
 @_NEEDS_CUDA
@@ -256,9 +254,7 @@ def test_rope_positions_pair_matches_two_single_calls(layout):
         # torch.compiler.disable.
         pytest.param(
             True,
-            marks = pytest.mark.skipif(
-                not has_real_cuda(), reason = "Triton RoPE kernel needs CUDA"
-            ),
+            marks = pytest.mark.skipif(not has_real_cuda(), reason = "Triton RoPE kernel needs CUDA"),
         ),
     ],
 )

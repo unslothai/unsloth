@@ -35,7 +35,9 @@ def main():
     from datasets import Dataset
     from transformers import TrainerCallback
     from trl import SFTConfig, SFTTrainer
-    from real_accelerator import accelerator_device_type  # tests/_shared, this script's own directory
+    from real_accelerator import (
+        accelerator_device_type,
+    )  # tests/_shared, this script's own directory
 
     # torch.cuda on CUDA / ROCm, torch.xpu on Intel XPU: same bf16 / synchronize / memory-stats API.
     device_type = accelerator_device_type()
