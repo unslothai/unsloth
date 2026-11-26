@@ -27,12 +27,23 @@ def _backend(
     model_gb = 70.0,
     kv_gb = 8.0,
     context_length = 262144,
+    seen = None,
 ):
     backend = object.__new__(LlamaCppBackend)
     backend._gguf_read_bytes = lambda _path: int(model_gb * _GB)
     backend._lazy_read_host_bytes = lambda *a, **k: 0
     backend.probe_server_capabilities = lambda *a, **k: {}
-    backend._estimate_kv_cache_bytes = lambda n_ctx, *a, **k: int(kv_gb * _GB) if n_ctx else 0
+
+    def kv(
+        n_ctx,
+        cache_type = None,
+        **kwargs,
+    ):
+        if seen is not None:
+            seen.append((n_ctx, cache_type, kwargs.get("n_parallel")))
+        return int(kv_gb * _GB) if n_ctx else 0
+
+    backend._estimate_kv_cache_bytes = kv
     backend._context_length = context_length
     return backend
 
@@ -154,6 +165,24 @@ class TestPreLaunch:
     def test_expert_placement_from_the_environment_counts_too(self, windows, env):
         kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 16 * _MIB)
         assert _backend(kv_gb = 32)._windows_host_commit_refusal(_cmd(), _CARD, env, **kwargs) is None
+
+    def test_kv_settings_come_from_argv_then_the_environment(self, windows):
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 96 * _MIB)
+        env = {
+            "LLAMA_ARG_CTX_SIZE": "32768",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_ARG_N_PARALLEL": "4",
+        }
+        seen = []
+        base = ["llama-server", "-m", "model.gguf", "--no-kv-offload"]
+        _backend(seen = seen)._windows_host_commit_refusal(base, _CARD, env, **kwargs)
+        assert seen[-1] == (32768, "q8_0", 4)
+        _backend(seen = seen)._windows_host_commit_refusal(
+            [*base, "-c", "8192", "-ctk", "f16", "-np", "2"], _CARD, env, **kwargs
+        )
+        # f16 K is heavier than the q8_0 V left in the environment.
+        assert seen[-1] == (8192, "f16", 2)
 
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (

@@ -17019,8 +17019,11 @@ class LlamaCppBackend:
                 argv, _env, auto_unmapped = auto_unmapped
             )
             private = spill if reserves_ram else 0
+            # argv wins over the LLAMA_ARG_* environment, as in llama.cpp.
             ctx_raw = _extra_args_device(argv, frozenset({"-c", "--ctx-size"}))
-            n_ctx = int(ctx_raw) if ctx_raw and ctx_raw.strip().lstrip("-").isdigit() else 0
+            if ctx_raw is None:
+                ctx_raw = str(_env.get("LLAMA_ARG_CTX_SIZE") or "")
+            n_ctx = int(ctx_raw) if ctx_raw.strip().lstrip("-").isdigit() else 0
             if n_ctx <= 0:
                 n_ctx = int(getattr(self, "_context_length", 0) or 0)
             kv_on_host = 0.0
@@ -17034,11 +17037,12 @@ class LlamaCppBackend:
                 # A layer split keeps the KV of the layers left on the CPU in host RAM.
                 kv_on_host = spill / resident
             if kv_on_host and n_ctx > 0:
-                cache_type = _extra_args_device(argv, frozenset({"-ctk", "--cache-type-k"}))
+                # The heavier axis, as the VRAM budget prices it.
+                cache_type = max(_effective_main_cache_types(argv, _env), key = _kv_bytes_per_elem)
                 parallel_raw = _extra_args_device(argv, frozenset({"-np", "--parallel"}))
-                n_parallel = (
-                    int(parallel_raw) if parallel_raw and parallel_raw.strip().isdigit() else 1
-                )
+                if parallel_raw is None:
+                    parallel_raw = str(_env.get("LLAMA_ARG_N_PARALLEL") or "")
+                n_parallel = int(parallel_raw) if parallel_raw.strip().isdigit() else 1
                 kv = self._estimate_kv_cache_bytes(n_ctx, cache_type, n_parallel = max(1, n_parallel))
                 private += int(kv * kv_on_host)
             if private <= 0:
