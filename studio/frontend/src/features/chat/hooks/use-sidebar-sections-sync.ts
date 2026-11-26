@@ -101,7 +101,8 @@ export function useSidebarSectionsSync(): void {
         const body = payload && JSON.stringify(payload);
         let response = await fetchLayout(body);
         if (response.status === 413 && body && payload?.base && current()) {
-          const smaller = JSON.stringify({ ...payload, ...compactSidebarEdit(payload.base, payload.layout) });
+          const compact = compactSidebarEdit(payload.base, payload.layout, payload.orderMoves);
+          const smaller = JSON.stringify({ ...payload, ...compact });
           if (smaller.length < body.length) response = await fetchLayout(smaller);
         }
         if (!response.ok) {

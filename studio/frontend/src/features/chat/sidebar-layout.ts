@@ -29,12 +29,24 @@ export function sidebarLayout(state: SidebarOrganizationState): SidebarLayout {
   };
 }
 
-export function compactSidebarEdit(base: SidebarLayout, layout: SidebarLayout) {
-  const changes = { ...layout };
+export function compactSidebarEdit(
+  base: SidebarLayout,
+  layout: SidebarLayout,
+  orderMoves?: SidebarOrganizationState["orderMoves"],
+) {
+  const movedSections = new Set(orderMoves?.map((move) => move.sectionId));
+  const changes = {
+    ...layout,
+    rowOrder: Object.fromEntries(Object.entries(layout.rowOrder).filter(([section, order]) => {
+      const before = base.rowOrder[section];
+      return movedSections.has(section) || base.sections[section]?.sort !== layout.sections[section]?.sort ||
+        before?.length !== order.length || order.some((row, index) => row !== before[index]);
+    })),
+  };
   const previous = {
     ...base,
     rowOrder: Object.fromEntries(
-      Object.entries(base.rowOrder).filter(([section]) => Object.hasOwn(layout.rowOrder, section)),
+      Object.entries(base.rowOrder).filter(([section]) => Object.hasOwn(changes.rowOrder, section)),
     ),
   };
   for (const field of ["sectionByChatId", "sectionByProjectId", "sectionByPageId"] as const) {

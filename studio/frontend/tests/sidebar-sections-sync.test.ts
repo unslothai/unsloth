@@ -225,8 +225,42 @@ test("a merged layout can be reduced when its saved baseline exceeds the request
   assert.deepEqual(posts[1].base?.sectionByChatId, {});
   assert.deepEqual(posts[1].base?.sectionByProjectId, {});
   assert.deepEqual(posts[1].base?.sectionByPageId, {});
-  assert.deepEqual(posts[1].base?.rowOrder, { [retained]: ["inbox"] });
+  assert.deepEqual(posts[1].base?.rowOrder, {});
   assert.deepEqual(JSON.parse(JSON.stringify(layouts.sidebarLayout(store.getState()))), corrected);
+  assert.equal(store.getState().pendingLayoutEdit, undefined);
+});
+
+test("renaming a section can omit historical ranks from an over-limit retry", async (t) => {
+  const section = "research";
+  const rows = Array.from({ length: 14_000 }, (_, index) =>
+    `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+  );
+  const initial = {
+    ...layouts.sidebarLayout(store.getInitialState()),
+    sections: { research: { name: "Research", sort: "manual" as const } },
+    rowOrder: { research: rows },
+    sectionOrder: ["pinned", section, "projects"],
+  };
+  const renamed = { ...initial, sections: { research: { ...initial.sections.research, name: "Notes" } } };
+  const posts: Edit[] = [];
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return Response.json(initial);
+    const body = String(init.body);
+    posts.push(JSON.parse(body));
+    return Buffer.byteLength(body) > 1024 * 1024
+      ? new Response(null, { status: 413 })
+      : Response.json(renamed);
+  });
+  await setImmediate();
+
+  store.getState().renameCustomSection(section, "Notes");
+  await setImmediate();
+  assert.equal(posts.length, 2);
+  assert.equal(posts[1].operationId, posts[0].operationId);
+  assert.deepEqual(posts[1].base?.rowOrder, {});
+  assert.deepEqual(posts[1].layout.rowOrder, {});
+  assert.deepEqual(layouts.sidebarLayout(store.getState()).rowOrder, initial.rowOrder);
+  assert.equal(store.getState().customSections[0].name, "Notes");
   assert.equal(store.getState().pendingLayoutEdit, undefined);
 });
 
@@ -272,6 +306,8 @@ test("explicit unpin placements sync even if they reuse the saved ranks", async 
   await setImmediate();
   assert.equal(posts.length, 4);
   assert.equal(posts[2].operationId, posts[3].operationId);
+  assert.deepEqual(posts[3].base?.rowOrder, { [section]: rows });
+  assert.deepEqual(posts[3].layout.rowOrder, { [section]: rows });
   assert.equal(store.getState().pendingLayoutEdit, undefined);
   assert.deepEqual(store.getState().orderMoves, [{ ...firstMove, sectionId: section }]);
 });
