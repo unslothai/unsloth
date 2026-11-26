@@ -58,7 +58,7 @@ def _conv_forward(
             dilation = self.dilation[1:],
         )
         return out.unsqueeze(2)
-    # A forward bound before this one (the MPS zero-buffer causal pad) keeps serving every other call.
+    # Keep a previously bound forward (MPS zero-buffer pad) for other calls.
     inner = self.__dict__.get("_unsloth_sf_inner")
     if inner is not None:
         return inner(x, cache_x)

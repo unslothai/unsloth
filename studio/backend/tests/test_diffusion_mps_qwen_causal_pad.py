@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MPS: the Qwen-Image VAE causal convs pad into a zero buffer like Wan's, and the single-frame speed pass keeps that
-forward for every call it does not take itself. Run on CPU (the patch is device-agnostic maths)."""
+"""MPS zero-buffer causal pad on Qwen-Image VAE convs, kept under the single-frame pass. Runs on CPU."""
 
 from __future__ import annotations
 
@@ -78,7 +77,6 @@ def test_single_frame_pass_keeps_the_zero_buffer_forward_for_other_calls(counted
     z3 = torch.randn(1, 4, 3, 6, 6)
     with torch.no_grad():
         ref3 = vae.decode(z3).sample
-    # the single-frame 2D path alone, without the pad fix (its own rounding, unchanged here)
     plain = _vae()
     assert SF.install(plain)
     with torch.no_grad():
@@ -92,7 +90,6 @@ def test_single_frame_pass_keeps_the_zero_buffer_forward_for_other_calls(counted
         out3 = vae.decode(z3).sample
     assert torch.equal(ref1, out1)
     assert torch.equal(ref3, out3)
-    # the one-frame decode is the 2D path; the three-frame decode falls back through the zero-buffer forward
     assert counted["n"] > single
 
 
