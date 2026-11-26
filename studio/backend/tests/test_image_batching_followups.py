@@ -172,3 +172,61 @@ def test_sdxl_two_long_prompts_with_the_same_chunk_count_still_batch(studio, mon
     assert all(r.status_code == 200 for r in responses)
     assert _groups(backend) == [sorted([long1, long2])]
     assert _alone(backend) == ["a red fox"]
+
+
+class _FastWords:
+    """A Rust-backed tokenizer stand-in: while a render's encode holds it, any other call raises like the real one."""
+
+    is_fast = True
+
+    def __init__(self) -> None:
+        self.held = False
+        self.calls = 0
+
+    def __call__(self, text, **_kwargs):
+        self.calls += 1
+        if self.held:
+            raise RuntimeError("Already borrowed")
+        return {"input_ids": list(range(len(text.split())))}
+
+
+@pytest.mark.parametrize("family_name", ["qwen-image-2.1", "flux.1"])
+def test_the_batch_key_never_touches_the_tokenizer_a_render_is_using(family_name):
+    """The key is read while another request renders: it reads a private copy made from the generation slot, so
+    neither the arriving request nor the running render sees "Already borrowed"."""
+    from core.inference.diffusion import coalesce_prompt_key, prime_coalesce_tokenizers
+
+    family = types.SimpleNamespace(name = family_name)
+    tok = _FastWords()
+    if family_name == "qwen-image-2.1":
+        pipe = _qwen21_pipe()
+        pipe.processor = types.SimpleNamespace(tokenizer = tok)
+    else:
+        pipe = types.SimpleNamespace(tokenizer_2 = tok)
+    prime_coalesce_tokenizers(family, pipe)
+    tok.held = True  # the running render is inside its prompt encode
+    short, same, longer = "a red fox", "a blue car", " ".join(["fox"] * 300)
+    key = coalesce_prompt_key(family, pipe, short)
+    assert key is not None
+    assert key == coalesce_prompt_key(family, pipe, same)
+    assert key != coalesce_prompt_key(family, pipe, longer)
+    assert tok.calls == 0
+
+
+def test_a_fast_tokenizer_without_a_private_copy_renders_alone_without_touching_it():
+    from core.inference.diffusion import coalesce_prompt_key
+
+    tok = _FastWords()
+    pipe = _qwen21_pipe()
+    pipe.processor = types.SimpleNamespace(tokenizer = tok)
+    assert coalesce_prompt_key(types.SimpleNamespace(name = "qwen-image-2.1"), pipe, "a fox") is None
+    assert tok.calls == 0
+
+
+def test_loads_whose_keys_never_tokenize_make_no_copy():
+    from core.inference import diffusion
+
+    tok = _FastWords()
+    pipe = types.SimpleNamespace(tokenizer = tok)
+    diffusion.prime_coalesce_tokenizers(types.SimpleNamespace(name = "z-image"), pipe)
+    assert tok not in diffusion._KEY_TOKENIZERS

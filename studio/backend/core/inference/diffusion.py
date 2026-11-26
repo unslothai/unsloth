@@ -4977,6 +4977,87 @@ def slot_follow_up():
         _SLOT_FOLLOW_UP.reset(token)
 
 
+# coalesce_prompt_key runs while another request renders, and a Rust-backed tokenizer used from two threads at once
+# raises "Already borrowed" in whichever call loses, the render's own prompt encode included. So the key reads a
+# private copy of each fast tokenizer, made from the generation slot where no render uses the original.
+_KEY_TOKENIZERS: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+_KEY_TOKENIZERS_LOCK = threading.Lock()
+# Requests reach coalesce_plan on several worker threads; one copy serves them one at a time.
+_KEY_TOKENIZE_LOCK = threading.Lock()
+
+
+def _pipe_tokenizers(pipe: Any) -> list:
+    found = [
+        getattr(pipe, "tokenizer", None),
+        getattr(pipe, "tokenizer_2", None),
+        getattr(getattr(pipe, "processor", None), "tokenizer", None),
+    ]
+    return [tok for tok in found if tok is not None]
+
+
+def _key_tokenizes(family: Any, pipe: Any) -> bool:
+    """Whether coalesce_prompt_key tokenizes prompts on this load."""
+    from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS
+    from .diffusion_text_length import FLUX_T5_FAMILIES
+
+    return (
+        type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS
+        or getattr(family, "name", None) in FLUX_T5_FAMILIES
+        or getattr(family, "textual_inversion", None) is not None
+    )
+
+
+def prime_coalesce_tokenizers(family: Any, pipe: Any) -> None:
+    """Copies this load's fast tokenizers once for coalesce_prompt_key. Call from the generation slot only."""
+    import copy
+
+    if pipe is None or not _key_tokenizes(family, pipe):
+        return
+    for tok in _pipe_tokenizers(pipe):
+        if not getattr(tok, "is_fast", False):
+            continue
+        with _KEY_TOKENIZERS_LOCK:
+            if tok in _KEY_TOKENIZERS:
+                continue
+        try:
+            dup = copy.deepcopy(tok)
+        except Exception as exc:  # noqa: BLE001 - no copy: those prompts render alone
+            logger.debug("diffusion.coalesce: cannot copy %s (%s)", type(tok).__name__, exc)
+            continue
+        with _KEY_TOKENIZERS_LOCK:
+            _KEY_TOKENIZERS.setdefault(tok, dup)
+
+
+class _NoKeyTokenizer(Exception):
+    """A fast tokenizer has no private copy yet: the prompt renders alone."""
+
+
+class _KeyPipe:
+    """The pipeline as coalesce_prompt_key reads it: each fast tokenizer swapped for its private copy."""
+
+    def __init__(self, pipe: Any) -> None:
+        self._pipe = pipe
+
+    @staticmethod
+    def _own(tok: Any) -> Any:
+        if tok is None or not getattr(tok, "is_fast", False):
+            return tok
+        with _KEY_TOKENIZERS_LOCK:
+            dup = _KEY_TOKENIZERS.get(tok)
+        if dup is None:
+            raise _NoKeyTokenizer(type(tok).__name__)
+        return dup
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._pipe, name)
+        if name in ("tokenizer", "tokenizer_2"):
+            return self._own(value)
+        if name == "processor" and getattr(value, "tokenizer", None) is not None:
+            import types
+            return types.SimpleNamespace(tokenizer = self._own(value.tokenizer))
+        return value
+
+
 def _clip_chunk_counts(pipe: Any, prompt: str) -> Optional[tuple]:
     """The conditioning chunks the weighted encode builds for ``prompt`` in each of the pipeline's CLIP encoders,
     weighted and unweighted (BREAK and comma backtracking included): a batch pads every row to its longest, so
@@ -5002,25 +5083,32 @@ def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
     512) per call. SD / SDXL weight and chunk prompts per call, so weighting and the 77-token chunk count must
     agree."""
     from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME
-    from .diffusion_prompt_weighting import has_prompt_syntax
-    from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS, _prompt_tokens
-    from .diffusion_text_length import FLUX_T5_FAMILIES, flux_t5_sequence_length
 
     name = getattr(family, "name", None)
     if name == MINIMAX_H3_IMAGE_FAMILY_NAME:
         return None
+    pipe = _KeyPipe(pipe) if pipe is not None else None
     try:
-        if type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS:
-            tokens = _prompt_tokens(pipe, prompt)
-            return None if tokens is None else ("qwen-image-2.1 tokens", tokens)
-        if name in FLUX_T5_FAMILIES:
-            bucket = flux_t5_sequence_length(getattr(pipe, "tokenizer_2", None), [prompt])
-            return None if bucket is None else ("t5 bucket", bucket)
-        if getattr(family, "textual_inversion", None) is not None:
-            chunks = _clip_chunk_counts(pipe, prompt)
-            return None if chunks is None else ("clip", has_prompt_syntax(prompt), chunks)
+        with _KEY_TOKENIZE_LOCK:
+            return _coalesce_prompt_key(family, name, pipe, prompt)
     except Exception:  # noqa: BLE001 - a prompt that cannot be measured renders alone
         return None
+
+
+def _coalesce_prompt_key(family: Any, name: Any, pipe: Any, prompt: str) -> Optional[tuple]:
+    from .diffusion_prompt_weighting import has_prompt_syntax
+    from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS, _prompt_tokens
+    from .diffusion_text_length import FLUX_T5_FAMILIES, flux_t5_sequence_length
+
+    if type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS:
+        tokens = _prompt_tokens(pipe, prompt)
+        return None if tokens is None else ("qwen-image-2.1 tokens", tokens)
+    if name in FLUX_T5_FAMILIES:
+        bucket = flux_t5_sequence_length(getattr(pipe, "tokenizer_2", None), [prompt])
+        return None if bucket is None else ("t5 bucket", bucket)
+    if getattr(family, "textual_inversion", None) is not None:
+        chunks = _clip_chunk_counts(pipe, prompt)
+        return None if chunks is None else ("clip", has_prompt_syntax(prompt), chunks)
     return ()
 
 
@@ -16653,6 +16741,8 @@ class DiffusionBackend:
                     paused_bg.resume()
                 raise
             render_t0 = time.perf_counter()
+            # Inside the slot, so no render uses the tokenizers while they are copied (once per load).
+            prime_coalesce_tokenizers(state.family, state.pipe)
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None
