@@ -3,9 +3,10 @@
 
 import { RUNTIME_REPAIR_KEY } from "../hooks/runtime-repair-history.ts";
 import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
+import { BROWSER_ACCOUNT_KEY } from "./browser-account-key.ts";
 import { clearNativeBrowsingData } from "./native-browser-clear.ts";
 
-export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
+export { BROWSER_ACCOUNT_KEY } from "./browser-account-key.ts";
 /** Written before a switch publishes new tokens, so peer tabs stop sending until the marker lands. */
 export const BROWSER_ACCOUNT_FENCE_KEY = "unsloth.browser-account.fence.v1";
 export const ACCOUNT_FENCE_TIMEOUT_MS = 10_000;

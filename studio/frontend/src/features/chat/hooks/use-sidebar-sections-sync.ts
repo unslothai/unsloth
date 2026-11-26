@@ -23,6 +23,7 @@ import {
   reconcilePersistedSidebarOrganization,
   useSidebarOrganizationStore as store,
 } from "../stores/sidebar-organization-store";
+import { rememberSidebarSyncBaseline } from "../stores/sidebar-organization-storage";
 
 const SIDEBAR_POLL_INTERVAL_MS = 30_000;
 
@@ -141,6 +142,7 @@ export function useSidebarSectionsSync(): void {
             // The tab that acknowledges the pending operation can send the next edit.
             peerEditedAt = undefined;
             store.setState({ syncedLayout: sent, pendingLayoutEdit: undefined });
+            rememberSidebarSyncBaseline(sent);
           } else if (peerEditedAt === undefined && base === undefined) {
             // The first GET started before this local edit. Use the pre-edit view
             // as the base for the user's next write.
@@ -158,6 +160,7 @@ export function useSidebarSectionsSync(): void {
             pendingLayoutEdit: undefined,
             orderMoves: undefined,
           });
+          if (base !== syncedLayout) rememberSidebarSyncBaseline(syncedLayout);
         }
       } catch {
         if (edit && current()) {

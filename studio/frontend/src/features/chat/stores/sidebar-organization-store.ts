@@ -6,6 +6,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 import {
+  readSidebarSyncBaseline,
   sidebarOrganizationStorage,
   sidebarOrganizationStorageChanged,
 } from "./sidebar-organization-storage.ts";
@@ -328,7 +329,7 @@ export function mergePersistedOrganization(
   current: SidebarOrganizationState,
 ): SidebarOrganizationState {
   const saved = persisted as
-    | Partial<SidebarOrganizationState>
+    | (Partial<SidebarOrganizationState> & { sidebarSyncVersion?: 1 })
     | undefined;
   const organizeBy: SidebarOrganizeBy =
     saved?.organizeBy === "list" ? "list" : "project";
@@ -402,14 +403,20 @@ export function mergePersistedOrganization(
         customSections,
       )
     : [];
+  const nativeBaseline = typeof saved?.syncedLayout === "string" ? saved.syncedLayout : undefined;
+  // Released tabs rewrite this key without sync fields. This exact account's base lives separately.
+  const recoveredBaseline = saved && saved.sidebarSyncVersion !== 1 && nativeBaseline === undefined
+    ? readSidebarSyncBaseline()
+    : undefined;
+  const keepPending = recoveredBaseline !== undefined && recoveredBaseline === current.syncedLayout;
   return {
     ...current,
     pendingLayoutEdit: typeof saved?.pendingLayoutEdit?.id === "string" &&
       typeof saved.pendingLayoutEdit.layout === "string"
       ? { ...saved.pendingLayoutEdit, orderMoves: readOrderMoves(saved.pendingLayoutEdit.orderMoves) }
-      : undefined,
-    orderMoves: readOrderMoves(saved?.orderMoves),
-    syncedLayout: typeof saved?.syncedLayout === "string" ? saved.syncedLayout : undefined,
+      : keepPending ? current.pendingLayoutEdit : undefined,
+    orderMoves: readOrderMoves(saved?.orderMoves) ?? (keepPending ? current.orderMoves : undefined),
+    syncedLayout: nativeBaseline ?? recoveredBaseline,
     organizeBy,
     chatSort,
     pinnedSort,
@@ -601,7 +608,9 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       storage: createJSONStorage(sidebarOrganizationStorage),
       merge: mergePersistedOrganization,
       partialize: (state) => {
-        const saved: Partial<SidebarOrganizationState> = { ...state };
+        const saved: Partial<SidebarOrganizationState> & { sidebarSyncVersion: 1 } = {
+          ...state, sidebarSyncVersion: 1,
+        };
         delete saved.pendingNewChatSection;
         return saved;
       },

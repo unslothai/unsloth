@@ -18,6 +18,7 @@ const localStorage = {
     }
     data.set(key, value);
   },
+  removeItem(key: string) { data.delete(key); },
 };
 const window = Object.assign(new EventTarget(), {
   localStorage,
@@ -30,6 +31,8 @@ Object.assign(globalThis, { localStorage, window, document });
 
 const layouts = await import("../src/features/chat/sidebar-layout.ts");
 const stores = await import("../src/features/chat/stores/sidebar-organization-store.ts");
+const sidebarStorage = await import("../src/features/chat/stores/sidebar-organization-storage.ts");
+const sidebarKeys = await import("../src/features/chat/stores/sidebar-organization-keys.ts");
 const accounts = await import("../src/lib/account-transition.ts");
 const store = stores.useSidebarOrganizationStore;
 type Layout = ReturnType<typeof layouts.sidebarLayout>;
@@ -63,6 +66,7 @@ function mount(
       "@/lib/navigation-nonce": { createNavigationNonce: randomUUID },
       "../sidebar-layout": layouts,
       "../stores/sidebar-organization-store": stores,
+      "../stores/sidebar-organization-storage": sidebarStorage,
     },
   );
   hook.useSidebarSectionsSync();
@@ -133,6 +137,66 @@ test("sidebar sync survives its account marker upgrade and rejects a different a
   window.dispatchEvent(new Event("focus"));
   await setImmediate();
   assert.deepEqual(methods, ["GET", "POST", "GET"]);
+});
+
+test("a reload after an older tab's write restores the same account's sync baseline", async (t) => {
+  const accountKey = accounts.BROWSER_ACCOUNT_KEY;
+  localStorage.setItem(accountKey, accounts.browserAccountMarker({ username: "alice", accountId: "legacy-edit" }));
+  t.after(() => {
+    data.delete(accountKey);
+    data.delete(sidebarKeys.SIDEBAR_SYNC_BASELINE_KEY);
+  });
+  const initial = {
+    ...layouts.sidebarLayout(store.getInitialState()),
+    sections: { research: { name: "Research", sort: "manual" as const } },
+    sectionOrder: ["pinned", "research", "projects"],
+  };
+  mount(t, async () => Response.json(initial));
+  await setImmediate();
+  const synced = store.getState().syncedLayout;
+  assert.ok(synced);
+  const key = stores.SIDEBAR_ORGANIZATION_STORAGE_KEY;
+  const legacy = JSON.stringify({ state: {
+    customSections: [{ id: "research", name: "Renamed in older tab", sort: "manual" }],
+    sectionOrder: initial.sectionOrder,
+  }, version: 0 });
+
+  store.setState(store.getInitialState(), true);
+  localStorage.setItem(key, legacy);
+  await store.persist.rehydrate();
+  assert.equal(store.getState().customSections[0].name, "Renamed in older tab");
+  assert.equal(store.getState().syncedLayout, synced);
+
+  localStorage.setItem(accountKey, accounts.browserAccountMarker({ username: "alice", accountId: "different" }));
+  store.setState(store.getInitialState(), true);
+  localStorage.setItem(key, legacy);
+  await store.persist.rehydrate();
+  assert.equal(store.getState().syncedLayout, undefined);
+});
+
+test("browser storage restores space for the pending edit before keeping a recovery copy", (t) => {
+  const accountKey = accounts.BROWSER_ACCOUNT_KEY;
+  const baselineKey = sidebarKeys.SIDEBAR_SYNC_BASELINE_KEY;
+  const layout = JSON.stringify(layouts.sidebarLayout(store.getInitialState()));
+  localStorage.setItem(accountKey, accounts.browserAccountMarker({ username: "alice", accountId: "quota" }));
+  t.after(() => { data.delete(accountKey); data.delete(baselineKey); });
+  sidebarStorage.rememberSidebarSyncBaseline(layout);
+  assert.ok(localStorage.getItem(baselineKey));
+  const storage = sidebarStorage.sidebarOrganizationStorage();
+  const key = stores.SIDEBAR_ORGANIZATION_STORAGE_KEY;
+  const originalSetItem = localStorage.setItem;
+  t.mock.method(localStorage, "setItem", (name: string, value: string) => {
+    if (name === key && localStorage.getItem(baselineKey)) {
+      throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+    }
+    originalSetItem(name, value);
+  });
+
+  const pending = JSON.stringify({ state: { pendingLayoutEdit: { id: "pending", layout } }, version: 0 });
+  storage.setItem(key, pending);
+  assert.equal(localStorage.getItem(key), pending);
+  assert.equal(localStorage.getItem(baselineKey), null);
+  assert.equal(sidebarStorage.readSidebarSyncBaseline(), layout);
 });
 
 async function checkRejectedSidebarEdit(t: TestContext, status: number) {
