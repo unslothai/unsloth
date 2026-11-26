@@ -250,7 +250,7 @@ hermes_dir() {
     first_dir "$root/models" "$native/models"
 }
 
-# Ollama ignores ~/.ollama/models once OLLAMA_MODELS is set; mounting it would let a stale copy shadow the store's tags.
+# As in Ollama, OLLAMA_MODELS replaces ~/.ollama/models; mounting both lets a stale copy shadow its tags.
 ollama_dirs() {
     local dir store
     store="$(host_path "${OLLAMA_MODELS:-}")"
