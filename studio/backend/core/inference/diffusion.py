@@ -16427,8 +16427,7 @@ class DiffusionBackend:
                     )
                     variation_seed_list = sd_controls_mod.variation_seeds(base_variation, len(jobs))
 
-                # The first render of a load (and the one that engages the deferred compile) pays one-time warm-up:
-                # torch.compile, kernel autotuning and CUDA graph capture where enabled. The Recipe labels its time.
+                # First render of a load (or the one engaging the deferred compile) pays one-time warm-up.
                 warmup_count_before = state.generation_count
                 deferred_engaged = False
                 # Deferred speed auto compiles on the 3rd image, but never with LoRA (compile rejects LoRA).

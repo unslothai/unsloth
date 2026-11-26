@@ -53746,7 +53746,6 @@ async def _generate_diffusion_image_run(
                         "batch_size": 1 if list_driven else request.batch_size,
                         "generation_seconds": generation_seconds,
                         "generation_count": len(result["images"]),
-                        # The first render of a load also paid compile / tuning: the Recipe says so next to its time.
                         **({"warmup_render": True} if result.get("warmup_render") else {}),
                         "model": result.get("repo_id"),
                         **({"engine": result["engine"]} if result.get("engine") else {}),
