@@ -23,8 +23,12 @@ def _clean(monkeypatch):
     monkeypatch.delenv(us.MIN_ROWS_ENV, raising = False)
     for k in us._COUNTS:
         us._COUNTS[k] = 0
+    us._ROWWISE.clear()
+    monkeypatch.setattr(us, "_persisted_rowwise", lambda index: None)
+    monkeypatch.setattr(us, "_persist_rowwise", lambda index, verdict: None)
     original = f8t.addmm_float8_unwrapped_inference
     yield
+    us._ROWWISE.clear()
     us.uninstall()
     compile_config._reset_for_tests()
     f8t.addmm_float8_unwrapped_inference = original

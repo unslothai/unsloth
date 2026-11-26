@@ -18175,6 +18175,7 @@ class DiffusionBackend:
             "bg_compile": state.bg_compile.describe() if state.bg_compile is not None else None,
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": _reported_transformer_quant(state),
+            "fp8_gemm": _fp8_gemm_status(state),
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
             "attention_backend": attention_backend,
             "transformer_cache": state.transformer_cache,
@@ -18262,6 +18263,29 @@ def _reported_transformer_quant(state: Any) -> Optional[str]:
     if quant is None and _small_host_int8(getattr(state, "pipe", None)):
         return "int8"
     return quant
+
+
+def _fp8_gemm_status(state: Any) -> Optional[dict]:
+    """Which fp8 GEMM the loaded fp8 transformer / text encoder runs (torchao row-wise, or the unit-scale fallback
+    where the torch build has no row-wise kernel), or None for a load without fp8. Never raises."""
+    try:
+        if "fp8" not in (
+            str(getattr(state, "transformer_quant", None) or "").lower(),
+            str(getattr(state, "text_encoder_quant", None) or "").lower(),
+        ):
+            return None
+        from .diffusion_fp8_unit_scale import gemm_path
+
+        index = None
+        denoiser = getattr(getattr(state, "pipe", None), "transformer", None)
+        for param in denoiser.parameters() if denoiser is not None else ():
+            device = getattr(param, "device", None)
+            if getattr(device, "type", None) == "cuda":
+                index = device.index
+                break
+        return gemm_path(index)
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
 
 
 def _grouped_form_status(pipe: Any) -> Optional[dict]:
