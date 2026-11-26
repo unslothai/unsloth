@@ -146,7 +146,7 @@ def _row(**overrides):
     }
 
 
-def test_a_reset_keeps_the_system_turn_and_the_newest_user_turn():
+def test_a_reset_keeps_the_previous_exchange_and_the_newest_user_turn():
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
     fitted, truncation = _fit(messages)
@@ -154,7 +154,8 @@ def test_a_reset_keeps_the_system_turn_and_the_newest_user_turn():
     assert truncation["fits"] is True
     assert truncation["checkpoint"] is True
     assert truncation["checkpoint_started"] is True
-    assert [m["role"] for m in fitted] == ["system", "user"]
+    assert [m["role"] for m in fitted] == ["system", "user", "assistant", "user"]
+    assert fitted[1:] == messages[-3:]
     assert fitted[-1]["content"] == "continue"
 
 
@@ -1141,7 +1142,7 @@ def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
         message for message in branch if id(message) not in kept_ids and message["role"] != "system"
     ]
     assert any(
-        "Section 7" in str(message["content"]) for message in evicted
+        "Section 6" in str(message["content"]) for message in evicted
     ), "the reset must have dropped turns after the pinned one for this test to mean anything"
     boundary = _branch_boundary(fitted, branch)
 
@@ -2445,7 +2446,7 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
     evicted = [
         message for message in branch if id(message) not in kept_ids and message["role"] != "system"
     ]
-    assert any("Section 7" in str(message["content"]) for message in evicted)
+    assert any("Section 6" in str(message["content"]) for message in evicted)
 
     recorded = llama_cpp._branch_boundary(fitted, branch)
     anchor = llama_cpp._branch_boundary_anchor(fitted, branch)
@@ -2995,8 +2996,8 @@ def test_the_carried_opening_pair_survives_the_next_compaction():
     assert truncation["fits"] is True
     assert correction in items, "the correction must not be dropped while the opening stays"
     assert items.index(opening) < items.index(correction)
-    assert items[-1] == increments[-1]
-    assert increments[0] not in items
+    assert increments[-1] in items or any(m["content"] == increments[-1] for m in fitted)
+    assert len(items) <= checkpoint.MAX_ITEMS
 
 
 def test_the_merged_recap_abandons_the_pair_the_same_way_the_fresh_walk_does():

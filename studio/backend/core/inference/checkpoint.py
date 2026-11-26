@@ -354,19 +354,30 @@ def _append_to_system(messages: list[dict], block: str) -> list[dict]:
     return [{"role": "system", "content": block}, *out]
 
 
-def _live_turn_groups(messages: list[dict]) -> list[list[dict]]:
-    """The tool exchanges of the turn in progress, oldest first: the groups after the newest user
-    message, minus the last group, which `truncate_oldest_messages` always keeps."""
+def _reset_keep_groups(messages: list[dict]) -> list[list[dict]]:
+    """Previous exchange as a unit, then each live tool exchange, oldest first."""
     groups = group_turns(messages)
-    newest = next(
-        (
-            index
-            for index in range(len(groups) - 1, -1, -1)
-            if any(message.get("role") == "user" for message in groups[index])
-        ),
-        None,
+    user_groups = [
+        index for index, group in enumerate(groups) if group[0].get("role") == "user"
+    ]
+    if not user_groups:
+        return []
+    newest = user_groups[-1]
+    # The rolling fitter always keeps the newest user group and the last group.
+    live = groups[newest + 1 : -1]
+    current_tool_work = any(
+        not (
+            isinstance(call, dict)
+            and str(call.get("id") or "").startswith(("rag_auto_", "conv_recall_"))
+        )
+        for group in groups[newest + 1 :]
+        for message in group
+        for call in message.get("tool_calls") or []
     )
-    return [] if newest is None else groups[newest + 1 : -1]
+    if len(user_groups) == 1 or current_tool_work:
+        return live
+    previous = [message for group in groups[user_groups[-2] : newest] for message in group]
+    return [previous, *live]
 
 
 def fit_checkpoint_context(
@@ -474,13 +485,13 @@ def fit_checkpoint_context(
     if (current_tokens > prompt_target or force_reset) and _resolved(can_reset):
         if on_evict is not None:
             on_evict()
-        live = _live_turn_groups(messages)
+        keep_groups = _reset_keep_groups(messages)
         ratio = clamp_compaction_headroom_ratio(headroom_ratio)
         hold_target = prompt_target - int(
             prompt_target * (_COMPACTION_HEADROOM_RATIO if ratio is None else ratio)
         )
-        for released in range(len(live) + 1):
-            held = {id(message) for group in live[released:] for message in group}
+        for released in range(len(keep_groups) + 1):
+            held = {id(message) for group in keep_groups[released:] for message in group}
             candidate, reset_dropped = truncate_oldest_messages(
                 messages,
                 0.0,
