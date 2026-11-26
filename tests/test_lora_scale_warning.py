@@ -72,7 +72,7 @@ def test_warns_only_once_per_process():
 
 
 def _get_peft_model_calls(relative_path, class_name):
-    tree = ast.parse((ROOT / relative_path).read_text())
+    tree = ast.parse((ROOT / relative_path).read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for item in node.body:
