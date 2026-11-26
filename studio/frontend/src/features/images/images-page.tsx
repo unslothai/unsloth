@@ -3151,6 +3151,9 @@ export function ImagesPage({
   const modelSelectionActionRef = useRef(modelSelectionAction);
   modelSelectionActionRef.current = modelSelectionAction;
   const pendingRestorePick = useRef<(() => void) | null>(null);
+  // The repo a restore's Load model targets: its load carries the restored LoRAs, which a pick of another model
+  // would otherwise drop (an int8 / fp8 build takes adapters only at load time).
+  const restoreLoraTarget = useRef<string | null>(null);
   useEffect(() => {
     if (modelSelectionAction !== "load" || !pendingRestorePick.current) return;
     const run = pendingRestorePick.current;
@@ -3291,6 +3294,7 @@ export function ImagesPage({
                 label: "Load model",
                 onClick: () => {
                   const run = () => {
+                    restoreLoraTarget.current = reloadModel;
                     handleModelSelectRef.current?.(reloadModel, {
                       source: "hub",
                       isLora: false,
@@ -4150,7 +4154,8 @@ export function ImagesPage({
 
   const bakedLorasFor = useCallback(
     (repoId: string, preserveSelection = false): LoraSpecInput[] => {
-      const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
+      const sameTarget =
+        repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null) || repoId === restoreLoraTarget.current;
       if (!sameTarget && !preserveSelection) return [];
       return loras
         .map((l) => ({ id: l.id.trim(), weight: l.weight }))

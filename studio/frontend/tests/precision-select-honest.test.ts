@@ -154,6 +154,9 @@ test("Images Restore puts back the precision and offers a different model as a r
   // An explicit Load model in Download only mode switches to Load and runs once handleModelSelect reads it.
   assert.match(action, /if \(modelSelectionActionRef\.current === "download"\) \{\s*pendingRestorePick\.current = run;\s*setModelSelectionAction\("load"\);/);
   assert.match(src, /if \(modelSelectionAction !== "load" \|\| !pendingRestorePick\.current\) return;/);
+  // Its load carries the restored LoRAs: a pick of another model would otherwise send none.
+  assert.match(action, /restoreLoraTarget\.current = reloadModel;\s*handleModelSelectRef\.current\?\.\(reloadModel/);
+  assert.match(src, /\|\| repoId === restoreLoraTarget\.current;/);
 });
 
 for (const page of ["images/images-page.tsx", "video/video-page.tsx"]) {
