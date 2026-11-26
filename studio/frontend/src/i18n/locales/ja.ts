@@ -5982,6 +5982,12 @@ export const ja = {
     maximize: "ウィンドウを最大化",
     restore: "ウィンドウを元のサイズに戻す",
     close: "ウィンドウを閉じる",
+    mediaCodecs: {
+      title: "生成した動画が再生されない場合があります",
+      // {command}: an apt command line, never translated.
+      description: "このシステムには GStreamer の動画デコーダーがありません。次のコマンドでインストールしてください: {command}",
+      copy: "コマンドをコピー",
+    },
   },
   runtimeUpdate: {
     installAudio: "オーディオランタイムをインストール",

@@ -6276,6 +6276,12 @@ export const sv = {
     maximize: "Maximera fönstret",
     restore: "Återställ fönstret",
     close: "Stäng fönstret",
+    mediaCodecs: {
+      title: "Genererade videor kanske inte spelas upp",
+      // {command}: an apt command line, never translated.
+      description: "Systemet saknar GStreamers videoavkodare. Installera dem med: {command}",
+      copy: "Kopiera kommando",
+    },
   },
   runtimeUpdate: {
     installAudio: "Installera ljudkörmiljön",
