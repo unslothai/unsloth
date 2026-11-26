@@ -4424,11 +4424,10 @@ def _unsloth_trl_vllm_init_error(error):
     if "bitsandbytes" not in text or "nknown quantization" not in text:
         return None
     return RuntimeError(
-        "Unsloth: this vLLM has no bitsandbytes support (vLLM >= 0.28 moved it out of tree), so TRL cannot "
-        "build its own vLLM engine for this 4-bit model (use_vllm = True, fast_inference = False). Load the "
-        "model with fast_inference = True: Unsloth then builds the vLLM engine itself, sharing the 4-bit "
-        "weights, and a current unsloth_zoo ships bitsandbytes for vLLM >= 0.28 (pip install -U unsloth_zoo). "
-        "Or install vllm-bnb-plugin, or load a 16-bit base (load_in_4bit = False)."
+        "Unsloth: this vLLM has no bitsandbytes support (vLLM >= 0.28 moved it into vllm-bnb-plugin), so TRL "
+        "cannot build its own vLLM engine for this 4-bit model (use_vllm = True, fast_inference = False). "
+        "`pip install vllm-bnb-plugin` and load the model with fast_inference = True, so Unsloth builds the "
+        "vLLM engine itself and shares the 4-bit weights. Or load a 16-bit base (load_in_4bit = False)."
     )
 
 
