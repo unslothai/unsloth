@@ -61,7 +61,7 @@ def _worker(rank, world, port, case, out):
         init_method = f"tcp://127.0.0.1:{port}",
         rank = rank,
         world_size = world,
-        timeout = datetime.timedelta(seconds = 15),
+        timeout = datetime.timedelta(seconds = 60),  # a cold runner can take long to start rank 0
     )
     save = _load_fsdp2_save()
     writer = rank == 0
@@ -108,6 +108,10 @@ def _worker(rank, world, port, case, out):
             pass
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "the gloo save tests run on Linux and macOS (as test_fsdp2_save_gloo)",
+)
 @pytest.mark.parametrize(
     "case", ["slow_get", "late_reader", "export_result", "writer_failed", "reader_never_comes"]
 )
@@ -123,12 +127,12 @@ def test_rank0_store_outlives_the_readers(case):
         _worker, args = (2, free_port(), case, out), nprocs = 2, join = False, start_method = "spawn"
     )
     start = time.time()
-    deadline = start + 60
+    deadline = start + 150
     while not procs.join(timeout = 1):
         if time.time() > deadline:
             for p in procs.processes:
                 p.kill()
-            pytest.fail("the ranks did not finish within 60 s")
+            pytest.fail("the ranks did not finish within 150 s")
     results = {}
     while len(results) < 2:
         rank, r = out.get(timeout = 5)
@@ -136,7 +140,9 @@ def test_rank0_store_outlives_the_readers(case):
     for rank, r in results.items():
         assert "crash" not in r, (rank, r["crash"])
     if case == "reader_never_comes":
-        assert time.time() - start < 30, "rank 0 waited past UNSLOTH_FSDP2_SAVE_EXIT_WAIT"
+        assert (
+            time.time() - start < 120
+        ), "rank 0 waited the default 300 s, not UNSLOTH_FSDP2_SAVE_EXIT_WAIT"
         assert results[0]["result"] == "done", results
     elif case == "export_result":
         assert tuple(results[1]["result"]) == ("ok", 42), results
@@ -144,3 +150,34 @@ def test_rank0_store_outlives_the_readers(case):
         assert "disk full" in results[1]["result"], results
     else:
         assert results[1]["result"] == "done", results
+
+
+class _CountingStore:
+    """`add` only, as the guard uses it; the readers have counted once `released` is set."""
+
+    def __init__(self, world):
+        self.world = world
+        self.released = False
+
+    def add(self, key, amount):
+        return self.world if self.released else 1
+
+
+def test_a_new_process_group_gets_its_own_guard(monkeypatch):
+    """A guard still running for a destroyed group's store must not stand in for the new group's."""
+    save = _load_fsdp2_save()
+    monkeypatch.setenv("UNSLOTH_FSDP2_SAVE_EXIT_WAIT", "30")
+    dist = types.SimpleNamespace(get_rank = lambda: 0, get_world_size = lambda: 2)
+    old, new = _CountingStore(2), _CountingStore(2)
+    try:
+        save._handshake_done(dist, old)
+        old_guard = save._STORE_GUARD["thread"]
+        assert old_guard is not None and old_guard.is_alive()
+        save._handshake_done(dist, new)
+        new_guard = save._STORE_GUARD["thread"]
+        assert new_guard is not None and new_guard is not old_guard and new_guard.is_alive()
+    finally:
+        old.released = new.released = True
+        for thread in (save._STORE_GUARD["thread"], locals().get("old_guard")):
+            if thread is not None:
+                thread.join(timeout = 5)

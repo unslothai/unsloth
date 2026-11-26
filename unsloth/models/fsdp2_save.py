@@ -140,7 +140,8 @@ def _keep_store_for_readers(store, world):
                 or (done and key == _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"]))
                 or time.monotonic() >= _STORE_GUARD["deadline"]
             ):
-                _STORE_GUARD["thread"] = None
+                if _STORE_GUARD["thread"] is threading.current_thread():
+                    _STORE_GUARD["thread"] = None
                 return
         time.sleep(delay)
         delay = min(delay * 2, 0.1)
@@ -150,7 +151,8 @@ def _handshake_done(dist, store):
     """Every rank, after its last store access of a writer handshake (any outcome)."""
     with _STORE_GUARD["lock"]:
         if _STORE_GUARD["store"] is not store:
-            _STORE_GUARD.update(store = store, count = 0)
+            # A new process group: a guard still running for the old store does not cover this one.
+            _STORE_GUARD.update(store = store, count = 0, thread = None)
         _STORE_GUARD["count"] += 1
         key = _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"])
     try:
