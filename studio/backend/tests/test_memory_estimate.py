@@ -821,26 +821,23 @@ class TestExpertOffloadIsPlaced:
         assert resp.gpu_bytes == base.gpu_bytes - 2 * _EXPS_BYTES
 
     @pytest.mark.parametrize(
-        "slots, spec, extra, staged",
+        "kw, staged",
         [
-            (1, "off", [], False),
-            (32, "off", [], True),
-            # ngram-mod and --spec-default draft 64 tokens, so one slot reserves 65 output rows.
-            (1, "ngram", [], True),
-            (1, "auto", [], True),
-            (1, "off", ["--spec-default"], True),
-            (1, "ngram", ["--spec-type", "none"], False),
+            ({"speculative_type": "auto"}, True),
+            ({"speculative_type": "off"}, True),
+            ({"speculative_type": "off", "n_parallel": 32}, True),
+            ({"speculative_type": "off", "llama_extra_args": ["--no-op-offload"]}, False),
+            ({"speculative_type": "off", "n_batch": 16, "n_ubatch": 16}, False),
         ],
-        ids = ["one_slot", "32_slots", "ngram", "auto", "extras_spec", "extras_none"],
+        ids = ["auto", "off", "32_slots", "no_op_offload", "micro_batch_below_32"],
     )
-    def test_a_head_on_the_host_is_staged_once_the_output_rows_reach_32(
-        self, estimate, slots, spec, extra, staged
-    ):
-        ot = ["-ot", r"output\.weight=CPU"]
-        kw = dict(n_parallel = slots, n_batch = 64, n_ubatch = 64, speculative_type = spec)
+    def test_a_head_on_the_host_is_staged_whenever_ops_offload(self, estimate, kw, staged):
+        # The output rows it multiplies depend on how the launch resolves speculation, so the
+        # estimate charges the head as an upper bound.
+        kw = {"n_batch": 64, "n_ubatch": 64, **kw}
+        extra = kw.pop("llama_extra_args", [])
         base = estimate(llama_extra_args = extra, **kw)
-        resp = estimate(llama_extra_args = [*extra, *ot], **kw)
-        assert resp.n_parallel == slots
+        resp = estimate(llama_extra_args = [*extra, "-ot", r"output\.weight=CPU"], **kw)
         assert resp.compute_bytes == base.compute_bytes + (_EMBD_BYTES if staged else 0)
 
     def test_partial_offload_prices_the_layers_from_the_back(self, estimate):

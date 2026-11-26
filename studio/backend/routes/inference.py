@@ -15718,8 +15718,6 @@ def _tensor_latches_allow_a_split(
 
 # GGUF header bytes outside the tensor table: measured 6 to 15 MiB on real quants.
 _TENSOR_TABLE_HEADER_SLACK = 64 * 1024 * 1024
-# Draft tokens of llama.cpp's --spec-default and Studio's ngram-mod (_build_ngram_mod_flags n_max).
-_NGRAM_DRAFT_N_MAX = 64
 
 
 def _gguf_memory_breakdown(
@@ -15873,8 +15871,6 @@ def _gguf_memory_breakdown(
 
     # Drafter KV and rollback state, priced wherever the drafter lives.
     drafter_runtime_bytes = 0
-    # Draft tokens per slot the target verifies; each needs an output row.
-    _staged_draft_n_max = 0
     # Allocated in the target's context, so it stays with the target when placed apart.
     target_spec_bytes = 0
     # The verification output rows in that reserve: target compute, not target KV.
@@ -15910,7 +15906,6 @@ def _gguf_memory_breakdown(
         draft_n_max = _estimate_draft_n_max(
             config, drafter_path, requested = spec_draft_n_max, extras = extras
         )
-        _staged_draft_n_max = max(0, int(draft_n_max or 0))
         keeps_target_ctx, target_rollback = _estimate_spec_mode_terms(
             drafter_kind,
             extras,
@@ -16293,43 +16288,10 @@ def _gguf_memory_breakdown(
         _ubatch = runtime.n_ubatch or 512
         if _op_offload and _ubatch >= _op_min_batch:
             host_staging_bytes = placement.host_staging_bytes
-        # The head multiplies the reserved output rows: one per slot and draft token (llama-server's
-        # n_outputs_max), a whole micro-batch on builds before llama.cpp#23861; pooled embeddings
-        # never run it. Speculation other than a lone drafter ends in ngram-mod or --spec-default,
-        # which draft 64 tokens; extras that own speculation are read the same way.
-        from core.inference.llama_cpp import _canonicalize_spec_mode
-        from core.inference.llama_server_args import _SPEC_FLAGS, _last_flag_value
-
-        _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
-        try:
-            _extras_spec = _last_flag_value(extras, frozenset({"--spec-type"}))
-        except ValueError:
-            _extras_spec = None
-        if _extras_spec is not None:
-            _spec_mode = "off" if _extras_spec.strip().lower() == "none" else "extras"
-        elif any(_flag_name(str(_t)) in _SPEC_FLAGS for _t in extras):
-            _spec_mode = "extras"
-        if _spec_mode == "off":
-            _draft_rows = 0
-        elif _spec_mode in ("mtp", "dspark", "eagle3", "dflash") and (
-            charged_drafter or embedded_mtp
-        ):
-            _draft_rows = _staged_draft_n_max
-        else:
-            _draft_rows = max(_NGRAM_DRAFT_N_MAX, _staged_draft_n_max)
-        try:
-            _rows_per_token = bool(
-                getattr(LlamaCppBackend, "reserves_micro_batch_outputs", lambda: False)()
-            )
-        except Exception as _rows_exc:  # noqa: BLE001 -- unprobed build: the current rule
-            logger.debug("llama-server build probe failed: %s", _rows_exc)
-            _rows_per_token = False
-        _out_rows = (
-            _ubatch
-            if _rows_per_token
-            else min(_ubatch, max(1, runtime.n_parallel) * (1 + _draft_rows))
-        )
-        if _op_offload and _out_rows >= _op_min_batch and not probe.is_embedding_gguf:
+        # A CPU-held head is staged once its reserved output rows (slots times draft tokens plus one)
+        # reach the threshold; the draft depth depends on how the launch resolves speculation, so it
+        # is counted whenever ops offload: an upper bound. Pooled embeddings never run the head.
+        if _op_offload and _ubatch >= _op_min_batch and not probe.is_embedding_gguf:
             host_staging_bytes = max(host_staging_bytes, placement.host_head_bytes)
     # --spec-draft-hf drafter: cache unsized without a local header, so the total is a floor.
     drafter_kv_unsized = bool(
