@@ -109,8 +109,7 @@ def _worker(rank, world, port, out, root, device, optim, fused, fused_bnb):
         out.put({"error": traceback.format_exc()[-3000:]})
 
 
-# (device, optim, UNSLOTH_BF16_SR_FUSED, UNSLOTH_BF16_SR_FUSED_BNB, one-pass AdamW steps, round-kernel rounds,
-#  one-kernel bitsandbytes steps)
+# (device, optim, FUSED, FUSED_BNB, one-pass AdamW steps, round-kernel rounds, one-kernel bnb steps)
 CASES = [
     pytest.param("cpu", "adamw", "1", "1", 0, 0, 0, id = "cpu-adamw-float32-route"),
     pytest.param(
