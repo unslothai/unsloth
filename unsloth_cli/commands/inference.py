@@ -199,7 +199,7 @@ def inference(
                 repetition_penalty = repetition_penalty,
                 enable_thinking = think,
             )
-        except ValueError as exc:
+        except (ValueError, RuntimeError) as exc:
             if rank == 0:
                 typer.echo(f"Error: {exc}", err = True)
             raise typer.Exit(code = 1)

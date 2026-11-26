@@ -402,3 +402,41 @@ def test_an_unknown_build_token_metadata_keeps_the_stock_forward():
 
     fake.QwenImage21Transformer2DModel = QwenImage21Transformer2DModel
     assert "build_token_metadata differs" in q.why_unsupported(fake)
+
+
+def _rows(m, texts, latents):
+    """Rows laid out as QwenImage21Pipeline lays out a prompt list: text right-padded to the longest, the pad masked."""
+    longest = max(t.shape[0] for t in texts)
+    batch = len(texts)
+    mask = torch.zeros(batch, longest, dtype = torch.long)
+    ehs = torch.zeros(batch, longest, texts[0].shape[1])
+    for row, t in enumerate(texts):
+        mask[row, : t.shape[0]] = 1
+        ehs[row, : t.shape[0]] = t
+    vlm = torch.zeros(batch, longest, dtype = torch.bool)
+    inp = {
+        "encoder_hidden_states": ehs,
+        "encoder_hidden_states_mask": None if bool(mask.all()) else mask,
+        "img_shapes": [[(1, 4, 6)]] * batch,
+        "img_mask": torch.cat([vlm, torch.ones(batch, 6, dtype = torch.bool)], 1),
+        "cond": None,
+        "latents": latents,
+    }
+    return _render(m, inp)
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_a_batch_row_matches_its_lone_render_only_at_equal_text_length(fast):
+    """If diffusers ever lays out each row on its own, the mixed case matches and text_length_runs can go."""
+    if fast:
+        assert q.install()
+    m = _model()
+    g = torch.Generator().manual_seed(3)
+    short, short2, long = (torch.randn(n, 24, generator = g) for n in (5, 5, 13))
+    lat = torch.randn(2, 24, 8, generator = g)
+    alone = _rows(m, [short], lat[:1])[-1][0]
+    assert torch.equal(_rows(m, [short, short2], lat)[-1][0], alone)
+    long_alone = _rows(m, [long], lat[1:])[-1][0]
+    mixed = _rows(m, [short, long], lat)[-1]
+    assert torch.equal(mixed[1], long_alone)
+    assert not torch.allclose(mixed[0], alone, atol = 1e-3)

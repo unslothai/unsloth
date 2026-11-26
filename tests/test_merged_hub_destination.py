@@ -172,6 +172,7 @@ def saving(monkeypatch, tmp_path):
         _determine_username = lambda repo, old, token: (repo, repo.split("/")[0]),
         _prewarm_base_model_hub_cache = lambda *args, **kwargs: None,
         get_model_name = lambda name: name,
+        _merge_base_model_name = lambda name, load_in_4bit = True: name,
         _normalize_compressed_method = lambda method: None,
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
@@ -222,6 +223,7 @@ def saving(monkeypatch, tmp_path):
         "_gemma_rope_the_zoo_export_drops",
         "_write_trained_gemma_rope",
         "_is_main_rank",
+        "_merge_base_resolver",
     }
     nodes = []
     for node in tree.body:

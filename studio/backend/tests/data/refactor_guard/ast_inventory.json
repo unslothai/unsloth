@@ -674,9 +674,6 @@
       "_hf_endpoint_host": {
         "kind": "def"
       },
-      "_hf_env_offline": {
-        "kind": "def"
-      },
       "_hf_offline_if_unreachable": {
         "kind": "def"
       },

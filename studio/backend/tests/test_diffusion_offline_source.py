@@ -201,12 +201,22 @@ def test_the_krea_tokenizer_and_its_fallback_open_the_snapshot_offline(
     assert [pathlib.Path(s) for s in sources] == [snapshot, snapshot]
 
 
-def test_an_online_krea_tokenizer_load_still_uses_the_repo_id(monkeypatch, tmp_path, online):
+def test_an_online_krea_tokenizer_load_stages_the_subfolder_with_the_token(
+    monkeypatch, tmp_path, online
+):
+    """Online, the tokenizer folder is fetched with the token and opened locally: by repo id,
+    transformers 5.x's config fallback drops token= and a gated repo 401s."""
+    import huggingface_hub
     from core.inference import diffusion_krea2
 
-    _fake_cache(tmp_path)
+    snapshot = _fake_cache(tmp_path)
     _live_cache(monkeypatch, tmp_path)
     sources: list = []
+    fetches: list = []
+
+    def _snapshot_download(repo_id, **kwargs):
+        fetches.append((repo_id, kwargs))
+        return str(snapshot)
 
     class _AutoTokenizer:
         @staticmethod
@@ -214,9 +224,13 @@ def test_an_online_krea_tokenizer_load_still_uses_the_repo_id(monkeypatch, tmp_p
             sources.append(source)
             return SimpleNamespace()
 
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot_download)
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(AutoTokenizer = _AutoTokenizer))
-    diffusion_krea2.load_krea2_tokenizer(REPO, local_files_only = False)
-    assert sources == [REPO]
+    diffusion_krea2.load_krea2_tokenizer(REPO, hf_token = "hf_x", local_files_only = False)
+    assert sources == [str(snapshot)]
+    assert fetches == [
+        (REPO, {"allow_patterns": ["tokenizer/*"], "cache_dir": str(tmp_path), "token": "hf_x"})
+    ]
 
 
 def _write_real_tokenizer(folder: pathlib.Path) -> None:

@@ -60,18 +60,40 @@ def test_processed_cache_options_are_local_deduplicated_and_non_train_capable(
     assert response.cache_available is True
     assert [item.model_dump() for item in response.splits] == [
         {"dataset": "org/data", "config": "default", "split": "train"},
+        {
+            "dataset": "org/data",
+            "config": "config with spaces",
+            "split": "validation",
+        },
         {"dataset": "org/data", "config": "config with spaces", "split": "test"},
         {
             "dataset": "org/data",
             "config": "config with spaces",
             "split": "train.clean",
         },
-        {
-            "dataset": "org/data",
-            "config": "config with spaces",
-            "split": "validation",
-        },
         {"dataset": "org/data", "config": "v1..v2", "split": "test"},
+    ]
+
+
+def test_cached_split_order_matches_the_dataset(monkeypatch, tmp_path):
+    cache_root = tmp_path / "datasets"
+    processed = cache_root / "org___data"
+    _write_processed_info(
+        processed / "default" / "0.0.0" / "hash",
+        "default",
+        ["train_sft", "test_sft", "train_gen", "test_gen"],
+    )
+    monkeypatch.setattr(dataset_cache, "hf_datasets_cache_roots", lambda: [cache_root])
+
+    response = local_options.local_dataset_options(
+        LocalDatasetOptionsRequest(dataset_name = "org/data", local_path = str(processed))
+    )
+
+    assert [item.split for item in response.splits] == [
+        "train_sft",
+        "test_sft",
+        "train_gen",
+        "test_gen",
     ]
 
 
@@ -736,3 +758,19 @@ def test_snapshot_options_reject_a_legacy_lzma_stream(tmp_path):
     )
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_inferred_split_order_matches_the_loader(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _rows(
+        snapshot,
+        "data/test-00000-of-00001.parquet",
+        "data/extra-00000-of-00001.parquet",
+        "data/validation-00000-of-00001.parquet",
+    )
+
+    assert [split for _, split in local_options._snapshot_options(snapshot)] == [
+        "validation",
+        "test",
+        "extra",
+    ]

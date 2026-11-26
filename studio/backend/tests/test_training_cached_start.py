@@ -3158,9 +3158,12 @@ def test_worker_4bit_tier_check_uses_model_load_target():
     snapshot = "/cache/models--org--model/snapshots/deadbeef"
     checked: list[tuple[str, str | None]] = []
 
-    with patch(
-        "utils.transformers_version.latest_tier_active_for",
-        side_effect = lambda target, token: checked.append((target, token)) or True,
+    with (
+        patch(
+            "utils.transformers_version.latest_tier_active_for",
+            side_effect = lambda target, token: checked.append((target, token)) or True,
+        ),
+        patch("utils.transformers_version._load_config_json", return_value = None),
     ):
         enabled = worker._effective_training_load_in_4bit(
             {"load_in_4bit": True},
@@ -3175,9 +3178,9 @@ def test_worker_4bit_tier_check_uses_model_load_target():
 def test_worker_strict_resume_rejects_4bit_tier_change():
     from core.training import worker
     from core.training.provenance import ExactResumeResourcesUnavailable
-    with patch(
-        "utils.transformers_version.latest_tier_active_for",
-        return_value = True,
+    with (
+        patch("utils.transformers_version.latest_tier_active_for", return_value = True),
+        patch("utils.transformers_version._load_config_json", return_value = None),
     ):
         with pytest.raises(ExactResumeResourcesUnavailable, match = "original 4-bit"):
             worker._effective_training_load_in_4bit(

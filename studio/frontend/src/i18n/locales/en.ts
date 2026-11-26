@@ -686,7 +686,8 @@ export const en = {
   },
   managedEngines: {
     gpu: "GPUs",
-    gpuHelp: "Choose which GPUs to use.",
+    gpuHelp:
+      "Choose which GPUs in this machine to use. Serving one model across machines (for example two DGX Sparks) is not part of this release.",
     parallelism: "Multi-GPU mode",
     tensor: "Tensor parallel",
     pipeline: "Pipeline parallel",
@@ -886,10 +887,17 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
-    addScheduledTask: "Add scheduled task…",
+    addScheduledTask: "Add scheduled task",
     compact: "Compact conversation",
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
+  },
+  chatFiles: {
+    title: "Files in this chat",
+    code: "Code snippets",
+    showInChat: "Show in chat",
+    download: "Download {name}",
+    saveFailed: "Could not save {name}.",
   },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
@@ -970,6 +978,7 @@ export const en = {
     saving: "Saving...",
     search: "Search",
     shutdown: "Shutdown",
+    technicalDetails: "Technical details",
   },
   shell: {
     helpMenu: {
@@ -4104,6 +4113,55 @@ export const en = {
       cachedDatasetGoneDescription:
         "The dataset files left this device, so training will download them again.",
     },
+    gpus: {
+      title: "GPUs",
+      description: "The GPUs on this machine and how training uses them",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB free",
+      pickModel: "Pick a model to see how training will use these GPUs.",
+      planning: "Checking how this model fits...",
+      planFailed: "Could not check the GPU plan: {message}",
+      perGpu: "(~{gb} GB per GPU)",
+      alternative: "Try instead: {alternative}",
+      override: "Choose mode and GPUs",
+      overrideHint:
+        "Automatic picks the fastest mode that fits. Untick a GPU to leave it free for chat or another run. Training uses the GPUs in this machine only: multi-node training (for example two DGX Sparks) is not part of this release.",
+      modeLabel: "Mode",
+      specLabel: "Layout",
+      unavailable: "Not available here",
+      runChip: "{mode} · {count} GPUs",
+      rankGpu: "Rank {rank} · GPU {index}",
+      mode: {
+        auto: "Automatic",
+        single: "Single GPU",
+        layerSplit: "Layer split",
+        ddp: "Data parallel (DDP)",
+        fsdp2: "Sharded data parallel (FSDP2)",
+        tp: "Tensor parallel",
+        pp: "Pipeline parallel",
+        cp: "Context parallel",
+        ep: "Expert parallel",
+        custom: "Custom layout",
+      },
+      summary: {
+        single: "Training on one GPU",
+        layerSplit: "Model is split layer by layer across {count} GPUs",
+        ddp: "Each GPU trains a full copy: data parallel on {count} GPUs",
+        fsdp2: "Weights and optimizer state sharded across {count} GPUs",
+        tp: "Each layer is split across {count} GPUs",
+        pp: "Layers run as {count} pipeline stages, one per GPU",
+        cp: "Each sequence is split across {count} GPUs",
+        ep: "MoE experts are spread across {count} GPUs",
+        custom: "Custom layout {spec} on {count} GPUs",
+      },
+      error: {
+        noGpu: "Select at least one GPU.",
+        singleNeedsOne: "Single GPU uses exactly one GPU. Untick the others.",
+        needsTwo: "This mode needs at least two GPUs.",
+        customSpec: "Enter a layout, for example {example}.",
+      },
+    },
     preview: {
       title: "Run preview",
       ready: "Ready",
@@ -4129,8 +4187,10 @@ export const en = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "{size} total",
       noGpu: "No GPU detected",
       hfToken: "HF token",
+      gpus: "GPUs",
       saved: "Saved",
       notSet: "Not set",
       files: "Files",
@@ -4173,7 +4233,7 @@ export const en = {
       noDatasetsFound: "No datasets found.",
       tokenRejectedTitle: "Hugging Face token rejected",
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
-      hubUnreachable: "Couldn't reach Hugging Face",
+      hubUnreachable: "Can't reach Hugging Face",
       cantUseDataset: "Can't use dataset",
       reasonInvalidHubId:
         "Enter a valid Hugging Face dataset ID: repo or owner/repo, with no consecutive periods or hyphens and no .git suffix (maximum 96 characters per part).",
@@ -4200,7 +4260,7 @@ export const en = {
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
       tokenRejectedAnonymousBody:
         "Public models are shown without it. Update your token in Settings → General to reach private and gated models.",
-      hubUnreachable: "Couldn't reach Hugging Face",
+      hubUnreachable: "Can't reach Hugging Face",
       cantUseModel: "Can't use model for training",
       reasonTypeMismatch:
         "This model doesn't match the training type selected in the previous step.",
@@ -5003,6 +5063,7 @@ export const en = {
     model: {
       label: "Translation model",
       fast: "Fast",
+      balanced: "Balanced",
       quality: "Best quality",
       chat: "Chat model",
       recommended: "Recommended",
@@ -5025,13 +5086,14 @@ export const en = {
       toneFormal: "Formal",
       toneCasual: "Casual",
       auto: "Translate as you type",
-      autoDescription: "Starts once the model is loaded. Typing never starts a download.",
+      autoDescription: "Starts automatically when model is loaded.",
       saveHistory: "Save history",
       saveHistoryDescription: "Kept in this browser only.",
       showPrompt: "Show prompt",
-      showPromptDescription: "See the exact instructions sent to the model.",
+      showPromptDescription: "See exact instructions sent to the model.",
     },
     history: {
+      notSaved: "Not saved to History: the browser's storage is full.",
       title: "History",
       search: "Search history",
       empty: "Your translations appear here.",
@@ -5141,6 +5203,11 @@ export const en = {
       notifyNone: "Off",
       archiveSuccessful: "Archive successful runs",
       webSearch: "Web search",
+      mcpServers: "Allow MCP tools for this task",
+      mcpServersHint: "Every run can use tools from checked servers without approval.",
+      mcpServersEmpty: "No servers are enabled. Enable an MCP server in chat to use it here.",
+      mcpServersLoadError: "Could not load MCP servers.",
+      mcpServerUnavailable: "{name} (unavailable)",
       project: "Project",
       projectNone: "None",
       model: "Model",
@@ -6096,6 +6163,12 @@ export const en = {
     maximize: "Maximize window",
     restore: "Restore window",
     close: "Close window",
+    mediaCodecs: {
+      title: "Generated videos may not play",
+      // {command}: an apt command line, never translated.
+      description: "This system is missing the GStreamer video decoders. Install them with: {command}",
+      copy: "Copy command",
+    },
   },
   runtimeUpdate: {
     // {component}: llama.cpp, whisper.cpp or audio.cpp; {components}: a list of them.

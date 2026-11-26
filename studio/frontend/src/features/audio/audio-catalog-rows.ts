@@ -9,6 +9,8 @@ import {
   AUDIO_CPP_MODELS,
   AUDIO_CPP_REPO,
   AUDIO_CPP_UNOFFERED_FOLDERS,
+  SEPARATION_GOAL_LABELS,
+  type SeparationGoal,
   audioCppDisplayName,
   isAudioCppFolderId,
 } from "./audio-cpp-catalog.ts";
@@ -28,6 +30,8 @@ export interface AudioCatalogRow {
   display_name: string;
   family: string | null;
   task: string;
+  /** Separate rows: what the model is for; absent on older servers. */
+  separation_goal?: SeparationGoal | null;
   workflows: readonly string[];
   description: string | null;
   languages: readonly string[] | null;
@@ -185,6 +189,7 @@ export function audioRowDescription(row: AudioCatalogRow): string {
   const parts: string[] = [];
   const pages = row.workflows.map((w) => WORKFLOW_LABELS[w]).filter(Boolean);
   if (pages.length > 0) parts.push(pages.join(", "));
+  if (row.separation_goal) parts.push(SEPARATION_GOAL_LABELS[row.separation_goal]);
   const codes = (row.languages ?? []).filter(
     (code) => code && code.toLowerCase() !== "auto",
   );

@@ -74,6 +74,12 @@ def test_last_frame_num_frames_and_a_string_seconds_are_forwarded(monkeypatch):
     assert bodies(studio, "/v1/videos") == [{"prompt": "x", "num_frames": 49}]
 
 
+def test_seed_minus_one_reaches_the_route_which_reads_it_as_random(monkeypatch):
+    result, studio = run_tool(monkeypatch, _studio(), "generate_video", {"prompt": "x", "seed": -1})
+    assert result["isError"] is False, result
+    assert bodies(studio, "/v1/videos") == [{"prompt": "x", "seed": -1}]
+
+
 def test_audio_without_a_reference_image_is_refused_before_any_call(monkeypatch):
     args = {"prompt": "x", "reference_audios": [{"data_base64": b64(_WAV), "filename": "v.wav"}]}
     result, studio = run_tool(monkeypatch, _studio(), "generate_video", args)
@@ -88,6 +94,7 @@ def test_audio_without_a_reference_image_is_refused_before_any_call(monkeypatch)
         {"reference_images": [PNG_URL] * 10},
         {"reference_images": [PNG_URL], "reference_audios": [{"clip_id": "c"}] * 4},
         {"seed": 2**53},
+        {"seed": -2},
         {"steps": 0},
         {"fps": 121},
         {"num_frames": 1025},
