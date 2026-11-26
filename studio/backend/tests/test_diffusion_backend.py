@@ -7851,7 +7851,7 @@ def test_generate_batched_seed_matches_solo_replay(fake_runtime, tmp_path):
 
 
 class _StepNoiseScheduler:
-    """Records the generator each ``step`` receives (FlowMatchLCMScheduler draws its per-step noise from it)."""
+    """Records the generator each ``step`` receives."""
 
     def __init__(self):
         self.step_generators = []
@@ -7898,7 +7898,6 @@ def test_generate_hands_each_images_generator_to_a_step_that_draws_noise(fake_ru
     backend.generate(prompt = "p", seed = 9)
     solo = pipe.scheduler.step_generators[-1]
     assert solo.manual == 9
-    # Restored after the call: the scheduler's own step again.
     assert "step" not in vars(pipe.scheduler)
 
 
