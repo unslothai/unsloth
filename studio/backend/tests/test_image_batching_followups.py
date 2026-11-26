@@ -305,3 +305,55 @@ def test_group_offload_with_every_group_pinned_counts_as_resident(monkeypatch):
         assert engine.request_batching()["mode"] == "any"
     engine._state.offload_policy = "none"
     assert engine.request_batching()["mode"] == "serial"
+
+
+def _scaled_engine(transformer):
+    from core.inference.diffusion import DiffusionBackend
+
+    engine = DiffusionBackend()
+    engine._state = types.SimpleNamespace(
+        family = types.SimpleNamespace(name = "z-image"),
+        pipe = types.SimpleNamespace(transformer = transformer),
+        offload_policy = "sequential",
+        cuda_graphs = (),
+        speed_optims = (),
+    )
+    return engine
+
+
+def test_a_load_with_per_call_activation_scales_serves_serially():
+    """A per-tensor activation scale comes from the whole call's amax: in a shared call one request's prompt would
+    set every other member's activation quantization."""
+    import torch
+
+    class ComfyNVFP4DynamicLinear(torch.nn.Linear):
+        pass
+
+    class NVFP4Tensor(torch.nn.Parameter):
+        pass
+
+    dynamic = torch.nn.Sequential(torch.nn.Linear(4, 4), ComfyNVFP4DynamicLinear(4, 4))
+    torchao_like = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    torchao_like[0].weight = NVFP4Tensor(torch.zeros(4, 4))
+    for transformer in (dynamic, torchao_like):
+        engine = _scaled_engine(transformer)
+        policy = engine.request_batching()
+        assert policy["mode"] == "serial"
+        assert policy["reason"].startswith("per-tensor dynamic activation scales (transformer.")
+        assert engine.coalesce_plan("a fox", False) is None
+
+
+def test_frozen_or_per_row_activation_scales_still_batch():
+    """Studio's NVFP4 linear freezes its activation scale, and FP8 / INT8 scale per row: a batch leaves each
+    member's activations as they are alone."""
+    import torch
+
+    class NVFP4FlashInferLinear(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("a_gsf", torch.ones(1))
+
+    for transformer in (torch.nn.Sequential(torch.nn.Linear(4, 4)), NVFP4FlashInferLinear()):
+        engine = _scaled_engine(transformer)
+        assert engine.request_batching()["mode"] == "any"
+        assert engine.coalesce_plan("a fox", False) == ((), False)

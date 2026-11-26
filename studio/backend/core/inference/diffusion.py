@@ -5109,6 +5109,31 @@ def _coalesce_prompt_key(family: Any, name: Any, pipe: Any, prompt: str) -> Opti
     return ()
 
 
+def _per_call_activation_scale(state: Any) -> Optional[str]:
+    """The first denoiser layer whose activation global scale comes from each call's amax (torchao NVFP4 with its
+    dynamic per-tensor scale, the ComfyUI dynamic NVFP4 linear), else None. FP8 / INT8 scale per row, so a batch
+    leaves each member's activations as they are alone. Read once per denoiser module and kept on it."""
+    pipe = getattr(state, "pipe", None)
+    if pipe is None:
+        return None
+    from .diffusion_cfg_batch import per_call_scaled
+
+    for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
+        module = getattr(pipe, name, None)
+        if module is None or not hasattr(module, "named_modules"):
+            continue
+        cached = module.__dict__.get("_unsloth_per_call_scaled")
+        if cached is None:
+            try:
+                cached = (per_call_scaled(module),)
+            except Exception:  # noqa: BLE001 - unreadable: say so rather than batch blind
+                cached = ("unreadable layers",)
+            module.__dict__["_unsloth_per_call_scaled"] = cached
+        if cached[0] is not None:
+            return f"{name}.{cached[0]}"
+    return None
+
+
 def _denoiser_streams_from_host(state: Any) -> bool:
     """The loaded placement copies denoiser weights from host memory on every render: model, sequential or
     streaming offload, or group offload with any group left unpinned. Resident (no offload, or every group pinned)
@@ -18258,11 +18283,21 @@ class DiffusionBackend:
 
     def request_batching(self) -> Optional[dict[str, str]]:
         """How concurrent requests share calls on this load, for status: ``mode`` is ``any`` (any batch size),
-        ``compiled_sizes`` (static compile: only batch sizes this load already compiled) or ``serial`` (resident
-        weights or CUDA graphs: every request renders alone), with the reason. None when nothing is loaded."""
+        ``compiled_sizes`` (static compile: only batch sizes this load already compiled) or ``serial`` (per-call
+        activation scales, resident weights or CUDA graphs: every request renders alone), with the reason. None when
+        nothing is loaded."""
         state = self._state
         if state is None:
             return None
+        scaled = _per_call_activation_scale(state)
+        if scaled is not None:
+            # A per-tensor activation scale comes from the whole call's amax, so one request's prompt would set the
+            # quantization of every other member's activations.
+            return {
+                "mode": "serial",
+                "reason": f"per-tensor dynamic activation scales ({scaled}): one request would set every batch "
+                "member's quantization, so concurrent requests render one at a time",
+            }
         if not _denoiser_streams_from_host(state):
             # Measured per family (A100 / RTX PRO 6000, batch of 4): resident loads ran 0.81x to 1.19x of serial
             # while each member drifted from its solo render; only loads streaming the denoiser from host gained
