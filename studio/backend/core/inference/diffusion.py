@@ -61,6 +61,7 @@ from .diffusion_content import (
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
 from .diffusion_hub_evidence import cached_family
 from .diffusion_init_buffers import install_single_file_fp32_buffers
+from .diffusion_step_noise import seeded_scheduler_step
 from . import hub_reachability
 from .diffusion_families import (
     SMALL_DIT_BF16_WHEN_RESIDENT,
@@ -17375,6 +17376,8 @@ class DiffusionBackend:
                         pipeline_upcasts_keep_storage(pipe),
                         # Only with the step callback: it stops the carry before the last step's decode.
                         cross_forward_render(pipe, enabled = "callback_on_step_end" in chunk_kwargs),
+                        # HiDream-I1 Fast/Dev: the LCM scheduler draws per-step noise the pipeline never seeds.
+                        seeded_scheduler_step(pipe, chunk_kwargs.get("generator")),
                     ):
                         # img2img / inpaint / controlnet pipes share the denoiser: predict from this call's scheduler
                         bind_adaln_pipe(pipe)

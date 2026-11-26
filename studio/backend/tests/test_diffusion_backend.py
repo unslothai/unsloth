@@ -7850,6 +7850,58 @@ def test_generate_batched_seed_matches_solo_replay(fake_runtime, tmp_path):
     assert batched[1] == solo == 9
 
 
+class _StepNoiseScheduler:
+    """Records the generator each ``step`` receives (FlowMatchLCMScheduler draws its per-step noise from it)."""
+
+    def __init__(self):
+        self.step_generators = []
+
+    def step(
+        self,
+        model_output,
+        timestep,
+        sample,
+        generator = None,
+        return_dict = True,
+    ):
+        self.step_generators.append(generator)
+        return (sample,)
+
+
+class _UnseededStepPipe(_FakePipe):
+    """Steps without passing its generator, as diffusers HiDreamImagePipeline does."""
+
+    def __init__(self):
+        super().__init__()
+        self.scheduler = _StepNoiseScheduler()
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        **kwargs,
+    ):
+        n = kwargs.get("num_images_per_prompt", 1) * (
+            len(prompt) if isinstance(prompt, list) else 1
+        )
+        self.scheduler.step(None, 0, types.SimpleNamespace(shape = (n, 4)), return_dict = False)
+        return super().__call__(prompt = prompt, **kwargs)
+
+
+def test_generate_hands_each_images_generator_to_a_step_that_draws_noise(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _UnseededStepPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "p", seeds = [3, 9])
+    [batched] = pipe.scheduler.step_generators
+    assert [g.manual for g in batched] == [3, 9]
+    backend.generate(prompt = "p", seed = 9)
+    solo = pipe.scheduler.step_generators[-1]
+    assert solo.manual == 9
+    # Restored after the call: the scheduler's own step again.
+    assert "step" not in vars(pipe.scheduler)
+
+
 def test_generate_prompt_list_rejected_off_txt2img(fake_runtime, tmp_path):
     backend = _load_zimage_backend(tmp_path)
     with pytest.raises(ValueError, match = "text-to-image only"):
