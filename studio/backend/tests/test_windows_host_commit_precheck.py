@@ -222,6 +222,34 @@ class TestPreLaunch:
         assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
         assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), _CARD, {}, **kwargs) is None
 
+    def test_a_layer_count_keeps_host_kv_beside_experts_on_the_cpu(self, windows):
+        # --cpu-moe keeps attention on the GPU only for the layers -ngl puts there.
+        backend = _backend(model_gb = 20, kv_gb = 32)
+        backend._n_layers = 40
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 24 * _MIB)
+        cmd = _cmd("--cpu-moe", "-ngl", "4")
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs)
+        assert backend._windows_host_commit_refusal(_cmd("--cpu-moe"), _CARD, {}, **kwargs) is None
+
+    def test_mixed_cache_types_follow_the_key_and_value_widths(self, windows):
+        # K 192 wide at f16, V 128 wide at q4_0: 32 GB if both were f16, 9 GB if both q4_0.
+        backend = _backend()
+        backend._kv_lora_rank = None
+        backend._kv_key_length, backend._kv_value_length = 192, 128
+        per_axis = {"f16": 32 * _GB, "q4_0": 9 * _GB}
+        backend._estimate_kv_cache_bytes = lambda n_ctx, cache_type = None, **k: per_axis[cache_type]
+        cmd = ["llama-server", "-m", "model.gguf", "--no-kv-offload", "-c", "8", "-ctv", "q4_0"]
+        # 0.6 * 32 + 0.4 * 9 = 22.8 GB: fits 26 GB of headroom, not 24.
+        assert (
+            backend._windows_host_commit_refusal(
+                cmd, _CARD, {}, avail_mib = 96 * _MIB, commit_headroom_mib = 26 * _MIB
+            )
+            is None
+        )
+        assert backend._windows_host_commit_refusal(
+            cmd, _CARD, {}, avail_mib = 96 * _MIB, commit_headroom_mib = 24 * _MIB
+        )
+
     @pytest.mark.parametrize(
         "extra, env, want",
         [((), {}, False), (("--swa-full",), {}, True), ((), {"LLAMA_ARG_SWA_FULL": "1"}, True)],

@@ -17023,10 +17023,13 @@ class LlamaCppBackend:
                 raw = str(_env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip().lower()
                 requested = int(raw) if raw.lstrip("-").isdigit() else None
             n_layers = getattr(self, "_n_layers", None)
+            # Layers a hand-set count leaves on the CPU, attention and KV included.
+            cpu_layer_share = 0.0
             if requested is not None and requested >= 0 and n_layers:
                 free_vram_bytes = min(
                     free_vram_bytes, resident * min(requested, n_layers) // n_layers
                 )
+                cpu_layer_share = max(0, n_layers - requested) / n_layers
             spill = max(0, resident - free_vram_bytes)
             _, reserves_ram = resolve_effective_memory_state(
                 argv, _env, auto_unmapped = auto_unmapped
@@ -17039,7 +17042,7 @@ class LlamaCppBackend:
             n_ctx = int(ctx_raw) if ctx_raw.strip().lstrip("-").isdigit() else 0
             if n_ctx <= 0:
                 n_ctx = int(getattr(self, "_context_length", 0) or 0)
-            kv_on_host = 0.0
+            kv_on_host = cpu_layer_share
             if child_has_no_gpu or not _kv_offload_from_args(argv, _env):
                 kv_on_host = 1.0
             elif (
@@ -17048,7 +17051,7 @@ class LlamaCppBackend:
                 and not _env_places_tensors_on_cpu(_env)
             ):
                 # A layer split keeps the KV of the layers left on the CPU in host RAM.
-                kv_on_host = spill / resident
+                kv_on_host = max(kv_on_host, spill / resident)
             if kv_on_host and n_ctx > 0:
                 k_type, v_type = _effective_main_cache_types(argv, _env)
                 parallel_raw = _extra_args_device(argv, frozenset({"-np", "--parallel"}))
@@ -17059,15 +17062,16 @@ class LlamaCppBackend:
                 kv = self._estimate_kv_cache_bytes(
                     n_ctx, k_type, n_parallel = n_parallel, swa_full = swa_full
                 )
-                # A refusal must not over-price: K and V each take half of an equal-width cache at
-                # their own type; MLA caches K only.
+                # A refusal must not over-price: K and V each take their width's share of the
+                # cache at their own type (half each when the widths are unknown); MLA caches K only.
                 if v_type != k_type and getattr(self, "_kv_lora_rank", None) is None:
-                    kv = (
-                        kv
-                        + self._estimate_kv_cache_bytes(
-                            n_ctx, v_type, n_parallel = n_parallel, swa_full = swa_full
-                        )
-                    ) // 2
+                    k_len = getattr(self, "_kv_key_length", None)
+                    v_len = getattr(self, "_kv_value_length", None)
+                    k_frac = k_len / (k_len + v_len) if k_len and v_len else 0.5
+                    kv_v = self._estimate_kv_cache_bytes(
+                        n_ctx, v_type, n_parallel = n_parallel, swa_full = swa_full
+                    )
+                    kv = int(kv * k_frac + kv_v * (1 - k_frac))
                 private += int(kv * kv_on_host)
             if private <= 0:
                 return None
