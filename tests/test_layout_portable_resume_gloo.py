@@ -78,6 +78,7 @@ def _case(
     out,
     resume_from = None,
     optim = "adamw_torch",
+    aux = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -161,10 +162,20 @@ def _case(
             config = LoraConfig(
                 r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False
             )
-            torch.manual_seed(1)
-            return tp_env.tensor_parallel_env_peft(lambda m: get_peft_model(m, config))(
-                load(ckpt, load_in_4bit = False)
-            )
+
+            def peft(m):
+                torch.manual_seed(1)
+                m = get_peft_model(m, config)
+                if aux:  # a frozen, inactive second adapter: PEFT saves it in <checkpoint>/aux
+                    m.add_adapter("aux", config)
+                    if resume_from is None:
+                        with torch.no_grad():
+                            for n, p in m.named_parameters():
+                                if ".aux." in n:
+                                    p.fill_(0.25)
+                return m
+
+            return tp_env.tensor_parallel_env_peft(peft)(load(ckpt, load_in_4bit = False))
 
         vocab = 1000
     g = torch.Generator().manual_seed(1)
@@ -191,7 +202,22 @@ def _case(
     if dist.is_initialized():
         dist.barrier()
     logs = [h for h in trainer.state.log_history if "loss" in h]
+    aux_state = {}
+    if aux:
+        import re
+
+        from unsloth.models import pp_native
+
+        stage = pp_native.pipeline_stage_of(trainer.model)
+        for k, v in trainer.model.state_dict().items():
+            layer = re.search(r"\.layers\.(\d+)\.", k)
+            if ".aux." not in k or (
+                stage is not None and not stage.start <= int(layer.group(1)) < stage.end
+            ):
+                continue  # another stage's layer (a stand-in here)
+            aux_state[k] = v.detach().clone()
     return {
+        "aux": aux_state,
         "steps": [h["step"] for h in logs],
         "losses": [h["loss"] for h in logs],
         "grad_norms": [h["grad_norm"] for h in logs],
@@ -485,3 +511,27 @@ def test_eight_bit_resume_between_tensor_parallel_and_one_process(refs):
     for arm in ("to_one", "from_one"):
         assert worst[arm] <= 2 * floor + 1e-4, (arm, worst, floor)
         assert worst[arm] < worst["fresh"] / 2, (arm, worst)
+
+
+def test_frozen_saved_tensors_are_restored_on_another_layout(tmp_path):
+    """An inactive second adapter (frozen, saved by PEFT under <checkpoint>/aux) comes back from a one-process
+    checkpoint under pp 2 with its saved values, not the fresh ones (tensor parallel takes one adapter)."""
+    _needs_pipelining(["pp2"])
+    tmp = str(tmp_path)
+    ckpt = _save_checkpoint("llama", os.path.join(tmp, "base"), {"num_hidden_layers": 4})
+    src = _run(tmp, "one", ckpt = ckpt, family = "llama", out = "aux_src", aux = True)
+    got = _run(
+        tmp,
+        "pp2",
+        ckpt = ckpt,
+        family = "llama",
+        out = "aux_pp2",
+        aux = True,
+        resume_from = os.path.join(tmp, "aux_src", f"checkpoint-{_SAVE_AT}"),
+    )
+    assert got["aux"] and set(got["aux"]) <= set(src["aux"]), sorted(
+        set(got["aux"]) - set(src["aux"])
+    )[:4]
+    for key, value in got["aux"].items():
+        assert float(src["aux"][key].abs().max()) == 0.25, key  # the saved, perturbed values
+        torch.testing.assert_close(value, src["aux"][key], msg = key)

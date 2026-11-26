@@ -441,8 +441,22 @@ def _grouped_lora_b(configs):
     )
 
 
+def _restorable(p):
+    """A parameter a checkpoint's saved tensor is copied into: trainable, or a frozen float tensor PEFT saved
+    (resized embeddings, an inactive adapter); never a quantized base weight."""
+    if p.requires_grad:
+        return True
+    from .ep_native import _EP
+
+    layout = getattr(p, _EP, None)
+    if layout is not None and layout[0] == "4bit":
+        return False
+    return type(p).__name__ != "Params4bit" and _local(p).is_floating_point()
+
+
 def portable_load_weights(model, checkpoint):
-    """Collective: every trainable parameter from the checkpoint's 1-GPU adapter, each rank keeping its slice."""
+    """Collective: every parameter the checkpoint's 1-GPU adapter holds (the trainable ones, and frozen ones PEFT
+    saved such as resized embeddings or an inactive adapter), each rank keeping its slice."""
     from .fsdp2_native import checkpoint_state_by_name
 
     mapped, legacy, _ = checkpoint_state_by_name(model, checkpoint)
@@ -451,14 +465,17 @@ def portable_load_weights(model, checkpoint):
             f"Unsloth: {checkpoint} holds fused MoE expert lora_B saved grouped_by_expert (an older layout); "
             "resume it on the layout it was saved on, or set UNSLOTH_MOE_LORA_B_LAYOUT to that layout."
         )
-    maps = _slice_maps(model)
+    # The same names in the same order on every rank of a shard group (one file, one model): slice maps
+    # are collectives over that group.
+    targets = [(n, p) for n, p in model.named_parameters() if n in mapped and _restorable(p)]
     with torch.no_grad():
-        for n, p in _trainables(model):
+        for n, p in targets:
             local = _local(p)
+            smap = _slice_map(model, p)
             local.copy_(
-                _to_local(n, mapped[n], maps[n], local).to(device = local.device, dtype = local.dtype)
+                _to_local(n, mapped[n], smap, local).to(device = local.device, dtype = local.dtype)
             )
-    return len(maps)
+    return len(targets)
 
 
 def _named_from_positional(model, inner, state_dict):
