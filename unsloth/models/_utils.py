@@ -11886,6 +11886,7 @@ class _AutoCheckpointSkip:
         self.backward_seen = False
         self.foreign = None
         self.forwards_seen = -1
+        self.forward_count = None
         self.layers = layers
         self.probe = probe
         self.handles = []
@@ -12253,7 +12254,7 @@ class _AutoCheckpointSkip:
         self.kept = _mark_checkpoint_skips(self.model, count) if count > 0 else []
         if self.kept:
             self._recount_offload()
-        self.applied = self.planned = len(self.kept)
+        self.applied = self.planned = self.forward_count = len(self.kept)
         if single and self.dynamic:
             self.sizing = dict(
                 usable = usable,
@@ -12309,6 +12310,10 @@ class _AutoCheckpointSkip:
             planner = planner_ref()
             if planner is not None:
                 planner.backward_seen = True
+                # Between forwards the marks hold the plan for the trainer's longest batch: a forward the
+                # re-size hook cannot see (compiled as a whole) never inherits a short batch's count.
+                if planner.sizing is not None and planner.applied != planner.planned:
+                    planner._apply(planner.planned)
 
         self.handles.append(hook(_seen))
         self.foreign = _foreign_cuda_bytes(device)
@@ -12339,12 +12344,15 @@ class _AutoCheckpointSkip:
         self.handles.append(handle)
         weakref.finalize(self, handle.remove)
 
-    def _stop_resizing(self, count):
-        self.sizing = None
-        self.dynamic = False
+    def _apply(self, count):
         self.unmark()
         self.kept = _mark_checkpoint_skips(self.model, count) if count > 0 else []
         self.applied = count
+
+    def _stop_resizing(self, count):
+        self.sizing = None
+        self.dynamic = False
+        self._apply(count)
         self._recount_offload()
 
     def _eligible(self):
@@ -12434,12 +12442,12 @@ class _AutoCheckpointSkip:
         if shape is None and args and torch.is_tensor(args[0]) and args[0].dim() >= 2:
             shape = args[0].shape
         count = self.planned if shape is None else self.count_for(shape[0], shape[1])
-        if count == self.applied:
-            return
-        self.unmark()
-        self.kept = _mark_checkpoint_skips(self.model, count) if count > 0 else []
-        self.applied = count
-        self._recount_offload()
+        if count != self.applied:
+            self._apply(count)
+        if count != self.forward_count:
+            # Smart offloading counts the checkpointed calls of a forward: recount when that changes.
+            self.forward_count = count
+            self._recount_offload()
 
 
 def checkpoint_skip_pending():
@@ -12942,6 +12950,8 @@ def _size_auto_checkpoint_skip_for_trainer(trainer):
     planner = getattr(model, "_unsloth_auto_skip", None)
     if not isinstance(planner, _AutoCheckpointSkip):
         return
+    if getattr(getattr(trainer, "args", None), "torch_compile", False):
+        planner.dynamic = False  # the compiled forward never runs the re-size hook eagerly
     if any(c.__name__.endswith(_MULTI_FORWARD_TRAINERS) for c in type(trainer).__mro__):
         planner.dynamic = False
         if planner.quiet:

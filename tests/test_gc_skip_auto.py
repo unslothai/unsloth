@@ -882,8 +882,8 @@ def test_a_step_without_an_eager_resize_falls_back_to_the_plan(monkeypatch):
     optimizer.step()  # the planning step
     model(torch.zeros(1, 16, 4))
     _backward(model)
-    optimizer.step()  # an eager re-size ran in this step
-    assert len(planner.kept) == 8 and planner.sizing is not None
+    optimizer.step()  # an eager re-size ran in this step (its marks are back to the plan after the backward)
+    assert planner.forwards == 1 and len(planner.kept) == 2 and planner.sizing is not None
     _backward(model)
     optimizer.step()  # no training forward reached the hook
     assert len(planner.kept) == 2 and planner.sizing is None
@@ -934,4 +934,48 @@ def test_default_plan_without_a_trainable_decoder_weight_and_no_room(monkeypatch
     model(torch.zeros(1, 16, 4))
     assert planner.kept == [] and planner.sizing is None
     assert [bool(layer.gradient_checkpointing) for layer in model.model.layers] == [True] * 8
+    monkeypatch.undo()
+
+
+def test_backward_restores_the_planned_marks_between_forwards(monkeypatch):
+    # A short batch keeps more layers only for its own forward and backward: afterwards the marks are the plan's
+    # (sized for the trainer's longest batch), so a forward that skips the eager hook (compiled) never inherits them.
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    planner.target_batch = 4
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    flags = lambda: [bool(layer.gradient_checkpointing) for layer in model.model.layers].count(
+        False
+    )
+    _backward(model)
+    model(torch.zeros(1, 16, 4))
+    assert flags() == 8
+    _backward(model)
+    assert flags() == 2 and planner.sizing is not None
+    model(torch.zeros(1, 16, 4))
+    assert flags() == 8
+    monkeypatch.undo()
+
+
+def test_trainer_torch_compile_keeps_the_fixed_plan(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    trainer = type("SFTTrainer", (), {})()
+    trainer.model = model
+    trainer.args = type(
+        "Args", (), {"per_device_train_batch_size": 4, "max_length": None, "torch_compile": True}
+    )()
+    ns["_size_auto_checkpoint_skip_for_trainer"](trainer)
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    assert len(planner.kept) == 2 and planner.sizing is None
     monkeypatch.undo()
