@@ -1239,11 +1239,13 @@ def test_management_load_keeps_the_matched_saved_row_key(
     """Replay and the managed path check re-read the row by this key, as after a Studio load."""
     import utils.openai_auto_switch_settings as overrides
 
-    # Only the listed id resolves, so the listed alias keys the lookup.
+    # The path also resolves under another root's alias; the listed alias still keys the lookup.
+    resolved = {
+        QWEN: (SNAPSHOT, "UD-Q4_K_XL", QWEN),
+        f"{SNAPSHOT}:UD-Q4_K_XL": (SNAPSHOT, "UD-Q4_K_XL", "Qwen3.8-27B-GGUF"),
+    }
     monkeypatch.setattr(
-        _no_local_gguf,
-        "resolve_local_gguf",
-        lambda requested, **k: (SNAPSHOT, "UD-Q4_K_XL", QWEN) if requested == QWEN else None,
+        _no_local_gguf, "resolve_local_gguf", lambda requested, **k: resolved.get(requested)
     )
     row = {"kv_cache_dtype": "q8_0"} if row_key else {}
     asked = []

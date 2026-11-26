@@ -8771,9 +8771,12 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     alias = request._override_alias_id or _snapshot_repo_or_self(load_path, require_cache = True)
     # A row may be keyed by the snapshot path; the scan also warms the index local_target_is_gguf reads.
     ref = f"{load_path}:{variant}" if variant else load_path
-    local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
-        resolve_local_gguf, ref
-    )
+    # Set only by a caller that already resolved the on-disk copy; a second resolution can pick another row.
+    local = None
+    if not request._override_alias_id:
+        local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
+            resolve_local_gguf, ref
+        )
     if local:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
