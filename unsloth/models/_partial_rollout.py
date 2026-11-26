@@ -151,8 +151,19 @@ class PartialRolloutEngine:
             return "presence_penalty"
         if float(getattr(params, "frequency_penalty", 0.0) or 0.0) != 0.0:
             return "frequency_penalty"
-        for name in ("structured_outputs", "guided_decoding", "logits_processors", "bad_words"):
+        # Each of these depends on the output history or on the request's own RNG stream, which a resubmitted
+        # request (old output moved into the prompt) does not keep.
+        for name in (
+            "structured_outputs",
+            "guided_decoding",
+            "logits_processors",
+            "bad_words",
+            "repetition_detection",
+        ):
             if getattr(params, name, None):
+                return name
+        for name in ("seed", "truncate_prompt_tokens", "thinking_token_budget"):
+            if getattr(params, name, None) is not None:
                 return name
         return None
 
@@ -175,10 +186,17 @@ class PartialRolloutEngine:
                     f"Unsloth: GRPO partial rollout cannot resume a carried row ({self.cut_error})."
                 )
             done = self.resume_len[row]
-            new = params.clone()
-            new.max_tokens = int(params.max_tokens) - done
+            prompt = args[1] if len(args) > 1 else kwargs.get("prompt", None)
+            # Older vLLM hands add_request a prepared EngineCoreRequest that carries its own sampling params.
+            prepared = getattr(prompt, "sampling_params", None)
+            new = (prepared if prepared is not None else params).clone()
+            if new.max_tokens is not None:
+                # None: vLLM derives the budget from the (now longer) prompt and max_model_len.
+                new.max_tokens = int(new.max_tokens) - done
             if getattr(new, "min_tokens", 0):
                 new.min_tokens = max(0, int(new.min_tokens) - done)
+            if prepared is not None:
+                prompt.sampling_params = new
             if len(args) > 2:
                 args[2] = new
             else:
@@ -310,7 +328,8 @@ def _unsupported_reason(trainer):
     ):
         return "needs vllm_importance_sampling_correction=True to weight carried tokens."
     if (
-        getattr(args, "vllm_return_sampling_mask", False)
+        getattr(getattr(trainer, "vllm_generation", None), "return_sampling_mask", False)
+        or getattr(args, "vllm_return_sampling_mask", False)
         or os.environ.get("UNSLOTH_GRPO_TRUNCATED_SUPPORT", "0") == "1"
     ):
         return "sampling-support masks are not carried."
@@ -323,6 +342,49 @@ def _unsupported_reason(trainer):
         return "needs num_generations >= 2."
     if _engine_of(trainer) is None:
         return "no vLLM LLMEngine found."
+    return None
+
+
+def _configure_rollout_logprobs(trainer):
+    """What the generated _generate_and_score_completions prologue does first: pick the vLLM logprob convention
+    (pre top_k / top_p / min_p) for this trainer. The partial rollout generates before that prologue runs, so a
+    carried row's first tokens would otherwise be logged under the other convention."""
+    try:
+        from unsloth_zoo.vllm_utils import set_vllm_untruncated_logprobs
+    except Exception:
+        return
+    llm = getattr(trainer, "llm", None) or getattr(
+        getattr(trainer, "vllm_generation", None), "llm", None
+    )
+    try:
+        trainer._unsloth_vllm_untruncated_logprobs = bool(
+            set_vllm_untruncated_logprobs(
+                bool(getattr(trainer, "use_vllm", False))
+                and bool(getattr(trainer, "vllm_importance_sampling_correction", False))
+                and llm is not None,
+                llm,
+            )
+        )
+    except Exception:
+        trainer._unsloth_vllm_untruncated_logprobs = False
+
+
+def _kept_set_reason(trainer):
+    """Kept-set scoring (zoo's automatic top_k / top_p / min_p support) would score a carried token over the new
+    policy's kept set, which need not contain it."""
+    try:
+        from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+        support = grpo_truncated_support_kwargs(trainer) or {}
+    except Exception:
+        return None
+    if (
+        int(support.get("support_top_k", 0) or 0) > 0
+        or float(support.get("support_top_p", 1.0)) < 1.0
+        or float(support.get("support_min_p", 0.0) or 0.0) > 0.0
+    ):
+        return (
+            "kept-set (truncated support) scoring is on; carried tokens cannot be scored over it."
+        )
     return None
 
 
@@ -410,8 +472,10 @@ def _generate_rows(trainer, state, groups, target, max_age):
         else:
             del engine.step
     completion_ids, logprobs = result[0], result[1]
-    extra = result[2] if len(result) > 2 else None
-    if extra not in (None, {}) or len(result) > 3:
+    tail = tuple(
+        result[2:]
+    )  # TRL 1.0-1.16 returns 2 values, later ones a sampling mask / extra fields
+    if any(x not in (None, {}) for x in tail):
         raise RuntimeError(
             "Unsloth: GRPO partial rollout cannot carry extra per-token generation fields."
         )
@@ -433,10 +497,10 @@ def _generate_rows(trainer, state, groups, target, max_age):
         row.logprobs.extend(lps)
         row.versions.extend([version] * len(tokens))
         row.done = i not in aborted
-    return len(aborted), type(extra), (None if wrapper.can_cut else wrapper.cut_error)
+    return len(aborted), tail, (None if wrapper.can_cut else wrapper.cut_error)
 
 
-def _replay(rows, extra_type):
+def _replay(rows, tail):
     """Stage 2 stand-in for _generate_single_turn: the trained rows, full completions, in order."""
 
     def replay(prompt_ids, images, multimodal_fields, *args, **kwargs):
@@ -446,10 +510,34 @@ def _replay(rows, extra_type):
             raise RuntimeError(
                 "Unsloth: GRPO partial rollout replay saw different prompts than it generated."
             )
-        extra = {} if extra_type is dict else None
-        return [list(r.tokens) for r in rows], [list(r.logprobs) for r in rows], extra
+        return (
+            [list(r.tokens) for r in rows],
+            [list(r.logprobs) for r in rows],
+            *({} if isinstance(x, dict) else None for x in tail),
+        )
 
     return replay
+
+
+def _working_copy(state):
+    """Generation extends carried rows in place; work on copies so a failed scoring call can be retried."""
+    work = PartialRolloutState()
+    work.serial, work.steps, work.aborted_rows = state.serial, state.steps, state.aborted_rows
+    for group in state.carry:
+        rows = []
+        for row in group.rows:
+            new = _Row(row.input)
+            new.prompt_ids, new.done = row.prompt_ids, row.done
+            new.tokens, new.logprobs, new.versions = (
+                list(row.tokens),
+                list(row.logprobs),
+                list(row.versions),
+            )
+            rows.append(new)
+        copy = _Group(rows, group.serial)
+        copy.age = group.age
+        work.carry.append(copy)
+    return work
 
 
 def _log(trainer, name, value):
@@ -483,7 +571,13 @@ def partial_rollout_generate_and_score(trainer, original, inputs, *args, **kwarg
             trainer._unsloth_partial_rollout_refused = reason
             _warn_once(reason, reason)
             return original(trainer, inputs, *args, **kwargs)
-        state = trainer._unsloth_partial_rollout = PartialRolloutState()
+        _configure_rollout_logprobs(trainer)
+        reason = _kept_set_reason(trainer)
+        if reason is not None:
+            trainer._unsloth_partial_rollout_refused = reason
+            _warn_once(reason, reason)
+            return original(trainer, inputs, *args, **kwargs)
+        state = PartialRolloutState()
     fraction, max_age = settings
     group_size = int(trainer.num_generations)
     fresh = _groups_of(inputs, group_size)
@@ -496,6 +590,7 @@ def partial_rollout_generate_and_score(trainer, original, inputs, *args, **kwarg
         )
     unit = _unit(group_size, int(getattr(trainer.args, "steps_per_generation", 1) or 1))
     spare = _spare_groups(fraction, len(fresh), unit)
+    state = _working_copy(state)
     groups = list(state.carry)
     for rows in fresh:
         groups.append(_Group([_Row(example) for example in rows], state.serial))
@@ -503,14 +598,13 @@ def partial_rollout_generate_and_score(trainer, original, inputs, *args, **kwarg
     target = len(groups) - spare
     aged = sum(1 for group in groups if group.age >= max_age)
     target = max(target, unit * math.ceil(aged / unit))
-    num_aborted, extra_type, cut_error = _generate_rows(trainer, state, groups, target, max_age)
+    _configure_rollout_logprobs(trainer)
+    num_aborted, tail, cut_error = _generate_rows(trainer, state, groups, target, max_age)
     complete = sorted((g for g in groups if g.complete), key = lambda g: (-g.age, g.serial))
     take = min(len(complete), target)
     if cut_error is not None:
         # This engine or these sampling params cannot be cut: every row ran to its end, so train all of them
         # (what a normal rollout does) and stop carrying.
-        trainer._unsloth_partial_rollout_refused = cut_error
-        _warn_once(cut_error, f"cannot stop this rollout early ({cut_error}).")
         take = len(complete)
     take -= take % unit
     if take == 0:
@@ -529,28 +623,36 @@ def partial_rollout_generate_and_score(trainer, original, inputs, *args, **kwarg
     tokens = sum(len(r.versions) for r in rows)
     stale = sum(sum(1 for v in r.versions if v != version) for r in rows)
     lag = sum(sum(version - v for v in r.versions) for r in rows)
-    _log(trainer, "partial_rollout/trained_groups", float(len(train)))
-    _log(trainer, "partial_rollout/carried_groups", float(len(state.carry)))
-    _log(trainer, "partial_rollout/aborted_rows", float(num_aborted))
-    _log(trainer, "partial_rollout/stale_token_frac", stale / max(tokens, 1))
-    _log(trainer, "partial_rollout/token_staleness_mean", lag / max(tokens, 1))
-    trainer._unsloth_partial_rollout_last = dict(
+    record = dict(
         trained_rows = len(rows),
         carried_groups = len(state.carry),
         aborted_rows = num_aborted,
         stale_token_frac = stale / max(tokens, 1),
+        token_staleness_mean = lag / max(tokens, 1),
         versions = [list(r.versions) for r in rows],
     )
     had = "_generate_single_turn" in trainer.__dict__
     previous = trainer.__dict__.get("_generate_single_turn", None)
-    trainer._generate_single_turn = _replay(rows, extra_type)
+    trainer._generate_single_turn = _replay(rows, tail)
     try:
-        return original(trainer, [row.input for row in rows], *args, **kwargs)
+        scored = original(trainer, [row.input for row in rows], *args, **kwargs)
     finally:
         if had:
             trainer._generate_single_turn = previous
         else:
             del trainer._generate_single_turn
+    # Published only after scoring succeeded: a retry of the same batch starts from the previous carry.
+    trainer._unsloth_partial_rollout = state
+    trainer._unsloth_partial_rollout_last = record
+    if cut_error is not None:
+        trainer._unsloth_partial_rollout_refused = cut_error
+        _warn_once(cut_error, f"cannot stop this rollout early ({cut_error}).")
+    _log(trainer, "partial_rollout/trained_groups", float(len(train)))
+    _log(trainer, "partial_rollout/carried_groups", float(len(state.carry)))
+    _log(trainer, "partial_rollout/aborted_rows", float(num_aborted))
+    _log(trainer, "partial_rollout/stale_token_frac", record["stale_token_frac"])
+    _log(trainer, "partial_rollout/token_staleness_mean", record["token_staleness_mean"])
+    return scored
 
 
 def wrap_grpo_partial_rollout(trainer_class):

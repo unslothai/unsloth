@@ -500,3 +500,101 @@ def test_float64_loss_of_carried_rows_equals_fresh_rollout(on):
         _policy_logps(completion_ids, 3407), current, completion_ids, mask, advantages
     )
     assert not torch.allclose(wrong[0], got[0])
+
+
+# ------------------------------------------------------------------------------------------ review regressions
+def test_two_value_single_turn_keeps_its_arity(on):
+    """TRL 1.0-1.16 return (completion_ids, logprobs); the replay must return the same shape."""
+    engine = FakeEngine(slots = 6)
+    trainer = FakeTrainer(engine)
+    three = trainer._generate_single_turn
+    trainer._generate_single_turn = lambda *a, **k: three(*a, **k)[:2]
+
+    def gas(trainer, inputs):
+        prompt_ids, _, _ = trainer._tokenize_prompts([x["prompt"] for x in inputs])
+        completion_ids, logprobs = trainer._generate_single_turn(prompt_ids, None, {}, 4)
+        return dict(inputs = list(inputs), completion_ids = completion_ids)
+
+    for step in range(3):
+        engine.version = step
+        out = pr.partial_rollout_generate_and_score(trainer, gas, batch(step))
+        trainer.state.global_step += 1
+    assert len(out["inputs"]) == 16 and engine.aborted
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("seed", 42), ("truncate_prompt_tokens", 3), ("repetition_detection", object())],
+)
+def test_history_or_rng_dependent_params_never_cut(on, field, value):
+    engine = FakeEngine()
+    trainer = FakeTrainer(engine)
+    trainer.params_kw = {field: value}
+    out = pr.partial_rollout_generate_and_score(trainer, original_gas, batch(0))
+    assert len(out["inputs"]) == 16 and not engine.aborted
+    assert field in trainer._unsloth_partial_rollout_refused
+
+
+def test_context_derived_budget_survives_resume(on):
+    engine = FakeEngine(slots = 6)
+    trainer = FakeTrainer(engine)
+    trainer.params_kw = dict(max_tokens = None)
+    engine_add = engine.add_request
+
+    def add(request_id, prompt, params, **kw):
+        if params.max_tokens is None:  # what vLLM does: budget from max_model_len - prompt
+            params = params.clone()
+            params.max_tokens = MAX_TOKENS + 3 - len(prompt["prompt_token_ids"])
+        return engine_add(request_id, prompt, params, **kw)
+
+    engine.add_request = add
+    run_steps(trainer, 3)
+    resumed = [(ids, mx) for ids, mx in engine.added if len(ids) > 3]
+    assert resumed and all(mx == MAX_TOKENS - (len(ids) - 3) for ids, mx in resumed)
+
+
+def test_sampling_mask_backend_is_refused(on):
+    engine = FakeEngine()
+    trainer = FakeTrainer(engine)
+    trainer.vllm_generation.return_sampling_mask = True
+    out = pr.partial_rollout_generate_and_score(trainer, original_gas, batch(0))
+    assert len(out["inputs"]) == 16 and not engine.aborted
+    assert "sampling-support" in trainer._unsloth_partial_rollout_refused
+
+
+def test_failed_scoring_keeps_the_previous_carry(on):
+    engine = FakeEngine(slots = 6)
+    trainer = FakeTrainer(engine)
+    run_steps(trainer, 2)
+    before = [
+        (g.serial, [list(r.tokens) for r in g.rows]) for g in trainer._unsloth_partial_rollout.carry
+    ]
+
+    def boom(trainer, inputs):
+        original_gas(trainer, inputs)
+        raise RuntimeError("reward server down")
+
+    with pytest.raises(RuntimeError, match = "reward server down"):
+        pr.partial_rollout_generate_and_score(trainer, boom, batch(2))
+    after = [
+        (g.serial, [list(r.tokens) for r in g.rows]) for g in trainer._unsloth_partial_rollout.carry
+    ]
+    assert after == before
+    out = pr.partial_rollout_generate_and_score(trainer, original_gas, batch(2))  # the retry
+    serials = [g.serial for g in trainer._unsloth_partial_rollout.carry]
+    assert len(out["inputs"]) == 16 and len(set(serials)) == len(serials)
+
+
+def test_logprob_convention_is_set_before_generating(on, monkeypatch):
+    vu = pytest.importorskip("unsloth_zoo.vllm_utils")
+    calls = []
+    monkeypatch.setattr(
+        vu,
+        "set_vllm_untruncated_logprobs",
+        lambda enabled, llm: calls.append(("set", len(engine.added))) or True,
+        raising = False,
+    )
+    engine = FakeEngine()
+    trainer = FakeTrainer(engine)
+    pr.partial_rollout_generate_and_score(trainer, original_gas, batch(0))
+    assert calls and calls[0] == ("set", 0) and trainer._unsloth_vllm_untruncated_logprobs is True
