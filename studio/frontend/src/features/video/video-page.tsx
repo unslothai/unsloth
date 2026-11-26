@@ -1468,6 +1468,8 @@ function VideoGenerator({
   >([]);
   const [referenceAudios, setReferenceAudios] = useState<ReferenceMedia[]>([]);
   const [referenceImageSize, setReferenceImageSize] = useState<"match" | "max">("match");
+  // Remounts the pickers on Restore, so a file still being read then is dropped with them.
+  const [restoreGeneration, setRestoreGeneration] = useState(0);
   const [flowShift, setFlowShift] = useState<number | null>(null);
   const [audioFlowShift, setAudioFlowShift] = useState<number | null>(null);
   const [numFrames, setNumFrames] = useState(
@@ -2709,7 +2711,7 @@ function VideoGenerator({
       if (video.conditioning === "restyle") {
         setRestyleRecipe({ prompt: video.prompt, seed: String(video.seed) });
         setPageMode("restyle");
-        toast.success("Settings restored. Restyle the same source clip to reproduce this clip.");
+        toast.success("Settings restored. Add the source clip again to reproduce this clip.");
         return;
       }
       setPrompt(video.prompt);
@@ -2762,6 +2764,7 @@ function VideoGenerator({
       setReferenceAudios([]);
       setReferenceImageSize("match");
       setCropPictureIndex(null);
+      setRestoreGeneration((n) => n + 1);
       const conditioned = CONDITIONING_INPUTS[video.conditioning ?? ""];
       toast.success(
         conditioned
@@ -4690,6 +4693,7 @@ function VideoGenerator({
                   <div className="grid gap-1.5">
                     <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={firstFrame}
                       onChange={(next) => {
                         setFirstFrame(next);
@@ -4704,6 +4708,7 @@ function VideoGenerator({
                   <div className="grid gap-1.5">
                     <span className="text-ui-11 text-muted-foreground/70">End frame</span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={lastFrame}
                       onChange={(next) => {
                         setLastFrame(next);
@@ -4791,6 +4796,7 @@ function VideoGenerator({
                       Picture {referenceImages.length + 1}
                     </span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={null}
                       onChange={(next) =>
                         next &&
@@ -4923,6 +4929,7 @@ function VideoGenerator({
                 ))}
                 {referenceVideos.length < 3 && hasReferenceRoom && (
                   <ReferenceMediaPicker
+                    key={restoreGeneration}
                     kind="video"
                     value={null}
                     label={`Add video ${referenceVideos.length + 1}`}
@@ -4966,6 +4973,7 @@ function VideoGenerator({
                   hasReferenceRoom &&
                   (referenceImages.length > 0 || referenceVideos.length > 0) && (
                     <ReferenceMediaPicker
+                      key={restoreGeneration}
                       kind="audio"
                       value={null}
                       label={`Add audio ${referenceAudios.length + 1}`}
@@ -5015,6 +5023,7 @@ function VideoGenerator({
                 </InfoHint>
               </span>
               <ReferenceMediaPicker
+                key={restoreGeneration}
                 kind="video"
                 value={continuationClip}
                 label="Clip to continue"

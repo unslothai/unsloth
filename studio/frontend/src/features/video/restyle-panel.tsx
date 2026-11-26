@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -77,16 +77,10 @@ export function VideoRestylePanel({ active, restore }: { active: boolean; restor
   const [frames, setFrames] = useState<File[]>([]);
   const [prompt, setPrompt] = useState("");
   const [seed, setSeed] = useState("");
-  const [restored, setRestored] = useState<RestyleRecipe | null>(null);
-  if (restore !== restored) {
-    setRestored(restore);
-    if (restore) {
-      setPrompt(restore.prompt);
-      setSeed(restore.seed);
-    }
-  }
   const [progress, setProgress] = useState<VideoRestyleProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Kept apart from job errors so a restore can drop it with its source.
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [status, setStatus] = useState<VideoRestyleStatus | null>(null);
   const [preview, setPreview] = useState<VideoRestylePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -212,6 +206,7 @@ export function VideoRestylePanel({ active, restore }: { active: boolean; restor
     setFrames(next.frames);
     setPreview(null);
     setError(null);
+    setPreviewError(null);
     setOutcomeStale(true);
     clipsFor.current += 1;
     loadedFor.current = lastJob.current;
@@ -227,11 +222,28 @@ export function VideoRestylePanel({ active, restore }: { active: boolean; restor
       const result = await previewVideoRestyle(next);
       if (ticket === previewFor.current) setPreview(result);
     } catch (err) {
-      if (ticket === previewFor.current) setError(err instanceof Error ? err.message : String(err));
+      if (ticket === previewFor.current) setPreviewError(err instanceof Error ? err.message : String(err));
     } finally {
       if (ticket === previewFor.current) setPreviewing(false);
     }
   };
+
+  // The recipe does not save its source, so a clip staged for another run is dropped. Unlike choose(), this
+  // keeps the shown outcome, and a running job already holds its upload.
+  const applyRestore = useEffectEvent((recipe: RestyleRecipe) => {
+    setPrompt(recipe.prompt);
+    setSeed(recipe.seed);
+    setVideo(null);
+    setFrames([]);
+    setPreview(null);
+    previewFor.current += 1;
+    setPreviewing(false);
+    setPreviewError(null);
+  });
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- each restore applies once, on mount or when replaced.
+    if (restore) applyRestore(restore);
+  }, [restore]);
 
   useEffect(() => {
     if (!active) {
@@ -251,6 +263,7 @@ export function VideoRestylePanel({ active, restore }: { active: boolean; restor
     setSubmitting(true);
     setOutcomeStale(false);
     setError(null);
+    setPreviewError(null);
     clipsFor.current += 1;
     setInputClip(null);
     setControlClip(null);
@@ -511,6 +524,7 @@ export function VideoRestylePanel({ active, restore }: { active: boolean; restor
           <p className="text-xs text-muted-foreground">Cancelled.</p>
         )}
         {error && <p className="text-xs text-destructive">{error}</p>}
+        {previewError && <p className="text-xs text-destructive">{previewError}</p>}
       </div>
 
       {/* justify-center-safe: three stacked players can be taller than the pane; plain centering would

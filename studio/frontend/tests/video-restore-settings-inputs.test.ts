@@ -69,6 +69,7 @@ for (const conditioning of [null, "t2va", "i2va", "l2va", "fl2va", "ref2va", "v2
     assert.deepEqual(state.setReferenceAudios, []);
     assert.equal(state.setReferenceImageSize, "match");
     assert.equal(state.setCropPictureIndex, null);
+    assert.equal((state.setRestoreGeneration as (n: number) => number)(1), 2);
   });
 }
 
@@ -101,7 +102,7 @@ test("restoring a restyle recipe reopens Restyle with its prompt and seed, leavi
   restore({ ...recipe, conditioning: "restyle" });
   assert.deepEqual(state.setRestyleRecipe, { prompt: "a fox in the snow", seed: "7" });
   assert.equal(state.setPageMode, "restyle");
-  for (const setter of ["setPrompt", "setSteps", "setGuidance", "setResolutionIntent", "setFirstFrame", "setReferenceImages"])
+  for (const setter of ["setPrompt", "setSteps", "setGuidance", "setResolutionIntent", "setFirstFrame", "setReferenceImages", "setRestoreGeneration"])
     assert.ok(!(setter in state), setter);
-  assert.deepEqual(toasts, ["Settings restored. Restyle the same source clip to reproduce this clip."]);
+  assert.deepEqual(toasts, ["Settings restored. Add the source clip again to reproduce this clip."]);
 });
