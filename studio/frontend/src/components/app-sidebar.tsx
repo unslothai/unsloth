@@ -2817,6 +2817,12 @@ export function AppSidebar() {
         settle(ids, saved);
         return;
       }
+      if (section !== null && place?.unpinKind) {
+        const { unpinKind, ...placement } = place;
+        state.recordUnpinFilings(unpinKind, section, [place.id]);
+        // The delayed rank write must not file the row again after a newer edit.
+        placements[placements.length - 1] = placement;
+      }
       const shown = mergeManualOrderTail(ids, saved);
       setPendingManualOrder((pending) => ({ ...pending, [scope]: shown }));
       // a partial order would rank every unloaded row ahead of the ones just arranged, so it is never

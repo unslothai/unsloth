@@ -5,7 +5,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
+import ts from "@typescript/typescript6";
 
+import type { SidebarDropPlace } from "../src/features/chat/lib/sidebar-drag.ts";
+import * as rowQuery from "../src/features/chat/utils/sidebar-row-query.ts";
+import { readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const data = new Map<string, string>();
@@ -379,6 +383,69 @@ test("explicit unpin placements sync even if they reuse the saved ranks", async 
   assert.deepEqual(posts[3].layout.rowOrder, { [section]: rows });
   assert.equal(store.getState().pendingLayoutEdit, undefined);
   assert.deepEqual(store.getState().orderMoves, [{ ...firstMove, sectionId: section }]);
+});
+
+test("a paged unpin drop files the project before a refresh can replace its assignment", async (t) => {
+  const scope = stores.customSectionScope("research");
+  const initial = {
+    ...layouts.sidebarLayout(store.getInitialState()),
+    sections: {
+      research: { name: "Research", sort: "manual" as const },
+      inbox: { name: "Inbox", sort: "manual" as const },
+    },
+    sectionByProjectId: { project: "research" },
+    rowOrder: { research: ["a", "project", "b", "c"] },
+    sectionOrder: ["pinned", "research", "inbox", "projects"],
+  };
+  let remote: Layout = initial;
+  const posts: Edit[] = [];
+  mount(t, async (_url, init) => {
+    if (init.method === "POST") {
+      const post: Edit = JSON.parse(String(init.body));
+      posts.push(post);
+      remote = post.layout;
+    }
+    return Response.json(remote);
+  });
+  await setImmediate();
+  remote = { ...initial, sectionByProjectId: { project: "inbox" } };
+
+  const src = readSrc("components/app-sidebar.tsx");
+  const declaration = src.slice(src.indexOf("const writeManualOrder = useCallback("), src.indexOf("// Escape leaves a selection"));
+  const { outputText } = ts.transpileModule(declaration, { compilerOptions: { target: ts.ScriptTarget.ES2022 } });
+  let finishRows!: (rows: string[]) => void;
+  const allRows = new Promise<string[]>((resolve) => { finishRows = resolve; });
+  const deps = {
+    useCallback: (callback: unknown) => callback,
+    manualOrderWritesRef: { current: new Map() },
+    chatRowSlots: { [scope]: { query: {} } },
+    chatRowLists: { [scope]: { hasMore: true } },
+    ...stores,
+    ...rowQuery,
+    readAllSidebarRowIds: () => allRows,
+    setPendingManualOrder: () => {},
+    setManualOrder: store.getState().setManualOrder,
+    setCustomSectionSort: store.getState().setCustomSectionSort,
+  };
+  const write: (scope: string, ids: string[], move: SidebarDropPlace) => void =
+    new Function(...Object.keys(deps), outputText + "\nreturn writeManualOrder;")(...Object.values(deps));
+  write(scope, ["project", "a", "b"], {
+    id: "project", targetId: "a", edge: "top", afterUnpin: true, unpinKind: "project",
+  });
+  window.dispatchEvent(new Event("focus"));
+  await setImmediate();
+  const assignmentWhilePaging = store.getState().sectionByProjectId.project;
+  finishRows(["a", "project", "b", "c"]);
+  await setImmediate();
+  assert.equal(assignmentWhilePaging, "research");
+  assert.equal(posts[0].layout.sectionByProjectId.project, "research");
+  assert.deepEqual(posts[0].orderMoves, [{
+    sectionId: "research", id: "project", targetId: null, edge: "bottom", afterUnpin: true, unpinKind: "project",
+  }]);
+  assert.deepEqual(posts[1].orderMoves, [{
+    sectionId: "research", id: "project", targetId: "a", edge: "top", afterUnpin: true,
+  }]);
+  assert.deepEqual(remote.rowOrder.research, ["project", "a", "b", "c"]);
 });
 
 test("the compact retry preserves the unchanged assignment for an explicit unpin drop", () => {
