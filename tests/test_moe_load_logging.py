@@ -227,5 +227,5 @@ def test_trainer_logs_every_n_steps_beside_the_loss(tmp_path):
 
 
 def test_unsloth_trainer_init_wires_the_env_flag():
-    source = (ROOT / "unsloth" / "trainer.py").read_text()
+    source = (ROOT / "unsloth" / "trainer.py").read_text(encoding = "utf-8")
     assert "UNSLOTH_LOG_MOE_LOAD" in source and "add_moe_load_callback" in source
