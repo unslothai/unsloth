@@ -135,8 +135,7 @@ def _lora_layers(model):
 
 
 def _base_weight(base):
-    # QLoRA exports merge into the original 16-bit weights; the NF4 dequant is a statistical stand-in
-    # (survival moved by at most 0.03 against the original base on random weights).
+    # QLoRA exports merge into the original weights; the NF4 dequant is a stand-in (within 0.03 measured).
     weight = base.weight
     quant_state = getattr(weight, "quant_state", None)
     if quant_state is not None:

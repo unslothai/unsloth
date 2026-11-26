@@ -42,7 +42,6 @@ def _tiny_lora(delta_scale):
     model = transformers.LlamaForCausalLM(config).to(torch.bfloat16)
     lora = peft.LoraConfig(r = 8, lora_alpha = 8, target_modules = ["q_proj", "v_proj", "down_proj"])
     model = peft.get_peft_model(model, lora)
-    # dW entries about delta_scale times the base weight's typical magnitude.
     for module in model.modules():
         if hasattr(module, "lora_A") and "default" in getattr(module, "lora_A", {}):
             W = module.base_layer.weight.float()
@@ -63,7 +62,6 @@ def test_small_update_warns_large_update_does_not(scheme):
     low = M.report_lora_quant_survival(small, scheme, log = logs.append, warn = warns.append)
     assert low is not None and low < M.SURVIVAL_WARN_BELOW, low
     assert len(warns) == 1 and "survives" in warns[0] and len(logs) == 1
-    # Read-only: the model the export then merges is untouched.
     after = small.state_dict()
     assert all(torch.equal(before[k], after[k]) for k in before)
     logs, warns = [], []
@@ -101,7 +99,6 @@ def test_reference_fp8_grid_matches_torchao():
         deq = lin.weight.dequantize().float()
     except Exception as error:
         pytest.skip(f"torchao float8 weight-only unavailable on this host: {error!r}")
-    # Same per-row e4m3 grid; torchao rounds its scale to the weight dtype, so feed it the same scale.
     assert scale.shape == (64, 1)
     torch.testing.assert_close((M._fp8(w / scale) * scale).bfloat16().float(), deq, rtol = 0, atol = 0)
     # The torchao_fp8 reference reproduces the export bit for bit, scale rounding included.
@@ -149,8 +146,7 @@ def _low_rank_lora(shrink):
 
 @pytest.mark.parametrize("scheme", ["NVFP4", "FP8"])
 def test_per_tensor_scale_follows_a_shrinking_merge(scheme):
-    # The export rescales from the merged tensor, so a uniform 2% shrink mostly moves values with their
-    # grid (what is left is bf16 merge noise). On the unmerged grid this read 0.48 / 0.22 and warned.
+    # Scales follow the merged tensor; on the unmerged grid this read 0.48 / 0.22 and warned.
     M = _load()
     ((_, cosine, _),) = M.lora_quant_survival(_low_rank_lora(0.02), scheme)
     assert cosine > 0.6, cosine
