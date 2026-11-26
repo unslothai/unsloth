@@ -4997,12 +4997,9 @@ def _pipe_tokenizers(pipe: Any) -> list:
 
 def _key_tokenizes(family: Any, pipe: Any) -> bool:
     """Whether coalesce_prompt_key tokenizes prompts on this load."""
-    from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS
     from .diffusion_text_length import FLUX_T5_FAMILIES
-
     return (
-        type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS
-        or getattr(family, "name", None) in FLUX_T5_FAMILIES
+        getattr(family, "name", None) in FLUX_T5_FAMILIES
         or getattr(family, "textual_inversion", None) is not None
     )
 
@@ -5078,14 +5075,17 @@ def _clip_chunk_counts(pipe: Any, prompt: str) -> Optional[tuple]:
 def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
     """What a prompt must share with its batch neighbours to render as it would alone; None = never batch it.
 
-    MiniMax-H3-Image loops per image when resident, so a batch gains nothing. Qwen-Image-2.1 builds its RoPE
-    layout from row 0, so only equal prompt token lengths match. FLUX.1 / Kontext pad T5 to one bucket (256 or
-    512) per call. SD / SDXL weight and chunk prompts per call, so weighting and the 77-token chunk count must
-    agree."""
+    MiniMax-H3-Image loops per image when resident, so a batch gains nothing. Qwen-Image-2.1 gains about 3% from a
+    batch (A100, INT8) while an equal-length member lands about 35 dB PSNR from its solo render, and Auto serves it
+    serially under CUDA graphs anyway. FLUX.1 / Kontext pad T5 to one bucket (256 or 512) per call. SD / SDXL weight
+    and chunk prompts per call, so weighting and the 77-token chunk count must agree."""
     from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME
+    from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS
 
     name = getattr(family, "name", None)
     if name == MINIMAX_H3_IMAGE_FAMILY_NAME:
+        return None
+    if type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS:
         return None
     pipe = _KeyPipe(pipe) if pipe is not None else None
     try:
@@ -5097,12 +5097,8 @@ def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
 
 def _coalesce_prompt_key(family: Any, name: Any, pipe: Any, prompt: str) -> Optional[tuple]:
     from .diffusion_prompt_weighting import has_prompt_syntax
-    from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS, _prompt_tokens
     from .diffusion_text_length import FLUX_T5_FAMILIES, flux_t5_sequence_length
 
-    if type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS:
-        tokens = _prompt_tokens(pipe, prompt)
-        return None if tokens is None else ("qwen-image-2.1 tokens", tokens)
     if name in FLUX_T5_FAMILIES:
         bucket = flux_t5_sequence_length(getattr(pipe, "tokenizer_2", None), [prompt])
         return None if bucket is None else ("t5 bucket", bucket)

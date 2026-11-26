@@ -131,8 +131,9 @@ def _prompt_tokens(pipe: Any, prompt: str) -> Optional[int]:
 def text_length_runs(pipe: Any, chunk: list) -> list:
     """Split ``(prompt, seed)`` jobs into consecutive runs of equal prompt token length.
 
-    Qwen-Image-2.1 builds one layout/RoPE table per batch from row 0, so a shorter padded prompt renders
-    different pixels than alone; equal lengths match exactly."""
+    Qwen-Image-2.1 builds one layout/RoPE table per batch from row 0, so a shorter padded prompt would render with
+    another row's layout. Equal lengths share a correct layout, but a batched member is still not bit-identical to
+    its solo render (about 35 dB PSNR on A100 INT8), like any other family's batch."""
     if len(chunk) < 2 or type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
         return [chunk]
     if all(prompt == chunk[0][0] for prompt, _ in chunk):

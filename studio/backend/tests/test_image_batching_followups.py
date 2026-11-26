@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Per-family batch grouping through the route, with requests arriving interleaved: members that encode the same
-way per call share one call even when they are not adjacent in the queue, and members that do not never share."""
+way per call share one call even when they are not adjacent in the queue, members that do not never share, and
+families a batch does not pay off for never wait to coalesce."""
 
 from __future__ import annotations
 
@@ -72,21 +73,13 @@ def _interleaved(*prompts):
     ]
 
 
-def test_qwen_image_21_never_puts_two_lengths_in_one_call(studio):
+@pytest.mark.parametrize("family_name", ["minimax-h3-image", "qwen-image-2.1"])
+def test_excluded_families_render_each_request_at_once_without_opening_a_batch(studio, family_name):
+    """MiniMax-H3-Image loops one image at a time, and a Qwen-Image-2.1 batch gains about 3% while drifting about
+    35 dB from the solo render, even interleaved A B A B with equal lengths: no request waits to coalesce."""
     app, backend, _saved = studio
-    _plan(backend, types.SimpleNamespace(name = "qwen-image-2.1"), _qwen21_pipe())
-    prompts = ("a fox", "a fox in snow", "a car", "a car on roads", "an owl", "an owl at night")
-    responses = _post_while_rendering(app, backend, _interleaved(*prompts), waiting = 6)
-    assert all(r.status_code == 200 for r in responses)
-    for call in _batched_calls(backend):
-        assert len({len(p.split()) for p in call["prompts"]}) == 1, call["prompts"]
-    assert sum(len(call["prompts"]) for call in _batched_calls(backend)) == 6
-
-
-def test_minimax_h3_image_renders_each_request_at_once_without_opening_a_batch(studio):
-    """Its pipeline loops one image at a time, so a batch gains nothing: no request waits to coalesce."""
-    app, backend, _saved = studio
-    _plan(backend, types.SimpleNamespace(name = "minimax-h3-image"), None)
+    pipe = _qwen21_pipe() if family_name == "qwen-image-2.1" else None
+    _plan(backend, types.SimpleNamespace(name = family_name), pipe)
     opened: list[int] = []
 
     async def run():
@@ -94,7 +87,7 @@ def test_minimax_h3_image_renders_each_request_at_once_without_opening_a_batch(s
         async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
             backend.rendering = True
             out = []
-            for path, account, body in _interleaved("a fox", "a cat", "an owl"):
+            for path, account, body in _interleaved("a red fox", "a red fox in snow", "a blue car"):
                 # Finishes while another render still holds the slot: it never waited to join a batch.
                 response = await asyncio.wait_for(
                     client.post(path, json = body, headers = {"x-test-account": account}),
@@ -109,7 +102,7 @@ def test_minimax_h3_image_renders_each_request_at_once_without_opening_a_batch(s
     assert [r.status_code for r in responses] == [200, 200, 200]
     assert opened == [0, 0, 0]
     assert _batched_calls(backend) == []
-    assert _alone(backend) == ["a fox", "a cat", "an owl"]
+    assert _alone(backend) == ["a red fox", "a red fox in snow", "a blue car"]
 
 
 def test_flux1_members_share_a_call_only_within_one_t5_bucket_when_interleaved(studio):
@@ -190,7 +183,7 @@ class _FastWords:
         return {"input_ids": list(range(len(text.split())))}
 
 
-@pytest.mark.parametrize("family_name", ["qwen-image-2.1", "flux.1"])
+@pytest.mark.parametrize("family_name", ["flux.1", "flux.1-kontext"])
 def test_the_batch_key_never_touches_the_tokenizer_a_render_is_using(family_name):
     """The key is read while another request renders: it reads a private copy made from the generation slot, so
     neither the arriving request nor the running render sees "Already borrowed"."""
@@ -198,11 +191,7 @@ def test_the_batch_key_never_touches_the_tokenizer_a_render_is_using(family_name
 
     family = types.SimpleNamespace(name = family_name)
     tok = _FastWords()
-    if family_name == "qwen-image-2.1":
-        pipe = _qwen21_pipe()
-        pipe.processor = types.SimpleNamespace(tokenizer = tok)
-    else:
-        pipe = types.SimpleNamespace(tokenizer_2 = tok)
+    pipe = types.SimpleNamespace(tokenizer_2 = tok)
     prime_coalesce_tokenizers(family, pipe)
     tok.held = True  # the running render is inside its prompt encode
     short, same, longer = "a red fox", "a blue car", " ".join(["fox"] * 300)
@@ -217,9 +206,8 @@ def test_a_fast_tokenizer_without_a_private_copy_renders_alone_without_touching_
     from core.inference.diffusion import coalesce_prompt_key
 
     tok = _FastWords()
-    pipe = _qwen21_pipe()
-    pipe.processor = types.SimpleNamespace(tokenizer = tok)
-    assert coalesce_prompt_key(types.SimpleNamespace(name = "qwen-image-2.1"), pipe, "a fox") is None
+    pipe = types.SimpleNamespace(tokenizer_2 = tok)
+    assert coalesce_prompt_key(types.SimpleNamespace(name = "flux.1"), pipe, "a fox") is None
     assert tok.calls == 0
 
 
