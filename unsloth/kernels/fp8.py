@@ -1975,10 +1975,12 @@ def _rowwise_gemm_works(gemm, device):
         return False
 
 
-@functools.lru_cache(maxsize = None)
-def _probe_fp8_rowwise_backend(device):
-    """Fastest rowwise FP8 GEMM that runs correctly on this device: FBGEMM ships no sm120 kernels ("cutlass
-    cannot initialize" on RTX PRO 6000 / 5090), where torch._scaled_mm keeps FBGEMM's numerics; else dequant."""
+_FP8_ROWWISE_BACKENDS = ("fbgemm", "scaled_mm", "tensorwise", "dequant")
+# Forces the rowwise FP8 backend (testing / A/B only): fbgemm, scaled_mm, tensorwise or dequant.
+_FP8_ROWWISE_BACKEND_ENV = os.environ.get("UNSLOTH_FP8_ROWWISE_BACKEND", "").strip().lower()
+
+
+def _select_fp8_rowwise_backend(device):
     ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
     if _has_fbgemm_rowwise():
         from unsloth.import_fixes import suppress_cuda_printf
@@ -1994,7 +1996,34 @@ def _probe_fp8_rowwise_backend(device):
         device,
     ):
         return "scaled_mm"
+    # Torch builds without the row-wise kernel (the Windows wheels) still run the tensorwise one.
+    if _rowwise_gemm_works(
+        lambda x: torch._scaled_mm(
+            x, x.t(), scale_a = ones(()), scale_b = ones(()), out_dtype = torch.float32
+        ),
+        device,
+    ):
+        return "tensorwise"
     return "dequant"
+
+
+@functools.lru_cache(maxsize = None)
+def _probe_fp8_rowwise_backend(device):
+    """Fastest rowwise FP8 GEMM that runs correctly on this device: FBGEMM ships no sm120 kernels ("cutlass
+    cannot initialize" on RTX PRO 6000 / 5090), where torch._scaled_mm keeps FBGEMM's numerics; a torch build
+    without the row-wise _scaled_mm runs the tensorwise one at unit scale plus an fp32 rescale; else dequant."""
+    if _FP8_ROWWISE_BACKEND_ENV in _FP8_ROWWISE_BACKENDS:
+        backend = _FP8_ROWWISE_BACKEND_ENV
+    else:
+        backend = _select_fp8_rowwise_backend(device)
+    if backend == "tensorwise" and _FP8_ROWWISE_BACKEND_ENV != "tensorwise":
+        print(
+            f"Unsloth: this torch build has no row-wise fp8 _scaled_mm on {device}; FP8 layers use "
+            "tensorwise _scaled_mm with the row scales applied in float32."
+        )
+    else:
+        logger.info(f"Unsloth: FP8 rowwise backend on {device}: {backend}")
+    return backend
 
 
 def _fp8_rowwise_backend(device):
@@ -2078,6 +2107,45 @@ def _scaled_mm_fp16_bias(x, weight):
                 _SCALED_MM_FP16_ZERO_BIAS_CACHE.clear()
             _SCALED_MM_FP16_ZERO_BIAS_CACHE[key] = bias
     return bias
+
+
+# Keyed by (device, stream) like the zero-bias cache; never filled during CUDA graph capture.
+_FP8_UNIT_SCALE_CACHE = {}
+
+
+def _fp8_unit_scale(device):
+    if torch.compiler.is_compiling():
+        return torch.ones((), dtype = torch.float32, device = device)
+    cuda = device.type == "cuda" and torch.cuda.is_initialized()
+    if cuda and torch.cuda.is_current_stream_capturing():
+        return torch.ones((), dtype = torch.float32, device = device)
+    key = (device, torch.cuda.current_stream(device).cuda_stream if cuda else None)
+    one = _FP8_UNIT_SCALE_CACHE.get(key)
+    if one is None:
+        with torch.inference_mode(False), torch.no_grad():
+            one = torch.ones((), dtype = torch.float32, device = device)
+        if type(one) is torch.Tensor:  # never cache a fake tensor
+            if len(_FP8_UNIT_SCALE_CACHE) >= _SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX:
+                _FP8_UNIT_SCALE_CACHE.clear()
+            _FP8_UNIT_SCALE_CACHE[key] = one
+    return one
+
+
+def _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, out_dtype):
+    """Rowwise FP8 GEMM on the tensorwise torch._scaled_mm, for torch builds without the row-wise kernel (the
+    Windows wheels): unit scales, float32 out, then the per-row and per-column scales in float32, rounded once."""
+    one = _fp8_unit_scale(x_quantized.device)
+    acc = torch._scaled_mm(
+        x_quantized,
+        weight.t(),
+        scale_a = one,
+        scale_b = one,
+        out_dtype = torch.float32,
+        use_fast_accum = True,
+    )
+    acc = acc[0] if isinstance(acc, tuple) else acc
+    acc = acc.mul_(x_scale).mul_(weight_scale.to(torch.float32).view(1, -1))
+    return acc if out_dtype == torch.float32 else acc.to(out_dtype)
 
 
 def _parse_fp8_dequant_max_rows(value):
@@ -2211,6 +2279,25 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             output = output + bias if bias is not None else output
             # FbgemmFp8Linear keeps its bias in float32:
             # cast only when the dtype differs (a no-op .to() aliases).
+            if output.dtype != x.dtype:
+                output = output.to(x.dtype)
+            output = output.reshape(output_shape)
+            del x_quantized, x_scale
+        elif (
+            backend == "tensorwise"
+            and rowwise
+            and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
+            and x.shape[-1] == weight.shape[1]
+            and x.numel() > _fp8_dequant_max_rows(x.device, weight.numel()) * x.shape[-1]
+        ):
+            output_shape = (*x.shape[:-1], -1)
+            x_quantized, x_scale = _quantize_fp8_per_row(
+                x.reshape(-1, x.shape[-1]), getattr(weight, "input_scale_ub", None)
+            )
+            if not weight.is_contiguous():
+                weight = weight.contiguous()
+            output = _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, x.dtype)
+            output = output + bias if bias is not None else output
             if output.dtype != x.dtype:
                 output = output.to(x.dtype)
             output = output.reshape(output_shape)
@@ -2380,11 +2467,13 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
     if backend == "fbgemm" and N % 8 == 0 and K % 8 == 0:
         return None
     if (
-        backend == "scaled_mm"
+        (
+            backend == "tensorwise"
+            or (backend == "scaled_mm" and not _scaled_mm_fp16_dequant_only(X.dtype))
+        )
         and N % 16 == 0
         and K % 16 == 0
         and X.numel() > _fp8_dequant_max_rows(X.device, N * K) * K
-        and not _scaled_mm_fp16_dequant_only(X.dtype)
     ):
         scale_ub = getattr(weight, "input_scale_ub", None)
         if scale_ub is not None and (
@@ -2393,14 +2482,14 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
             or scale_ub.device != X.device
         ):
             return None
-        return "scaled_mm"
+        return backend
     return "dequant"
 
 
 def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
     K = X.shape[-1]
     output_shape = (*X.shape[:-1], -1)
-    if route == "scaled_mm":
+    if route in ("scaled_mm", "tensorwise"):
         x2 = X.reshape(-1, K)
         if x2.stride(-1) != 1:
             x2 = x2.contiguous()
@@ -2423,17 +2512,20 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
                 num_warps = 4 if block_k <= 4096 else 16,
                 enable_fp_fusion = True,
             )
-        output = torch._scaled_mm(
-            x_quantized,
-            weight.t(),
-            scale_a = x_scale,
-            scale_b = (
-                weight_scale if weight_scale.dtype == torch.float32 else weight_scale.float()
-            ).view(1, -1),
-            bias = _scaled_mm_fp16_bias(X, weight),
-            out_dtype = _scaled_mm_out_dtype(X.dtype),
-            use_fast_accum = True,
-        )
+        if route == "tensorwise":
+            output = _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, X.dtype)
+        else:
+            output = torch._scaled_mm(
+                x_quantized,
+                weight.t(),
+                scale_a = x_scale,
+                scale_b = (
+                    weight_scale if weight_scale.dtype == torch.float32 else weight_scale.float()
+                ).view(1, -1),
+                bias = _scaled_mm_fp16_bias(X, weight),
+                out_dtype = _scaled_mm_out_dtype(X.dtype),
+                use_fast_accum = True,
+            )
     else:
         W_deq = torch.empty(weight.shape, device = weight.device, dtype = X.dtype)
         numel = W_deq.numel()
@@ -2455,7 +2547,7 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
     # cast only when the dtype differs (a no-op .to() aliases).
     if output.dtype != X.dtype:
         output = output.to(X.dtype)
-    return output.reshape(output_shape) if route == "scaled_mm" else output
+    return output.reshape(output_shape) if route != "dequant" else output
 
 
 def fbgemm_fp8_linear(
