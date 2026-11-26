@@ -78,6 +78,7 @@ def _resolved_ip_addresses(host: str):
 
 
 def wildcard_ip_versions(host: str) -> tuple[int, ...]:
+    """IP versions for every unspecified address this host resolves to."""
     versions = {
         address.version for address in _resolved_ip_addresses(host) if address.is_unspecified
     }
@@ -102,6 +103,7 @@ def resolved_bind_address_count(host: str) -> int:
 
 
 def is_wildcard_host(host: str) -> bool:
+    """True when the host resolves to an unspecified bind address."""
     return bool(wildcard_ip_versions(host))
 
 
