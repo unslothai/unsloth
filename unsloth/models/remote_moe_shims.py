@@ -244,7 +244,8 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
         outs = sorted_tokens.new_zeros((0, x.shape[-1]))
     unsorted = torch.empty_like(outs)
     unsorted[order] = outs
-    weighted = unsorted.view(num_tokens, top_k, -1).to(torch.float32) * topk_weight.to(
+    # Explicit width: view cannot infer -1 when the shard routes no tokens.
+    weighted = unsorted.view(num_tokens, top_k, outs.shape[-1]).to(torch.float32) * topk_weight.to(
         torch.float32
     ).unsqueeze(-1)
     return weighted.sum(dim = 1).to(x.dtype)
