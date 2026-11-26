@@ -250,10 +250,12 @@ hermes_dir() {
     first_dir "$root/models" "$native/models"
 }
 
+# Ollama ignores ~/.ollama/models once OLLAMA_MODELS is set; mounting it would let a stale copy shadow the store's tags.
 ollama_dirs() {
-    local dir
-    for dir in "$(host_path "${OLLAMA_MODELS:-}")" "$HOME/.ollama/models" \
-            "$DEV_ROOT"/usr/share/ollama/.ollama/models "$DEV_ROOT"/var/lib/ollama/.ollama/models; do
+    local dir store
+    store="$(host_path "${OLLAMA_MODELS:-}")"
+    [[ -n "$store" && -d "$store" ]] || store="$HOME/.ollama/models"
+    for dir in "$store" "$DEV_ROOT"/usr/share/ollama/.ollama/models "$DEV_ROOT"/var/lib/ollama/.ollama/models; do
         [[ -n "$dir" && -d "$dir" ]] && printf '%s\n' "$dir"
     done
     return 0
@@ -279,13 +281,10 @@ if [[ -n "${UNSLOTH_OLLAMA_DIR:-}" ]]; then
 else
     ollama_seen=""
     while IFS= read -r dir; do
-        real="$(CDPATH='' cd -- "$dir" && pwd -P)" || continue
+        real="$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P)" || real="$dir"
         [[ "$ollama_seen" == *$'\n'"$real"$'\n'* ]] && continue
         if [[ -z "$ollama_seen" ]]; then
             mount_models Ollama "$dir" /root/.ollama/models
-        elif [[ "$dir" == "$HOME/.ollama/models" ]]; then
-            mount_models Ollama "$dir" /root/.ollama/home-models
-            MODEL_MOUNTS+=(-e OLLAMA_MODELS=/root/.ollama/home-models)
         else
             mount_models Ollama "$dir" "${dir#"$DEV_ROOT"}"
         fi

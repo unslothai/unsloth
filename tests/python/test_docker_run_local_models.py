@@ -284,16 +284,27 @@ def test_lone_service_store_keeps_its_mount_point(tmp_path):
     assert not any(a.startswith("OLLAMA_MODELS=") for a in argv)
 
 
-def test_ollama_models_env_keeps_the_home_store_visible(tmp_path):
-    home = _dir(tmp_path / "home" / ".ollama" / "models")
+def test_ollama_models_env_store_is_not_shadowed_by_the_home_store(tmp_path):
+    _dir(tmp_path / "home" / ".ollama" / "models")
     custom = _dir(tmp_path / "ollama custom")
 
-    mounts, _ = _run(tmp_path, OLLAMA_MODELS = custom)
-    argv = (tmp_path / "argv").read_text().splitlines()
+    ollama, (service,), argv = _ollama_mounts(tmp_path, _SERVICE_STORE, OLLAMA_MODELS = custom)
 
-    assert mounts["/root/.ollama/models"] == (custom, True)
-    assert mounts["/root/.ollama/home-models"] == (home, True)
-    assert "OLLAMA_MODELS=/root/.ollama/home-models" in argv
+    assert ollama == {"/root/.ollama/models": (custom, True), _SERVICE_STORE: (service, True)}
+    assert not any(a.startswith("OLLAMA_MODELS=") for a in argv)
+
+
+@pytest.mark.skipif(os.name == "posix" and os.geteuid() == 0, reason = "root enters any directory")
+def test_store_the_launcher_cannot_enter_is_still_mounted(tmp_path):
+    store = tmp_path / "service-owned"
+    store.mkdir()
+    store.chmod(0o600)
+    try:
+        mounts, _ = _run(tmp_path, OLLAMA_MODELS = str(store))
+    finally:
+        store.chmod(0o700)
+
+    assert mounts["/root/.ollama/models"] == (os.path.realpath(store), True)
 
 
 def test_the_same_ollama_store_is_mounted_once(tmp_path):
