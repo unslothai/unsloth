@@ -607,6 +607,14 @@ def apply_speed_optims(
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
     filter_reductions = compile_config.family_filters_reductions(family)
 
+    if getattr(target, "backend", None) == "rocm":
+        try:
+            from . import diffusion_rocm_triton_conv3d  # noqa: PLC0415 - ROCm gfx11 only
+            applied["rocm_triton_conv3d"] = diffusion_rocm_triton_conv3d.install(
+                getattr(pipe, "vae", None), logger
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only, MIOpen stays
+            _warn(logger, "rocm triton conv3d", exc)
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(
