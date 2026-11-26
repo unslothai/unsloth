@@ -101,10 +101,11 @@ def _edited_order(
     switched_to_manual = False,
     unranked_first = False,
 ):
-    if any(move.get("afterUnpin") for move in moves):
+    has_unpin = any(move.get("afterUnpin") for move in moves)
+    if has_unpin:
         moves = list(_mark_later_unpin_placements(moves))
-    if base == layout and not switched_to_manual:
-        moves = [move for move in moves if move.get("afterUnpin")]
+    if base == layout and not switched_to_manual and not has_unpin:
+        moves = ()
     elif not importing and not switched_to_manual:
         common = set(base).intersection(layout)
         common_base = [key for key in base if key in common]

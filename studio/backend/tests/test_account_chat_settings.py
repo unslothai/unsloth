@@ -1442,7 +1442,24 @@ def test_sidebar_sections_honors_an_unpin_drop_into_the_old_section(client, anch
     assert saved["rowOrder"]["a"] == initial["rowOrder"]["a"]
 
 
-def test_sidebar_sections_replays_the_last_drag_of_a_just_unpinned_chat(client):
+@pytest.mark.parametrize(
+    ("initial", "peer_order", "peer_move", "placements", "merged_order"),
+    [
+        ("abcd", "cad", ("c", "a", "top"), [("b", "c", "bottom"), ("b", "a", "bottom")], "cabd"),
+        ("abcde", "aced", ("e", "d", "top"), [("b", "c", "bottom"), ("c", "b", "bottom")], "abced"),
+        (
+            "abcde",
+            "aced",
+            ("e", "d", "top"),
+            [("d", "a", "top"), ("b", "c", "bottom"), ("d", "b", "bottom"), ("c", "b", "bottom")],
+            "abced",
+        ),
+    ],
+    ids = ["unpinned-row", "dependent-row", "dependent-row-with-undone-drag"],
+)
+def test_sidebar_sections_replays_drag_order_after_unpinning_a_chat(
+    client, initial, peer_order, peer_move, placements, merged_order
+):
     path = "/chat/sidebar-sections"
 
     def save(
@@ -1458,32 +1475,29 @@ def test_sidebar_sections_replays_the_last_drag_of_a_just_unpinned_chat(client):
         assert response.is_success, response.text
         return response.json()
 
+    def placement(row, target, edge):
+        return {"sectionId": "work", "id": row, "targetId": target, "edge": edge}
+
     base = save(
         "initial",
         {
             "sections": {"work": {"name": "Work", "sort": "manual"}},
-            "sectionByChatId": dict.fromkeys("abcd", "work"),
-            "rowOrder": {"work": list("abcd")},
+            "sectionByChatId": dict.fromkeys(initial, "work"),
+            "rowOrder": {"work": list(initial)},
         },
     )
     peer = save(
         "peer",
-        {**base, "rowOrder": {"work": list("cad")}},
+        {**base, "rowOrder": {"work": list(peer_order)}},
         base,
-        [{"sectionId": "work", "id": "c", "targetId": "a", "edge": "top"}],
+        [placement(*peer_move)],
     )
-    assert peer["rowOrder"]["work"] == list("cad")
-    unpin = {
-        "sectionId": "work",
-        "id": "b",
-        "targetId": "c",
-        "edge": "bottom",
-        "afterUnpin": True,
-        "unpinKind": "chat",
-    }
-    later = {"sectionId": "work", "id": "b", "targetId": "a", "edge": "bottom"}
-    saved = save("local", base, base, [unpin, later])
-    assert saved["rowOrder"]["work"] == list("cabd")
+    assert peer["rowOrder"]["work"] == list(peer_order)
+    unpin = ("b", "c", "bottom")
+    moves = [placement(*move) for move in placements]
+    moves[placements.index(unpin)].update(afterUnpin = True, unpinKind = "chat")
+    saved = save("local", base, base, moves)
+    assert saved["rowOrder"]["work"] == list(merged_order)
 
 
 @pytest.mark.parametrize(
