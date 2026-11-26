@@ -11,20 +11,33 @@ import types
 from core.inference import diffusion
 
 
-def test_first_render_of_a_load_is_a_warmup():
-    assert diffusion._is_warmup_render(0, False) is True
-    assert diffusion._is_warmup_render(0, True) is True
+W = diffusion._is_warmup_render
 
 
-def test_the_render_that_engages_the_deferred_compile_is_a_warmup():
-    assert diffusion._is_warmup_render(2, True) is True
+def test_a_compiled_first_render_is_a_warmup():
+    assert W(0, False, True, False) is True
 
 
-def test_steady_state_renders_are_not_warmups():
-    assert diffusion._is_warmup_render(1, False) is False
-    assert diffusion._is_warmup_render(5, False) is False
-    # the 3rd image where the deferred profile was declined or failed stays eager
-    assert diffusion._is_warmup_render(2, False) is False
+def test_the_render_that_engages_the_deferred_compile_inline_is_a_warmup():
+    assert W(2, True, True, False) is True
+
+
+def test_a_render_that_waited_for_the_background_compile_is_a_warmup():
+    assert W(5, False, False, True) is True
+
+
+def test_eager_renders_are_not_warmups():
+    # speed off / eager first render: nothing compiled
+    assert W(0, False, False, False) is False
+    # deferred profile engaged but compiling in the background: this render ran eager
+    assert W(2, True, False, False) is False
+    # declined or failed deferred profile stays eager
+    assert W(2, False, False, False) is False
+
+
+def test_steady_state_compiled_renders_are_not_warmups():
+    assert W(1, False, True, False) is False
+    assert W(5, False, True, False) is False
 
 
 def _deferred_state(pipe):
@@ -66,7 +79,11 @@ def test_an_engaged_deferred_profile_reports_true(monkeypatch):
 def test_generate_marks_the_deferred_render_only_when_it_engaged():
     src = inspect.getsource(diffusion.DiffusionBackend.generate)
     assert "deferred_engaged = self._engage_deferred_speed(state) is True" in src
-    assert "_is_warmup_render(warmup_count_before, deferred_engaged)" in src
+    assert (
+        "_is_warmup_render(\n                        warmup_count_before,\n                        deferred_engaged,"
+        in src
+    )
+    assert "waited_for_bg = bg_was_compiling and paused_bg is None" in src
 
 
 def test_generate_reports_it_and_the_gallery_keeps_it():

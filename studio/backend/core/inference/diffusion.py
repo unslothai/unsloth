@@ -2108,11 +2108,17 @@ def _release_render_on_unload(method):
     return wrapped
 
 
-def _is_warmup_render(count_before: int, deferred_engaged: bool) -> bool:
-    """True for the first generation of a load, or the one where the deferred speed profile actually engaged (it
-    compiles inline): its elapsed time includes one-time compile, kernel tuning and graph capture, not the
-    steady-state render time. A declined or failed deferred profile stays eager, so it is not a warm-up."""
-    return count_before == 0 or bool(deferred_engaged)
+def _is_warmup_render(
+    count_before: int, deferred_engaged: bool, compiled_inline: bool, waited_for_bg: bool
+) -> bool:
+    """True when this render's elapsed time includes one-time compile, kernel tuning and graph capture rather than
+    the steady-state render time: it waited for a background compile to finish, or it ran the compiled denoiser
+    inline (not eager beside a pending background compile) on the load's first generation or on the generation
+    where the deferred speed profile engaged. An eager render (speed off, declined or failed deferred profile, or
+    eager while a background compile runs) is never a warm-up."""
+    if waited_for_bg:
+        return True
+    return bool(compiled_inline) and (count_before == 0 or bool(deferred_engaged))
 
 
 @dataclass
@@ -16353,7 +16359,10 @@ class DiffusionBackend:
         ):
             # Wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
+            bg_was_compiling = bool(pending_bg is not None and pending_bg.compiling())
             paused_bg = _wait_or_pause_bg_compile(pending_bg, self._state, loras, cancel)
+            # Not parked: this render waited for the in-flight compile, so its time includes it.
+            waited_for_bg = bg_was_compiling and paused_bg is None
             try:
                 with self._lock:
                     state = self._state
@@ -17762,7 +17771,13 @@ class DiffusionBackend:
                     "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
                     "inpaint_padding": inpaint_padding_applied,
                     "cfg_interval_end": cfg_interval_applied,
-                    "warmup_render": _is_warmup_render(warmup_count_before, deferred_engaged),
+                    "warmup_render": _is_warmup_render(
+                        warmup_count_before,
+                        deferred_engaged,
+                        "compiled" in tuple(getattr(state, "speed_optims", None) or ())
+                        and not bg_eager,
+                        waited_for_bg,
+                    ),
                 }
                 if upscale_model and workflow == "upscale":
                     result["upscale_model"] = upscale_model
