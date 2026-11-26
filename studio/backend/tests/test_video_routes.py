@@ -19,7 +19,6 @@ import core.inference.video_gallery as gallery_module
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.video_families import (
     VIDEO_CANCELLED_MSG,
-    VIDEO_GENERATION_BUSY_MSG,
     VIDEO_NOT_LOADED_MSG,
 )
 import routes.video as video_routes
