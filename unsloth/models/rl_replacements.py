@@ -4147,6 +4147,24 @@ def _unsloth_vllm_moe_relaid_out(module):
     )
 
 
+def _unsloth_vllm_reload_takes_iterator(reload, depth = 0):
+    """True when reload_weights accepts weights_iterator and is_checkpoint_format."""
+    try:
+        parameters = inspect.signature(reload).parameters
+    except (TypeError, ValueError):
+        return False
+    if "weights_iterator" in parameters and "is_checkpoint_format" in parameters:
+        return True
+    if depth or not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return False
+    # vLLM 0.29's v2 GPUModelRunner.reload_weights(*args, **kwargs) forwards to the v1 runner's.
+    try:
+        from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+    except Exception:
+        return False
+    return _unsloth_vllm_reload_takes_iterator(getattr(GPUModelRunner, "reload_weights", None), 1)
+
+
 def _unsloth_vllm_reload_runner(llm, vllm_model):
     """vLLM's model runner when a sync must go through its in-place reload, else None.
     Unquantized MoE weights are re-laid out after load (FlashInfer TRTLLM / CUTLASS, vLLM's CUDA
@@ -4159,12 +4177,8 @@ def _unsloth_vllm_reload_runner(llm, vllm_model):
         return None
     executor = getattr(getattr(llm, "llm_engine", None), "model_executor", None)
     runner = getattr(getattr(executor, "driver_worker", None), "model_runner", None)
-    try:
-        parameters = inspect.signature(getattr(runner, "reload_weights", None)).parameters
-    except (TypeError, ValueError):
-        return None
     # vLLM 0.11 reloads from disk only; its CUDA MoE default there (Triton) keeps checkpoint layout.
-    if "weights_iterator" not in parameters or "is_checkpoint_format" not in parameters:
+    if not _unsloth_vllm_reload_takes_iterator(getattr(runner, "reload_weights", None)):
         return None
     if getattr(runner, "model", vllm_model) is not vllm_model:
         return None

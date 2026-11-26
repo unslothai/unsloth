@@ -253,3 +253,33 @@ def test_online_dpo_state_dict_sync_reloads_moe(moe, monkeypatch):
     assert sorted(engine_model.inner.loaded) == ["bias", "weight"]
     assert runner.reloads == ([True] if moe else [])
     assert llm.resets == 1
+
+
+def test_reload_through_a_forwarding_runner(monkeypatch):
+    """vLLM 0.29: the v2 runner's reload_weights(*args, **kwargs) forwards to the v1 runner's."""
+    import sys
+
+    from unsloth.models.rl_replacements import _unsloth_vllm_reload_runner
+
+    monkeypatch.delenv("UNSLOTH_VLLM_SYNC_RELOAD", raising = False)
+
+    class V1Runner:
+        def reload_weights(
+            self,
+            weights_iterator = None,
+            weights_path = None,
+            is_checkpoint_format = True,
+        ):
+            pass
+
+    names = ("vllm", "vllm.v1", "vllm.v1.worker", "vllm.v1.worker.gpu_model_runner")
+    for name in names:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    sys.modules["vllm.v1.worker.gpu_model_runner"].GPUModelRunner = V1Runner
+    engine_model = _MoEEngine()
+    llm, runner = _llm(engine_model)
+    runner.reload_weights = lambda *args, **kwargs: _Runner.reload_weights(runner, *args, **kwargs)
+    assert _unsloth_vllm_reload_runner(llm, engine_model) is runner
+    del V1Runner.reload_weights
+    V1Runner.reload_weights = lambda self: None
+    assert _unsloth_vllm_reload_runner(llm, engine_model) is None
