@@ -297,6 +297,9 @@ def _install(
         from .video_minimax_h3_rowmod import install as install_row_mod
         if install_row_mod(transformer, logger = logger):
             levers.append("h3_row_mod")
+            # a batched forward (several same-layout images) runs the row ops over its flattened rows
+            from .diffusion_minimax_h3_image_batch import install_batched_row_mod
+            install_batched_row_mod(transformer)
     # the streamed GEMM keeps the swapped Linears and their parameters (the pinned streamer copies into them), so the
     # fused SwiGLU serves there too; per call it runs stock while a weight is off the card (producer_linear)
     if "h3_int8_gemm" in levers or "h3_int8_gemm_streamed" in levers:

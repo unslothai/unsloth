@@ -25,6 +25,8 @@ pytestmark = pytest.mark.timeout(300)
 @pytest.fixture(autouse = True)
 def _picture_one_at_its_own_size(monkeypatch):
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_SOURCE_RESIZE", "0")
+    # one batch-1 block call per image (the batched forward has its own tests: test_h3_image_batched_forward.py)
+    monkeypatch.setenv("UNSLOTH_H3_IMAGE_BATCHED", "0")
 
 
 @pytest.fixture(scope = "module")
@@ -535,3 +537,49 @@ def test_the_pinned_prefetch_streamer_serves_every_image_from_one_upload(h3i):
     for i in streamer.streamed_indices:
         assert all(p.device.type == "cpu" for p in stack.transformer_blocks[i].parameters())
     streamer.remove()
+
+
+@pytest.fixture
+def sequential(h3i, pipe, monkeypatch):
+    """The pipe as the sequential tier (one big component on the card at a time); counts the DiT's entries."""
+    saved_plan = pipe._unsloth_h3_plan
+    pipe._unsloth_h3_plan = h3i.H3ImagePlan(
+        placement = h3i.PLACE_SEQUENTIAL,
+        dit_gb = 1.0,
+        te_gb = 1.0,
+        vae_gb = 1.0,
+        vram_gb = 24.0,
+        host_gb = None,
+    )
+    entries = []
+    real_enter = type(pipe)._enter
+
+    def counting(self, name):
+        entries.append(name)
+        return real_enter(self, name)
+
+    monkeypatch.setattr(type(pipe), "_enter", counting)
+    yield entries
+    pipe._unsloth_h3_plan = saved_plan
+
+
+def test_the_sequential_tier_brings_the_dit_in_once_for_every_image(
+    h3i, pipe, sequential, monkeypatch
+):
+    import torch
+
+    entries = sequential
+    monkeypatch.setenv(h3i.LOCKSTEP_ENV, "0")
+    alone = _render(pipe, [21, 22, 23])
+    assert entries.count("transformer") == 3
+    assert "lockstep" not in pipe._unsloth_h3_last_stats
+    monkeypatch.delenv(h3i.LOCKSTEP_ENV)
+    entries.clear()
+    together = _render(pipe, [21, 22, 23])
+    assert entries.count("transformer") == 1
+    assert pipe._unsloth_h3_last_stats["lockstep"] == 3
+    # each image runs each block as its own batch-1 call: its own render, bit for bit
+    assert all(a.dtype == b.dtype and torch.equal(a, b) for a, b in zip(alone, together))
+    assert not torch.equal(together[0], together[1])
+    assert pipe._sequential_refusal() is None
+    assert pipe._batch_cap([object(), object()], 100.0) == 1
