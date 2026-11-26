@@ -209,7 +209,14 @@ def install_frozen_prefix_skip(model):
         stack, k = plan
         flags, handles = [], []
         for layer in stack[:k]:
-            flags.append((layer, layer.gradient_checkpointing))
+            # A layer checkpoint_skip_layers keeps reads False: save the flag it holds underneath, so that
+            # restoring it does not stop the layer checkpointing once it is no longer kept.
+            raw = (
+                layer.__dict__.get("_unsloth_gc_flag")
+                if getattr(type(layer), "_unsloth_skip_aware", False)
+                else None
+            )
+            flags.append((layer, layer.gradient_checkpointing if raw is None else raw))
             # Off: the hooks then run outside the checkpoint, and the layer runs once.
             layer.gradient_checkpointing = False
             handles.append(layer.register_forward_pre_hook(_detach_inputs, with_kwargs = True))

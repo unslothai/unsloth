@@ -218,24 +218,18 @@ def _steps_before_arming():
     return 1 if keep in ("", "0") else 2
 
 
-def _checkpoint_skip_pending():
-    import sys
-    pending = getattr(sys.modules.get("unsloth.models._utils"), "checkpoint_skip_pending", None)
-    try:
-        return bool(pending()) if pending is not None else False
-    except Exception:
-        return False
-
-
 def _on_optimizer_step(optimizer, args, kwargs):
     _STATE["steps"] += 1
     if not _MEMOS or _mode() in ("0", "false", "off"):
         return
     if not _STATE["armed"] and _STATE["steps"] < _steps_before_arming():
         return
-    if not _STATE["armed"] and _checkpoint_skip_pending() and _STATE.get("gc_skip_waits", 0) < 4:
-        # The default checkpoint_skip_layers = "auto" plan is not in place for a whole step yet.
-        _STATE["gc_skip_waits"] = _STATE.get("gc_skip_waits", 0) + 1
+    from ..kernels.dequant_cache import _GC_SKIP_WAIT_MAX, _checkpoint_skip_pending
+
+    waits = _STATE.get("gc_skip_waits", 0)
+    if not _STATE["armed"] and waits < _GC_SKIP_WAIT_MAX and _checkpoint_skip_pending():
+        # A checkpoint_skip_layers = "auto" plan has not run a step with its kept layers yet.
+        _STATE["gc_skip_waits"] = waits + 1
         return
     try:
         _rebudget()

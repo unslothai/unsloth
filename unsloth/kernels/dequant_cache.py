@@ -364,12 +364,8 @@ _GC_SKIP_WAIT_MAX = 4
 
 
 def _checkpoint_skip_pending():
-    utils = sys.modules.get("unsloth.models._utils")
-    pending = getattr(utils, "checkpoint_skip_pending", None)
-    try:
-        return bool(pending()) if pending is not None else False
-    except Exception:
-        return False
+    pending = getattr(sys.modules.get("unsloth.models._utils"), "checkpoint_skip_pending", None)
+    return pending is not None and bool(pending())
 
 
 def _on_optimizer_step(optimizer, args, kwargs):
@@ -381,9 +377,8 @@ def _on_optimizer_step(optimizer, args, kwargs):
             clear_dequant_cache(release = True)
         return
     if _checkpoint_skip_pending() and STATS["gc_skip_wait"] < _GC_SKIP_WAIT_MAX:
-        # checkpoint_skip_layers = "auto" keeps activations from its plan on: the transient measured so far
-        # does not include them yet, so budget nothing until a safe point measured with the plan in place
-        # (at most a few safe points, so a plan that never settles cannot keep the cache off).
+        # The checkpoint_skip_layers = "auto" plan's kept activations are not measured yet: budget nothing
+        # (at most _GC_SKIP_WAIT_MAX times, so a plan that never settles cannot keep the cache off).
         with _lock:
             for index in list(_SEEN):
                 if _cached_bytes(index):

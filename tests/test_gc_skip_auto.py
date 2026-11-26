@@ -21,6 +21,7 @@ NAMES = (
     "usable_cuda_bytes",
     "_size_auto_checkpoint_skip_for_trainer",
     "_local_numel",
+    "_foreign_cuda_bytes",
     "_default_checkpoint_skip_allowed",
     "_mark_checkpoint_skips",
     "checkpoint_skip_pending",
@@ -34,6 +35,7 @@ def _load():
         "os": os,
         "math": __import__("math"),
         "_PAIRED_FORWARD_TRAINERS": ("DPOTrainer", "ORPOTrainer", "CPOTrainer"),
+        "_MULTI_FORWARD_TRAINERS": ("GRPOTrainer", "RLOOTrainer", "PPOTrainer", "OnlineDPOTrainer"),
         "logger": logging.getLogger("test_gc_skip_auto"),
         "find_decoder_layers": lambda m: list(_base(m).model.layers),
     }
@@ -83,7 +85,7 @@ def test_zero_env_changes_nothing(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "value, expected", [("3", 3), ("max", "max"), ("auto", "auto"), ("0", 0), ("x", 0)]
+    "value, expected", [("3", 3), ("max", "max"), ("auto", "auto"), ("0", 0), ("x", 0), ("", None)]
 )
 def test_env_parsing(monkeypatch, value, expected):
     ns, found = _load()
@@ -311,9 +313,16 @@ def test_auto_does_not_scale_persistent_grads_by_sequence_length():
 
 
 class _FakeLayer(torch.nn.Module):
-    def __init__(self, cost, memory):
+    def __init__(
+        self,
+        cost,
+        memory,
+        trainable = False,
+    ):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.zeros(1), requires_grad = False)
+        if trainable:
+            self.adapter = torch.nn.Parameter(torch.zeros(1))  # its gradient marks a backward
         self.gradient_checkpointing = True
         self.cost, self.memory = cost, memory
 
@@ -329,10 +338,11 @@ class _FakeModel(torch.nn.Module):
         costs,
         memory,
         attn = "sdpa",
+        trainable = False,
     ):
         super().__init__()
         self.model = torch.nn.Module()
-        self.model.layers = torch.nn.ModuleList(_FakeLayer(c, memory) for c in costs)
+        self.model.layers = torch.nn.ModuleList(_FakeLayer(c, memory, trainable) for c in costs)
         self.config = type("Config", (), {"_attn_implementation": attn})()
         self.max_seq_length = 16
 
@@ -719,8 +729,8 @@ def test_auto_resizes_for_each_batch_shape(monkeypatch):
     # own shape with the same budget: a 1 x 16 batch keeps all 8, a 4 x 16 one 2, an 8 x 16 one none.
     ns, found = _load()
     gib = 1 << 30
-    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib)
-    model = _FakeModel([gib // 16] * 8, memory)
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     planner.target_batch = 4
@@ -730,15 +740,90 @@ def test_auto_resizes_for_each_batch_shape(monkeypatch):
     assert ns["checkpoint_skip_pending"]()
     flags = lambda: [bool(layer.gradient_checkpointing) for layer in model.model.layers]
     for batch, kept in ((1, 8), (4, 2), (8, 0), (1, 8)):
+        _backward(model)
         model(torch.zeros(batch, 16, 4))
         assert len(planner.kept) == kept, (batch, planner.kept)
         assert flags().count(False) == kept
-    assert planner.count_for(1, 8) == 8  # never sized below the measured length
+    assert (
+        planner.count_for(4, 8) == planner.count_for(4, 16) == 2
+    )  # never sized below the measured length
     assert not ns["checkpoint_skip_pending"]()
     # An explicit value afterwards removes the re-size hook and its marks.
     ns["skip_checkpointing"](model, 3)
+    _backward(model)
     model(torch.zeros(8, 16, 4))
     assert flags().count(False) == 3 and not hasattr(model, "_unsloth_auto_skip")
+    monkeypatch.undo()
+
+
+def _backward(model):
+    # What the backward of the last forward does for the planner: a gradient reaches a trainable weight.
+    (sum(layer.adapter.sum() for layer in model.model.layers) * 0).backward()
+
+
+def test_two_training_forwards_before_a_backward_keep_the_planned_count(monkeypatch):
+    # Chunked losses run several forwards before one backward: their kept layers would add up, so the planner
+    # keeps the count planned for the trainer's whole batch from then on.
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    planner.target_batch = 4
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    _backward(model)
+    model(torch.zeros(1, 16, 4))
+    assert len(planner.kept) == 8
+    model(torch.zeros(1, 16, 4))  # no backward in between
+    assert len(planner.kept) == 2 and planner.sizing is None
+    _backward(model)
+    model(torch.zeros(1, 16, 4))
+    assert len(planner.kept) == 2
+    monkeypatch.undo()
+
+
+def test_grpo_family_trainers_keep_the_default_off_and_never_resize(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    ns["_MULTI_FORWARD_TRAINERS"] = ("GRPOTrainer",)
+    for quiet in (True, False):
+        model = _FakeModel([gib // 16] * 8, memory, trainable = True)
+        ns["_AutoCheckpointSkip"].install(model, quiet = quiet)
+        planner = model._unsloth_auto_skip
+        trainer = type("UnslothGRPOTrainer", (), {})()
+        trainer.model = model
+        trainer.args = type("Args", (), {"per_device_train_batch_size": 4, "max_length": None})()
+        ns["_size_auto_checkpoint_skip_for_trainer"](trainer)
+        if quiet:
+            assert not hasattr(model, "_unsloth_auto_skip") and planner.handles == []
+            continue
+        _fake_step(model, rows = 16)
+        model(torch.zeros(1, 16, 4))
+        assert len(planner.kept) == 2 and planner.sizing is None
+    monkeypatch.undo()
+
+
+def test_another_process_growing_ends_the_resizing(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    foreign = [0]
+    ns["_foreign_cuda_bytes"] = lambda device: foreign[0]
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    assert planner.sizing is not None and len(planner.kept) == 8
+    optimizer = torch.optim.SGD([model.model.layers[0].adapter], lr = 0.0)
+    foreign[0] = 2 * gib
+    _backward(model)
+    optimizer.step()
+    assert planner.sizing is None and planner.kept == []
+    assert [bool(layer.gradient_checkpointing) for layer in model.model.layers] == [True] * 8
     monkeypatch.undo()
 
 
@@ -746,8 +831,8 @@ def test_auto_resize_waits_for_an_unrelated_forward(monkeypatch):
     # Evaluation (no grad) and eval-mode forwards never re-size the plan.
     ns, found = _load()
     gib = 1 << 30
-    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib)
-    model = _FakeModel([gib // 16] * 8, memory)
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     planner.target_batch = 4

@@ -614,3 +614,16 @@ def test_waits_for_a_safe_point_with_the_checkpoint_skip_plan_in_place(monkeypat
         dc._on_optimizer_step(None, (), {})
     assert dc._BUDGET[None] == 10 * GiB - 2 * GiB - GiB
     assert dc.STATS["gc_skip_wait"] == dc._GC_SKIP_WAIT_MAX
+
+
+def test_checkpoint_skip_pending_reads_the_planner_module(monkeypatch):
+    import sys, types
+
+    fake = types.ModuleType("unsloth.models._utils")
+    fake.checkpoint_skip_pending = lambda: True
+    monkeypatch.setitem(sys.modules, "unsloth.models._utils", fake)
+    assert dc._checkpoint_skip_pending() is True
+    fake.checkpoint_skip_pending = lambda: False
+    assert dc._checkpoint_skip_pending() is False
+    monkeypatch.delitem(sys.modules, "unsloth.models._utils")
+    assert dc._checkpoint_skip_pending() is False
