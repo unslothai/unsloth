@@ -226,8 +226,14 @@ def tensor_parallel_env_load(fn):
                     out = fn(*args, **kwargs)
                 else:
                     from .pp_load import _pipeline_loading
+                    from .pp_native import PPConfig
+
+                    v = getattr(layout, "stages_per_rank", None)
                     with _pipeline_loading(
-                        lambda: layout.pp_mesh, layout.schedule, None, auto = True
+                        lambda: layout.pp_mesh,
+                        layout.schedule,
+                        None if v is None else PPConfig(stages_per_rank = v),
+                        auto = True,
                     ):
                         out = fn(*args, **kwargs)
             finally:
