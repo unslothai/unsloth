@@ -190,17 +190,59 @@ def test_out_of_memory_is_reraised(gpu, monkeypatch):
 
 def test_low_free_memory_keeps_miopen(gpu, monkeypatch):
     monkeypatch.setenv(R.ENABLE_ENV, "1")
+    monkeypatch.setattr(R, "MEM_CHECK_MIN_BYTES", 0)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_a: (256 << 20, 128 * GiB))
     vae = _vae()
     R.install(vae)
     with torch.no_grad():
         vae.conv(_x())
     assert gpu.calls == 0 and R.COUNTS["fallback_memory"] == 1
-    # allocator slack (reserved but free) counts as free
+    # reserved-but-unallocated allocator blocks are not counted as free
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *_a: 16 * GiB)
     with torch.no_grad():
         vae.conv(_x())
+    assert gpu.calls == 0 and R.COUNTS["fallback_memory"] == 2
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_a: (64 * GiB, 128 * GiB))
+    with torch.no_grad():
+        vae.conv(_x())
     assert gpu.calls == 1 and R.COUNTS["routed"] == 1
+
+
+def test_small_calls_skip_the_driver_memory_query(gpu, monkeypatch):
+    monkeypatch.setenv(R.ENABLE_ENV, "1")
+    monkeypatch.setattr(R, "MEM_CHECK_MIN_BYTES", 1 << 40)
+
+    def boom(*_a):
+        raise AssertionError("mem_get_info called for a small call")
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", boom)
+    vae = _vae()
+    R.install(vae)
+    with torch.no_grad():
+        vae.conv(_x())
+    assert gpu.calls == 1
+
+
+def test_graph_capture_stays_on_miopen(gpu, monkeypatch):
+    monkeypatch.setenv(R.ENABLE_ENV, "1")
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    vae = _vae()
+    R.install(vae)
+    x = _x()
+    with torch.no_grad():
+        y = vae.conv(x)
+        ref = F.conv3d(x, vae.conv.weight, vae.conv.bias, padding = 1)
+    assert gpu.calls == 0 and torch.equal(y, ref)
+
+
+def test_old_triton_keeps_miopen(monkeypatch):
+    fake = types.SimpleNamespace(__version__ = "3.4.0")
+    monkeypatch.setitem(sys.modules, "triton", fake)
+    assert not R._triton_ok()
+    fake.__version__ = "3.6.0"
+    assert R._triton_ok()
+    fake.__version__ = "not-a-version"
+    assert not R._triton_ok()
 
 
 def test_memory_estimate_counts_winograd_buffers():

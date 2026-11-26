@@ -39,6 +39,10 @@ TUNED_ARCHES = ("gfx1151",)
 # Free memory kept back beyond the estimated workspace: the larger of these.
 MEM_MARGIN_BYTES = 512 << 20
 MEM_MARGIN_FRACTION = 0.03
+# mem_get_info is a driver call (~0.2 ms): only calls whose workspace could matter pay it.
+MEM_CHECK_MIN_BYTES = 64 << 20
+# Measured Triton releases (Linux 3.6, Windows triton-windows 3.8); older ones stay on MIOpen.
+MIN_TRITON = (3, 6)
 _INT32_MAX = 2**31 - 1
 _BLOCK = 64
 
@@ -109,11 +113,15 @@ def _kernels() -> Optional[Any]:
     with _LOCK:
         if "mod" in _STATE:
             return _STATE["mod"]
-        try:
-            from .rocm_triton_conv3d import conv3d as mod
-        except Exception as exc:  # noqa: BLE001 - no Triton: MIOpen stays
-            mod = None
-            _STATE["import_error"] = repr(exc)[:300]
+        mod = None
+        if not _triton_ok():
+            _STATE["import_error"] = f"Triton older than {MIN_TRITON} or missing"
+        else:
+            try:
+                from .rocm_triton_conv3d import conv3d as mod
+            except Exception as exc:  # noqa: BLE001 - no Triton: MIOpen stays
+                mod = None
+                _STATE["import_error"] = repr(exc)[:300]
         _STATE["mod"] = mod
         return mod
 
@@ -174,12 +182,9 @@ def plan(
 
 
 def _free_bytes(torch: Any, device: Any) -> int:
+    # Driver-free memory only: reserved-but-unallocated blocks are not counted (private pools, other allocators).
     free, total = torch.cuda.mem_get_info(device)
-    # Blocks the caching allocator holds but has not handed out are reusable by this call.
-    slack = max(
-        0, int(torch.cuda.memory_reserved(device)) - int(torch.cuda.memory_allocated(device))
-    )
-    return int(free) + slack, int(total)
+    return int(free), int(total)
 
 
 def _selfcheck(torch: Any, mod: Any, device: Any, dtype: Any) -> bool:
@@ -220,6 +225,23 @@ def _selfcheck(torch: Any, mod: Any, device: Any, dtype: Any) -> bool:
     return ok
 
 
+def _capturing(torch: Any) -> bool:
+    """Never run the first-use self-check or a Triton compile inside CUDA / HIP graph capture."""
+    try:
+        return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _triton_ok() -> bool:
+    try:
+        import triton
+        parts = tuple(int(x) for x in str(triton.__version__).split(".")[:2])
+        return parts >= MIN_TRITON
+    except Exception:  # noqa: BLE001 - no Triton, or an unparsable stub
+        return False
+
+
 def _on_gpu(t: Any) -> bool:
     return bool(t.is_cuda)
 
@@ -237,6 +259,7 @@ def _make_conv_forward(module: Any, original: Any, logger: Any):
         if (
             torch.compiler.is_compiling()
             or not _on_gpu(input)
+            or _capturing(torch)
             or input.dim() != 5
             or input.dtype not in (torch.bfloat16, torch.float16)
             or weight.dtype != input.dtype
@@ -285,10 +308,11 @@ def _make_conv_forward(module: Any, original: Any, logger: Any):
         if biggest > _INT32_MAX:
             COUNTS["fallback_shape"] += 1
             return original(input, weight, bias)
-        free, total = _free_bytes(torch, input.device)
-        if extra + max(MEM_MARGIN_BYTES, int(total * MEM_MARGIN_FRACTION)) > free:
-            COUNTS["fallback_memory"] += 1
-            return original(input, weight, bias)
+        if extra >= MEM_CHECK_MIN_BYTES:
+            free, total = _free_bytes(torch, input.device)
+            if extra + max(MEM_MARGIN_BYTES, int(total * MEM_MARGIN_FRACTION)) > free:
+                COUNTS["fallback_memory"] += 1
+                return original(input, weight, bias)
         try:
             y = mod.conv3d(input, weight, bias, stride, padding, dilation)
         except Exception as exc:  # noqa: BLE001 - MIOpen for this shape from now on
