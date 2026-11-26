@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in UNSLOTH_LOG_MOE_LOAD=N: every N optimizer steps, log the hard top-k routing load of each MoE
-layer (max / mean of the per-expert routed token counts), the router's softmax mass and the aux loss
-those routes give, beside the training loss. A balancing loss can fall while the real imbalance grows.
+"""Opt-in UNSLOTH_LOG_MOE_LOAD=N: log hard top-k MoE routing load every N optimizer steps.
 
-Reads the per-layer router logits the model already returns for its aux loss (output_router_logits),
-from one hook on the outer model: a gradient checkpoint recompute reruns layers, never the outer
-forward, so each micro batch counts once, and hooks inside compiled layers are not needed. Counts stay
-on the device (one host sync per log); the loss and the routes are untouched."""
+Hooks the outer model's router logits, so a checkpoint recompute (which reruns layers, never the
+outer forward) counts each micro batch once."""
 
 __all__ = [
     "MoERoutingLoad",
@@ -27,7 +23,6 @@ _ENV = "UNSLOTH_LOG_MOE_LOAD"
 
 
 def moe_load_interval(value = None) -> int:
-    """Optimizer steps between counted steps from UNSLOTH_LOG_MOE_LOAD; 0 = off."""
     value = os.environ.get(_ENV, "0") if value is None else value
     try:
         every = int(str(value).strip())
@@ -91,8 +86,7 @@ def _router_logits(output):
 
 
 class MoERoutingLoad:
-    """Counts the hard top-k routes and the softmax mass per expert and layer of each graph-building
-    forward of `model` while started."""
+    """Per expert and layer hard top-k counts and softmax mass of graph-building forwards."""
 
     def __init__(self, model):
         self.model = model
@@ -192,8 +186,7 @@ class MoERoutingLoad:
         self.forwards += 1
 
     def stats(self, per_layer = True) -> dict:
-        """Max / mean of the hard counts and of the softmax mass per layer, and the aux loss they give
-        (load_balancing_loss_func over every counted token, coefficient not applied); one host sync."""
+        """Max / mean load per layer and the uncoefficiented aux loss; one host sync."""
         if self.hard is None:
             return {}
         hard = self.hard.to(torch.float64)
@@ -231,8 +224,7 @@ class MoERoutingLoad:
 
 
 class UnslothMoELoadCallback(TrainerCallback):
-    """Counts the routes of every `every`-th optimizer step and adds them to the next training log.
-    Prefer `add_moe_load_callback`."""
+    """Counts routes of every `every`-th optimizer step into the next training log."""
 
     def __init__(
         self,
@@ -266,7 +258,6 @@ class UnslothMoELoadCallback(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
         if self.counter is not None and self.counter.active:
             self.counter.stop()
-            # Kept on the device; read at the next training log.
             self._pending = True
 
     def on_log(

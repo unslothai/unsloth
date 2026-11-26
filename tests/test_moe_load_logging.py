@@ -38,7 +38,6 @@ def _model(family, router_logits = True):
     model = AutoModelForCausalLM.from_config(config).float()
     with torch.no_grad():
         for name, param in model.named_parameters():
-            # Random gates far from uniform, so the routes are unbalanced and ties are absent.
             if "gate" in name and "proj" not in name:
                 param.normal_(0, 1.0)
     model.train()
@@ -112,7 +111,6 @@ def test_counts_and_aux_match_the_model(family, padded):
     assert stats["moe_load_max_mean"] >= 1.0 and stats["moe_soft_max_mean"] >= 1.0
     loads = [stats[f"moe_load_max_mean/layer_{i}"] for i in range(len(counter))]
     assert stats["moe_load_max_mean"] == max(loads)
-    # Stopped: later forwards add nothing; detached: the hook is gone.
     model(input_ids = ids)
     assert counter.hard.sum().item() == real * top_k * len(counter)
     counter.detach()
