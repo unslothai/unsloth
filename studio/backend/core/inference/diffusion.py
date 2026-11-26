@@ -16987,6 +16987,12 @@ class DiffusionBackend:
                 from .diffusion_qwenimage21 import text_length_runs
 
                 chunks = [run for chunk in chunks for run in text_length_runs(pipe, chunk)]
+                # SD / SDXL chunked encode pads a batch to its longest prompt: equal chunk counts only.
+                chunks = [
+                    run
+                    for chunk in chunks
+                    for run in sd_controls_mod.chunk_count_runs(sd_controls, fam, pipe, chunk)
+                ]
 
                 # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
                 strength_applied = effective_request_strength(
