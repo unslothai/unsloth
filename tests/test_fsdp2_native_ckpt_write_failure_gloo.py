@@ -8,7 +8,11 @@ a full disk, or a raising write):
   instead of the other rank running on into a collective the writer never joins;
 * the Trainer hook keeps the other format's optimizer_dcp when the new optimizer.pt fails, so the
   checkpoint still resumes;
-* a failed scheduler write, or a failed write inside fsdp2_gathered, raises on every rank too.
+* a failed scheduler write, or a failed write inside fsdp2_gathered, raises on every rank too;
+* a sharded (DCP) optimizer save over a committed optimizer_dcp whose write fails on one rank keeps
+  the committed directory and resumes it bitwise, with one renaming rank or one per "node";
+* a save that stops between its two renames resumes from the new, complete copy, and the next save
+  clears the leftovers.
 
 UNSLOTH_TEST_BACKEND=nccl runs the same cases on two GPUs."""
 
@@ -123,7 +127,7 @@ def _attempt(fn):
     try:
         fn()
         error = None
-    except Exception as exc:
+    except BaseException as exc:  # DCP's CheckpointException is a BaseException
         error = f"{type(exc).__name__}: {str(exc)[:300]}"
     return error, time.monotonic() - start
 
@@ -304,11 +308,140 @@ def _case_gathered_body_fail(native, dist, rank, tmp):
     return res
 
 
+def _local_state(native, model, opt):
+    """This rank's optimizer shards (FQN keyed, plain local tensors), cloned."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
+    from torch.distributed.tensor import DTensor
+
+    state = get_optimizer_state_dict(model, opt, options = StateDictOptions(full_state_dict = False))
+    out = {}
+    for fqn, entry in state["state"].items():
+        for name, t in entry.items():
+            if isinstance(t, DTensor):
+                t = t.to_local()
+            if isinstance(t, torch.Tensor):
+                out[(fqn, name)] = t.detach().cpu().clone()
+    return out
+
+
+def _bitwise(a, b):
+    return sorted(a) == sorted(b) and all(
+        a[k].dtype == b[k].dtype and torch.equal(a[k].view(-1), b[k].view(-1)) for k in a
+    )
+
+
+def _tree_digest(directory):
+    import hashlib
+
+    if not os.path.isdir(directory):
+        return None
+    out = {}
+    for name in sorted(os.listdir(directory)):
+        with open(os.path.join(directory, name), "rb") as f:
+            out[name] = hashlib.sha256(f.read()).hexdigest()
+    return out
+
+
+def _dcp_leftovers(tmp):
+    return sorted(f for f in os.listdir(tmp) if f != "optimizer_dcp")
+
+
+def _resume_bitwise(native, rank, directory, expected):
+    fresh, fresh_opt = _new(native, 1)
+    _train(fresh, fresh_opt, 7, rank)  # some other state, so a skipped load cannot pass
+    error, _ = _attempt(lambda: native.native_load_optimizer(fresh, fresh_opt, directory))
+    if error is not None:
+        return error
+    return _bitwise(_local_state(native, fresh, fresh_opt), expected)
+
+
+def _case_dcp_overwrite(
+    native,
+    dist,
+    rank,
+    tmp,
+    per_node = False,
+):
+    """A committed optimizer_dcp is saved over while rank 1's disk is full."""
+    if per_node:
+        native._node_id = lambda: f"node{rank}"  # every rank renames, in turn, on one filesystem
+    model, opt = _new(native, 1)
+    _train(model, opt, 1, rank)
+    directory = os.path.join(tmp, "optimizer_dcp")
+    native.native_save_optimizer_sharded(model, opt, directory)
+    dist.barrier()
+    committed = _local_state(native, model, opt)
+    digest = _tree_digest(directory)
+    shard = os.path.join(directory, f"__{rank}_0.distcp")
+    size = os.path.getsize(shard)
+    _train(model, opt, 2, rank)
+    if rank == 1:
+        _cap_file_size(size // 2)
+    error, elapsed = _attempt(lambda: native.native_save_optimizer_sharded(model, opt, directory))
+    if rank == 1:
+        _uncap()
+    res = {"save_error": error, "elapsed": elapsed}
+    res["post_collective"] = _post_collective(dist) if error is None else None
+    dist.barrier()
+    res["dcp_kept"] = _tree_digest(directory) == digest
+    res["leftovers"] = _dcp_leftovers(tmp)
+    res["resume_bitwise"] = _resume_bitwise(native, rank, directory, committed)
+    return res
+
+
+def _case_dcp_overwrite_per_node(native, dist, rank, tmp):
+    return _case_dcp_overwrite(native, dist, rank, tmp, per_node = True)
+
+
+def _case_dcp_crash_between_renames(native, dist, rank, tmp):
+    """The save stops after `optimizer_dcp` -> `.old`, before the temp copy is renamed in."""
+    model, opt = _new(native, 1)
+    _train(model, opt, 1, rank)
+    directory = os.path.join(tmp, "optimizer_dcp")
+    native.native_save_optimizer_sharded(model, opt, directory)
+    _train(model, opt, 2, rank)
+    second = _local_state(native, model, opt)
+    real_rename = os.rename
+    calls = []
+
+    def rename(src, dst, *args, **kwargs):
+        if os.fspath(dst) == directory or os.fspath(src) == directory:
+            calls.append((src, dst))  # the swap's renames (DCP also renames its .metadata)
+            if os.fspath(dst) == directory:
+                raise OSError(5, "crash between the renames (injected)")
+        return real_rename(src, dst, *args, **kwargs)
+
+    os.rename = rename
+    try:
+        error, elapsed = _attempt(
+            lambda: native.native_save_optimizer_sharded(model, opt, directory)
+        )
+    finally:
+        os.rename = real_rename
+    dist.barrier()
+    res = {"save_error": error, "elapsed": elapsed, "renames": len(calls)}
+    res["layout"] = sorted(os.listdir(tmp))
+    res["resume_second"] = _resume_bitwise(native, rank, directory, second)
+    dist.barrier()
+    # The next save swaps in cleanly and clears what the stopped one left.
+    _train(model, opt, 3, rank)
+    third = _local_state(native, model, opt)
+    error3, _ = _attempt(lambda: native.native_save_optimizer_sharded(model, opt, directory))
+    dist.barrier()
+    res["third_error"] = error3
+    res["layout_after"] = sorted(os.listdir(tmp))
+    res["resume_third"] = _resume_bitwise(native, rank, directory, third)
+    return res
+
+
 _CASES = {
     "optimizer_overwrite": _case_optimizer_overwrite,
     "trainer_cross_format": _case_trainer_cross_format,
     "scheduler_fail": _case_scheduler_fail,
     "gathered_body_fail": _case_gathered_body_fail,
+    "dcp_overwrite": _case_dcp_overwrite,
+    "dcp_overwrite_per_node": _case_dcp_overwrite_per_node,
+    "dcp_crash_between_renames": _case_dcp_crash_between_renames,
 }
 
 
@@ -428,3 +561,52 @@ def test_scheduler_write_failure_raises_everywhere(tmp_path):
 def test_gathered_write_failure_raises_everywhere(tmp_path):
     pytest.importorskip("transformers")
     _assert_all_raised(_run("gathered_body_fail", str(tmp_path)), "gathered_body_fail")
+
+
+@pytest.mark.parametrize("case", ["dcp_overwrite", "dcp_overwrite_per_node"])
+def test_sharded_save_failure_keeps_committed_dcp(tmp_path, case):
+    pytest.importorskip("transformers")
+    results = _run(case, str(tmp_path))
+    for r in results.values():
+        assert r["save_error"] is not None, (case, results)  # no rank runs on
+        assert r["elapsed"] < _FAST_S, (case, results)
+        assert r["dcp_kept"], (case, results)  # the committed directory, byte for byte
+        assert r["leftovers"] == [], (case, results)
+        assert r["resume_bitwise"] is True, (case, results)
+
+
+def test_sharded_save_stopped_between_renames_resumes_new_copy(tmp_path):
+    pytest.importorskip("transformers")
+    results = _run("dcp_crash_between_renames", str(tmp_path))
+    writer = results[0]
+    assert writer["renames"] == 2, results
+    assert writer["layout"] == ["optimizer_dcp.old", "optimizer_dcp.tmp-2"], results
+    for r in results.values():
+        assert r["save_error"] is not None, results
+        assert r["resume_second"] is True, results  # the newer, complete copy
+        assert r["third_error"] is None, results
+        assert r["layout_after"] == ["optimizer_dcp"], results
+        assert r["resume_third"] is True, results
+
+
+def test_resolve_dcp_dir_prefers_the_complete_copy(tmp_path):
+    native = _load_native()
+    d = str(tmp_path / "optimizer_dcp")
+
+    def make(path, complete = True):
+        os.makedirs(path, exist_ok = True)
+        if complete:
+            open(os.path.join(path, ".metadata"), "wb").close()
+
+    assert native._resolve_dcp_dir(d) is None
+    make(d + ".old")
+    assert native._resolve_dcp_dir(d) == d + ".old"  # stopped after the first rename, no temp copy
+    make(d + ".tmp-3", complete = False)
+    assert native._resolve_dcp_dir(d) == d + ".old"  # a temp copy without metadata is never read
+    make(d + ".tmp-2")
+    make(d + ".tmp-4")
+    assert native._resolve_dcp_dir(d) == d + ".tmp-4"  # stopped between the renames: the new copy
+    make(d, complete = False)
+    assert native._resolve_dcp_dir(d) is None  # an incomplete directory in place: not guessed past
+    make(d)
+    assert native._resolve_dcp_dir(d) == d  # a stopped save before its swap: the committed copy

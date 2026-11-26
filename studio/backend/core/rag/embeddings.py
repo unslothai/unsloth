@@ -1459,10 +1459,13 @@ def _identity(
     is_llama: bool,
     name: str,
     served = None,
-    served_identity: tuple[str | None, str | None] | None = None,
+    served_identity: tuple[str | None, str | None] | str | None = None,
 ) -> str:
     if config.is_connection_model(name):
-        return config.embedding_identity("connection", name)
+        from .embed_connection import connection_identity
+        return connection_identity(
+            name, served_identity if isinstance(served_identity, str) else None
+        )
     if is_llama:
         if served_identity is None:
             repo = config.effective_gguf_repo_for_embedding_model(name)

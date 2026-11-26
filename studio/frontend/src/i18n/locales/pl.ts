@@ -5459,6 +5459,7 @@ export const pl = {
       showPromptDescription: "Zobacz dokładne instrukcje wysyłane do modelu.",
     },
     history: {
+      notSaved: "Nie zapisano w historii: pamięć przeglądarki jest pełna.",
       title: "Historia",
       search: "Szukaj w historii",
       empty: "Tutaj pojawią się Twoje tłumaczenia.",

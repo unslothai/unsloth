@@ -347,6 +347,32 @@ def _no_sdpa_align_wrapper_left_installed():
 
 
 @pytest.fixture(autouse = True)
+def _no_nvfp4_weight_quant_patch_left_installed():
+    # quantize_transformer installs it process-wide for an NVFP4 load. A test that drives the real quantize
+    # leaves torchao's NVFP4Tensor.to_nvfp4 rewritten to 4over6, so every later "torchao reference" in that
+    # worker is the patch itself and max6 parity fails against it.
+    yield
+    weight_quant = sys.modules.get("core.inference.diffusion_nvfp4_weight_quant")
+    if weight_quant is not None:
+        weight_quant.uninstall_nvfp4_weight_quant_patch()
+
+
+@pytest.fixture(autouse = True)
+def _forget_multigpu_card_names():
+    # probe_devices caches each ordinal's torch.cuda.get_device_name per process. A test that probes on the
+    # CPU runner caches "" for every card, and later tests that fake "Tesla T4" then see a primary and
+    # secondary of different models.
+    def _forget():
+        multigpu = sys.modules.get("core.inference.diffusion_multigpu")
+        if multigpu is not None:
+            multigpu._NAMES.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_hub_unreachable_verdict():
     # Per-process Hub verdict must not leak between tests.
     def _forget():
@@ -474,6 +500,11 @@ def _forget_queued_media_requests():
         video_routes = sys.modules.get("routes.video")
         if video_routes is not None:
             video_routes._VIDEO_QUEUE.clear()
+            video_routes._page_outcomes.clear()
+            video_routes._admitting.clear()
+        video_queue = sys.modules.get("core.inference.video_queue")
+        if video_queue is not None:
+            video_queue.reset()
         batching = sys.modules.get("core.inference.image_request_batching")
         if batching is not None:
             batching._OPEN.clear()

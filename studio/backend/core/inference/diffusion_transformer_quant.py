@@ -877,6 +877,202 @@ def explain_unusable_scheme(
     return f"'{scheme}' is not usable for family '{family}' on this GPU"
 
 
+def _precision_card_key(device: Any, ordinal: Optional[int]) -> Optional[str]:
+    """The smoke-cache card key for ``device`` WITHOUT initialising CUDA; None when it cannot be told."""
+    if device is None:
+        return None
+    device = str(device)
+    if device != "cuda":
+        return device
+    if ordinal is not None:
+        return f"cuda:{ordinal}"
+    torch = _sys.modules.get("torch")
+    try:
+        if torch is not None and torch.cuda.is_initialized():
+            return f"cuda:{torch.cuda.current_device()}"
+    except Exception:  # noqa: BLE001 -- an unreadable index reads no probe verdict
+        pass
+    return None
+
+
+_PRECISION_PERSISTED_TABLES: dict[str, Optional[dict[str, bool]]] = {}
+
+
+def _probed_unusable(scheme: str, card: Optional[str]) -> bool:
+    """A recorded smoke-probe failure for ``scheme`` on ``card`` (this process, else the persisted table)."""
+    if card is None:
+        return False
+    cached = _SMOKE_CACHE.get((scheme, card))
+    if cached is not None:
+        return cached is False
+    # Read once per card: status polls this, and a later probe lands in ``_SMOKE_CACHE``, which wins above.
+    if card not in _PRECISION_PERSISTED_TABLES:
+        _PRECISION_PERSISTED_TABLES[card] = _persisted_probe_table(card)
+    table = _PRECISION_PERSISTED_TABLES[card]
+    return isinstance(table, dict) and table.get(scheme) is False
+
+
+def _denied_precision_reason(family: Optional[str], scheme: str, base_repo: Optional[str]) -> str:
+    """``explain_unusable_scheme``'s family-deny text, short enough for a dropdown, measured numbers kept."""
+    if scheme == TQ_NVFP4:
+        failure = _nvfp4_gate_failure(family)
+        if failure is not None:
+            return f"Measured and failed the NVFP4 accuracy gate for this model: {failure}"
+        return "No NVFP4 accuracy-gate record covers this model yet, so NVFP4 is not offered for it"
+    return (
+        f"{scheme.upper()} is ruled out for this model by the measured accuracy gate (black frames or "
+        "below the quality bar), whatever the GPU"
+    )
+
+
+def torchao_probe_governs(
+    scheme: str,
+    target: Any,
+    *,
+    model_kind: Optional[str] = "pipeline",
+    offload: Optional[bool] = None,
+    modular: bool = False,
+    family: Optional[str] = None,
+) -> bool:
+    """Whether an explicit ``scheme`` on ``target`` stands or falls on the torchao smoke probe. False when the load
+    could take a native path that skips the probe, mirroring the image and video precision checks: a ROCm / stubbed
+    torchao / MPS host, the fp16 Turing linears, or native INT8 under offload (``offload`` None = not known, counted
+    as possible). No target, or an unanswerable host check, also reads False, so a probe verdict is never applied to a
+    load that would not run the probed kernels."""
+    if target is None:
+        return False
+    try:
+        if model_kind != "pipeline":
+            return True  # a GGUF pick reaches dense quant only through torchao
+        if scheme in NATIVE_QUANT_SCHEMES and not modular and native_quant_host(target):
+            return False
+        if fp16_card_native_host(target, scheme):
+            return False
+        if (
+            offload is not False
+            and scheme in NATIVE_OFFLOAD_SCHEMES
+            and native_offload_host(target)
+        ):
+            return False
+        if scheme == TQ_FP8 and str(family or "").strip().lower() == "minimax-h3":
+            # MiniMax-H3 runs its hosted fp8 codes stored where torchao's fp8 GEMM fails (the video precision check).
+            from .video_minimax_h3_native_quant import h3_hosted_fp8_storage_host
+            if h3_hosted_fp8_storage_host(target):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 -- see the docstring
+        return False
+
+
+def precision_target(device: Any, dtype: Any, ordinal: Optional[int]) -> Any:
+    """A device target for ``precision_options`` from a load's recorded device, dtype and card, or None. No allocation;
+    the dtype may be a ``torch.dtype`` or its name."""
+    try:
+        import torch
+
+        from .diffusion_device import diffusion_device_target_from_torch_device
+
+        if not isinstance(dtype, torch.dtype):
+            dtype = getattr(torch, str(dtype or "").replace("torch.", ""), None)
+        if not isinstance(dtype, torch.dtype) or device is None:
+            return None
+        device = str(device)
+        if device == "cuda" and ordinal is not None:
+            device = f"cuda:{int(ordinal)}"
+        return diffusion_device_target_from_torch_device(device, dtype)
+    except Exception:  # noqa: BLE001 -- no target, no probe verdicts
+        return None
+
+
+def plan_precision_options(
+    family: Optional[str],
+    *,
+    model_kind: Optional[str],
+    repo_id: Optional[str],
+    base_repo: Optional[str],
+    gpu_ordinal: Optional[int],
+    target: Any = None,
+    offload: Optional[bool] = None,
+    modular: bool = False,
+) -> Optional[dict[str, Optional[str]]]:
+    """``precision_options`` for a download plan, judged on the base the load check uses: a pipeline is its own base;
+    a GGUF without one is judged on a gate-lifted base, as ``assert_precision_available`` does. None without a family.
+    Probe verdicts need the planned ``target``; without one only the family table answers."""
+    if not family:
+        return None
+    try:
+        if model_kind == "pipeline":
+            base = repo_id or base_repo
+        else:
+            base = base_repo or nvfp4_gated_base(family)
+        return precision_options(
+            family,
+            base,
+            "cuda" if gpu_ordinal is not None else None,
+            ordinal = gpu_ordinal,
+            target = target,
+            model_kind = model_kind,
+            offload = offload,
+            modular = modular,
+        )
+    except Exception:  # noqa: BLE001 -- a plan never fails over its precision hints
+        return None
+
+
+def precision_options(
+    family: Optional[str],
+    base_repo: Optional[str] = None,
+    device: Any = None,
+    *,
+    ordinal: Optional[int] = None,
+    target: Any = None,
+    model_kind: Optional[str] = "pipeline",
+    offload: Optional[bool] = None,
+    modular: bool = False,
+) -> dict[str, Optional[str]]:
+    """Each explicit dense scheme -> why an explicit request for it would be refused, or None when nothing known rules
+    it out. Sources: the family deny table (with the NVFP4 gate failures) and a recorded probe failure on this card,
+    applied only when ``torchao_probe_governs`` says the load would run the probed torchao kernels (so never without
+    a ``target``). Network-free and GPU-free: never spawns the smoke probe or initialises CUDA, and never raises (status
+    reads it). The global NVFP4 switch is left to the caller, so an nvfp4 that is only switched off reads None."""
+    options: dict[str, Optional[str]] = {scheme: None for scheme in TQ_SCHEMES}
+    try:
+        if target is not None:
+            card = _precision_card_key(
+                getattr(target, "device", None), getattr(target, "ordinal", None)
+            )
+        else:
+            card = _precision_card_key(device, ordinal)
+    except Exception:  # noqa: BLE001 -- no card, no probe verdicts
+        card = None
+    for scheme in TQ_SCHEMES:
+        try:
+            if nvfp4_blocked(scheme):
+                # Switched off, the gate lift is unreadable: only a measured failure outlives the switch.
+                if (
+                    family
+                    and family_denies_scheme(family, scheme, base_repo)
+                    and _nvfp4_gate_failure(family)
+                ):
+                    options[scheme] = _denied_precision_reason(family, scheme, base_repo)
+            elif family and family_denies_scheme(family, scheme, base_repo):
+                options[scheme] = _denied_precision_reason(family, scheme, base_repo)
+            elif _probed_unusable(scheme, card) and torchao_probe_governs(
+                scheme,
+                target,
+                model_kind = model_kind,
+                offload = offload,
+                modular = modular,
+                family = family,
+            ):
+                options[scheme] = (
+                    f"{scheme.upper()} failed this GPU's kernel probe: the GEMM this scheme needs did not run here"
+                )
+        except Exception:  # noqa: BLE001 -- an unanswerable lookup rules nothing out
+            options[scheme] = None
+    return options
+
+
 # The reason torchao cannot be used AT ALL, resolved once. None means it imports.
 _TORCHAO_UNAVAILABLE: Optional[tuple[Optional[str]]] = None
 

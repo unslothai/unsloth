@@ -52,6 +52,7 @@ activate_happy_eyeballs()
 install_openblas_runtime_cap()
 
 from utils.hardware import apply_gpu_ids
+from utils.keep_awake import keeps_system_awake
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 
 # Light module: the MLX branch runs on torch-less hosts.
@@ -4441,6 +4442,7 @@ def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
         event_queue.put({"type": "model_load_completed", "ts": time.time()})
 
 
+@keeps_system_awake
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Fresh subprocess entrypoint: events out on event_queue, stop commands in on stop_queue."""
     # Off on Linux: forked map() workers deadlock.

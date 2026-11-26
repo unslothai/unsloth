@@ -5406,6 +5406,7 @@ export const vi = {
       showPromptDescription: "Xem hướng dẫn chính xác được gửi đến mô hình.",
     },
     history: {
+      notSaved: "Chưa lưu vào Lịch sử: bộ nhớ của trình duyệt đã đầy.",
       title: "Lịch sử",
       search: "Tìm trong lịch sử",
       empty: "Các bản dịch của bạn sẽ xuất hiện ở đây.",

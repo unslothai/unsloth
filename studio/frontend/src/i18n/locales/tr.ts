@@ -5408,6 +5408,7 @@ export const tr = {
       showPromptDescription: "Modele gönderilen talimatların tam halini görün.",
     },
     history: {
+      notSaved: "Geçmişe kaydedilmedi: tarayıcı depolama alanı dolu.",
       title: "Geçmiş",
       search: "Geçmişte ara",
       empty: "Çevirileriniz burada görünür.",

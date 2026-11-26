@@ -1044,6 +1044,12 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+# Families beyond Qwen3-MoE that pp carries the router aux loss for (OLMoE / Qwen2-MoE: transformers 5.x records their
+# router logits; 4.x refuses aux on at the split and runs aux off as before).
+_MOE_PP_FAMILY = (
+    "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_families_match_gradient_accumulation"
+)
+_MOE_PP_FAMILIES = ("mixtral", "olmoe", "qwen2_moe", "ernie4_5_moe")
 _MOE_CP_AUX = "tests/test_cp_router_aux_gloo.py::test_router_aux_loss_under_cp_matches_one_process"
 _MOE_CP_AUX_FAMILY = (
     "tests/test_cp_router_aux_gloo.py::test_family_router_aux_loss_under_cp_matches_one_process"
@@ -1209,6 +1215,12 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
     + ("eager: no compiled region",),
+    **{
+        (family, "lora+experts", aux, "pp"): (f"{_MOE_PP_FAMILY}[{case}-{family}]",) * 2
+        + ("eager: no compiled region",)
+        for family in _MOE_PP_FAMILIES
+        for aux, case in ((True, "1f1b_lora_coef1"), (False, "gpipe_lora_aux_off"))
+    },
     ("deepseek_v41", "lora", False, "pp"): (
         _DSV41_PP + "[pp2_gpipe|pp2_1f1b|pp4_gpipe_mb4|pp2_gpipe_mb4_gc|pp2_1f1b_gc]",
     )
@@ -1366,6 +1378,7 @@ def _moe_note(family, precision, aux, mode):
             "qwen4_exp",
             "deepseek_v41",
             "gpt_oss",
+            *_MOE_PP_FAMILIES,
         ):
             if not aux:
                 return (
@@ -1373,8 +1386,8 @@ def _moe_note(family, precision, aux, mode):
                     "covers this family under pipeline parallel yet"
                 )
             return (
-                "pipeline parallel carries the router auxiliary loss for Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp "
-                "only (refused at the split)"
+                "pipeline parallel carries the router auxiliary loss for Qwen3-MoE, Qwen3.5-MoE, Qwen4Exp, "
+                "Mixtral, OLMoE, Qwen2-MoE and Ernie 4.5 MoE only (refused at the split)"
             )
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
@@ -1917,10 +1930,16 @@ def _ep_blocker(
         return _family_ep_blocker(family, load_in_4bit)
     try:
         from .models import ep_native, tp_native
+
         if ep_native.is_expert_parallel(model):
             return ""
+        from .models import ep_expert_lists
+
         problems = [
-            tp_native.expert_shard_problem(block, ep)
+            None
+            if ep_expert_lists.list_shard_problem(block, ep) is None
+            or ep_expert_lists.fused_list_problem(block, ep) is None
+            else tp_native.expert_shard_problem(block, ep)
             for block in tp_native.moe_blocks_with_experts(model)
         ]
     except Exception:

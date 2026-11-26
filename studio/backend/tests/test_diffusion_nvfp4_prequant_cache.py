@@ -54,6 +54,11 @@ def env(tmp_path, monkeypatch):
         pytest.skip("torchao has no NVFP4 inference workflow")
     # The weight pass is plain torch; only the dynamic-activation GEMM needs sm100.
     monkeypatch.setattr(iw, "is_sm_at_least_100", lambda: True, raising = False)
+    # _quantize runs the real quantize_transformer, which rewrites NVFP4Tensor.to_nvfp4 for the
+    # whole process; pinning the current one here puts torchao's back at teardown.
+    from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
+
+    monkeypatch.setattr(NVFP4Tensor, "to_nvfp4", NVFP4Tensor.__dict__["to_nvfp4"])
     root = tmp_path / "cache"
     monkeypatch.setenv(C.ENV_DIR, str(root))
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")

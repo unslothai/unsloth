@@ -279,11 +279,13 @@ def _case_env(
         trainer_b.train(resume_from_checkpoint = ckpt2)
         res["b"] = summary(trainer_b)
         if layout is not None:
-            # A checkpoint written on another layout is refused before anything is loaded.
+            # A checkpoint written on another layout without the 1-GPU optimizer.pt (an older Unsloth) is refused
+            # before anything is loaded; with it, it resumes resharded (test_layout_portable_resume_gloo).
             bad = os.path.join(tmp, "bad")
             if rank == 0:
                 import shutil
                 shutil.copytree(ckpt2, bad)
+                os.remove(os.path.join(bad, "optimizer.pt"))
             dist.barrier()
             path = os.path.join(bad, "unsloth_tp", f"rank{rank:05d}.pt")
             payload = torch.load(path, weights_only = True)
