@@ -788,7 +788,11 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
                     f"{repo_id} is a GGUF repository: pick one of its GGUF files instead of downloading all of them."
                 )
             # The native loader reads the checkpoint, never the quants published beside it.
-            siblings = [s for s in siblings if not str(getattr(s, "rfilename", "")).lower().endswith(".gguf")]
+            siblings = [
+                s
+                for s in siblings
+                if not str(getattr(s, "rfilename", "")).lower().endswith(".gguf")
+            ]
         revision = str(getattr(info, "sha", "") or "") or None
         missing_files = []
         missing_bytes = 0
