@@ -195,7 +195,17 @@ import {
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
-import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { clipPrecisionSelection } from "@/lib/clip-precision";
+import { reseedAction } from "@/lib/failed-load-reseed";
+import {
+  activePrecisionDenials,
+  deniedSelectionFallback,
+  gpuSelectionKey,
+  type PlannedPrecision,
+  precisionResidentKey,
+  withPrecisionDenials,
+} from "@/lib/precision-denials";
+import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -231,6 +241,7 @@ import {
   engagedAttentionBackend,
   formatResolvedValue,
   isPrecisionRefusal,
+  loadedTransformerPrecisionLabel,
   resolvedBadge,
   resolvedRequestSelectValue,
   resolvedSeedKey,
@@ -867,7 +878,7 @@ function AdvancedSelect({
   badge?: ReactNode;
   value: string;
   onValueChange: (v: string) => void;
-  options: Array<[string, string]>;
+  options: ReadonlyArray<SelectOption>;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -882,9 +893,19 @@ function AdvancedSelect({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
-                {l}
+            {options.map(([v, l, disabledReason]) => (
+              <SelectItem key={v} value={v} className="text-xs" disabled={!!disabledReason}>
+                {disabledReason ? (
+                  // Disabled items take no pointer events, so the reason is shown inline rather than as a tooltip.
+                  <span className="flex flex-col items-start gap-0.5">
+                    <span>{l}</span>
+                    <span className="max-w-[calc(16rem*var(--ui-space-scale,1))] whitespace-normal text-ui-10 leading-snug text-muted-foreground">
+                      {disabledReason}
+                    </span>
+                  </span>
+                ) : (
+                  l
+                )}
               </SelectItem>
             ))}
           </SelectContent>
@@ -2064,9 +2085,44 @@ function VideoGenerator({
   // Reseed from the LOADED build so declined requests snap back. Keyed on the load-time half only:
   // transformer_cache is rewritten at generation time.
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  // Bumped once a failed load's status re-read lands: the resident record did not move, so without it Precision and
+  // the other Advanced selects would keep showing the refused pick while Generate runs the resident build.
+  const [failedLoadReseed, setFailedLoadReseed] = useState(0);
+  const handledFailedLoadReseed = useRef(0);
+  // The last picked model's per-scheme refusals from its download plan, for the Precision select before it loads.
+  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PlannedPrecision>(null);
+  // A plan's denials die with the resident it was made beside: a load landing, an eject or an eviction drops them.
+  const residentPrecisionKey = precisionResidentKey(status);
+  useEffect(() => {
+    setPlannedPrecisionOptions(null);
+  }, [residentPrecisionKey]);
+  // And with a failed load, which abandons the pick it planned (the selects snap back to the resident build).
+  useEffect(() => {
+    if (failedLoadReseed > 0) setPlannedPrecisionOptions(null);
+  }, [failedLoadReseed]);
+  // Schemes the loaded (else last planned) family or card refuses (Wan NVFP4's failed accuracy gate): disabled in
+  // Precision with the reason, and a held one falls back to Auto rather than being refused at load.
+  const precisionDenials = activePrecisionDenials(
+    status,
+    plannedPrecisionOptions,
+    selectedGpu !== "auto" && gpuChoices.some((d) => String(d.index) === selectedGpu) ? selectedGpu : "auto",
+  );
+  useEffect(() => {
+    setTransformerQuant((v) => deniedSelectionFallback(v, precisionDenials));
+  }, [precisionDenials, transformerQuant]);
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
-    if (!record) return;
+    const afterFailedLoad = failedLoadReseed !== handledFailedLoadReseed.current;
+    handledFailedLoadReseed.current = failedLoadReseed;
+    const action = reseedAction(status, record != null, afterFailedLoad);
+    if (action === "auto") {
+      setTransformerQuant("auto");
+      setMemoryMode("auto");
+      setAttentionBackend("auto");
+      setInt8Attention("auto");
+      return;
+    }
+    if (action !== "record" || !record) return;
     const family = resolvedFamilyOverrideSelection(record.family_override);
     if (family) setFamilyOverride(family);
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
@@ -2090,7 +2146,7 @@ function VideoGenerator({
     const int8 = int8AttentionSelection(record.int8_attention);
     if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
-  }, [resolvedKey]);
+  }, [resolvedKey, failedLoadReseed]);
 
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
     const cached = galleryCache.srcById.get(video.id);
@@ -2649,6 +2705,9 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
+      // The precision the clip ran with, for the next load (an NVFP4 clip on a build with NVFP4 off falls back).
+      const precision = clipPrecisionSelection(video.transformer_quant, video.model_kind);
+      if (precision) setTransformerQuant(precision);
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
@@ -2858,7 +2917,8 @@ function VideoGenerator({
           setCanReapply(lastLoadRevert.current.canReapply);
           lastLoadRevert.current = null;
         }
-        void refreshStatus();
+        // Then snap the Advanced selects to what the re-read says is loaded.
+        void refreshStatus().finally(() => setFailedLoadReseed((n) => n + 1));
         return;
       }
       if (p.phase === null) {
@@ -3171,7 +3231,7 @@ function VideoGenerator({
         dismissLoadToast();
         if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
-        void refreshStatus();
+        void refreshStatus().finally(() => setFailedLoadReseed((n) => n + 1));
         return settle(false);
       } finally {
         savePoll.stop();
@@ -3262,6 +3322,8 @@ function VideoGenerator({
       pickToast.dismiss(pendingStagedLoad.current?.toastId);
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
+      // The canceled pick planned the Precision denials; the resident build's status describes the next load again.
+      setPlannedPrecisionOptions(null);
       // No load started, so no poll will roll back the optimistic quant label; only for this job's pick.
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);
@@ -3331,6 +3393,11 @@ function VideoGenerator({
           pickToast.dismiss(pickToastId);
           return true;
         }
+        setPlannedPrecisionOptions({
+          gpu: gpuSelectionKey(advanced.gpu_ids),
+          options: plan.precision_options ?? null,
+          repos: [repoId, opts.displayRepoId],
+        });
         // The shared envelope's half of the incompatible-pairing check; video has no live path here.
         incompatible = plan.incompatible_reason ?? null;
         incompatibleCode = plan.incompatible_code ?? null;
@@ -4176,23 +4243,26 @@ function VideoGenerator({
       {!status?.loaded || status.model_kind === "pipeline" ? (
         <AdvancedSelect
           label="Precision"
-          hint="How the model computes. Auto picks the fastest precision the hardware supports (INT8 on every capable GPU, then FP8 where the card has it) by quantising the transformer onto low-precision tensor cores, and keeps plain bf16 when the device or memory plan can't take it. Off always runs bf16."
+          hint="How the model computes. Auto picks per model and GPU: usually INT8 (or FP8 where the card has it), quantising the transformer onto low-precision tensor cores, but it keeps plain bf16 for models where quantising was measured as no faster or visibly different, and when the device or memory plan can't take it, so Auto is not always the fastest choice. The header reports what Auto picked. Off always runs bf16."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
-            ["auto", "Auto (fastest for GPU)"],
+            ["auto", "Auto (per model and GPU)"],
             ["none", "Off (bf16)"],
             // Low-precision schemes need dense tensor cores, which Mac or CPU-only hosts lack.
             ...(hostOffersDensePrecision(hostClass)
-              ? withNvfp4Option(
-                  [
-                    ["fp8", "FP8"],
-                    ["int8", "INT8"],
-                    ["nvfp4", "NVFP4 (Blackwell)"],
-                    ["mxfp8", "MXFP8 (Blackwell)"],
-                  ] as [string, string][],
-                  nvfp4Diffusion,
+              ? withPrecisionDenials(
+                  withNvfp4Option(
+                    [
+                      ["fp8", "FP8"],
+                      ["int8", "INT8"],
+                      ["nvfp4", "NVFP4 (Blackwell)"],
+                      ["mxfp8", "MXFP8 (Blackwell)"],
+                    ] as SelectOption[],
+                    nvfp4Diffusion,
+                  ),
+                  precisionDenials,
                 )
               : []),
           ]}
@@ -4230,7 +4300,7 @@ function VideoGenerator({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. A video model is never split across cards, so this is one choice, not a pool. Only cards in this machine are listed: using two machines (for example two DGX Sparks) for one job is not part of this release."
+          hint="Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one clip is not part of this release."
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
@@ -4392,6 +4462,8 @@ function VideoGenerator({
               models={videoModels}
               value={selectorModelId}
               loadedModelIdOverride={selectorModelId}
+              // The resident build's precision, not the catalog row's: an FP8 load of the BF16 Wan row reads FP8.
+              loadedPrecisionOverride={busy !== "unloading" ? loadedTransformerPrecisionLabel(status) : null}
               activeGgufVariant={quant}
               onValueChange={handleModelSelect}
               resolveDownloadFootprint={resolveDownloadFootprint}

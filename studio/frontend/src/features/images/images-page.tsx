@@ -119,7 +119,16 @@ import {
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
-import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { reseedAction } from "@/lib/failed-load-reseed";
+import {
+  activePrecisionDenials,
+  deniedSelectionFallback,
+  gpuSelectionKey,
+  type PlannedPrecision,
+  precisionResidentKey,
+  withPrecisionDenials,
+} from "@/lib/precision-denials";
+import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ExternalModelOption,
   ModelOption,
@@ -1065,7 +1074,7 @@ function AdvancedSelect({
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
-  options: Array<[string, string]>;
+  options: ReadonlyArray<SelectOption>;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -1080,9 +1089,19 @@ function AdvancedSelect({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
-                {l}
+            {options.map(([v, l, disabledReason]) => (
+              <SelectItem key={v} value={v} className="text-xs" disabled={!!disabledReason}>
+                {disabledReason ? (
+                  // Disabled items take no pointer events, so the reason is shown inline rather than as a tooltip.
+                  <span className="flex flex-col items-start gap-0.5">
+                    <span>{l}</span>
+                    <span className="max-w-[calc(16rem*var(--ui-space-scale,1))] whitespace-normal text-ui-10 leading-snug text-muted-foreground">
+                      {disabledReason}
+                    </span>
+                  </span>
+                ) : (
+                  l
+                )}
               </SelectItem>
             ))}
           </SelectContent>
@@ -2091,6 +2110,12 @@ export function ImagesPage({
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("auto");
   // The loaded build the Engine select was last seeded from; cleared by a failed load to force a reseed.
   const [engineSeed, setEngineSeed] = useState("");
+  // Bumped once a failed load's status re-read lands: the resident record did not move, so without it Precision and
+  // the other Advanced selects would keep showing the refused pick while Generate runs the resident build.
+  const [failedLoadReseed, setFailedLoadReseed] = useState(0);
+  const handledFailedLoadReseed = useRef(0);
+  // The last picked model's per-scheme refusals from its download plan, for the Precision select before it loads.
+  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PlannedPrecision>(null);
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -3716,8 +3741,9 @@ export function ImagesPage({
         // And for the Engine select: a worker that failed before publishing leaves the resident provenance, so the
         // seed would not move and the next Reapply would replay the failed pick.
         setEngineSeed("");
-        // A failed load may have freed a previously-loaded model, so resync to the real backend state.
-        void refreshStatus();
+        // A failed load may have freed a previously-loaded model, so resync to the real backend state, then snap the
+        // Advanced selects to what that state says is loaded.
+        void refreshStatus().finally(() => setFailedLoadReseed((n) => n + 1));
         return;
       }
       if (p.phase === null) {
@@ -4014,10 +4040,41 @@ export function ImagesPage({
   // engaged and Precision never advertises a scheme the model is not running. Keyed on the
   // LOAD-TIME half of the record: the backend rewrites the speed/attention/cache entries at
   // GENERATION time, and the whole record threw away a Precision picked but not yet loaded.
+  // Schemes the loaded (else last planned) family or card refuses: disabled in Precision with the reason, and a held
+  // one falls back to Auto rather than being refused at load.
+  // A plan's denials die with the resident it was made beside: a load landing, an eject or an eviction drops them.
+  const residentPrecisionKey = precisionResidentKey(status);
+  useEffect(() => {
+    setPlannedPrecisionOptions(null);
+  }, [residentPrecisionKey]);
+  // And with a failed load, which abandons the pick it planned (the selects snap back to the resident build).
+  useEffect(() => {
+    if (failedLoadReseed > 0) setPlannedPrecisionOptions(null);
+  }, [failedLoadReseed]);
+  const precisionDenials = activePrecisionDenials(
+    status,
+    plannedPrecisionOptions,
+    selectedGpu !== "auto" && gpuChoices.some((d) => String(d.index) === selectedGpu) ? selectedGpu : "auto",
+  );
+  useEffect(() => {
+    setTransformerQuant((v) => deniedSelectionFallback(v, precisionDenials));
+  }, [precisionDenials, transformerQuant]);
+
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
-    if (!record) return;
+    const afterFailedLoad = failedLoadReseed !== handledFailedLoadReseed.current;
+    handledFailedLoadReseed.current = failedLoadReseed;
+    const action = reseedAction(status, record != null, afterFailedLoad);
+    if (action === "auto") {
+      setTransformerQuant("auto");
+      setTextEncoderQuant("auto");
+      setMemoryMode("auto");
+      setAttentionBackend("auto");
+      setInt8Attention("auto");
+      return;
+    }
+    if (action !== "record" || !record) return;
     const family = resolvedFamilyOverrideSelection(record.family_override);
     if (family) setFamilyOverride(family);
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
@@ -4047,7 +4104,7 @@ export function ImagesPage({
     const int8 = int8AttentionSelection(record.int8_attention);
     if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
-  }, [resolvedKey]);
+  }, [resolvedKey, failedLoadReseed]);
 
   const bakedLorasFor = useCallback(
     (repoId: string, preserveSelection = false): LoraSpecInput[] => {
@@ -4220,7 +4277,7 @@ export function ImagesPage({
         dismissLoadToast();
         if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
-        void refreshStatus();
+        void refreshStatus().finally(() => setFailedLoadReseed((n) => n + 1));
         return settle(false);
       } finally {
         savePoll.stop();
@@ -4415,6 +4472,8 @@ export function ImagesPage({
       pickToast.dismiss(pendingStagedLoad.current?.toastId);
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
+      // The canceled pick planned the Precision denials; the resident build's status describes the next load again.
+      setPlannedPrecisionOptions(null);
       // Staging starts no load, so the optimistic label must be reverted here, for this job's pick only.
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);
@@ -4611,6 +4670,13 @@ export function ImagesPage({
           pickToast.dismiss(pickToastId);
           dropReleasedPick(ownRevert);
           return true;
+        }
+        if (!downloadOnly) {
+          setPlannedPrecisionOptions({
+            gpu: gpuSelectionKey(advanced.gpu_ids),
+            options: plan.precision_options ?? null,
+            repos: [repoId, opts.displayRepoId],
+          });
         }
         if (downloadOnly && plan.plan_failed) {
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
@@ -6382,23 +6448,26 @@ export function ImagesPage({
           && !isNativeEngineStatus(status)) ? (
         <AdvancedSelect
           label="Precision"
-          hint="How the model computes. Auto picks the fastest precision the hardware supports (INT8 on every capable GPU, then FP8 where the card has it) and quantises the transformer onto low-precision tensor cores. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
+          hint="How the model computes. Auto picks per model and GPU: usually INT8 (or FP8 where the card has it), quantising the transformer onto low-precision tensor cores, but it keeps BF16 for models where quantising was measured as no faster or visibly different, so Auto is not always the fastest choice. The loaded build reports what Auto picked. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
-            ["auto", "Auto (fastest for GPU)"],
+            ["auto", "Auto (per model and GPU)"],
             ["none", "Off (run the checkpoint as-is)"],
             // Mac and CPU-only hosts cannot run the dense tensor-core path these schemes need.
             ...(hostOffersDensePrecision(hostClass)
-              ? withNvfp4Option(
-                  [
-                    ["fp8", "FP8"],
-                    ["int8", "INT8"],
-                    ["nvfp4", "NVFP4 (Blackwell)"],
-                    ["mxfp8", "MXFP8 (Blackwell)"],
-                  ] as [string, string][],
-                  nvfp4Diffusion,
+              ? withPrecisionDenials(
+                  withNvfp4Option(
+                    [
+                      ["fp8", "FP8"],
+                      ["int8", "INT8"],
+                      ["nvfp4", "NVFP4 (Blackwell)"],
+                      ["mxfp8", "MXFP8 (Blackwell)"],
+                    ] as SelectOption[],
+                    nvfp4Diffusion,
+                  ),
+                  precisionDenials,
                 )
               : []),
           ]}
@@ -6428,7 +6497,7 @@ export function ImagesPage({
             ["fp8_dynamic", "FP8 (compute)"],
             ["int8", "INT8"],
             ["nvfp4", "NVFP4"],
-          ] as [string, string][],
+          ] as SelectOption[],
           nvfp4Diffusion,
         )}
       />
@@ -6488,7 +6557,7 @@ export function ImagesPage({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool. Only cards in this machine are listed: using two machines (for example two DGX Sparks) for one job is not part of this release."
+          hint="Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one image is not part of this release."
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[

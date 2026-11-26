@@ -6470,6 +6470,13 @@ class DiffusionDownloadPlanResponse(BaseModel):
         description = "Stable code for incompatible_reason: 'unified-memory-load' when the unified-memory "
         "check refused the pick (send allow_oversized_load to attempt it anyway); null otherwise.",
     )
+    precision_options: Optional[Dict[str, Optional[str]]] = Field(
+        None,
+        description = "Explicit transformer precision (int8, fp8, nvfp4, mxfp8) -> why a request for it would be "
+        "refused for the planned family on the selected card (the family deny list, a measured NVFP4 gate failure, or a recorded kernel-probe failure on "
+        "the card), or null when nothing known rules it out. Null as a whole when no family was resolved. The global NVFP4 switch is "
+        "reported separately.",
+    )
 
 
 class DiffusionStatusResponse(BaseModel):
@@ -6488,6 +6495,19 @@ class DiffusionStatusResponse(BaseModel):
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
+    precision_options: Optional[Dict[str, Optional[str]]] = Field(
+        None,
+        description = "Explicit transformer precision (int8, fp8, nvfp4, mxfp8) -> why a request for it would be "
+        "refused for the loaded family on its card (the family deny list, a measured NVFP4 gate failure, or a recorded kernel-probe failure on "
+        "the card), or null when nothing known rules it out. Null as a whole when nothing is loaded. The global NVFP4 switch is "
+        "reported separately.",
+    )
+    precision_options_card: Optional[int] = Field(
+        None,
+        description = "The PHYSICAL GPU id (the index space of gpu_ids and the UI's GPU picker, not the torch "
+        "ordinal under a CUDA_VISIBLE_DEVICES mask) precision_options was judged on (a kernel-probe verdict is per "
+        "card), so a pick for another card does not inherit it; null when unknown or not on a GPU.",
     )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
@@ -8369,6 +8389,19 @@ class VideoStatusResponse(BaseModel):
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
+    precision_options: Optional[Dict[str, Optional[str]]] = Field(
+        None,
+        description = "Explicit transformer precision (int8, fp8, nvfp4, mxfp8) -> why a request for it would be "
+        "refused for the loaded family on its card (the family deny list, a measured NVFP4 gate failure, or a recorded kernel-probe failure on "
+        "the card), or null when nothing known rules it out. Null as a whole when nothing is loaded. The global NVFP4 switch is "
+        "reported separately.",
+    )
+    precision_options_card: Optional[int] = Field(
+        None,
+        description = "The PHYSICAL GPU id (the index space of gpu_ids and the UI's GPU picker, not the torch "
+        "ordinal under a CUDA_VISIBLE_DEVICES mask) precision_options was judged on (a kernel-probe verdict is per "
+        "card), so a pick for another card does not inherit it; null when unknown or not on a GPU.",
     )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,

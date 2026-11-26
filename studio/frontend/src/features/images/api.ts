@@ -36,6 +36,10 @@ export interface DiffusionResolvedControl {
 
 export interface DiffusionStatus {
   loaded: boolean;
+  /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
+  precision_options?: Record<string, string | null> | null;
+  /** The GPU index precision_options was judged on (probe verdicts are per card); null when unknown. */
+  precision_options_card?: number | null;
   // False when the resident model belongs to another account; the response then carries nothing else.
   yours?: boolean;
   repo_id: string | null;
@@ -533,6 +537,8 @@ export interface DiffusionDownloadPlan {
   incompatible_reason?: string | null;
   /** Absent on an older backend. */
   incompatible_code?: string | null;
+  /** Per transformer scheme, why the planned family or card refuses it (null = nothing known); absent on older backends. */
+  precision_options?: Record<string, string | null> | null;
 }
 
 export async function getDiffusionDownloadPlan(

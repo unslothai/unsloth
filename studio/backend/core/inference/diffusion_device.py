@@ -440,6 +440,22 @@ def resolve_selected_cuda_ordinals(gpu_ids: Optional[list[int]]) -> list[int]:
     return sorted(dict.fromkeys(ordinals))
 
 
+def physical_gpu_id_for_ordinal(ordinal: Optional[int]) -> Optional[int]:
+    """The PHYSICAL GPU id (the UI's and ``gpu_ids``' index space) of torch ``ordinal``, the inverse of
+    :func:`resolve_selected_cuda_ordinals`: under ``CUDA_VISIBLE_DEVICES=1,0`` ordinal 0 is physical 1. None when the
+    ordinal is unknown or the mask cannot be read as numeric ids; never raises (status reads it)."""
+    if ordinal is None:
+        return None
+    try:
+        from utils.hardware.hardware import get_parent_visible_gpu_ids
+
+        visible = get_parent_visible_gpu_ids()
+        index = int(ordinal)
+        return int(visible[index]) if 0 <= index < len(visible) else None
+    except Exception:  # noqa: BLE001 -- an unreadable mask names no card
+        return None
+
+
 _UNPLANNED = object()
 # Set by an auto-switch for its locality check and the load it starts (both copy this context), so free VRAM
 # moving in between cannot rank the load onto a card whose precision picks an artifact the check never saw.
