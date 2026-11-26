@@ -15733,6 +15733,7 @@ class DiffusionBackend:
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
             compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
+            base_repo = getattr(state, "base_repo", None),
         )
         if unavailable:
             raise LoraSelectionError(unavailable)
@@ -18139,6 +18140,7 @@ class DiffusionBackend:
             family = state.family.name,
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
+            base_repo = getattr(state, "base_repo", None),
         )
         # Baked adapters ride inside the compiled build.
         compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()) and not getattr(

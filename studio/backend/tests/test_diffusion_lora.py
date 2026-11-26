@@ -172,6 +172,39 @@ def test_lora_unavailable_reason_names_the_cause():
     )
 
 
+def test_nvfp4_bakes_loras_like_int8_and_fp8_except_on_a_policy_base():
+    """The load bakes adapters before an NVFP4 quantize (diffusion._apply_loras routes nvfp4 to the baked path, the
+    Images page lists nvfp4 as a baking scheme), so the status must not say LoRAs are unavailable there."""
+    pipeline = dict(engine = "diffusers", model_kind = "pipeline", transformer_quant = "nvfp4")
+    assert dl.lora_unavailable_reason(family = "flux.2-klein", **pipeline) is None
+    assert (
+        dl.lora_unavailable_reason(
+            family = "flux.2-klein", base_repo = "black-forest-labs/FLUX.2-klein-4B", **pipeline
+        )
+        is None
+    )
+    assert dl.supports_lora(family = "flux.2-klein", compiled = True, **pipeline)
+    # A per-layer policy names Linears that PEFT's wrapping renames: refused with the way out.
+    for family, base in (
+        ("z-image", "Tongyi-MAI/Z-Image-Turbo"),
+        ("flux.1", "black-forest-labs/FLUX.1-schnell"),
+        ("qwen-image-2.1", "Qwen/Qwen-Image-2.1"),
+        ("qwen-image", None),
+    ):
+        reason = dl.lora_unavailable_reason(family = family, base_repo = base, **pipeline)
+        assert reason and "NVFP4" in reason and "FP8" in reason, (family, base)
+    # The policy is per base: another base of a policy family takes the whole-model build, which bakes.
+    assert (
+        dl.lora_unavailable_reason(
+            family = "flux.1", base_repo = "black-forest-labs/FLUX.1-dev", **pipeline
+        )
+        is None
+    )
+    assert "MXFP8" in dl.lora_unavailable_reason(
+        engine = "diffusers", family = "flux.2-klein", model_kind = "pipeline", transformer_quant = "mxfp8"
+    )
+
+
 def test_resolve_specs_maps_cancelled_to_diffusion_sentinel(tmp_path, monkeypatch):
     # A cancelled Hub download raises RuntimeError("Cancelled"); it maps to the sentinel so the route returns 409.
     def _boom(spec_id, weight, **kw):
