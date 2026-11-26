@@ -614,14 +614,42 @@ def divisible_for_scheme(scheme: str) -> int:
 
 
 # int8 leads: full-rate on consumer cards (which halve fp8 FP32 accumulate).
-# nvfp4 reaches auto only via ``_FAMILY_AUTO_PREFER``.
+# nvfp4 reaches auto only via ``_FAMILY_AUTO_PREFER``. First rung with ``cap >= floor`` wins, so rungs stay descending.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
+    (
+        (11, 0),
+        (TQ_INT8, TQ_FP8, TQ_MXFP8),
+    ),  # Thor sm_110, consumer Blackwell sm_120 / sm_121: unchanged
+    (
+        (10, 3),
+        (TQ_FP8, TQ_MXFP8, TQ_INT8),
+    ),  # Blackwell Ultra sm_103 (B300 / GB300): its tensor cores drop nearly all INT8 dense throughput
     (
         (10, 0),
         (TQ_INT8, TQ_FP8, TQ_MXFP8),
-    ),  # Blackwell sm_100+
+    ),  # Blackwell sm_100 (B200 / GB200)
     ((8, 9), (TQ_INT8, TQ_FP8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
+)
+_SM103_FLOOR = (10, 3)
+_SM103_INT8_FIRST = (TQ_INT8, TQ_FP8, TQ_MXFP8)
+# The sm_103 FP8-first rung changes the output, so it applies only where fp8 passed the accuracy gate against bf16
+# (B200, LPIPS mean <= 0.25 with the SSIM / CLIP bars; outputs/prequant_gate): flux.1 schnell / dev / krea-dev, both
+# FLUX.2s, Z-Image, Krea 2, Lumina 2, Qwen-Image with the activation floor (28/28), FLUX.3 Klein 0.033 (keep-list,
+# 11 cases), Wan2.2-TI2V-5B 0.17. Every other family (unmeasured, or fp8 over the bar) keeps the sm_100 int8-first order.
+_SM103_FP8_FIRST_FAMILIES = frozenset(
+    {
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "flux.3-klein",
+        "flux.3-klein-base",
+        "z-image",
+        "krea-2",
+        "lumina-2",
+        "qwen-image",
+        "wan2.2-ti2v-5b",
+    }
 )
 
 # Families whose activation ranges break specific schemes at the MODEL level (``FamilyProfile.scheme_deny``; the smoke
@@ -1629,12 +1657,17 @@ def _auto_scheme_order(
 ) -> tuple[str, ...]:
     """Schemes ``auto`` would try here, best first, before deny list and smoke probe; empty below every tier."""
     tier: tuple[str, ...] = ()
+    rung: Optional[tuple[int, int]] = None
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            tier = schemes
+            tier, rung = schemes, floor
             break
     if not tier:
         return ()
+    key = str(family or "").strip().lower()
+    fp8_first = rung == _SM103_FLOOR and key in _SM103_FP8_FIRST_FAMILIES
+    if rung == _SM103_FLOOR and not fp8_first:
+        tier = _SM103_INT8_FIRST
     prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
     if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
         # Switch off: drop gated/backend rows before their gate record or backend probe (imports flashinfer).
@@ -1654,6 +1687,10 @@ def _auto_scheme_order(
     for scheme in without_nvfp4(head + tier):
         if scheme not in order and scheme not in skip:
             order.append(scheme)
+    if fp8_first and TQ_INT8 in order:
+        # A family head (``auto_prefer``) leads with int8 too: on sm_103 it goes last there as well.
+        order.remove(TQ_INT8)
+        order.append(TQ_INT8)
     return tuple(order)
 
 
