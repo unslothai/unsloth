@@ -5458,6 +5458,7 @@ export const nl = {
       showPromptDescription: "Bekijk de exacte instructies die naar het model gaan.",
     },
     history: {
+      notSaved: "Niet opgeslagen in de geschiedenis: de opslag van de browser is vol.",
       title: "Geschiedenis",
       search: "Geschiedenis doorzoeken",
       empty: "Je vertalingen verschijnen hier.",
