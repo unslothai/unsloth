@@ -754,9 +754,11 @@ def apply_chat_template_to_dataset(
                     context = cell_text(input_)
                     if context:
                         prompt += "\n\n" + context
+                    answer = cell_text(output)
+                    trimmed_answer = answer.removesuffix(eos_token)
                     messages = [
                         _alpaca_message("user", prompt),
-                        _alpaca_message("assistant", cell_text(output)),
+                        _alpaca_message("assistant", trimmed_answer),
                     ]
                     if isinstance(system, str) and system.strip():
                         messages.insert(0, _alpaca_message("system", system))
@@ -768,6 +770,14 @@ def apply_chat_template_to_dataset(
                         # Templates without a system role carry explicit instructions in the user turn.
                         messages.pop(0)
                         messages[0] = _alpaca_message("user", system + "\n\n" + prompt)
+                        text = _render_messages(tokenizer, messages)
+                    if (
+                        answer != trimmed_answer
+                        and isinstance(text, str)
+                        and not text.rstrip().endswith(eos_token)
+                    ):
+                        # Some native templates leave the terminator entirely to the caller.
+                        messages[-1] = _alpaca_message("assistant", answer)
                         text = _render_messages(tokenizer, messages)
                     if not isinstance(text, str) or not text.strip():
                         raise ValueError("The model's chat template did not render the Alpaca example")

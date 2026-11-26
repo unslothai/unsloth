@@ -134,3 +134,23 @@ def test_native_alpaca_keeps_text_for_list_only_templates():
 
     assert result["success"] is True
     assert result["dataset"][0]["text"] == "system:Be brief.user:Say hi\n\nin Frenchassistant:Salut"
+
+
+@pytest.mark.parametrize("template_adds_eos", [True, False])
+def test_native_alpaca_renders_an_existing_assistant_eos_once(template_adds_eos):
+    tokenizer = _JinjaTokenizer(
+        _QWEN3_TEMPLATE if template_adds_eos else "{{ messages[-1].content }}"
+    )
+    tokenizer.eos_token = "<|im_end|>"
+    dataset = Dataset.from_list([{"instruction": "Echo", "output": "done<|im_end|>"}])
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = tokenizer,
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    text = result["dataset"][0]["text"]
+    assert text.rstrip().endswith("done<|im_end|>")
