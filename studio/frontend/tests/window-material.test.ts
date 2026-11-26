@@ -186,10 +186,12 @@ test("the pinned caption strip stops at docked Run settings, whose glass runs to
 	const frame = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.ok(frame.includes("left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height)"));
 	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready]';
-	const panel = new RegExp(glassFrame.replace(/[[\]()|]/g, "\\$&") + ' aside\\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
+	// Every engine runs the column to the window top; legacy WebKitGTK masks its own glass back to below the caption.
+	const anyFrame = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready]';
+	const panel = new RegExp(anyFrame.replace(/[[\]()|]/g, "\\$&") + ' aside\\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
 	assert.ok(panel.includes("--chat-settings-top: 0px;"), panel);
 	assert.ok(panel.includes("padding-top: var(--studio-custom-titlebar-height, 0px);"), panel);
-	assert.ok(css.includes(glassFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));
+	assert.ok(css.includes(anyFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));
 	assert.ok(frame.includes("linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat"), frame);
 	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {\n  background: transparent;\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;\n  box-shadow: none;'));
 	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;'));

@@ -75,3 +75,20 @@ test("the gate follows the shell's compositor answer, not CPU painting", () => {
   assert.match(MAIN, /if \(status\.legacyCompositor\) \{\s*document\.documentElement\.classList\.add\("webkit-legacy-compositor"\);/);
   assert.doesNotMatch(CSS, /webkit-cpu-paint\[data-glass\][^{]*sidebar-inner/);
 });
+
+test("under it the sidebar and Run settings blur past the caption's edge and mask back, so no step shows where they meet", () => {
+  const own = decls(SIDEBAR);
+  assert.equal(own.get("--studio-legacy-glass-bleed"), "calc(3 * var(--glass-blur, 12px))");
+  assert.equal(own.get("width"), "calc(100% + var(--studio-legacy-glass-bleed))");
+  assert.equal(own.get("padding-right"), "var(--studio-legacy-glass-bleed)", "the content keeps the sidebar's width");
+  assert.equal(own.get("flex"), "none", "the frame would shrink it back to the sidebar's width");
+  assert.equal(own.get("mask"), "linear-gradient(black 0 0) left top / calc(100% - var(--studio-legacy-glass-bleed)) 100% no-repeat");
+  // The masked bleed lies over the conversation, so it passes clicks through; the lens stays inert.
+  assert.equal(own.get("pointer-events"), "none");
+  assert.equal(decls(`${SIDEBAR} > :not(.glass-lens)`).get("pointer-events"), "auto");
+  const top = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]';
+  assert.equal(decls(top).get("--chat-settings-top"), "0px", "Run settings runs to the window top on every engine");
+  assert.equal(decls(top).get("padding-top"), "var(--studio-custom-titlebar-height, 0px)");
+  const panel = decls(`${GATE}[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]`);
+  assert.equal(panel.get("mask"), "linear-gradient(transparent var(--studio-custom-titlebar-height, 0px), black var(--studio-custom-titlebar-height, 0px))", "the caption draws its own band");
+});

@@ -7419,10 +7419,21 @@ html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper
     radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))
       calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height) / var(--studio-run-settings-fillet) var(--studio-run-settings-fillet) no-repeat;
 }
+/* A backdrop blur stops at its own box, so next to the caption's blur it drew a step. The sidebar's box runs on
+   under the caption by the blur's reach and is masked back to the column, so both blur the same pixels there. */
 html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
+  --studio-legacy-glass-bleed: calc(3 * var(--glass-blur, 12px));
+  flex: none;
+  width: calc(100% + var(--studio-legacy-glass-bleed));
+  padding-right: var(--studio-legacy-glass-bleed);
+  pointer-events: none;
+  mask: linear-gradient(black 0 0) left top / calc(100% - var(--studio-legacy-glass-bleed)) 100% no-repeat;
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] > :not(.glass-lens) {
+  pointer-events: auto;
 }
 html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass^="liquid"] .wallpaper-preview-composer {
@@ -7530,12 +7541,11 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-/* Not WebKitGTK < 2.54 glass: its strip mask keeps only the caption. */
-html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   --chat-settings-top: 0px;
   padding-top: var(--studio-custom-titlebar-height, 0px);
 }
-html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
   top: var(--studio-custom-titlebar-height, 0px);
 }
 /* The strip's glass covers this column: two adjacent backdrop blurs always show a seam. */
@@ -7568,8 +7578,10 @@ html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   box-shadow: inset 1px 0 0 rgb(255 255 255 / .08);
 }
-/* WebKitGTK < 2.54 keeps this column's own glass below the caption: the strip's fill and no edge line, so the corner reads as one sheet. */
+/* WebKitGTK < 2.54 keeps this column's own glass below the caption: the strip's fill and no edge line, so the corner reads as one sheet.
+   The column runs to the window top like elsewhere and is masked to below the caption, so its blur reads the same pixels as the caption's. */
 html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+  mask: linear-gradient(transparent var(--studio-custom-titlebar-height, 0px), black var(--studio-custom-titlebar-height, 0px));
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   /* The strip's sheen is fixed too, so it runs on into this column. */
   background-attachment: fixed;
