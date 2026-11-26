@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One update-status pass fetches each repo's GitHub release list once: the forced tag refresh and the
-asset-size lookup used to send two identical ``releases?per_page=30`` requests per component."""
+"""One update-status pass fetches each repo's GitHub release list once."""
 
 from __future__ import annotations
 
@@ -54,7 +53,6 @@ def test_a_pass_reads_tag_and_assets_from_one_fetch(monkeypatch):
         assets = freshness.latest_release_assets(_REPO, force_refresh = True)
     assert (tag, assets) == ("b9518", {"app-b9518-linux-x64.tar.gz": 7})
     assert seen == [_REPO]
-    # Both memos are filled from that release, as two fetches would have filled them.
     assert freshness._release_memo[_REPO][1] == "b9518"
     assert freshness._assets_memo[_REPO][1] == {"app-b9518-linux-x64.tar.gz": 7}
 
@@ -134,7 +132,6 @@ def test_forced_update_status_fetches_each_repo_once_with_the_same_answer(monkey
     assert first["update_available"] is True
     assert (first["latest_tag"], first["update_size_bytes"]) == ("b9518", 4242)
 
-    # The same answer two separate fetches give.
     monkeypatch.setattr(freshness_flow, "shared_release_fetches", _no_pass)
     seen.clear()
     second = upd.get_update_status(force_refresh = True)

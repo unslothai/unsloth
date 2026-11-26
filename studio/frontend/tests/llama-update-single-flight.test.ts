@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Every non-passive copy of the update check (the corner card, the Audio page) used to force its own
-// GitHub refresh when it became enabled. Copies now share the forced read in flight and reuse a recent
-// one; the user's explicit Check still forces.
+// Copies share an in-flight forced read and reuse a recent one; explicit Check still forces.
 
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
@@ -141,7 +139,6 @@ test(
     mount(module, { enabled: true });
     await advance(1000);
     assert.deepEqual(w.requests, [FORCED_URL]);
-    // Both copies surface the shared answer.
     assert.equal(w.surfaced.length, 2);
     assert.equal(w.surfaced[0], w.surfaced[1]);
   }),

@@ -224,7 +224,7 @@ _pass_releases: contextvars.ContextVar[Optional[dict[str, dict]]] = contextvars.
 
 @contextlib.contextmanager
 def shared_release_fetches():
-    """One status pass fetches each repo's release list once: the tag and the asset sizes read the same release object, instead of a second identical GitHub request. Failures are not shared, so a retry inside the pass still asks. Nested passes join the outer one."""
+    """Share each repo's release fetch within one status pass. Failures are not shared; nested passes join the outer one."""
     if _pass_releases.get() is not None:
         yield
         return

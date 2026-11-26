@@ -349,10 +349,7 @@ async function fetchStatus(
   }
 }
 
-// A forced read asks GitHub for three releases and can run the backend resolver, and every
-// non-passive copy (corner card, Audio page) forces one when it becomes enabled. Copies share
-// the forced read in flight, and an automatic check soon after a successful one reads the
-// status the server just cached instead. refresh() always forces.
+// Copies share an in-flight forced read; an auto check soon after one reads the server cache. refresh() always forces.
 const FORCED_REUSE_MS = 5 * 60 * 1000;
 const FORCED_AT_STORAGE_KEY = "unsloth_llama_update_forced_at";
 let forcedInFlight: Promise<LlamaUpdateStatus | null> | null = null;
@@ -382,7 +379,6 @@ function fetchForcedStatus(): Promise<LlamaUpdateStatus | null> {
       try {
         localStorage.setItem(FORCED_AT_STORAGE_KEY, String(at));
       } catch {
-        // Storage can be unavailable in restricted browser contexts.
       }
     }
     if (forcedInFlight === request) forcedInFlight = null;
