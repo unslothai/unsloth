@@ -1180,7 +1180,6 @@ def test_a_custom_folder_keeps_publisher_qualified_ids(monkeypatch, tmp_path):
 
 
 def test_a_scan_folder_subfolder_holding_one_checkpoint_is_listed(monkeypatch, tmp_path):
-    """library/Flux/flux1-dev.safetensors with no config loads as single_file, as on main."""
     from core.inference import media_model_index
 
     library = tmp_path / "library"
