@@ -4324,18 +4324,62 @@ def _unsloth_vllm_trl_dequantizes(original):
         return Version(trl_version_raw) >= Version("1.19.0")
 
 
+def _unsloth_vllm_engine_quantization(llm):
+    """The quantization method a vLLM LLM was built with ("bitsandbytes", "fp8", ...), or None."""
+    for owner in (llm, getattr(llm, "llm_engine", None)):
+        model_config = getattr(owner, "model_config", None)
+        if model_config is None:
+            model_config = getattr(getattr(owner, "vllm_config", None), "model_config", None)
+        if model_config is not None:
+            return getattr(model_config, "quantization", None) or None
+    return None
+
+
+def _unsloth_trl_vllm_engine_check(generation, model):
+    """Called right after TRL >= 0.28 builds its own colocated vLLM (use_vllm = True, fast_inference = False).
+
+    TRL >= 1.19 (#8269) no longer passes quantization = "bitsandbytes" and sends 4-bit weights dequantized.
+    So a QLoRA model quantized on the fly gets a 16-bit vLLM copy next to the 4-bit trainer, about 4x the
+    weight memory: say so once. A pre-quantized bitsandbytes checkpoint (the unsloth/*-bnb-4bit repos) still
+    builds a bitsandbytes engine from its config, and that engine cannot load the dequantized weights:
+    record it, so the first sync raises Unsloth's clear error instead of vLLM's shape assert."""
+    llm = getattr(generation, "llm", None)
+    generation._unsloth_vllm_engine_quantization = _unsloth_vllm_engine_quantization(llm)
+    if model is None or not getattr(model, "is_loaded_in_4bit", False):
+        return
+    if getattr(model, "is_loaded_in_8bit", False):
+        return
+    original = getattr(type(generation), "_iter_named_params", None)
+    original = getattr(original, "__wrapped__", original)
+    if original is None or not _unsloth_vllm_trl_dequantizes(original):
+        return
+    if generation._unsloth_vllm_engine_quantization is not None:
+        return
+    print(
+        f"Unsloth: TRL {trl_version_raw} builds its own vLLM engine unquantized for this 4-bit model "
+        "(use_vllm = True, fast_inference = False). vLLM holds a 16-bit copy of the weights, about 4x "
+        "the 4-bit model's weight memory, on top of the training model. Load the model with "
+        "fast_inference = True so vLLM shares the 4-bit weights instead, or lower "
+        "vllm_gpu_memory_utilization if this runs out of memory."
+    )
+
+
 def _unsloth_vllm_generation_refuses_quantized(generation, original):
     """TRL 0.28 to 1.18 VLLMGeneration merges the adapters into a quantized base in place and sends
     param.data, which is the packed storage (bitsandbytes 4-bit: uint8 bytes), not weights. A colocated
     engine then fails a shape assert inside vLLM on the first sync, and a vLLM server is sent bytes as
-    weights. Raise the error the TRL < 0.28 sync raises instead; True = skip the sync (explicit opt-in)."""
+    weights. Raise the error the TRL < 0.28 sync raises instead; True = skip the sync (explicit opt-in).
+    TRL >= 1.19 sends bitsandbytes 4-bit weights dequantized: fine for an unquantized engine, still
+    refused for a colocated engine built quantized from a pre-quantized checkpoint."""
     model = getattr(generation, "model", None)
     if model is None or not _unsloth_vllm_quantized(model):
         return False
+    engine_quantization = generation.__dict__.get("_unsloth_vllm_engine_quantization")
     if (
         getattr(model, "is_loaded_in_4bit", False)
         and not getattr(model, "is_loaded_in_8bit", False)
         and _unsloth_vllm_trl_dequantizes(original)
+        and engine_quantization is None
     ):
         return False
     if os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1":
@@ -4346,10 +4390,21 @@ def _unsloth_vllm_generation_refuses_quantized(generation, original):
                 "quantized model and every rollout uses the initial weights."
             )
         return True
+    if engine_quantization is not None and _unsloth_vllm_trl_dequantizes(original):
+        reason = (
+            f"TRL {trl_version_raw} sends dequantized 16-bit weights, but its vLLM engine was built "
+            f"{engine_quantization}-quantized from the checkpoint's own quantization config, so vLLM "
+            "cannot load them."
+        )
+    else:
+        reason = (
+            f"TRL {trl_version_raw} sends the packed quantized storage, not weights, so vLLM cannot "
+            "load it."
+        )
     raise RuntimeError(
         "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a quantized "
-        "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's vLLM engine: TRL "
-        f"{trl_version_raw} sends the packed quantized storage, not weights, so vLLM cannot load it.\n"
+        "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's vLLM engine: "
+        f"{reason}\n"
         "Load the model with fast_inference = True, or load a 16-bit base (load_in_4bit = False, "
         "load_in_8bit = False). Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway with every "
         "rollout from the initial weights."
@@ -7425,7 +7480,10 @@ def vllm_generation_init_patch():
                 f"{indent}    # before the trainer existed, so only keep the request if the engine returns masks.\n"
                 f"{indent}    if getattr(self, 'return_sampling_mask', False) and not _unsloth_engine_returns_sampling_mask(self.llm):\n"
                 f"{indent}        self.return_sampling_mask = False\n"
-                f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
+                f"{indent}else:\n"
+                + textwrap.indent(llm_block, indent + "    ")
+                + "\n"
+                + f"{indent}    _unsloth_trl_vllm_engine_check(self, model)"
             )
 
         patched_src, num_replacements = pattern.subn(replace_llm_block, src, count = 1)
@@ -7436,6 +7494,7 @@ def vllm_generation_init_patch():
         vllm_generation._unsloth_engine_returns_sampling_mask = (
             _unsloth_engine_returns_sampling_mask
         )
+        vllm_generation._unsloth_trl_vllm_engine_check = _unsloth_trl_vllm_engine_check
         return patched_src
 
     # Newer versions have sync_weights or reload rpc calls; earlier ones are stripped in the patched grpo_trainer above.
