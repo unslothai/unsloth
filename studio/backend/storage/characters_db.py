@@ -300,7 +300,8 @@ def delete_character(character_id: str) -> bool:
                 "SELECT character_id, muted FROM chat_cast WHERE thread_id = ? ORDER BY position, character_id",
                 (thread_id,),
             ).fetchall()
-            if len(rows) > 1 and all(row["muted"] for row in rows):
+            # Mute exists only in a group: a lone member left behind always speaks.
+            if rows and all(row["muted"] for row in rows):
                 conn.execute(
                     "UPDATE chat_cast SET muted = 0 WHERE thread_id = ? AND character_id = ?",
                     (thread_id, rows[0]["character_id"]),
@@ -566,6 +567,9 @@ def update_chat_scene(
                 raise CharacterLimitReached(f"A chat can have up to {MAX_CAST} characters.")
             if len(cast) > 1 and all(cast.values()):
                 raise CastAllMuted("A group chat needs at least one character who is not muted.")
+            # Mute exists only in a group (a solo chat has no unmute control): a lone member speaks.
+            if len(cast) == 1:
+                cast = dict.fromkeys(cast, False)
             conn.execute("DELETE FROM chat_cast WHERE thread_id = ?", (thread_id,))
             for position, (character_id, muted) in enumerate(cast.items()):
                 conn.execute(
