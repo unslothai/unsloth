@@ -3652,13 +3652,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "    ))\n"
             "except Exception:\n"
             "    self._unsloth_vllm_untruncated_logprobs = False\n"
-            # vLLM drops LoRA updates below half a bf16 step; score in the same rounding order it samples with.
-            "if bool(getattr(self, 'use_vllm', False)):\n"
-            "    try:\n"
-            "        from unsloth.kernels.utils import match_vllm_lora_rounding as _unsloth_match_lora_rounding\n"
-            "        _unsloth_match_lora_rounding()\n"
-            "    except Exception:\n"
-            "        pass\n"
         )
         function = (
             function[: _untruncated_header.end()]

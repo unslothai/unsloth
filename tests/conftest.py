@@ -103,16 +103,6 @@ def _fresh_new_mapper_cache():
         loader_utils._NEW_MAPPER_CACHE["entry"] = None
 
 
-@pytest.fixture(autouse = True)
-def _fresh_lora_fused_passes():
-    """A GRPO generation with use_vllm turns the fused LoRA order off for the rest of the process
-    (match_vllm_lora_rounding); a test that ran it must not hand that order to later tests in its worker."""
-    yield
-    kernel_utils = sys.modules.get("unsloth.kernels.utils")
-    if kernel_utils is not None and hasattr(kernel_utils, "_LORA_FUSED_PASSES_ENV"):
-        kernel_utils.LORA_FUSED_PASSES = (kernel_utils._LORA_FUSED_PASSES_ENV or "1") != "0"
-
-
 @pytest.hookimpl(trylast = True)
 def pytest_collection_modifyitems(config, items):
     """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""

@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import importlib
+import contextlib
 import os
 import triton
 import ctypes
@@ -2102,23 +2103,34 @@ _LORA_FUSED_PASSES_ENV = os.environ.get("UNSLOTH_LORA_FUSED_PASSES")
 LORA_FUSED_PASSES = (_LORA_FUSED_PASSES_ENV or "1") != "0"
 
 
-def match_vllm_lora_rounding():
-    """RL with vLLM rollouts: use the base-then-LoRA order, so the trainer scores the policy vLLM sampled.
+_VLLM_LORA_ROUNDING_NOTICE = [False]
+
+
+@contextlib.contextmanager
+def vllm_lora_rounding(on = True):
+    """RL with vLLM rollouts: the base-then-LoRA order inside, so the trainer scores the policy vLLM sampled.
 
     vLLM rounds the base GEMM output to bf16 before adding the LoRA term, and merged rollouts fold
     s * B @ A into bf16 weights. Both drop LoRA updates below half a bf16 step. The fused order lets the
     base GEMM accumulate onto the LoRA term; where cuBLAS does that in fp32 (A100, L4, CPU; not B200) the
     trainer keeps those updates, its policy runs ahead of the sampler's as the adapter grows, and the
     trainer / rollout logprob gap grows with it. The gradient math is unchanged, only where the forward
-    rounds. Process-wide, and an explicit UNSLOTH_LORA_FUSED_PASSES wins. Returns whether the fused order is off."""
+    rounds. The previous order is restored on exit (nesting safe), and an explicit
+    UNSLOTH_LORA_FUSED_PASSES wins. Yields whether the fused order is off."""
     global LORA_FUSED_PASSES
-    if _LORA_FUSED_PASSES_ENV is None and LORA_FUSED_PASSES:
+    previous = LORA_FUSED_PASSES
+    if on and _LORA_FUSED_PASSES_ENV is None and LORA_FUSED_PASSES:
         LORA_FUSED_PASSES = False
-        print(
-            "Unsloth: vLLM rollouts add LoRA after rounding the base output to bf16, so the trainer now does too "
-            "(UNSLOTH_LORA_FUSED_PASSES=1 keeps the fused order)."
-        )
-    return not LORA_FUSED_PASSES
+        if not _VLLM_LORA_ROUNDING_NOTICE[0]:
+            _VLLM_LORA_ROUNDING_NOTICE[0] = True
+            print(
+                "Unsloth: vLLM rollouts add LoRA after rounding the base output to bf16, so GRPO training does "
+                "too (UNSLOTH_LORA_FUSED_PASSES=1 keeps the fused order)."
+            )
+    try:
+        yield not LORA_FUSED_PASSES
+    finally:
+        LORA_FUSED_PASSES = previous
 
 
 try:
