@@ -13850,11 +13850,19 @@ class DiffusionBackend:
 
             if scheme not in CACHEABLE_SCHEMES or transformer_is_quantised(transformer):
                 return None
-            cached = lookup(fam, scheme, base_repo = base, source_base = source_base, logger = logger)
-            if not cached:
-                return None
             first = next(iter(transformer.parameters()), None)
             here = str(first.device) if first is not None else "cpu"
+            # The quantize this read replaces runs where the dense module sits now (an nvfp4 entry is keyed on it).
+            cached = lookup(
+                fam,
+                scheme,
+                base_repo = base,
+                source_base = source_base,
+                logger = logger,
+                quant_device = here.split(":")[0],
+            )
+            if not cached:
+                return None
             t0 = time.perf_counter()
             loaded = load_prequantized_transformer(
                 type(transformer),
@@ -14038,6 +14046,8 @@ class DiffusionBackend:
                 logger = logger,
                 cancel_check = cancel_check,
                 defer = defer,
+                # _pipeline_quant_from_cache reads nvfp4 back, keyed on where this build was quantized.
+                nvfp4_readback = True,
             )
         except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
             logger.warning("diffusion.prequant_cache: skipped (%s)", exc)

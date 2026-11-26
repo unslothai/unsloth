@@ -2433,12 +2433,27 @@ def quantize_transformer(
 
                 # The quantiser that wrote these weights, so the cache never files them under another method.
                 transformer._unsloth_runtime_quant_info["nvfp4_weight_quant"] = resolve_method()
+                # And where: 4over6 compares fp32 reductions, so a CPU build and a CUDA build differ in a few blocks.
+                transformer._unsloth_runtime_quant_info["nvfp4_quant_device"] = _nvfp4_quant_device(
+                    transformer
+                )
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme
     except Exception as exc:  # noqa: BLE001 - leave the transformer dense -> GGUF fallback
         _warn(logger, scheme, exc)
         return None
+
+
+def _nvfp4_quant_device(transformer: Any) -> Optional[str]:
+    """``"cuda"`` / ``"cpu"`` when every NVFP4 weight sits on that device type, else None (mixed or none)."""
+    kinds = set()
+    for module in transformer.modules():
+        weight = getattr(module, "weight", None)
+        if type(weight).__name__ == "NVFP4Tensor":
+            qdata = getattr(weight, "qdata", None)
+            kinds.add(getattr(getattr(qdata, "device", None), "type", None))
+    return kinds.pop() if len(kinds) == 1 else None
 
 
 def _quantize_native(

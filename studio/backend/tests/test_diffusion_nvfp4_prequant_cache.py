@@ -124,9 +124,9 @@ def test_a_whole_model_nvfp4_build_round_trips_bit_identically(env, tmp_path, mo
     base, model = _write_base(tmp_path)
     _quantize(model, monkeypatch)
     fam = _fam(base)
-    path = C.save_runtime_quant(model, fam, base_repo = str(base))
+    path = C.save_runtime_quant(model, fam, base_repo = str(base), nvfp4_readback = True)
     assert path is not None and Path(path).is_file()
-    assert C.lookup(fam, "nvfp4", base_repo = str(base)) == path
+    assert C.lookup(fam, "nvfp4", base_repo = str(base), quant_device = "cpu") == path
 
     ckpt = PS.load_prequant_safetensors(path, mmap = True)
     assert _same_bytes(model.state_dict(), ckpt["state_dict"]) == []
@@ -151,7 +151,7 @@ def test_a_returning_load_reads_the_nvfp4_build_into_the_dense_module(env, tmp_p
     fresh.load_state_dict(model.state_dict())
     _quantize(model, monkeypatch)
     fam = _fam(base)
-    assert C.save_runtime_quant(model, fam, base_repo = str(base)) is not None
+    assert C.save_runtime_quant(model, fam, base_repo = str(base), nvfp4_readback = True) is not None
 
     monkeypatch.setattr(D, "select_transformer_quant_scheme", lambda *a, **k: "nvfp4")
     monkeypatch.setattr(D, "native_quant_scheme", lambda *a, **k: None)
@@ -179,18 +179,18 @@ def test_the_key_carries_the_weight_quantiser_and_its_version(env, tmp_path, mon
     base, model = _write_base(tmp_path)
     _quantize(model, monkeypatch)
     fam = _fam(base)
-    assert C.save_runtime_quant(model, fam, base_repo = str(base))
-    assert C.lookup(fam, "nvfp4", base_repo = str(base))
+    assert C.save_runtime_quant(model, fam, base_repo = str(base), nvfp4_readback = True)
+    assert C.lookup(fam, "nvfp4", base_repo = str(base), quant_device = "cpu")
 
     monkeypatch.setenv(WQ.WEIGHT_QUANT_ENV, "max6")
-    assert C.lookup(fam, "nvfp4", base_repo = str(base)) is None
+    assert C.lookup(fam, "nvfp4", base_repo = str(base), quant_device = "cpu") is None
     # A build stamped with one quantiser is never filed under the other.
-    assert C.save_runtime_quant(model, fam, base_repo = str(base)) is None
+    assert C.save_runtime_quant(model, fam, base_repo = str(base), nvfp4_readback = True) is None
     monkeypatch.delenv(WQ.WEIGHT_QUANT_ENV)
-    assert C.lookup(fam, "nvfp4", base_repo = str(base))
+    assert C.lookup(fam, "nvfp4", base_repo = str(base), quant_device = "cpu")
 
     monkeypatch.setattr(WQ, "QUANTIZER_VERSION", WQ.QUANTIZER_VERSION + 1)
-    assert C.lookup(fam, "nvfp4", base_repo = str(base)) is None
+    assert C.lookup(fam, "nvfp4", base_repo = str(base), quant_device = "cpu") is None
 
 
 def test_int8_and_fp8_keys_are_unchanged():
@@ -214,11 +214,18 @@ def test_int8_and_fp8_keys_are_unchanged():
 
 def test_policy_families_and_the_kill_switch_never_key(env, tmp_path, monkeypatch):
     base, _model = _write_base(tmp_path)
-    assert C._key_for(_fam(base), "nvfp4", str(base), "transformer") is not None
+    assert C._key_for(_fam(base), "nvfp4", str(base), "transformer", quant_device = "cpu") is not None
     # z-image's base takes a per-layer nvfp4 / fp8 / bf16 policy: that build is not the cached whole-model one.
     policy = _fam(base, "z-image")
     assert (
-        C._key_for(policy, "nvfp4", str(base), "transformer", base_id = "Tongyi-MAI/Z-Image-Turbo")
+        C._key_for(
+            policy,
+            "nvfp4",
+            str(base),
+            "transformer",
+            base_id = "Tongyi-MAI/Z-Image-Turbo",
+            quant_device = "cpu",
+        )
         is None
     )
     assert (
@@ -226,7 +233,7 @@ def test_policy_families_and_the_kill_switch_never_key(env, tmp_path, monkeypatc
         is not None
     )
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "0")
-    assert C._key_for(_fam(base), "nvfp4", str(base), "transformer") is None
+    assert C._key_for(_fam(base), "nvfp4", str(base), "transformer", quant_device = "cpu") is None
 
 
 def test_mxfp8_is_still_never_cached(env, tmp_path):
@@ -235,12 +242,42 @@ def test_mxfp8_is_still_never_cached(env, tmp_path):
     assert C.lookup(_fam(base), "mxfp8", base_repo = str(base)) is None
 
 
+def test_quantize_stamps_where_the_weights_were_quantized(env, tmp_path, monkeypatch):
+    _base, model = _write_base(tmp_path)
+    _quantize(model, monkeypatch)
+    assert model._unsloth_runtime_quant_info["nvfp4_quant_device"] == "cpu"
+
+
+def test_the_key_carries_the_quantize_device_and_a_split_build_is_not_saved(
+    env, tmp_path, monkeypatch
+):
+    """4over6 compares fp32 reductions, so a CPU build and a CUDA build of the same weights differ in a few blocks:
+    a hit must come from a quantize on the device type this load would quantize on."""
+    base, model = _write_base(tmp_path)
+    _quantize(model, monkeypatch)
+    fam = _fam(base)
+    info = model._unsloth_runtime_quant_info
+    info["nvfp4_quant_device"] = None  # weights split across CPU and CUDA
+    assert C.save_runtime_quant(model, fam, base_repo = str(base), nvfp4_readback = True) is None
+    info["nvfp4_quant_device"] = "cpu"
+    # A load path that never reads nvfp4 back does not write it either.
+    assert C.save_runtime_quant(model, fam, base_repo = str(base)) is None
+    assert C.save_runtime_quant(model, fam, base_repo = str(base), nvfp4_readback = True)
+    assert C.lookup(fam, "nvfp4", base_repo = str(base), quant_device = "cpu")
+    assert C.lookup(fam, "nvfp4", base_repo = str(base), quant_device = "cuda") is None
+    assert C.lookup(fam, "nvfp4", base_repo = str(base)) is None
+    # int8 / fp8 keys never see the device.
+    assert C._key_for(fam, "fp8", str(base), "transformer") is not None
+
+
 def test_a_build_without_baked_activation_scales_skips_the_flashinfer_preflight(monkeypatch):
     """Only baked activation scales move to flashinfer; a runtime build (what the cache holds) never probes it."""
     from core.inference import diffusion_nvfp4_ops as ops
     from core.inference import diffusion_prequant as P
 
     calls = []
-    monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: calls.append(device) or "torchao")
+    monkeypatch.setattr(
+        ops, "select_nvfp4_backend", lambda device = None: calls.append(device) or "torchao"
+    )
     assert P._engage_nvfp4_backend(Tiny(), {"scheme": "nvfp4"}, "cuda") == 0
     assert calls == []

@@ -342,6 +342,7 @@ def key_parts(
     component: str,
     source_fp: str,
     base: Optional[str] = None,
+    quant_device: Optional[str] = None,
 ) -> dict:
     """Everything besides the source weights that changes the quantized bytes this cache would hold."""
     from .diffusion_transformer_quant import (
@@ -376,19 +377,27 @@ def key_parts(
         else None,
         "fast_accum": _resolve_fast_accum(None) if scheme == TQ_FP8 else None,
         **extra,
-        **_nvfp4_parts(scheme),
+        **_nvfp4_parts(scheme, quant_device),
         **_toolchain(),
     }
 
 
-def _nvfp4_parts(scheme: str) -> dict:
-    """The NVFP4 converter's identity: the weight quantiser's method and byte version. Empty for every other scheme,
+def _nvfp4_parts(scheme: str, quant_device: Optional[str] = None) -> dict:
+    """The NVFP4 converter's identity: the weight quantiser's method, byte version and the device type it ran on
+    (4over6 compares fp32 reductions, so a CPU and a CUDA build differ in a few blocks). Empty for every other scheme,
     so int8 / fp8 entries keep their keys."""
     if scheme != "nvfp4":
         return {}
     from .diffusion_nvfp4_weight_quant import QUANTIZER_VERSION, resolve_method
 
-    return {"nvfp4_weight_quant": resolve_method(), "nvfp4_quantizer": QUANTIZER_VERSION}
+    return {
+        "nvfp4_weight_quant": resolve_method(),
+        "nvfp4_quantizer": QUANTIZER_VERSION,
+        "nvfp4_quant_device": quant_device,
+    }
+
+
+_NVFP4_QUANT_DEVICES = ("cpu", "cuda")
 
 
 def _nvfp4_policy_build(fam: Any, base: Optional[str]) -> bool:
@@ -421,13 +430,17 @@ def _key_for(
     component: str,
     base_id: Optional[str] = None,
     shards: Optional[list] = None,
+    quant_device: Optional[str] = None,
 ) -> Optional[tuple[str, dict]]:
     """``base`` is where the dense shards are found (or ``shards`` themselves); ``base_id`` the base model the artifact
-    is recorded and validated against (default ``base``)."""
+    is recorded and validated against (default ``base``). ``quant_device``: the device type an nvfp4 quantize runs on
+    ("cpu" / "cuda"); nvfp4 is keyed only with one."""
     if scheme not in CACHEABLE_SCHEMES:
         return None
     if scheme == "nvfp4":
         from .diffusion_nvfp4_flag import nvfp4_blocked
+        if quant_device not in _NVFP4_QUANT_DEVICES:
+            return None
         if nvfp4_blocked(scheme) or _nvfp4_policy_build(
             fam, base_id if base_id is not None else base
         ):
@@ -446,6 +459,7 @@ def _key_for(
         component = component,
         source_fp = fp,
         base = base_id if base_id is not None else base,
+        quant_device = quant_device,
     )
     return cache_key(parts), parts
 
@@ -475,8 +489,10 @@ def lookup(
     component: str = "transformer",
     logger: Any = None,
     source_base: Optional[str] = None,
+    quant_device: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises."""
+    """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises.
+    ``quant_device``: where this load would quantize nvfp4 ("cpu" / "cuda"); without it nvfp4 is a miss."""
     if not enabled() or scheme not in CACHEABLE_SCHEMES:
         return None
     try:
@@ -494,7 +510,9 @@ def lookup(
             if not candidate or tuple(candidate) in seen:
                 continue
             seen.add(tuple(candidate))
-            keyed = _key_for(fam, scheme, source, component, shards = candidate)
+            keyed = _key_for(
+                fam, scheme, source, component, shards = candidate, quant_device = quant_device
+            )
             # Ask the Hub only when there is an entry to serve (a manifest), never on a plain miss.
             if keyed is not None and (cache_root() / keyed[0] / MANIFEST_NAME).is_file():
                 key, shards = keyed[0], candidate
@@ -1155,6 +1173,7 @@ def save_runtime_quant(
     cancel_check: Optional[Any] = None,
     defer: bool = False,
     host_snapshot: bool = False,
+    nvfp4_readback: bool = False,
 ) -> Any:
     """Persist a just-quantized transformer; returns the artifact path or None (logged). Never raises.
     ``base_repo`` is recorded as ``base_model_id``; ``source_base`` is where the dense weights were read (a mirror).
@@ -1198,7 +1217,23 @@ def save_runtime_quant(
             _log(logger, "info", f"skipped (model dtype {info.get('dtype')} is not bfloat16)")
             return None
         recorded_base = str(base_repo or getattr(fam, "base_repo", "") or "")
-        keyed = _key_for(fam, scheme, source_base or base_repo, component, base_id = recorded_base)
+        quant_device = None
+        if scheme == "nvfp4":
+            if not nvfp4_readback:
+                _log(logger, "info", "skipped (this load path never reads an nvfp4 entry back)")
+                return None
+            quant_device = info.get("nvfp4_quant_device")
+            if quant_device not in _NVFP4_QUANT_DEVICES:
+                _log(logger, "info", "skipped (nvfp4 weights were quantized across devices)")
+                return None
+        keyed = _key_for(
+            fam,
+            scheme,
+            source_base or base_repo,
+            component,
+            base_id = recorded_base,
+            quant_device = quant_device,
+        )
         if keyed is None:
             _log(logger, "info", "skipped (dense source shards not found locally)")
             return None
@@ -1319,6 +1354,7 @@ def save_runtime_quant(
         if "nvfp4_weight_quant" in parts:
             metadata["nvfp4_weight_quant"] = parts["nvfp4_weight_quant"]
             metadata["nvfp4_quantizer"] = parts["nvfp4_quantizer"]
+            metadata["nvfp4_quant_device"] = parts["nvfp4_quant_device"]
         if wanted_wo:
             metadata["weight_only_name_tokens"] = list(wanted_wo["weight_only_name_tokens"])
             metadata["weight_only_outliers"] = int(wanted_wo["weight_only_outliers"])
