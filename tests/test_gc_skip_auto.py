@@ -131,7 +131,6 @@ def test_auto_plans_after_first_step_and_keeps_gradients():
     third = _step(model, ids)
     assert planner.kept == [0, 1, 2, 3, 4, 5]
     assert _checkpointed(model) == [False] * 6
-    # One process: only the per-batch re-size hook stays; the probes are gone.
     assert model._unsloth_auto_skip is planner and planner.sizing is not None
     assert (
         len(model._forward_pre_hooks) == len(hooks) + 1
@@ -665,7 +664,6 @@ def test_auto_planner_stays_out_of_compiled_regions(mode):
 
 
 def test_unset_env_plans_auto_by_default_quietly(monkeypatch, capsys):
-    # The default (argument 0, UNSLOTH_GC_KEEP_LAYERS unset) on one CUDA GPU: "auto", without the refusal prints.
     ns, found = _load()
     assert "_default_checkpoint_skip_allowed" in found, "no default for checkpoint_skip_layers"
     gib = 1 << 30
@@ -695,7 +693,6 @@ def test_unset_env_stays_off_where_the_default_does_not_apply(monkeypatch):
     model = _FakeModel([gib // 16] * 8, memory)
     assert ns["skip_checkpointing"](model, 0) == []
     assert not hasattr(model, "_unsloth_auto_skip")
-    # A block-swapped model keeps the old default even where it would apply.
     ns["_default_checkpoint_skip_allowed"] = lambda: True
     model._unsloth_block_swap = type("Swap", (), {"indices": [0]})()
     assert ns["skip_checkpointing"](model, 0) == []
@@ -725,8 +722,6 @@ def test_default_applies_to_one_process_on_one_cuda_gpu_without_vllm(monkeypatch
 
 
 def test_auto_resizes_for_each_batch_shape(monkeypatch):
-    # Planned for the trainer's longest batch (4 x 16 rows: 2 of 8 layers); each later forward re-sizes for its
-    # own shape with the same budget: a 1 x 16 batch keeps all 8, a 4 x 16 one 2, an 8 x 16 one none.
     ns, found = _load()
     gib = 1 << 30
     memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
@@ -748,7 +743,6 @@ def test_auto_resizes_for_each_batch_shape(monkeypatch):
         planner.count_for(4, 8) == planner.count_for(4, 16) == 2
     )  # never sized below the measured length
     assert not ns["checkpoint_skip_pending"]()
-    # An explicit value afterwards removes the re-size hook and its marks.
     ns["skip_checkpointing"](model, 3)
     _backward(model)
     model(torch.zeros(8, 16, 4))
@@ -757,13 +751,10 @@ def test_auto_resizes_for_each_batch_shape(monkeypatch):
 
 
 def _backward(model):
-    # What the backward of the last forward does for the planner: a gradient reaches a trainable weight.
     (sum(layer.adapter.sum() for layer in model.model.layers) * 0).backward()
 
 
 def test_two_training_forwards_before_a_backward_keep_the_planned_count(monkeypatch):
-    # Chunked losses run several forwards before one backward: their kept layers would add up, so the planner
-    # keeps the count planned for the trainer's whole batch from then on.
     ns, found = _load()
     gib = 1 << 30
     memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
@@ -828,7 +819,6 @@ def test_another_process_growing_ends_the_resizing(monkeypatch):
 
 
 def test_auto_resize_waits_for_an_unrelated_forward(monkeypatch):
-    # Evaluation (no grad) and eval-mode forwards never re-size the plan.
     ns, found = _load()
     gib = 1 << 30
     memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
@@ -847,8 +837,6 @@ def test_auto_resize_waits_for_an_unrelated_forward(monkeypatch):
 
 
 def test_default_declines_a_decoder_layout_it_cannot_find(monkeypatch):
-    # The unset default never breaks get_peft_model: no decoder layers found means fully checkpointed, while an
-    # explicit "auto" still raises.
     ns, found = _load()
     gib = 1 << 30
     memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib)
@@ -879,8 +867,6 @@ def test_auto_replacing_auto_clears_the_old_marks(monkeypatch):
 
 
 def test_a_step_without_an_eager_resize_falls_back_to_the_plan(monkeypatch):
-    # A forward compiled as a whole never runs the re-size hook eagerly: after one such optimizer step the
-    # planned count (sized for the trainer's whole batch) replaces the last eager batch's marks.
     ns, found = _load()
     gib = 1 << 30
     memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))

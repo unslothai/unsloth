@@ -209,8 +209,7 @@ def install_frozen_prefix_skip(model):
         stack, k = plan
         flags, handles = [], []
         for layer in stack[:k]:
-            # A layer checkpoint_skip_layers keeps reads False: save the flag it holds underneath, so that
-            # restoring it does not stop the layer checkpointing once it is no longer kept.
+            # A kept layer reads False: save the underlying flag so restoring it does not disable checkpointing.
             raw = (
                 layer.__dict__.get("_unsloth_gc_flag")
                 if getattr(type(layer), "_unsloth_skip_aware", False)

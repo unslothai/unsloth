@@ -11859,9 +11859,8 @@ def _default_checkpoint_skip_allowed():
 
 class _AutoCheckpointSkip:
     """Plan checkpoint skips from measured memory, using the smallest count across ranks.
-    One process: after the plan, each training forward re-sizes the count for its own batch shape (never below
-    the measured length), so short batches keep more layers and long ones fewer, inside the same budget.
-    quiet (the unset default): refusals print nothing and the plan stands down if vLLM or a process group appears.
+    One process: each training forward re-sizes the count for its batch shape within the same budget.
+    quiet (the unset default): refusals print nothing; stands down if vLLM or a process group appears.
     Multimodal inputs must stay within max_seq_length; tensor/pipeline parallel models are excluded.
     """
 
@@ -12209,8 +12208,6 @@ class _AutoCheckpointSkip:
             not _default_checkpoint_skip_allowed()
             or getattr(self.model, "_unsloth_block_swap", None) is not None
         ):
-            # The unset default: vLLM, a process group or block swap (offload_layers re-planned at trainer
-            # init) appeared after install, keep every layer checkpointed.
             self.kept = []
             return self.kept
         allocated_start = self.started
@@ -12259,8 +12256,6 @@ class _AutoCheckpointSkip:
             self._recount_offload()
         self.applied = self.planned = len(self.kept)
         if single and self.dynamic:
-            # Each training forward re-sizes for its own batch: the planned count covers the longest batch the
-            # trainer can send, most batches are shorter. Same budget and margins, from this usable memory.
             self.sizing = dict(
                 usable = usable,
                 step = step_bytes - grad_bytes,
@@ -12297,7 +12292,6 @@ class _AutoCheckpointSkip:
         import weakref
 
         planner_ref = weakref.ref(self)
-        # A decoder layer's own trainable weight: every backward reaches it (a frozen prefix has none).
         param = next(
             (
                 p
@@ -12329,8 +12323,7 @@ class _AutoCheckpointSkip:
             if planner is None or planner.sizing is None:
                 return
             if planner.forwards == planner.forwards_seen:
-                # A whole step without an eager re-size (the forward runs compiled as a whole, or bypasses
-                # the hooked module): the marks of the last eager batch must not stand for other shapes.
+                # No eager re-size this step (compiled whole forward): last eager marks must not stand.
                 planner._stop_resizing(planner.planned)
                 return
             planner.forwards_seen = planner.forwards
@@ -12385,7 +12378,6 @@ class _AutoCheckpointSkip:
 
     @staticmethod
     def _recount_offload():
-        # Smart offloading learnt the checkpointed-call count in the first step; recount it.
         try:
             import unsloth_zoo.gradient_checkpointing as zoo_gc
             if zoo_gc.CURRENT_GC_INDEX == 0:
@@ -12427,8 +12419,7 @@ class _AutoCheckpointSkip:
         if not module.training or not torch.is_grad_enabled():
             return
         if not self.backward_seen:
-            # A second training forward before any backward (chunked losses): its kept layers would add to the
-            # first's. The planned count covers the whole batch: keep it from now on.
+            # Two forwards before a backward (chunked losses): kept layers would add up, so keep the planned count.
             self._stop_resizing(self.planned)
             return
         self.backward_seen = False
@@ -12952,8 +12943,6 @@ def _size_auto_checkpoint_skip_for_trainer(trainer):
     if not isinstance(planner, _AutoCheckpointSkip):
         return
     if any(c.__name__.endswith(_MULTI_FORWARD_TRAINERS) for c in type(trainer).__mro__):
-        # Several training forwards (loss chunks) before one backward: never re-sized per forward, and the
-        # unset default stays off.
         planner.dynamic = False
         if planner.quiet:
             planner.remove()

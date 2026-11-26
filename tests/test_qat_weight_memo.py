@@ -358,8 +358,6 @@ def test_batch_size_seen_by_the_model(monkeypatch):
 
 
 def test_waits_while_a_checkpoint_skip_plan_is_pending(monkeypatch):
-    # The default checkpoint_skip_layers = "auto" (one CUDA GPU) keeps activations once planned: the memo arms
-    # only at a step measured with the plan in place, waiting at most _GC_SKIP_WAIT_MAX steps.
     from unsloth.kernels import dequant_cache as dc
 
     monkeypatch.delenv("UNSLOTH_GC_KEEP_LAYERS", raising = False)

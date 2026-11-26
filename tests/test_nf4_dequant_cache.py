@@ -598,8 +598,6 @@ def test_evaluation_rows_do_not_mark_growth(monkeypatch):
 
 
 def test_waits_for_a_safe_point_with_the_checkpoint_skip_plan_in_place(monkeypatch):
-    # checkpoint_skip_layers = "auto" (the default on one GPU) keeps activations once planned: a safe point measured
-    # before its plan ran a step budgets nothing, at most a few times; then the normal budget applies.
     _memory(monkeypatch, usable = 10 * GiB)
     dc._SEEN.add(None)
     pending = [True]
