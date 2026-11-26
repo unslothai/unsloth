@@ -162,5 +162,5 @@ def test_trainable_tokens_adapter_reloads_onto_smaller_base(tmp_path, tie):
     fresh = base()
     assert _grow_vocab_for_adapter(fresh, str(tmp_path / "adapter"))
     assert fresh.get_input_embeddings().weight.shape[0] == 34
-    reloaded = peft.PeftModel.from_pretrained(fresh, str(tmp_path / "adapter"))
+    reloaded = peft.PeftModel.from_pretrained(fresh, str(tmp_path / "adapter"), torch_device = "cpu")
     assert torch.allclose(reloaded.get_input_embeddings()(torch.tensor([32, 33])), expected)
