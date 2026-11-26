@@ -321,6 +321,35 @@ class TestPreLaunch:
             is None
         )
 
+    def test_pinned_experts_in_cpu_layers_are_not_counted_twice(self, windows):
+        # 40 GB, 32 GB experts, 40 layers, -ngl 20 --n-cpu-moe 20: the pinned experts are all in the
+        # CPU half already, so the CPU keeps 20 GB, not 28.
+        backend = _backend(model_gb = 40, kv_gb = 0)
+        backend._n_layers = 40
+        backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 32 * _GB)
+        cmd = _cmd("--no-mmap", "-ngl", "20", "--n-cpu-moe", "20")
+        kwargs = dict(avail_mib = 96 * _MIB)
+        assert (
+            backend._windows_host_commit_refusal(
+                cmd, _CARD, {}, commit_headroom_mib = 23 * _MIB, **kwargs
+            )
+            is None
+        )
+        assert backend._windows_host_commit_refusal(
+            cmd, _CARD, {}, commit_headroom_mib = 21 * _MIB, **kwargs
+        )
+
+    def test_a_looped_model_places_weights_by_physical_layers(self, windows):
+        # 24 physical layers visited twice (48 cache slots): -ngl 25 offloads every weight.
+        backend = _backend(model_gb = 20, kv_gb = 8)
+        backend._n_layers, backend._n_weight_layers = 48, 24
+        cmd = _cmd("--no-mmap", "-ngl", "25")
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 4 * _MIB)
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
+        # -ngl 12 leaves half of the physical layers, and about half of the cache, on the CPU.
+        cmd = _cmd("--no-mmap", "-ngl", "12")
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs)
+
     def test_flash_attention_off_does_not_price_v_twice(self, windows):
         # The estimator floors V at f16 with flash attention off: the q4_0-K figure is the cache.
         backend = _backend()

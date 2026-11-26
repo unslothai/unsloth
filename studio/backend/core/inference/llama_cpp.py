@@ -16966,29 +16966,33 @@ class LlamaCppBackend:
             "smaller or more quantized GGUF, or a shorter context, and load again."
         )
 
-    def _windows_cpu_expert_bytes(
+    def _windows_cpu_expert_layers(
         self,
         model_path: Optional[str],
         argv: Sequence[str],
         env: Mapping[str, str],
         n_layers: Optional[int],
-    ) -> int:
-        """Expert bytes --cpu-moe / --n-cpu-moe (or their LLAMA_ARG_* twins) keep on the CPU; 0 when
-        unknown. -ot patterns are not guessed at."""
+    ) -> tuple[int, int]:
+        """(expert bytes in the GGUF, how many leading layers keep theirs on the CPU) under
+        --cpu-moe / --n-cpu-moe or their LLAMA_ARG_* twins; (0, 0) when unknown. --cpu-moe pins
+        every layer's experts. -ot patterns are not guessed at."""
         everything = _extra_args_set_any_flag(argv, {"--cpu-moe", "-cmoe"}) or (
             env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
         )
-        count = 0
-        if not everything:
+        if not n_layers:
+            if not everything:
+                return 0, 0
+        elif not everything:
             raw = _extra_args_device(argv, frozenset({"--n-cpu-moe", "-ncmoe"}))
             if raw is None:
                 raw = env.get("LLAMA_ARG_N_CPU_MOE")
-            if not (_is_positive_int(raw) and n_layers):
-                return 0
-            count = min(int(str(raw).strip()), n_layers)
+            if not _is_positive_int(raw):
+                return 0, 0
         scan = self._gguf_tensor_scan(model_path)
         experts = int(scan[2]) if scan else 0
-        return experts if everything else experts * count // n_layers
+        if everything:
+            return experts, n_layers or 0
+        return experts, min(int(str(raw).strip()), n_layers)
 
     def _windows_host_kv_share(
         self, layer_share: float, n_layers: int, n_ctx: int, shape: Mapping[str, object]
@@ -17082,15 +17086,21 @@ class LlamaCppBackend:
                 raw = str(_env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip().lower()
                 requested = int(raw) if raw.lstrip("-").isdigit() else None
             n_layers = getattr(self, "_n_layers", None)
-            # Experts pinned to the CPU never take VRAM, however much is free.
-            cpu_experts = self._windows_cpu_expert_bytes(model_path, argv, _env, n_layers)
-            gpu_eligible = max(0, resident - cpu_experts)
-            # Layers a hand-set count leaves on the CPU, attention and KV included; of the layers
-            # it offloads, CPU-pinned experts still stay behind (the union, not the larger cap).
+            # Weights sit on physical layers; a looped model visits each more than once (cache slots).
+            n_phys = getattr(self, "_n_weight_layers", None) or n_layers
+            experts, pinned = self._windows_cpu_expert_layers(model_path, argv, _env, n_phys)
+            # llama.cpp offloads the LAST layers, so the CPU keeps the first ones; experts pinned in
+            # the first `pinned` layers stay on the CPU only where those layers were offloaded.
+            gpu_layers = n_phys
             cpu_layer_share = 0.0
-            if requested is not None and requested >= 0 and n_layers:
-                gpu_eligible = gpu_eligible * min(requested, n_layers) // n_layers
-                cpu_layer_share = max(0, n_layers - requested) / n_layers
+            if requested is not None and requested >= 0 and n_phys:
+                gpu_layers = min(requested, n_phys)
+                cpu_layer_share = (n_phys - gpu_layers) / n_phys
+            if n_phys:
+                pinned_on_gpu = max(0, pinned - (n_phys - gpu_layers))
+                gpu_eligible = max(0, (resident * gpu_layers - experts * pinned_on_gpu) // n_phys)
+            else:
+                gpu_eligible = max(0, resident - experts)
             free_vram_bytes = min(free_vram_bytes, gpu_eligible)
             spill = max(0, resident - free_vram_bytes)
             _, reserves_ram = resolve_effective_memory_state(
@@ -17146,7 +17156,8 @@ class LlamaCppBackend:
                     k_frac = k_len / (k_len + v_len) if k_len and v_len else 0.5
                     kv_v = self._estimate_kv_cache_bytes(n_ctx, v_type, **shape)
                     kv = int(kv * k_frac + kv_v * (1 - k_frac))
-                if 0 < kv_on_host < 1 and n_layers:
+                # Per-slot weights only map onto layers when slots and physical layers agree.
+                if 0 < kv_on_host < 1 and n_layers and n_phys == n_layers:
                     kv_on_host = self._windows_host_kv_share(kv_on_host, n_layers, n_ctx, shape)
                 private += int(kv * kv_on_host)
             if private <= 0:
