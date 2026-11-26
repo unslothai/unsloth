@@ -664,6 +664,7 @@ def chat_can_swap() -> bool:
 @contextlib.asynccontextmanager
 async def _hold_swap_requests():
     from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+    from core.inference.gpu_residency import image_swap_owns_chat_load_gate
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
     from core.inference.media_keepwarm import admission_gate
 
@@ -673,7 +674,12 @@ async def _hold_swap_requests():
         admission_gate(DIFFUSION),
         admission_gate(VIDEO),
     ):
-        yield
+        # This swap reserves the gate for restoration without starting a chat load.
+        token = image_swap_owns_chat_load_gate.set(True)
+        try:
+            yield
+        finally:
+            image_swap_owns_chat_load_gate.reset(token)
 
 
 def _media_busy() -> bool:

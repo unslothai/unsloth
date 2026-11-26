@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any, Iterable, Optional
 
@@ -22,6 +23,9 @@ K3_RETRY_AFTER_S = 15
 
 MEDIA_OWNERS = (arb.DIFFUSION, arb.VIDEO)
 _MEDIA_KIND = {arb.DIFFUSION: "image", arb.VIDEO: "video"}
+image_swap_owns_chat_load_gate: ContextVar[bool] = ContextVar(
+    "image_swap_owns_chat_load_gate", default = False
+)
 
 
 class MediaNeed(dict):
@@ -642,7 +646,7 @@ def chat_load_in_flight() -> bool:
         from core.inference import llama_keepwarm, model_slots
         from core.inference.llama_cpp import chat_load_active
         return bool(
-            llama_keepwarm._load_lock.locked()
+            (llama_keepwarm._load_lock.locked() and not image_swap_owns_chat_load_gate.get())
             or chat_load_active()
             or model_slots.loading is not None
         )

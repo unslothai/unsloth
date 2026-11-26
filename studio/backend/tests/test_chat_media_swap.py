@@ -899,6 +899,25 @@ def test_transformers_reload_preserves_inherited_precision(monkeypatch):
     assert swap._transformers_load.launch.max_seq_length == 8192
 
 
+def test_image_swap_gate_is_not_a_chat_load_for_its_own_admission():
+    from core.inference.gpu_residency import chat_load_in_flight
+    async def check():
+        acquired = asyncio.Event()
+
+        async def other_request():
+            await acquired.wait()
+            return await asyncio.to_thread(chat_load_in_flight)
+
+        unrelated = asyncio.create_task(other_request())
+        async with swap._hold_swap_requests():
+            acquired.set()
+            assert await unrelated
+            assert not await asyncio.to_thread(chat_load_in_flight)
+        assert not chat_load_in_flight()
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("scenario", ["normal", "kept_video", "retry", "queued_media"])
 def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop, scenario):
     from types import SimpleNamespace
