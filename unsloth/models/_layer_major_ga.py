@@ -211,7 +211,11 @@ def _auto_ready(trainer, swapper):
 def _micro_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
     _TLS.passthrough = True
     try:
-        return trainer.training_step(model, inputs, num_items_in_batch, *args, **kwargs)
+        # The class chain (SFTTrainer and the Trainer patches), not instance-level wrappers such as
+        # UNSLOTH_BATCH_REPORT's: those already saw this micro-batch's outer call and see the others' too.
+        return type(trainer).training_step(
+            trainer, model, inputs, num_items_in_batch, *args, **kwargs
+        )
     finally:
         _TLS.passthrough = False
 

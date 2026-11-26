@@ -193,6 +193,33 @@ def test_trainer_matches_standard_accumulation_bitwise(ga, tmp_path, monkeypatch
     assert sw.log.count(("hold", 1)) == 2 * 2 and sw.log.count(("hold", 2)) == 2 * 2
 
 
+def test_instance_level_training_step_wrappers_see_each_micro_batch_once(ga, tmp_path, monkeypatch):
+    """A diagnostic wrapper on trainer.training_step (UNSLOTH_BATCH_REPORT installs one) counts the trainer
+    loop's calls: each micro-batch once, in order, with the window on."""
+    mod, engine = ga
+    seen = []
+    real_init = transformers.Trainer.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        inner = self.training_step
+
+        def counting(model, inputs, *a, **k):
+            seen.append(int(inputs["input_ids"].shape[1]))
+            return inner(model, inputs, *a, **k)
+
+        self.training_step = counting
+
+    monkeypatch.setattr(transformers.Trainer, "__init__", init)
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1")
+    assert _windows(engine) == 2
+    first = list(seen)
+    seen.clear()
+    _train(mod, tmp_path, monkeypatch, "0")
+    assert seen == first and len(first) == 6
+
+
 def test_no_block_swap_means_no_window(ga, tmp_path, monkeypatch):
     mod, engine = ga
     engine.layer_major_stats(reset = True)
