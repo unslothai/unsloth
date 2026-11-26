@@ -642,18 +642,21 @@ class _StdlibLazyFinder:
     ):
         if name not in self._names:
             return None
+        spec = _PathFinder.find_spec(name, _stdlib_paths())
+        if spec is None or spec.loader is None:
+            return spec
+        patch = _pending_pathlib_patch if name == "pathlib" else None
+        spec.loader = _StdlibLoader(spec.loader, patch, lambda: self._loaded(name))
+        return spec
+
+    def _loaded(self, name):
+        # Only once the module ran: a find_spec probe (importlib.util.find_spec) must not use up the patch.
         self._names.discard(name)
         if not self._names:
             try:
                 sys.meta_path.remove(self)
             except ValueError:
                 pass
-        spec = _PathFinder.find_spec(name, _stdlib_paths())
-        if spec is None or spec.loader is None:
-            return spec
-        patch = _pending_pathlib_patch if name == "pathlib" else None
-        spec.loader = _StdlibLoader(spec.loader, patch)
-        return spec
 
 
 class _StdlibFirst:
@@ -674,9 +677,10 @@ class _StdlibFirst:
 
 
 class _StdlibLoader:
-    def __init__(self, loader, patch):
+    def __init__(self, loader, patch, loaded):
         self._loader = loader
         self._patch = patch
+        self._loaded = loaded
 
     def create_module(self, spec):
         return self._loader.create_module(spec)
@@ -697,6 +701,7 @@ class _StdlibLoader:
             module.__loader__ = self._loader
             if getattr(module, "__spec__", None) is not None:
                 module.__spec__.loader = self._loader
+        self._loaded()
         if self._patch is None:
             return
         try:

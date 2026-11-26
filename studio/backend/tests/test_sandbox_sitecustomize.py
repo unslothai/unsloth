@@ -642,6 +642,21 @@ def test_path_mkdir_is_remapped_when_pathlib_is_imported_after_startup(tmp_path,
     assert (tmp_path / "made" / "inner").is_dir()
 
 
+@pytest.mark.parametrize("name", ["pathlib", "json"])
+def test_a_find_spec_probe_does_not_use_up_the_lazy_stdlib_import(tmp_path, name):
+    """importlib.util.find_spec only probes: the import after it must still be answered (and pathlib patched)."""
+    code = (
+        "import importlib.util, sys, sysconfig, os\n"
+        f"assert importlib.util.find_spec({name!r}) is not None\n"
+        f"import {name}\n"
+        "stdlib = os.path.realpath(sysconfig.get_paths()['stdlib'])\n"
+        f"patched = {name!r} != 'pathlib' or '_path_mkdir' in {name}.Path.mkdir.__qualname__\n"
+        f"print(os.path.realpath({name}.__file__).startswith(stdlib), patched)\n"
+    )
+    (tmp_path / f"{name}.py").write_text("raise SystemExit('planted copy ran')\n")
+    assert _child(code, tmp_path).split() == ["True", "True"]
+
+
 def test_modules_that_import_pathlib_get_the_patched_one(tmp_path):
     code = "import zipfile, pathlib\nprint(pathlib.Path.mkdir.__qualname__)\n"
     assert "_path_mkdir" in _child(code, tmp_path)
