@@ -121,6 +121,11 @@ _REFUSED_LOAD_FLAGS = (
     # Refused again at Trainer init ("tp / pp x precision"); here before any shard is read.
     ("float8_training", "fp8 training (float8_training; UNSLOTH_FSDP2=1 trains it data parallel)"),
 )
+# Expert parallel (UNSLOTH_EP_SIZE): 8-bit weights and fp8 training have no ep cell in the capability registry.
+_REFUSED_EP_LOAD_FLAGS = (
+    ("load_in_8bit", "8-bit weights (load_in_8bit = True; load in 4-bit or 16-bit)"),
+    ("float8_training", "fp8 training (float8_training; UNSLOTH_FSDP2=1 trains it data parallel)"),
+)
 _REFUSED_PIPELINE_LOAD_FLAGS = (
     ("full_finetuning", "full finetuning (full_finetuning = True; use UNSLOTH_FSDP2=1 instead)"),
     ("qat_scheme", "QAT (qat_scheme)"),
@@ -173,6 +178,14 @@ def tensor_parallel_env_load(fn):
 
                 values = _bound(fn, args, kwargs)
                 ep_refuse_fast_inference(values)
+                refused = [what_ for key, what_ in _REFUSED_EP_LOAD_FLAGS if values.get(key)]
+                if refused:
+                    raise NotImplementedError(
+                        f"Unsloth: UNSLOTH_EP_SIZE={ep_env_size()} (expert parallel) does not support "
+                        + "; ".join(refused)
+                        + ". Unset UNSLOTH_EP_SIZE (or ep in UNSLOTH_PARALLEL) to run this script with DDP "
+                        "or UNSLOTH_FSDP2=1."
+                    )
                 # Every branch, the whole adapter / QAT load included: apply_expert_parallel shards it later.
                 refuse_hf_distributed_kwargs(values, "expert parallel", "apply_expert_parallel")
                 sharded = not _is_adapter(values) and values.get("qat_scheme") is None
