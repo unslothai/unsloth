@@ -754,12 +754,28 @@ def _document_starts(seq_info):
     return starts
 
 
+def _torch_checkpoint():
+    """torch's own checkpoint, also once unsloth_zoo's smart gradient checkpointing has replaced
+    torch.utils.checkpoint.checkpoint with its forced-reentrant, CPU-offloading version: chunk loops nested
+    in a checkpointed layer need non-reentrant recompute (one replay per backward, closed-over grads)."""
+    import torch.utils.checkpoint as module
+
+    for func in (
+        getattr(module, "_unsloth_pristine_checkpoint", None),
+        module.checkpoint,
+        getattr(module, "_old_checkpoint", None),
+    ):
+        if getattr(func, "__module__", None) == module.__name__:
+            return func
+    return module.checkpoint
+
+
 def _chunked_masked_attention(
     shard, query, key, value, attention_fn, kwargs, window, cu_seqlens, starts, rows
 ):
     """attention_fn per query chunk, against only the keys the chunk can see, with its mask slice. sdpa saves
     its mask for backward, so each chunk is checkpointed: otherwise the slices add back up to [T, T]."""
-    from torch.utils.checkpoint import checkpoint
+    checkpoint = _torch_checkpoint()
 
     total = query.shape[2]
     grad = torch.is_grad_enabled() and any(x.requires_grad for x in (query, key, value))
