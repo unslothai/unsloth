@@ -738,7 +738,8 @@ def _prepare_h3_conditioning(
         )
         return caption_embeds, cache
 
-    # Phase 1: 63 GiB conditioner loads here only on caption misses; VAEs only on clip misses.
+    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner is resident here and nowhere else, and only when a
+    # caption missed: a clip-only edit loads the VAE encoders alone, a caption-only edit the conditioner alone.
     text_loaded = len(caption_embeds) < len(to_encode)
     vaes_loaded = len(clip_entries) < len(clip_paths)
     with isolated_sampling(device, False):
@@ -880,6 +881,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         return str(out_dir)
     caption_embeds, cache = prepared
 
+    # Phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
     if base_precision in ("fp8", "mxfp8"):
         raise ValueError(

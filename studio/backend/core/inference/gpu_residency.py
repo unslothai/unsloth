@@ -898,8 +898,9 @@ def _free_steps(
             logger.warning("gpu_residency: could not release the idle video server: %s", exc)
         if freed and done():
             return freed
-    # 3. Idle image model's text encoders stream from host; model stays loaded. Known-size loads
-    # only, when they cover a shortfall; unsized stops after one step (must stay whole model).
+    # 3. An idle image model's resident text encoders: they stream from the host, the model stays loaded. Only for a
+    # load with a known size (an unsized one stops after one step, which must stay the whole model), and only when
+    # the encoders cover a known shortfall.
     if (
         (need_mib or short_mib)
         and arb.DIFFUSION in overlapping()
@@ -913,6 +914,7 @@ def _free_steps(
             logger.warning("gpu_residency: could not stream the image text encoders: %s", exc)
         if freed and done():
             return freed
+    # 4. The idle image or video model on these GPUs.
     for name in overlapping():
         if name in MEDIA_OWNERS and not any(_media_busy(name)) and not foreign_on(name, acting):
             _evict_resident(name, acting, evicted, freed)
@@ -937,6 +939,7 @@ def _free_steps(
             _record_evicted([reports[id(victim)] for victim in dropped], evicted, freed)
             if dropped and done():
                 return freed
+    # 6. The active chat model.
     if owner != arb.CHAT and arb.CHAT in overlapping():
         _evict_resident(arb.CHAT, acting, evicted, freed)
     return freed

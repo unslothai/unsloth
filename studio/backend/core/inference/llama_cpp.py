@@ -11055,6 +11055,7 @@ class LlamaCppBackend:
             if _is_file(p):
                 return str(p)
 
+        # 7. System PATH
         system_path = shutil.which("llama-server")
         if system_path:
             return system_path
@@ -41431,7 +41432,8 @@ class LlamaCppBackend:
 
             try:
                 # ── Speculative buffer state machine ──────────────────
-                # BUFFERING holds for tool signals, STREAMING yields, DRAINING swallows a tool.
+                # BUFFERING: hold content, check for tool signals
+                # STREAMING: no tool, yield tokens; DRAINING: tool found, consume silently
                 _S_BUFFERING = 0
                 _S_STREAMING = 1
                 _S_DRAINING = 2
@@ -42159,6 +42161,7 @@ class LlamaCppBackend:
                     )
                     if not _safety_tc:
                         # ── Re-prompt on plan-without-action ──
+                        # Classify only what the user sees.
                         _visible_raw = content_accum.strip()
                         _visible = (
                             _strip_tool_markup(content_accum, final = True).strip()
