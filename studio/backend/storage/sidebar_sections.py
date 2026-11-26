@@ -119,10 +119,11 @@ def _merge(
                 eligible = set(saved) | imported_rows.get(key, set())
                 ids = [row for row in ids if row in eligible]
             if not importing:
-                removed = set(previous).difference(ids)
                 # Browser-local pins can be absent from the editing browser's list.
                 pages = result["sectionByPageId"]
-                saved = [row for row in saved if row not in removed or pages.get(row) == key]
+                removed = {row for row in set(previous).difference(ids) if pages.get(row) != key}
+                saved = [row for row in saved if row not in removed]
+                previous = [row for row in previous if row not in removed]
             row_order[key] = _edited_order(saved, previous, ids, importing, moves)
     result["rowOrder"] = {key: ids for key, ids in row_order.items() if key in live}
     return result

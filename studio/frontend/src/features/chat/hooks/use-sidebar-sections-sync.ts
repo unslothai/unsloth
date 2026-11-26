@@ -13,7 +13,8 @@ import {
 import {
   accountTransitionPending,
   BROWSER_ACCOUNT_FENCE_KEY,
-  browserAccountKey,
+  BROWSER_ACCOUNT_KEY,
+  sameBrowserAccount,
 } from "@/lib/account-transition";
 import { isBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
@@ -27,16 +28,19 @@ const SIDEBAR_POLL_INTERVAL_MS = 30_000;
 
 export function useSidebarSectionsSync(): void {
   useEffect(() => {
-    const account = browserAccountKey();
+    let account = localStorage.getItem(BROWSER_ACCOUNT_KEY);
     let mounted = true;
     let request: AbortController | undefined;
     let scheduled = false;
     let peerEditedAt: number | undefined;
 
     function allowed() {
-      return mounted && !accountTransitionPending() &&
-        !localStorage.getItem(BROWSER_ACCOUNT_FENCE_KEY) && browserAccountKey() === account &&
-        hasSettledAuthSession() && !isBackendDownForDesktopUpdate();
+      if (!mounted || accountTransitionPending() ||
+        localStorage.getItem(BROWSER_ACCOUNT_FENCE_KEY) || !sameBrowserAccount(account) ||
+        !hasSettledAuthSession() || isBackendDownForDesktopUpdate()) return false;
+      // Keep the upgraded marker so another account cannot match by username alone.
+      account = localStorage.getItem(BROWSER_ACCOUNT_KEY);
+      return true;
     }
 
     function schedule() {

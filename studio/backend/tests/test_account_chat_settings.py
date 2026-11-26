@@ -1000,17 +1000,27 @@ def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client):
 
 
 @pytest.mark.parametrize(
-    ("initial", "first", "second", "expected"),
+    ("initial", "first", "second", "expected", "sort"),
     [
-        ("abcd", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc"),
-        ("", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc"),
-        ("abcde", ("abdce", "d", "c", "top"), ("bcade", "a", "c", "bottom"), "bdcae"),
-        ("apbc", ("bac", "b", "a", "top"), None, "bapc"),
-        ("abcd", ("cdba", "d", "c", "bottom"), None, "cdba"),
+        ("abcd", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc", "manual"),
+        ("", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc", "manual"),
+        ("abcde", ("abdce", "d", "c", "top"), ("bcade", "a", "c", "bottom"), "bdcae", "manual"),
+        ("apbc", ("bac", "b", "a", "top"), None, "bapc", "manual"),
+        ("abcd", ("cdba", "d", "c", "bottom"), None, "cdba", "updated"),
+        ("axbc", ("bca", "b", "c", "top"), None, "bca", "updated"),
     ],
-    ids = ["independent", "first-manual-order", "moved-anchor", "unseen-page", "sort-switch"],
+    ids = [
+        "independent",
+        "first-manual-order",
+        "moved-anchor",
+        "unseen-page",
+        "sort-switch",
+        "sort-switch-hidden-row",
+    ],
 )
-def test_sidebar_sections_merge_concurrent_row_placements(client, initial, first, second, expected):
+def test_sidebar_sections_merge_concurrent_row_placements(
+    client, initial, first, second, expected, sort
+):
     from copy import deepcopy
 
     path = "/chat/sidebar-sections"
@@ -1031,10 +1041,8 @@ def test_sidebar_sections_merge_concurrent_row_placements(client, initial, first
     common = save(
         "initial",
         {
-            "sections": {
-                "work": {"name": "Work", "sort": "updated" if expected == "cdba" else "manual"}
-            },
-            "sectionByChatId": {key: "work" for key in set(first[0]) - {"p"}},
+            "sections": {"work": {"name": "Work", "sort": sort}},
+            "sectionByChatId": {key: "work" for key in set(initial + first[0]) - {"p"}},
             "sectionByPageId": {"p": "work"} if "p" in initial else {},
             "rowOrder": {"work": list(initial)} if initial else {},
         },

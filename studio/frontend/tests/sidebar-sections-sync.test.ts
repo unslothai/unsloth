@@ -21,6 +21,7 @@ const localStorage = {
 };
 const window = Object.assign(new EventTarget(), {
   localStorage,
+  location: new URL("https://studio.example/"),
   setInterval,
   clearInterval,
 });
@@ -29,6 +30,7 @@ Object.assign(globalThis, { localStorage, window, document });
 
 const layouts = await import("../src/features/chat/sidebar-layout.ts");
 const stores = await import("../src/features/chat/stores/sidebar-organization-store.ts");
+const accounts = await import("../src/lib/account-transition.ts");
 const store = stores.useSidebarOrganizationStore;
 type Layout = ReturnType<typeof layouts.sidebarLayout>;
 type Edit = {
@@ -56,11 +58,7 @@ function mount(
         getAuthSessionMark: () => "test-session",
         hasSettledAuthSession: () => true,
       },
-      "@/lib/account-transition": {
-        accountTransitionPending: () => false,
-        BROWSER_ACCOUNT_FENCE_KEY: "auth-fence",
-        browserAccountKey: () => "test-account",
-      },
+      "@/lib/account-transition": accounts,
       "@/lib/desktop-update-activity": { isBackendDownForDesktopUpdate: () => false },
       "@/lib/navigation-nonce": { createNavigationNonce: () => "next-edit" },
       "../sidebar-layout": layouts,
@@ -107,6 +105,34 @@ test("a large saved sidebar keeps its pending sync operation within browser stor
   assert.ok(store.getState().pendingLayoutEdit?.layout === pendingLayoutEdit.layout);
   assert.equal(store.getState().customSections[0].name, "Field notes");
   assert.equal(store.getState().sectionByChatId[chatIds.at(-1)!], section.id);
+});
+
+test("sidebar sync survives its account marker upgrade and rejects a different account", async (t) => {
+  const key = accounts.BROWSER_ACCOUNT_KEY;
+  localStorage.setItem(key, "alice");
+  t.after(() => { data.delete(key); });
+  const methods: string[] = [];
+  const initial = layouts.sidebarLayout(store.getInitialState());
+  mount(t, async (_url, init) => {
+    methods.push(init.method ?? "GET");
+    if (init.method !== "POST") return Response.json(initial);
+    return Response.json(JSON.parse(String(init.body)).layout);
+  });
+  await setImmediate();
+  assert.deepEqual(methods, ["GET"]);
+
+  localStorage.setItem(key, accounts.browserAccountMarker({ username: "alice", accountId: "one" }));
+  store.getState().createCustomSection("Research");
+  await setImmediate();
+  window.dispatchEvent(new Event("focus"));
+  await setImmediate();
+  assert.deepEqual(methods, ["GET", "POST", "GET"]);
+
+  localStorage.setItem(key, accounts.browserAccountMarker({ username: "alice", accountId: "two" }));
+  store.getState().createCustomSection("Other account");
+  window.dispatchEvent(new Event("focus"));
+  await setImmediate();
+  assert.deepEqual(methods, ["GET", "POST", "GET"]);
 });
 
 test("a peer can upload a later edit after retrying the closed tab's pending operation", async (t) => {
