@@ -306,6 +306,20 @@ def test_download_plan_refuses_a_gguf_repo_whose_only_other_weights_are_stray(mo
         native_audio_download_plan("unsloth/Big-Chat-GGUF")
 
 
+def test_download_plan_refuses_quants_beside_only_a_peft_adapter(monkeypatch):
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "adapter_model.safetensors", size = 10),
+            SimpleNamespace(rfilename = "adapter_config.json", size = 1),
+            SimpleNamespace(rfilename = "Q4_K_M/Big-Q4_K_M.gguf", size = 10**12),
+            SimpleNamespace(rfilename = "Q8_0/Big-Q8_0.gguf", size = 2 * 10**12),
+        ],
+    )
+    with pytest.raises(ValueError, match = "is a GGUF repository"):
+        native_audio_download_plan("someone/lora-and-quants-GGUF")
+
+
 def test_download_plan_still_lists_a_gguf_repo_with_one_quant(monkeypatch):
     # One quant (here split in two parts, plus its projector) is the whole model, not every quant.
     _hub_repo(
