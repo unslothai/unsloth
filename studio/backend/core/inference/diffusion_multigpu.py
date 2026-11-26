@@ -1666,11 +1666,16 @@ def refine_plan_for_multigpu(
                 rejected.append(PlacementCandidate("cfg_replica", why))
             return False
         label = _ALTERNATIVE_LABELS.get(alternative, alternative)
+        request = default_request(pipe)
+        per_step = (
+            "half of each step's tokens on each card"
+            if request is not None and request.guided is False
+            else "one forward per guided step instead of two"
+        )
         rejected.append(
             PlacementCandidate(
                 alternative,
-                f"the {label} would fit, but the CFG replica layout is predicted faster (one forward per guided step "
-                "instead of two)",
+                f"the {label} would fit, but the CFG replica layout is predicted faster ({per_step})",
             )
         )
         _record_decision(

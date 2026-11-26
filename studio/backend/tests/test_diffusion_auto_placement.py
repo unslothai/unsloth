@@ -864,6 +864,8 @@ def test_unguided_flux2_default_request_takes_the_replica_to_split_its_tokens(mo
     recorded = _recorded(d)
     assert recorded.chosen == "cfg_replica", recorded
     assert "half of each step's tokens" in recorded.summary
+    kinds = {c.kind: c.reason for c in recorded.rejected}
+    assert "half of each step's tokens on each card" in kinds["layer_split"]
     est = d.status["mode_estimate"]
     assert est["replica_render_s"] < est["alternative_render_s"]
 
