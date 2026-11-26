@@ -197,3 +197,18 @@ def test_float16_merge_is_measured_after_the_bfloat16_reload():
         layer.lora_B["default"].weight.fill_(0.001953125)
     ((_, cosine, norm_ratio),) = M.lora_quant_survival(net, "FP8")
     assert cosine == 0.0 and norm_ratio == 0.0
+
+
+def test_fp4_and_mx_scales_match_compressed_tensors():
+    M = _load()
+    x = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0, 0.7421875, 0.26, 7.0, -0.75, -2.5])
+    want = torch.tensor([0.0, 1.0, 1.0, 2.0, 2.0, 4.0, 4.0, 0.5, 0.5, 6.0, -1.0, -2.0])
+    torch.testing.assert_close(M._fp4(x), want, rtol = 0, atol = 0)
+    # Block max 7 rounds up to 8 before the exponent is taken: MXFP4 scale 2, not 1.
+    amax = torch.tensor([7.0, 6.0, 4.0, 1.0])
+    torch.testing.assert_close(M._pow2_scale(amax, 2), torch.tensor([2.0, 1.0, 1.0, 0.25]))
+    ct = pytest.importorskip("compressed_tensors.quantization.utils.mxfp_utils")
+    amax = torch.rand(4096) * 100
+    for bits, emax in ((4, 2), (8, 8)):
+        ref = torch.exp2(ct.generate_mx_scales(amax, num_bits = bits) - 127)
+        torch.testing.assert_close(M._pow2_scale(amax, emax), ref, rtol = 0, atol = 0)

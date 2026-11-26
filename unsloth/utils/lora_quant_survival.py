@@ -18,7 +18,6 @@ _MAX_ROWS = 256
 
 _FP8_MAX = 448.0
 _FP4_MAX = 6.0
-_FP4_GRID = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 
 # llm-compressor scheme / torchao kind -> reference weight format.
 _SCHEME_FORMATS = {
@@ -39,10 +38,19 @@ def _fp8(x):
 
 
 def _fp4(x):
-    grid = torch.tensor(_FP4_GRID, dtype = torch.float32, device = x.device)
-    mag = x.abs().clamp(max = _FP4_MAX)
-    idx = (mag.unsqueeze(-1) - grid).abs().argmin(dim = -1)
-    return grid[idx] * x.sign()
+    # compressed-tensors FP4_E2M1_DATA.cast_to_fp4: ties go to the even code.
+    m = x.abs()
+    q = torch.where(m <= 5.0, 4.0, 6.0)
+    for edge, inclusive, value in (
+        (3.5, False, 3.0),
+        (2.5, True, 2.0),
+        (1.75, False, 1.5),
+        (1.25, True, 1.0),
+        (0.75, False, 0.5),
+        (0.25, True, 0.0),
+    ):
+        q = torch.where((m <= edge) if inclusive else (m < edge), value, q)
+    return q * x.sign()
 
 
 def _blocks(x, size):
@@ -54,8 +62,10 @@ def _blocks(x, size):
 
 
 def _pow2_scale(amax, emax):
-    # OCP MX: shared scale 2^(floor(log2(amax)) - emax of the element format).
-    exp = torch.floor(torch.log2(amax.clamp(min = 2.0**-126))) - emax
+    # compressed-tensors generate_mx_scales: round_to_power_2 rounds up from 1.75 * 2^e, then - emax.
+    amax = amax.clamp(min = 2.0**-126)
+    exp = torch.floor(torch.log2(amax))
+    exp = exp + (amax >= 1.75 * torch.exp2(exp)).float() - emax
     return torch.exp2(exp)
 
 
