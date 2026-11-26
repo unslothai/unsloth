@@ -60,7 +60,19 @@ _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe
 # Qwen4ExpForCausalLM: same router output (logits first) and load_balancing_loss_func as Qwen3-MoE.
 # ConditionalGeneration wrappers read num_experts / top-k / coef from text_config.
 _PP_MOE_AUX_WRAPPERS = ("Qwen3_5MoeForConditionalGeneration", "Qwen4ExpForConditionalGeneration")
-_PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM", *_PP_MOE_AUX_WRAPPERS)
+_PP_MOE_AUX_FAMILIES = (
+    "Qwen3MoeForCausalLM",
+    "Qwen4ExpForCausalLM",
+    # Same load_balancing_loss_func over recorded router logits; parity per family in test_pp_moe_aux_gloo.py. OLMoE,
+    # Qwen2-MoE and GraniteMoE record router logits from transformers 5.x on (4.x: aux off only, as before).
+    "MixtralForCausalLM",
+    "OlmoeForCausalLM",
+    "Qwen2MoeForCausalLM",
+    "FlexOlmoForCausalLM",
+    "Ernie4_5_MoeForCausalLM",
+    "GraniteMoeForCausalLM",
+    *_PP_MOE_AUX_WRAPPERS,
+)
 _PP_MOE_AUX_SCHEDULES = ("gpipe", "1f1b")
 # Mixture-of-experts CausalLMs whose loss has no router auxiliary term (bias-based routing balance, nothing
 # updated from router statistics in training): a stage boundary cuts nothing, so there is nothing to carry.
@@ -935,12 +947,8 @@ def _statistics_match_transformers(
     return True
 
 
-def _moe_aux_plan(parts):
-    """_MoEAux for a family in _PP_MOE_AUX_FAMILIES whose decoder records router logits with a transformers
-    OutputRecorder and whose load_balancing_loss_func is the statistics form; None otherwise (refused)."""
-    inner = parts.inner
-    if type(inner).__name__ not in _PP_MOE_AUX_FAMILIES:
-        return None
+def _router_logits_recorder(parts):
+    """(router class, output index) of the decoder's transformers OutputRecorder for router_logits, else None."""
     recorder = (getattr(type(parts.decoder), "_can_record_outputs", None) or {}).get(
         "router_logits"
     )
@@ -952,6 +960,19 @@ def _moe_aux_plan(parts):
         or getattr(recorder, "layer_name", None)
     ):
         return None
+    return router_class, index
+
+
+def _moe_aux_plan(parts):
+    """_MoEAux for a family in _PP_MOE_AUX_FAMILIES whose decoder records router logits with a transformers
+    OutputRecorder and whose load_balancing_loss_func is the statistics form; None otherwise (refused)."""
+    inner = parts.inner
+    if type(inner).__name__ not in _PP_MOE_AUX_FAMILIES:
+        return None
+    recorded = _router_logits_recorder(parts)
+    if recorded is None:
+        return None
+    router_class, index = recorded
     wrapper = type(inner).__name__ in _PP_MOE_AUX_WRAPPERS
     config = inner.config.get_text_config() if wrapper else inner.config
     if wrapper and not isinstance(getattr(config, "router_aux_loss_coef", None), (int, float)):
@@ -1088,7 +1109,9 @@ def _uncarried_moe_owner(model, parts = None):
     parts = parts if parts is not None else _find_parts(model)
     inner = parts.inner
     name = type(inner).__name__
-    if name in _PP_MOE_AUX_FAMILIES or name in _PP_MOE_NO_AUX_FAMILIES:
+    if name in _PP_MOE_NO_AUX_FAMILIES:
+        return None
+    if name in _PP_MOE_AUX_FAMILIES and _router_logits_recorder(parts) is not None:
         return None
     if _moe_marker(_text_config(model), parts.layers) is None:
         return None
@@ -1099,7 +1122,8 @@ def _uncarried_router_aux_message(inner, what):
     return (
         f"Unsloth: pipeline parallelism trains {type(inner).__name__} (mixture-of-experts) only with its router "
         f"auxiliary loss off, but {what}: the loss is carried between stages only for "
-        f"{', '.join(_PP_MOE_AUX_FAMILIES)}, so the last stage would add it over its own layers' routers only. "
+        f"{', '.join(_PP_MOE_AUX_FAMILIES)} (when the decoder records router logits: transformers 5.x for OLMoE, "
+        "Qwen2-MoE and GraniteMoE), so the last stage would add it over its own layers' routers only. "
         "Turn it off (router_aux_loss_coef = 0.0 in SFTConfig, which TRL >= 1.x otherwise sets from the "
         "architecture; or model.config.output_router_logits = False with a plain Trainer), or use native FSDP2 "
         "(UNSLOTH_FSDP2=1)."
@@ -1174,7 +1198,8 @@ def _refuse_unsupported(
                 "then apply_pipeline_parallel)"
                 if allow_moe is False and type(inner).__name__ in _PP_MOE_AUX_FAMILIES
                 else "the router auxiliary loss is carried between stages only for "
-                f"{', '.join(_PP_MOE_AUX_FAMILIES)} (transformers 5.x); {type(inner).__name__} is not proven"
+                f"{', '.join(_PP_MOE_AUX_FAMILIES)} when the decoder records router logits (transformers 5.x for "
+                f"OLMoE, Qwen2-MoE and GraniteMoE); {type(inner).__name__} is not proven"
             )
             raise ValueError(
                 f"Unsloth: pipeline parallelism v1 does not support this mixture-of-experts model ({marker}): "
