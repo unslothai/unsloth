@@ -80,7 +80,7 @@ H3Task = Annotated[
 Device = Annotated[
     Optional[Literal["auto", "cpu", "gpu"]],
     Field(
-        description = 'llm, tts and audio: where the model runs. "cpu" keeps the GPU free, so a resident image or video model stays loaded; to keep the chat model loaded as well, also pass alongside=true. For kind "llm" it needs a GGUF model, and a vision GGUF still uses the GPU for its projector. "gpu" is never moved to the CPU silently; placement.device reports where the model ended up. Unset leaves the choice to Unsloth Studio. Saved llama.cpp arguments for the model (Settings > API), such as -ngl 0, still apply under "gpu".'
+        description = 'llm, tts and audio: where the model runs. "cpu" keeps the GPU free, so a resident image or video model stays loaded; to keep the chat model loaded as well, also pass alongside=true. For kind "llm" it needs a GGUF model, and a vision GGUF still uses the GPU for its projector. "gpu" is never moved to the CPU silently; placement.device reports where the model ended up. Unset or "auto" leaves the choice to Unsloth Studio, which applies a saved placement. Saved llama.cpp arguments for the model (Settings > API), such as -ngl 0, still apply under "gpu".'
     ),
 ]
 Alongside = Annotated[
@@ -671,7 +671,7 @@ async def load_model(
     ``hf_token`` is for gated repos.
     The call waits up to ``wait_s`` seconds (at most 240); set the client's tool timeout above that, or pass wait_s=50 under Codex's 60 s default.
     A load that is still running then returns ``loaded`` false, ``status`` "loading" and a ``job_id``: it keeps running in Unsloth Studio, and get_job(kind="load", id=job_id, wait_s=…) follows it to the same result.
-    Calling load_model again with the same arguments while that load runs follows it instead of starting another, and so does a call (without ``variant``) for a chat model Unsloth Studio is already loading.
+    Calling load_model again with the same arguments while that load runs follows it instead of starting another, and so does a call without ``variant`` or other load options for a chat model Unsloth Studio is already loading.
     Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
     deadline = loading.deadline_after(wait_s)

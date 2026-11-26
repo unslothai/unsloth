@@ -181,7 +181,7 @@ def test_device_gpu_keeps_a_saved_offload_argument(monkeypatch):
     from models.inference import LoadRequest
     from utils import openai_auto_switch_settings as settings
 
-    row = {"llama_extra_args": ["-ngl", "0"]}
+    row = {"llama_extra_args": ["-ngl", "0"], **SAVED_CPU}
     monkeypatch.setattr(settings, "resolve_override_for_load", lambda *a: (LLM, dict(row)))
     monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)

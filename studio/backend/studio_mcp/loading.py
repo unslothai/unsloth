@@ -413,7 +413,7 @@ async def load_llm(
     is_lora: bool = False,
     precheck: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> LoadResult:
-    # Unset options come from the model's saved launch settings, as in the UI and CLI.
+    # Unset options come from the model's saved launch settings, as with the CLI.
     body: dict[str, Any] = {"model_path": model, "use_saved_settings": True}
     if max_seq_length is not None:
         body["max_seq_length"] = max_seq_length
