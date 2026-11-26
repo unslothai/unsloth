@@ -197,11 +197,113 @@ def dacl_state_dir() -> Path:
     return path
 
 
+_HASH_CHUNK = 1024 * 1024
+NATIVE_HASH_ENV = "UNSLOTH_MXC_NATIVE_HASH"
+_cng_lock = threading.Lock()  # not _lock: _acquire hashes while holding it
+_cng_state: list = []  # [] untried, [None] unavailable, [_Cng] ready
+
+
+class _CngFailure(Exception):
+    pass
+
+
+class _Cng:
+    """Windows CNG SHA-256. Python's hashlib on Windows ARM64 lacks the SHA instructions (~320 MB/s), and
+    Studio hashes wxc-exec.exe on every launch; CNG uses them."""
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        # System32 only: a bcrypt.dll beside the interpreter or in the cwd must never load.
+        bcrypt = ctypes.WinDLL("bcrypt.dll", winmode = 0x00000800)  # LOAD_LIBRARY_SEARCH_SYSTEM32
+        handle_p = ctypes.POINTER(ctypes.c_void_p)
+        bytes_p = ctypes.POINTER(ctypes.c_ubyte)
+        signatures = {
+            "BCryptOpenAlgorithmProvider": [
+                handle_p,
+                wintypes.LPCWSTR,
+                wintypes.LPCWSTR,
+                wintypes.ULONG,
+            ],
+            "BCryptCreateHash": [
+                ctypes.c_void_p,
+                handle_p,
+                bytes_p,
+                wintypes.ULONG,
+                bytes_p,
+                wintypes.ULONG,
+                wintypes.ULONG,
+            ],
+            "BCryptHashData": [ctypes.c_void_p, bytes_p, wintypes.ULONG, wintypes.ULONG],
+            "BCryptFinishHash": [ctypes.c_void_p, bytes_p, wintypes.ULONG, wintypes.ULONG],
+            "BCryptDestroyHash": [ctypes.c_void_p],
+        }
+        for name, argtypes in signatures.items():
+            function = getattr(bcrypt, name)
+            function.argtypes = argtypes
+            function.restype = ctypes.c_long  # NTSTATUS; 0 is success
+        self._ctypes = ctypes
+        self._bcrypt = bcrypt
+        self._algorithm = ctypes.c_void_p()
+        if (
+            bcrypt.BCryptOpenAlgorithmProvider(ctypes.byref(self._algorithm), "SHA256", None, 0)
+            != 0
+        ):
+            raise OSError("BCryptOpenAlgorithmProvider(SHA256) failed")
+
+    def digest(self, stream) -> str:
+        ctypes, bcrypt = self._ctypes, self._bcrypt
+        hash_handle = ctypes.c_void_p()
+        if (
+            bcrypt.BCryptCreateHash(self._algorithm, ctypes.byref(hash_handle), None, 0, None, 0, 0)
+            != 0
+        ):
+            raise _CngFailure("BCryptCreateHash failed")
+        try:
+            buffer = bytearray(_HASH_CHUNK)
+            view = memoryview(buffer)
+            native = (ctypes.c_ubyte * _HASH_CHUNK).from_buffer(buffer)
+            while True:
+                count = stream.readinto(view)
+                if not count:
+                    break
+                if bcrypt.BCryptHashData(hash_handle, native, count, 0) != 0:
+                    raise _CngFailure("BCryptHashData failed")
+            output = (ctypes.c_ubyte * 32)()
+            if bcrypt.BCryptFinishHash(hash_handle, output, 32, 0) != 0:
+                raise _CngFailure("BCryptFinishHash failed")
+            return bytes(output).hex()
+        finally:
+            bcrypt.BCryptDestroyHash(hash_handle)
+
+
+def _native_sha256() -> _Cng | None:
+    if os.name != "nt" or os.environ.get(NATIVE_HASH_ENV, "").strip() == "0":
+        return None
+    with _cng_lock:
+        if not _cng_state:
+            try:
+                _cng_state.append(_Cng())
+            except (OSError, AttributeError, ValueError) as exc:
+                logger.debug("Windows CNG SHA-256 unavailable, using hashlib: %s", exc)
+                _cng_state.append(None)
+        return _cng_state[0]
+
+
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
+    """SHA-256 of every byte of ``path``: CNG on Windows, hashlib otherwise or if CNG fails."""
+    native = _native_sha256()
     try:
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        with path.open("rb", buffering = 0) as stream:
+            if native is not None:
+                try:
+                    return native.digest(stream)
+                except _CngFailure as exc:
+                    logger.warning("Windows CNG SHA-256 failed, using hashlib: %s", exc)
+                    stream.seek(0)
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(_HASH_CHUNK), b""):
                 digest.update(chunk)
     except OSError as exc:
         raise MxcRuntimeUnavailable("the managed wxc-exec.exe could not be read") from exc

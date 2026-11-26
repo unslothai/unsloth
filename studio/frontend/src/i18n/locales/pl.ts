@@ -4476,8 +4476,8 @@ export const pl = {
       summary: {
         single: "Trenowanie na jednej karcie GPU",
         layerSplit: "Model jest dzielony warstwa po warstwie na karty GPU: {count}",
-        ddp: "Model mieści się na jednej karcie GPU: równoległość danych na kartach GPU: {count}",
-        fsdp2: "Model jest za duży na jedną kartę GPU: shardowany na karty GPU: {count}",
+        ddp: "Każda karta GPU trenuje pełną kopię: równoległość danych na kartach GPU: {count}",
+        fsdp2: "Wagi i stan optymalizatora shardowane na karty GPU: {count}",
         tp: "Każda warstwa jest dzielona na karty GPU: {count}",
         pp: "Warstwy działają jako etapy potoku ({count}), po jednym na kartę GPU",
         cp: "Każda sekwencja jest dzielona na karty GPU: {count}",
@@ -4488,7 +4488,7 @@ export const pl = {
         noGpu: "Wybierz co najmniej jedną kartę GPU.",
         singleNeedsOne: "Jedna karta GPU używa dokładnie jednej karty. Odznacz pozostałe.",
         needsTwo: "Ten tryb wymaga co najmniej dwóch kart GPU.",
-        customSpec: "Wpisz układ, na przykład dp=2,tp=2.",
+        customSpec: "Wpisz układ, na przykład {example}.",
       },
     },
     preview: {
@@ -5461,6 +5461,7 @@ export const pl = {
       showPromptDescription: "Zobacz dokładne instrukcje wysyłane do modelu.",
     },
     history: {
+      notSaved: "Nie zapisano w historii: pamięć przeglądarki jest pełna.",
       title: "Historia",
       search: "Szukaj w historii",
       empty: "Tutaj pojawią się Twoje tłumaczenia.",
@@ -6494,6 +6495,12 @@ export const pl = {
     maximize: "Maksymalizuj okno",
     restore: "Przywróć okno",
     close: "Zamknij okno",
+    mediaCodecs: {
+      title: "Wygenerowane filmy mogą się nie odtwarzać",
+      // {command}: an apt command line, never translated.
+      description: "W tym systemie brakuje dekoderów wideo GStreamer. Zainstaluj je poleceniem: {command}",
+      copy: "Kopiuj polecenie",
+    },
   },
   runtimeUpdate: {
     installAudio: "Zainstaluj środowisko uruchomieniowe audio",

@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from core.inference.inference_gate import holds_inference, pauses_background_embedding
+from utils.keep_awake import keeps_system_awake
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
@@ -61,6 +62,7 @@ from .diffusion_content import (
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
 from .diffusion_hub_evidence import cached_family
 from .diffusion_init_buffers import install_single_file_fp32_buffers
+from .diffusion_step_noise import seeded_scheduler_step
 from . import hub_reachability
 from .diffusion_families import (
     SMALL_DIT_BF16_WHEN_RESIDENT,
@@ -113,6 +115,7 @@ from .diffusion_compat import (
     speech_pick_refusal,
 )
 from .diffusion_device import (
+    physical_gpu_id_for_ordinal,
     apply_cpu_render_threads,
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
@@ -598,6 +601,8 @@ from .diffusion_transformer_quant import (
     dense_transformer_unsupported_reason,
     denoiser_modules,
     explain_unusable_scheme,
+    precision_options,
+    precision_target,
     family_denies_scheme,
     fp16_card_int8_host,
     fp16_card_native_host,
@@ -822,7 +827,22 @@ def _note_multigpu_default_request(
             why = "guidance-distilled or embedded guidance, no negative branch"
     except Exception:  # noqa: BLE001 - unknown: the placement keeps its split-first order
         guided, steps, why = None, None, ""
-    note_default_request(pipe, guided = guided, steps = steps, why = why)
+    # a joint-sequence denoiser (FLUX.2) prices a token split on the default render's own size
+    from .diffusion_sequence_parallel import default_request_tokens
+
+    sized = default_request_tokens(pipe, _DEFAULT_RENDER_PX, _DEFAULT_RENDER_PX)
+    note_default_request(
+        pipe,
+        guided = guided,
+        steps = steps,
+        why = why,
+        tokens = sized[0] if sized else None,
+        text_tokens = sized[1] if sized else None,
+    )
+
+
+# The Images page's and generate()'s default width and height.
+_DEFAULT_RENDER_PX = 1024
 
 
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
@@ -12859,7 +12879,7 @@ class DiffusionBackend:
                     from .diffusion_tp2 import engage_for_plan as _tp2_engage
                     from .diffusion_tp2 import place_atomically as _tp2_place
 
-                    # opt-in UNSLOTH_DIFFUSION_TP=1: denoiser sharded over two cards, kept resident
+                    # UNSLOTH_DIFFUSION_TP=1 (or Krea 2 streaming its denoiser, env unset): sharded over two cards, resident
                     plan_without_tp = plan
                     plan = _tp2_engage(pipe, plan, logger, loras = loras)
                     # streamed text encoders pin after the load returns, before or during the first encode
@@ -13882,11 +13902,19 @@ class DiffusionBackend:
 
             if scheme not in CACHEABLE_SCHEMES or transformer_is_quantised(transformer):
                 return None
-            cached = lookup(fam, scheme, base_repo = base, source_base = source_base, logger = logger)
-            if not cached:
-                return None
             first = next(iter(transformer.parameters()), None)
             here = str(first.device) if first is not None else "cpu"
+            # The quantize this read replaces runs where the dense module sits now (an nvfp4 entry is keyed on it).
+            cached = lookup(
+                fam,
+                scheme,
+                base_repo = base,
+                source_base = source_base,
+                logger = logger,
+                quant_device = here.split(":")[0],
+            )
+            if not cached:
+                return None
             t0 = time.perf_counter()
             loaded = load_prequantized_transformer(
                 type(transformer),
@@ -14070,6 +14098,8 @@ class DiffusionBackend:
                 logger = logger,
                 cancel_check = cancel_check,
                 defer = defer,
+                # _pipeline_quant_from_cache reads nvfp4 back, keyed on where this build was quantized.
+                nvfp4_readback = True,
             )
         except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
             logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
@@ -15767,6 +15797,7 @@ class DiffusionBackend:
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
             compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
+            base_repo = getattr(state, "base_repo", None),
         )
         if unavailable:
             raise LoraSelectionError(unavailable)
@@ -15914,6 +15945,20 @@ class DiffusionBackend:
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
+            if str(getattr(state, "transformer_quant", None) or "").strip().lower() == "nvfp4":
+                from core.inference import diffusion_lora
+
+                # A per-layer NVFP4 policy base cannot take adapters at load either: give the status's reason, not a
+                # reload that would fail the same way.
+                refused = diffusion_lora.lora_unavailable_reason(
+                    engine = "diffusers",
+                    family = getattr(getattr(state, "family", None), "name", None),
+                    model_kind = getattr(state, "kind", None),
+                    transformer_quant = state.transformer_quant,
+                    base_repo = getattr(state, "base_repo", None),
+                )
+                if refused:
+                    raise LoraSelectionError(refused)
             raise LoraReloadRequiredError(
                 f"This {_quant_build_label(state)} build was loaded without LoRA adapters, and a quantized "
                 "transformer takes adapters only when it loads. " + LORA_RELOAD_REMEDY
@@ -16237,6 +16282,14 @@ class DiffusionBackend:
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
         object.__setattr__(state, "speed_auto_compiled", bool(speed_applied.get("compiled")))
+        if speed_applied.get("compiled"):
+            # compiled calls never split by tokens: an unguided load's replica would only hold a second copy
+            from .diffusion_multigpu import release_sequence_split_replica
+            release_sequence_split_replica(
+                state.pipe,
+                "Auto speed compiled the denoiser on the 3rd image; compiled calls are not split by tokens",
+                logger,
+            )
         object.__setattr__(
             state, "cuda_graphs", tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
         )
@@ -16321,6 +16374,7 @@ class DiffusionBackend:
             return None
 
     @_release_render_on_unload
+    @keeps_system_awake
     @holds_inference
     @with_hires
     @vram_budget_scope("image")
@@ -16933,6 +16987,12 @@ class DiffusionBackend:
                 from .diffusion_qwenimage21 import text_length_runs
 
                 chunks = [run for chunk in chunks for run in text_length_runs(pipe, chunk)]
+                # SD / SDXL chunked encode pads a batch to its longest prompt: equal chunk counts only.
+                chunks = [
+                    run
+                    for chunk in chunks
+                    for run in sd_controls_mod.chunk_count_runs(sd_controls, fam, pipe, chunk)
+                ]
 
                 # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
                 strength_applied = effective_request_strength(
@@ -17350,6 +17410,8 @@ class DiffusionBackend:
                         pipeline_upcasts_keep_storage(pipe),
                         # Only with the step callback: it stops the carry before the last step's decode.
                         cross_forward_render(pipe, enabled = "callback_on_step_end" in chunk_kwargs),
+                        # HiDream-I1 Fast/Dev: the LCM scheduler draws per-step noise the pipeline never seeds.
+                        seeded_scheduler_step(pipe, chunk_kwargs.get("generator")),
                     ):
                         # img2img / inpaint / controlnet pipes share the denoiser: predict from this call's scheduler
                         bind_adaln_pipe(pipe)
@@ -17565,6 +17627,14 @@ class DiffusionBackend:
                                 decode_restores.append(restore)
                                 if peak_probe is not None:
                                     # the decode ran with fewer weights than the probe's baseline: its peak understates
+                                    peak_probe.decode_released = True
+                            from .diffusion_tp2 import lend_for_decode as _tp2_lend
+
+                            # Krea 2 under TP: the first card's shards wait on the idle second card for the decode
+                            tp_restore = _tp2_lend(state.pipe, logger)
+                            if tp_restore is not None:
+                                decode_restores.append(tp_restore)
+                                if peak_probe is not None:
                                     peak_probe.decode_released = True
                             marked = False
                             for _ in range(_BOUNDARY_MARK_ATTEMPTS):
@@ -18155,6 +18225,8 @@ class DiffusionBackend:
                 "supports_controlnet": False,
                 "resolved": None,
                 "generation_defaults": None,
+                "precision_options": None,
+                "precision_options_card": None,
             }
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
@@ -18189,6 +18261,7 @@ class DiffusionBackend:
             family = state.family.name,
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
+            base_repo = getattr(state, "base_repo", None),
         )
         # Baked adapters ride inside the compiled build.
         compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()) and not getattr(
@@ -18225,6 +18298,7 @@ class DiffusionBackend:
             "bg_compile": state.bg_compile.describe() if state.bg_compile is not None else None,
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": _reported_transformer_quant(state),
+            "fp8_gemm": _fp8_gemm_status(state),
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
             "attention_backend": attention_backend,
             "transformer_cache": state.transformer_cache,
@@ -18235,6 +18309,26 @@ class DiffusionBackend:
             "lora_fuse": lora_fuse_status(state.pipe),
             "load_lora_specs": _load_lora_specs(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            "precision_options": precision_options(
+                state.family.name,
+                state.base_repo,
+                state.device,
+                # The probe only judges a load that runs torchao on this card, not a native path.
+                target = precision_target(
+                    state.device,
+                    state.dtype,
+                    state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal,
+                ),
+                model_kind = state.kind,
+                # These verdicts describe the NEXT load, whose Memory choice may offload (native INT8 then skips the
+                # probe), so the resident's own policy is not assumed: unknown counts as possibly offloaded.
+                offload = None,
+            ),
+            # The card those verdicts were judged on, so a pick for another card does not inherit its probe failures.
+            "precision_options_card": physical_gpu_id_for_ordinal(
+                state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal
+            ),
             "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(
                 tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
@@ -18313,6 +18407,33 @@ def _reported_transformer_quant(state: Any) -> Optional[str]:
     if quant is None and _small_host_int8(getattr(state, "pipe", None)):
         return "int8"
     return quant
+
+
+def _fp8_gemm_status(state: Any) -> Optional[dict]:
+    """Which fp8 GEMM the loaded fp8 transformer / text encoder runs (torchao row-wise, or the unit-scale fallback
+    where the torch build has no row-wise kernel), or None for a load without fp8. The card is the fp8 component's
+    own (the dispatcher routes by operand device): the denoiser when it is fp8, else the text encoder. Never raises."""
+    try:
+        pipe = getattr(state, "pipe", None)
+        component = None
+        if str(getattr(state, "transformer_quant", None) or "").lower() == "fp8":
+            component = "transformer"
+        elif str(getattr(state, "text_encoder_quant", None) or "").lower() == "fp8":
+            component = "text_encoder"
+        if component is None:
+            return None
+        from .diffusion_fp8_unit_scale import gemm_path
+
+        index = None
+        module = getattr(pipe, component, None)
+        for param in module.parameters() if module is not None else ():
+            device = getattr(param, "device", None)
+            if getattr(device, "type", None) == "cuda":
+                index = device.index
+                break
+        return {**gemm_path(index), "component": component}
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
 
 
 def _grouped_form_status(pipe: Any) -> Optional[dict]:

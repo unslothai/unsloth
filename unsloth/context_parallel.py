@@ -1130,8 +1130,8 @@ class ContextParallelManager:
 
     def _note_real_tokens(self, local_ids, local) -> None:
         # Same-size forwards OR their masks: counting a pad as real is harmless, a real token as pad
-        # is not.
-        if not isinstance(local_ids, torch.Tensor) or not torch.is_grad_enabled():
+        # is not. Also under no_grad: evaluate() inside torch.no_grad() must not count the cp pads.
+        if not isinstance(local_ids, torch.Tensor):
             return
         masks = self.__dict__.setdefault("_real_token_masks", {})
         key = local_ids.numel()
@@ -1525,16 +1525,16 @@ def _cp_scaler_start(trainer, accelerator) -> None:
 
 
 def _model_parallel_axes(model) -> list:
-    """The tensor / pipeline / expert parallel axes a trainer would combine with context parallelism: from
-    UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_EP_SIZE (read without building anything) or a model split by
-    hand."""
+    """The tensor / pipeline parallel axes a trainer would combine with context parallelism: from
+    UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (read without building anything) or a model split by hand. Expert parallel
+    is not one: the experts are token-local, so it composes with cp and the registry's ep x cp cells decide
+    (_expert_parallel_size)."""
     import os
 
     axes = []
     for name, what in (
         ("UNSLOTH_PP_SIZE", "pipeline parallel"),
         ("UNSLOTH_TP_SIZE", "tensor parallel"),
-        ("UNSLOTH_EP_SIZE", "expert parallel"),
     ):
         raw = str(os.environ.get(name, "")).strip()
         try:
@@ -1547,7 +1547,6 @@ def _model_parallel_axes(model) -> list:
             axes.append(f"{what} ({name}={raw})")
     if isinstance(model, torch.nn.Module):
         try:
-            from .models.ep_native import is_expert_parallel
             from .models.pp_native import is_pipeline_parallel
             from .models.tp_native import is_tensor_parallel
         except Exception:
@@ -1556,9 +1555,25 @@ def _model_parallel_axes(model) -> list:
             axes.append("pipeline parallel (apply_pipeline_parallel)")
         if is_tensor_parallel(model) and not any(a.startswith("tensor") for a in axes):
             axes.append("tensor parallel (apply_tensor_parallel)")
-        if is_expert_parallel(model) and not any(a.startswith("expert") for a in axes):
-            axes.append("expert parallel (apply_expert_parallel)")
     return axes
+
+
+def _expert_parallel_size(model) -> int:
+    """UNSLOTH_EP_SIZE, or the ep mesh size of a model apply_expert_parallel sharded (2 if it cannot be read)."""
+    try:
+        from .models.ep_native import _mesh, ep_env_size, is_expert_parallel
+    except Exception:
+        return 1
+    try:
+        ep = ep_env_size()
+    except ValueError:
+        ep = 1
+    if ep <= 1 and isinstance(model, torch.nn.Module) and is_expert_parallel(model):
+        try:
+            ep = int(_mesh(model).size())
+        except Exception:
+            ep = 2
+    return ep
 
 
 def _composed_layout(size: int):
@@ -1610,6 +1625,7 @@ def _refuse_model_parallel_cp(
             fsdp2 = bool(unsloth_fsdp2_native_requested())
         except Exception:
             fsdp2 = False
+        ep = _expert_parallel_size(model)
         alone = types.SimpleNamespace(
             dp = max(world // size, 1),
             tp = 1,
@@ -1618,13 +1634,14 @@ def _refuse_model_parallel_cp(
             fsdp2 = fsdp2,
             cp_backend = None,
             schedule = None,
+            ep = ep,  # expert parallel beside cp: the registry's ep x cp cells decide
         )
         # A constructor kwarg (context_parallel_backend = ...) overrides the config's value.
         backend = backend or getattr(config, "context_parallel_backend", None)
         check_layout(alone, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config)
         return
 
-    composable = all("UNSLOTH_" in a and not a.startswith("expert") for a in axes)
+    composable = all("UNSLOTH_" in a for a in axes)
     layout = _composed_layout(size) if composable else None
     if layout is not None:
         from .parallel_capabilities import check_layout

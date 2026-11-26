@@ -4149,8 +4149,8 @@ export const en = {
       summary: {
         single: "Training on one GPU",
         layerSplit: "Model is split layer by layer across {count} GPUs",
-        ddp: "Model fits one GPU: data parallel on {count} GPUs",
-        fsdp2: "Model is too big for one GPU: sharded across {count} GPUs",
+        ddp: "Each GPU trains a full copy: data parallel on {count} GPUs",
+        fsdp2: "Weights and optimizer state sharded across {count} GPUs",
         tp: "Each layer is split across {count} GPUs",
         pp: "Layers run as {count} pipeline stages, one per GPU",
         cp: "Each sequence is split across {count} GPUs",
@@ -4161,7 +4161,7 @@ export const en = {
         noGpu: "Select at least one GPU.",
         singleNeedsOne: "Single GPU uses exactly one GPU. Untick the others.",
         needsTwo: "This mode needs at least two GPUs.",
-        customSpec: "Enter a layout, for example dp=2,tp=2.",
+        customSpec: "Enter a layout, for example {example}.",
       },
     },
     preview: {
@@ -5095,6 +5095,7 @@ export const en = {
       showPromptDescription: "See exact instructions sent to the model.",
     },
     history: {
+      notSaved: "Not saved to History: the browser's storage is full.",
       title: "History",
       search: "Search history",
       empty: "Your translations appear here.",

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import collections
 import functools
 import inspect
 import os
@@ -114,6 +115,7 @@ from .diffusion_step_skip import (
     uninstall_static_step_skip,
 )
 from .diffusion_device import (
+    physical_gpu_id_for_ordinal,
     apply_cpu_render_threads,
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
@@ -228,6 +230,8 @@ from .diffusion_transformer_quant import (
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
     explain_unusable_scheme,
+    precision_options,
+    precision_target,
     native_int8_act,
     native_offload_host,
     rdna_video_explicit_w8a8_reason,
@@ -358,6 +362,7 @@ from .video_stream_encode import (
 from utils.hardware import clear_gpu_cache
 
 from core.inference.inference_gate import holds_inference, pauses_background_embedding
+from utils.keep_awake import keeps_system_awake
 
 # Shared with the image backend so both pin every loader call to the same live cache root
 from core.inference.diffusion import hub_cache_dir
@@ -2336,6 +2341,8 @@ class _PlannedFetch(NamedTuple):
     # The encoder components the plan left out (hosted pre-cast checkpoints it expected to find); _run_load re-plans
     # the base when the actual fetches skip a different set.
     skip_te: tuple = ()
+    # The other listed candidates a fetch loop may fall back to, in its order, as ``(name, blob key, size)``.
+    alternates: tuple = ()
 
 
 def _sibling_etag(sibling: Any) -> Optional[str]:
@@ -2384,6 +2391,37 @@ class _OneCommitListings:
                 repo, files_metadata = True, **({"revision": pinned} if pinned else {})
             )
         return self._infos[key]
+
+    def recording(self, api: Any) -> "_RecordedListings":
+        """``api`` whose unpinned full listings are shared with this plan, both ways."""
+        return _RecordedListings(api, self)
+
+
+class _RecordedListings:
+    """A ``model_info`` client for a picker that runs before the plan (the hosted encoder choice): its full listing of
+    an unpinned repo is the plan's listing of that repo, so the repo is listed once and the plan sizes the very blob the
+    picker chose. The fetch itself still resolves the repo's ref on its own (the revision is not carried to it)."""
+
+    def __init__(self, api: Any, listings: _OneCommitListings):
+        self._api = api
+        self._listings = listings
+
+    def model_info(self, repo_id: str, *args: Any, **kwargs: Any) -> Any:
+        key = repo_id.strip().lower()
+        shareable = (
+            not args
+            and kwargs.get("files_metadata")
+            and set(kwargs) <= {"files_metadata", "timeout"}
+            and key not in self._listings._pins
+        )
+        if not shareable:
+            return self._api.model_info(repo_id, *args, **kwargs)
+        if key not in self._listings._infos:
+            self._listings._infos[key] = self._api.model_info(repo_id, *args, **kwargs)
+        return self._listings._infos[key]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._api, name)
 
 
 def _plan_total(plan: dict[str, "_PlannedFetch"]) -> Optional[int]:
@@ -2461,8 +2499,59 @@ def _plan_fetch(
     return _PlannedFetch(repo, revision, files)
 
 
+def _plan_first_listed(repo: str, info: Any, candidates: Any) -> Optional["_PlannedFetch"]:
+    """Plan the first of ``candidates`` listed in ``repo`` (exact repo, no mirror swap), else None. Unpinned."""
+    meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
+    listed = [
+        (n, _sibling_etag(meta[n]), int(getattr(meta[n], "size", 0) or 0))
+        for n in dict.fromkeys(candidates)
+        if n in meta
+    ]
+    if not listed:
+        return None
+    return _PlannedFetch(repo, None, (listed[0],), alternates = tuple(listed[1:]))
+
+
+def _plan_follow_candidate(
+    plan: dict[str, "_PlannedFetch"], role: str, repo: str, name: str
+) -> Optional[dict[str, "_PlannedFetch"]]:
+    """``plan`` with ``role``'s entry for ``repo`` moved to its listed fallback ``name``, else None (nothing to move)."""
+    prefix = f"{role}:{repo}:"
+    for key, entry in plan.items():
+        names = [alt[0] for alt in entry.alternates]
+        if not key.startswith(prefix) or name not in names:
+            continue
+        at = names.index(name)
+        out = {k: v for k, v in plan.items() if k != key}
+        out[prefix + name] = entry._replace(
+            files = (entry.alternates[at],), alternates = entry.alternates[at + 1 :]
+        )
+        return out
+    return None
+
+
+def _source_starting_at(source: Any, name: str) -> Any:
+    """``source`` with ``name`` as its first candidate (a fetch fell back to it), so a re-plan names that file."""
+    import dataclasses
+
+    from .diffusion_prequant import candidate_filenames_of
+
+    names = list(candidate_filenames_of(source))
+    if name not in names or not dataclasses.is_dataclass(source):
+        return source
+    try:
+        return dataclasses.replace(
+            source, filename = name, fallback_filenames = tuple(names[names.index(name) + 1 :])
+        )
+    except (TypeError, ValueError):
+        return source
+
+
 _FETCH_CHECKPOINT = "checkpoint"
 _FETCH_BASE = "base"
+_FETCH_TE_PREQUANT = "te_prequant"
+_FETCH_DENOISER_PREQUANT = "denoiser_prequant"
+_FETCH_H3_TE_QUANT = "h3_te_quant"
 
 
 def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
@@ -6775,6 +6864,9 @@ class VideoBackend:
         self._generate_job_account: Optional[str] = None
         # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run
         self._gen_video_id: Optional[str] = None
+        # video_id -> (account, terminal record) of recent clips: a page whose clip ended while a
+        # successor took the single progress record still reads its own outcome.
+        self._gen_outcomes: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """Pins the device per worker thread: torch.cuda.set_device is thread-local, not set once at
@@ -7507,6 +7599,19 @@ class VideoBackend:
                 kwargs.get("hf_token"),
                 local_files_only = local_files_only,
             )
+            # Resolved once so the progress plan and the fetch name the same files.
+            denoiser_sources = (
+                self._denoiser_prequant_source_list(
+                    fam,
+                    planned_denoiser,
+                    base,
+                    kwargs.get("h3_task"),
+                    hf_token = kwargs.get("hf_token"),
+                )
+                if skip_transformer_weights
+                else []
+            )
+            denoiser_plan = [(src, planned_denoiser) for src in denoiser_sources]
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -7521,6 +7626,7 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 ltx25_dev = ltx25_dev,
                 planned_files = (planned_files := {}),
+                denoiser_sources = denoiser_plan,
             )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
@@ -7649,6 +7755,7 @@ class VideoBackend:
                         ltx25_dev = ltx25_dev,
                         planned_files = (replanned := {}),
                         pin_revisions = _fetched_pins(planned_files),
+                        denoiser_sources = denoiser_plan,
                     )
                     previous_plan, planned_files = (
                         planned_files,
@@ -7684,6 +7791,24 @@ class VideoBackend:
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
             )
+
+            def _follow_denoiser_fallback(source: Any, name: str) -> None:
+                # The fetch moved past a failed candidate: count the file it now pulls, and so does any re-plan.
+                nonlocal denoiser_plan, planned_files, expected
+                denoiser_plan = [
+                    (
+                        _source_starting_at(src, name)
+                        if getattr(src, "location", None) == source.location
+                        else src,
+                        sch,
+                    )
+                    for src, sch in denoiser_plan
+                ]
+                moved = self._publish_followed_candidate(token, planned_files, source, name)
+                if moved is not None:
+                    planned_files = moved
+                    expected = _plan_total(planned_files) if expected else expected
+
             # Fetch the hosted DiT here, under this load's cancel event, and claim it against a mid-load delete.
             if _ltx23_prequant_serves_on_card(
                 fam,
@@ -7699,6 +7824,18 @@ class VideoBackend:
                 ltx23_sources = self._denoiser_prequant_source_list(
                     fam, TQ_FP8, LTX23_PREQUANT_BASE, hf_token = kwargs.get("hf_token")
                 )
+                denoiser_plan = denoiser_plan + [(src, TQ_FP8) for src in ltx23_sources]
+                ltx23_planned: dict[str, _PlannedFetch] = {}
+                if not local_files_only:
+                    from huggingface_hub import HfApi
+                    ltx23_planned = self._plan_prequant_fetches(
+                        _OneCommitListings(
+                            hub_reachability.guarded(HfApi(token = kwargs.get("hf_token") or None))
+                        ),
+                        denoiser_sources = [(src, TQ_FP8) for src in ltx23_sources],
+                    )
+                previous_plan, planned_files = planned_files, {**planned_files, **ltx23_planned}
+                added = self._plan_partials(planned_files, known = previous_plan)
                 with self._lock:
                     if self._load_token == token and self._loading is not None:
                         self._loading.asset_repos = tuple(
@@ -7707,27 +7844,32 @@ class VideoBackend:
                                 + tuple(src.location for src in ltx23_sources)
                             )
                         )
+                        if ltx23_planned and expected:
+                            expected = _plan_total(planned_files)
+                            self._loading.expected_bytes = expected
+                            if hasattr(self._loading, "fetch_plan"):
+                                self._loading.incomplete_baseline = {
+                                    **added,
+                                    **self._loading.incomplete_baseline,
+                                }
+                                self._loading.fetch_plan = planned_files
                 self._fetch_denoiser_prequant(
                     ltx23_sources,
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                     local_files_only = local_files_only,
                     scheme = TQ_FP8,
+                    on_fallback = _follow_denoiser_fallback,
                 )
             # The denoiser artifact too: the injection that would fetch it has no cancel event.
             if skip_transformer_weights:
                 self._fetch_denoiser_prequant(
-                    self._denoiser_prequant_source_list(
-                        fam,
-                        planned_denoiser,
-                        base,
-                        kwargs.get("h3_task"),
-                        hf_token = kwargs.get("hf_token"),
-                    ),
+                    denoiser_sources,
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                     local_files_only = local_files_only,
                     scheme = planned_denoiser,
+                    on_fallback = _follow_denoiser_fallback,
                 )
             base_plan = planned_files.get(_FETCH_BASE)
             actual_te_skip = tuple(te_skipped) + tuple(h3_te_skipped)
@@ -7751,6 +7893,7 @@ class VideoBackend:
                     planned_files = (replanned := {}),
                     skip_te_override = actual_te_skip,
                     pin_revisions = _fetched_pins(planned_files),
+                    denoiser_sources = denoiser_plan,
                 )
                 previous_plan, planned_files = (
                     planned_files,
@@ -9192,8 +9335,10 @@ class VideoBackend:
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
         scheme: Optional[str] = None,
+        on_fallback: Optional[Callable[[Any, str], None]] = None,
     ) -> None:
-        """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation."""
+        """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation.
+        ``on_fallback(source, name)`` runs before each attempt past the first, so progress can follow that file."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from core.inference.diffusion_prequant import (
             candidate_filenames_of,
@@ -9215,6 +9360,11 @@ class VideoBackend:
                 cache_dir = hub_cache_dir(),
             )
             for index, name in enumerate(names):
+                if index and on_fallback is not None:
+                    try:
+                        on_fallback(source, name)
+                    except Exception as exc:  # noqa: BLE001 -- progress is best effort, the fetch is not
+                        logger.debug("video.denoiser_prequant_replan_failed: %s", exc)
                 try:
                     hf_hub_download_with_xet_fallback(
                         source.location,
@@ -9643,8 +9793,9 @@ class VideoBackend:
         planned_files: Optional[dict[str, "_PlannedFetch"]] = None,
         skip_te_override: Optional[tuple[str, ...]] = None,
         pin_revisions: Optional[dict[str, str]] = None,
+        denoiser_sources: Optional[Sequence[tuple[Any, Optional[str]]]] = None,
     ) -> Optional[int]:
-        """Bytes this load pulls, minus replaced dense shards; None offline, where no download happens."""
+        """Bytes this load pulls (incl. pre-cast DiT / encoder fetches), minus replaced dense shards; None offline."""
         if local_files_only:
             return None
         try:
@@ -9652,15 +9803,17 @@ class VideoBackend:
 
             total = 0
             api = hub_reachability.guarded(HfApi(token = hf_token or None))
+            listings = _OneCommitListings(api, pin_revisions)
             if skip_te_override is not None:
                 # The encoder fetches already ran: plan around what they actually staged.
                 skip_te_components = tuple(skip_te_override)
             else:
-                skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, api))
-                if self._h3_te_quant_hub_files(h3_te_scheme, api)[1]:
+                # The listings that pick the encoders are the ones the plan sizes them from: one request per repo.
+                picker = listings.recording(hub_reachability.always_asked(api))
+                skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, picker))
+                if self._h3_te_quant_hub_files(h3_te_scheme, picker)[1]:
                     skip_te_components = skip_te_components + ("text_encoder",)
             planned: dict[str, _PlannedFetch] = {}
-            listings = _OneCommitListings(api, pin_revisions)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 listing = _video_listing_repo(repo_id)
                 info = listings.info(listing)
@@ -9691,12 +9844,113 @@ class VideoBackend:
                 planned[_FETCH_BASE] = _plan_fetch(
                     base, listing, info, [name for name, _ in base_files], hf_token
                 )._replace(skip_te = tuple(skip_te_components))
+            prequant = self._plan_prequant_fetches(
+                listings,
+                te_sources = te_sources,
+                skip_te_components = skip_te_components,
+                h3_te_scheme = h3_te_scheme,
+                denoiser_sources = denoiser_sources,
+            )
+            total += sum(int(size or 0) for e in prequant.values() for _n, _k, size in e.files)
+            planned.update(prequant)
             if planned_files is not None:
                 planned_files.update(planned)
             # The plan's own total (one count per blob, as progress reads it); the raw sum only without a plan.
             return _plan_total(planned) if planned else (total or None)
         except Exception:  # noqa: BLE001 -- progress totals are best-effort only
             return None
+
+    def _publish_followed_candidate(
+        self, token: Any, plan: dict[str, "_PlannedFetch"], source: Any, name: str
+    ) -> Optional[dict[str, "_PlannedFetch"]]:
+        """``plan`` with the hosted denoiser of ``source`` moved to its listed fallback ``name``, published to this
+        load's progress (still its token, and a total to report); None when the plan has no such fallback."""
+        moved = _plan_follow_candidate(plan, _FETCH_DENOISER_PREQUANT, source.location, name)
+        if moved is None:
+            return None
+        added = self._plan_partials(moved, known = plan)
+        with self._lock:
+            loading = self._loading
+            if self._load_token == token and loading is not None and loading.expected_bytes:
+                loading.expected_bytes = _plan_total(moved)
+                if hasattr(loading, "fetch_plan"):
+                    loading.incomplete_baseline = {**added, **loading.incomplete_baseline}
+                    loading.fetch_plan = moved
+        return moved
+
+    @staticmethod
+    def _plan_prequant_fetches(
+        listings: "_OneCommitListings",
+        *,
+        te_sources: Optional[dict[str, Any]] = None,
+        skip_te_components: tuple[str, ...] = (),
+        h3_te_scheme: Optional[str] = None,
+        denoiser_sources: Optional[Sequence[tuple[Any, Optional[str]]]] = None,
+    ) -> dict[str, "_PlannedFetch"]:
+        """Plan the pre-cast files ``_run_load`` fetches before the base, mirroring its candidate order. Best effort."""
+        planned: dict[str, _PlannedFetch] = {}
+
+        def _add(role: str, repo: str, names: list) -> None:
+            try:
+                entry = _plan_first_listed(repo, listings.info(repo), names)
+            except Exception as exc:  # noqa: BLE001 -- progress totals are best-effort only
+                logger.debug("video.plan_prequant_unlisted: %s: %s", repo, exc)
+                return
+            if entry is not None:
+                planned[f"{role}:{repo}:{entry.files[0][0]}"] = entry
+
+        try:
+            from .diffusion_prequant import (
+                candidate_filenames_of,
+                prefer_cached_pickle_twins,
+                restricted_prequant_load_supported,
+            )
+            from .diffusion_te_prequant import (
+                te_candidate_filenames,
+                te_candidate_is_readable,
+                te_prequant_mirror_path,
+            )
+
+            for component, source in (te_sources or {}).items():
+                if component not in skip_te_components:
+                    continue
+                if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
+                    continue
+                names = prefer_cached_pickle_twins(
+                    source.location,
+                    [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)],
+                    readable = te_candidate_is_readable,
+                )
+                # _fetch_te_prequant stops at the first mirrored name: read in place, nothing downloads.
+                mirrored = next(
+                    (i for i, n in enumerate(names) if te_prequant_mirror_path(source.location, n)),
+                    None,
+                )
+                if mirrored is not None:
+                    names = names[:mirrored]
+                if names:
+                    _add(_FETCH_TE_PREQUANT, source.location, names)
+            if h3_te_scheme and "text_encoder" in skip_te_components:
+                from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
+                filename = h3_te_quant_filename(h3_te_scheme)
+                if filename:
+                    _add(_FETCH_H3_TE_QUANT, h3_te_quant_source(h3_te_scheme), [filename])
+            for source, scheme in denoiser_sources or ():
+                if getattr(source, "kind", None) != "repo":
+                    continue
+                # _fetch_denoiser_prequant's order: readable names, unless that leaves none.
+                names = list(dict.fromkeys(candidate_filenames_of(source)))
+                names = [n for n in names if restricted_prequant_load_supported(scheme, n)] or names
+                names = prefer_cached_pickle_twins(
+                    source.location,
+                    names,
+                    readable = lambda n, scheme = scheme: restricted_prequant_load_supported(scheme, n),
+                    cache_dir = hub_cache_dir(),
+                )
+                _add(_FETCH_DENOISER_PREQUANT, source.location, names)
+        except Exception as exc:  # noqa: BLE001 -- progress totals are best-effort only
+            logger.debug("video.plan_prequant_failed: %s", exc)
+        return planned
 
     @vram_budget_scope("video", load = True)
     def download_plan(
@@ -10554,17 +10808,22 @@ class VideoBackend:
                 for root in roots:
                     folder = root / ("models--" + repo.replace("/", "--"))
                     try:
+                        ref = folder / "refs" / "main"
+                        rev = entry.revision or (
+                            ref.read_text(encoding = "utf-8").strip() if ref.is_file() else None
+                        )
+                        snapshot = folder / "snapshots" / rev / name if rev else None
                         if etag:
                             candidates = [folder / "blobs" / etag]
                             stable = folder / "blobs" / f"{etag}.incomplete"
                             if stable.is_file():
                                 best = max(best, blob_bytes_present(stable))
+                            # A cache without symlinks (Windows) MOVES the finished blob into the snapshot; a symlink
+                            # there points at a blob already read by key, possibly another revision's.
+                            if snapshot is not None and not snapshot.is_symlink():
+                                candidates.append(snapshot)
                         else:
-                            ref = folder / "refs" / "main"
-                            rev = entry.revision or (
-                                ref.read_text(encoding = "utf-8").strip() if ref.is_file() else None
-                            )
-                            candidates = [folder / "snapshots" / rev / name] if rev else []
+                            candidates = [snapshot] if snapshot is not None else []
                         for path in candidates:
                             if path.is_file():
                                 best = max(best, os.path.getsize(path))
@@ -15063,9 +15322,11 @@ class VideoBackend:
         live_preview: Optional[bool] = None,
         draft_decode: Optional[bool] = None,
         before_commit: Optional[Callable[[], None]] = None,
+        record_outcome: bool = True,
     ) -> dict[str, int]:
         """Returns at once (proxy caps ~100 s). VIDEO_NOT_LOADED_MSG and VIDEO_GENERATION_BUSY_MSG map to 409.
-        ``before_commit`` runs under the lock just before the reservation; raising aborts it."""
+        ``before_commit`` runs under the lock just before the reservation; raising aborts it.
+        ``record_outcome`` False keeps a Video page clip's id out of the /v1/videos job store."""
         if input_reference is not None and (first_frame is not None or reference_images):
             raise ValueError(
                 "input_reference cannot be combined with explicit conditioning inputs."
@@ -15184,10 +15445,16 @@ class VideoBackend:
                     "eta_seconds": None,
                 }
                 self._last_request_shape = None
+                _note_clip_started(state.family, canvas_w, canvas_h, run_num_frames, steps)
                 break
         worker = account_thread(
             # Not in kwargs: those are also replayed as a valid generate() call.
-            target = functools.partial(self._run_generate, job_token = job_token, video_id = video_id),
+            target = functools.partial(
+                self._run_generate,
+                job_token = job_token,
+                video_id = video_id,
+                **({} if record_outcome else {"record_outcome": False}),
+            ),
             kwargs = dict(
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -15247,12 +15514,17 @@ class VideoBackend:
         cancel_event: threading.Event,
         job_token: Optional[object] = None,
         video_id: Optional[str] = None,
+        record_outcome: bool = True,
         **gen_kwargs: Any,
     ) -> None:
         """Reservation never outlives its thread after BaseException; begin_generate looks it up by name."""
         try:
             self._run_generate_body(
-                cancel_event = cancel_event, job_token = job_token, video_id = video_id, **gen_kwargs
+                cancel_event = cancel_event,
+                job_token = job_token,
+                video_id = video_id,
+                record_outcome = record_outcome,
+                **gen_kwargs,
             )
         finally:
             if job_token is not None:
@@ -15268,6 +15540,7 @@ class VideoBackend:
         cancel_event: threading.Event,
         job_token: Optional[object] = None,
         video_id: Optional[str] = None,
+        record_outcome: bool = True,
         **gen_kwargs: Any,
     ) -> None:
         """Worker for begin_generate; unexpected errors are logged in full, the client gets
@@ -15275,7 +15548,7 @@ class VideoBackend:
         from . import video_gallery
 
         def _record_outcome(error: Optional[str] = None) -> None:
-            if video_id is None:
+            if video_id is None or not record_outcome:
                 return
             try:
                 video_gallery.record_job_outcome(
@@ -15422,7 +15695,36 @@ class VideoBackend:
                     total_steps = total,
                     video_id = (video or {}).get("id"),
                 )
+            # Under the lock, so a successor's start cannot be paired with this clip's time.
+            _note_clip_finished(error is None, total)
+            if self._gen_video_id is not None:
+                self._gen_outcomes[self._gen_video_id] = (
+                    self._generate_job_account,
+                    dict(self._gen),
+                )
+                self._gen_outcomes.move_to_end(self._gen_video_id)
+                while len(self._gen_outcomes) > 64:
+                    self._gen_outcomes.popitem(last = False)
+        # Outside the lock: the queue starts the next video as soon as this one ends.
+        _wake_video_queue()
 
+    def generate_outcome(self, video_id: str, expected_account: Optional[str]) -> Optional[dict]:
+        """The terminal progress record of the clip ``video_id``, for the account that ran it."""
+        with self._lock:
+            kept = self._gen_outcomes.get(video_id)
+        if kept is None or kept[0] != expected_account:
+            return None
+        gen = dict(kept[1])
+        total = int(gen.get("total") or 0)
+        gen.update(
+            video_id = video_id,
+            active = False,
+            total_steps = total,
+            fraction = 1.0 if gen.get("phase") == "completed" else 0.0,
+        )
+        return gen
+
+    @keeps_system_awake
     @holds_inference
     @vram_budget_scope("video")
     def generate(
@@ -17386,8 +17688,21 @@ class VideoBackend:
 
     def forget_terminal_video(self, video_id: Optional[str] = None) -> bool:
         """Drop a deleted clip's terminal record, else the UI resurrects a ghost card; live jobs are
-        kept."""
+        kept. Its by-id outcome goes too (with no id, as on a clear, every completed one of the
+        caller's account: a clear only deletes the caller's own clips)."""
+        account = current_account_id()
         with self._lock:
+            if video_id is not None:
+                kept = self._gen_outcomes.get(str(video_id))
+                if kept is not None and kept[1].get("phase") == "completed":
+                    self._gen_outcomes.pop(str(video_id), None)
+            else:
+                for vid in [
+                    vid
+                    for vid, kept in self._gen_outcomes.items()
+                    if kept[0] == account and kept[1].get("phase") == "completed"
+                ]:
+                    self._gen_outcomes.pop(vid, None)
             gen = self._gen
             if self._generate_job_active or not isinstance(gen, dict):
                 return False
@@ -17599,6 +17914,8 @@ class VideoBackend:
                 "h3_task": None,
                 "defaults": None,
                 "resolved": None,
+                "precision_options": None,
+                "precision_options_card": None,
             }
         from hub.utils.gguf import extract_quant_token
 
@@ -17659,6 +17976,27 @@ class VideoBackend:
                 else None
             ),
             "transformer_quant": state.transformer_quant,
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            "precision_options": precision_options(
+                fam.name,
+                state.base_repo,
+                state.device,
+                # The probe only judges a load that runs torchao on this card, not a native path.
+                target = precision_target(
+                    state.device,
+                    state.dtype,
+                    state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal,
+                ),
+                model_kind = state.kind,
+                # These verdicts describe the NEXT load, whose Memory choice may offload (native INT8 then skips the
+                # probe), so the resident's own policy is not assumed: unknown counts as possibly offloaded.
+                offload = None,
+                modular = bool(getattr(fam, "modular_workflow", None)),
+            ),
+            # The card those verdicts were judged on, so a pick for another card does not inherit its probe failures.
+            "precision_options_card": physical_gpu_id_for_ordinal(
+                state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal
+            ),
             "baked_loras": video_lora.baked_lora_names(getattr(state, "pipe", None)),
             "baked_lora_specs": video_lora.baked_lora_specs(getattr(state, "pipe", None)),
             # Structural refusal only (kind, two experts); the transformer_quant refusal depends on the next load.
@@ -17836,6 +18174,37 @@ def _family_shape_defaults(fam) -> dict:
         "frame_offset": fam.frame_offset,
         "resolution_presets": [list(p) for p in fam.resolution_presets],
     }
+
+
+def _note_clip_started(fam, width, height, num_frames, steps) -> None:
+    """Tell the video queue which shape now runs, for its ETAs; never fails a generation."""
+    try:
+        from core.inference import video_queue
+
+        name = getattr(fam, "name", None)
+        frames = num_frames if num_frames is not None else getattr(fam, "default_num_frames", None)
+        video_queue.clip_started(
+            (name, width, height, frames),
+            steps if steps is not None else getattr(fam, "default_steps", None),
+        )
+    except Exception:  # noqa: BLE001 -- ETA bookkeeping only
+        pass
+
+
+def _note_clip_finished(ok: bool, steps: Optional[int]) -> None:
+    try:
+        from core.inference import video_queue
+        video_queue.clock.finished(ok, steps or None)
+    except Exception:  # noqa: BLE001 -- ETA bookkeeping only
+        pass
+
+
+def _wake_video_queue() -> None:
+    try:
+        from core.inference import video_queue
+        video_queue.notify()
+    except Exception:  # noqa: BLE001 -- the queue still has its poll
+        pass
 
 
 def generation_in_flight() -> bool:
