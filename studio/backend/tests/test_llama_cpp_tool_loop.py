@@ -7711,3 +7711,107 @@ def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatc
     assert len(seen) == 1
     assert isinstance(seen[0], tools_mod.PythonCallAnalyses)
     assert list(seen[0]._by_source) == ["print(1)"]
+
+
+@pytest.mark.parametrize(
+    "policy, tool_choice, whole_doc, sticky, complete, expected_passage",
+    [
+        ("checkpoint", None, True, 0, "Complete document", "Complete document"),
+        ("checkpoint", "required", True, 0, "Complete document", "Complete document"),
+        (
+            "checkpoint",
+            {"type": "function", "function": {"name": "search_knowledge_base"}},
+            True,
+            0,
+            "Complete document",
+            "Complete document",
+        ),
+        ("rolling", None, True, 0, "Complete document", "Complete document"),
+        ("checkpoint", None, True, 2, "Complete document", "Complete document"),
+        ("checkpoint", None, True, 0, "Large document " * 50, "Partial passage"),
+        ("checkpoint", None, False, 0, "", None),
+    ],
+)
+def test_first_context_fit_retries_whole_document_in_prompt_order(
+    monkeypatch, policy, tool_choice, whole_doc, sticky, complete, expected_passage
+):
+    from core.inference import tools
+
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])
+    backend._effective_context_length = 1000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_kw: sum(len(str(m.get("content", ""))) for m in messages),
+    )
+    monkeypatch.setattr(llama_cpp, "_can_reset_epoch", lambda *_a, **_kw: True)
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(
+        llama_cpp, "_sticky_compaction_details", lambda *_a, **_kw: (sticky, True, False)
+    )
+
+    def exchange(name, prefix, text):
+        return tools.build_synthetic_search_exchange(
+            tool_name = name,
+            call_prefix = prefix,
+            status_label = name,
+            query = "Summarize the document",
+            text = text,
+            sources = None,
+        )
+
+    def inject(
+        messages,
+        scope,
+        *,
+        whole_document_only = False,
+    ):
+        if not scope["whole_doc"]:
+            return None
+        if whole_document_only:
+            assert not any("ancient" in str(message.get("content")) for message in messages)
+            assert not any(message.get("content") == "Partial passage" for message in messages)
+            text = complete
+        elif tool_choice is not None:
+            return None
+        else:
+            text = "Partial passage"
+        return {
+            **exchange("search_knowledge_base", "rag_auto_", text),
+            "whole_document": whole_document_only,
+        }
+
+    monkeypatch.setattr(tools, "build_rag_autoinject", inject)
+    mcp = exchange(tools.MCP_TOOL_SEARCH_NAME, "mcp_auto_", "Matching MCP tools")
+    catalog = [
+        {"type": "function", "function": {"name": name}}
+        for name in ["search_knowledge_base", tools.MCP_TOOL_SEARCH_NAME]
+    ]
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "ancient " * 250},
+                {"role": "assistant", "content": "Prior answer"},
+                {"role": "user", "content": "Summarize the document"},
+            ],
+            tools = catalog,
+            mcp_match_exchange = {**mcp, "names": []},
+            context_overflow = "truncate_oldest",
+            context_policy = policy,
+            max_tokens = 80,
+            max_tool_iterations = 2,
+            tool_choice = tool_choice,
+            rag_scope = {"thread_id": "t1", "context_length": 1000, "whole_doc": whole_doc},
+        )
+    )
+
+    sent = [m.get("content") for m in payloads[0]["messages"] if m["role"] == "tool"]
+    expected = [expected_passage] if expected_passage else []
+    if not isinstance(tool_choice, dict):
+        expected.append("Matching MCP tools")
+    assert sent == expected
+    assert payloads[0]["tool_choice"] == "auto"
+    assert [e["result"] for e in events if e["type"] == "tool_end"] == sent
+    truncation = next(e for e in events if e["type"] == "context_truncated")
+    assert truncation["fits"] and truncation["dropped_messages"] == 2
+    assert bool(truncation.get("checkpoint_started")) is (policy == "checkpoint" and not sticky)

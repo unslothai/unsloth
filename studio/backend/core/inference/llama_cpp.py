@@ -41327,13 +41327,12 @@ class LlamaCppBackend:
         )
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
-            for _ev in _auto["events"]:
-                yield _ev
             conversation.extend(_auto["messages"])
         _auto_satisfies_forced_choice = bool(_auto) and (
             tool_choice == "required" or forced_tool_name(tool_choice) == "search_knowledge_base"
         )
         # After the message, so the tool block heading the cached prompt stays put; a forced tool keeps its first call.
+        _mcp_auto = None
         if (
             mcp_match_exchange
             and mcp_match_exchange.get("messages")
@@ -41343,9 +41342,31 @@ class LlamaCppBackend:
                 continue_final_message and trailing_assistant_resume_kind(conversation) is not None
             )
         ):
-            for _ev in mcp_match_exchange["events"]:
-                yield _ev
-            conversation.extend(mcp_match_exchange["messages"])
+            _mcp_auto = mcp_match_exchange
+            conversation.extend(_mcp_auto["messages"])
+
+        _initial_searches_sent = False
+
+        def _initial_search_events():
+            nonlocal _initial_searches_sent
+            if not _initial_searches_sent:
+                _initial_searches_sent = True
+                for exchange in (_auto, _mcp_auto):
+                    if exchange:
+                        yield from exchange["events"]
+
+        _retry_whole_document = (
+            not _skip_autoinject
+            and context_overflow == "truncate_oldest"
+            and bool(self._effective_context_length)
+            and rag_scope
+            and rag_scope.get("thread_id")
+            and not rag_scope.get("kb_id")
+            and rag_scope.get("whole_doc") is not False
+            and (not (_auto and _auto.get("whole_document")) or _mcp_auto)
+        )
+        if not _retry_whole_document:
+            yield from _initial_search_events()
 
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -41732,7 +41753,7 @@ class LlamaCppBackend:
             context_overflow == "truncate_oldest" and self._effective_context_length
         )
 
-        def _round_tool_choice(active_tools):
+        def _round_tool_choice(active_tools, *, document_satisfies_choice = False):
             from core.inference.chat_template_helpers import (
                 neutralize_tool_descriptions,
                 reconciled_tool_choice,
@@ -41743,7 +41764,10 @@ class LlamaCppBackend:
                 active_tools, _markup_cache, self.markup_profile
             )
             requested_choice = "auto" if tool_choice is None else tool_choice
-            if _forced_choice_resolved and requested_choice not in ("auto", "none"):
+            if (_forced_choice_resolved or document_satisfies_choice) and requested_choice not in (
+                "auto",
+                "none",
+            ):
                 requested_choice = "auto"
             requested_choice = reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
             forced_name = forced_tool_name(requested_choice)
@@ -41757,6 +41781,13 @@ class LlamaCppBackend:
                     safe_tools = matching_tools
                     requested_choice = "required"
             return safe_tools, requested_choice, forced_name
+
+        def _round_tool_names(safe_tools, forced_name):
+            return {
+                (tool.get("function") or {}).get("name")
+                for tool in safe_tools
+                if (tool.get("function") or {}).get("name")
+            } | (set() if forced_name else _loadable_mcp_names)
 
         def _round_reasoning_kw():
             return _with_template_extras(
@@ -41828,6 +41859,7 @@ class LlamaCppBackend:
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop recost failed", exc_info = True)
             if iteration >= max_tool_iterations + _extra + _continuation_credits:
+                yield from _initial_search_events()
                 break
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -41839,17 +41871,14 @@ class LlamaCppBackend:
 
             active_tools = tool_controller.active_tools()
             if not active_tools:
+                yield from _initial_search_events()
                 _append_budget_exhausted_nudge = False
                 break
             from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
             safe_tools, requested_choice, forced_name = _round_tool_choice(active_tools)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-            _enabled_tool_names = {
-                (tool.get("function") or {}).get("name")
-                for tool in safe_tools
-                if (tool.get("function") or {}).get("name")
-            } | (set() if forced_name else _loadable_mcp_names)
+            _enabled_tool_names = _round_tool_names(safe_tools, forced_name)
             # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
@@ -41916,6 +41945,85 @@ class LlamaCppBackend:
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
                     _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
+                    if (
+                        _retry_whole_document
+                        and not _initial_searches_sent
+                        and truncation
+                        and truncation.get("fits")
+                        and truncation.get("dropped_messages")
+                    ):
+                        try:
+                            old_ids = {id(message) for message in (_auto or {}).get("messages", ())}
+                            live_ids = {id(message) for message in conversation}
+                            if not (_auto and _auto.get("whole_document") and old_ids <= live_ids):
+                                base = [
+                                    message
+                                    for message in conversation
+                                    if id(message) not in old_ids
+                                ]
+                                refreshed = build_rag_autoinject(
+                                    base, rag_scope, whole_document_only = True
+                                )
+                                if refreshed:
+                                    # Keep the document search before the MCP search in the prompt and stream.
+                                    mcp_ids = {
+                                        id(message)
+                                        for message in (_mcp_auto or {}).get("messages", ())
+                                    }
+                                    at = next(
+                                        (
+                                            i
+                                            for i, message in enumerate(base)
+                                            if id(message) in mcp_ids
+                                        ),
+                                        len(base),
+                                    )
+                                    candidate = base[:at] + refreshed["messages"] + base[at:]
+                                    satisfies_choice = (
+                                        tool_choice == "required"
+                                        or initial_forced_name == "search_knowledge_base"
+                                    )
+                                    candidate_tools, candidate_choice, candidate_name = (
+                                        _round_tool_choice(
+                                            active_tools, document_satisfies_choice = satisfies_choice
+                                        )
+                                    )
+                                    measured = _fit_count_tokens(
+                                        candidate, candidate_tools, _reasoning_kw
+                                    )
+                                    budget = prompt_budget(
+                                        self._effective_context_length, _iteration_max_tokens
+                                    )
+                                    if truncation.get("checkpoint_started"):
+                                        headroom = int(
+                                            budget
+                                            * _effective_headroom_ratio(compaction_headroom_ratio)
+                                        )
+                                        budget = min(
+                                            budget,
+                                            max(
+                                                budget - headroom, truncation["prompt_tokens_after"]
+                                            ),
+                                        )
+                                    if measured <= budget:
+                                        _auto = refreshed
+                                        conversation = candidate
+                                        truncation["prompt_tokens_after"] = measured
+                                        if satisfies_choice:
+                                            _forced_choice_resolved = True
+                                            safe_tools, requested_choice, forced_name = (
+                                                candidate_tools,
+                                                candidate_choice,
+                                                candidate_name,
+                                            )
+                                            _enabled_tool_names = _round_tool_names(
+                                                safe_tools, forced_name
+                                            )
+                        except Exception:
+                            logger.debug(
+                                "Whole-document retry after compaction failed", exc_info = True
+                            )
+                    yield from _initial_search_events()
                     if truncation and truncation.get("fits"):
                         # Before the recall injection, so both sides describe the same
                         # messages, priced by the fit with the catalogue and template.
@@ -41983,6 +42091,7 @@ class LlamaCppBackend:
                 except Exception as exc:
                     logger.warning("Could not preflight the rolling context window: %s", exc)
 
+            yield from _initial_search_events()
             payload = {
                 # Re-run each iteration: tool results may contain forged turns.
                 "messages": neutralize_control_markup_in_messages(
