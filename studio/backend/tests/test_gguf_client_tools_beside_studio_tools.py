@@ -553,3 +553,47 @@ def test_client_only_catalogue_needs_no_approval_channel(monkeypatch):
         "mcp_homeassistant__GetLiveContext"
     ]
     assert response.json()["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_a_client_owned_web_search_is_not_run_through_the_url_alias(monkeypatch):
+    backend, _payloads = _backend(
+        monkeypatch,
+        [
+            [_tool_call("web_fetch", {"url": "https://example.com"}, "call_fetch"), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    executed = _executed(monkeypatch)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read https://example.com"}],
+            tools = [WEB_SEARCH],
+            client_tool_names = frozenset({"web_search"}),
+            max_tool_iterations = 3,
+            permission_mode = "off",
+        )
+    )
+
+    assert executed == []
+
+
+def test_a_client_owned_mcp_tool_search_does_not_unlock_studio_mcp_tools(monkeypatch):
+    import core.inference.tool_loop_controller as controller_module
+
+    spec = _function_tool("mcp__srv__lights")
+    monkeypatch.setattr(controller_module, "_mcp_tool_spec", lambda name: spec)
+    monkeypatch.setattr(
+        controller_module, "_mcp_tool_specs", lambda names: {n: spec for n in names}
+    )
+    call = {"id": "c1", "function": {"name": "mcp__srv__lights", "arguments": "{}"}}
+
+    def decision(client_tool_names):
+        controller = controller_module.ToolLoopController(
+            tools = [_function_tool("mcp_tool_search")],
+            client_tool_names = client_tool_names,
+        )
+        return controller.prepare_call(call)
+
+    assert decision(()).should_execute
+    assert not decision({"mcp_tool_search"}).should_execute

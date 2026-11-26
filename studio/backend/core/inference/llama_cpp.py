@@ -41401,7 +41401,13 @@ class LlamaCppBackend:
         from core.inference.tools import mcp_loadable_specs
 
         # Plus the MCP tools a search can load mid-turn (#10997).
-        _loadable_mcp = mcp_loadable_specs(tools)
+        _loadable_mcp = mcp_loadable_specs(
+            [
+                tool
+                for tool in tools or []
+                if (tool.get("function") or {}).get("name") not in (client_tool_names or ())
+            ]
+        )
         _loadable_mcp_names = set(_gguf_active_tool_names(_loadable_mcp))
         _detect_tools = list(tools or []) + _loadable_mcp
         _enabled_names_gate = set(_gguf_active_tool_names(_detect_tools)) if tools else None
@@ -41617,6 +41623,7 @@ class LlamaCppBackend:
             session_id = session_id,
             thread_id = thread_id,
             loaded_mcp_tools = (mcp_match_exchange or {}).get("names", ()),
+            client_tool_names = client_tool_names or (),
         )
 
         def _tool_succeeded(tool_name: str) -> bool:
