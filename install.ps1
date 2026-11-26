@@ -359,7 +359,8 @@ function Install-UnslothStudio {
             } else {
                 $fso.GetFile($Path).ShortPath
             }
-            # Alias must resolve (#11290): a bogus one breaks UV_OVERRIDE and --find-links.
+            # A space-free alias is not necessarily a name that resolves (#11290). This value
+            # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
             if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
         } catch {}
         return $Path
@@ -788,8 +789,9 @@ function Install-UnslothStudio {
         $pip = ($Resolver -eq "pip")
         $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
         $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-        # PIP_NO_INDEX is pip's own, so naming no index matches what pip does; UV_NO_INDEX is ours
-        # alone, honouring the operator.
+        # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
+        # pip's and pip really reads it, so naming no index here matches what pip will
+        # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
         $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
         if ($noIndexRequested) { return @() }
         $default = $null
@@ -1909,8 +1911,9 @@ function Install-UnslothStudio {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        # GetFullPath anchors relative paths to [Environment]::CurrentDirectory, which Set-Location
-        # does not move, unlike Resolve-Path (PowerShell#10278, by design); fallback only.
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
         try {
             $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
         } catch {
@@ -2169,7 +2172,8 @@ function Install-UnslothStudio {
             if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
             if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
         }
-        # An empty DACL, or one this could not split, is not evidence of anything.
+        # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
+        # manage to split.
         if ($seen -eq 0) { return $true }
         return $false
     }
@@ -2179,7 +2183,8 @@ function Install-UnslothStudio {
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         $sddl = ""
         try {
-            # Constrained Language Mode blocks ACL property reads; use -ExpandProperty.
+            # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
+            # property access on types outside its allowed list, and the security descriptor is one.
             $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
                 Select-Object -ExpandProperty Sddl)"
         } catch { return $false }
@@ -2516,7 +2521,8 @@ function Install-UnslothStudio {
         # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
         if (-not $made) { return "" }
         if ($env:OS -eq "Windows_NT") {
-            # Until labelled, users may swap in a junction: never adopt or recurse through one.
+            # Until it is labelled a standard user can swap this directory for a junction: a link is
+            # never adopted, and cleanup never recurses through one into its target.
             $isLink = { try { "$((Get-Item -LiteralPath $dir -Force -ErrorAction Stop).Attributes)" -match 'ReparsePoint' } catch { $true } }
             $labelled = $false
             $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
@@ -8429,15 +8435,17 @@ main()
             $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
         } catch { return @() }
         foreach ($sub in $subs) {
-            # Guarded per subkey: one unreadable entry must not hide the adapters after it.
+            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
+            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
             try {
                 # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
                 if ("$($sub.PSChildName)" -match '^\d+$') {
                     $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
                     if ($props) {
                         $desc = "$($props.DriverDesc)"
-                        # Callers re-filter on Intel, so a VEN_8086 hit with a localized DriverDesc
-                        # is tagged, not dropped; XPU only for Arc / Data Center GPU names.
+                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
+                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
+                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
                         if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
                             $names += if ($desc -match '(?i)intel') { $desc }
                                       elseif ($desc) { "Intel $desc" }

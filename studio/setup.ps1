@@ -1702,7 +1702,8 @@ function Test-StudioSddlWritableByNonAdmin {
         if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
         if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
     }
-    # An empty DACL, or one this did not manage to split, is not evidence of anything.
+    # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
+    # manage to split.
     if ($seen -eq 0) { return $true }
     return $false
 }
@@ -1712,7 +1713,8 @@ function Test-StudioDirectoryIsAdminOnly {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
     $sddl = ""
     try {
-        # CLM blocks property reads on the Acl type; use Select-Object -ExpandProperty instead.
+        # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
+        # property access on types outside its allowed list, and the security descriptor is one.
         $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
             Select-Object -ExpandProperty Sddl)"
     } catch { return $false }
@@ -3347,8 +3349,9 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        # GetFullPath uses process CWD, which Set-Location does not move (PowerShell#10278);
-        # fallback only.
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
         try {
             $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
         } catch {
@@ -3705,7 +3708,8 @@ $script:NvidiaPresenceStaleGpuWheel = $null
 function Test-NvidiaSmiHasGpu {
     param([Parameter(Mandatory = $true)][string]$Exe)
     $out = Invoke-NvidiaSmiBounded $Exe @('-L')
-    # Assigned, not OR-ed: the binary it settled on matters, not an earlier one that hung.
+    # Assigned, not OR-ed: the fallback loop tries several paths, and what matters is
+    # whether the binary it settled on answered, not whether an earlier one hung.
     $script:NvidiaSmiWedged = ($LASTEXITCODE -eq 124)
     return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
 }
@@ -6252,8 +6256,9 @@ function Get-WoaDependencyIndexArgs {
     $pip = ($Resolver -eq "pip")
     $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
     $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-    # Each variable follows its owner's rule: pip reads PIP_NO_INDEX itself, so naming no index
-    # matches pip; UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
+    # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
+    # pip's and pip really reads it, so naming no index here matches what pip will
+    # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
     $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
     if ($noIndexRequested) { return @() }
     $default = $null
@@ -6396,7 +6401,8 @@ function Get-UvSafePath {
         } else {
             $fso.GetFile($Path).ShortPath
         }
-        # A space-free alias may not resolve (#11290); a bogus one breaks every later uv call.
+        # A space-free alias is not necessarily a name that resolves (#11290). This value
+        # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
         if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
     } catch {}
     return $Path
