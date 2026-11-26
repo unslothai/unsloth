@@ -41344,11 +41344,13 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     return items
 
 
-_OPENAI_EMBEDDING_MODELS = frozenset({
-    "text-embedding-ada-002",
-    "text-embedding-3-small",
-    "text-embedding-3-large",
-})
+_OPENAI_EMBEDDING_MODELS = frozenset(
+    {
+        "text-embedding-ada-002",
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+    }
+)
 
 
 def _decode_openai_embedding_tokens(body: dict, value: list) -> dict:
@@ -41357,8 +41359,7 @@ def _decode_openai_embedding_tokens(body: dict, value: list) -> dict:
     if all(type(token) is int for token in value):
         rows = [value]
     elif all(
-        isinstance(row, list) and row and all(type(token) is int for token in row)
-        for row in value
+        isinstance(row, list) and row and all(type(token) is int for token in row) for row in value
     ):
         rows = value
     else:
@@ -41375,9 +41376,7 @@ def _decode_openai_embedding_tokens(body: dict, value: list) -> dict:
     try:
         return {**body, "input": [decode_tokens(row) for row in rows]}
     except KeyError:
-        raise HTTPException(
-            status_code = 400, detail = "Invalid OpenAI embedding token IDs."
-        ) from None
+        raise HTTPException(status_code = 400, detail = "Invalid OpenAI embedding token IDs.") from None
 
 
 async def _with_decoded_openai_embedding_inputs(body: dict) -> dict:

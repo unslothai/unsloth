@@ -26,13 +26,15 @@ def _load_token_bytes() -> dict[int, bytes]:
     for line in ranks.splitlines():
         encoded, rank = line.split()
         tokens[int(rank)] = base64.b64decode(encoded)
-    tokens.update({
-        100257: b"<|endoftext|>",
-        100258: b"<|fim_prefix|>",
-        100259: b"<|fim_middle|>",
-        100260: b"<|fim_suffix|>",
-        100276: b"<|endofprompt|>",
-    })
+    tokens.update(
+        {
+            100257: b"<|endoftext|>",
+            100258: b"<|fim_prefix|>",
+            100259: b"<|fim_middle|>",
+            100260: b"<|fim_suffix|>",
+            100276: b"<|endofprompt|>",
+        }
+    )
     return tokens
 
 
