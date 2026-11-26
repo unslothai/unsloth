@@ -1387,9 +1387,7 @@ class MtmdSttSidecar:
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         first_window_seconds = windows[0][1] if windows else total_audio_seconds
-        start_context = (
-            0 if context_length else _cold_start_context(model_id, first_window_seconds)
-        )
+        start_context = 0 if context_length else _cold_start_context(model_id, first_window_seconds)
         self.load(
             model_id,
             request_cancel_event = cancel_event,
