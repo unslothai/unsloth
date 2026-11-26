@@ -198,7 +198,7 @@ import {
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import { pickFamily, precisionDisabledReasons } from "@/lib/precision-availability";
 import { ggufQuantLabel } from "@/features/model-picker";
-import { isHubRepoId, recipeModelToReload, recipeTransformerQuant, seededTransformerQuant } from "@/lib/recipe-precision";
+import { recipeModelToReload, recipeTransformerQuant, seededTransformerQuant } from "@/lib/recipe-precision";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -1483,10 +1483,6 @@ function VideoGenerator({
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
   // Bumped by a refused or failed load: the resident record did not change, so Precision reseeds from it.
   const [precisionReseed, setPrecisionReseed] = useState(0);
-  // A restore's Load model intent: the recipe to re-apply once that model is resident, and whether the pick running
-  // now is that one. Retired by any other pick, a failed or refused load, a cancel, and the model landing.
-  const pendingRecipeAfterLoad = useRef<{ video: GalleryVideo; model: string } | null>(null);
-  const restorePicking = useRef(false);
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   const [canReapply, setCanReapply] = useState(false);
   // Pending LoRA picks; the resident build's baked set is status.baked_lora_specs.
@@ -1620,7 +1616,6 @@ function VideoGenerator({
     pickToast.dismissAll();
     // Clearing the timer stops the next tick, not a request awaiting its response.
     cancelSeq.current += 1;
-    pendingRecipeAfterLoad.current = null;
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     dismissLoadToast();
@@ -2658,56 +2653,22 @@ function VideoGenerator({
   }, []);
 
   // Load a clip's recipe back into the form inputs.
-  // The resident status and handleModelSelect (declared further down) as of now, for a restore's reload offer.
+  // The resident status as of now, for a restore's reload prompt.
   const restoreStatusRef = useRef<VideoStatus | null>(null);
   restoreStatusRef.current = status;
-  const handleModelSelectRef = useRef<((id: string, meta: ModelSelectorChangeMeta) => void) | null>(null);
-  const restoreSettingsRef = useRef<((video: GalleryVideo, silent?: boolean) => void) | null>(null);
-  // The build a clip ran with: Precision applies to the next load, and a different model is offered as a reload,
-  // never loaded behind the user's back.
-  const restoreClipBuild = useCallback((video: GalleryVideo, offerReload = true) => {
+  // The build a clip ran with: Precision applies to the next load, and a different model is named for the user to
+  // reload from the picker, never loaded behind their back.
+  const restoreClipBuild = useCallback((video: GalleryVideo) => {
     const restoredQuant = recipeTransformerQuant(video);
     if (restoredQuant) setTransformerQuant(restoredQuant);
-    const current = restoreStatusRef.current;
-    const reloadModel = offerReload ? recipeModelToReload(video, current, ggufQuantLabel) : null;
+    const reloadModel = recipeModelToReload(video, restoreStatusRef.current, ggufQuantLabel);
     if (!reloadModel) return;
     toast.info(`This clip was made with ${reloadModel}`, {
-      description: current?.loaded
-        ? "Load it to reproduce this clip; the restored precision applies to that load."
-        : "Load it to generate with these settings; the restored precision applies to that load.",
-      ...(isHubRepoId(reloadModel)
-        ? {
-            action: {
-              label: "Load model",
-              onClick: () => {
-                restorePicking.current = true;
-                handleModelSelectRef.current?.(reloadModel, {
-                  source: "hub",
-                  isLora: false,
-                  isDiffusion: true,
-                  ...(video.model_kind === "gguf" && video.gguf_filename
-                    ? {
-                        isGguf: true,
-                        ggufFilename: video.gguf_filename,
-                        ggufVariant: ggufQuantLabel(video.gguf_filename),
-                      }
-                    : {}),
-                });
-                restorePicking.current = false;
-                // The pick seeds its model's recommended settings; the clip's recipe outranks them, now and when
-                // the load lands.
-                claimVideoRecipe().commit();
-                restoreSettingsRef.current?.(video, true);
-                // Size, fps and frame window fit the RESIDENT family; apply them again once this model is resident.
-                pendingRecipeAfterLoad.current = { video, model: reloadModel };
-              },
-            },
-          }
-        : {}),
+      description: `${video.gguf_filename && video.model_kind === "gguf" ? `${video.gguf_filename} is not loaded. ` : ""}Load it from the model picker to reproduce this clip; the restored precision applies to that load.`,
     });
-  }, [claimVideoRecipe]);
+  }, []);
   const restoreSettings = useCallback(
-    (video: GalleryVideo, silent = false) => {
+    (video: GalleryVideo) => {
       setPrompt(video.prompt);
       const restoredNegative = video.negative_prompt ?? "";
       setNegativePrompt(restoredNegative);
@@ -2717,7 +2678,7 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
-      restoreClipBuild(video, !silent);
+      restoreClipBuild(video);
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
@@ -2746,19 +2707,10 @@ function VideoGenerator({
         setDurationIntentSeconds(video.num_frames / fps);
         setNumFrames(video.num_frames);
       }
-      if (!silent) toast.success("Settings restored to inputs");
+      toast.success("Settings restored to inputs");
     },
     [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps, statusKnown],
   );
-  restoreSettingsRef.current = restoreSettings;
-  // A recipe whose model was loaded from its Restore toast: re-apply it on the new family's limits once it is resident.
-  useEffect(() => {
-    const pending = pendingRecipeAfterLoad.current;
-    if (!pending || !status?.loaded) return;
-    if (recipeModelToReload(pending.video, status, ggufQuantLabel) !== null) return;
-    pendingRecipeAfterLoad.current = null;
-    restoreSettingsRef.current?.(pending.video, true);
-  }, [status]);
 
   // No periodic poll corrects a stale read, so only the newest ticket may write.
   const statusTicket = useRef(0);
@@ -2927,7 +2879,6 @@ function VideoGenerator({
         if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         setPrecisionReseed((n) => n + 1);
-        pendingRecipeAfterLoad.current = null;
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
@@ -3253,7 +3204,6 @@ function VideoGenerator({
         setBusy(null);
         // A refused load keeps the resident model and its record, so Precision would not reseed on its own.
         setPrecisionReseed((n) => n + 1);
-        pendingRecipeAfterLoad.current = null;
         void refreshStatus();
         return settle(false);
       } finally {
@@ -3718,7 +3668,6 @@ function VideoGenerator({
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
       if (busy !== null) return;
-      if (!restorePicking.current) pendingRecipeAfterLoad.current = null;
       beginPick();
       // Before any branch, since staging never sets `busy`.
       const token = pickGuard.claim();
@@ -3880,7 +3829,6 @@ function VideoGenerator({
       revertPick,
     ],
   );
-  handleModelSelectRef.current = handleModelSelect;
 
   // Load-time LoRAs: the picker reseeds from what each new resident build baked, so a plain pick clears it.
   const loraCapable = videoLoraCapable(status);

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // What "Restore these settings" puts back for the build: the precision a saved image or clip ran with, and
-// whether its model is the resident one (a different model is offered as a reload, never loaded silently).
+// whether its model is the resident one (a different model is named for the user to reload, never loaded).
 
 import { type ResolvedControl, resolvedSelectValue } from "./resolved-precision.ts";
 
@@ -108,9 +108,4 @@ export function recipeModelToReload(
   if (!model || recipe.model_kind === "connection") return null;
   if (status && residentRunsRecipe(model, recipe, status, variantOf)) return null;
   return model;
-}
-
-/** Whether a model id is a Hub repo the picker can load by id alone (not a local path). */
-export function isHubRepoId(model: string): boolean {
-  return /^[\w.-]+\/[\w.-]+$/.test(model.trim());
 }

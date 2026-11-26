@@ -15,7 +15,6 @@ import {
   precisionUnavailableReason,
 } from "../src/lib/precision-availability.ts";
 import {
-  isHubRepoId,
   recipeModelToReload,
   recipeTextEncoderQuant,
   recipeTransformerQuant,
@@ -101,9 +100,6 @@ test("a recipe from another model is offered as a reload, the resident one is no
   assert.equal(recipeModelToReload({ model: "Lightricks/LTX-2" }, { loaded: false }), "Lightricks/LTX-2");
   assert.equal(recipeModelToReload({ model: "gpt-image", model_kind: "connection" }, null), null);
   assert.equal(recipeModelToReload({ model: null }, null), null);
-  assert.equal(isHubRepoId("Lightricks/LTX-2"), true);
-  assert.equal(isHubRepoId("/home/me/models/wan"), false);
-  assert.equal(isHubRepoId("C:\\models\\wan"), false);
 });
 
 test("a different GGUF file of the resident repo is still offered as a reload", () => {
@@ -121,26 +117,6 @@ test("a different GGUF file of the resident repo is still offered as a reload", 
   // Same repo, other build kind.
   assert.equal(recipeModelToReload(q8, { loaded: true, repo_id: repo, model_kind: "pipeline" }), repo);
 });
-
-for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
-  test(`${page}: a recipe loaded from its toast is re-applied once its model is resident`, () => {
-    const src = readSrc(page);
-    assert.match(src, /pendingRecipeAfterLoad\.current = \{ (image, exactCaption|video), model: reloadModel \};/);
-    assert.match(
-      src,
-      /if \(recipeModelToReload\(pending\.(image|video), status, ggufQuantLabel\) !== null\) return;\s*(pendingRecipeAfterLoad\.current = null|retireRestoreIntent\(\));/,
-    );
-    // Any other pick, a failed or refused load, and a cancel retire it, so a later ordinary load never replays it.
-    assert.match(src, /if \(!restorePicking\.current\) (pendingRecipeAfterLoad\.current = null|retireRestoreIntent\(\));/);
-    const retire = /pendingRecipeAfterLoad\.current = null;|retireRestoreIntent\(\);/;
-    // Both failure paths (each bumps the Precision reseed) retire it too.
-    const failures = [...src.matchAll(/setPrecisionReseed\(\(n\) => n \+ 1\);/g)].map((m) => m.index ?? 0);
-    assert.equal(failures.length, 2);
-    for (const at of failures) assert.match(src.slice(at - 120, at + 120), retire);
-    assert.match(src, /cancelSeq\.current \+= 1;\s*(pendingRecipeAfterLoad\.current = null|retireRestoreIntent\(\));/);
-    assert.match(src, /recipeModelToReload\((image|video), (status|current), ggufQuantLabel\)/);
-  });
-}
 
 for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
   test(`${page}: a refused or failed load reseeds Precision from the resident build`, () => {
@@ -172,29 +148,16 @@ test("the video header names the loaded precision, as the Images header does", (
   );
 });
 
-test("Images Restore puts back the precision and offers a different model as a reload", () => {
+test("Images Restore puts back the precision and names a different model for the user to reload", () => {
   const src = readSrc("features/images/images-page.tsx");
   const start = src.indexOf("const restoreSettings = useCallback(");
   const body = src.slice(start, src.indexOf("// Like dropping an image on ComfyUI", start));
   assert.match(body, /recipeTransformerQuant\(image\)/);
   assert.match(body, /recipeTextEncoderQuant\(image\)/);
   assert.match(body, /recipeModelToReload\(image, status, ggufQuantLabel\)/);
-  assert.match(body, /handleModelSelectRef\.current\?\.\(reloadModel/);
-  assert.match(src, /handleModelSelectRef\.current = handleModelSelect;/);
-  // Load model keeps the restored recipe: the pick's defaults are outranked and the form re-applied silently, and a
-  // GGUF recipe names its variant so the pick loads that file instead of asking for a quantization.
-  const action = body.slice(body.indexOf("handleModelSelectRef.current?.(reloadModel"));
-  assert.match(action, /ggufVariant: ggufQuantLabel\(image\.gguf_filename\)/);
-  assert.match(action, /claimImageRecipe\(\)\.commit\(\);\s*restoreSettingsRef\.current\?\.\(image, exactCaption, "vary"\);/);
-  assert.match(src, /restoreSettingsRef\.current = restoreSettings;/);
-  // An explicit Load model in Download only mode switches to Load and runs once handleModelSelect reads it.
-  assert.match(action, /if \(modelSelectionActionRef\.current === "download"\) \{\s*pendingRestorePick\.current = run;\s*setModelSelectionAction\("load"\);/);
-  assert.match(src, /if \(modelSelectionAction !== "load" \|\| !pendingRestorePick\.current\) return;/);
-  // Its load carries the restored LoRAs: a pick of another model would otherwise send none.
-  assert.match(body, /restoreLoraTarget\.current = reloadModel;\s*restorePicking\.current = true;\s*handleModelSelectRef\.current\?\.\(reloadModel/);
-  // The exemption retires with the intent: another pick, a failed load, a cancel, or the model landing.
-  assert.match(src, /const retireRestoreIntent = \(\) => \{\s*restoreLoraTarget\.current = null;\s*pendingRecipeAfterLoad\.current = null;/);
-  assert.match(src, /\|\| repoId === restoreLoraTarget\.current;/);
+  assert.match(body, /toast\.info\(`This image was made with \$\{reloadModel\}`/);
+  // A prompt, never a load: the picker's own load path stays the only way in.
+  assert.doesNotMatch(body, /handleModelSelect/);
 });
 
 for (const page of ["images/images-page.tsx", "video/video-page.tsx"]) {
@@ -205,7 +168,7 @@ for (const page of ["images/images-page.tsx", "video/video-page.tsx"]) {
   });
 }
 
-// Runs the video page's restoreClipBuild for real, with the page's state setters and toast stubbed.
+// Runs the video page's restoreClipBuild for real, with the page's state setter and toast stubbed.
 function videoRestoreClipBuild(status: unknown) {
   const source = readSrc("features/video/video-page.tsx");
   const tree = ts.createSourceFile("video-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -221,88 +184,48 @@ function videoRestoreClipBuild(status: unknown) {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   });
   const state: Record<string, unknown> = {};
-  const toasts: { message: string; options: { action?: { onClick: () => void } } }[] = [];
-  const loads: unknown[][] = [];
-  const events: string[] = [];
-  const reapplied: unknown[][] = [];
+  const toasts: { message: string; options: { description?: string; action?: unknown } }[] = [];
   const scope = {
     useCallback: (fn: unknown) => fn,
     setTransformerQuant: (v: unknown) => {
       state.transformerQuant = v;
     },
     restoreStatusRef: { current: status },
-    handleModelSelectRef: {
-      current: (...args: unknown[]) => {
-        events.push("pick");
-        loads.push(args);
-      },
-    },
-    restoreSettingsRef: {
-      current: (...args: unknown[]) => {
-        events.push("reapply");
-        reapplied.push(args);
-      },
-    },
-    claimVideoRecipe: () => ({ commit: () => events.push("claim") }),
-    pendingRecipeAfterLoad: { current: null },
-    restorePicking: { current: false },
-    // The page's ggufQuantLabel (model-identity.ts imports through the @ alias), for a plain -QUANT.gguf name.
-    ggufQuantLabel: (filename: string) => filename.replace(/\.gguf$/i, "").split("-").pop(),
     recipeTransformerQuant,
     recipeModelToReload,
-    isHubRepoId,
+    // The page's ggufQuantLabel (model-identity.ts imports through the @ alias), for a plain -QUANT.gguf name.
+    ggufQuantLabel: (filename: string) => filename.replace(/\.gguf$/i, "").split("-").pop(),
     toast: { info: (message: string, options: never) => toasts.push({ message, options }) },
   };
   const fn = new Function(...Object.keys(scope), outputText)(...Object.values(scope));
-  return { restore: fn as (video: unknown, offerReload?: boolean) => void, state, toasts, loads, events, reapplied };
+  return { restore: fn as (video: unknown) => void, state, toasts };
 }
 
-test("Video Restore brings an FP8 clip back as FP8 and offers its model, never loading it unasked", () => {
+test("Video Restore brings an FP8 clip back as FP8 and names its model, never loading it", () => {
   const resident = { loaded: true, repo_id: "Lightricks/LTX-2", display_repo_id: null };
-  const { restore, state, toasts, loads, events, reapplied } = videoRestoreClipBuild(resident);
+  const { restore, state, toasts } = videoRestoreClipBuild(resident);
   restore({ model: "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind: "pipeline", transformer_quant: "fp8" });
   assert.equal(state.transformerQuant, "fp8");
   assert.equal(toasts.length, 1);
   assert.match(toasts[0].message, /Wan-AI\/Wan2\.2-TI2V-5B-Diffusers/);
-  assert.equal(loads.length, 0, "nothing loads until the user asks");
-  toasts[0].options.action?.onClick();
-  assert.equal(loads.length, 1);
-  assert.equal(loads[0][0], "Wan-AI/Wan2.2-TI2V-5B-Diffusers");
-  // The pick's recommended steps / guidance must not replace the clip's: claim the form, then re-apply it silently.
-  assert.deepEqual(events, ["pick", "claim", "reapply"]);
-  assert.equal(reapplied[0][1], true);
-
-  const gguf = videoRestoreClipBuild(resident);
-  gguf.restore({
-    model: "QuantStack/Wan2.2-TI2V-5B-GGUF",
-    model_kind: "gguf",
-    gguf_filename: "Wan2.2-TI2V-5B-Q4_K_M.gguf",
-    transformer_quant: null,
-  });
-  gguf.toasts[0].options.action?.onClick();
-  assert.deepEqual(gguf.loads[0][1], {
-    source: "hub",
-    isLora: false,
-    isDiffusion: true,
-    isGguf: true,
-    ggufFilename: "Wan2.2-TI2V-5B-Q4_K_M.gguf",
-    ggufVariant: "Q4_K_M",
-  });
-
-  // The silent re-apply offers nothing again.
-  const silent = videoRestoreClipBuild(resident);
-  silent.restore({ model: "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind: "pipeline", transformer_quant: "fp8" }, false);
-  assert.equal(silent.state.transformerQuant, "fp8");
-  assert.equal(silent.toasts.length, 0);
+  assert.match(toasts[0].options.description ?? "", /model picker/);
+  assert.equal(toasts[0].options.action, undefined, "a prompt, not a load");
 
   const same = videoRestoreClipBuild(resident);
   same.restore({ model: "Lightricks/LTX-2", model_kind: "pipeline", transformer_quant: null });
   assert.equal(same.state.transformerQuant, "none");
   assert.equal(same.toasts.length, 0);
+
+  // Another GGUF file of the resident repo (video status names only the quant) is named, file included.
+  const repo = "QuantStack/Wan2.2-TI2V-5B-GGUF";
+  const gguf = videoRestoreClipBuild({ loaded: true, repo_id: repo, model_kind: "gguf", gguf_variant: "Q4_K_M" });
+  gguf.restore({ model: repo, model_kind: "gguf", gguf_filename: "Wan2.2-TI2V-5B-Q8_0.gguf", transformer_quant: null });
+  assert.equal(gguf.toasts.length, 1);
+  assert.match(gguf.toasts[0].options.description ?? "", /Wan2\.2-TI2V-5B-Q8_0\.gguf is not loaded/);
 });
 
 test("Video restoreSettings runs the build restore", () => {
   const src = readSrc("features/video/video-page.tsx");
   const start = src.indexOf("const restoreSettings = useCallback(");
-  assert.match(src.slice(start, start + 1500), /restoreClipBuild\(video, !silent\);/);
+  assert.match(src.slice(start, start + 1500), /restoreClipBuild\(video\);/);
 });

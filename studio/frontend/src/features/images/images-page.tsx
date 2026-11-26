@@ -124,7 +124,6 @@ import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import { ggufQuantLabel } from "@/features/model-picker";
 import { pickFamily, precisionDisabledReasons } from "@/lib/precision-availability";
 import {
-  isHubRepoId,
   recipeModelToReload,
   recipeTextEncoderQuant,
   recipeTransformerQuant,
@@ -2112,16 +2111,6 @@ export function ImagesPage({
   const [engineSeed, setEngineSeed] = useState("");
   // Bumped by a refused or failed load: the resident record did not change, so the Precision selects reseed from it.
   const [precisionReseed, setPrecisionReseed] = useState(0);
-  // A restore's Load model intent: the repo whose load carries the restored LoRAs, the recipe to re-apply once that
-  // model is resident, and whether the pick running now is that one. Retired by any other pick, a failed or
-  // refused load, a cancel, and the model landing.
-  const restoreLoraTarget = useRef<string | null>(null);
-  const pendingRecipeAfterLoad = useRef<{ image: GalleryImage; exactCaption: boolean; model: string } | null>(null);
-  const restorePicking = useRef(false);
-  const retireRestoreIntent = () => {
-    restoreLoraTarget.current = null;
-    pendingRecipeAfterLoad.current = null;
-  };
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -2478,7 +2467,6 @@ export function ImagesPage({
     pickToast.dismissAll();
     // Clearing the timer stops the next tick, not requests already awaiting a response.
     cancelSeq.current += 1;
-    retireRestoreIntent();
     // Otherwise a discarded adapter would be mixed into an unrelated model.
     pendingDeploy.current = null;
     if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -3152,24 +3140,6 @@ export function ImagesPage({
   );
 
   // `via`: "import" names what was not applied in its own toast; "vary" restores silently for the Vary run.
-  // handleModelSelect is declared further down; a restore's reload action reaches it through this.
-  const handleModelSelectRef = useRef<((id: string, meta: ModelSelectorChangeMeta) => void) | null>(null);
-  const restoreSettingsRef = useRef<
-    ((image: GalleryImage, exactCaption?: boolean, via?: "restore" | "import" | "vary") => void) | null
-  >(null);
-  // A restore's Load model is an explicit load: in Download only mode it switches the picker to Load first and
-  // runs on the next render, once handleModelSelect reads the new mode.
-  const modelSelectionActionRef = useRef(modelSelectionAction);
-  modelSelectionActionRef.current = modelSelectionAction;
-  const pendingRestorePick = useRef<(() => void) | null>(null);
-  // The repo a restore's Load model targets: its load carries the restored LoRAs, which a pick of another model
-  // would otherwise drop (an int8 / fp8 build takes adapters only at load time).
-  useEffect(() => {
-    if (modelSelectionAction !== "load" || !pendingRestorePick.current) return;
-    const run = pendingRestorePick.current;
-    pendingRestorePick.current = null;
-    run();
-  }, [modelSelectionAction]);
   const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore") => {
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0 (the base pass's, or Hires CFG's for the refine pass); do not
@@ -3295,59 +3265,10 @@ export function ImagesPage({
     const reloadModel = via === "restore" ? recipeModelToReload(image, status, ggufQuantLabel) : null;
     if (reloadModel) {
       toast.info(`This image was made with ${reloadModel}`, {
-        description: status?.loaded
-          ? "Load it to reproduce this image; the restored precision applies to that load."
-          : "Load it to generate with these settings; the restored precision applies to that load.",
-        ...(isHubRepoId(reloadModel)
-          ? {
-              action: {
-                label: "Load model",
-                onClick: () => {
-                  const run = () => {
-                    restoreLoraTarget.current = reloadModel;
-                    restorePicking.current = true;
-                    handleModelSelectRef.current?.(reloadModel, {
-                      source: "hub",
-                      isLora: false,
-                      isDiffusion: true,
-                      ...(image.model_kind === "gguf" && image.gguf_filename
-                        ? {
-                            isGguf: true,
-                            ggufFilename: image.gguf_filename,
-                            ggufVariant: ggufQuantLabel(image.gguf_filename),
-                          }
-                        : {}),
-                    });
-                    restorePicking.current = false;
-                    // The pick seeds its model's recommended steps / size; the image's recipe outranks them, now and
-                    // when the load lands ("vary" re-applies the form silently).
-                    claimImageRecipe().commit();
-                    restoreSettingsRef.current?.(image, exactCaption, "vary");
-                    // The size fits the RESIDENT family's limits; apply it again once this model is resident.
-                    pendingRecipeAfterLoad.current = { image, exactCaption, model: reloadModel };
-                  };
-                  if (modelSelectionActionRef.current === "download") {
-                    pendingRestorePick.current = run;
-                    setModelSelectionAction("load");
-                  } else {
-                    run();
-                  }
-                },
-              },
-            }
-          : {}),
+        description: `${image.gguf_filename && image.model_kind === "gguf" ? `${image.gguf_filename} is not loaded. ` : ""}Load it from the model picker to reproduce this image; the restored precision applies to that load.`,
       });
     }
-  }, [changeSamplerChoice, claimImageRecipe, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
-  restoreSettingsRef.current = restoreSettings;
-  // A recipe whose model was loaded from its Restore toast: re-apply it on the new family's limits once it is resident.
-  useEffect(() => {
-    const pending = pendingRecipeAfterLoad.current;
-    if (!pending || !status?.loaded) return;
-    if (recipeModelToReload(pending.image, status, ggufQuantLabel) !== null) return;
-    retireRestoreIntent();
-    restoreSettingsRef.current?.(pending.image, pending.exactCaption, "vary");
-  }, [status]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -3838,7 +3759,6 @@ export function ImagesPage({
         // seed would not move and the next Reapply would replay the failed pick.
         setEngineSeed("");
         setPrecisionReseed((n) => n + 1);
-        retireRestoreIntent();
         // A failed load may have freed a previously-loaded model, so resync to the real backend state.
         void refreshStatus();
         return;
@@ -4177,8 +4097,7 @@ export function ImagesPage({
 
   const bakedLorasFor = useCallback(
     (repoId: string, preserveSelection = false): LoraSpecInput[] => {
-      const sameTarget =
-        repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null) || repoId === restoreLoraTarget.current;
+      const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
       if (!sameTarget && !preserveSelection) return [];
       return loras
         .map((l) => ({ id: l.id.trim(), weight: l.weight }))
@@ -4343,7 +4262,6 @@ export function ImagesPage({
         lastLoadRevert.current = null;
         // A refused load keeps the resident model and its provenance, so the seed would not move: reseed the
         // Engine select from the resident build rather than replay the refused pick on the next Reapply.
-        retireRestoreIntent();
         setEngineSeed("");
         setPrecisionReseed((n) => n + 1);
         dismissLoadToast();
@@ -5151,7 +5069,6 @@ export function ImagesPage({
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      if (!restorePicking.current) retireRestoreIntent();
       // A Download only selection does not take over the page, or a staged load never loads.
       const downloadOnlyPick = modelSelectionAction === "download";
       // The backend 409s a second load; download-only picks submit none, so allow them.
@@ -5337,7 +5254,6 @@ export function ImagesPage({
       revertPick,
     ],
   );
-  handleModelSelectRef.current = handleModelSelect;
 
   const handleDeployAdapter = useCallback(
     (args: {
