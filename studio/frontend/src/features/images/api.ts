@@ -93,6 +93,8 @@ export interface DiffusionStatus {
   supports_lora?: boolean;
   // Why supports_lora is false, shown in the LoRA slot when no reload would turn LoRA on.
   lora_unavailable_reason?: string | null;
+  /** Whether an unchanged LoRA set was folded into the weights, else why not; null without active LoRAs. */
+  lora_fusion?: { fused: boolean; skipped_reason?: string | null } | null;
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
   // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).

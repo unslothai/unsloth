@@ -503,6 +503,7 @@ import {
   engineSelectVisible,
   loadedEngineChoice,
   loraUnavailableNote,
+  loraFusionNote,
   nativeLoadAdvanced,
   nativeReloadTarget,
   offersCompiledLoraReload,
@@ -2483,6 +2484,7 @@ export function ImagesPage({
   // An INT8 / FP8 build that did not bake this selection: Generate reloads with it first instead of a refused run.
   const loraReload = loraCapable ? loraReloadReason(status, loras) : null;
   const loraOffNote = external ? null : loraUnavailableNote(status);
+  const loraUnfusedNote = external ? null : loraFusionNote(status);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
@@ -7499,6 +7501,9 @@ export function ImagesPage({
                   onOpenChange={setLoraFoldersOpen}
                   onInventoryChange={() => setLoraRefreshKey((k) => k + 1)}
                 />
+                {loraUnfusedNote && (
+                  <p className="mt-1.5 text-ui-11 leading-snug text-muted-foreground/80">{loraUnfusedNote}</p>
+                )}
               </Field>
             )}
             {controlnetCapable && availableControlNets.length > 0 && workflow === "create" && (

@@ -81,6 +81,8 @@ interface EngineStatus {
   lora_after_reload?: boolean;
   supports_lora?: boolean;
   lora_unavailable_reason?: string | null;
+  /** Whether an unchanged LoRA set was folded into the weights, else why not; null without active LoRAs. */
+  lora_fusion?: { fused: boolean; skipped_reason?: string | null } | null;
   resolved?: Record<string, { source: string; requested?: string | boolean | null }> | null;
 }
 
@@ -128,6 +130,14 @@ export function loraUnavailableNote(status: EngineStatus | null | undefined): st
   if (!status?.loaded || status.supports_lora) return null;
   if (offersNativeLoraReload(status) || offersCompiledLoraReload(status)) return null;
   return status.lora_unavailable_reason || "LoRAs cannot be applied to this model on its current engine.";
+}
+
+/** Why active LoRAs run unfused (offloaded denoiser, not opted in, baked at load), shown under the LoRA list. */
+export function loraFusionNote(status: EngineStatus | null | undefined): string | null {
+  if (!status?.loaded || !status.supports_lora) return null;
+  const fusion = status.lora_fusion;
+  if (!fusion || fusion.fused) return null;
+  return fusion.skipped_reason?.trim() || null;
 }
 
 interface ReloadStatus {
