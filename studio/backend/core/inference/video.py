@@ -114,6 +114,7 @@ from .diffusion_step_skip import (
     uninstall_static_step_skip,
 )
 from .diffusion_device import (
+    physical_gpu_id_for_ordinal,
     apply_cpu_render_threads,
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
@@ -17679,7 +17680,7 @@ class VideoBackend:
                 modular = bool(getattr(fam, "modular_workflow", None)),
             ),
             # The card those verdicts were judged on, so a pick for another card does not inherit its probe failures.
-            "precision_options_card": (
+            "precision_options_card": physical_gpu_id_for_ordinal(
                 state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal
             ),
             "baked_loras": video_lora.baked_lora_names(getattr(state, "pipe", None)),

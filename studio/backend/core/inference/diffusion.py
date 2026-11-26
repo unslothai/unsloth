@@ -113,6 +113,7 @@ from .diffusion_compat import (
     speech_pick_refusal,
 )
 from .diffusion_device import (
+    physical_gpu_id_for_ordinal,
     apply_cpu_render_threads,
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
@@ -18254,7 +18255,7 @@ class DiffusionBackend:
                 offload = state.offload_policy != OFFLOAD_NONE,
             ),
             # The card those verdicts were judged on, so a pick for another card does not inherit its probe failures.
-            "precision_options_card": (
+            "precision_options_card": physical_gpu_id_for_ordinal(
                 state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal
             ),
             "packed_weights": _grouped_form_status(state.pipe),

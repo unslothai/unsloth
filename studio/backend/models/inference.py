@@ -6504,8 +6504,9 @@ class DiffusionStatusResponse(BaseModel):
     )
     precision_options_card: Optional[int] = Field(
         None,
-        description = "The GPU index precision_options was judged on (a kernel-probe verdict is per card), so a "
-        "pick for another card does not inherit it; null when unknown or not on a GPU.",
+        description = "The PHYSICAL GPU id (the index space of gpu_ids and the UI's GPU picker, not the torch "
+        "ordinal under a CUDA_VISIBLE_DEVICES mask) precision_options was judged on (a kernel-probe verdict is per "
+        "card), so a pick for another card does not inherit it; null when unknown or not on a GPU.",
     )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
@@ -8391,8 +8392,9 @@ class VideoStatusResponse(BaseModel):
     )
     precision_options_card: Optional[int] = Field(
         None,
-        description = "The GPU index precision_options was judged on (a kernel-probe verdict is per card), so a "
-        "pick for another card does not inherit it; null when unknown or not on a GPU.",
+        description = "The PHYSICAL GPU id (the index space of gpu_ids and the UI's GPU picker, not the torch "
+        "ordinal under a CUDA_VISIBLE_DEVICES mask) precision_options was judged on (a kernel-probe verdict is per "
+        "card), so a pick for another card does not inherit it; null when unknown or not on a GPU.",
     )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,

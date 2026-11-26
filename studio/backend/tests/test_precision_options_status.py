@@ -209,10 +209,31 @@ def test_status_and_plan_routes_fill_it():
         assert "model_kind = state.kind," in flat
         assert '"precision_options_card": None,' in flat
         assert (
-            '"precision_options_card": ( state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal )'
+            '"precision_options_card": physical_gpu_id_for_ordinal( state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal )'
             in flat
         )
     for route in ("routes/inference.py", "routes/video.py"):
         text = (root / route).read_text(encoding = "utf-8")
         assert '"precision_options": plan_precision_options(' in text
         assert "target = plan_target," in text
+
+
+def test_the_status_card_is_the_physical_id_the_ui_picks(monkeypatch):
+    """Under CUDA_VISIBLE_DEVICES=1,0 torch ordinal 0 is physical GPU 1: the status must name 1, or picking physical 1
+    hides its own probe failure and picking physical 0 inherits it."""
+    from core.inference import diffusion_device
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [1, 0])
+    assert diffusion_device.physical_gpu_id_for_ordinal(0) == 1
+    assert diffusion_device.physical_gpu_id_for_ordinal(1) == 0
+    assert diffusion_device.physical_gpu_id_for_ordinal(2) is None
+    assert diffusion_device.physical_gpu_id_for_ordinal(None) is None
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [4, 5])
+    assert diffusion_device.physical_gpu_id_for_ordinal(1) == 5
+
+    def broken():
+        raise RuntimeError("mask unreadable")
+
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", broken)
+    assert diffusion_device.physical_gpu_id_for_ordinal(0) is None
