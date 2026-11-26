@@ -1400,9 +1400,12 @@ function saveChatFullAccess(threadId: string, on: boolean, explicit = false): vo
   if (!explicit && savedChatFullAccess.get(threadId) === on) return;
   chatFullAccessDecidedSinceOpen.add(threadId);
   savedChatFullAccess.set(threadId, on);
-  // The open chat's snapshot write carries the flag; a separate patch would supersede its queued edits.
-  if (threadId === threadScopedSettingsThreadId) scheduleThreadScopedSettingsWrite(threadId);
-  else void mergeThreadScopedSettingsIntoRow(threadId, { fullAccess: on }, false).catch(() => undefined);
+  if (threadId === threadScopedSettingsThreadId) {
+    explicitlyEditedThreadFields.add("fullAccess");
+    scheduleThreadScopedSettingsWrite(threadId);
+  } else {
+    void mergeThreadScopedSettingsIntoRow(threadId, { fullAccess: on }, false).catch(() => undefined);
+  }
 }
 
 function saveGrantedChats(grants: ChatFullAccessGrants): void {
@@ -1449,12 +1452,8 @@ function restoreSavedChatFullAccess(threadId: string, saved: unknown): void {
   });
 }
 
-function buildThreadScopedSnapshot(
-  threadId: string,
-  snapshot: ThreadScopedSettings | null,
-): ThreadScopedSettings {
-  const settings =
-    snapshot ?? readThreadScopedSettings(useChatRuntimeStore.getState());
+function buildThreadScopedSnapshot(threadId: string): ThreadScopedSettings {
+  const settings = readThreadScopedSettings(useChatRuntimeStore.getState());
   // Keep the stored level: the sanitizer drops a live "full", which would erase it.
   if (
     settings.permissionMode === undefined &&
@@ -1470,8 +1469,60 @@ function buildThreadScopedSnapshot(
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
-  explicitlyEditedThreadFields.clear();
   return settings;
+}
+
+type PendingThreadFields = Map<string, { value: unknown }>;
+const pendingThreadFields = new Map<string, PendingThreadFields>();
+export const THREAD_SETTINGS_REVISION_KEY = "unsloth_chat_thread_settings_revision";
+let threadSettingsEditVersion = 0;
+
+export function getThreadSettingsEditVersion(): number {
+  return threadSettingsEditVersion;
+}
+
+function stageThreadFields(threadId: string, changes: ThreadScopedSettings): PendingThreadFields {
+  const staged = new Map(pendingThreadFields.get(threadId));
+  for (const [key, value] of Object.entries(changes)) {
+    if (value !== undefined) staged.set(key, { value });
+  }
+  if (staged.size > 0) pendingThreadFields.set(threadId, staged);
+  return staged;
+}
+
+function captureThreadWrite(threadId: string, snapshot: ThreadScopedSettings | null) {
+  const settings = buildThreadScopedSnapshot(threadId);
+  const patch = Object.fromEntries(
+    Object.entries(settings).filter(([key]) => explicitlyEditedThreadFields.has(key)),
+  );
+  explicitlyEditedThreadFields.clear();
+  return {
+    fields: stageThreadFields(threadId, patch),
+    settingsDefaults: snapshot ?? settings,
+  };
+}
+
+function threadFieldsPayload(fields: PendingThreadFields): ThreadScopedSettings {
+  return Object.fromEntries(Array.from(fields, ([key, entry]) => [key, entry.value]));
+}
+
+function acknowledgeThreadFields(threadId: string, written: PendingThreadFields): void {
+  const pending = pendingThreadFields.get(threadId);
+  if (pending) {
+    // Keep a newer edit even if the user changed this field to the same value again.
+    const remaining = new Map(pending);
+    for (const [key, entry] of written) {
+      if (remaining.get(key) === entry) remaining.delete(key);
+    }
+    if (remaining.size > 0) pendingThreadFields.set(threadId, remaining);
+    else pendingThreadFields.delete(threadId);
+  }
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(THREAD_SETTINGS_REVISION_KEY, crypto.randomUUID());
+  } catch {
+    // Reopening the thread still reads its persisted settings.
+  }
 }
 
 const THREAD_SETTINGS_REPLAY_KEY = "unsloth_chat_thread_settings_replay";
@@ -1570,18 +1621,16 @@ function sendThreadScopedSettingsBeacon(
   snapshot: ThreadScopedSettings | null,
   merge = false,
 ): void {
-  // A merge for a never-read chat; a full replacement would erase the rest of its row.
-  const body = merge
-    ? {
-        settingsPatch: snapshot,
-        settingsSeq: nextThreadSettingsSeq(),
-        settingsWriter: threadSettingsWriter,
-      }
-    : {
-        settings: buildThreadScopedSnapshot(threadId, snapshot),
-        settingsSeq: nextThreadSettingsSeq(),
-        settingsWriter: threadSettingsWriter,
-      };
+  const { fields, settingsDefaults } = merge
+    ? { fields: stageThreadFields(threadId, snapshot ?? {}), settingsDefaults: undefined }
+    : captureThreadWrite(threadId, snapshot);
+  if (!fields.size && !settingsDefaults) return;
+  const body = {
+    settingsPatch: threadFieldsPayload(fields),
+    settingsDefaults,
+    settingsSeq: nextThreadSettingsSeq(),
+    settingsWriter: threadSettingsWriter,
+  };
   // Stand down queued and in-flight writes so an older one cannot land after the beacon.
   takeThreadSettingsWriteTicket(threadId);
   threadSettingsWriteAborts.get(threadId)?.abort();
@@ -1592,11 +1641,14 @@ function sendThreadScopedSettingsBeacon(
     body: JSON.stringify(body),
     keepalive: true,
   })
+    .then((response) => {
+      if (response.ok) acknowledgeThreadFields(threadId, fields);
+    })
     .finally(() => forgetThreadReads([threadId]))
     .catch(() => undefined);
 }
 
-// One chain per thread: writes replace settings_json, so they must be ordered.
+// A newer write carries any unacknowledged fields from earlier edits in this window.
 const threadSettingsWriteChains = new Map<string, Promise<unknown>>();
 const threadSettingsWriteTickets = new Map<string, number>();
 
@@ -1621,7 +1673,8 @@ function writeThreadScopedSettings(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
 ): Promise<boolean> {
-  const settings = buildThreadScopedSnapshot(threadId, snapshot);
+  const { fields, settingsDefaults } = captureThreadWrite(threadId, snapshot);
+  const settingsPatch = threadFieldsPayload(fields);
   // The seq marks when the edit happened, not when the request was sent.
   const settingsSeq = nextThreadSettingsSeq();
   const ticket = takeThreadSettingsWriteTicket(threadId);
@@ -1644,9 +1697,10 @@ function writeThreadScopedSettings(
         );
         await updateStoredChatThread(
           threadId,
-          { settings, settingsSeq, settingsWriter: threadSettingsWriter },
+          { settingsPatch, settingsDefaults, settingsSeq, settingsWriter: threadSettingsWriter },
           { signal: controller.signal },
         );
+        acknowledgeThreadFields(threadId, fields);
         forgetReplayedThreadSettings(threadId);
         return true;
       } catch {
@@ -1759,6 +1813,7 @@ function scheduleThreadScopedSettingsWrite(
   ) {
     flushThreadScopedSettingsWrite();
   }
+  threadSettingsEditVersion += 1;
   threadSettingsWriteThreadId = threadId;
   threadSettingsWriteSnapshot = snapshot;
   if (threadSettingsWriteTimer !== null) clearTimeout(threadSettingsWriteTimer);
@@ -1949,6 +2004,8 @@ async function mergeThreadScopedSettingsIntoRow(
   changes: ThreadScopedSettings,
   supersede = true,
 ): Promise<void> {
+  const fields = stageThreadFields(threadId, changes);
+  const settingsPatch = threadFieldsPayload(fields);
   const settingsSeq = nextThreadSettingsSeq();
   const ticket = supersede ? takeThreadSettingsWriteTicket(threadId) : null;
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
@@ -1965,10 +2022,11 @@ async function mergeThreadScopedSettingsIntoRow(
           "../utils/chat-history-storage"
         );
         await updateStoredChatThread(threadId, {
-          settingsPatch: changes,
+          settingsPatch,
           settingsSeq,
           settingsWriter: threadSettingsWriter,
         });
+        acknowledgeThreadFields(threadId, fields);
         forgetReplayedThreadSettings(threadId);
       } catch (error) {
         warnSettingsPersistenceFailure();
@@ -5471,9 +5529,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       threadScopedSettingsThreadId = threadId;
       explicitlyEditedThreadFields.clear();
-      for (const field of heldFields) {
-        if (isRecommendedSamplingKey(field)) explicitlyEditedThreadFields.add(field);
-      }
+      for (const field of heldFields) explicitlyEditedThreadFields.add(field);
       constraintSuppressedThreadFields.clear();
       const stored = hasThreadScopedSettings(settings)
         ? (settings as ThreadScopedSettings)

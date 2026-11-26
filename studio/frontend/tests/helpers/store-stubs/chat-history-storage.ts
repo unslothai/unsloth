@@ -5,6 +5,7 @@ export interface RecordedThreadWrite {
   threadId: string;
   settings?: Record<string, unknown>;
   settingsPatch?: Record<string, unknown>;
+  settingsDefaults?: Record<string, unknown>;
   settingsSeq?: number;
   settingsWriter?: string;
 }
@@ -28,6 +29,7 @@ export async function updateStoredChatThread(
   update: {
     settings?: Record<string, unknown>;
     settingsPatch?: Record<string, unknown>;
+    settingsDefaults?: Record<string, unknown>;
     settingsSeq?: number;
     settingsWriter?: string;
   },
@@ -44,7 +46,7 @@ export async function updateStoredChatThread(
     threadId,
     update.settings !== undefined
       ? { ...update.settings }
-      : { ...row, ...update.settingsPatch },
+      : { ...update.settingsDefaults, ...row, ...update.settingsPatch },
   );
 }
 

@@ -62,6 +62,7 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
+import { forgetThreadReads } from "./api/thread-read-cache";
 import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
@@ -140,6 +141,8 @@ import {
 import { readRtfAttachmentContent } from "./rtf";
 import {
   awaitThreadScopedSettingsWrite,
+  getThreadSettingsEditVersion,
+  THREAD_SETTINGS_REVISION_KEY,
   beginThreadScopedPairing,
   codeToolsOn,
   commitHeldThreadScopedEditsToTheirThread,
@@ -3803,12 +3806,46 @@ function ThreadScopedSettingsSync({
       }, THREAD_READ_RETRY_MS);
     };
 
+    let remoteRead: AbortController | null = null;
+    const syncRemote = (event: StorageEvent) => {
+      if (event.key !== THREAD_SETTINGS_REVISION_KEY) return;
+      if (!paired) {
+        sync();
+        return;
+      }
+      remoteRead?.abort();
+      const read = new AbortController();
+      remoteRead = read;
+      void awaitThreadScopedSettingsWrite(activeThreadId)
+        .then(async (written) => {
+          if (!written || read.signal.aborted || cancelled) return;
+          const version = getThreadSettingsEditVersion();
+          forgetThreadReads([activeThreadId]);
+          const { thread, cacheable } = await getStoredChatThreadReadResult(activeThreadId, {
+            timeoutMs: THREAD_READ_TIMEOUT_MS,
+            signal: read.signal,
+          });
+          if (
+            cancelled || read.signal.aborted || !thread || !cacheable ||
+            version !== getThreadSettingsEditVersion()
+          ) return;
+          applyThreadScopedSettings(
+            activeThreadId,
+            thread.settings ? sanitizeThreadScopedSettings(thread.settings) : null,
+          );
+        })
+        .catch(() => undefined);
+    };
+
     sync();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
+    window.addEventListener("storage", syncRemote);
     return () => {
       cancelled = true;
       if (retryTimer !== null) clearTimeout(retryTimer);
       abortReads();
+      remoteRead?.abort();
+      window.removeEventListener("storage", syncRemote);
       commitHeldThreadScopedEditsToTheirThread();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     };

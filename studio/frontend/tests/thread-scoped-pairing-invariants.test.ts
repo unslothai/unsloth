@@ -134,7 +134,8 @@ test("an edit whose chat was never read is sent as a merge, not a replacement", 
   assert.match(commit, /heldThreadScopedChanges\(held\)/);
   assert.match(commit, /sendThreadScopedSettingsBeacon\(threadId, changes, true\)/);
   const merge = slice(store, "async function mergeThreadScopedSettingsIntoRow", "\n}");
-  assert.match(merge, /settingsPatch: changes/);
+  assert.match(merge, /stageThreadFields\(threadId, changes\)/);
+  assert.match(merge, /settingsPatch,/);
 });
 
 test("hydration does not overwrite a field whose edit is still held", () => {
@@ -155,7 +156,7 @@ test("every snapshot write is ordered against the others", () => {
   assert.match(store, /function nextThreadSettingsSeq\(\): number \{/);
   const write = slice(store, "function writeThreadScopedSettings", "\n}");
   assert.match(write, /const settingsSeq = nextThreadSettingsSeq\(\);/);
-  assert.match(write, /\{ settings, settingsSeq, settingsWriter/);
+  assert.match(write, /\{ settingsPatch, settingsDefaults, settingsSeq, settingsWriter/);
   const beacon = slice(store, "function sendThreadScopedSettingsBeacon", "\n}");
   assert.match(beacon, /settingsSeq: nextThreadSettingsSeq\(\)/);
   assert.match(beacon, /takeThreadSettingsWriteTicket\(threadId\)/);
