@@ -267,8 +267,7 @@ _REMOVED_BLOCK_PTR = textwrap.dedent(
 
 
 def test_phase_tile_is_bit_identical_without_block_pointers():
-    # Triton 3.9 (and triton-windows 3.9, paired with torch 2.15) made the block pointer API raise; the phase tile
-    # must switch to plain pointers instead of failing its probe and dropping to decode + int8 GEMM.
+    # Triton 3.9 block pointers raise: the phase tile must use plain pointers, not drop to decode + int8 GEMM.
     pytest.importorskip("triton")
     env = dict(os.environ, TRITON_INTERPRET = "1", CUDA_VISIBLE_DEVICES = "")
     proc = subprocess.run(

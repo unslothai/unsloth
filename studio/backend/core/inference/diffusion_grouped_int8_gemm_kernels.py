@@ -14,9 +14,8 @@ from .diffusion_grouped_int8_kernels import _e4m3, _rint_clamp
 
 
 def block_ptr_removed(language = tl) -> bool:
-    """True when ``tl.make_block_ptr`` / ``tl.advance`` are missing or are Triton 3.9's raise-only stubs
-    (triton-lang/triton#10833; triton-windows 3.9 alike). Only Triton's own ``@builtin`` wrapper is unwrapped, and the
-    docstring (which names the removal) does not count: the stub's raise message is a constant of its body."""
+    """True when ``tl.make_block_ptr`` / ``tl.advance`` are missing or Triton 3.9's raise-only stubs (triton-lang/triton#10833).
+    Docstrings do not count: the stub's raise message is a body constant."""
     import inspect
 
     for name in ("make_block_ptr", "advance"):
@@ -33,7 +32,6 @@ def block_ptr_removed(language = tl) -> bool:
     return False
 
 
-# Read once at import: launch passes it as the BLOCK_PTR constexpr.
 BLOCK_PTR = not block_ptr_removed()
 
 
@@ -273,8 +271,7 @@ def _phase_loop_ptr(
 ):
     Q: tl.constexpr = BLOCK_K // 4
     # _phase_loop with plain pointers, for a Triton without block pointers (3.9 removed tl.make_block_ptr /
-    # tl.advance, triton-lang/triton#10833). Same bytes: rows past M / N read as zeros (never stored), columns stay
-    # inside K. Not the default: on sm120 under Triton 3.8 the block pointers are a few percent faster.
+    # tl.advance). Not the default: block pointers are a few percent faster on sm120 under Triton 3.8.
     rows_m = pid_m.to(tl.int64) * BLOCK_M + tl.arange(0, BLOCK_M)
     rows_n = pid_n.to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     mask_m = (rows_m < M)[:, None]
