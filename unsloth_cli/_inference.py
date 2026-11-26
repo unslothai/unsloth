@@ -1168,6 +1168,20 @@ class HttpChatBackend:
         # No redirects: this carries a bearer token (see urlopen_no_redirect).
         return urlopen_no_redirect(request, timeout = timeout)
 
+    def _signed_gallery_url(self, image_id: str) -> Optional[str]:
+        from urllib.parse import quote
+
+        gallery_path = f"/api/inference/images/gallery/{quote(image_id, safe = '')}"
+        try:
+            with self._request("GET", f"{gallery_path}/signed-url", timeout = 10) as response:
+                payload = json.load(response)
+        except (OSError, ValueError):
+            return None
+        path = payload.get("url") if isinstance(payload, dict) else None
+        if isinstance(path, str) and path.startswith(f"{gallery_path}/file-signed?token="):
+            return self._base + path
+        return None
+
     def ensure_loaded(
         self,
         model: str,
@@ -1375,9 +1389,14 @@ class HttpChatBackend:
                         for line in str(parsed.get("result", "")).splitlines():
                             if line.startswith("__FILES__:"):
                                 for file in json.loads(line.removeprefix("__FILES__:")):
-                                    if image_id := file.get("gallery_image_id"):
+                                    image_id = file.get("gallery_image_id")
+                                    if isinstance(image_id, str) and image_id:
+                                        url = self._signed_gallery_url(image_id)
+                                        receipt = f"Saved gallery image {image_id}"
                                         typer.echo(
-                                            f"Saved gallery image {image_id}: {self._base}/api/inference/images/gallery/{image_id}/file",
+                                            f"{receipt} at {url}"
+                                            if url
+                                            else f"{receipt}. Open the Studio Images gallery.",
                                             err = True,
                                         )
                     if "error" in parsed:
