@@ -1311,6 +1311,51 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == "Line 1\nLine 2"
 
+    def test_claude_tool_search_result_exposes_the_registered_client_tool(self):
+        tool_name = "mcp__scratch__lookup_mineral_code"
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        }
+        payload = AnthropicMessagesRequest(
+            model = "local",
+            tools = [
+                {"name": "ToolSearch", "input_schema": {"type": "object"}},
+                {"name": tool_name, "input_schema": schema, "defer_loading": True},
+            ],
+            messages = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_search",
+                            "name": "ToolSearch",
+                            "input": {},
+                        },
+                    ],
+                },
+                _tool_result_turn(
+                    tool_use_id = "toolu_search",
+                    content = [
+                        {"type": "tool_reference", "tool_name": tool_name},
+                        {"type": "tool_reference", "tool_name": "unknown"},
+                        {"type": "text", "text": "Ready."},
+                    ],
+                ),
+            ],
+        )
+        from routes.inference import _anthropic_chat_fields
+
+        fields = _anthropic_chat_fields(payload, reads_images = False)
+        result = fields["messages"][-1]
+        assert result["tool_call_id"] == "toolu_search"
+        assert result["content"] == (
+            f"Tool loaded: {tool_name}. Its schema is available in the tools list.\nReady."
+        )
+        assert fields["tools"][-1]["function"]["parameters"] == schema
+
     @pytest.mark.parametrize(
         "content, expected",
         [

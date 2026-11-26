@@ -46230,6 +46230,7 @@ def _anthropic_chat_fields(
             # Kept for the template to decide, as for a chat caller replaying reasoning_content.
             preserve_thinking = payload.preserve_thinking is not False,
             tool_result_images = reads_images,
+            tools = payload.tools,
         )
     )
     studio_tools = _anthropic_requested_studio_tools(payload.tools)
@@ -46645,7 +46646,10 @@ async def _anthropic_messages_via_connection(
     # Keep every turn's thinking: _build_external_messages drops it for providers that must not get it,
     # and DeepSeek answers 400 when tools ride on a history without it.
     messages = anthropic_messages_to_openai(
-        [m.model_dump() for m in payload.messages], payload.system, preserve_thinking = True
+        [m.model_dump() for m in payload.messages],
+        payload.system,
+        preserve_thinking = True,
+        tools = payload.tools,
     )
     _restore_connection_tool_extras(current_subject, messages)
     fields = {
@@ -46803,6 +46807,7 @@ async def anthropic_count_tokens(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
@@ -47583,6 +47588,7 @@ async def anthropic_messages(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.
