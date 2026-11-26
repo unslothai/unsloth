@@ -101,6 +101,6 @@ def test_missing_engine_is_silent():
 
 
 def test_rl_injects_the_check_for_grpo_and_rloo():
-    src = (ROOT / "unsloth" / "models" / "rl.py").read_text()
+    src = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
     assert 'trainer_file in ("grpo_trainer", "rloo_trainer")' in src
     assert "_vllm_batch_cap import grpo_check_max_num_seqs" in src
