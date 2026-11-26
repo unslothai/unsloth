@@ -989,6 +989,11 @@ def format_and_template_dataset(
     if is_vlm:
         warnings = []
         errors = []
+        if dataset_revision is None:
+            from hub.utils.dataset_cache import processed_dataset_commit
+
+            # A processed-cache run has no revision pin; its rows' build dir names their commit.
+            dataset_revision = processed_dataset_commit(dataset, dataset_name)
 
         multimodal_info = detect_multimodal_dataset(dataset)
 
