@@ -73,6 +73,8 @@ export interface VideoStatus {
   resident_mib?: number | null;
   family: string | null;
   supported_families?: string[];
+  // Per family, transformer_quant schemes refused on every GPU, with the reason; absent on older backends.
+  transformer_quant_denials?: Record<string, Record<string, string>>;
   modular_families?: string[];
   base_repo: string | null;
   device: string | null;

@@ -120,6 +120,15 @@ import {
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { pickFamily, precisionDisabledReasons } from "@/lib/precision-availability";
+import {
+  isHubRepoId,
+  recipeModelToReload,
+  recipeTextEncoderQuant,
+  recipeTransformerQuant,
+  seededTextEncoderQuant,
+  seededTransformerQuant,
+} from "@/lib/recipe-precision";
 import type {
   ExternalModelOption,
   ModelOption,
@@ -1057,6 +1066,7 @@ function AdvancedSelect({
   value,
   onValueChange,
   options,
+  disabledReasons,
 }: {
   label: string;
   hint?: ReactNode;
@@ -1065,7 +1075,10 @@ function AdvancedSelect({
   value: string;
   onValueChange: (v: string) => void;
   options: Array<[string, string]>;
+  /** Options that cannot load here, keyed by value; shown disabled with the reason as their tooltip. */
+  disabledReasons?: Record<string, string>;
 }) {
+  const selectedReason = disabledReasons?.[value];
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
@@ -1080,7 +1093,14 @@ function AdvancedSelect({
           </SelectTrigger>
           <SelectContent>
             {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
+              <SelectItem
+                key={v}
+                value={v}
+                disabled={disabledReasons?.[v] !== undefined && v !== value}
+                title={disabledReasons?.[v]}
+                // Disabled items keep pointer events so the reason tooltip still shows on hover.
+                className="text-xs data-[disabled]:pointer-events-auto data-[disabled]:cursor-not-allowed"
+              >
                 {l}
               </SelectItem>
             ))}
@@ -1088,6 +1108,11 @@ function AdvancedSelect({
         </Select>
       </div>
       {desc && <p className="text-ui-11 leading-snug text-muted-foreground/70">{desc}</p>}
+      {selectedReason && (
+        <p role="status" className="text-ui-11 leading-snug text-amber-600 dark:text-amber-400">
+          Cannot load here: {selectedReason}
+        </p>
+      )}
     </div>
   );
 }
@@ -2082,6 +2107,8 @@ export function ImagesPage({
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("auto");
   // The loaded build the Engine select was last seeded from; cleared by a failed load to force a reseed.
   const [engineSeed, setEngineSeed] = useState("");
+  // Bumped by a refused or failed load: the resident record did not change, so the Precision selects reseed from it.
+  const [precisionReseed, setPrecisionReseed] = useState(0);
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -2183,6 +2210,13 @@ export function ImagesPage({
     reconcileResidentComponents(status);
   }, [status, reconcileInitialComponents, reconcileResidentComponents]);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
+  // What the Precision select can load: the host's probed scheme ladder and the next load's family deny list.
+  const precisionAvailability = {
+    denseQuantSupported: hostClass === "dense-quant",
+    denseQuantSchemes,
+    family: pickFamily(familyOverride, Boolean(status?.loaded), status?.family),
+    denials: status?.transformer_quant_denials,
+  };
   // A connection is not bound by the resident model's size grid or presets.
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
@@ -3103,6 +3137,8 @@ export function ImagesPage({
   );
 
   // `via`: "import" names what was not applied in its own toast; "vary" restores silently for the Vary run.
+  // handleModelSelect is declared further down; a restore's reload action reaches it through this.
+  const handleModelSelectRef = useRef<((id: string, meta: ModelSelectorChangeMeta) => void) | null>(null);
   const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore") => {
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0 (the base pass's, or Hires CFG's for the refine pass); do not
@@ -3150,6 +3186,13 @@ export function ImagesPage({
       if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
     }
     setLoras(restoredLoras);
+    if (via === "restore") {
+      // The build it ran with: Precision and Text encoder precision apply to the next load (Reapply or a pick).
+      const restoredQuant = recipeTransformerQuant(image);
+      if (restoredQuant) setTransformerQuant(restoredQuant);
+      const restoredEncoder = recipeTextEncoderQuant(image);
+      if (restoredEncoder) setTextEncoderQuant(restoredEncoder);
+    }
     if (typeof image.strength === "number") {
       if (image.workflow === "upscale") setUpscaleStrength(image.strength);
       else setStrength(image.strength);
@@ -3215,6 +3258,31 @@ export function ImagesPage({
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
+      });
+    }
+    // A different model is offered as a reload, never loaded behind the user's back.
+    const reloadModel = via === "restore" ? recipeModelToReload(image, status) : null;
+    if (reloadModel) {
+      toast.info(`This image was made with ${reloadModel}`, {
+        description: status?.loaded
+          ? "Load it to reproduce this image; the restored precision applies to that load."
+          : "Load it to generate with these settings; the restored precision applies to that load.",
+        ...(isHubRepoId(reloadModel)
+          ? {
+              action: {
+                label: "Load model",
+                onClick: () =>
+                  handleModelSelectRef.current?.(reloadModel, {
+                    source: "hub",
+                    isLora: false,
+                    isDiffusion: true,
+                    ...(image.model_kind === "gguf" && image.gguf_filename
+                      ? { isGguf: true, ggufFilename: image.gguf_filename }
+                      : {}),
+                  }),
+              },
+            }
+          : {}),
       });
     }
   }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
@@ -3707,6 +3775,7 @@ export function ImagesPage({
         // And for the Engine select: a worker that failed before publishing leaves the resident provenance, so the
         // seed would not move and the next Reapply would replay the failed pick.
         setEngineSeed("");
+        setPrecisionReseed((n) => n + 1);
         // A failed load may have freed a previously-loaded model, so resync to the real backend state.
         void refreshStatus();
         return;
@@ -4011,19 +4080,10 @@ export function ImagesPage({
     if (!record) return;
     const family = resolvedFamilyOverrideSelection(record.family_override);
     if (family) setFamilyOverride(family);
-    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
-      // The engaged value spells "no quant" as "off"; the option is "none".
-      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
-        (o) => o === v || (o === "none" && v === "off"),
-      ) ?? null,
-    );
+    const quant = seededTransformerQuant(record.transformer_quant);
     if (quant) setTransformerQuant(quant);
-    const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
-      // "off" maps to Dense, NOT Default, or a pinned Dense would silently take the family scheme.
-      (["auto", "none", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
-        (o) => o === v || (o === "none" && v === "off"),
-      ) ?? null,
-    );
+    // "off" maps to Dense, NOT Default, or a pinned Dense would silently take the family scheme.
+    const encoder = seededTextEncoderQuant(record.text_encoder_quant);
     if (encoder) setTextEncoderQuant(encoder);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
@@ -4039,6 +4099,18 @@ export function ImagesPage({
     if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
+  // A refused or failed load leaves the resident record (and so resolvedKey) as it was: put the Precision selects
+  // back on what is loaded, or they keep advertising the scheme that never engaged.
+  useEffect(() => {
+    if (precisionReseed === 0) return;
+    const record = status?.loaded ? status.resolved : null;
+    if (!record) return;
+    const quant = seededTransformerQuant(record.transformer_quant);
+    if (quant) setTransformerQuant(quant);
+    const encoder = seededTextEncoderQuant(record.text_encoder_quant);
+    if (encoder) setTextEncoderQuant(encoder);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per failure, on the record as it is then
+  }, [precisionReseed]);
 
   const bakedLorasFor = useCallback(
     (repoId: string, preserveSelection = false): LoraSpecInput[] => {
@@ -4208,6 +4280,7 @@ export function ImagesPage({
         // A refused load keeps the resident model and its provenance, so the seed would not move: reseed the
         // Engine select from the resident build rather than replay the refused pick on the next Reapply.
         setEngineSeed("");
+        setPrecisionReseed((n) => n + 1);
         dismissLoadToast();
         if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
@@ -5198,6 +5271,7 @@ export function ImagesPage({
       revertPick,
     ],
   );
+  handleModelSelectRef.current = handleModelSelect;
 
   const handleDeployAdapter = useCallback(
     (args: {
@@ -6377,6 +6451,10 @@ export function ImagesPage({
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
+          disabledReasons={precisionDisabledReasons(
+            [["fp8", "FP8"], ["int8", "INT8"], ["nvfp4", "NVFP4"], ["mxfp8", "MXFP8"]],
+            precisionAvailability,
+          )}
           options={[
             ["auto", "Auto (fastest for GPU)"],
             ["none", "Off (run the checkpoint as-is)"],

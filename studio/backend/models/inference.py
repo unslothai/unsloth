@@ -6516,6 +6516,10 @@ class DiffusionStatusResponse(BaseModel):
     modular_families: List[str] = Field(
         default_factory = list, description = "Loadable families shipped as Modular Diffusers pipelines"
     )
+    transformer_quant_denials: Dict[str, Dict[str, str]] = Field(
+        default_factory = dict,
+        description = "Per family, transformer_quant schemes refused on every GPU, with the refusal reason",
+    )
     supports_prompt_upsampler: bool = Field(
         False,
         description = "Whether the loaded family can enhance prompts with the FLUX.3 prompt upsampler",
@@ -8384,6 +8388,10 @@ class VideoStatusResponse(BaseModel):
     family: Optional[str] = Field(None, description = "Detected video family")
     supported_families: List[str] = Field(default_factory = list, description = "Loadable families")
     modular_families: List[str] = Field(default_factory = list, description = "Modular families")
+    transformer_quant_denials: Dict[str, Dict[str, str]] = Field(
+        default_factory = dict,
+        description = "Per family, transformer_quant schemes refused on every GPU, with the refusal reason",
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")

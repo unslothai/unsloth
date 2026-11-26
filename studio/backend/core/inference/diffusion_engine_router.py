@@ -1421,6 +1421,14 @@ def _supported_family_capabilities() -> tuple[str, ...]:
     return tuple(pipeline_available_family_names())
 
 
+def _transformer_quant_denials(families: Any) -> dict[str, dict[str, str]]:
+    try:
+        from .diffusion_transformer_quant import transformer_quant_denials
+        return transformer_quant_denials(families)
+    except Exception:  # noqa: BLE001 -- a status poll never fails over the precision hints
+        return {}
+
+
 def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     """Tag a backend status dict with the active engine + any fallback reason."""
     out = dict(status)
@@ -1428,6 +1436,7 @@ def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     out["fallback_reason"] = _fallback_reason
     out["mlx_fallback_reason"] = _mlx_fallback_reason
     out["supported_families"] = list(_supported_family_capabilities())
+    out["transformer_quant_denials"] = _transformer_quant_denials(_supported_family_capabilities())
     # The family override picker classes an opaque folder as a modular pipeline only for these (FLUX.3).
     out["modular_families"] = list(modular_image_family_names(_supported_family_capabilities()))
     # FLUX.3 prompt upsampling, by the loaded family (pure: no binary or cache probe on a status poll).

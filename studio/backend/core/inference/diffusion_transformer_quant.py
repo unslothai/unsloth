@@ -785,6 +785,38 @@ def family_denies_scheme(
     return _family_denied(family, scheme, base_repo)
 
 
+_DENIALS_CACHE: dict[tuple, dict[str, dict[str, str]]] = {}
+
+
+def transformer_quant_denials(families: Any = None) -> dict[str, dict[str, str]]:
+    """Per family (of ``families``, or every family in the deny table), the schemes the deny table refuses on every
+    GPU with the refusal text a load would give, so a picker can disable them before the load. Torch-free, cached
+    per family set and NVFP4 switch. An nvfp4 deny a gate record lifts for some base is left out: the base decides."""
+    wanted = (
+        None if families is None else tuple(sorted({str(f).strip().lower() for f in families if f}))
+    )
+    key = (wanted, nvfp4_diffusion_enabled())
+    cached = _DENIALS_CACHE.get(key)
+    if cached is not None:
+        return {family: dict(reasons) for family, reasons in cached.items()}
+    out: dict[str, dict[str, str]] = {}
+    for family, schemes in sorted(_FAMILY_SCHEME_DENY.items()):
+        if wanted is not None and family not in wanted:
+            continue
+        reasons: dict[str, str] = {}
+        for scheme in sorted(schemes):
+            if scheme == TQ_NVFP4 and nvfp4_gated_base(family) is not None:
+                continue
+            try:
+                reasons[scheme] = explain_unusable_scheme(family, scheme)
+            except Exception:  # noqa: BLE001 -- a status read never fails over its explanation
+                reasons[scheme] = f"'{scheme}' is ruled out for family '{family}'"
+        if reasons:
+            out[family] = reasons
+    _DENIALS_CACHE[key] = out
+    return {family: dict(reasons) for family, reasons in out.items()}
+
+
 def explain_unusable_scheme(
     family: Optional[str],
     scheme: str,
