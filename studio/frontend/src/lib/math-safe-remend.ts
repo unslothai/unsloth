@@ -6,6 +6,16 @@ import type { RemendHandler, RemendOptions } from "remend";
 // remend's htmlTags pass, except a `<` inside math (`x_{<i}`) is passed over instead of cut.
 const TRAILING_TAG_RE = /<[a-zA-Z/][^>]*$/;
 const TAG_START_RE = /<[a-zA-Z/]/g;
+const ATX_HEADING_RE = / {0,3}#{1,6}[ \t]/y;
+const QUOTE_RE = / {0,3}>/y;
+// Generous on purpose: wrongly thinking a paragraph is quoted only skips a reset.
+const QUOTED_LINE_RE = /[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*>/y;
+// A `$$` with only container markers before it on its line is a display fence, which may span paragraphs.
+const FENCE_PREFIX_RE = /^(?:[ \t>]|(?:[-*+]|\d{1,9}[.)])[ \t])*$/;
+const TABLE_DELIMITER_RE =
+  / {0,3}(?:\|?(?:[ \t]*:?-+:?[ \t]*\|)+(?:[ \t]*:?-+:?[ \t]*)?|\|[ \t]*:?-+:?[ \t]*)\r?(?:\n|$)/y;
+const PARAGRAPH_BREAK_RE =
+  /[ \t]*\r?\n| {0,3}(?:>(?: {0,4}>)*[ \t]*\r?\n|(?:[-*+]|1[.)])[ \t]+[^ \t\r\n]|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})\r?\n|#{1,6}[ \t]|```|~~~|\$\$[^$\r\n]*\r?\n)/y;
 
 type MathState =
   | "none"
@@ -60,6 +70,24 @@ function nextDollarState(state: MathState, block: boolean): MathState {
   return state === "inlineDollar" ? "none" : "inlineDollar";
 }
 
+function matchesAt(re: RegExp, text: string, at: number): boolean {
+  re.lastIndex = at;
+  return re.test(text);
+}
+
+// Unambiguous CommonMark paragraph ends, so a stray `$` (`US$`, `$HOME`) can't flip later paragraphs.
+function endsParagraph(text: string, lineStart: number, next: number): boolean {
+  return (
+    matchesAt(ATX_HEADING_RE, text, lineStart) ||
+    matchesAt(PARAGRAPH_BREAK_RE, text, next)
+  );
+}
+
+function isTableHeader(text: string, lineStart: number): boolean {
+  const end = text.indexOf("\n", lineStart);
+  return end !== -1 && matchesAt(TABLE_DELIMITER_RE, text, end + 1);
+}
+
 // Only `$$` counts while open (remend closes it); an unclosed `$` stays prose, like `echo $PATH <done`.
 function mathAt(
   text: string,
@@ -71,6 +99,20 @@ function mathAt(
   let state: MathState = "none";
   let spanId = 0;
   let next = 0;
+  let lineStart = 0;
+  let quoted = matchesAt(QUOTED_LINE_RE, text, 0);
+  let fence = false;
+  // Each GFM table row is its own inline context; cells are not split, so `$p(x|y)$` survives.
+  let inTable = isTableHeader(text, 0);
+  const endInlineMath = () => {
+    if (
+      state === "inlineDollar" ||
+      state === "inlineLatex" ||
+      (state === "blockDollar" && !fence)
+    ) {
+      state = "none";
+    }
+  };
   for (let i = 0; i <= text.length; i++) {
     while (next < positions.length && positions[next] <= i) {
       openAt.push(
@@ -85,6 +127,21 @@ function mathAt(
     if (i >= text.length || code[i] || code[i + 1]) continue;
     const char = text[i];
     const after = text[i + 1];
+    if (char === "\n") {
+      // A `>` line opens a quote unless this paragraph is already quoted (then it continues it).
+      const opensQuote = matchesAt(QUOTE_RE, text, i + 1);
+      const headerNext = isTableHeader(text, i + 1);
+      const ends =
+        endsParagraph(text, lineStart, i + 1) || (opensQuote && !quoted);
+      if (ends || inTable || headerNext) endInlineMath();
+      if (ends) {
+        quoted = matchesAt(QUOTED_LINE_RE, text, i + 1);
+        inTable = false;
+      }
+      if (headerNext) inTable = true;
+      lineStart = i + 1;
+      continue;
+    }
     if (char === "\\" && after === "$") {
       i += 1;
       continue;
@@ -106,6 +163,9 @@ function mathAt(
       width = block ? 1 : 0;
     }
     if (nextState === null) continue;
+    if (nextState === "blockDollar" && state !== "blockDollar") {
+      fence = FENCE_PREFIX_RE.test(text.slice(lineStart, i));
+    }
     if (state === "none" && nextState !== "blockDollar") {
       spanId += 1;
     }

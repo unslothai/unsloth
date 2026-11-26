@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   FINISHED_TEXT_REMEND,
+  IncrementalMarkdownCache,
   LITERAL_LINK_REMEND,
   repairStreamingMarkdown,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
@@ -29,6 +30,63 @@ const KEPT = [
   "x `<span",
   "use `a<b` and <div",
   "```html\n<div class",
+  "The $ sign.\n\nThen $x_{<i}$ ok",
+  "The $ sign.\n- Then $x_{<i}$ ok",
+  "The $ sign.\n1. Then $x_{<i}$ ok",
+  "## What does $ mean?\nThen $x_{<i}$ ok",
+  "Intro.\n## What $ is\nThen $x_{<i}$ ok",
+  "The $ sign.\n# Then $x_{<i}$ ok",
+  "- Prices in US$.\n---\nThen $x_{<i}$ ok",
+  "Prices in US$.\n***\nThen $x_{<i}$ ok",
+  "Prices in US$.\n___\nThen $x_{<i}$ ok",
+  "- Let $y\n=\nx_{<i}$ ok",
+  "Let $a\n-*-\nb_{<i}$ ok",
+  "Let $a\n**\nb_{<i}$ ok",
+  "Let $a\n__\nb_{<i}$ ok",
+  "- Let $y\n--\nx_{<i}$ ok",
+  "| Item | Cost ($) |\n|---|---|\n| A | $x_{<i}$ |",
+  "Prices in US$.\n$x_{<i}$ | Q\n--- | ---\n1 | 2",
+  "| Metric\n| ---\n| US$\n| $x_{<i}$",
+  "## Condition $p(x_{<i}|y)$\n|---|---|",
+  "| Model | Factorization |\n|---|---|\n| AR | $p(x_i|x_{<i})$ |\n\nDone.",
+  "Use $$ for display math and $x_{<i}$ for inline math.",
+  "| Conditional $p(x_{<i}|y)$ | Value |\n| --- | --- |\n| a | 1 |",
+  "| a | b |\n|---|---|\n| US$ | 1 |\n| 2 | $x_{<i}$ |",
+  "Intro.\n\n| a | b |\n|---|---|\n| US$ | 1 |\n| 2 | $x_{<i}$ |",
+  "a | b\n--- | ---\n1 | US$\n$x_{<i}$ | 2",
+  "| a |\n|---|\n| 1 |\n\nLet $a +\nx_{<i}$ ok",
+  "Let $a\n***b***\nc_{<i}$ ok",
+  "Let $a +\n#tag\nx_{<i}$ ok",
+  "The $ sign.\n```\nx\n```\nThen $x_{<i}$ ok",
+  "> The $ sign.\n>\n> Then $x_{<i}$ ok",
+  "## T\n\nLet $a +\nx_{<i}$ ok",
+  "Let $a +\n    - x_{<i}$ ok",
+  "- Let $a_{<i}\n  + \n  b_i$ ok",
+  "Let $a\n    >\n    b_{<i}$ ok",
+  "> Let $a\n>     >\n>     b_{<i}$ ok",
+  "> > The $ sign.\n> >\n> > Then $x_{<i}$ ok",
+  "A dollar sign ($) opens it.\n> Then $x_{<i}$ ok",
+  "> Let $a\nlazy\n> b_{<i}$ ok",
+  "Intro.\n\n> Let $a\nlazy\n> b_{<i}$ ok",
+  "1. > Let $p(x_i\n   > \\mid x_{<i})$ ok",
+  "Intro.\n\n1. > Let $p(x_i\n   > \\mid x_{<i})$ ok",
+  "Wrap display math in $$.\n\n$$\nx_{<i}\n$$",
+  "Wrap display math in $$.\n$$\nx_{<i}\n$$",
+  "Wrap display math in $$.\n$$\\displaystyle\nx_{<i}\n$$",
+  "The terms are $$a+b\n$$ and $$x_{<i}$$ ok",
+  "> $$\n> a\n>\n> x_{<i} $$",
+  "- $$\n  a\n\n  x_{<i}\n  $$",
+  "Let $a +\n    # b\nx_{<i}$ ok",
+  "~~~bash\necho $HOME\n~~~\nThen $x_{<i}$ ok",
+  "Use $x_{<i}$`c` ok",
+  "Let $a +\nx_{<i}$ ok",
+  "Let $a \\le\n|x_{<i}|$ ok",
+  "Let $a =\n2. x_{<i}$ ok",
+  "> Let $p(x_i\n> \\mid x_{<i})$ ok",
+  "It costs \\$5. Then $x_{<i}$ ok",
+  "$$a$$ and $x_{<i}$ ok",
+  "~~~\necho $HOME\n~~~\n\n\\(x_{<i}\\) ok",
+  "$$\na\n\nx_{<i}\n$$",
 ];
 
 const STRIPPED: Array<[string, string]> = [
@@ -62,6 +120,20 @@ test("a < inside math is not cut as an incomplete HTML tag", () => {
   }
 });
 
+test("a streamed formula with < survives the incremental tail repair", () => {
+  for (const text of [
+    "Intro:\n\n$$p(x) = \\prod_i p(x_i \\mid x_{<i})$$",
+    `**Context.**${"\n\nShort paragraph.".repeat(16)}\n\nThe term $x_{<i}$.`,
+  ]) {
+    const cache = new IncrementalMarkdownCache();
+    let markdown = "";
+    for (let n = 1; n <= text.length; n++) {
+      markdown = cache.update(text.slice(0, n)).markdown;
+    }
+    assert.ok(markdown.endsWith(text.slice(-8)), JSON.stringify(markdown));
+  }
+});
+
 test("a trailing HTML tag outside math is still stripped", () => {
   for (const [text, expected] of STRIPPED) {
     assert.equal(remendMathSafe(text), expected);
@@ -86,6 +158,7 @@ test("output matches remend's own pass whenever the cut is not inside math", () 
     "and \\[a<b",
     "and \\(a<b",
     "price $5 and <span",
+    "## Using $$ for display\n\nadd <span class=",
   ]) {
     for (const options of [undefined, FINISHED_TEXT_REMEND, LITERAL_LINK_REMEND]) {
       assert.equal(remendMathSafe(text, options), remend(text, options));
