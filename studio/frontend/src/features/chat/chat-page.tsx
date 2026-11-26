@@ -182,6 +182,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "./api/chat-api";
+import { subscribeChatImageToolSettled } from "./api/chat-image-tool-events";
 import { codeToolCanRun } from "./api/code-tool-placement";
 import {
   clearAutoOpenedArtifacts,
@@ -3457,7 +3458,7 @@ export function ChatPage({
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
   // The Images pill can use the image or video model loaded in Unsloth. Re-read when Chat becomes active,
-  // when any load settles (a chat load can evict them), when either is ejected, and on focus.
+  // when any load settles, when either is ejected, and after an image tool restores chat.
   useEffect(() => {
     let disposed = false;
     let controller: AbortController | null = null;
@@ -3487,6 +3488,7 @@ export function ChatPage({
       }),
       subscribeModelEjected("image", refresh),
       subscribeModelEjected("video", refresh),
+      subscribeChatImageToolSettled(refresh),
     ];
     // An idle unload, another tab or an MCP client changes them with no event in this tab.
     window.addEventListener("focus", refresh);
