@@ -570,6 +570,23 @@ test("the regex budget counts matching work, not keys", () => {
   assert.ok(charged() < cap * 1.05, `charged ${charged()} of ${cap}`);
 });
 
+test("a card with thousands of plain keys stops scanning at the prompt's literal budget", () => {
+  const entries = Array.from({ length: 5000 }, (_, i) =>
+    entry({ id: `k${i}`, keys: Array.from({ length: 10 }, (_, k) => `keyword${i}x${k}`), content: `lore ${i}` }),
+  );
+  const lore = book(entries, { recursive_scanning: true });
+  const budget = loreBudget([lore]);
+  const cap = budget.literalChars.left;
+  const text = "the quick brown fox jumps over the lazy dog ".repeat(400);
+  activateLorebook(lore, [text], budget);
+  // Spent, then every later key is skipped without a scan: the overshoot is at most one window.
+  assert.ok(budget.literalChars.left <= 0, "the budget ran out");
+  assert.ok(budget.literalChars.left > -16_001, `overshot to ${budget.literalChars.left} of ${cap}`);
+  // Keys checked before it ran out still fire.
+  const small = book([entry({ id: "w", keys: ["lazy dog"], content: "dog lore" })]);
+  assert.deepEqual(activateLorebook(small, [text]).fired.map((f) => f.id), ["w"]);
+});
+
 test("keys and names in scripts without spaces fire inside a sentence; a card can turn whole words off", () => {
   assert.equal(activateLorebook(book([entry({ keys: ["東京"], content: "Tokyo" })]), ["私は東京に行く"]).fired.length, 1);
   const loose = entry({ keys: ["elf"], content: "Elves", extensions: { match_whole_words: false } });
