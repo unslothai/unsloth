@@ -207,6 +207,13 @@ def test_status_and_plan_routes_fill_it():
         )
         assert "target = precision_target( state.device, state.dtype," in flat
         assert "model_kind = state.kind," in flat
+        # The verdicts describe the next load, whose Memory pick may offload: the resident's policy is not assumed.
+        assert "model_kind = state.kind, # These verdicts describe the NEXT load" in flat
+        assert "offload = None," in flat
+        assert (
+            "offload = state.offload_policy" not in flat
+            and "offload = (state.offload_policy" not in flat
+        )
         assert '"precision_options_card": None,' in flat
         assert (
             '"precision_options_card": physical_gpu_id_for_ordinal( state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal )'

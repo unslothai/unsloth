@@ -18252,7 +18252,9 @@ class DiffusionBackend:
                     state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal,
                 ),
                 model_kind = state.kind,
-                offload = state.offload_policy != OFFLOAD_NONE,
+                # These verdicts describe the NEXT load, whose Memory choice may offload (native INT8 then skips the
+                # probe), so the resident's own policy is not assumed: unknown counts as possibly offloaded.
+                offload = None,
             ),
             # The card those verdicts were judged on, so a pick for another card does not inherit its probe failures.
             "precision_options_card": physical_gpu_id_for_ordinal(
