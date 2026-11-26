@@ -5208,6 +5208,22 @@ def _default_request_batching(state: Any) -> dict[str, Any]:
     }
 
 
+def _step_cache_couples_rows(state: Any, steps: Optional[int]) -> bool:
+    """Whether FBCache can run this call: it decides skips from one batch-wide residual mean, so one request's image
+    would decide whether another's blocks run. A static schedule decides by step only and is row-independent.
+    Unknown steps on an AUTO cache count as engaged."""
+    from .diffusion_cache import TC_FBCACHE, auto_step_cache_mode
+
+    if getattr(state, "cache_auto", False):
+        if steps is None:
+            return True
+        try:
+            return auto_step_cache_mode(int(steps)) == TC_FBCACHE
+        except (TypeError, ValueError):
+            return True
+    return getattr(state, "transformer_cache", None) == TC_FBCACHE
+
+
 def _measured_sizes(
     state: Any, width: Any, height: Any, guidance: Optional[float]
 ) -> dict[int, dict]:
@@ -18375,6 +18391,12 @@ class DiffusionBackend:
                 "reason": "this family's pipeline renders one image per forward, so concurrent requests render one "
                 "at a time",
             }
+        if not getattr(state, "cache_auto", False) and _step_cache_couples_rows(state, None):
+            return {
+                "mode": "serial",
+                "reason": "the step cache (FBCache) decides skips from the whole call, so one request would decide "
+                "another's; concurrent requests render one at a time",
+            }
         policy = _default_request_batching(state)
         if policy["mode"] == "serial" and policy.get("measurable"):
             from . import diffusion_batch_race
@@ -18392,12 +18414,16 @@ class DiffusionBackend:
         width: int,
         height: int,
         guidance: Optional[float] = None,
+        steps: Optional[int] = None,
     ) -> Optional[frozenset]:
         """Allowed batch sizes at this shape: None = any, empty = none; static compile offers only already-compiled sizes.
         A race verdict at this shape refines it: a measured loser is dropped, a measured winner is offered."""
         policy = self.request_batching()
         state = self._state
         if policy is None or policy["mode"] == "serial":
+            return frozenset()
+        if _step_cache_couples_rows(state, steps):
+            # An AUTO cache engages FBCache at this step count: its skip decision would couple the rows.
             return frozenset()
         measured = _measured_sizes(state, width, height, guidance)
         winners = frozenset(k for k, v in measured.items() if v.get("promoted"))
@@ -18468,6 +18494,10 @@ class DiffusionBackend:
         if not batched_forward(getattr(state, "family", None), getattr(state, "pipe", None)):
             raise diffusion_batch_race.RaceRefused(
                 "this family's pipeline renders one image per forward"
+            )
+        if _step_cache_couples_rows(state, steps):
+            raise diffusion_batch_race.RaceRefused(
+                "FBCache runs at this step count; its batch-wide skip decision couples the rows"
             )
         policy = _default_request_batching(state)
         if policy["mode"] == "serial" and not policy.get("measurable"):

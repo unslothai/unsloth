@@ -749,3 +749,54 @@ def test_members_a_batch_left_out_coalesce_again_behind_it():
     assert sorted(map(sorted, calls)) == [["a", "b"], ["c", "d"]]
     assert all(r is not None for r in results)
     assert trace.snapshot()["counts"].get("rejoined", 0) >= 2
+
+
+def test_fbcache_decides_skips_from_the_whole_batch():
+    """Why FBCache loads never coalesce: a row that alone would skip its blocks is computed because its neighbour
+    changed (and the other way round), so one request decides another's image."""
+    torch = pytest.importorskip("torch")
+    fbc = pytest.importorskip("diffusers.hooks.first_block_cache")
+    prev = torch.ones(2, 4, 8)
+
+    def decide(residual):
+        hook = types.SimpleNamespace(
+            threshold = 0.1,
+            state_manager = types.SimpleNamespace(
+                get_state = lambda: types.SimpleNamespace(head_block_residual = prev)
+            ),
+        )
+        return (
+            fbc.FBCHeadBlockHook._should_compute_remaining_blocks.__wrapped__(hook, residual)
+            if hasattr(fbc.FBCHeadBlockHook._should_compute_remaining_blocks, "__wrapped__")
+            else fbc.FBCHeadBlockHook._should_compute_remaining_blocks(hook, residual)
+        )
+
+    still = prev.clone()
+    moved = prev.clone()
+    moved[1] *= 3.0
+    assert decide(still[:1]) is False  # row 0 alone: skip
+    assert decide(moved) is True  # the same row 0 beside a changed neighbour: computed
+
+
+@pytest.mark.parametrize("cache", ["fbcache", "static", None])
+def test_an_fbcache_load_serves_serially_and_a_static_schedule_still_batches(cache):
+    engine = _engine(offload_policy = "sequential", transformer_cache = cache, cache_auto = False)
+    policy = engine.request_batching()
+    if cache == "fbcache":
+        assert policy["mode"] == "serial" and "FBCache" in policy["reason"]
+        assert engine.coalesce_batch_sizes(1024, 1024) == frozenset()
+        with pytest.raises(race.RaceRefused):
+            engine.batch_race(width = 512, height = 512, steps = 8)
+    else:
+        assert policy["mode"] == "any"
+        assert engine.coalesce_batch_sizes(1024, 1024) is None
+
+
+def test_an_auto_cache_batches_only_below_the_fbcache_step_count():
+    from core.inference.diffusion_cache import FBCACHE_MIN_STEPS
+
+    engine = _engine(offload_policy = "sequential", transformer_cache = None, cache_auto = True)
+    assert engine.request_batching()["mode"] == "any"
+    assert engine.coalesce_batch_sizes(1024, 1024, None, FBCACHE_MIN_STEPS - 1) is None
+    assert engine.coalesce_batch_sizes(1024, 1024, None, FBCACHE_MIN_STEPS) == frozenset()
+    assert engine.coalesce_batch_sizes(1024, 1024) == frozenset(), "unknown steps count as engaged"

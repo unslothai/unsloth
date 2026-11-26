@@ -56252,6 +56252,8 @@ async def _coalesced_image_generate(
     shape_kwargs = {}
     if sizes_of is not None and _callable_takes(sizes_of, "guidance"):
         shape_kwargs["guidance"] = generate_kwargs.get("guidance")
+    if sizes_of is not None and _callable_takes(sizes_of, "steps"):
+        shape_kwargs["steps"] = generate_kwargs.get("steps")
 
     def fits(total: int) -> bool:
         if sizes_of is None:
