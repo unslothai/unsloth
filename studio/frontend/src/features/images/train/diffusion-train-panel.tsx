@@ -1667,7 +1667,7 @@ export function DiffusionTrainPanel({
     m: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto",
   ): string => {
     if (m === "auto") return "Auto";
-    if (m === "nf4") return "nf4 (lowest VRAM)";
+    if (m === "nf4") return "NF4 (bitsandbytes, not NVFP4)";
     if (m === "bf16") return "bf16 (fastest)";
     if (m === "int8") return "int8";
     if (m === "mxfp8") return "mxfp8 (Blackwell)";
@@ -1874,7 +1874,7 @@ export function DiffusionTrainPanel({
 
         {isDiT ? (
           <div className={fieldClass}>
-            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; nf4 uses the least VRAM.">
+            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; NF4 uses the least VRAM. NF4 is the bitsandbytes 4-bit format QLoRA uses, not NVIDIA's NVFP4, which Studio runs for image and video generation only.">
               Base precision
             </FieldLabel>
             <Select
