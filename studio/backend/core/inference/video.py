@@ -361,6 +361,7 @@ from .video_stream_encode import (
 from utils.hardware import clear_gpu_cache
 
 from core.inference.inference_gate import holds_inference, pauses_background_embedding
+from utils.keep_awake import keeps_system_awake
 
 # Shared with the image backend so both pin every loader call to the same live cache root
 from core.inference.diffusion import hub_cache_dir
@@ -15677,6 +15678,7 @@ class VideoBackend:
                     video_id = (video or {}).get("id"),
                 )
 
+    @keeps_system_awake
     @holds_inference
     @vram_budget_scope("video")
     def generate(
