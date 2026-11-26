@@ -1267,6 +1267,52 @@ def test_sidebar_sections_keeps_unranked_chats_before_a_drag_with_an_unseen_page
     assert response.json()["rowOrder"]["work"] == ["c", "b", "a", "p"]
 
 
+def test_sidebar_sections_keeps_unranked_chats_during_concurrent_manual_reorders(client):
+    path = "/chat/sidebar-sections"
+
+    def send(
+        operation,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    initial = send(
+        "initial",
+        {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys("abde", "work"),
+            "rowOrder": {"work": list("abde")},
+        },
+    )
+    after_filing = send(
+        "file-chat",
+        {**initial, "sectionByChatId": {**initial["sectionByChatId"], "c": "work"}},
+        initial,
+    )
+    peer = send(
+        "peer",
+        {**initial, "rowOrder": {"work": list("abed")}},
+        initial,
+        [{"sectionId": "work", "id": "e", "targetId": "d", "edge": "top"}],
+    )
+    assert peer["rowOrder"]["work"] == list("abed")
+    assert peer["sectionByChatId"]["c"] == "work"
+    saved = send(
+        "local",
+        {**after_filing, "rowOrder": {"work": list("cbade")}},
+        after_filing,
+        [{"sectionId": "work", "id": "b", "targetId": "a", "edge": "top"}],
+    )
+    assert saved["rowOrder"]["work"] == list("cbaed")
+
+
 @pytest.mark.parametrize(
     ("initial", "first", "second", "expected", "sort"),
     [

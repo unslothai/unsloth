@@ -82,6 +82,7 @@ def _edited_order(
     moves,
     *,
     switched_to_manual = False,
+    unranked_first = False,
 ):
     if base == layout and not switched_to_manual:
         moves = [move for move in moves if move.get("afterUnpin")]
@@ -104,7 +105,13 @@ def _edited_order(
     if moves:
         if saved == base and (switched_to_manual or set(saved).issubset(layout)):
             return _merge_order(layout, saved)
-        order = _merge_order(saved, layout)
+        primary = saved
+        if unranked_first and saved != base:
+            ranked = set(saved).union(base)
+            # Manual sections display unranked rows before their saved order.
+            unranked = [row for row in layout if row not in ranked]
+            primary = unranked + saved
+        order = _merge_order(primary, layout)
         for move in moves:
             _apply_placement(order, move)
         if saved == base:
@@ -183,10 +190,9 @@ def _merge(
         moves = moves_by_section.get(key, ())
         if importing or ids != previous or key not in row_order or moves:
             saved = row_order.get(key, [])
-            switched_to_manual = (
-                base["sections"].get(key, {}).get("sort") == "updated"
-                and layout["sections"].get(key, {}).get("sort") == "manual"
-            )
+            previous_sort = base["sections"].get(key, {}).get("sort")
+            sort = layout["sections"].get(key, {}).get("sort")
+            switched_to_manual = previous_sort == "updated" and sort == "manual"
             if importing and key in row_order:
                 # Only newly imported rows receive a rank from this browser. Existing rows
                 # may since have been dragged, unranked, unfiled, or filed elsewhere.
@@ -207,7 +213,13 @@ def _merge(
                 saved = [row for row in saved if row not in removed]
                 previous = [row for row in previous if row not in removed]
             row_order[key] = _edited_order(
-                saved, previous, ids, importing, moves, switched_to_manual = switched_to_manual
+                saved,
+                previous,
+                ids,
+                importing,
+                moves,
+                switched_to_manual = switched_to_manual,
+                unranked_first = previous_sort == sort == "manual" and not importing,
             )
     result["rowOrder"] = {key: ids for key, ids in row_order.items() if key in live}
     return result
