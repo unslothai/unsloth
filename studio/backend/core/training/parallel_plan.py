@@ -218,12 +218,22 @@ def detect_host(max_age_s: float = 5.0) -> dict:
         "multi_process_reason": reason,
         "gpus": gpus,
         "core": core_axes(),
+        # A UUID / MIG mask cannot be narrowed by index: /start refuses a plan that pins a subset of it.
+        "pins_gpu_ids": _mask_takes_gpu_ids(),
         "transformers": _transformers_version(),
         "torch": _torch_version(),
     }
     with _HOST_LOCK:
         _HOST_CACHE.update(at = time.monotonic(), value = host)
     return host
+
+
+def _mask_takes_gpu_ids() -> bool:
+    try:
+        from utils.hardware import hardware as hw
+        return bool(hw._get_parent_visible_gpu_spec().get("supports_explicit_gpu_ids", True))
+    except Exception:  # noqa: BLE001 -- the same default as the /start check
+        return True
 
 
 def _torch_version() -> tuple:
@@ -510,6 +520,15 @@ def _plain_core_message(message: str) -> str:
     return text[:1].upper() + text[1:] if text else message.strip()
 
 
+def _too_big(need: float, largest: dict, host: dict) -> str:
+    """Why a run that DDP could not take is sharded, claiming only what was checked: the freest card."""
+    if not _fits(need, [largest]):
+        return "more than any one GPU has room for"
+    if not host.get("pins_gpu_ids", True):
+        return "and not every GPU has room for a full copy, while this GPU mask cannot keep a run to one card"
+    return "and not every GPU has room for a full copy"
+
+
 def _fits(need_gb: Optional[float], gpus: list) -> bool:
     if need_gb is None:
         return False
@@ -694,26 +713,12 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if multi_reason:
             return _legacy(multi_reason)
         core = host.get("core") or {}
-        # EP needs fused expert stacks; transformers 4.x leaves most families unfused (refused at load).
-        if (
-            model.get("is_moe")
-            and core.get(EP)
-            and tuple(host.get("transformers") or (5, 0)) >= (5, 0)
-        ):
-            try:
-                _core_check(
-                    _sizes_for(EP, len(gpus)), model, host, {**request, "parallel_mode": EP}, gpus
-                )
-                return _result(
-                    EP,
-                    gpus,
-                    "Mixture-of-experts model: its experts are split across the GPUs (expert parallel).",
-                    _spec_for(EP, len(gpus), None),
-                )
-            except ParallelPlanError:
-                pass
         if need is None:
             return _legacy("The model size could not be estimated, so Studio keeps one process.")
+        # Expert parallel is never picked here, only on request: when a full copy fits every GPU, DDP has no
+        # all-to-all per layer (OLMoE-1B-7B LoRA on 2 GPUs: DDP 240 s, ep 570 s for 60 steps); when it does not,
+        # Core alone knows what an ep rank holds (padded expert shards, load peaks, 4-bit splits), and FSDP2
+        # shards any model.
         if _fits(need, gpus) and core.get(DDP):
             try:
                 _core_check(
@@ -727,6 +732,18 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 )
             except ParallelPlanError:
                 pass
+        # Mixed GPUs: the run fits the largest card but not every card. Every multi-process layout gives each
+        # rank an equal share, so the smallest card caps it; training alone on the large card is the safe pick.
+        # It pins that card, which a UUID / MIG mask cannot take.
+        largest = max(gpus, key = lambda g: (g["free_gb"], -g["index"]))
+        if host.get("pins_gpu_ids", True) and _fits(need, [largest]):
+            return _result(
+                SINGLE,
+                [largest],
+                f"The model needs about {need:.1f} GB"
+                + ("" if _fits(need, gpus) else ", and not every GPU has room for a full copy")
+                + f"; GPU {largest['index']} ({largest['name']}) holds it whole, so it trains there alone.",
+            )
         shard = (model.get("per_gpu_gb") or {}).get(len(gpus))
         if core.get(FSDP2) and shard is not None and _fits(shard, gpus):
             try:
@@ -740,7 +757,8 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 return _result(
                     FSDP2,
                     gpus,
-                    f"The model needs about {need:.1f} GB, more than one GPU holds; sharded over {len(gpus)} GPUs it needs about {shard:.1f} GB each (FSDP2).",
+                    f"The model needs about {need:.1f} GB, {_too_big(need, largest, host)}; sharded over "
+                    f"{len(gpus)} GPUs it needs about {shard:.1f} GB each (FSDP2).",
                     _spec_for(FSDP2, len(gpus), None),
                 )
             except ParallelPlanError:

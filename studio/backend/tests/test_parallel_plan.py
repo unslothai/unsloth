@@ -116,15 +116,19 @@ def test_does_not_fit_sharded_is_legacy_layer_split():
     assert plan["gpu_ids"] is None
 
 
-def test_moe_uses_ep_only_when_core_has_it():
+def test_auto_never_picks_expert_parallel():
     without = pp.plan({"parallel_mode": "auto"}, _host(2, ep = False), _model(need = 6.0, moe = True))
     assert without["mode"] == "ddp"
+    # Automatic never picks expert parallel: DDP when a copy fits every GPU (faster: no all-to-all per
+    # layer), FSDP2 when it does not. Expert parallel stays an explicit choice that Core checks at load.
     with_ep = pp.plan({"parallel_mode": "auto"}, _host(2, ep = True), _model(need = 6.0, moe = True))
-    assert with_ep["mode"] == "ep" and with_ep["spec"] == "ep=2"
-    # transformers 4.x keeps most families' experts unfused, which expert parallel refuses at load.
-    old_tf = dict(_host(2, ep = True), transformers = (4, 57))
-    assert pp.plan({"parallel_mode": "auto"}, old_tf, _model(need = 6.0, moe = True))["mode"] == "ddp"
-    assert pp.plan({"parallel_mode": "ep"}, old_tf, _model(need = 6.0, moe = True))["mode"] == "ep"
+    assert with_ep["mode"] == "ddp" and with_ep["spec"] == "dp=2", with_ep
+    big = pp.plan(
+        {"parallel_mode": "auto"}, _host(2, ep = True), _model(need = 20.0, shard = 11.0, moe = True)
+    )
+    assert big["mode"] == "fsdp2", big
+    explicit = pp.plan({"parallel_mode": "ep"}, _host(2, ep = True), _model(need = 6.0, moe = True))
+    assert explicit["mode"] == "ep" and explicit["spec"] == "ep=2", explicit
 
 
 def test_auto_falls_back_when_ep_cannot_shard_the_family():
@@ -156,7 +160,13 @@ def test_auto_falls_back_when_ep_cannot_shard_the_family():
 def test_busy_gpu_counts_its_free_memory():
     host = _host(gpus = [_t4(0, free = 14.5), _t4(1, free = 4.0)])
     plan = pp.plan({"parallel_mode": "auto"}, host, _model(need = 6.0, shard = 3.4))
-    assert plan["mode"] == "fsdp2"
+    # The busy card cannot hold a copy; the free one holds the whole run.
+    assert plan["mode"] == "single" and plan["gpu_ids"] == [0], plan
+    both_busy = _host(gpus = [_t4(0, free = 4.0), _t4(1, free = 4.0)])
+    assert (
+        pp.plan({"parallel_mode": "auto"}, both_busy, _model(need = 6.0, shard = 3.4))["mode"]
+        == "fsdp2"
+    )
 
 
 def test_unknown_size_keeps_one_process():
@@ -411,6 +421,43 @@ def test_config_traits_match_core():
         "multimodal": False,
         "windowed": False,
     }
+
+
+def _mixed_host(**extra):
+    gpus = [
+        {"index": 0, "name": "NVIDIA RTX 6000 Ada Generation", "total_gb": 47.99, "free_gb": 44.9},
+        {"index": 1, "name": "NVIDIA GeForce RTX 3090", "total_gb": 24.0, "free_gb": 23.9},
+    ]
+    return dict(_host(gpus = gpus), **extra)
+
+
+def test_mixed_gpus_train_alone_on_the_card_that_holds_the_run():
+    # RTX 6000 Ada 48 GB + RTX 3090 24 GB, Qwen3-4B full fine-tune (~31.7 GB): FSDP2 ran out of memory on
+    # the 3090 at step 1; the 48 GB card trains it alone.
+    plan = pp.plan(
+        {"parallel_mode": "auto"}, _mixed_host(), _model(need = 31.7, shard = 16.8, mode = "full")
+    )
+    assert plan["mode"] == "single" and plan["gpu_ids"] == [0], plan
+    assert (
+        "GPU 0" in plan["reason"] and "not every GPU has room for a full copy" in plan["reason"]
+    ), plan
+    # Two large cards and a small one: the reason names the chosen card, not "only" that one.
+    gpus = _mixed_host()["gpus"] + [
+        {"index": 2, "name": "NVIDIA RTX 6000 Ada Generation", "total_gb": 47.99, "free_gb": 44.0}
+    ]
+    three = pp.plan({"parallel_mode": "auto"}, _host(gpus = gpus), _model(need = 31.7, shard = 11.0))
+    assert three["mode"] == "single" and "only" not in three["reason"], three
+
+
+def test_one_card_is_not_pinned_on_a_mask_that_cannot_be_narrowed():
+    # GPUs visible by UUID: /start refuses a plan that pins a subset, so Automatic does not pick one card.
+    plan = pp.plan(
+        {"parallel_mode": "auto"}, _mixed_host(pins_gpu_ids = False), _model(need = 31.7, shard = 16.8)
+    )
+    assert not (plan["mode"] == "single" and plan["gpu_ids"]), plan
+    # The 48 GB card holds the run: the reason says why it is sharded, not that no card holds it.
+    assert plan["mode"] == "fsdp2" and "cannot keep a run to one card" in plan["reason"], plan
+    assert "any one GPU" not in plan["reason"], plan
 
 
 def test_fsdp2_reshards_when_the_run_does_not_fit_one_gpu():
