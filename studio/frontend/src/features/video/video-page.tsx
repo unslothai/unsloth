@@ -64,7 +64,7 @@ import {
 } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
-import { VideoRestylePanel } from "./restyle-panel";
+import { type RestyleRecipe, VideoRestylePanel } from "./restyle-panel";
 import { checkMediaCodecsOnce, desktopMissingMediaCodecPackages } from "./media-codec-notice";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
@@ -592,7 +592,6 @@ const CONDITIONING_INPUTS: Record<string, string> = {
   fl2va: "the start and end frames",
   ref2va: "the references",
   v2v: "the clip to continue",
-  restyle: "the source clip on the Restyle tab",
 };
 
 function clipMeta(video: GalleryVideo): string {
@@ -1531,6 +1530,7 @@ function VideoGenerator({
   // Kept mounted once opened: its poll is what saves a finished restyle into the gallery.
   const [restyleMounted, setRestyleMounted] = useState(false);
   if (pageMode === "restyle" && !restyleMounted) setRestyleMounted(true);
+  const [restyleRecipe, setRestyleRecipe] = useState<RestyleRecipe | null>(null);
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
@@ -2705,6 +2705,13 @@ function VideoGenerator({
   // Load a clip's recipe back into the form inputs.
   const restoreSettings = useCallback(
     (video: GalleryVideo) => {
+      // Restyle has its own prompt and seed and fixed settings, so its recipe reopens that tab instead.
+      if (video.conditioning === "restyle") {
+        setRestyleRecipe({ prompt: video.prompt, seed: String(video.seed) });
+        setPageMode("restyle");
+        toast.success("Settings restored. Restyle the same source clip to reproduce this clip.");
+        return;
+      }
       setPrompt(video.prompt);
       const restoredNegative = video.negative_prompt ?? "";
       setNegativePrompt(restoredNegative);
@@ -2745,6 +2752,7 @@ function VideoGenerator({
         setDurationIntentSeconds(video.num_frames / fps);
         setNumFrames(video.num_frames);
       }
+      // Staged inputs and their options are not saved with the recipe, so they reset to defaults.
       setFirstFrame(null);
       setLastFrame(null);
       setContinuationClip(null);
@@ -4589,7 +4597,7 @@ function VideoGenerator({
       )}
       {restyleMounted && (
         <div className={pageMode === "restyle" ? "contents" : "hidden"} inert={pageMode !== "restyle" || undefined}>
-          <VideoRestylePanel active={active} />
+          <VideoRestylePanel active={active} restore={restyleRecipe} />
         </div>
       )}
       {pageMode === "create" && (

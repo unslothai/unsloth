@@ -67,11 +67,24 @@ function useObjectUrl(blob: Blob | null): string | null {
   return url;
 }
 
-export function VideoRestylePanel({ active }: { active: boolean }) {
+export interface RestyleRecipe {
+  prompt: string;
+  seed: string;
+}
+
+export function VideoRestylePanel({ active, restore }: { active: boolean; restore: RestyleRecipe | null }) {
   const [video, setVideo] = useState<File | null>(null);
   const [frames, setFrames] = useState<File[]>([]);
   const [prompt, setPrompt] = useState("");
   const [seed, setSeed] = useState("");
+  const [restored, setRestored] = useState<RestyleRecipe | null>(null);
+  if (restore !== restored) {
+    setRestored(restore);
+    if (restore) {
+      setPrompt(restore.prompt);
+      setSeed(restore.seed);
+    }
+  }
   const [progress, setProgress] = useState<VideoRestyleProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<VideoRestyleStatus | null>(null);

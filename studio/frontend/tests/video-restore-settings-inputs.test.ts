@@ -56,7 +56,7 @@ const recipe = {
   num_frames: 121,
 };
 
-for (const conditioning of [null, "t2va", "i2va", "l2va", "fl2va", "ref2va", "v2v", "restyle"]) {
+for (const conditioning of [null, "t2va", "i2va", "l2va", "fl2va", "ref2va", "v2v"]) {
   test(`restoring a ${conditioning ?? "legacy"} recipe drops every staged conditioning input`, () => {
     const { restore, state } = restoreSettings();
     restore({ ...recipe, conditioning });
@@ -87,7 +87,6 @@ test("restoring a conditioned recipe names the input to add again", () => {
     fl2va: /Add the start and end frames again/,
     ref2va: /Add the references again/,
     v2v: /Add the clip to continue again/,
-    restyle: /Add the source clip on the Restyle tab again/,
   };
   for (const [conditioning, message] of Object.entries(expected)) {
     const { restore, toasts } = restoreSettings();
@@ -95,4 +94,14 @@ test("restoring a conditioned recipe names the input to add again", () => {
     assert.equal(toasts.length, 1);
     assert.match(toasts[0], message);
   }
+});
+
+test("restoring a restyle recipe reopens Restyle with its prompt and seed, leaving Create alone", () => {
+  const { restore, state, toasts } = restoreSettings();
+  restore({ ...recipe, conditioning: "restyle" });
+  assert.deepEqual(state.setRestyleRecipe, { prompt: "a fox in the snow", seed: "7" });
+  assert.equal(state.setPageMode, "restyle");
+  for (const setter of ["setPrompt", "setSteps", "setGuidance", "setResolutionIntent", "setFirstFrame", "setReferenceImages"])
+    assert.ok(!(setter in state), setter);
+  assert.deepEqual(toasts, ["Settings restored. Restyle the same source clip to reproduce this clip."]);
 });
