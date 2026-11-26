@@ -3569,6 +3569,33 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "version and is ignored.",
         )
 
+    # Colocated vLLM IS: request pre-min_p/top_k/top_p logprobs. Must be first in the body so the flag
+    # describes this call's rollouts (zoo decides per trainer).
+    _untruncated_header = re.search(
+        r"\n?([ \t]*)def _generate_and_score_completions\([^)]*\)[^:\n]*:[ \t]*\n", function
+    )
+    if _untruncated_header is not None and "set_vllm_untruncated_logprobs" not in function:
+        _body = re.match(r"([ \t]+)", function[_untruncated_header.end() :])
+        _indent = _body.group(1) if _body else _untruncated_header.group(1) + "    "
+        _setter = (
+            "try:\n"
+            "    from unsloth_zoo.vllm_utils import set_vllm_untruncated_logprobs as _unsloth_untruncated\n"
+            "    _unsloth_llm = getattr(self, 'llm', None) or getattr(getattr(self, 'vllm_generation', None), 'llm', None)\n"
+            "    self._unsloth_vllm_untruncated_logprobs = bool(_unsloth_untruncated(\n"
+            "        bool(getattr(self, 'use_vllm', False))\n"
+            "        and bool(getattr(self, 'vllm_importance_sampling_correction', False))\n"
+            "        and _unsloth_llm is not None,\n"
+            "        _unsloth_llm,\n"
+            "    ))\n"
+            "except Exception:\n"
+            "    self._unsloth_vllm_untruncated_logprobs = False\n"
+        )
+        function = (
+            function[: _untruncated_header.end()]
+            + textwrap.indent(_setter, _indent)
+            + function[_untruncated_header.end() :]
+        )
+
     return function
 
 
@@ -4103,6 +4130,79 @@ def _unsloth_vllm_watch_weight_resets(engine):
         engine.collective_rpc = _unsloth_collective_rpc
 
 
+def _unsloth_vllm_moe_relaid_out(module):
+    """True when this vLLM FusedMoE layer keeps its experts in a kernel layout, not the checkpoint's."""
+    quant_method = getattr(module, "quant_method", None)
+    backend = getattr(quant_method, "unquantized_backend", None)
+    if backend is not None:
+        # vLLM >= 0.2x picks one backend per layer; only the Triton ones keep checkpoint layout.
+        return str(getattr(backend, "name", backend)).upper() not in ("TRITON", "BATCHED_TRITON")
+    if type(quant_method).__name__ != "UnquantizedFusedMoEMethod":
+        # Quantized experts are repacked after load.
+        return True
+    # vLLM 0.11: AITER shuffles, VLLM_USE_FLASHINFER_MOE_FP16 swaps w1 / w3.
+    return bool(
+        getattr(quant_method, "rocm_aiter_moe_enabled", False)
+        or getattr(quant_method, "flashinfer_cutlass_moe_enabled", False)
+    )
+
+
+def _unsloth_vllm_reload_takes_iterator(reload, depth = 0):
+    """True when reload_weights accepts weights_iterator and is_checkpoint_format."""
+    try:
+        parameters = inspect.signature(reload).parameters
+    except (TypeError, ValueError):
+        return False
+    if "weights_iterator" in parameters and "is_checkpoint_format" in parameters:
+        return True
+    if depth or not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return False
+    # vLLM 0.29's v2 GPUModelRunner.reload_weights(*args, **kwargs) forwards to the v1 runner's.
+    try:
+        from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+    except Exception:
+        return False
+    return _unsloth_vllm_reload_takes_iterator(getattr(GPUModelRunner, "reload_weights", None), 1)
+
+
+def _unsloth_vllm_reload_runner(llm, vllm_model):
+    """vLLM's model runner when a sync must go through its in-place reload, else None.
+    Unquantized MoE weights are re-laid out after load (FlashInfer TRTLLM / CUTLASS, vLLM's CUDA
+    default on Blackwell; ROCm AITER), so a plain load_weights later writes checkpoint layout into
+    kernel layout and corrupts every expert. Triton experts (Hopper, Ampere, Ada) keep the layout. reload_weights(weights_iterator = ...) re-runs the
+    post-load processing. Dense and MLA layers keep load_weights: MLA's W_UK_T / W_UV are views of
+    kv_b_proj, so they follow it. UNSLOTH_VLLM_SYNC_RELOAD = 0 never reloads, 1 always does."""
+    choice = os.environ.get("UNSLOTH_VLLM_SYNC_RELOAD", "auto").strip().lower()
+    if choice in ("0", "false", "off", "no") or vllm_model is None:
+        return None
+    executor = getattr(getattr(llm, "llm_engine", None), "model_executor", None)
+    runner = getattr(getattr(executor, "driver_worker", None), "model_runner", None)
+    # vLLM 0.11 reloads from disk only; its CUDA MoE default there (Triton) keeps checkpoint layout.
+    if not _unsloth_vllm_reload_takes_iterator(getattr(runner, "reload_weights", None)):
+        return None
+    if getattr(runner, "model", vllm_model) is not vllm_model:
+        return None
+    if choice in ("1", "true", "on", "yes"):
+        return runner
+    relaid_out = getattr(vllm_model, "_unsloth_vllm_relaid_out", None)
+    if relaid_out is None:
+        modules = getattr(vllm_model, "modules", None)
+        relaid_out = callable(modules) and any(
+            hasattr(m, "w13_weight") and _unsloth_vllm_moe_relaid_out(m) for m in modules()
+        )
+        try:
+            vllm_model._unsloth_vllm_relaid_out = relaid_out
+        except Exception:
+            pass
+    return runner if relaid_out else None
+
+
+def _unsloth_vllm_reload(runner, weights):
+    """Every weight through vLLM's in-place reload: load_weights between its start and finish, then
+    the post-load processing (MoE re-layout, MLA W_UK_T / W_UV) on the same storage."""
+    runner.reload_weights(weights_iterator = weights, is_checkpoint_format = True)
+
+
 class _UnslothVllmFrozenSync:
     """Send frozen non-adapter weights once per vLLM name (same param, storage, version); resend
     after a weight drop or receiver change. UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS = 1 disables."""
@@ -4236,6 +4336,16 @@ def _unsloth_vllm_sync_peft_merged(trainer):
                 adapted_ids.add(id(weight))
     else:
         adapted_ids = set(_unsloth_vllm_tuner_groups(model))
+    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None)
+    runner = _unsloth_vllm_reload_runner(trainer.llm, llm_model) if mode == "colocate" else None
+    if runner is not None:
+        # A reload re-lays out whole modules, so it is sent everything, frozen weights included.
+        _unsloth_vllm_reload(
+            runner,
+            ((name, tensor) for name, tensor, _ in _unsloth_vllm_iter_peft_merged(model, fix_name)),
+        )
+        trainer.llm.reset_prefix_cache()
+        return None
     frozen_sync = _UnslothVllmFrozenSync(
         trainer,
         model,
@@ -4243,7 +4353,6 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         engine = trainer.llm if mode == "colocate" else None,
         adapted_ids = adapted_ids,
     )
-    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None)
     for name, tensor, param in _unsloth_vllm_iter_peft_merged(model, fix_name):
         if not frozen_sync.keep(name, tensor, param):
             continue
@@ -4289,6 +4398,101 @@ def _unsloth_vllm_generation_merges_out_of_place(generation):
     return ok
 
 
+def _unsloth_vllm_trl_dequantizes(original):
+    """True when TRL's own _iter_named_params sends bitsandbytes 4-bit weights dequantized (TRL #8269, 1.19)."""
+    try:
+        return "dequantize_4bit" in inspect.getsource(original)
+    except (OSError, TypeError):
+        return Version(trl_version_raw) >= Version("1.19.0")
+
+
+def _unsloth_vllm_engine_quantization(llm):
+    """The quantization method a vLLM LLM was built with ("bitsandbytes", "fp8", ...), or None."""
+    for owner in (llm, getattr(llm, "llm_engine", None)):
+        model_config = getattr(owner, "model_config", None)
+        if model_config is None:
+            model_config = getattr(getattr(owner, "vllm_config", None), "model_config", None)
+        if model_config is not None:
+            return getattr(model_config, "quantization", None) or None
+    return None
+
+
+def _unsloth_trl_vllm_engine_check(generation, model):
+    """Called right after TRL >= 0.28 builds its own colocated vLLM (use_vllm = True, fast_inference = False).
+
+    TRL >= 1.19 (#8269) no longer passes quantization = "bitsandbytes" and sends 4-bit weights dequantized.
+    So a QLoRA model quantized on the fly gets a 16-bit vLLM copy next to the 4-bit trainer, about 4x the
+    weight memory: say so once. A pre-quantized bitsandbytes checkpoint (the unsloth/*-bnb-4bit repos) still
+    builds a bitsandbytes engine from its config, and that engine cannot load the dequantized weights:
+    record it, so the first sync raises Unsloth's clear error instead of vLLM's shape assert."""
+    llm = getattr(generation, "llm", None)
+    generation._unsloth_vllm_engine_quantization = _unsloth_vllm_engine_quantization(llm)
+    if model is None or not getattr(model, "is_loaded_in_4bit", False):
+        return
+    if getattr(model, "is_loaded_in_8bit", False):
+        return
+    original = getattr(type(generation), "_iter_named_params", None)
+    original = getattr(original, "__wrapped__", original)
+    if original is None or not _unsloth_vllm_trl_dequantizes(original):
+        return
+    if generation._unsloth_vllm_engine_quantization is not None:
+        return
+    print(
+        f"Unsloth: TRL {trl_version_raw} builds its own vLLM engine unquantized for this 4-bit model "
+        "(use_vllm = True, fast_inference = False). vLLM holds a 16-bit copy of the weights, about 4x "
+        "the 4-bit model's weight memory, on top of the training model. Load the model with "
+        "fast_inference = True so vLLM shares the 4-bit weights instead, or lower "
+        "vllm_gpu_memory_utilization if this runs out of memory."
+    )
+
+
+def _unsloth_vllm_generation_refuses_quantized(generation, original):
+    """TRL 0.28 to 1.18 VLLMGeneration merges the adapters into a quantized base in place and sends
+    param.data, which is the packed storage (bitsandbytes 4-bit: uint8 bytes), not weights. A colocated
+    engine then fails a shape assert inside vLLM on the first sync, and a vLLM server is sent bytes as
+    weights. Raise the error the TRL < 0.28 sync raises instead; True = skip the sync (explicit opt-in).
+    TRL >= 1.19 sends bitsandbytes 4-bit weights dequantized: fine for an unquantized engine, still
+    refused for a colocated engine built quantized from a pre-quantized checkpoint."""
+    model = getattr(generation, "model", None)
+    if model is None or not _unsloth_vllm_quantized(model):
+        return False
+    engine_quantization = generation.__dict__.get("_unsloth_vllm_engine_quantization")
+    if (
+        getattr(model, "is_loaded_in_4bit", False)
+        and not getattr(model, "is_loaded_in_8bit", False)
+        and _unsloth_vllm_trl_dequantizes(original)
+        and engine_quantization is None
+    ):
+        return False
+    if os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1":
+        if not generation.__dict__.get("_unsloth_vllm_stale_rollouts_warned", False):
+            generation._unsloth_vllm_stale_rollouts_warned = True
+            print(
+                "Unsloth: UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1, so vLLM weight sync is skipped for this "
+                "quantized model and every rollout uses the initial weights."
+            )
+        return True
+    if engine_quantization is not None and _unsloth_vllm_trl_dequantizes(original):
+        reason = (
+            f"TRL {trl_version_raw} sends dequantized 16-bit weights, but its vLLM engine was built "
+            f"{engine_quantization}-quantized from the checkpoint's own quantization config, so vLLM "
+            "cannot load them."
+        )
+    else:
+        reason = (
+            f"TRL {trl_version_raw} sends the packed quantized storage, not weights, so vLLM cannot "
+            "load it."
+        )
+    raise RuntimeError(
+        "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a quantized "
+        "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's vLLM engine: "
+        f"{reason}\n"
+        "Load the model with fast_inference = True, or load a 16-bit base (load_in_4bit = False, "
+        "load_in_8bit = False). Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway with every "
+        "rollout from the initial weights."
+    )
+
+
 def _unsloth_vllm_patch_iter_named_params(generation_cls):
     """Route VLLMGeneration._iter_named_params through the out-of-place PEFT merge."""
     original = getattr(generation_cls, "_iter_named_params", None)
@@ -4297,6 +4501,8 @@ def _unsloth_vllm_patch_iter_named_params(generation_cls):
 
     def _iter_named_params(self):
         if not _unsloth_vllm_generation_merges_out_of_place(self):
+            if _unsloth_vllm_generation_refuses_quantized(self, original):
+                return
             yield from original(self)
             return
         self._unsloth_vllm_out_of_place_syncs = (
@@ -4390,9 +4596,12 @@ def _unsloth_vllm_load_state_dict(trainer, model):
         )
     model = trainer.accelerator.unwrap_model(model)
     model = getattr(model, "_orig_mod", model)
-    trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
-        model.state_dict().items()
-    )
+    llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
+    runner = _unsloth_vllm_reload_runner(trainer.llm, llm_model)
+    if runner is not None:
+        _unsloth_vllm_reload(runner, iter(model.state_dict().items()))
+    else:
+        llm_model.load_weights(model.state_dict().items())
     trainer.llm.reset_prefix_cache()
 
 
@@ -5022,10 +5231,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pg_use = False
                     _pg_skip_pk = False
                     _pg_forward_fn = None
-                    # A FlexAttention/Triton compile failure or OOM here is GPU-wide, not layout-specific, so retrying every step just re-pays it. Disable PG persistently; the packed/padded path below still gives the exact result.
-                    unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
-                    if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
+                    # A FlexAttention/Triton compile failure here is GPU-wide, not layout-specific, so retrying every step just re-pays it: disable PG persistently. An OOM (bare or raised while compiling) is transient and only skips PG for this batch. The packed/padded path below still gives the exact result.
+                    if isinstance(_pg_err, torch.cuda.OutOfMemoryError) or isinstance(
+                        getattr(_pg_err, "inner_exception", None), torch.cuda.OutOfMemoryError
+                    ):
                         torch.cuda.empty_cache()
+                    else:
+                        unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
                     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
                         "0" if _unsloth_head_hooked else "1"
                     )
@@ -5499,7 +5711,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # transformers <= 4.48 does not support logits_to_keep, so drop the logits here; see huggingface/trl#2770.
 
-    function = inspect.getsource(_get_per_token_logps_and_entropies)
+    function = _unsloth_wrap_hidden_states_section(
+        inspect.getsource(_get_per_token_logps_and_entropies)
+    )
     if trl_version < Version("1.7.0"):
         # TRL < 1.7.0 unpacks (logps, entropies) while TRL >= 1.7.0 unpacks (logps, entropies, aux_loss), so drop the third element to match. The regex tolerates comment/whitespace drift and fails loud rather than ship a 3-tuple to older TRL.
         new_function, n = re.subn(
@@ -5515,6 +5729,55 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
         function = new_function
     return function
+
+
+_SCORER_HIDDEN_STATES_REQUEST = (
+    'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0" if _unsloth_head_hooked else "1"'
+)
+_SCORER_HIDDEN_STATES_RESET = 'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"'
+
+
+def _unsloth_wrap_hidden_states_section(source):
+    """Put the scorer's hidden-states section in try / finally in the generated source, so a caught error
+    (an OOM retry, auto_find_batch_size) cannot leave UNSLOTH_RETURN_HIDDEN_STATES at "1" for later
+    generate / evaluate forwards. Done on the text so the template body keeps its indentation."""
+    lines = source.split("\n")
+    starts = [i for i, line in enumerate(lines) if line.strip() == _SCORER_HIDDEN_STATES_REQUEST]
+    if len(starts) != 1:
+        raise RuntimeError(
+            "Unsloth GRPO: expected one hidden-states request in _get_per_token_logps_and_entropies, "
+            f"found {len(starts)}; update _unsloth_wrap_hidden_states_section."
+        )
+    start = starts[0]
+    indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+    end = next(
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if lines[i] == indent + _SCORER_HIDDEN_STATES_RESET
+        ),
+        None,
+    )
+    if end is None:
+        raise RuntimeError(
+            "Unsloth GRPO: the hidden-states reset after the scorer section moved; "
+            "update _unsloth_wrap_hidden_states_section."
+        )
+    body = [("    " + line) if line.strip() else line for line in lines[start + 1 : end]]
+    wrapped = (
+        [indent + "_unsloth_prior_hidden_states = os.environ.get('UNSLOTH_RETURN_HIDDEN_STATES')"]
+        + [lines[start], indent + "try:"]
+        + (body if any(line.strip() for line in body) else [indent + "    pass"])
+        + [
+            indent + "finally:",
+            indent + "    if _unsloth_prior_hidden_states is None:",
+            indent + "        os.environ.pop('UNSLOTH_RETURN_HIDDEN_STATES', None)",
+            indent + "    else:",
+            indent
+            + "        os.environ['UNSLOTH_RETURN_HIDDEN_STATES'] = _unsloth_prior_hidden_states",
+        ]
+    )
+    return "\n".join(lines[:start] + wrapped + lines[end:])
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
@@ -7251,6 +7514,22 @@ def _unsloth_vllm_sync_colocate(generation, vllm_model):
         getattr(state, "deepspeed_plugin", None) is not None
         or getattr(state, "fsdp_plugin", None) is not None
     )
+    runner = _unsloth_vllm_reload_runner(getattr(generation, "llm", None), vllm_model)
+    if runner is not None:
+        # The reload holds a module's tensors until all of them arrive (padded ones until the
+        # end), past where ZeRO-3 / FSDP gathered tensors stay valid and past PEFT's in-place
+        # unmerge. Only the out-of-place merge yields tensors nothing rewrites: copy the rest.
+        if (
+            state is None
+            or sharded
+            or (
+                getattr(generation.model, "peft_config", None) is not None
+                and not _unsloth_vllm_generation_merges_out_of_place(generation)
+            )
+        ):
+            weights = ((name, param.detach().clone()) for name, param in weights)
+        _unsloth_vllm_reload(runner, weights)
+        return
     if not sharded:
         model = generation.model
         # Adapted base weights arrive merged (fresh copies, or TRL's in-place merge): always sent.
@@ -7356,7 +7635,10 @@ def vllm_generation_init_patch():
                 f"{indent}    # before the trainer existed, so only keep the request if the engine returns masks.\n"
                 f"{indent}    if getattr(self, 'return_sampling_mask', False) and not _unsloth_engine_returns_sampling_mask(self.llm):\n"
                 f"{indent}        self.return_sampling_mask = False\n"
-                f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
+                f"{indent}else:\n"
+                + textwrap.indent(llm_block, indent + "    ")
+                + "\n"
+                + f"{indent}    _unsloth_trl_vllm_engine_check(self, model)"
             )
 
         patched_src, num_replacements = pattern.subn(replace_llm_block, src, count = 1)
@@ -7367,6 +7649,7 @@ def vllm_generation_init_patch():
         vllm_generation._unsloth_engine_returns_sampling_mask = (
             _unsloth_engine_returns_sampling_mask
         )
+        vllm_generation._unsloth_trl_vllm_engine_check = _unsloth_trl_vllm_engine_check
         return patched_src
 
     # Newer versions have sync_weights or reload rpc calls; earlier ones are stripped in the patched grpo_trainer above.
