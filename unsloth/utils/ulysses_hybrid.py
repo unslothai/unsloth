@@ -754,12 +754,28 @@ def _document_starts(seq_info):
     return starts
 
 
+def _torch_checkpoint():
+    """torch's own checkpoint, also once unsloth_zoo's smart gradient checkpointing has replaced
+    torch.utils.checkpoint.checkpoint with its forced-reentrant, CPU-offloading version: chunk loops nested
+    in a checkpointed layer need non-reentrant recompute (one replay per backward, closed-over grads)."""
+    import torch.utils.checkpoint as module
+
+    for func in (
+        getattr(module, "_unsloth_pristine_checkpoint", None),
+        module.checkpoint,
+        getattr(module, "_old_checkpoint", None),
+    ):
+        if getattr(func, "__module__", None) == module.__name__:
+            return func
+    return module.checkpoint
+
+
 def _chunked_masked_attention(
     shard, query, key, value, attention_fn, kwargs, window, cu_seqlens, starts, rows
 ):
     """attention_fn per query chunk, against only the keys the chunk can see, with its mask slice. sdpa saves
     its mask for backward, so each chunk is checkpointed: otherwise the slices add back up to [T, T]."""
-    from torch.utils.checkpoint import checkpoint
+    checkpoint = _torch_checkpoint()
 
     total = query.shape[2]
     grad = torch.is_grad_enabled() and any(x.requires_grad for x in (query, key, value))
@@ -858,11 +874,12 @@ def _ulysses_hf_attention(
         # Flash takes the window and the softcap as arguments, and documents as cu_seqlens.
         mask = None
         if cu_seqlens is not None:
-            if int(cu_seqlens[-1]) < total:
-                # Padding to the cp multiple sits after the last document: its own segment.
-                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
-            cu = cu_seqlens.to(device = query.device, dtype = torch.int32)
-            longest = int((cu[1:] - cu[:-1]).max())
+            from .packing import cover_padded_cu_seqlens
+
+            # Padding to the cp multiple sits after the last document: its own segment. Host lengths, cached
+            # per batch: no device read per layer.
+            cu, longest = cover_padded_cu_seqlens(seq_info, total)
+            cu = cu.to(device = query.device, dtype = torch.int32)
             kwargs.update(
                 cu_seq_lens_q = cu, cu_seq_lens_k = cu, max_length_q = longest, max_length_k = longest
             )

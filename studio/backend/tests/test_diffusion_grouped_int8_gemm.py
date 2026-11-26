@@ -225,3 +225,133 @@ def test_fused_gemm_is_bit_identical_under_the_interpreter():
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "OK 16" in proc.stdout
+
+
+_REMOVED_BLOCK_PTR = textwrap.dedent(
+    """
+    import sys
+    sys.path.insert(0, {root!r})
+    import triton.language as tl
+    import triton.language.core as core
+
+    # Triton 3.9's stubs (triton-lang/triton#10833): docstring plus an unconditional raise.
+    def make_block_ptr(base, shape, strides, offsets, block_shape, order, _semantic=None):
+        \"\"\"Block pointers have been removed. Use a tensor descriptor instead.\"\"\"
+        raise NotImplementedError("Block pointers have been removed in favor of the tensor descriptor API")
+
+    def advance(base, offsets, _semantic=None):
+        \"\"\"Block pointers have been removed. Use a tensor descriptor instead.\"\"\"
+        raise NotImplementedError("Block pointers have been removed in favor of the tensor descriptor API")
+
+    for mod in (tl, core):
+        mod.make_block_ptr, mod.advance = make_block_ptr, advance
+
+    import torch
+    import core.inference.diffusion_grouped_int8_gemm as fg
+    from core.inference.diffusion_grouped_int8 import decode_int8_torch
+
+    n = 0
+    for tile in ((16, 32, 64, 1, 4, 1, 2), (16, 32, 64, 1, 4, 1, 2, 3)):
+        for c in fg.probe_cases("cpu"):
+            if not fg.covered(c["xq"], c["packed"], c["s_rel"], c["codebook"], c["bits"], c["group"], tile):
+                continue
+            out, _ = fg.launch(c["xq"], c["packed"], c["s_rel"], c["codebook"], c["xs"], c["ws"], c["bias"],
+                               c["bits"], c["group"], tile)
+            q8 = decode_int8_torch(c["packed"], c["s_rel"], c["codebook"], c["group"], c["bits"])
+            ref = fg.reference(c["xq"], q8, c["xs"], c["ws"], c["bias"])
+            assert torch.equal(out, ref), (tile, c["bits"], c["group"])
+            n += 1
+    print("OK", n)
+    """
+)
+
+
+def test_phase_tile_is_bit_identical_without_block_pointers():
+    # Triton 3.9 block pointers raise: the phase tile must use plain pointers, not drop to decode + int8 GEMM.
+    pytest.importorskip("triton")
+    env = dict(os.environ, TRITON_INTERPRET = "1", CUDA_VISIBLE_DEVICES = "")
+    proc = subprocess.run(
+        [sys.executable, "-c", _REMOVED_BLOCK_PTR.format(root = ROOT)],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "OK 8" in proc.stdout
+
+
+def test_block_ptr_removed_detection():
+    pytest.importorskip("triton")
+    import functools
+    import types
+
+    from core.inference import diffusion_grouped_int8_gemm_kernels as kernels
+
+    def working(*args, **kwargs):
+        """Block pointers have been removed upstream, but this one still works."""
+        return args
+
+    def stub(*args, **kwargs):
+        """Block pointers have been removed. Use a tensor descriptor instead."""
+        raise NotImplementedError(
+            "Block pointers have been removed in favor of the tensor descriptor API"
+        )
+
+    wrapped_stub = functools.wraps(stub)(lambda *a, **k: stub(*a, **k))
+    assert not kernels.block_ptr_removed(
+        types.SimpleNamespace(make_block_ptr = working, advance = working)
+    )
+    assert kernels.block_ptr_removed(types.SimpleNamespace(make_block_ptr = stub, advance = stub))
+    assert kernels.block_ptr_removed(
+        types.SimpleNamespace(make_block_ptr = wrapped_stub, advance = working)
+    )
+    assert kernels.block_ptr_removed(types.SimpleNamespace(make_block_ptr = working))
+    assert kernels.block_ptr_removed(types.SimpleNamespace())
+
+
+def _eligible_call(monkeypatch, launch):
+    import torch
+    from types import SimpleNamespace
+
+    rules = ((64, fg._PHASE, (6,)),)
+    monkeypatch.setattr(fg, "_DEVICE", {0: rules})
+    monkeypatch.setattr(fg, "_STATE", dict(fg._STATE))
+    monkeypatch.setattr(fg, "fused_config", lambda index: fg._DEVICE.get(index))
+    monkeypatch.setattr(fg, "covered", lambda *a, **k: True)
+    monkeypatch.setattr(fg, "fused_mode", lambda: "on")
+    monkeypatch.setattr(fg, "launch", launch)
+    xq = SimpleNamespace(is_cuda = True, shape = (17, 3072), device = torch.device("cuda", 0))
+    return lambda: fg.grouped_mm_dequant(xq, None, None, None, None, None, None, 6, 32)
+
+
+def test_launch_oom_falls_back_for_that_call_only(monkeypatch):
+    import torch
+
+    launches = []
+
+    def launch(*_args):
+        launches.append(True)
+        if len(launches) == 1:
+            raise torch.OutOfMemoryError("simulated transient launch allocation failure")
+        return "fused", None
+
+    call = _eligible_call(monkeypatch, launch)
+    assert call() is None
+    assert fg._DEVICE[0] is not None
+    assert call() == "fused"
+    assert len(launches) == 2
+
+
+def test_launch_error_still_disables_the_card(monkeypatch):
+    launches = []
+
+    def launch(*_args):
+        launches.append(True)
+        raise RuntimeError("simulated compile failure")
+
+    call = _eligible_call(monkeypatch, launch)
+    assert call() is None
+    assert fg._DEVICE[0] is None
+    assert call() is None
+    assert len(launches) == 1

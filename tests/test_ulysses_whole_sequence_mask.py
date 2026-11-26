@@ -249,7 +249,7 @@ def test_chunk_masks_do_not_live_until_backward(checkpointed, monkeypatch):
 
     monkeypatch.setattr(uh, "_chunk_mask", recorded)
     if not checkpointed:
-        monkeypatch.setattr("torch.utils.checkpoint.checkpoint", lambda fn, *a, **k: fn(*a))
+        monkeypatch.setattr(uh, "_torch_checkpoint", lambda: lambda fn, *a, **k: fn(*a))
     q, k, v, g = _qkv(256, torch.float32)
     out = uh._chunked_masked_attention(_Attn(2), q, k, v, saving, {}, 40, None, None, 64)
     alive = sum(ref() is not None for ref in masks)

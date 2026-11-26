@@ -8639,6 +8639,21 @@ _LISTED_DEVICE_RE = re.compile(r"^\s+(\S+):\s")
 _LIST_DEVICES_HEADER = "Available devices:"
 
 
+class _ExitedProcess:
+    """A reaped child's exit status: no pid or terminate(), so a kill never signals a reused pid."""
+
+    pid = None
+
+    def __init__(self, returncode: Optional[int]):
+        self.returncode = returncode
+
+    def poll(self) -> Optional[int]:
+        return self.returncode
+
+    def wait(self, timeout: Optional[float] = None) -> Optional[int]:
+        return self.returncode
+
+
 def _parse_listed_devices(text: Optional[str]) -> Optional[list[str]]:
     """Only lines below the header count: backend init logging above it also has colons."""
     if not text:
@@ -33613,6 +33628,9 @@ class LlamaCppBackend:
                 _spawn_cwd: Optional[str] = None
                 # An inherited LLAMA_ARG_FIT=off belongs to the user, and the flip would override it on the CLI.
                 _did_rocm_retry = False
+                # The system launch a signal-only bundle retry replaced; restored if it fails too.
+                _rocm_signal_undo: Optional[tuple] = None
+                _rocm_retry_undone = False
 
                 def _enable_managed_fit_for_no_flash(fa_cmd: list) -> list:
                     """Restores Unsloth's own --fit on for a --flash-attn off respawn, which is re-
@@ -33777,6 +33795,7 @@ class LlamaCppBackend:
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
+                    nonlocal _rocm_signal_undo, _rocm_retry_undone
                     nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib, effective_ctx
                     nonlocal _fit_retry_pool
                     # Single revocation point for the tensor-spill plan; label is empty only on the first spawn.
@@ -34167,7 +34186,9 @@ class LlamaCppBackend:
                             cancelled = _load_cancelled,
                             **_wait_kwargs,
                         ):
-                            if _did_rocm_retry:
+                            # A later failure (an MTP probe respawn) must not undo a proven runtime.
+                            _rocm_signal_undo = None
+                            if _did_rocm_retry and not _rocm_retry_undone:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
                                 self._remember_bundle_only_rocm(binary)
@@ -34183,6 +34204,26 @@ class LlamaCppBackend:
                         # captured settings while a crashed child leaves is_active false.
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
+                        if _rocm_signal_undo is not None:
+                            # The bundle failed too, so no mix (#7233 hosts need the system ROCm):
+                            # recover from the system launch's own crash as if the retry never ran.
+                            self._kill_process()
+                            self._child_gpu_physical_ids = _child_gpu_physical_ids
+                            if self._stdout_thread is not None:
+                                self._stdout_thread.join(timeout = 2)
+                            _undo_ld, _undo_proc, _undo_lines, _undo_log = _rocm_signal_undo
+                            env["LD_LIBRARY_PATH"] = _undo_ld
+                            # Reaped before the bundle launch, so only its exit status comes back.
+                            _undo_proc = _ExitedProcess(_undo_proc.poll())
+                            with self._spawn_lock:
+                                self._process = _undo_proc
+                                self._process_env = (_undo_proc, env)
+                            self._stdout_lines = _undo_lines
+                            self._llama_log_path = _undo_log
+                            self._health_wait_stalled = False
+                            self._health_wait_stall_kind = None
+                            _rocm_signal_undo = None
+                            _rocm_retry_undone = True
                         if _fit_retry_restore is not None:
                             # Retry on the planned cards before reading anything off the widened child.
                             logger.warning(
@@ -34216,6 +34257,35 @@ class LlamaCppBackend:
                             "\n".join(self._stdout_lines)
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
+                        # A GPF in the prepended system libamdhip64 exits -11 with no
+                        # symbol-lookup line (#18948), so a signal crash also earns the retry.
+                        _signal_mix = False
+                        if (
+                            not _did_rocm_retry
+                            and not _hip_rocr_mismatch
+                            and self._is_signal_crash(
+                                _crashed_proc.poll() if _crashed_proc is not None else None
+                            )
+                        ):
+                            _clean_env = self._llama_server_env_for_binary(
+                                binary, use_system_rocm = False
+                            )
+                            _clean_ld = _clean_env.get("LD_LIBRARY_PATH", "")
+                            _clean_dirs = _clean_ld.split(":")
+                            _env_dirs = env.get("LD_LIBRARY_PATH", "").split(":")
+                            # Dropping the prepend only removes dirs (a staged CPU runtime differs).
+                            # The bundle must see a GPU too: on #7233 hosts it passes /health on CPU.
+                            _hip_rocr_mismatch = (
+                                bool(_clean_ld)
+                                and len(_clean_dirs) < len(_env_dirs)
+                                and set(_clean_dirs) <= set(_env_dirs)
+                                and bool(
+                                    self._list_devices_under(
+                                        binary, {**env, "LD_LIBRARY_PATH": _clean_ld}
+                                    )
+                                )
+                            )
+                            _signal_mix = _hip_rocr_mismatch
                         # A startup crash means the spill prediction was wrong, so placement returns to llama.cpp.
                         _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
                             "\n".join(self._stdout_lines)
@@ -34238,12 +34308,19 @@ class LlamaCppBackend:
                             if _retry_ld and _retry_ld != env.get("LD_LIBRARY_PATH"):
                                 logger.warning(
                                     "llama-server crashed during startup (exit code %s) "
-                                    "because a bundled ROCm library could not resolve a "
-                                    "symbol against the system ROCm; retrying once "
-                                    "with the bundled runtime only. Crash log: %s",
+                                    "with the system ROCm libraries prepended; "
+                                    "retrying once with the bundled runtime only. "
+                                    "Crash log: %s",
                                     _crashed_proc.returncode,
                                     self._llama_log_path,
                                 )
+                                if _signal_mix:
+                                    _rocm_signal_undo = (
+                                        env.get("LD_LIBRARY_PATH"),
+                                        _crashed_proc,
+                                        self._stdout_lines,
+                                        self._llama_log_path,
+                                    )
                                 env["LD_LIBRARY_PATH"] = _retry_ld
                                 _did_rocm_retry = True
                                 continue

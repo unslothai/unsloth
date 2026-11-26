@@ -257,6 +257,8 @@ def _engage(
     import core.inference.diffusion_prequant as pq
 
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: backend)
+    # A hosted checkpoint with baked activation scales: only those reach the backend selection.
+    monkeypatch.setattr(lin, "_baked_activation_scales", lambda metadata: {"layer": 1.0})
     monkeypatch.setattr(
         lin,
         "convert_nvfp4_backend",

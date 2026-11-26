@@ -4227,8 +4227,8 @@ export const zhTW = {
       summary: {
         single: "在一個 GPU 上訓練",
         layerSplit: "模型按層拆分到 {count} 個 GPU 上",
-        ddp: "模型可放入單一 GPU：在 {count} 個 GPU 上進行資料平行",
-        fsdp2: "模型太大，單一 GPU 放不下：分片到 {count} 個 GPU 上",
+        ddp: "每個 GPU 訓練一份完整副本：在 {count} 個 GPU 上進行資料平行",
+        fsdp2: "權重與最佳化器狀態分片到 {count} 個 GPU 上",
         tp: "每一層都拆分到 {count} 個 GPU 上",
         pp: "各層組成 {count} 個管線階段，每個 GPU 一個",
         cp: "每個序列都拆分到 {count} 個 GPU 上",
@@ -4239,7 +4239,7 @@ export const zhTW = {
         noGpu: "請至少選擇一個 GPU。",
         singleNeedsOne: "單一 GPU 模式只使用一個 GPU，請取消勾選其他 GPU。",
         needsTwo: "此模式至少需要兩個 GPU。",
-        customSpec: "請輸入配置，例如 dp=2,tp=2。",
+        customSpec: "請輸入配置，例如 {example}。",
       },
     },
     preview: {
@@ -5140,6 +5140,7 @@ export const zhTW = {
       showPromptDescription: "查看傳送給模型的確切指示。",
     },
     history: {
+      notSaved: "未儲存到歷史記錄：瀏覽器儲存空間已滿。",
       title: "記錄",
       search: "搜尋記錄",
       empty: "您的翻譯會顯示在這裡。",
@@ -6112,6 +6113,12 @@ export const zhTW = {
     maximize: "最大化視窗",
     restore: "還原視窗",
     close: "關閉視窗",
+    mediaCodecs: {
+      title: "產生的影片可能無法播放",
+      // {command}: an apt command line, never translated.
+      description: "此系統缺少 GStreamer 影片解碼器。請使用以下指令安裝：{command}",
+      copy: "複製指令",
+    },
   },
   runtimeUpdate: {
     installAudio: "安裝音訊執行環境",

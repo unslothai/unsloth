@@ -1294,8 +1294,8 @@ def test_a_skipped_amp_step_does_not_leak_expert_usage(set_to_none, gc):
 
 
 def test_real_token_masks_never_mark_a_real_token_as_padding():
-    """The MoE sees only a shard's token count: masks of graph-building forwards of one size are
-    OR-ed, and one with nothing appended makes every token of that size real."""
+    """The MoE sees only a shard's token count: masks of forwards of one size are OR-ed, and one
+    with nothing appended makes every token of that size real."""
     manager = _ulysses_manager(2, 1)
     odd = {"input_ids": torch.ones(1, 5, dtype = torch.long)}
     manager._prepare_inputs(odd)
@@ -1309,7 +1309,7 @@ def test_real_token_masks_never_mark_a_real_token_as_padding():
     assert manager.real_token_mask(3) is None
     manager._clear_real_tokens()
     odd = {"input_ids": torch.ones(1, 5, dtype = torch.long)}
-    with torch.no_grad():  # nothing to recompute: not noted
+    with torch.no_grad():  # evaluate() inside no_grad: the appended token is still not real
         manager._prepare_inputs(odd)
         manager._ulysses_shard(odd)
-    assert manager.real_token_mask(3) is None
+    assert manager.real_token_mask(3).tolist() == [True, True, False]

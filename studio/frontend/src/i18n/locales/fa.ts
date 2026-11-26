@@ -4412,8 +4412,8 @@ export const fa = {
       summary: {
         single: "آموزش روی یک GPU",
         layerSplit: "مدل لایه به لایه بین {count} GPU تقسیم می‌شود",
-        ddp: "مدل در یک GPU جا می‌شود: موازی‌سازی داده روی {count} GPU",
-        fsdp2: "مدل برای یک GPU بیش از حد بزرگ است: تکه‌تکه روی {count} GPU",
+        ddp: "هر GPU یک نسخهٔ کامل را آموزش می‌دهد: موازی‌سازی داده روی {count} GPU",
+        fsdp2: "وزن‌ها و وضعیت بهینه‌ساز تکه‌تکه روی {count} GPU",
         tp: "هر لایه بین {count} GPU تقسیم می‌شود",
         pp: "لایه‌ها به‌صورت {count} مرحله خط لوله اجرا می‌شوند، هر GPU یک مرحله",
         cp: "هر دنباله بین {count} GPU تقسیم می‌شود",
@@ -4424,7 +4424,7 @@ export const fa = {
         noGpu: "دست‌کم یک GPU انتخاب کنید.",
         singleNeedsOne: "حالت یک GPU دقیقاً از یک GPU استفاده می‌کند. تیک بقیه را بردارید.",
         needsTwo: "این حالت دست‌کم به دو GPU نیاز دارد.",
-        customSpec: "یک چیدمان وارد کنید، مثلاً dp=2,tp=2.",
+        customSpec: "یک چیدمان وارد کنید، مثلاً {example}.",
       },
     },
     preview: {
@@ -5383,6 +5383,7 @@ export const fa = {
       showPromptDescription: "دستورالعمل‌های دقیق ارسال‌شده به مدل را ببینید.",
     },
     history: {
+      notSaved: "در تاریخچه ذخیره نشد: فضای ذخیره‌سازی مرورگر پر است.",
       title: "سابقه",
       search: "جستجوی سابقه",
       empty: "ترجمه‌های شما اینجا نمایش داده می‌شوند.",
@@ -6413,6 +6414,12 @@ export const fa = {
     maximize: "بزرگ کردن پنجره",
     restore: "بازگرداندن اندازهٔ پنجره",
     close: "بستن پنجره",
+    mediaCodecs: {
+      title: "ممکن است ویدیوهای تولیدشده پخش نشوند",
+      // {command}: an apt command line, never translated.
+      description: "رمزگشاهای ویدیوی GStreamer روی این سیستم نصب نیستند. آن‌ها را با این دستور نصب کنید: {command}",
+      copy: "کپی دستور",
+    },
   },
   runtimeUpdate: {
     installAudio: "نصب محیط اجرای صدا",
