@@ -871,3 +871,137 @@ def test_gather_sequence_fused_collectives_match_list_path_bitwise():
         for p in procs:
             p.join(30)
     assert results == {0: "ok", 1: "ok"}, results
+
+
+# Local-shard GRPO scoring (cp_local_row_scorer): each peer scores 1 / N of the gathered rows, the log-probs are
+# gathered with a backward of N x this peer's slice. Against the same CP model scoring every row on every peer.
+def _row_scorer(hidden, head, index):
+    logp = torch.log_softmax(hidden @ head.t(), -1)
+    return logp.gather(-1, index[..., None]).squeeze(-1), -(logp.exp() * logp).sum(-1)
+
+
+def _grpo_scored(
+    policy,
+    ref,
+    batch,
+    world,
+    beta = 0.04,
+    eps = 0.2,
+):
+    # As _grpo_dapo, with the log-probs taken by the GRPO scorer (wrapped under CP as the zoo loss wraps it).
+    ids, mask, completion, rewards = batch
+    adv = ((rewards - rewards.mean()) / (rewards.std() + 1e-4)).to(policy.lm_head.weight.dtype)[
+        :, None
+    ]
+    completion = completion.to(adv.dtype)
+    scorer = cp.cp_local_row_scorer(_row_scorer)
+
+    def logps_of(model):
+        h = model.model(input_ids = ids, attention_mask = mask).last_hidden_state
+        return scorer(h[:, :-1], model.lm_head.weight, ids[:, 1:])
+
+    logps, entropy = logps_of(policy)
+    with torch.no_grad():
+        ref_logps, _ = logps_of(ref)
+    ratio = torch.exp(logps - logps.detach())
+    loss = -torch.min(ratio * adv, ratio.clamp(1 - eps, 1 + eps) * adv)
+    loss = loss + beta * (torch.exp(ref_logps - logps) - (ref_logps - logps) - 1) - 0.01 * entropy
+    return (loss * completion).sum() / completion.sum().clamp(min = 1.0), logps.detach()
+
+
+def _local_rows_worker(rank, world, init_file, queue):
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = world)
+    try:
+        torch.set_num_threads(1)
+        g = torch.Generator().manual_seed(5)
+        rand = lambda n: torch.randint(1, _V, (n,), generator = g).tolist()
+        prompt = rand(9)
+        # 3 rows x 25 scored positions: 75 rows, split 38 / 37 (the gather pads the short slice).
+        ids, mask = _right_pad([prompt + rand(n) for n in (11, 3, 17)])
+        completion = mask.clone()
+        completion[:, :9] = 0
+        batch = (ids, mask, completion[:, 1:], torch.tensor([0.3, 1.0, 0.1]))
+        out = {}
+        for dtype, tol in ((torch.float64, 1e-12), (torch.float32, 1e-6)):
+            results = {}
+            for arm in ("one_process", "gathered", "local", "local_scale_1"):
+                policy, ref = _LlamaLike(0, dtype), _LlamaLike(1, dtype).requires_grad_(False)
+                scope, env = contextlib.nullcontext(), "1"
+                if arm != "one_process":
+                    manager = _manager(rank, world)
+                    cp.attach_rl_hooks(manager, policy)
+                    cp.attach_rl_hooks(manager, ref)
+                    scope = cp._manager_scope(manager)
+                    env = "0" if arm == "gathered" else "1"
+                backward = cp._GatherRows.backward
+                if (
+                    arm == "local_scale_1"
+                ):  # the flip: without the N x scale the gradients must come out wrong
+                    cp._GatherRows.backward = staticmethod(
+                        lambda ctx, grad: (
+                            grad[ctx.lo : ctx.lo + ctx.n],
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                    )
+                before = dict(cp.CP_LOCAL_ROWS_STATS)
+                os.environ[cp._LOCAL_ROWS_ENV] = env
+                try:
+                    with scope:
+                        loss, logps = _grpo_scored(policy, ref, batch, world)
+                        loss.backward()
+                finally:
+                    cp._GatherRows.backward = backward
+                    os.environ.pop(cp._LOCAL_ROWS_ENV, None)
+                grads = torch.cat([p.grad.flatten() for p in policy.parameters()])
+                if arm != "one_process":  # DDP's average over the CP group
+                    dist.all_reduce(grads)
+                    grads /= world
+                local = cp.CP_LOCAL_ROWS_STATS["local"] - before["local"]
+                results[arm] = (loss.detach(), logps, grads, local)
+            ref_loss, ref_logps, ref_grads, _ = results["one_process"]
+            for arm in ("gathered", "local"):
+                loss, logps, grads, _ = results[arm]
+                assert abs(float(loss - ref_loss)) <= tol * abs(float(ref_loss)), (arm, dtype)
+                assert float((logps - ref_logps).abs().max()) <= tol, (arm, dtype)
+                rel = float((grads - ref_grads).norm() / ref_grads.norm())
+                assert rel <= tol, f"{arm} {dtype}: grad rel {rel:.3e}"
+            # The gathered arm never engages the local path; the local arm does (policy and reference scoring).
+            assert results["gathered"][3] == 0 and results["local"][3] == 2, results
+            flip = float((results["local_scale_1"][2] - ref_grads).norm() / ref_grads.norm())
+            assert flip > 0.1, f"{dtype}: the scale-1 flip still matched (grad rel {flip:.3e})"
+            out[str(dtype)] = flip
+        queue.put((rank, "ok"))
+    except BaseException:  # pragma: no cover - reported to the parent
+        import traceback
+        queue.put((rank, traceback.format_exc()))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_grpo_local_row_scoring_matches_the_gathered_path():
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("needs fork")
+    ctx = mp.get_context("fork")
+    queue = ctx.Queue()
+    with tempfile.TemporaryDirectory() as tmp:
+        init_file = os.path.join(tmp, "init")
+        procs = [
+            ctx.Process(target = _local_rows_worker, args = (r, 2, init_file, queue)) for r in range(2)
+        ]
+        for p in procs:
+            p.start()
+        results = dict(queue.get(timeout = 180) for _ in procs)
+        for p in procs:
+            p.join(30)
+    assert results == {0: "ok", 1: "ok"}, results
+
+
+def test_local_row_scorer_is_the_scorer_itself_outside_a_cp_scope(monkeypatch):
+    assert cp.cp_local_row_scorer(_row_scorer) is _row_scorer
+    monkeypatch.setattr(cp, "_ACTIVE_MANAGER", _manager(0, 2))
+    monkeypatch.setenv(cp._LOCAL_ROWS_ENV, "0")
+    assert cp.cp_local_row_scorer(_row_scorer) is _row_scorer

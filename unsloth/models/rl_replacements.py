@@ -4919,6 +4919,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 )
                 lm_head_bias = None
             _head_log_softmax = chunked_hidden_states_selective_log_softmax
+            # DPO / GRPO context parallel: each peer scores its share of the gathered rows (identity otherwise).
+            import sys as _sys
+
+            _cp_local_rows = getattr(
+                _sys.modules.get("unsloth.context_parallel", None), "cp_local_row_scorer", None
+            )
+            if _cp_local_rows is not None:
+                _head_log_softmax = _cp_local_rows(_head_log_softmax)
             # ZeRO-3 released the head after the forward: score with one gathered read-only copy.
             _zero3_head = None
             try:
