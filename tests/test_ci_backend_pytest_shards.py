@@ -265,6 +265,8 @@ class TestTheSplitKeepsTheSelectionItInherited:
         run = _shared_pytest_step()["run"]
         assert "--timeout=330" in run
         assert "timeout --signal=INT --kill-after=60" in run
+        # SIGALRM cannot interrupt a test blocked in C code; only the thread method names it.
+        assert "--timeout-method=thread" in run
 
     def test_the_serial_files_are_ignored_by_every_shard(self):
         """The twelve cannot share a worker, even sharded; the shared --ignore list holds them out."""

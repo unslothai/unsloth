@@ -6130,6 +6130,21 @@ def patch_enable_input_require_grads():
         PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
+    import os
+
+    keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
+
+    def _sub_model_hook(owner):
+        # transformers >= 5 hooks every sub-model; a frozen tower's backward is wasted, downstream still gets grad.
+        def make_inputs_require_grads(module, input, output):
+            # Traced: keep the flag, since a graph need not retrace when a tower is unfrozen later.
+            if torch.compiler.is_compiling() or any(p.requires_grad for p in owner.parameters()):
+                return outer_hook(module, input, output)
+
+        return make_inputs_require_grads
+
+    outer_hook = make_inputs_require_grads
+
     @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
         hooks = []
@@ -6164,7 +6179,12 @@ def patch_enable_input_require_grads():
                 continue
 
             seen_modules.add(embedding_id)
-            hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
+            hook = (
+                make_inputs_require_grads
+                if module is self or keep_frozen_towers
+                else _sub_model_hook(module)
+            )
+            hooks.append(input_embeddings.register_forward_hook(hook))
 
         self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
@@ -8520,7 +8540,8 @@ def fix_dynamo_config_thread_visibility():
     except Exception:
         return
 
-    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+    # functorch too: pp_schedules.allow_split_backward turns donated_buffer off for every thread.
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config", "torch._functorch.config")
 
     # config.patch()/load_config() writes are thread-local by design; a per-thread depth counter
     # keeps them out of the global default.

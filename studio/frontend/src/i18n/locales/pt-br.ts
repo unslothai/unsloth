@@ -882,7 +882,7 @@ export const ptBR = {
   chatMenu: {
     more: "Opções do chat",
     copy: "Copiar",
-    addScheduledTask: "Adicionar tarefa agendada…",
+    addScheduledTask: "Adicionar tarefa agendada",
     compact: "Compactar conversa",
     compactEmpty: "Ainda não há nada para compactar",
     compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",

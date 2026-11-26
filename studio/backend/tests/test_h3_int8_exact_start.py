@@ -228,6 +228,7 @@ def _int8_model(monkeypatch):
         k,
         v,
         mode = 0,
+        fallback = None,  # the spy stands for the kernel taking every call
     ):
         calls.append(tuple(q.shape))
         return native(q, k, v) * 1.01

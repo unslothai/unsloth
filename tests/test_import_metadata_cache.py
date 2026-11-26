@@ -326,7 +326,25 @@ def test_init_installs_first_and_removes_last():
         and not l.startswith("import os")
     )
     assert install < first_import, "must be in place before transformers / TRL can be imported"
-    assert uninstall > len(lines) - 20, "must stay in place for the whole import"
+    # Every import the package runs at import time, nested in if / try blocks too, comes before the
+    # uninstall; only the gc threshold restore (stdlib only) may follow it.
+    later = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and node.lineno - 1 > uninstall
+        and not _inside_function(tree, node)
+        and not (isinstance(node, ast.ImportFrom) and node.module == "_import_gc")
+    ]
+    assert not later, f"must stay in place for the whole import: imports after it on lines {later}"
+
+
+def _inside_function(tree, target):
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+        and any(child is target for child in ast.walk(node))
+        for node in ast.walk(tree)
+    )
 
 
 _COUNT_SCRIPT = textwrap.dedent(

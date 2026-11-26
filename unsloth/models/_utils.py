@@ -5102,13 +5102,14 @@ from torch._inductor.runtime.hints import DeviceProperties
 
 
 @functools.lru_cache(None)
-def is_big_gpu(index) -> bool:
+def is_big_gpu(index = 0) -> bool:
+    # torch._inductor.utils.is_big_gpu's signature (index 0 by default) and SM thresholds.
     if DEVICE_TYPE == "xpu":
         prop = DeviceProperties.create(torch.device("xpu", index) if type(index) is int else index)
         min_sms = 16
     else:
         prop = DeviceProperties.create(torch.device("cuda", index) if type(index) is int else index)
-        min_sms = 80
+        min_sms = 68
 
     avail_sms = prop.multi_processor_count
     if avail_sms < min_sms:
@@ -6944,6 +6945,7 @@ def patch_gradient_accumulation_fix(Trainer):
             _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
+            _refuse_expert_parallel_env_model_init(_original_trainer_init, args, kwargs)
             tp_env = _tensor_parallel_env_trainer_pre(model)
             if tp_env is None and model is not None:
                 from .ep_native import ep_env_apply, ep_refuse_prebuilt_optimizer
@@ -7047,6 +7049,9 @@ def patch_gradient_accumulation_fix(Trainer):
                             pass
             except Exception:
                 pass
+            from .ep_native import ep_refuse_trainer_fsdp
+
+            ep_refuse_trainer_fsdp(self)
             if getattr(self, "is_fsdp_enabled", False):
                 # FSDP2 keeps the fused LoRA kernels when each decoder block is its own unit (checked
                 # again once accelerate has wrapped); FSDP1 and a root-only wrap decline them here.
@@ -7367,10 +7372,10 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     _refuse_unwrapped_config_cp(trainer, init, args, kwargs)
     if not any(
         os.environ.get(name, "").strip() not in ("", "1")
-        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     ):
         return
-    from ..parallel_env import env_cp_size
+    from ..parallel_env import env_cp_backend, env_cp_size
     from ..parallel_capabilities import check_layout
 
     cp = env_cp_size()
@@ -7381,7 +7386,23 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     layout = env_layout()
     training_args = _trainer_init_args(trainer, init, args, kwargs)
     if layout is None:
-        return  # context parallel alone: the CP trainer setup checks it
+        from .ep_native import ep_env_size
+
+        ep = ep_env_size()
+        if ep <= 1:
+            return  # context parallel alone: the CP trainer setup checks it
+        from ..parallel_env import ParallelLayout
+
+        world = int(os.environ.get("WORLD_SIZE", "1") or 1)
+        layout = ParallelLayout(
+            1,
+            world,
+            world,
+            native_fsdp2 or bool(_launch.unsloth_fsdp2_requested()),
+            cp = cp,
+            cp_backend = env_cp_backend(),
+            ep = ep,
+        )
     backend = getattr(training_args, "context_parallel_backend", None) or layout.cp_backend
     check_layout(layout, type(trainer), model, training_args, cp_backend = backend)
 
@@ -7453,6 +7474,34 @@ def _tensor_parallel_env_trainer_pre(model):
 def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
     """UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE setup runs on the __init__ model, so a model_init model would silently
     train as plain DDP."""
+    model_init = _trainer_model_init(init, args, kwargs)
+    if model_init is not None:
+        pp = getattr(layout, "pp", 1) > 1
+        what = "pipeline parallel" if pp else "tensor parallel"
+        if pp and layout.tp > 1:
+            what += " x tensor parallel"
+        names = (
+            " and ".join(v.split("=")[0] for v in layout.env_vars.split())
+            if pp
+            else "UNSLOTH_TP_SIZE"
+        )
+        raise RuntimeError(
+            f"Unsloth: {layout.env_vars if pp else f'UNSLOTH_TP_SIZE={layout.tp}'} ({what}) does not support "
+            "`Trainer(model_init = ...)` or `hyperparameter_search`: the model model_init builds would not "
+            f"be {what}. Build the model first and pass it as `Trainer(model = model)`, or unset "
+            f"{names}."
+        )
+
+
+def _refuse_expert_parallel_env_model_init(init, args, kwargs):
+    """UNSLOTH_EP_SIZE: the expert parallel setup runs on the __init__ model, so a model_init model (full
+    finetuning, or one built without Unsloth's get_peft_model) would silently train as plain DDP."""
+    from .ep_native import _MODEL_INIT_REFUSAL, ep_env_size
+    if ep_env_size() > 1 and _trainer_model_init(init, args, kwargs) is not None:
+        raise NotImplementedError(_MODEL_INIT_REFUSAL)
+
+
+def _trainer_model_init(init, args, kwargs):
     model_init = kwargs.get("model_init")
     if model_init is None:
         import inspect
@@ -7482,22 +7531,7 @@ def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
         if "model_init" in names:
             index = names.index("model_init")
             model_init = args[index] if index < len(args) else None
-    if model_init is not None:
-        pp = getattr(layout, "pp", 1) > 1
-        what = "pipeline parallel" if pp else "tensor parallel"
-        if pp and layout.tp > 1:
-            what += " x tensor parallel"
-        names = (
-            " and ".join(v.split("=")[0] for v in layout.env_vars.split())
-            if pp
-            else "UNSLOTH_TP_SIZE"
-        )
-        raise RuntimeError(
-            f"Unsloth: {layout.env_vars if pp else f'UNSLOTH_TP_SIZE={layout.tp}'} ({what}) does not support "
-            "`Trainer(model_init = ...)` or `hyperparameter_search`: the model model_init builds would not "
-            f"be {what}. Build the model first and pass it as `Trainer(model = model)`, or unset "
-            f"{names}."
-        )
+    return model_init
 
 
 def _tensor_parallel_trainer_pre(model):

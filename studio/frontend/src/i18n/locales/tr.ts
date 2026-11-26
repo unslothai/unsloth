@@ -974,7 +974,7 @@ export const tr = {
   chatMenu: {
     more: "Sohbet seçenekleri",
     copy: "Kopyala",
-    addScheduledTask: "Zamanlanmış görev ekle…",
+    addScheduledTask: "Zamanlanmış görev ekle",
     compact: "Konuşmayı sıkıştır",
     compactEmpty: "Henüz sıkıştırılacak bir şey yok",
     compactUnsupported:

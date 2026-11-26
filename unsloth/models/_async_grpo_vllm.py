@@ -643,8 +643,15 @@ class UnslothAsyncVLLMServer:
 
     def server_info(self):
         lora_config = self.vllm_config.lora_config
+        model_config = self.vllm_config.model_config
         return {
-            "model_config": {"dtype": str(self.vllm_config.model_config.dtype)},
+            "model_config": {
+                "dtype": str(model_config.dtype),
+                # TRL >= 1.19 refuses score centering with temperature scaling unless these are processed logprobs.
+                "logprobs_mode": str(getattr(model_config, "logprobs_mode", "raw_logprobs")),
+                # No candidate sets and no /inference/v1/generate here; rl.py rejects top_k / top_p up front.
+                "return_sampling_mask": False,
+            },
             "lora_config": None
             if lora_config is None
             else {

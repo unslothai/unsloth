@@ -882,7 +882,7 @@ export const ar = {
   chatMenu: {
     more: "خيارات المحادثة",
     copy: "نسخ",
-    addScheduledTask: "إضافة مهمة مجدولة…",
+    addScheduledTask: "إضافة مهمة مجدولة",
     compact: "ضغط المحادثة",
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",

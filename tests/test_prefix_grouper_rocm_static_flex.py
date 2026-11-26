@@ -23,10 +23,16 @@ KERNEL = (
 )
 
 
+_BASE_VERSION = str(torch.__version__).split("+")[0]
+# AMD SDK / Radeon wheel (repo.amd.com): torch.version.hip unset, ROCm tag only in __version__.
+_SDK_VERSION = _BASE_VERSION + "+rocm7.14.0"
+
+
 def _load(
     monkeypatch,
     hip,
     env = None,
+    version = None,
 ):
     compiles = []
 
@@ -39,6 +45,9 @@ def _load(
         return compiled
 
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    if version is None:
+        version = _BASE_VERSION + ("+rocm7.13.0" if hip else "+cu130")
+    monkeypatch.setattr(torch, "__version__", version)
     monkeypatch.setattr(torch, "compile", recording_compile)
     if env is None:
         monkeypatch.delenv("UNSLOTH_ROCM_FLEX_STATIC", raising = False)
@@ -81,6 +90,13 @@ def test_rocm_no_grad_and_cpu_calls_keep_the_dynamic_compile(monkeypatch):
         assert kernel._flex_attention_compiled(q, q, q)[1] is True
     q = _operand(device = "cpu")
     assert kernel._flex_attention_compiled(q, q, q)[1] is True
+
+
+def test_sdk_wheel_gradient_calls_compile_static(monkeypatch):
+    kernel, _ = _load(monkeypatch, None, version = _SDK_VERSION)
+    q = _operand()
+    assert kernel._flex_attention_compiled(q, q, q)[1] is False
+    assert kernel._small_smem_skip_reason(q) is None
 
 
 @pytest.mark.parametrize("hip, env", [(None, None), ("", None), ("7.13.0", "0")])
