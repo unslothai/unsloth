@@ -477,7 +477,9 @@ def _tokenize_member(
             model_name,
             build_masker,
             notify = lambda level, message: logger.info(message),
-            dataset_template = dataset_info.get("dataset_template") if isinstance(dataset_info, dict) else None,
+            dataset_template = dataset_info.get("dataset_template")
+            if isinstance(dataset_info, dict)
+            else None,
         )
         if applied:
             labels = [list(x) for x in holder.train_dataset["labels"]]

@@ -100,7 +100,12 @@ def _render_tokens(tokenizer, input_ids: list, labels: list | None) -> dict:
     }
 
 
-def _mask(tokenizer, model_name: str, encoded: dict, dataset_template: str | None = None) -> tuple[list, dict]:
+def _mask(
+    tokenizer,
+    model_name: str,
+    encoded: dict,
+    dataset_template: str | None = None,
+) -> tuple[list, dict]:
     """Labels for each row via apply_completion_masking, the call the training worker makes."""
     from datasets import Dataset
     from unsloth.chat_templates import train_on_responses_only

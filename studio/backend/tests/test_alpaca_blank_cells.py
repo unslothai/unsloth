@@ -212,12 +212,16 @@ def test_alpaca_rows_use_the_existing_instruct_template():
             return "".join(f'<{m["role"]}>{m["content"]}<end>' for m in messages)
 
     result = _format_result(
-        Dataset.from_list([{
-            "instruction": "Say hello",
-            "input": "in French",
-            "system": "Be brief.",
-            "output": "Bonjour",
-        }]),
+        Dataset.from_list(
+            [
+                {
+                    "instruction": "Say hello",
+                    "input": "in French",
+                    "system": "Be brief.",
+                    "output": "Bonjour",
+                }
+            ]
+        ),
         InstructTokenizer(),
     )
     assert result["dataset"][0]["text"] == (

@@ -627,7 +627,6 @@ def test_pretokenized_rows_show_their_own_ids_and_labels(monkeypatch):
     assert sample["truncated_from"] == 5 and out["masking"]["applied"] is False
 
 
-
 @pytest.mark.parametrize("typed", [False, True])
 @pytest.mark.parametrize("dataset_template", [None, "alpaca"])
 def test_alpaca_preview_uses_the_training_marker(typed, dataset_template, monkeypatch):
@@ -655,7 +654,11 @@ def test_alpaca_preview_uses_the_training_marker(typed, dataset_template, monkey
         return [[-100, -100, 3]], {"applied": True}
 
     monkeypatch.setattr(token_preview_worker, "_mask", mask)
-    args = {"text": "example", "final_format": "alpaca"} if typed else {"rows": [{"instruction": "prompt"}]}
+    args = (
+        {"text": "example", "final_format": "alpaca"}
+        if typed
+        else {"rows": [{"instruction": "prompt"}]}
+    )
     args["train_on_completions"] = True
     result = token_preview_worker._preview(Tokenizer(), {"model_name": "test/model"}, args)
     assert result["samples"][0]["num_trained"] == 1
