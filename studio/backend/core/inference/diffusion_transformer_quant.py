@@ -877,6 +877,59 @@ def _denied_precision_reason(family: Optional[str], scheme: str, base_repo: Opti
     )
 
 
+def torchao_probe_governs(
+    scheme: str,
+    target: Any,
+    *,
+    model_kind: Optional[str] = "pipeline",
+    offload: Optional[bool] = None,
+    modular: bool = False,
+) -> bool:
+    """Whether an explicit ``scheme`` on ``target`` stands or falls on the torchao smoke probe. False when the load
+    could take a native path that skips the probe, mirroring the image and video precision checks: a ROCm / stubbed
+    torchao / MPS host, the fp16 Turing linears, or native INT8 under offload (``offload`` None = not known, counted
+    as possible). No target, or an unanswerable host check, also reads False, so a probe verdict is never applied to a
+    load that would not run the probed kernels."""
+    if target is None:
+        return False
+    try:
+        if model_kind != "pipeline":
+            return True  # a GGUF pick reaches dense quant only through torchao
+        if scheme in NATIVE_QUANT_SCHEMES and not modular and native_quant_host(target):
+            return False
+        if fp16_card_native_host(target, scheme):
+            return False
+        if (
+            offload is not False
+            and scheme in NATIVE_OFFLOAD_SCHEMES
+            and native_offload_host(target)
+        ):
+            return False
+        return True
+    except Exception:  # noqa: BLE001 -- see the docstring
+        return False
+
+
+def precision_target(device: Any, dtype: Any, ordinal: Optional[int]) -> Any:
+    """A device target for ``precision_options`` from a load's recorded device, dtype and card, or None. No allocation;
+    the dtype may be a ``torch.dtype`` or its name."""
+    try:
+        import torch
+
+        from .diffusion_device import diffusion_device_target_from_torch_device
+
+        if not isinstance(dtype, torch.dtype):
+            dtype = getattr(torch, str(dtype or "").replace("torch.", ""), None)
+        if not isinstance(dtype, torch.dtype) or device is None:
+            return None
+        device = str(device)
+        if device == "cuda" and ordinal is not None:
+            device = f"cuda:{int(ordinal)}"
+        return diffusion_device_target_from_torch_device(device, dtype)
+    except Exception:  # noqa: BLE001 -- no target, no probe verdicts
+        return None
+
+
 def plan_precision_options(
     family: Optional[str],
     *,
@@ -884,9 +937,13 @@ def plan_precision_options(
     repo_id: Optional[str],
     base_repo: Optional[str],
     gpu_ordinal: Optional[int],
+    target: Any = None,
+    offload: Optional[bool] = None,
+    modular: bool = False,
 ) -> Optional[dict[str, Optional[str]]]:
     """``precision_options`` for a download plan, judged on the base the load check uses: a pipeline is its own base;
-    a GGUF without one is judged on a gate-lifted base, as ``assert_precision_available`` does. None without a family."""
+    a GGUF without one is judged on a gate-lifted base, as ``assert_precision_available`` does. None without a family.
+    Probe verdicts need the planned ``target``; without one only the family table answers."""
     if not family:
         return None
     try:
@@ -895,7 +952,14 @@ def plan_precision_options(
         else:
             base = base_repo or nvfp4_gated_base(family)
         return precision_options(
-            family, base, "cuda" if gpu_ordinal is not None else None, ordinal = gpu_ordinal
+            family,
+            base,
+            "cuda" if gpu_ordinal is not None else None,
+            ordinal = gpu_ordinal,
+            target = target,
+            model_kind = model_kind,
+            offload = offload,
+            modular = modular,
         )
     except Exception:  # noqa: BLE001 -- a plan never fails over its precision hints
         return None
@@ -907,14 +971,24 @@ def precision_options(
     device: Any = None,
     *,
     ordinal: Optional[int] = None,
+    target: Any = None,
+    model_kind: Optional[str] = "pipeline",
+    offload: Optional[bool] = None,
+    modular: bool = False,
 ) -> dict[str, Optional[str]]:
     """Each explicit dense scheme -> why an explicit request for it would be refused, or None when nothing known rules
-    it out. Sources: the family deny table (with the NVFP4 gate failures) and a recorded probe failure on this card.
-    Network-free and GPU-free: never spawns the smoke probe or initialises CUDA, and never raises (status reads it).
-    The global NVFP4 switch is left to the caller, so an nvfp4 that is only switched off reads None."""
+    it out. Sources: the family deny table (with the NVFP4 gate failures) and a recorded probe failure on this card,
+    applied only when ``torchao_probe_governs`` says the load would run the probed torchao kernels (so never without
+    a ``target``). Network-free and GPU-free: never spawns the smoke probe or initialises CUDA, and never raises (status
+    reads it). The global NVFP4 switch is left to the caller, so an nvfp4 that is only switched off reads None."""
     options: dict[str, Optional[str]] = {scheme: None for scheme in TQ_SCHEMES}
     try:
-        card = _precision_card_key(device, ordinal)
+        if target is not None:
+            card = _precision_card_key(
+                getattr(target, "device", None), getattr(target, "ordinal", None)
+            )
+        else:
+            card = _precision_card_key(device, ordinal)
     except Exception:  # noqa: BLE001 -- no card, no probe verdicts
         card = None
     for scheme in TQ_SCHEMES:
@@ -929,7 +1003,9 @@ def precision_options(
                     options[scheme] = _denied_precision_reason(family, scheme, base_repo)
             elif family and family_denies_scheme(family, scheme, base_repo):
                 options[scheme] = _denied_precision_reason(family, scheme, base_repo)
-            elif _probed_unusable(scheme, card):
+            elif _probed_unusable(scheme, card) and torchao_probe_governs(
+                scheme, target, model_kind = model_kind, offload = offload, modular = modular
+            ):
                 options[scheme] = (
                     f"{scheme.upper()} failed this GPU's kernel probe: the GEMM this scheme needs did not run here"
                 )

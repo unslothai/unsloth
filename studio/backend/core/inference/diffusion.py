@@ -599,6 +599,7 @@ from .diffusion_transformer_quant import (
     denoiser_modules,
     explain_unusable_scheme,
     precision_options,
+    precision_target,
     family_denies_scheme,
     fp16_card_int8_host,
     fp16_card_native_host,
@@ -18218,7 +18219,17 @@ class DiffusionBackend:
             "multi_gpu": multigpu_placement_status(state.pipe),
             # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
             "precision_options": precision_options(
-                state.family.name, state.base_repo, state.device
+                state.family.name,
+                state.base_repo,
+                state.device,
+                # The probe only judges a load that runs torchao on this card, not a native path.
+                target = precision_target(
+                    state.device,
+                    state.dtype,
+                    state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal,
+                ),
+                model_kind = state.kind,
+                offload = state.offload_policy != OFFLOAD_NONE,
             ),
             "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(

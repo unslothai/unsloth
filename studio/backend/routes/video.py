@@ -299,6 +299,17 @@ async def video_download_plan(
         if fam is not None:
             from core.inference.diffusion_transformer_quant import plan_precision_options
 
+            # Probe verdicts need the planned card's target; while training holds the GPU only the family table answers.
+            plan_target = None
+            if not training and gpu_ordinal is not None:
+                try:
+                    from core.inference.diffusion_device import resolve_diffusion_device_target
+                    plan_target = await asyncio.to_thread(
+                        resolve_diffusion_device_target, ordinal = gpu_ordinal
+                    )
+                except Exception:  # noqa: BLE001 -- no target, no probe verdicts
+                    plan_target = None
+
             # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
             plan = {
                 **plan,
@@ -308,6 +319,10 @@ async def video_download_plan(
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
                     gpu_ordinal = gpu_ordinal,
+                    target = plan_target,
+                    # Video's native INT8 offload follows the memory request too; unknown here, so counted as possible.
+                    offload = None,
+                    modular = bool(getattr(fam, "modular_workflow", None)),
                 ),
             }
         return DiffusionDownloadPlanResponse(**plan)

@@ -7,6 +7,7 @@ can disable a scheme with its reason before a load is refused (Wan2.2 TI2V 5B NV
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,21 +63,74 @@ def test_a_family_with_no_deny_rules_nothing_out(monkeypatch):
     }
 
 
+def _target(
+    ordinal,
+    *,
+    native = False,
+    fp16_native = False,
+    offload_native = False,
+    monkeypatch = None,
+):
+    """An NVIDIA-shaped bf16 target whose native-path answers the test chooses."""
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: native)
+    monkeypatch.setattr(tq, "fp16_card_native_host", lambda target, scheme: fp16_native)
+    monkeypatch.setattr(tq, "native_offload_host", lambda target: offload_native)
+    return SimpleNamespace(device = "cuda", dtype = "bfloat16", ordinal = ordinal)
+
+
 def test_a_recorded_probe_failure_names_the_card(monkeypatch):
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
     tq._SMOKE_CACHE[("fp8", "cuda:1")] = False
     tq._SMOKE_CACHE[("int8", "cuda:1")] = True
-    options = tq.precision_options("no-such-family", None, "cuda", ordinal = 1)
+    target = _target(1, monkeypatch = monkeypatch)
+    options = tq.precision_options("no-such-family", None, "cuda", target = target, offload = False)
     assert options["fp8"] and "kernel probe" in options["fp8"]
     assert options["int8"] is None
     # Another card's verdict does not leak.
-    assert tq.precision_options("no-such-family", None, "cuda", ordinal = 0)["fp8"] is None
+    other = SimpleNamespace(device = "cuda", dtype = "bfloat16", ordinal = 0)
+    assert tq.precision_options("no-such-family", None, "cuda", target = other)["fp8"] is None
 
 
 def test_the_persisted_table_counts_when_this_process_has_not_probed(monkeypatch):
     monkeypatch.setattr(tq, "_persisted_probe_table", lambda card: {"fp8": False, "int8": True})
-    options = tq.precision_options(None, None, "cuda:0")
+    options = tq.precision_options(None, None, "cuda:0", target = _target(0, monkeypatch = monkeypatch))
     assert options["fp8"] and options["int8"] is None
+
+
+def test_a_probe_verdict_never_applies_to_a_native_path(monkeypatch):
+    """The torchao probe does not judge the native ROCm / MPS, fp16 Turing or native INT8 offload loads, which the
+    precision check lets through, so their schemes stay pickable."""
+    tq._SMOKE_CACHE[("fp8", "cuda:0")] = False
+    tq._SMOKE_CACHE[("int8", "cuda:0")] = False
+    rocm = _target(0, native = True, monkeypatch = monkeypatch)
+    assert tq.precision_options(None, None, "cuda", target = rocm, offload = False)["fp8"] is None
+    assert tq.precision_options(None, None, "cuda", target = rocm, offload = False)["int8"] is None
+    # The modular workflow seeds torchao checkpoints, so a ROCm host still runs the probed kernels there.
+    assert tq.precision_options(None, None, "cuda", target = rocm, offload = False, modular = True)["fp8"]
+    turing = _target(0, fp16_native = True, monkeypatch = monkeypatch)
+    assert tq.precision_options(None, None, "cuda", target = turing, offload = False)["int8"] is None
+    nvidia = _target(0, offload_native = True, monkeypatch = monkeypatch)
+    assert tq.precision_options(None, None, "cuda", target = nvidia, offload = True)["int8"] is None
+    # Not known whether the load offloads: counted as possible, so no refusal.
+    assert tq.precision_options(None, None, "cuda", target = nvidia, offload = None)["int8"] is None
+    # Resident, the native offload path is out, so the torchao verdict stands; fp8 has no native offload path.
+    assert tq.precision_options(None, None, "cuda", target = nvidia, offload = False)["int8"]
+    assert tq.precision_options(None, None, "cuda", target = nvidia, offload = True)["fp8"]
+    # A GGUF pick reaches dense quant only through torchao.
+    assert tq.precision_options(None, None, "cuda", target = rocm, model_kind = "gguf")["fp8"]
+
+
+def test_without_a_target_only_the_family_table_answers(monkeypatch):
+    tq._SMOKE_CACHE[("fp8", "cuda:0")] = False
+    assert tq.precision_options(None, None, "cuda", ordinal = 0)["fp8"] is None
+
+
+def test_precision_target_builds_from_recorded_state():
+    torch = pytest.importorskip("torch")
+    target = tq.precision_target("cuda", "bfloat16", 1)
+    assert target is not None and target.ordinal == 1 and target.dtype is torch.bfloat16
+    assert tq.precision_target("cuda", "not-a-dtype", 0) is None
+    assert tq.precision_target(None, "bfloat16", 0) is None
 
 
 def test_an_unknown_card_index_never_initialises_cuda(monkeypatch):
@@ -104,6 +158,8 @@ def test_plan_options_judge_a_pipeline_on_its_own_repo(monkeypatch):
         device,
         *,
         ordinal = None,
+        target = None,
+        **_kw,
     ):
         seen.update(family = family, base = base, device = device, ordinal = ordinal)
         return {s: None for s in SCHEMES}
@@ -140,17 +196,14 @@ def test_status_and_plan_routes_fill_it():
     video = (root / "core/inference/video.py").read_text()
     flat_image = re.sub(r"\s+", " ", image)
     flat_video = re.sub(r"\s+", " ", video)
-    assert (
-        '"precision_options": precision_options( state.family.name, state.base_repo, state.device )'
-        in flat_image
-        or (
-            '"precision_options": precision_options(state.family.name, state.base_repo, state.device)'
-            in flat_image
+    # The status passes the resident target, so a probe verdict only lands where torchao runs.
+    for flat in (flat_image, flat_video):
+        assert re.search(
+            r'"precision_options": precision_options\( ?(state\.family\.name|fam\.name),', flat
         )
-    )
-    assert re.search(
-        r'"precision_options": precision_options\( ?fam\.name, state\.base_repo, state\.device ?\)',
-        flat_video,
-    )
+        assert "target = precision_target( state.device, state.dtype," in flat
+        assert "model_kind = state.kind," in flat
     for route in ("routes/inference.py", "routes/video.py"):
-        assert '"precision_options": plan_precision_options(' in (root / route).read_text()
+        text = (root / route).read_text()
+        assert '"precision_options": plan_precision_options(' in text
+        assert "target = plan_target," in text
