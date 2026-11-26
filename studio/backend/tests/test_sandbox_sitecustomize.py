@@ -629,6 +629,23 @@ def test_the_shim_imports_neither_json_nor_pathlib_at_startup(tmp_path):
     assert not added & {"json", "pathlib", "re", "enum"}, sorted(added)
 
 
+def test_the_shim_resolves_the_stdlib_paths_once_at_startup(tmp_path):
+    """realpath of every sys.path entry is slow on Windows (more inside the container): one pass per launch."""
+    code = (
+        "import os, sys\n"
+        f"sys.path.insert(0, {str(_SHIM.parent)!r})\n"
+        "real = os.path.realpath\n"
+        "calls = []\n"
+        "os.path.realpath = lambda *a, **k: calls.append(a) or real(*a, **k)\n"
+        "entries = len(sys.path)\n"
+        "import sitecustomize\n"
+        "os.path.realpath = real\n"
+        "print(len(calls), entries)\n"
+    )
+    calls, entries = map(int, _child(code, tmp_path, shim = False, flags = ("-S",)).split())
+    assert calls <= entries + 1, (calls, entries)
+
+
 @pytest.mark.skipif(
     os.path.exists("/mnt/data"),
     reason = "the host has a real /mnt/data, which the shim never shadows",

@@ -606,7 +606,9 @@ def _stdlib_paths():
 
 
 _saved_path = sys.path[:]
-sys.path[:] = _stdlib_paths()
+# Computed once: realpath per sys.path entry is slow on Windows, more so inside the container.
+_STARTUP_STDLIB_PATHS = _stdlib_paths()
+sys.path[:] = _STARTUP_STDLIB_PATHS
 try:
     # The stdlib copy, never an importlib/ the chat put on PYTHONPATH (this runs before any import of it).
     from importlib.machinery import PathFinder as _PathFinder
@@ -627,7 +629,7 @@ class _StdlibLazyFinder:
 
     def __init__(self, names):
         self._names = set(names)
-        self._paths = _stdlib_paths()
+        self._paths = _STARTUP_STDLIB_PATHS
         self._loading = _thread._local()  # builtin; importing threading costs ~1 ms per launch
 
     def find_spec(
