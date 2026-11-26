@@ -457,10 +457,20 @@ def loose_diffusion_checkpoint_rows(
     return rows
 
 
+_NUMBERED_SHARD = re.compile(r"-\d{5}-of-\d{5}\.safetensors$", re.IGNORECASE)
+
+
 def _is_single_checkpoint_dir(path: Path) -> bool:
-    """A folder holding one loose checkpoint (Flux/flux1-dev.safetensors) loads as single_file."""
-    sole = model_common.sole_checkpoint(path)
-    return sole is not None and not _is_image_lora_file(sole)
+    """A folder holding one whole loose checkpoint (Flux/flux1-dev.safetensors) loads as single_file."""
+    from core.inference.diffusion_local_files import resolve_local_single_file
+
+    name = resolve_local_single_file(str(path))
+    if not name or _NUMBERED_SHARD.search(name):
+        return False
+    try:
+        return (path / name).stat().st_size > 0 and not _is_image_lora_file(path / name)
+    except OSError:
+        return False
 
 
 def _is_loose_diffusion_checkpoint_row(model: LocalModelInfo) -> bool:
@@ -695,10 +705,7 @@ def _scan_hf_cache(
         # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
         latest_snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
         if not snapshot_partial and (
-            (
-                hf_cache_scan.snapshot_pipeline_missing_denoiser(latest_snapshot)
-                and not model_common.snapshot_holds_a_whole_model(latest_snapshot)
-            )
+            hf_cache_scan.snapshot_pipeline_missing_denoiser(latest_snapshot)
             or hf_cache_scan.snapshot_is_encoder_companion(model_id, repo_dir, latest_snapshot)
         ):
             # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.

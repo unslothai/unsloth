@@ -262,6 +262,18 @@ def _loadable_directory(load_dir: Path) -> bool:
     return sole is not None and _loader_can_open(str(load_dir), sole)
 
 
+def _pull_is_incomplete(info) -> bool:
+    """An HF repo by its download state, as before the shared scan: the Model Hub also flags layouts it lists for
+    its own reasons (a lone checkpoint, an artifact mirror), and _loadable_directory judges those."""
+    if getattr(info, "source", None) != "hf_cache" or not getattr(info, "model_id", None):
+        return bool(getattr(info, "partial", False))
+    from hub.utils.inventory_scan import repo_partial_verdicts
+
+    path = Path(info.path)
+    repo_dir = path.parent.parent if path.parent.name == "snapshots" else path
+    return any(repo_partial_verdicts(info.model_id, repo_dir))
+
+
 @in_scan_memo
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
@@ -276,7 +288,7 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
     for info in candidates:
         try:
             # a cancelled or incomplete pull still lists, and loading it fails predictably
-            if getattr(info, "partial", False):
+            if _pull_is_incomplete(info):
                 continue
             if _local_model_task(info) != task:
                 continue

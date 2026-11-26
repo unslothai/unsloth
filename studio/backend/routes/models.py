@@ -392,10 +392,7 @@ def collect_local_models(
         materialize_ollama_links = materialize_ollama_links,
     )
     rows = _without_format_labels(
-        [
-            _with_loader_partial(_with_scan_model_id(row))
-            for row in local_inventory._filter_hidden_models(rows)
-        ]
+        [_with_scan_model_id(row) for row in local_inventory._filter_hidden_models(rows)]
     )
     listed = local_inventory._dedupe_local_models(rows)
     if folded is not None:
@@ -410,24 +407,6 @@ def _with_scan_model_id(model):
     if model.model_id or not scan_model_id:
         return model
     return model.model_copy(update = {"model_id": scan_model_id})
-
-
-def _with_loader_partial(model):
-    """The Hub flags an artifact mirror's pipeline partial so it is no Hub pick, but a whole one still loads (a
-    Qwen/Qwen-Image-2.1-Turbo pick downloads it into unsloth/Qwen-Image-2.1-Turbo-FP8)."""
-    from core.inference.diffusion_families import mirror_hosts_artifacts
-    from hub.services.models.common import snapshot_holds_a_whole_model
-    from hub.utils.hf_cache_state import latest_snapshot_dir
-
-    if not (
-        model.partial and model.source == "hf_cache" and mirror_hosts_artifacts(model.model_id)
-    ):
-        return model
-    path = Path(model.path)
-    snapshot = latest_snapshot_dir(path) if (path / "snapshots").is_dir() else path
-    if not snapshot_holds_a_whole_model(snapshot):
-        return model
-    return model.model_copy(update = {"partial": False})
 
 
 def _without_format_labels(models: list) -> list:

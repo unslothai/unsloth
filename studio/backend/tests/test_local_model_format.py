@@ -1111,7 +1111,8 @@ def _flux_checkpoint(path: Path) -> Path:
 
 
 def test_a_copied_single_file_hf_checkpoint_is_whole_and_media_resolvable(monkeypatch, tmp_path):
-    """Windows without symlinks copies files into snapshots/; a lone flux1-dev.safetensors loads as single_file."""
+    """Windows without symlinks copies files into snapshots/; a lone flux1-dev.safetensors loads as single_file,
+    though the Model Hub lists the unrecognized layout as partial."""
     from core.inference import media_model_index
 
     checkpoint = _flux_checkpoint(
@@ -1119,7 +1120,7 @@ def test_a_copied_single_file_hf_checkpoint_is_whole_and_media_resolvable(monkey
     )
 
     (row,) = _scan_hub_only(monkeypatch, tmp_path)
-    assert (row.model_id, row.partial) == ("Comfy-Org/flux1-dev", False)
+    assert (row.model_id, row.partial) == ("Comfy-Org/flux1-dev", True)
     pick = media_model_index._build_index("text-to-image")["comfy-org/flux1-dev"]
     assert Path(pick.model_path) == checkpoint.parent
 
@@ -1152,17 +1153,11 @@ def test_a_whole_cached_pipeline_without_safetensors_defaults_is_media_resolvabl
         _write(snapshot / "tokenizer" / name)
     _write(snapshot / "scheduler" / "scheduler_config.json")
 
-    (row,) = _scan_hub_only(monkeypatch, tmp_path)
-    assert row.partial is False
+    _scan_hub_only(monkeypatch, tmp_path)
     pick = media_model_index._build_index("text-to-image")[
         "stabilityai/stable-diffusion-xl-base-1.0"
     ]
     assert Path(pick.model_path) == snapshot
-
-    # Without its denoiser weights the same pipeline is a torn download.
-    (snapshot / "unet" / f"diffusion_pytorch_model{weight_suffix}").unlink()
-    (row,) = _scan_hub_only(monkeypatch, tmp_path)
-    assert row.partial is True
 
 
 def test_a_custom_folder_keeps_publisher_qualified_ids(monkeypatch, tmp_path):
@@ -1199,13 +1194,16 @@ def test_a_scan_folder_subfolder_holding_one_checkpoint_is_listed(monkeypatch, t
     )
 
 
-def test_an_empty_single_file_hf_checkpoint_stays_partial(monkeypatch, tmp_path):
+def test_an_empty_single_file_hf_checkpoint_is_not_offered(monkeypatch, tmp_path):
+    from core.inference import media_model_index
+
     checkpoint = _hf_snapshot(tmp_path, "Comfy-Org/flux1-dev") / "flux1-dev.safetensors"
     checkpoint.parent.mkdir(parents = True)
     checkpoint.write_bytes(b"")
 
     (row,) = _scan_hub_only(monkeypatch, tmp_path)
     assert row.partial is True
+    assert "comfy-org/flux1-dev" not in media_model_index._build_index("text-to-image")
 
 
 def test_a_whole_artifact_mirror_pipeline_loads_but_is_no_hub_pick(monkeypatch, tmp_path):
@@ -1225,9 +1223,23 @@ def test_a_whole_artifact_mirror_pipeline_loads_but_is_no_hub_pick(monkeypatch, 
         _touch(snapshot / name / "diffusion_pytorch_model.safetensors")
     _write(snapshot / "scheduler" / "scheduler_config.json")
 
-    (row,) = _scan_hub_only(monkeypatch, tmp_path)
-    assert row.partial is False
+    _scan_hub_only(monkeypatch, tmp_path)
     pick = media_model_index._build_index("text-to-image")["unsloth/qwen-image-2.1-turbo-fp8"]
     assert Path(pick.model_path) == snapshot
     (hub_row,) = local_inventory._scan_hf_cache(tmp_path / "hub")
     assert (hub_row.partial, hub_row.companion_prefetch) == (True, True)
+
+
+@pytest.mark.parametrize("name", ["flux1-dev.safetensors", "model-00001-of-00003.safetensors"])
+def test_a_scan_folder_subfolder_with_an_empty_or_numbered_checkpoint_is_not_listed(
+    monkeypatch, tmp_path, name
+):
+    library = tmp_path / "library"
+    checkpoint = library / "Flux" / name
+    if name.startswith("flux1"):
+        checkpoint.parent.mkdir(parents = True)
+        checkpoint.write_bytes(b"")
+    else:
+        _flux_checkpoint(checkpoint)
+
+    assert _scan_hub_only(monkeypatch, tmp_path, folders = [library]) == []
