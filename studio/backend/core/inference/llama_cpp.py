@@ -9557,7 +9557,7 @@ class LlamaCppBackend:
         return counts[(width, height)]
 
     def _countable_messages(self, messages: list[dict]) -> list[dict]:
-        """The counting copy every fit and size probe uses: images charged, audio and video dropped."""
+        """The counting copy for fitting and size probes, with priced media as text stand-ins."""
         from core.inference.mcp_images import prepare_image_turn_boundaries
 
         # Before pricing: a stand-in hides an image turn from Ministral's alternation fix-up.

@@ -49,7 +49,7 @@ def _image_stand_in(tokens: int) -> dict:
 
 
 def _message_with_priced_images(message: dict, price_image: Callable[[dict], int]) -> dict:
-    """Counting copy only: images become stand-ins of their price, audio and video are dropped."""
+    """Counting copy only: replace images and priced audio with token stand-ins."""
     content = message.get("content")
     if not isinstance(content, list):
         return message
@@ -61,6 +61,8 @@ def _message_with_priced_images(message: dict, price_image: Callable[[dict], int
             countable.append(_image_stand_in(price_image(part)))
             changed = True
         elif kind in _UNPRICED_MEDIA_TYPES:
+            if kind == "input_audio" and (tokens := part.get("studio_audio_tokens")):
+                countable.append(_image_stand_in(tokens))
             changed = True
         else:
             countable.append(part)
@@ -74,7 +76,7 @@ def _message_with_priced_images(message: dict, price_image: Callable[[dict], int
 def messages_with_priced_images(
     messages: list[dict], price_image: Callable[[dict], int]
 ) -> list[dict]:
-    """``messages_without_unpriced_media`` with images charged instead of dropped."""
+    """Keep the text and charge media with a known token price."""
     priced = [_message_with_priced_images(message, price_image) for message in messages]
     return messages if all(before is after for before, after in zip(messages, priced)) else priced
 
@@ -84,16 +86,17 @@ def estimate_message_tokens_with_priced_images(
 ) -> int:
     """Added rather than rendered, so the estimate never serialises a long stand-in."""
     content = message.get("content")
-    images = (
-        sum(
-            price_image(part)
-            for part in content
-            if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
-        )
-        if isinstance(content, list)
-        else 0
-    )
-    return estimate_message_tokens_without_unpriced_media(message) + images
+    estimate = estimate_message_tokens_without_unpriced_media(message)
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("type")
+            if kind in _IMAGE_PART_TYPES:
+                estimate += price_image(part)
+            elif kind == "input_audio":
+                estimate += part.get("studio_audio_tokens", 0)
+    return estimate
 
 
 def image_dimensions(part: dict) -> Optional[tuple[int, int]]:
