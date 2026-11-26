@@ -188,16 +188,21 @@ def ep_refuse_per_expert_lists(model):
 
 def ep_refuse_trainer_fsdp(trainer):
     """Trainer.__init__: accelerate's FSDP (an `accelerate launch` FSDP config / fsdp args) would wrap and shard
-    the per-rank expert slices at train() as if they were one tensor."""
+    the per-rank expert slices at train() as if they were one tensor; DeepSpeed ZeRO would partition them and
+    average their gradients over every rank the same way."""
     model = getattr(trainer, "model", None)
-    if (
-        getattr(trainer, "is_fsdp_enabled", False)
-        and isinstance(model, nn.Module)
-        and is_expert_parallel(model)
-    ):
+    if not isinstance(model, nn.Module) or not is_expert_parallel(model):
+        return
+    if getattr(trainer, "is_fsdp_enabled", False):
         raise NotImplementedError(
             "Unsloth: expert parallel cannot be combined with accelerate's FSDP (an accelerate FSDP config or "
             "TrainingArguments fsdp): every rank holds different experts. Launch with torchrun and DDP, or drop ep."
+        )
+    if getattr(trainer, "is_deepspeed_enabled", False):
+        raise NotImplementedError(
+            "Unsloth: expert parallel cannot be combined with DeepSpeed (an accelerate DeepSpeed config or "
+            "TrainingArguments deepspeed): every rank holds different experts, and DeepSpeed would partition "
+            "and average them as one tensor. Launch with torchrun and DDP, or drop ep."
         )
 
 
@@ -857,8 +862,20 @@ def _sync_nonfinite(model, group):
             torch.stack([~torch.isfinite(g).all() for g in grads]).any().to(torch.int32).reshape(1)
         )
     dist.all_reduce(bad, op = dist.ReduceOp.MAX, group = group)
-    if grads:
-        grads[0].view(-1)[:1].masked_fill_(bad.to(grads[0].device).bool(), float("inf"))
+    # A rank with no expert gradients (none of its experts was routed to) poisons another trainable gradient:
+    # the scaler reads every gradient it unscales, so this rank skips the step with its peers.
+    target = grads[0] if grads else None
+    if target is None:
+        target = next(
+            (
+                p.grad
+                for p in model.parameters()
+                if p.grad is not None and p.grad.is_floating_point() and p.grad.numel()
+            ),
+            None,
+        )
+    if target is not None:
+        target.view(-1)[:1].masked_fill_(bad.to(target.device).bool(), float("inf"))
 
 
 _CKPT_DIR = "unsloth_ep"
@@ -887,8 +904,14 @@ def _rank_path(directory):
     return os.path.join(directory, _CKPT_DIR, f"rank{dist.get_rank():05d}.pt")
 
 
-def _save_rank_state(model, optimizer, directory):
-    """Every rank: its trainable tensors as held (expert LoRA shards local) and its optimizer state."""
+def _save_rank_state(
+    model,
+    optimizer,
+    directory,
+    scheduler = None,
+):
+    """Every rank: its trainable tensors as held (expert LoRA shards local) and its optimizer state. `scheduler`
+    (the writer rank's, or None): its state is saved beside, in the same agreed write."""
     path = _rank_path(directory)
     weights = {n: p.detach().cpu() for n, p in model.named_parameters() if p.requires_grad}
     optim = optimizer.state_dict() if optimizer is not None else None
@@ -898,6 +921,9 @@ def _save_rank_state(model, optimizer, directory):
     def write():
         os.makedirs(os.path.dirname(path), exist_ok = True)
         tpn._atomic_torch_save(payload, path)
+        if scheduler is not None:
+            from transformers.trainer import SCHEDULER_NAME
+            tpn._atomic_torch_save(scheduler.state_dict(), os.path.join(directory, SCHEDULER_NAME))
 
     tpn._agree_write(write)
 
@@ -1092,25 +1118,30 @@ def ep_trainer_setup(trainer):
         _tpn()._agree_write(write)
 
     trainer.save_model = ep_save_model
+
     # Checkpoints: the adapter is the 1-GPU one (save_model above); each rank also writes its own trainable
     # tensors (local expert shards) and its optimizer state, and a resume loads them back on the same layout.
-    save_optim = trainer._save_optimizer_and_scheduler
-    load_optim = trainer._load_optimizer_and_scheduler
-    load_weights = trainer._load_from_checkpoint
-
+    # The stock optimizer.pt is not written: it would repeat rank 0's optimizer state outside the agreed write
+    # (a failed write there leaves its peers waiting and truncates the previous file in place).
     def ep_save_optimizer_and_scheduler(output_dir):
-        out = save_optim(output_dir)
-        _save_rank_state(model, trainer.optimizer, output_dir)
-        return out
+        scheduler = getattr(trainer, "lr_scheduler", None) if trainer.args.should_save else None
+        _save_rank_state(model, trainer.optimizer, output_dir, scheduler)
 
     def ep_load_from_checkpoint(resume_from_checkpoint, model_ = None):
         _load_rank_weights(model, resume_from_checkpoint)
 
     def ep_load_optimizer_and_scheduler(checkpoint):
-        out = load_optim(checkpoint)
-        if checkpoint is not None:
-            _load_rank_optimizer(model, trainer.optimizer, checkpoint)
-        return out
+        # The rank state is authoritative; an older checkpoint's optimizer.pt (rank 0's state) is not read.
+        if checkpoint is None:
+            return None
+        _load_rank_optimizer(model, trainer.optimizer, checkpoint)
+        from transformers.trainer import SCHEDULER_NAME
+
+        path = os.path.join(checkpoint, SCHEDULER_NAME)
+        scheduler = getattr(trainer, "lr_scheduler", None)
+        if scheduler is not None and os.path.isfile(path):
+            scheduler.load_state_dict(_tpn()._resume_torch_load(path))
+        return None
 
     if getattr(trainer.args, "load_best_model_at_end", False) and getattr(
         trainer.args, "save_only_model", False

@@ -287,6 +287,30 @@ def _case_nonfinite_scaler(rank, world, tmp, ep):
     return out
 
 
+def _case_nonfinite_no_expert_grads(rank, world, tmp):
+    """fp16 GradScaler: rank 0 has an inf expert gradient, rank 1 no expert gradient at all (none of its experts
+    was routed to) and a finite shared one. Every rank must skip the step, or the shared weights diverge."""
+    epn = _epn()
+    holder = torch.nn.Module()
+    holder.expert = _tagged(epn, torch.zeros(3, 4))
+    holder.shared = torch.nn.Parameter(torch.ones(5))
+    if rank == 0:
+        holder.expert.grad = torch.zeros(3, 4)
+        holder.expert.grad[1, 2] = float("inf")
+    holder.shared.grad = torch.full((5,), 0.5)
+    optimizer = torch.optim.SGD(holder.parameters(), lr = 1.0)
+    scaler = torch.amp.GradScaler("cpu", init_scale = 1.0)
+    scaler.scale(torch.ones(()))  # creates the scale, as scaler.scale(loss) does before backward
+    epn._sync_nonfinite(holder, None)
+    scaler.step(optimizer)
+    scaler.update()
+    return {
+        "stepped": not torch.equal(holder.shared.detach(), torch.ones(5)),
+        "scale": float(scaler.get_scale()),
+        "file": epn.__file__,
+    }
+
+
 def _worker(rank, world, tmp, case, timeout, kwargs):
     os.environ.update(
         RANK = str(rank), WORLD_SIZE = str(world), LOCAL_RANK = str(rank), LOCAL_WORLD_SIZE = str(world)
@@ -412,6 +436,13 @@ def test_nonfinite_sync_only_under_an_enabled_grad_scaler():
     _ok(results)
     assert [r["none"] for r in results] == [True, False, True, False], results
     assert [r["enabled"] for r in results] == [False] * 4, results
+
+
+def test_nonfinite_sync_skips_the_step_on_a_rank_without_expert_grads():
+    results = _spawn("_case_nonfinite_no_expert_grads", world = 2, timeout = 20)
+    _ok(results)
+    assert [r["stepped"] for r in results] == [False, False], results
+    assert results[0]["scale"] == results[1]["scale"] == 0.5, results  # both scalers backed off
 
 
 @pytest.mark.parametrize("tokens", [0, 1, 7, 64])

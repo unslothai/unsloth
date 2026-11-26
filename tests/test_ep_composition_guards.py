@@ -102,6 +102,26 @@ def test_launch_keeps_ep_alone_and_size_one_axes():
         pe.apply_parallel_env(dict(environ))
 
 
+@pytest.mark.parametrize("axis", ["tp", "pp"])
+def test_parallelize_refuses_an_inherited_ep(monkeypatch, axis):
+    (pe,) = _package_modules("parallel_env")
+    for name in _ENV:
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    monkeypatch.setenv("UNSLOTH_EP_SIZE", "2")
+    monkeypatch.setattr(pe, "_SET_BY_PARALLELIZE", [None, {}])
+    monkeypatch.setattr(pe, "_reinstall_after_import", lambda: None)
+    before = dict(os.environ)
+    try:
+        with pytest.raises(ValueError, match = "expert parallel \\(ep\\) cannot be combined"):
+            pe.parallelize(**{axis: 2})
+        assert dict(os.environ) == before  # nothing written
+        assert pe._SET_BY_PARALLELIZE == [None, {}]
+    finally:  # an accepted call must not leak what it wrote into the later (spawned) tests
+        for name in set(os.environ) - set(before):
+            del os.environ[name]
+
+
 def test_auto_refuses_ep():
     pe, auto = _package_modules("parallel_env", "parallel_auto")
     with pytest.raises(ValueError, match = "UNSLOTH_EP_SIZE=2 asks for another axis"):
@@ -150,9 +170,45 @@ def test_trainer_refuses_accelerate_fsdp_on_ep_model():
     with pytest.raises(NotImplementedError, match = "accelerate's FSDP"):
         epn.ep_refuse_trainer_fsdp(types.SimpleNamespace(model = model, is_fsdp_enabled = True))
     epn.ep_refuse_trainer_fsdp(types.SimpleNamespace(model = model, is_fsdp_enabled = False))
+    with pytest.raises(NotImplementedError, match = "DeepSpeed"):
+        epn.ep_refuse_trainer_fsdp(
+            types.SimpleNamespace(model = model, is_fsdp_enabled = False, is_deepspeed_enabled = True)
+        )
+    epn.ep_refuse_trainer_fsdp(
+        types.SimpleNamespace(model = torch.nn.Linear(2, 2), is_deepspeed_enabled = True)
+    )
     epn.ep_refuse_trainer_fsdp(
         types.SimpleNamespace(model = torch.nn.Linear(2, 2), is_fsdp_enabled = True)
     )
+
+
+@pytest.mark.parametrize(
+    "flag, what",
+    [("load_in_8bit", "8-bit weights"), ("float8_training", "fp8 training")],
+)
+def test_ep_env_load_refuses_unsupported_precision_before_loading(monkeypatch, flag, what):
+    from unsloth_models_loader import load_models_module
+
+    for name in _ENV:
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("UNSLOTH_EP_SIZE", "2")
+    tp_env = load_models_module("tp_env")
+    assert tp_env.env_layout() is None  # the expert parallel branch, not the tp / pp one
+    calls = []
+
+    def from_pretrained(
+        model_name,
+        load_in_4bit = True,
+        load_in_8bit = False,
+        float8_training = None,
+        **kwargs,
+    ):
+        calls.append(model_name)
+        return torch.nn.Linear(2, 2)
+
+    with pytest.raises(NotImplementedError, match = f"expert parallel\\) does not support {what}"):
+        tp_env.tensor_parallel_env_load(from_pretrained)("x", **{flag: True})
+    assert calls == []
 
 
 def _snapshot(model):
