@@ -27,7 +27,8 @@ async function loadSavedPageBase(endpoint: string): Promise<void> {
     answers.set(endpoint, pageBase);
     if (pageBase) setHubPageBase(endpoint, pageBase);
   } catch {
-    // Not the owner, or offline: the relay URL still redirects for a local browser.
+    // Not the owner, or offline: keep the relay URL now, and ask again when next needed.
+    answers.delete(endpoint);
   }
 }
 
