@@ -694,3 +694,20 @@ def test_a_queued_page_clip_never_renders_on_another_checkpoint_of_the_same_repo
     [job] = client.get(QUEUE).json()["jobs"]
     assert (job["video_id"], job["status"]) == (page["video_id"], "failed")
     assert "model changed" in job["error"]
+
+
+def test_another_account_clearing_its_gallery_keeps_this_accounts_outcome(client, backend):
+    running = _busy(client, backend)
+    first = client.post(PAGE, json = {"prompt": "kept"}).json()
+    _queue(client, "successor")
+    _finish_running(client, backend, running)
+    _drain()
+    _wait_idle(backend)
+    backend.gate.clear()
+    _drain()  # the successor holds the shared record
+    progress = "/api/inference/video/generate-progress"
+    with _client_as(_OTHER) as other:
+        assert other.delete("/api/inference/video/gallery").status_code == 200
+    mine = client.get(progress, params = {"video_id": first["video_id"]}).json()
+    assert mine["phase"] == "completed" and mine["video"]["id"] == first["video_id"]
+    backend.gate.set()

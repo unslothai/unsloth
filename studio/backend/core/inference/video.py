@@ -17432,7 +17432,9 @@ class VideoBackend:
 
     def forget_terminal_video(self, video_id: Optional[str] = None) -> bool:
         """Drop a deleted clip's terminal record, else the UI resurrects a ghost card; live jobs are
-        kept. Its by-id outcome goes too (all completed ones when no id is given, as on a clear)."""
+        kept. Its by-id outcome goes too (with no id, as on a clear, every completed one of the
+        caller's account: a clear only deletes the caller's own clips)."""
+        account = current_account_id()
         with self._lock:
             if video_id is not None:
                 kept = self._gen_outcomes.get(str(video_id))
@@ -17442,7 +17444,7 @@ class VideoBackend:
                 for vid in [
                     vid
                     for vid, kept in self._gen_outcomes.items()
-                    if kept[1].get("phase") == "completed"
+                    if kept[0] == account and kept[1].get("phase") == "completed"
                 ]:
                     self._gen_outcomes.pop(vid, None)
             gen = self._gen
