@@ -221,8 +221,7 @@ _REMOTE = "_unsloth_ep_remote_expert"
 
 
 def load_remote_experts(block, ep, rank):
-    """The expert modules of `block` another rank keeps once apply_expert_parallel shards it as per-expert lists
-    (the same split as shard_expert_list / shard_fused_lists), None when it would not shard it that way."""
+    """Other ranks' expert modules under the shard_expert_list / shard_fused_lists split, else None."""
     if not isinstance(ep, int) or ep < 2 or _tpn().expert_shard_problem(block, ep) is None:
         return None
     if list_shard_problem(block, ep) is None:
@@ -247,11 +246,10 @@ def _keep_meta(
     fn,
     recurse = True,
 ):
-    return module  # another rank's expert: .to() / .float() leave its meta stand-ins as they are
+    return module
 
 
 def keep_remote_on_meta(expert):
-    """Model-wide .to(device) (accelerate's dispatch_model after a load, a user's .cuda()) skips this expert."""
     expert.__dict__["_apply"] = functools.partial(_keep_meta, expert)
 
 
@@ -315,7 +313,7 @@ def is_remote(p):
 
 
 def _refuse_remote_local(lst_items, block):
-    guard = block.__dict__.pop("_unsloth_tp_load_guard", None)  # set by expert_parallel_loading
+    guard = block.__dict__.pop("_unsloth_tp_load_guard", None)
     if guard is not None:
         guard.remove()
     if any(is_remote(p) for m in lst_items for p in m.parameters()):

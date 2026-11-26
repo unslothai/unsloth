@@ -5201,7 +5201,6 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
             return
         counts["loaded_bytes"] += nbytes(p)
         if id(module) in plan["remote"]:
-            # Another rank's per-expert module: a meta stand-in, the loaded tensor freed now.
             module._parameters[pname] = _lists_module().remote_stand_in(
                 p, plan["remote"][id(module)]
             )
@@ -5278,8 +5277,7 @@ def _lists_module():
 
 
 def _ep_remote_modules(model, ep, rank):
-    """{id(module): (experts, ep, rank)} for every module inside another rank's per-expert expert (transformers
-    4.x ModuleList experts, zoo GptOssExpertsBnb4bit lists): what expert parallel loading leaves on meta."""
+    """{id(module): (experts, ep, rank)} for every module inside another rank's per-expert expert."""
     lists = _lists_module()
     remote = {}
     for block in moe_blocks_with_experts(model):
@@ -5295,8 +5293,7 @@ def _ep_remote_modules(model, ep, rank):
 
 
 def _ep_finish_remote(model, ep, rank):
-    """After an expert parallel load: every parameter of another rank's per-expert expert is a tagged meta stand-in
-    (a tensor the setter missed is replaced now), and the blocks refuse a forward until apply_expert_parallel."""
+    """Make other ranks' expert params tagged meta stand-ins; forward refused until apply_expert_parallel."""
     lists = _lists_module()
     replaced = 0
     for block in moe_blocks_with_experts(model):
@@ -5401,7 +5398,7 @@ def _ep_lists_load_4x(original, cls, name, args, kwargs, mesh, state):
         _TP_QUANTIZE_OWNER.reset(token)
         state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
-    counts["remote_loaded_then_freed"] = _ep_finish_remote(model, ep, rank)  # 0: never read
+    counts["remote_loaded_then_freed"] = _ep_finish_remote(model, ep, rank)
     for p in model.parameters():
         if not p.is_meta:
             counts["kept_bytes"] += p.numel() * p.element_size()
@@ -5577,7 +5574,6 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             and not original_kwargs.get("load_in_8bit")
             and not _set_param_hook()
         ):
-            # transformers 4.x: other ranks' per-expert experts are never read, quantized on load or not.
             state["on_load"] = on_load
             try:
                 return _ep_lists_load_4x(original, cls, name, args, original_kwargs, mesh, state)
