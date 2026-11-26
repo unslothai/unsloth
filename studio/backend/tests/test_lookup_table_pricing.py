@@ -252,12 +252,16 @@ def test_split_names_keep_the_extension_as_written():
     ]
 
 
-def test_a_posix_class_pattern_is_not_proof_the_table_stays_on_the_host():
-    """std::regex reads [[:alpha:]] as a class."""
+def test_a_posix_class_pattern_is_read_as_std_regex_reads_it():
+    """std::regex reads [[:alpha:]] as a class, and the first matching override wins."""
     on_device = lc._override_places_tensor_on_device
     assert on_device(PLE, ["-ot", "per_[[:alpha:]_]+=CUDA0"], {})
-    assert on_device(PLE, ["-ot", "per_[[:alpha:]_]+=CPU,per_layer=CUDA0"], {})
+    assert not on_device(PLE, ["-ot", "per_[[:alpha:]_]+=CPU,per_layer=CUDA0"], {})
     assert not on_device(PLE, ["-ot", "per_[[:alpha:]_]+=CPU"], {})
+    # A class that does not match leaves the table to a later override.
+    assert on_device(PLE, ["-ot", "per_[[:digit:]]=CPU,per_layer=CUDA0"], {})
+    # A device pattern Python cannot read may still be the match.
+    assert on_device(PLE, ["-ot", "per(=CUDA0"], {})
 
 
 class TestHeaderScan:

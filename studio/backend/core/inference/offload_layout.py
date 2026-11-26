@@ -462,12 +462,16 @@ _POSIX_CLASSES = {
 _POSIX_CLASS_RE = re.compile(r"\[:([a-z]+):\]")
 
 
+# llama-hparams.h LLAMA_MAX_LAYERS: no model has more blocks for a count to name.
+_MAX_BLOCKS = 512
+
+
 def block_ffn_overrides(count: int, body: str) -> list[str]:
     """The patterns ``--n-cpu-moe count`` (or ``--n-cpu-ffn``) pushes: blocks 0..count-1."""
-    return [rf"blk\.{i}{body}" for i in range(max(0, int(count)))]
+    return [rf"blk\.{i}{body}" for i in range(min(max(0, int(count)), _MAX_BLOCKS))]
 
 
-def _std_regex(pattern: str) -> Optional[re.Pattern]:
+def std_regex(pattern: str) -> Optional[re.Pattern]:
     """``pattern`` compiled to match as llama.cpp's std::regex does, or None if Python cannot."""
 
     def posix(match: re.Match) -> str:
@@ -528,7 +532,7 @@ def place_weights(
     resolved = True
     compiled: list[tuple[re.Pattern, bool]] = []
     for pattern, on_host in overrides:
-        regex = _std_regex(pattern)
+        regex = std_regex(pattern)
         if regex is not None:
             compiled.append((regex, on_host))
         else:
@@ -541,7 +545,9 @@ def place_weights(
         return None
 
     device = host = duplicate = 0
-    staged: dict[object, int] = {}
+    # Host bytes per block. The head is left out: it multiplies only the rows that need logits,
+    # under the 32-row offload threshold (a load with every weight on the host staged none of it).
+    staged: dict[int, int] = {}
     # Per GPU layer: host expert bytes, and whether any expert stays on the device.
     experts: dict[int, list] = {}
     tied_head = "output.weight" not in tensor_bytes and architecture not in _HEADLESS_ARCHS
@@ -560,8 +566,6 @@ def place_weights(
                 device += size
             if name == "token_embd.weight" and tied_head:
                 head_on_host = override is True or (override is None and not output_on_gpu)
-                if head_on_host and output_on_gpu:
-                    staged["output"] = staged.get("output", 0) + size
                 # load_tensors reuses token_embd when the head lands in the same buffer type.
                 if head_on_host != input_on_host:
                     duplicate += size
@@ -570,18 +574,14 @@ def place_weights(
                     else:
                         device += size
             continue
-        if name in blocks:
-            layer_on_gpu = rank[blocks[name]] >= first_gpu
-            group: object = blocks[name]
-        else:
-            layer_on_gpu = output_on_gpu
-            group = "output"
+        layer_on_gpu = rank[blocks[name]] >= first_gpu if name in blocks else output_on_gpu
         on_device = override is False or (override is None and layer_on_gpu)
         if on_device:
             device += size
         else:
             host += size
-            staged[group] = staged.get(group, 0) + size
+            if name in blocks:
+                staged[blocks[name]] = staged.get(blocks[name], 0) + size
         if name in blocks and layer_on_gpu and _CACHED_EXPERT_RE.match(name):
             entry = experts.setdefault(blocks[name], [0, False])
             if on_device:

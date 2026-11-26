@@ -8042,35 +8042,16 @@ def _override_places_tensor_on_device(
     extra_args: Optional[Iterable[str]] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """Whether an ``--override-tensor`` (argv or env) may put ``name`` on a device."""
-    source_env = os.environ if env is None else env
-    values: list[str] = []
-    env_value = str(source_env.get("LLAMA_ARG_OVERRIDE_TENSOR") or "").strip()
-    if env_value:
-        values.append(env_value)
-    args = [str(a) for a in extra_args or ()]
-    for i, raw in enumerate(args):
-        if _flag_name(raw) in {"-ot", "--override-tensor"}:
-            _, eq, inline = raw.partition("=")
-            value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-            if value:
-                values.append(value)
-    for value in values:
-        for part in value.split(","):
-            pattern, eq, target = part.rpartition("=")
-            if not eq or not pattern:
-                continue
-            on_host = _override_targets_host(f"{pattern}={target}")
-            if "[:" in pattern:
-                # A POSIX class is std::regex syntax Python reads literally: unknown, so a host
-                if not on_host:
-                    return True
-                continue
-            try:
-                if not re.search(pattern, name):
-                    continue
-            except re.error:
+    """Whether the first tensor override (env or argv) matching ``name`` may put it on a device; a
+    device pattern Python cannot read counts as a match."""
+    from core.inference.offload_layout import std_regex
+
+    for pattern, on_host in _main_tensor_overrides(extra_args, env):
+        regex = std_regex(pattern)
+        if regex is None:
+            if not on_host:
                 return True
+        elif regex.search(name):
             return not on_host
     return False
 
@@ -8098,8 +8079,9 @@ def _main_tensor_overrides(
     def add_value(value: str) -> None:
         # parse_tensor_buffer_overrides: comma-separated, split at the first '='.
         for part in str(value).split(","):
+            # An empty pattern is a valid regex that matches every tensor.
             pattern, eq, target = part.partition("=")
-            if eq and pattern:
+            if eq:
                 overrides.append((pattern, _override_targets_host(f"x={target}")))
 
     def add_count(raw: Optional[str], body: str) -> None:

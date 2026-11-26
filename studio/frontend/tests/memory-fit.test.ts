@@ -222,6 +222,14 @@ test("the floor notes outrank every verdict, in their own order", () => {
   assert.match(moe.advisory?.text ?? "", /tensor override is not reflected/);
 });
 
+test("an unplaced override is noted on a zero GPU figure, below a RAM overage", () => {
+  const zero = fit({ moeOffloadUnmodelled: true, gpuBytes: 0, totalBytes: 2 * GB }, {});
+  assert.equal(zero.cpuOnly, true);
+  assert.match(zero.advisory?.text ?? "", /tensor override is not reflected/);
+  const over = fit({ moeOffloadUnmodelled: true, gpuBytes: 0, totalBytes: 900 * GB }, {});
+  assert.match(over.advisory?.text ?? "", /Exceeds system RAM/);
+});
+
 test("the floor marker follows either unsizable case", () => {
   assert.equal(fit({ kvEstimable: false }, {}).prefix, "≥ ");
   assert.equal(fit({ drafterKvUnsized: true }, {}).prefix, "≥ ");

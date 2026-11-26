@@ -392,11 +392,14 @@ export function resolveMemoryAdvisory(
       text: "An adapter or control vector is unmeasured. Actual usage will be higher.",
     };
   }
-  if (estimate.moeOffloadUnmodelled && !verdicts.cpuOnly) {
-    return {
-      tone: "muted",
-      text: "A tensor override is not reflected here, so GPU usage may be higher or lower.",
-    };
+  const unplacedOverride: MemoryAdvisory | null = estimate.moeOffloadUnmodelled
+    ? {
+        tone: "muted",
+        text: "A tensor override is not reflected here, so GPU usage may be higher or lower.",
+      }
+    : null;
+  if (unplacedOverride && !verdicts.cpuOnly) {
+    return unplacedOverride;
   }
   if (verdicts.cpuOnly) {
     if (verdicts.totalFit === "exceeds") {
@@ -404,6 +407,10 @@ export function resolveMemoryAdvisory(
         tone: "warn",
         text: "Exceeds system RAM. Try a shorter context or smaller model.",
       };
+    }
+    // A zero GPU figure is not proof: the override may still put weights on a card.
+    if (unplacedOverride) {
+      return unplacedOverride;
     }
     if (verdicts.hostPressured) {
       return {

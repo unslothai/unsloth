@@ -226,6 +226,15 @@ class TestOverrides:
         )
         assert got == [("a", True), ("b", False), ("c", True), (FFN_EXPS_OVERRIDE, True)]
 
+    def test_an_empty_pattern_is_kept_and_matches_every_tensor(self):
+        got = _main_tensor_overrides(["-ot", "=CPU"], {})
+        assert got == [("", True)]
+        p = place_weights(_moe(), None, got)
+        assert (p.device_bytes, p.host_bytes) == (0, sum(_moe().values()))
+
+    def test_a_count_names_no_more_blocks_than_llama_cpp_allows(self):
+        assert len(_main_tensor_overrides(["-ncmoe", "1000000000"], {})) == 512
+
     def test_counts_and_flags_that_place_nothing(self):
         assert _main_tensor_overrides(["-ncmoe", "0", "--n-cpu-ffn=0", "--top-k", "40"], {}) == []
         # Draft placement is the drafter's.
