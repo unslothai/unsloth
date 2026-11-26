@@ -196,8 +196,8 @@ def test_status_and_plan_routes_fill_it():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    image = (root / "core/inference/diffusion.py").read_text()
-    video = (root / "core/inference/video.py").read_text()
+    image = (root / "core/inference/diffusion.py").read_text(encoding = "utf-8")
+    video = (root / "core/inference/video.py").read_text(encoding = "utf-8")
     flat_image = re.sub(r"\s+", " ", image)
     flat_video = re.sub(r"\s+", " ", video)
     # The status passes the resident target, so a probe verdict only lands where torchao runs.
@@ -213,6 +213,6 @@ def test_status_and_plan_routes_fill_it():
             in flat
         )
     for route in ("routes/inference.py", "routes/video.py"):
-        text = (root / route).read_text()
+        text = (root / route).read_text(encoding = "utf-8")
         assert '"precision_options": plan_precision_options(' in text
         assert "target = plan_target," in text

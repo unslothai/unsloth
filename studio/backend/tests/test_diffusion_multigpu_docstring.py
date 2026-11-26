@@ -10,7 +10,9 @@ from pathlib import Path
 
 _DOC = ast.get_docstring(
     ast.parse(
-        (Path(__file__).resolve().parents[1] / "core/inference/diffusion_multigpu.py").read_text()
+        (Path(__file__).resolve().parents[1] / "core/inference/diffusion_multigpu.py").read_text(
+            encoding = "utf-8"
+        )
     )
 )
 
