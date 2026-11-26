@@ -5495,6 +5495,7 @@ export const es419 = {
         "Consulta las instrucciones exactas enviadas al modelo.",
     },
     history: {
+      notSaved: "No se guardó en el historial: el almacenamiento del navegador está lleno.",
       title: "Historial",
       search: "Buscar en el historial",
       empty: "Tus traducciones aparecen aquí.",

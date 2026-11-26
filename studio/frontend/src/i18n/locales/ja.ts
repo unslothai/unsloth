@@ -5017,6 +5017,7 @@ export const ja = {
       showPromptDescription: "モデルに送られる正確な指示を表示します。",
     },
     history: {
+      notSaved: "履歴に保存されませんでした: ブラウザのストレージがいっぱいです。",
       title: "履歴",
       search: "履歴を検索",
       empty: "翻訳はここに表示されます。",

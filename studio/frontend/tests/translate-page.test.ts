@@ -36,6 +36,7 @@ import {
   buildChatHandoff,
   capHistory,
   exportHistory,
+  recentForChat,
   parseHistory,
   searchHistory,
 } from "../src/features/translate/translate-history.ts";
@@ -361,6 +362,39 @@ test("a translated document of several pages is kept in the history", () => {
     }).map((item) => item.output),
     [output],
   );
+});
+
+test("chat with recent translations stays within a budget, newest first", () => {
+  const entry = (id: string, chars: number) => ({
+    id,
+    at: 0,
+    source: "s".repeat(Math.ceil(chars / 2)),
+    output: "o".repeat(Math.floor(chars / 2)),
+    target: "fr",
+    from: null,
+    model: null,
+  });
+  const ids = (history: ReturnType<typeof entry>[]) =>
+    recentForChat(history).map((item) => item.id);
+  assert.deepEqual(
+    ids(["a", "b", "c", "d", "e", "f"].map((id) => entry(id, 10))),
+    ["a", "b", "c", "d", "e"],
+  );
+  assert.deepEqual(
+    ids([
+      entry("a", 25_000),
+      entry("b", 50_000),
+      entry("c", 30_000),
+      entry("d", 1),
+    ]),
+    ["a", "b"],
+  );
+  assert.deepEqual(
+    ids(["a", "b", "c", "d", "e"].map((id) => entry(id, 20_000))),
+    ["a", "b", "c", "d", "e"],
+    "five entries at the former cap still go together",
+  );
+  assert.deepEqual(ids([entry("a", 250_000), entry("b", 10)]), ["a"]);
 });
 
 test("a damaged saved history is read as far as it is valid", () => {

@@ -98,6 +98,24 @@ const englishName = (code: string | null): string =>
     : (TRANSLATE_LANGUAGES.find((language) => language.code === code)?.name ??
       code);
 
+const CHAT_RECENT_ENTRIES = 5;
+/** Five entries at the former 20,000-character entry cap: older entries stop being added past it. */
+const CHAT_RECENT_CHARS = 100_000;
+
+/** The newest entries that fit the chat budget; the newest is always included. */
+export function recentForChat(
+  history: readonly TranslateHistoryEntry[],
+): TranslateHistoryEntry[] {
+  let chars = 0;
+  let keep = 0;
+  for (const entry of history.slice(0, CHAT_RECENT_ENTRIES)) {
+    chars += entry.source.length + entry.output.length;
+    if (chars > CHAT_RECENT_CHARS && keep > 0) break;
+    keep += 1;
+  }
+  return history.slice(0, keep);
+}
+
 export function buildChatHandoff(
   entries: readonly Pick<
     TranslateHistoryEntry,

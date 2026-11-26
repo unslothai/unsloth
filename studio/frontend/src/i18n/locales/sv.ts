@@ -5283,6 +5283,7 @@ export const sv = {
       showPromptDescription: "Se exakta instruktioner som skickas till modellen.",
     },
     history: {
+      notSaved: "Inte sparad i historiken: webbläsarens lagring är full.",
       title: "Historik",
       search: "Sök i historiken",
       empty: "Dina översättningar visas här.",
