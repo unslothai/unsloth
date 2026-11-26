@@ -646,14 +646,15 @@ def _fp8_tensorwise_backend_available() -> bool:
 
 
 def get_checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
-    """Formats from ``get_checkpoint_quant_formats`` that load here but run dequantized to 16-bit: fp8 when
-    torch has no row-wise fp8 GEMM and the core library has no tensorwise fallback. The checkpoints stay listed;
-    this only says the FP8 speedup is not delivered."""
+    """Checkpoint kinds that load here but run dequantized to 16-bit. ``fp8_rowwise``: per-channel (row-wise
+    scaled) FP8 checkpoints, when torch has no row-wise fp8 GEMM and the core library has no tensorwise
+    fallback. Block-scaled FP8 checkpoints run their own Triton GEMM and are not covered. The checkpoints stay
+    listed in ``formats``; this only says the FP8 speedup is not delivered for that kind."""
     if "fp8" not in formats:
         return []
     if _fp8_rowwise_gemm_runs() or _fp8_tensorwise_backend_available():
         return []
-    return ["fp8"]
+    return ["fp8_rowwise"]
 
 
 def get_compute_capabilities() -> dict[int, tuple[int, int]]:

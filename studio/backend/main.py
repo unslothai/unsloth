@@ -3304,7 +3304,7 @@ def get_system_info(
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
         # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
         "checkpoint_quant_formats": (_quant_formats := _checkpoint_quant_formats()),
-        # Of those, the ones this torch runs dequantized (no row-wise or tensorwise fp8 GEMM). Additive key.
+        # FP8 kinds this torch runs dequantized: fp8_rowwise without a row-wise or tensorwise fp8 GEMM. Additive key.
         "checkpoint_quant_dequant_only": _checkpoint_quant_dequant_only(_quant_formats),
     }
 

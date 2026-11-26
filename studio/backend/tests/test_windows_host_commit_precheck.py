@@ -133,6 +133,16 @@ class TestPreLaunch:
             is None
         )
 
+    def test_lazy_tables_neither_spill_nor_pull_kv_to_the_host(self, windows):
+        # 120 GB file, 100 GB of it lazy-mapped tables: 20 GB resident fits 30 GB free with its KV.
+        backend = _backend(model_gb = 120, kv_gb = 32)
+        backend._lazy_read_host_bytes = lambda *a, **k: 100 * _GB
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 8 * _MIB)
+        assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), _CARD, {}, **kwargs) is None
+        # Without the discount the same file spills 90 GB.
+        backend._lazy_read_host_bytes = lambda *a, **k: 0
+        assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), _CARD, {}, **kwargs)
+
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (
             _backend(model_gb = 20)._windows_host_commit_refusal(

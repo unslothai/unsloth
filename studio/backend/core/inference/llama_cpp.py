@@ -17010,12 +17010,15 @@ class LlamaCppBackend:
                 )
             except Exception:  # noqa: BLE001 -- no discount: mapped bytes are not refused anyway
                 lazy = 0
+            # Lazy-read tables stay mapped from disk and never take VRAM: price the rest, as the
+            # host-RAM advisory does, so they neither spill nor pull KV onto the host.
+            resident = max(1, model_bytes - max(0, lazy))
             free_vram_bytes = sum(max(0, row[1]) for row in gpus) * 1024 * 1024
-            spill = max(0, model_bytes - free_vram_bytes)
+            spill = max(0, resident - free_vram_bytes)
             _, reserves_ram = resolve_effective_memory_state(
                 argv, _env, auto_unmapped = auto_unmapped
             )
-            private = max(0, spill - lazy) if reserves_ram else 0
+            private = spill if reserves_ram else 0
             ctx_raw = _extra_args_device(argv, frozenset({"-c", "--ctx-size"}))
             n_ctx = int(ctx_raw) if ctx_raw and ctx_raw.strip().lstrip("-").isdigit() else 0
             if n_ctx <= 0:
@@ -17025,7 +17028,7 @@ class LlamaCppBackend:
                 kv_on_host = 1.0
             elif spill and not _extra_args_set_any_flag(argv, self._ARGV_EXPERTS_ON_CPU):
                 # A layer split keeps the KV of the layers left on the CPU in host RAM.
-                kv_on_host = spill / model_bytes
+                kv_on_host = spill / resident
             if kv_on_host and n_ctx > 0:
                 cache_type = _extra_args_device(argv, frozenset({"-ctk", "--cache-type-k"}))
                 parallel_raw = _extra_args_device(argv, frozenset({"-np", "--parallel"}))

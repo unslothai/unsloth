@@ -108,8 +108,8 @@ def _fake_core(tmp_path, monkeypatch, backends):
         ("linux", None, []),
         ("linux", ("fbgemm", "scaled_mm", "dequant"), []),
         # Windows torch has no row-wise kernel: native only with a tensorwise fallback.
-        ("win32", ("fbgemm", "scaled_mm", "dequant"), ["fp8"]),
-        ("win32", None, ["fp8"]),
+        ("win32", ("fbgemm", "scaled_mm", "dequant"), ["fp8_rowwise"]),
+        ("win32", None, ["fp8_rowwise"]),
         ("win32", ("fbgemm", "scaled_mm", "tensorwise", "dequant"), []),
     ],
 )
@@ -134,7 +134,7 @@ def test_a_probed_rowwise_verdict_beats_the_platform(monkeypatch, tmp_path):
     probed = types.SimpleNamespace(_ROWWISE = {0: False})
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_fp8_unit_scale", probed)
     monkeypatch.setattr(sys, "platform", "linux")
-    assert nvidia.get_checkpoint_quant_dequant_only(["fp8"]) == ["fp8"]
+    assert nvidia.get_checkpoint_quant_dequant_only(["fp8"]) == ["fp8_rowwise"]
     probed._ROWWISE = {0: True, 1: None}
     monkeypatch.setattr(sys, "platform", "win32")
     assert nvidia.get_checkpoint_quant_dequant_only(["fp8"]) == []
@@ -161,7 +161,7 @@ def test_system_route_reports_dequant_only_beside_the_formats(monkeypatch, tmp_p
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delitem(sys.modules, "core.inference.diffusion_fp8_unit_scale", raising = False)
     _fake_core(tmp_path, monkeypatch, None)
-    assert main._checkpoint_quant_dequant_only(formats) == ["fp8"]
+    assert main._checkpoint_quant_dequant_only(formats) == ["fp8_rowwise"]
     # The route ships both keys from one formats read.
     src = open(main.__file__, encoding = "utf-8").read()
     assert '"checkpoint_quant_dequant_only": _checkpoint_quant_dequant_only(_quant_formats)' in src
