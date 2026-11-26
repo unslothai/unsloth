@@ -125,7 +125,7 @@ import {
 import { useSystemInfo } from "@/hooks/use-system";
 import { diffusionTrainGuideUrl } from "./diffusion-train-guides";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
-import { runningTrainingSelection } from "./diffusion-train-restore";
+import { shownTrainingSelection, trainingRunSelection, type TrainingRunSelection } from "./diffusion-train-restore";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 import {
   MediaGenerationPresetControl,
@@ -944,27 +944,36 @@ export function DiffusionTrainPanel({
     return () => window.clearInterval(id);
   }, [active, poll]);
 
-  // After a reload the page defaults to FLUX.1-dev; show the running job's family and base instead, once per job.
+  // The backend keeps the terminal status until the next start, so dismissal is local.
+  const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
+
+  // Point the form at a run's family and base: the running or shown job, a resumed run, or one opened from history,
+  // so the form never shows the FLUX.1-dev default beside a Z-Image run.
+  const followRun = useCallback(
+    (run: TrainingRunSelection) => {
+      seededFromLoaded.current = true;
+      seededBaseFamily.current = run.familyName;
+      setFamilyName(run.familyName);
+      if (run.baseModel) {
+        baseDirty.current = true;
+        const known = families.find((f) => f.name === run.familyName)?.base_repos.includes(run.baseModel);
+        setBaseChoice(known ? run.baseModel : CUSTOM_BASE);
+        if (!known) setCustomBase(run.baseModel);
+      }
+    },
+    [families, setFamilyName, setBaseChoice],
+  );
+
+  // After a reload the page defaults to FLUX.1-dev; show the running or shown job's family and base, once per job.
   const seededRunJob = useRef<string | null>(null);
   useEffect(() => {
     const jobKey = status?.job_id ?? "";
     if (seededRunJob.current === jobKey) return;
-    const run = runningTrainingSelection(status, families);
+    const run = shownTrainingSelection(status, families, dismissedJobId);
     if (!run) return;
     seededRunJob.current = jobKey;
-    seededFromLoaded.current = true;
-    seededBaseFamily.current = run.familyName;
-    setFamilyName(run.familyName);
-    if (run.baseModel) {
-      baseDirty.current = true;
-      const known = families.find((f) => f.name === run.familyName)?.base_repos.includes(run.baseModel);
-      setBaseChoice(known ? run.baseModel : CUSTOM_BASE);
-      if (!known) setCustomBase(run.baseModel);
-    }
-  }, [status, families, setFamilyName, setBaseChoice]);
-
-  // The backend keeps the terminal status until the next start, so dismissal is local.
-  const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
+    followRun(run);
+  }, [status, families, dismissedJobId, followRun]);
   const running = Boolean(status?.active) || status?.status === "running";
   const completed =
     status?.status === "completed" && status.job_id !== dismissedJobId;
@@ -1077,11 +1086,14 @@ export function DiffusionTrainPanel({
 
   const openPrevRun = useCallback(async (jobId: string) => {
     try {
-      setViewRun(await getDiffusionTrainingRun(jobId));
+      const detail = await getDiffusionTrainingRun(jobId);
+      setViewRun(detail);
+      const run = trainingRunSelection(detail, families);
+      if (run) followRun(run);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not load that run");
     }
-  }, []);
+  }, [families, followRun]);
 
   const viewLossHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = viewRun?.metric_history;
@@ -1477,6 +1489,8 @@ export function DiffusionTrainPanel({
         notifiedComplete.current = false;
         setViewRun(null);
         setDismissedJobId(null);
+        const run = trainingRunSelection(detail, families);
+        if (run) followRun(run);
         toast.success(
           detail.checkpoint_step != null
             ? `Resuming from step ${detail.checkpoint_step}`
@@ -1489,7 +1503,7 @@ export function DiffusionTrainPanel({
         setResumingJobId(null);
       }
     },
-    [poll],
+    [poll, families, followRun],
   );
 
   const onStop = useCallback(
