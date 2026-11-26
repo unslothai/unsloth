@@ -391,6 +391,7 @@ def _case_train(
     gc = "none",
     packed = None,
     eval_only = False,
+    eval_no_grad = False,
     padding = None,
     hf_loss = False,
 ):
@@ -700,7 +701,9 @@ def _case_train(
             return original_eval_stats(*a, **k)
 
         pp_native._router_statistics = counted_eval_stats
-        metrics = trainer.evaluate(eval_dataset = data)
+        # A caller may run evaluate() under no_grad (a callback, a manual eval loop): the cp pads stay excluded.
+        with torch.no_grad() if eval_no_grad else torch.enable_grad():
+            metrics = trainer.evaluate(eval_dataset = data)
         stage = pp_native.pipeline_stage_of(trainer.model)
         manager = getattr(trainer, "_context_parallel_manager", None)
         return {

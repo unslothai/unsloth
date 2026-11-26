@@ -900,6 +900,8 @@ def _router_statistics(
 
 def _load_balancing_from_statistics(stats, num_experts):
     counts, probs, rows = stats[:num_experts], stats[num_experts : 2 * num_experts], stats[-1]
+    # An all-masked micro-batch has no routed rows (counts and probs are 0 too): 0, not 0 / 0 = NaN.
+    rows = rows.clamp_min(1)
     return torch.sum((counts / rows) * (probs / rows)) * num_experts
 
 
