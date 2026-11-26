@@ -200,6 +200,10 @@ fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
+    // On Windows, NSIS relaunches the app and forwards the previous session's arguments.
+    #[cfg(windows)]
+    let relaunched =
+        relaunched || std::env::args_os().any(|arg| arg == OsStr::new("--show-after-update"));
     let hidden = argv_has_hidden_flag();
     // The marker is gone now, so a GPU crash before the window reports in must not relaunch
     // hidden.
@@ -2421,6 +2425,13 @@ fn main() {
             appimage_webkit::mode_label(|name| std::env::var_os(name))
         );
     }
+    #[cfg(target_os = "linux")]
+    if appimage_webkit::host_lacks_audio_sink() {
+        warn!(
+            "GStreamer has no autoaudiosink plugin: WebKitGTK aborts a page on its first audio or \
+             video. Install GStreamer's good plugins (gst-plugins-good, gstreamer1.0-plugins-good)."
+        );
+    }
     #[cfg(target_os = "macos")]
     macos_event_guard::install();
 
@@ -2526,6 +2537,7 @@ fn main() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            appimage_webkit::missing_media_codec_packages,
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
             browser_webview::browser_view_open_background,

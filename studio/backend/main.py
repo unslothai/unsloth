@@ -37,6 +37,15 @@ try:
 except Exception:
     pass
 
+# Windows ROCm: PAL_DISABLE_SDMA=1 before HIP initialises (rocm-systems#12571 stale copy after an event record).
+try:
+    from utils.rocm_pal_env import (
+        apply_windows_rocm_pal_defaults as _apply_windows_rocm_pal_defaults,
+    )
+    _apply_windows_rocm_pal_defaults()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 

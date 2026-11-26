@@ -2,16 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  getDiffusionDownloadPlan,
-  type DiffusionDownloadPlan,
-} from "@/features/images/api";
-import { getVideoDownloadPlan } from "@/features/video/api";
+import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { getAudioDownloadPlan } from "@/features/audio/api";
 import { diffusionFileKind } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 import { useInventoryVersion } from "../stores/inventory-events";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { inFlightMediaDownloadPlan } from "../lib/media-download-plan";
 import {
   additionalAssetDownloads,
   selectDownloadEntries,
@@ -38,7 +35,7 @@ export function useRequiredAssetsDownload({
   const inventoryVersion = useInventoryVersion();
   const sequence = useRef(0);
   const starting = useRef(false);
-  const fetchPlan = useCallback(async () => {
+  const fetchPlan = useCallback(async (inventory: number) => {
     const body = {
       model_path: repoId,
       gguf_filename: filename,
@@ -48,9 +45,11 @@ export function useRequiredAssetsDownload({
     const result =
       runtime === "audio"
         ? await getAudioDownloadPlan(repoId, token || undefined)
-        : runtime === "video"
-          ? await getVideoDownloadPlan(body)
-          : await getDiffusionDownloadPlan(body);
+        : await inFlightMediaDownloadPlan(
+            runtime === "video" ? "video" : "images",
+            body,
+            inventory,
+          );
     const resultPlan: DiffusionDownloadPlan = result;
     if (resultPlan.plan_failed)
       throw new Error(
@@ -79,7 +78,7 @@ export function useRequiredAssetsDownload({
       fetch: fetchPlan,
       inventory: inventoryVersion,
       expires: Date.now() + 30_000,
-      promise: fetchPlan(),
+      promise: fetchPlan(inventoryVersion),
     };
     cached.current = record;
     void record.promise.catch(() => {

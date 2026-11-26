@@ -374,6 +374,8 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     for key in ("output_dir", "allow_external_output_dir"):
         if key in values:
             config[key] = values.get(key)
+    if values.get("parallel"):
+        config["parallel"] = values["parallel"]
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
     # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
@@ -1328,6 +1330,7 @@ class TrainingBackend:
         self.current_job_id = self.current_start_request_id = None
         self._status_start_request_id = self._output_dir = None
         self.eval_enabled = False
+        self.parallel_plan = None
 
     def _require_start_request_account(self, start_request_id):
         record = self._start_requests.get(start_request_id)
@@ -2031,6 +2034,7 @@ class TrainingBackend:
             self.eval_loss_history.clear()
             self.eval_step_history.clear()
             self.eval_enabled = False
+            self.parallel_plan = config.get("parallel")
             self._output_dir = config.get("output_dir") if resume_source_run_id else None
             self._progress.output_dir = self._output_dir
             self._resume_source_run_id = resume_source_run_id
@@ -2230,6 +2234,7 @@ class TrainingBackend:
                 self.grad_norm_step_history.clear()
                 self._needs_xet_respawn = False
                 self._status_start_request_id = None
+                self.parallel_plan = None
             return "reset"
 
     def _start_stop_watchdog(

@@ -300,9 +300,14 @@ class _Engine:
         self._fail_active(RuntimeError("Unsloth: the in-process vLLM server stopped."))
         with self.cv:
             pending, self.pending = self.pending, []
+            # A command queued before `stop` would otherwise leave its caller blocked in `call` forever.
+            commands, self.commands = self.commands, []
             self.staged = None
         for item in pending:
             item[-1].set_exception(RuntimeError("Unsloth: the in-process vLLM server stopped."))
+        for _, future in commands:
+            if not future.done():
+                future.set_exception(RuntimeError("Unsloth: the in-process vLLM server stopped."))
         for name in list(self.loras):
             self.remove_adapter(name)
 
@@ -442,17 +447,22 @@ class _Engine:
         return self.slot_id
 
     def remove_adapter(self, name):
-        lora = self.loras.pop(name, None)
+        lora = self.loras.get(name)
         if lora is None:
             return False
         was_newest = self.newest == name
-        if was_newest:
-            self.newest = next(reversed(self.loras), None)
-        if lora.lora_int_id == self.slot_id and self.loras:
-            # One slot serves every name; restore the newest remaining version.
+        remaining = [other for other in self.loras if other != name]
+        if lora.lora_int_id == self.slot_id and remaining:
+            # One slot serves every name; restore the newest remaining version. Reload before touching the
+            # registry: a failed reload puts this version back in the slot, so the registry must keep naming it.
             if was_newest:
-                self._reload_slot(self.loras[self.newest], lora)
+                self._reload_slot(self.loras[remaining[-1]], lora)
+                self.newest = remaining[-1]
+            del self.loras[name]
             return True
+        del self.loras[name]
+        if was_newest:
+            self.newest = remaining[-1] if remaining else None
         state = self.lora_holds.setdefault(lora.lora_int_id, [False, 0])
         state[0] = True
         self._maybe_remove(lora.lora_int_id)
@@ -643,8 +653,15 @@ class UnslothAsyncVLLMServer:
 
     def server_info(self):
         lora_config = self.vllm_config.lora_config
+        model_config = self.vllm_config.model_config
         return {
-            "model_config": {"dtype": str(self.vllm_config.model_config.dtype)},
+            "model_config": {
+                "dtype": str(model_config.dtype),
+                # TRL >= 1.19 refuses score centering with temperature scaling unless these are processed logprobs.
+                "logprobs_mode": str(getattr(model_config, "logprobs_mode", "raw_logprobs")),
+                # No candidate sets and no /inference/v1/generate here; rl.py rejects top_k / top_p up front.
+                "return_sampling_mask": False,
+            },
             "lora_config": None
             if lora_config is None
             else {

@@ -140,6 +140,9 @@ PLAIN_HELPERS = {
     "_FIRST_USE_WORK": [0],
     # Read by zoo's speculative.py head replay (unsloth_zoo #2474); the stub holds no QSA cache trims.
     "_QSA_TRIM_HELD": [],
+    # zoo's speculative.py tree-width filter (unsloth_zoo #2729); zoo's default when
+    # UNSLOTH_MLX_FAST_VERIFY_LOW_ROWS is unset.
+    "_LANE_LOW_ROWS": 4,
 }
 
 

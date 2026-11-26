@@ -4,6 +4,8 @@
 """UNSLOTH_PARALLEL / unsloth.parallelize and the context parallel x tensor / pipeline parallel refusals, without a
 process group (tests/test_parallel_cp_compose_gloo.py trains the composed layouts on gloo ranks)."""
 
+import dataclasses
+
 import pytest
 import torch
 
@@ -19,6 +21,8 @@ _ENV = (
     "UNSLOTH_FSDP2",
     "UNSLOTH_PP_SCHEDULE",
     "UNSLOTH_PP_MICROBATCHES",
+    "UNSLOTH_PP_STAGES_PER_RANK",
+    "UNSLOTH_PP_KEEP_REPLICA",
     "UNSLOTH_RETURN_LOGITS",
     "WORLD_SIZE",
 )
@@ -143,7 +147,10 @@ def test_flag_parses_every_key_and_fills_dp(clean_env):
         ("tp", "not key=value"),
         ("xp=2", "unknown key"),
         ("tp=2,tp=2", "twice"),
-        ("pp=2,pp_schedule=interleaved", "interleaved virtual stages are not supported yet"),
+        ("pp=2,pp_schedule=interleaved", "only interleaved1f1b is supported"),
+        ("pp=2,pp_schedule=loopedbfs", "only interleaved1f1b is supported"),
+        ("pp=2,pp_stages_per_rank=2", "needs pp_schedule=interleaved1f1b"),
+        ("pp=2,pp_schedule=1f1b,pp_stages_per_rank=2", "needs pp_schedule=interleaved1f1b"),
         ("cp=2,cp_backend=tree", "must be one of"),
         ("fsdp=maybe", "must be 0 or 1"),
     ],
@@ -242,6 +249,67 @@ def test_parallelize_sets_the_flag_and_refuses_after_a_load(clean_env):
         for key in _ENV:
             os.environ.pop(key, None)
         tp_env._reset_env_layout()
+
+
+def test_interleaved1f1b_flag_translates_and_reads_into_the_layout(clean_env):
+    from unsloth import parallel_env as pe
+    from unsloth.models import tp_env
+
+    clean_env.setenv("WORLD_SIZE", "2")
+    spec = pe.parse_parallel_spec(
+        "pp=2,schedule=Interleaved-1F1B,pp_microbatches=2,stages_per_rank=2"
+    )
+    assert pe.translate(spec) == {
+        "UNSLOTH_PP_SIZE": "2",
+        "UNSLOTH_PP_SCHEDULE": "interleaved1f1b",
+        "UNSLOTH_PP_MICROBATCHES": "2",
+        "UNSLOTH_PP_STAGES_PER_RANK": "2",
+    }
+    clean_env.setenv("UNSLOTH_PP_SIZE", "2")
+    clean_env.setenv("UNSLOTH_PP_SCHEDULE", "interleaved1f1b")
+    clean_env.setenv("UNSLOTH_PP_MICROBATCHES", "2")
+
+    def read():
+        tp_env._reset_env_layout()
+        try:
+            return tp_env.env_layout()
+        finally:
+            tp_env._reset_env_layout()
+
+    # The whole-model replica needs one stage per rank: refused until it is turned off.
+    with pytest.raises(ValueError, match = "UNSLOTH_PP_KEEP_REPLICA=0"):
+        read()
+    clean_env.setenv("UNSLOTH_PP_KEEP_REPLICA", "0")
+    layout = read()
+    assert (layout.schedule, layout.stages_per_rank, layout.microbatches) == (
+        "interleaved1f1b",
+        2,
+        2,
+    )
+    clean_env.setenv("UNSLOTH_PP_STAGES_PER_RANK", "3")
+    assert read().stages_per_rank == 3
+    clean_env.setenv("UNSLOTH_PP_STAGES_PER_RANK", "1")
+    with pytest.raises(ValueError, match = "2 or more stages per rank"):
+        read()
+    clean_env.delenv("UNSLOTH_PP_STAGES_PER_RANK")
+    clean_env.delenv("UNSLOTH_PP_MICROBATCHES")
+    with pytest.raises(ValueError, match = "UNSLOTH_PP_MICROBATCHES"):
+        read()
+    clean_env.setenv("UNSLOTH_PP_SCHEDULE", "1f1b")
+    assert read().stages_per_rank is None
+    clean_env.setenv("UNSLOTH_PP_STAGES_PER_RANK", "2")
+    with pytest.raises(ValueError, match = "needs UNSLOTH_PP_SCHEDULE=interleaved1f1b"):
+        read()
+
+
+def test_interleaved1f1b_is_refused_beside_another_axis():
+    from unsloth import parallel_capabilities as caps
+    caps.check(_q(pp = 2, pp_schedule = "interleaved1f1b"), cells = False)
+    for other in (dict(dp = 2), dict(tp = 2)):
+        with pytest.raises(
+            NotImplementedError, match = r"^Unsloth: pp x schedule: interleaved1f1b with"
+        ):
+            caps.check(_q(pp = 2, pp_schedule = "interleaved1f1b", **other), cells = False)
 
 
 def test_layout_rules_run_when_the_layout_is_read(clean_env):
@@ -446,6 +514,7 @@ def test_tensor_parallel_alone_keeps_what_tp_native_supports():
         (dict(cp = 2, torch = (2, 6)), "cp x torch", "upgrade torch"),
         (dict(pp = 2, trainer = "grpo"), "pp x trainer", "drop pp"),
         (dict(pp = 2, packing = True), "pp x packing", "packing = False"),
+        (dict(tp = 2, packing = True), "tp x packing", "packing = False"),
         (dict(pp = 2, mode = "full"), "pp x mode", "use LoRA, or UNSLOTH_FSDP2=1"),
         (dict(tp = 2, vllm = True), "pp / tp x vLLM", "fast_inference = False"),
     ],
@@ -778,6 +847,9 @@ def test_compile_counters_count_breaks_and_recompiles():
         ("dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
         ("dp_shard=2,dp_replicate=1", {"dp": 2, "fsdp": True}),
         ("dp=2,dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
+        # Expert parallel (models/ep_native.py); ep with tp / pp / cp / fsdp is refused by translate.
+        ("ep=2", {"ep": 2}),
+        ("ep_size=2,tp=2", {"ep": 2, "tp": 2}),
     ],
 )
 def test_distributed_config_names_are_accepted(raw, want):
@@ -788,8 +860,6 @@ def test_distributed_config_names_are_accepted(raw, want):
 @pytest.mark.parametrize(
     "raw, match",
     [
-        ("ep=2", "expert parallel"),
-        ("ep_size=2,tp=2", "expert parallel"),
         ("efsdp=2", "expert FSDP"),
         ("dp_shard=2,dp_replicate=2", "HSDP"),
         ("dp=4,dp_shard=2", "disagrees"),
@@ -892,6 +962,7 @@ def test_adafactor_is_refused_on_native_fsdp2_shards():
 
 
 def test_moe_rows_cover_family_precision_aux_and_mode():
+    import os
     import types
 
     from unsloth import parallel_capabilities as caps
@@ -902,11 +973,12 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         if c.name.startswith("MoE ")
         and not c.name.endswith((", block compile", ", Unsloth checkpoint", ", multimodal"))
     ]
-    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
+    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 8
     proven = sorted(c.name for c in moe if not c.missing())
     assert "MoE qwen3_moe x lora+experts x aux off x cp" in proven
     assert "MoE qwen3_moe x full x aux off x fsdp2" in proven
     assert "MoE qwen3_moe x lora+experts x aux on x ddp" in proven
+    assert "MoE qwen3_moe x lora+experts x aux off x ep_cp" in proven
     moe_q = dict(family = "qwen3_moe", moe = True, expert_lora = True)
     assert caps.cell_status(_q(cp = 2, cp_backend = "ulysses", **moe_q))[0] == "supported"
     # LoRA on the experts under cp: eager only (block compile recompiles more than one process).
@@ -936,10 +1008,56 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     ):
         with pytest.raises(NotImplementedError, match = why):
             caps.check(_q(cp = 2, cp_backend = "ulysses", **{**moe_q, **extra}))
+    # Qwen3-MoE aux under Ulysses cp is supported; other families, HF checkpointing and the kill switch stay refused.
+    aux_cp = _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q)
+    assert caps.cell_status(aux_cp)[0] == "supported"
+    caps.check(aux_cp)
+    caps.check(
+        _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, memory = "unsloth_offload", **moe_q)
+    )
+    caps.check(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
+    with pytest.raises(NotImplementedError, match = r"no numeric parity"):
+        caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, memory = "gc", **moe_q))
     with pytest.raises(
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):
-        caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
+        caps.check(
+            _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **{**moe_q, "family": "phimoe"})
+        )
+    # The other cp router aux families (tests/test_cp_router_aux_gloo.py::test_family_*): lora (on the experts where
+    # PEFT's all-linear adapts them) and full finetuning.
+    for family in caps.CP_ROUTER_AUX_FAMILIES[1:]:
+        expert_lora = family not in ("gpt_oss", "qwen3_5_moe")
+        for mode in ("lora", "full"):
+            q = _q(
+                cp = 2,
+                cp_backend = "ulysses",
+                router_aux_loss = True,
+                family = family,
+                moe = True,
+                mode = mode,
+                expert_lora = expert_lora and mode == "lora",
+                attention = "eager" if family == "gpt_oss" else "sdpa",
+            )
+            assert caps.cell_status(q)[0] == "supported", (family, mode, caps.cell_status(q))
+            caps.check(q)
+            # Their parity ran without checkpointing: Unsloth's checkpoint stays unadvertised for them.
+            gc = dataclasses.replace(q, memory = "unsloth_offload")
+            assert caps.cell_status(gc)[0] != "supported", (family, mode, caps.cell_status(gc))
+            with pytest.raises(NotImplementedError):
+                caps.check(gc)
+    with pytest.raises(
+        NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
+    ):
+        caps.check(_q(cp = 2, cp_backend = "ring", router_aux_loss = True, **moe_q))
+    os.environ["UNSLOTH_CP_ROUTER_AUX"] = "0"
+    try:
+        with pytest.raises(
+            NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
+        ):
+            caps.check(aux_cp)
+    finally:
+        del os.environ["UNSLOTH_CP_ROUTER_AUX"]
     # Pipeline parallel carries the Qwen3-MoE router auxiliary loss (tests/test_pp_moe_aux_gloo.py): gpipe /
     # 1f1b, one stage per rank, aux on or off; other families, full finetuning and checkpointing stay refused.
     for aux in (True, False):
@@ -948,13 +1066,18 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
             assert caps.cell_status(pp_q)[0] == "supported", (aux, schedule)
             caps.check(pp_q)
     with pytest.raises(
-        NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp only"
+        NotImplementedError, match = r"x pp' lacks .*Qwen2-MoE and Ernie 4.5 MoE only"
     ):
         caps.check(
-            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "qwen3_next"})
         )
     with pytest.raises(NotImplementedError, match = r"x pp' lacks .*no gloo parity run"):
-        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "mixtral"}))
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "qwen3_next"}))
+    # Mixtral / OLMoE / Qwen2-MoE / Ernie 4.5 MoE: carried, aux on or off (test_pp_moe_aux_gloo.py families).
+    for family in ("mixtral", "olmoe", "qwen2_moe", "ernie4_5_moe"):
+        for aux in (True, False):
+            pp_q = _q(pp = 2, pp_schedule = "1f1b", router_aux_loss = aux, **{**moe_q, "family": family})
+            assert caps.cell_status(pp_q)[0] == "supported", (family, aux)
     # gpt-oss pp with aux loss off runs; with it on the note names the switch.
     gpt_oss_q = {**moe_q, "family": "gpt_oss", "attention": "eager", "windowed": True}
     for extra in ({}, {"memory": "gc"}, {"memory": "unsloth_offload", "mode": "qlora"}):
@@ -1122,10 +1245,10 @@ def test_launcher_flag_with_a_disagreeing_legacy_variable_is_refused(clean_env, 
         pe.apply_parallel_env()
 
 
-def test_the_launcher_keys_are_accepted_and_ep_is_reserved():
+def test_the_launcher_keys_are_accepted_and_efsdp_is_reserved():
     from unsloth import parallel_env as pe
     assert set(LAUNCHER_KEYS) <= set(pe._KEYS)
-    assert {"ep", "efsdp"} <= set(pe._RESERVED)
+    assert "ep" in pe._KEYS and "efsdp" in pe._RESERVED
 
 
 @pytest.mark.parametrize("kind", ["sft", "dpo", "grpo"])

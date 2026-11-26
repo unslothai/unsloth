@@ -723,8 +723,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Latest-tier models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         if load_in_4bit:
-            from utils.transformers_version import latest_tier_active_for
-            if latest_tier_active_for(config["model_name"], hf_token):
+            from utils.transformers_version import latest_tier_forces_16bit
+            if latest_tier_forces_16bit(config["model_name"], hf_token):
                 load_in_4bit = False
                 logger.info(
                     "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -919,6 +919,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_options_by_workflow",
                         "audio_workflow_tasks",
                         "audio_server_task",
+                        "audio_separation",
                         "audio_convert",
                         "audio_convert_route",
                         "audio_convert_rules",

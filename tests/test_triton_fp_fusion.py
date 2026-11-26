@@ -14,6 +14,8 @@ import sys
 import pytest
 
 KERNELS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "kernels"
+# Optimizers launch Triton too; their stochastic rounding kernels state False on purpose.
+OPTIMIZERS = KERNELS.parent / "optimizers"
 
 # Subscript calls that are not launches, or forward options already carrying enable_fp_fusion.
 _NOT_LAUNCHES = {
@@ -38,9 +40,9 @@ _LAUNCH_HELPERS = {
 
 
 def _launch_sites():
-    for path in sorted(KERNELS.rglob("*.py")):
-        rel = path.relative_to(KERNELS)
-        if rel.parts[0] == "moe" and rel.parts[1] in ("tests", "benchmark"):
+    for path in sorted(KERNELS.rglob("*.py")) + sorted(OPTIMIZERS.rglob("*.py")):
+        rel = path.relative_to(KERNELS.parent)
+        if rel.parts[:2] == ("kernels", "moe") and rel.parts[2] in ("tests", "benchmark"):
             continue
         src = path.read_text(encoding = "utf-8")
         if "triton" not in src:

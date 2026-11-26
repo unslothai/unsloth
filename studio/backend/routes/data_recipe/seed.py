@@ -1634,6 +1634,9 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             )
 
     file_bytes = _decode_base64_payload(payload.content_base64)
+    if ext in (".csv", ".json", ".jsonl"):
+        # Notepad / PowerShell BOM: pandas rejects it in JSON, DuckDB reads a .json array as one "json" column.
+        file_bytes = file_bytes.removeprefix(b"\xef\xbb\xbf")
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
     if len(file_bytes) > LOCAL_SEED_UPLOAD_MAX_BYTES:

@@ -18,6 +18,7 @@ from core.training.account_jobs import (
     worker_alive,
 )
 from utils.account_context import account_thread
+from utils.keep_awake import keeps_system_awake
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import contextlib
 import json
@@ -78,6 +79,7 @@ class _DownloadPhaseQueue:
         self.queue.put(event)
 
 
+@keeps_system_awake
 def _run_diffusion_child(
     *,
     event_queue: Any,
@@ -209,7 +211,12 @@ def _resume_fields(
 ) -> dict[str, Any]:
     """Derived from disk; write_error is sticky and blocks resume; started_at and ended_at fence off bundles from other runs. Never raises."""
     try:
+        from core.training.account_jobs import account_path
         from core.training.diffusion_checkpoint import describe_resume_state
+
+        # The scan probes (and may rename inside) output_dir: keep a managed record in its workspace.
+        account_path(output_dir)
+        account_path(source_checkpoint)
         state = describe_resume_state(
             output_dir,
             status = status,

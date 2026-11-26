@@ -193,14 +193,17 @@ def snapshot_backend_flags() -> Optional[dict]:
 
 
 def release_rocm_tunableop(pipe: Any) -> None:
-    """Unload: drop this pipe's TunableOp claim (process-global, so not in snapshot_backend_flags)."""
-    mod = sys.modules.get(f"{__package__}.diffusion_rocm_tunableop")
-    if mod is None or pipe is None:
+    """Unload: drop this pipe's TunableOp and MIOpen db claims (process-global, so not in snapshot_backend_flags)."""
+    if pipe is None:
         return
-    try:
-        mod.release(pipe)
-    except Exception:  # noqa: BLE001 - teardown is best effort
-        pass
+    for name in ("diffusion_rocm_tunableop", "diffusion_rocm_miopen_db"):
+        mod = sys.modules.get(f"{__package__}.{name}")
+        if mod is None:
+            continue
+        try:
+            mod.release(pipe)
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
 
 
 def restore_backend_flags(state: Optional[dict]) -> None:
@@ -571,6 +574,14 @@ def apply_speed_optims(
                 rocm_tunableop.install_for_pipe(pipe, getattr(target, "device", None), logger)
         except Exception as exc:  # noqa: BLE001 - keep torch's default GEMM pick
             _warn(logger, "rocm tunableop", exc)
+        try:
+            from . import diffusion_rocm_miopen_db as rocm_miopen_db
+            if mode == SPEED_OFF:
+                rocm_miopen_db.uninstall(pipe)
+            else:
+                rocm_miopen_db.install_for_pipe(pipe, getattr(target, "device", None), logger)
+        except Exception as exc:  # noqa: BLE001 - keep MIOpen's own solver pick
+            _warn(logger, "rocm miopen db", exc)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:

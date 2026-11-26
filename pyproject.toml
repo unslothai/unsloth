@@ -92,6 +92,8 @@ studio = [
     "backend/core/inference/nvfp4_gate_record.json",
     # ROCm GEMM tables: if missing from the wheel, gfx1151 silently falls back to the slower pick.
     "backend/core/inference/rocm_gemm_tables/*.csv",
+    # ROCm MIOpen find-db / perf-db per exact stack: if missing from the wheel, gfx1151 VAE convs take the slower pick.
+    "backend/core/inference/rocm_miopen_db/*/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
@@ -199,7 +201,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.11.11",
+    "unsloth_zoo>=2026.11.12",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -220,7 +222,7 @@ huggingfacenotorch = [
     # Ceiling = newest release the version matrix ran. Each `!=` was tested and rejected: keep them.
     # Apple Silicon stays at 5.5.0 via unsloth_zoo's marker-split requirement.
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.18.0",
-    "trl>=0.18.2,!=0.19.0,<=1.18.2",
+    "trl>=0.18.2,!=0.19.0,<=1.19.0",
     "sentence-transformers",
 ]
 # torchcodec ships wheels only for manylinux x86_64 (aarch64 from 0.11), macOS arm64 and win_amd64;
@@ -247,7 +249,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.11.11",
+    "unsloth_zoo>=2026.11.12",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -886,7 +888,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.11.11",
+    "unsloth_zoo>=2026.11.12",
     "packaging",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.18.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
@@ -904,7 +906,7 @@ colab-new = [
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
-    "trl>=0.18.2,!=0.19.0,<=1.18.2",
+    "trl>=0.18.2,!=0.19.0,<=1.19.0",
     "peft>=0.18.0",
     "xformers ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",

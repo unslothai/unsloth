@@ -487,9 +487,12 @@ def _is_oom(exc: BaseException) -> bool:
 # PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync, which never fills the native allocator's stats.
 _PROBE_OOMS: list = [0]
 _PROBED: dict = {}
-# The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, these module sources and the
-# loaded library's bytes (``_probe_extra``): any change re-probes. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
-PROBE_PERSIST_SOURCES = ("diffusion_int8_cutlass.py", "diffusion_int8_gemm.py")
+# The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, this module's source, and
+# (``_probe_extra``) the loaded library's bytes plus the race code digest, which covers the probe's diffusion_int8_gemm
+# input (``tie_operands``): any change re-probes. Not the whole diffusion_int8_gemm.py: an unrelated edit there
+# would drop every stored tile verdict, and with it a returning card's stored races (``_cut_misses``).
+# UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+PROBE_PERSIST_SOURCES = ("diffusion_int8_cutlass.py",)
 _PROBE_STORE: list = [None]
 
 

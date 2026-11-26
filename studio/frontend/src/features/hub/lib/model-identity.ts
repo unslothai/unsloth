@@ -80,6 +80,48 @@ export function ggufVariantsMatch(
   );
 }
 
+const HUB_REPO_ID_RE = /^[^/:\\\s]+\/[^/:\\\s]+$/;
+
+export function withoutNamedQuant(
+  id: string,
+  quant: string | null | undefined,
+): string {
+  if (!(quant && id.toLowerCase().endsWith(`:${quant.toLowerCase()}`))) {
+    return id;
+  }
+  const repo = id.slice(0, -quant.length - 1);
+  return HUB_REPO_ID_RE.test(repo) ? repo : id;
+}
+
+export function servedCheckpoint(
+  loaded: readonly { quant?: string | null; checkpoint?: string }[],
+  checkpoint: string,
+  variant: string | null | undefined,
+): string {
+  if (!(checkpoint && variant)) {
+    return checkpoint;
+  }
+  const copy = loaded.find(
+    (m) =>
+      m.checkpoint &&
+      m.quant &&
+      m.checkpoint !== checkpoint &&
+      ggufVariantsMatch(m.quant, variant) &&
+      modelIdsMatch(withoutNamedQuant(m.checkpoint, m.quant), checkpoint),
+  );
+  return copy?.checkpoint ?? checkpoint;
+}
+
+/** For long-lived runs: a quant loaded later beside this one would take the bare repo id. */
+export function pinnedCheckpoint(
+  checkpoint: string,
+  variant: string | null | undefined,
+): string {
+  return variant && HUB_REPO_ID_RE.test(checkpoint)
+    ? `${checkpoint}:${variant}`
+    : checkpoint;
+}
+
 // Mirrors core/inference/model_ids.py _looks_like_path.
 const PUBLIC_ID_PATH_PREFIX_RE = /^(?:[/\\]|\.{1,2}[\\/]|~)/;
 const GGUF_SUFFIX_RE = /\.gguf$/i;

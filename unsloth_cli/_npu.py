@@ -85,7 +85,7 @@ def npu_detected() -> bool:
         from pathlib import Path
 
         path = Path(__file__).resolve().parents[1] / "studio/backend/utils/hardware/npu.py"
-        spec = importlib.util.spec_from_file_location("_unsloth_cli_npu_detect", path)
+        spec = importlib.util.spec_from_file_location("studio.backend.utils.hardware.npu", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return bool(module.detect_amd_npu().get("supported"))
