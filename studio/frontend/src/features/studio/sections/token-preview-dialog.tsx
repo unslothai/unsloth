@@ -233,6 +233,7 @@ type PreviewQuery = {
   hfToken: string | null;
   text?: string;
   finalFormat?: string | null;
+  alpacaSerialization?: TokenPreviewResponse["alpaca_serialization"];
   seed?: number;
 };
 
@@ -396,9 +397,10 @@ function TokenPreviewContent() {
   );
   const datasetState = useTokenPreview(datasetQuery);
   const finalFormat = datasetState.data?.final_format ?? null;
+  const alpacaSerialization = datasetState.data?.alpaca_serialization ?? null;
   const textQuery = useMemo(
-    () => (tab === "text" ? { config, hfToken, text, finalFormat } : null),
-    [config, hfToken, text, tab, finalFormat],
+    () => (tab === "text" ? { config, hfToken, text, finalFormat, alpacaSerialization } : null),
+    [config, hfToken, text, tab, finalFormat, alpacaSerialization],
   );
   const textState = useTokenPreview(textQuery, TEXT_DEBOUNCE_MS);
   const summary = datasetState.data ?? textState.data;

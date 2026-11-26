@@ -143,12 +143,6 @@ def get_tokenizer_chat_template(tokenizer, model_name):
     return tokenizer
 
 
-def alpaca_dataset_template(tokenizer):
-    """Return the legacy marker name when the model has no native chat template."""
-    template = getattr(tokenizer, "chat_template", None)
-    return None if template and template != STUDIO_ALPACA_CHAT_TEMPLATE else "alpaca"
-
-
 def get_training_chat_template(tokenizer, model_name, final_format):
     if getattr(tokenizer, "chat_template", None):
         return tokenizer
@@ -612,6 +606,7 @@ def apply_chat_template_to_dataset(
     batch_size = 1000,
     num_proc = None,
     progress_callback = None,
+    native_alpaca = False,
 ):
     """Rejects a non-None custom_prompt_template: Studio cannot persist a matching inference template."""
     dataset = dataset_info["dataset"]
@@ -733,8 +728,7 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
-        dataset_template = alpaca_dataset_template(tokenizer)
-        native_template = dataset_template is None
+        dataset_template = None if native_alpaca else "alpaca"
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
         preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
@@ -750,9 +744,10 @@ def apply_chat_template_to_dataset(
             for instruction, input_, output, system in zip(
                 instructions, inputs, examples["output"], systems
             ):
-                if native_template:
+                if native_alpaca:
                     prompt = cell_text(instruction)
-                    if context := cell_text(input_).strip():
+                    context = cell_text(input_)
+                    if context:
                         prompt += "\n\n" + context
                     messages = [
                         {"role": "user", "content": prompt},

@@ -177,6 +177,7 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str, str | 
         format_type = config.get("format_type") or "auto",
         dataset_name = config.get("dataset_name"),
         custom_format_mapping = config.get("custom_format_mapping"),
+        prefer_native_alpaca = True,
         # In-process: a pool for three rows costs seconds and changes nothing in the output.
         num_proc = 1,
     )
@@ -220,7 +221,7 @@ def _sample(texts: list, count: int, seed: int) -> list:
 
 
 def _preview(tokenizer, config: dict, request: dict) -> dict:
-    from utils.datasets.chat_templates import alpaca_dataset_template, get_training_chat_template
+    from utils.datasets.chat_templates import get_training_chat_template
     from utils.datasets.online_tokenization import resolve_add_special_tokens
 
     model_name = config["model_name"]
@@ -231,7 +232,11 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         first_text = texts[0]
     elif request.get("text") is not None:
         texts, final_format = [request["text"]], str(request.get("final_format") or "").lower()
-        dataset_template = alpaca_dataset_template(tokenizer) if final_format == "alpaca" else None
+        dataset_template = (
+            "alpaca"
+            if final_format == "alpaca" and request.get("alpaca_serialization") != "native"
+            else None
+        )
         first_text = texts[0]
     else:
         # Format a deep copy: templates mutate the tokenizer; the whole pool decides raw-text and
@@ -284,6 +289,11 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         "samples": samples,
         "masking": masking,
         "final_format": final_format or None,
+        "alpaca_serialization": (
+            ("legacy" if dataset_template == "alpaca" else "native")
+            if final_format == "alpaca"
+            else None
+        ),
         "add_special_tokens": add_special_tokens,
         "vocab_size": len(tokenizer),
         "bos_token": getattr(tokenizer, "bos_token", None),

@@ -99,6 +99,7 @@ def _format_dataset(trainer, config: dict, hf_token):
     result = trainer.load_and_format_dataset(
         dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
         format_type = config.get("format_type", ""),
+        prefer_native_alpaca = config.get("prefer_native_alpaca", False),
         local_datasets = config.get("local_datasets") or None,
         custom_format_mapping = config.get("custom_format_mapping"),
         subset = config.get("subset"),

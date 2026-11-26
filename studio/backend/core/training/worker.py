@@ -3843,6 +3843,7 @@ def _run_mlx_training(
                 format_type = format_type,
                 dataset_name = hf_dataset or "local",
                 custom_format_mapping = custom_format_mapping,
+                prefer_native_alpaca = config.get("prefer_native_alpaca", False),
                 progress_callback = _fmt_progress,
             )
             if info.get("success", True):
@@ -3868,6 +3869,7 @@ def _run_mlx_training(
                     custom_format_mapping = custom_format_mapping,
                     split_name = "eval",
                     raw_text_column = info.get("raw_text_column"),
+                    prefer_native_alpaca = config.get("prefer_native_alpaca", False),
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
@@ -5281,6 +5283,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             result = trainer.load_and_format_dataset(
                 dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
                 format_type = config.get("format_type", ""),
+                prefer_native_alpaca = config.get("prefer_native_alpaca", False),
                 local_datasets = config.get("local_datasets") or None,
                 local_eval_datasets = config.get("local_eval_datasets") or None,
                 custom_format_mapping = config.get("custom_format_mapping"),

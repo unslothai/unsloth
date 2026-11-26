@@ -14,13 +14,14 @@ class _Tokenizer:
     eos_token = "</s>"
 
 
-def _format_result(dataset, tokenizer = None):
+def _format_result(dataset, tokenizer = None, **format_options):
     result = format_and_template_dataset(
         dataset,
         model_name = "Qwen2ForCausalLM",
         tokenizer = tokenizer or _Tokenizer(),
         batch_size = 2,
         num_proc = 1,
+        **format_options,
     )
     assert result["success"] is True
     assert result["final_format"] == "alpaca"
@@ -216,15 +217,33 @@ def test_alpaca_rows_use_the_existing_instruct_template():
             [
                 {
                     "instruction": "Say hello",
-                    "input": "in French",
+                    "input": "  in French",
                     "system": "Be brief.",
                     "output": "Bonjour",
                 }
             ]
         ),
         InstructTokenizer(),
+        prefer_native_alpaca = True,
     )
     assert result["dataset"][0]["text"] == (
-        "<system>Be brief.<end><user>Say hello\n\nin French<end><assistant>Bonjour<end>"
+        "<system>Be brief.<end><user>Say hello\n\n  in French<end><assistant>Bonjour<end>"
     )
     assert result["dataset_template"] is None
+
+
+def test_explicit_alpaca_and_older_runs_keep_legacy_headings():
+    class InstructTokenizer:
+        chat_template = "native"
+        eos_token = "<end>"
+
+        def apply_chat_template(self, *args, **kwargs):
+            raise AssertionError("legacy Alpaca should keep its selected serialization")
+
+    dataset = Dataset.from_list([{"instruction": "Question", "input": "  context", "output": "Answer"}])
+    for options in ({"format_type": "alpaca", "prefer_native_alpaca": True}, {"prefer_native_alpaca": False}):
+        result = _format_result(dataset, InstructTokenizer(), **options)
+        assert result["dataset_template"] == "alpaca"
+        assert result["dataset"][0]["text"].endswith(
+            "### Instruction:\nQuestion\n\n### Input:\n  context\n\n### Response:\nAnswer<end>"
+        )

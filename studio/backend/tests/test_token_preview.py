@@ -655,7 +655,11 @@ def test_alpaca_preview_uses_the_training_marker(typed, dataset_template, monkey
 
     monkeypatch.setattr(token_preview_worker, "_mask", mask)
     args = (
-        {"text": "example", "final_format": "alpaca"}
+        {
+            "text": "example",
+            "final_format": "alpaca",
+            "alpaca_serialization": "native" if dataset_template is None else None,
+        }
         if typed
         else {"rows": [{"instruction": "prompt"}]}
     )

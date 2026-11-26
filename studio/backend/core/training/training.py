@@ -280,6 +280,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "local_datasets": values.get("local_datasets"),
         "local_eval_datasets": values.get("local_eval_datasets"),
         "format_type": values.get("format_type", ""),
+        "prefer_native_alpaca": values.get("prefer_native_alpaca", False),
         "subset": values.get("subset"),
         "train_split": values.get("train_split", "train"),
         "eval_split": values.get("eval_split"),

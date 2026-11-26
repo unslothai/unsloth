@@ -1896,6 +1896,7 @@ async def token_preview(
             "rows": rows,
             "text": request.text,
             "final_format": request.final_format,
+            "alpaca_serialization": request.alpaca_serialization,
             "dataset_name": request.dataset_name,
             "format_type": request.format_type,
             "custom_format_mapping": request.custom_format_mapping,
@@ -2262,6 +2263,9 @@ async def _admit_training_request(
         "local_datasets": request.local_datasets,
         "local_eval_datasets": request.local_eval_datasets,
         "format_type": request.format_type,
+        # A checkpoint created before native Alpaca used the legacy format even in Auto.
+        "prefer_native_alpaca": resume_run is None
+        or training_run_config(resume_run).get("prefer_native_alpaca", False),
         "subset": request.subset,
         "train_split": request.train_split,
         "dataset_streaming": request.dataset_streaming,
