@@ -705,7 +705,6 @@ def test_prompt_list_splits_by_chunk_count_and_keeps_solo_embeds(tiny_sdxl, shor
     assert runs == [[jobs[0]], [jobs[1]]]
 
     def embeds(prompts):
-        """What the pipe call conditions on: the swapped-in embeddings, or the pipeline's own encode."""
         kwargs = {"prompt": list(prompts), "negative_prompt": ["blurry"] * len(prompts)}
         apply_prompt_controls(tiny_sdxl, SDXL, None, kwargs, guidance = 7.0)
         if "prompt_embeds" not in kwargs:
@@ -722,7 +721,7 @@ def test_prompt_list_splits_by_chunk_count_and_keeps_solo_embeds(tiny_sdxl, shor
     assert len(calls) == 2
     assert torch.equal(calls[0][0], solo[0]) and torch.equal(calls[0][1], solo[1])
     assert solo[0].shape[1] == 77 and calls[1][0].shape[1] == 154
-    # one batch instead: the short row carries an extra empty-prompt chunk it does not have alone
+    # batched together, the short row gains an extra empty chunk
     assert padded[0].shape[1] == 154
 
 
@@ -731,12 +730,10 @@ def test_chunk_count_runs_keeps_order_and_leaves_plain_batches_alone(tiny_sdxl):
     long = "a grey owl on a mossy branch, " * 7
     jobs = [(short_a, 1), (short_b, 2), (long, 3), (short_a, 4)]
     assert chunk_count_runs(None, SDXL, tiny_sdxl, jobs) == [jobs[:2], [jobs[2]], [jobs[3]]]
-    # every prompt one chunk: the pipeline encodes the batch itself
     plain = [(short_a, 1), (short_b, 2)]
     assert chunk_count_runs(None, SDXL, tiny_sdxl, plain) == [plain]
     same = [(long, 1), (long, 2)]
     assert chunk_count_runs(None, SDXL, tiny_sdxl, same) == [same]
-    # other families never reach the chunked encoder
     assert chunk_count_runs(None, FLUX, tiny_sdxl, jobs) == [jobs]
 
 

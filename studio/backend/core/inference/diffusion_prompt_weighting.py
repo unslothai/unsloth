@@ -223,7 +223,7 @@ def _clip_chunk_counts(
     *,
     weighted: bool = True,
 ) -> list[int]:
-    """Per text, the 77-token chunk count ``_encode_texts`` gives it alone (the most over the pipeline's tokenizers)."""
+    """Per text, the max 77-token chunk count over the pipeline's tokenizers."""
     convert = getattr(pipe, "maybe_convert_prompt", None)
     pairs = _encoders(pipe)
     return [

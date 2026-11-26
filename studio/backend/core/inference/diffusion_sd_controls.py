@@ -180,16 +180,13 @@ def weighting_engaged(
 
 
 def chunk_count_runs(controls: Optional[SdControls], family: Any, pipe: Any, chunk: list) -> list:
-    """Split ``(prompt, seed)`` jobs into consecutive runs of equal CLIP chunk count, order kept.
+    """Split ``(prompt, seed)`` jobs into ordered runs of equal CLIP chunk count.
 
-    The chunked encoder pads every row of a batch to the longest prompt's chunk count with empty-prompt
-    chunks, so a short prompt batched beside one past 75 tokens is conditioned on extra chunks and renders
-    different pixels than alone; rows of equal count encode exactly as they do alone."""
+    The chunked encoder pads a batch to its longest prompt with empty chunks, changing shorter rows' pixels."""
     if len(chunk) < 2 or all(job[0] == chunk[0][0] for job in chunk):
         return [chunk]
     prompts = [job[0] for job in chunk]
     if not weighting_engaged(controls, family, pipe, prompts):
-        # The pipeline encodes: every prompt is one 77-token chunk.
         return [chunk]
     weighted = (controls or SdControls()).prompt_weighting is not False
     unique = list(dict.fromkeys(prompts))

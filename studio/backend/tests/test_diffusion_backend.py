@@ -8140,8 +8140,7 @@ class _RecordingPipe(_FakePipe):
 
 
 def test_sdxl_prompt_list_renders_each_clip_chunk_count_apart(fake_runtime, tmp_path, monkeypatch):
-    # The chunked SDXL encoder pads a batch to its longest prompt: a short prompt beside one past 75 tokens
-    # would be conditioned on an extra empty chunk, so each chunk count renders in its own pipe call.
+    # Each CLIP chunk count renders in its own pipe call.
     import core.inference.diffusion_sd_controls as sd_controls
 
     backend = _loaded_backend(
