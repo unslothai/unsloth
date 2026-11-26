@@ -281,6 +281,74 @@ def _wait_for_writer(
         )
 
 
+def _writers_in_turn(
+    dist,
+    writers,
+    action,
+    group = None,
+    name = "unsloth_fsdp2_turn",
+):
+    """Every rank of `group` calls this. The ranks in `writers` (global ranks) run `action` one after
+    another, each once the previous one has published its outcome under its store key ("done" or
+    "failed:<error>"), so writers sharing a filesystem never race. Every rank then waits for all of
+    them, as _wait_for_writer does: a failed writer re-raises its own error, the others raise
+    WriterFailed naming it."""
+    me = dist.get_rank()
+    ranks = (
+        tuple(dist.get_process_group_ranks(group))
+        if group is not None
+        else tuple(range(dist.get_world_size()))
+    )
+    counter = (name, ranks)
+    _SAVE_COUNTER[counter] = _SAVE_COUNTER.get(counter, 0) + 1
+    prefix = f"{name}_{ranks[0]}_{len(ranks)}_{_SAVE_COUNTER[counter]}"
+    keys = [f"{prefix}_w{r}" for r in writers]
+    own = None
+    try:
+        store = dist.distributed_c10d._get_default_store()
+    except Exception:
+        store = None
+    if store is None:
+        # Without a store: in turn between barriers, then one failure flag for every rank.
+        from .tp_native import _flag_device
+
+        for r in writers:
+            if r == me:
+                try:
+                    action()
+                except BaseException as exc:
+                    own = exc
+            dist.barrier(group = group)
+        flag = torch.tensor([int(own is not None)], dtype = torch.int32, device = _flag_device(group))
+        dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = group)
+        if own is not None:
+            raise own
+        if flag.item():
+            raise WriterFailed(
+                "Unsloth: the FSDP2 save failed on a rank that writes; see that rank's error."
+            )
+        return
+    if me in writers:
+        index = writers.index(me)
+        if index:
+            store.wait([keys[index - 1]], _save_timeout())
+        try:
+            action()
+        except BaseException as exc:
+            own = exc
+        store.set(keys[index], "done" if own is None else "failed:" + _failure_text(own))
+    store.wait(keys, _save_timeout())
+    if own is not None:
+        raise own
+    for r, key in zip(writers, keys):
+        value = store.get(key)
+        if value != b"done":
+            detail = value.decode("utf-8", errors = "replace").removeprefix("failed:")
+            raise WriterFailed(
+                f"Unsloth: the FSDP2 save failed on rank {r}, a rank that writes: {detail}"
+            )
+
+
 def _gather_full(param, DTensor):
     """All ranks: the full tensor of a sharded parameter. Packed 4-bit bytes travel as uint8, so no
     float copy kernel can rewrite NaN bit patterns inside them."""
