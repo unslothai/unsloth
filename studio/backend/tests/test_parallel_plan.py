@@ -413,6 +413,21 @@ def test_config_traits_match_core():
     }
 
 
+def test_fsdp2_reshards_when_the_run_does_not_fit_one_gpu():
+    host = _host(2)
+    big = pp.plan({"parallel_mode": "auto"}, host, _model(need = 20.0, shard = 11.0, mode = "full"))
+    assert big["mode"] == "fsdp2" and big["env"] == {"UNSLOTH_FSDP2_LAYOUT": "sharded"}, big
+    small = pp.plan({"parallel_mode": "fsdp2"}, host, _model(need = 6.0))
+    assert small["mode"] == "fsdp2" and small["env"] == {}, small
+    custom = pp.plan(
+        {"parallel_mode": "custom", "parallel_spec": "dp=2,fsdp=1"},
+        host,
+        _model(need = 20.0, shard = 11.0),
+    )
+    assert custom["env"] == {"UNSLOTH_FSDP2_LAYOUT": "sharded"}, custom
+    assert pp.plan({"parallel_mode": "ddp"}, host, _model(need = 20.0))["env"] == {}
+
+
 def test_core_rule_prefix_is_dropped():
     assert (
         pp._plain_core_message(

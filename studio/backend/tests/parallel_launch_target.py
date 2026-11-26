@@ -26,6 +26,8 @@ def train(event_queue, stop_queue, config):
             "LOCAL_WORLD_SIZE",
             "MASTER_ADDR",
             "UNSLOTH_PARALLEL",
+            "UNSLOTH_FSDP2_LAYOUT",
+            "UNSLOTH_STUDIO_TEST_NOT_ALLOWED",
         )
     }
     from core.training import worker

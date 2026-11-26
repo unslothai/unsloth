@@ -126,6 +126,13 @@ def test_tensor_parallel_ranks_count_as_one_replica_for_the_row_bound(tmp_path, 
     assert {r["data_parallel_world_size"] for r in ranks} == {1}
 
 
+def test_ranks_get_only_the_plan_env_on_the_allowlist(tmp_path, monkeypatch):
+    env = {"UNSLOTH_FSDP2_LAYOUT": "sharded", "UNSLOTH_STUDIO_TEST_NOT_ALLOWED": "1"}
+    ranks = _run_to_completion(tmp_path, monkeypatch, parallel = {"env": env})
+    assert {r["UNSLOTH_FSDP2_LAYOUT"] for r in ranks} == {"sharded"}
+    assert {r["UNSLOTH_STUDIO_TEST_NOT_ALLOWED"] for r in ranks} == {None}
+
+
 def test_a_dead_rank_ends_the_run_with_an_error(tmp_path, monkeypatch):
     proc, events, _ = _start(tmp_path, monkeypatch, fail_rank = 1, fail_step = 2)
     try:

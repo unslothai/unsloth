@@ -643,6 +643,19 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         n = len(chosen)
         if multi and _gpus_differ(chosen):
             notes.append(_mixed_gpu_note(mode))
+        env: dict = {}
+        sizes = None
+        if mode == FSDP2:
+            sizes = {"fsdp": True}
+        elif mode == CUSTOM and spec:
+            try:
+                sizes = _parse_spec(spec, n)
+            except ParallelPlanError:
+                sizes = None
+        if sizes and sizes.get("fsdp") and need is not None and chosen and not _fits(need, chosen):
+            # Core keeps FSDP2 blocks gathered when the weights alone fit a card, which does not count the
+            # gradients and optimizer state: a run that does not fit every GPU whole must reshard after forward.
+            env["UNSLOTH_FSDP2_LAYOUT"] = "sharded"
         return {
             "requested_mode": requested or AUTO,
             "mode": mode,
@@ -658,6 +671,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             "notes": notes,
             "modes": _mode_rows(host, model or None, request, gpus),
             "error": None,
+            "env": env if multi else {},
         }
 
     def _legacy(why: str) -> dict:
