@@ -68,7 +68,8 @@ unsloth_host_env() {
 }
 
 # UNSLOTH_APPIMAGE_WEBKIT=auto (default) uses a host WebKitGTK >= 2.54 when the probe proves the
-# host stack and its appindicator load; host forces it; bundled, or anything else, keeps the bundle.
+# host stack and its appindicator load and its GStreamer has autoaudiosink; host forces it;
+# bundled, or anything else, keeps the bundle.
 unsloth_host_exe="$APPDIR/usr/bin/host/unsloth-studio"
 unsloth_webkit_request="${UNSLOTH_APPIMAGE_WEBKIT:-auto}"
 unsloth_webkit_mode=bundled

@@ -882,7 +882,7 @@ export const ru = {
   chatMenu: {
     more: "Параметры чата",
     copy: "Копировать",
-    addScheduledTask: "Добавить запланированную задачу…",
+    addScheduledTask: "Добавить запланированную задачу",
     compact: "Сжать беседу",
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",

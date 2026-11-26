@@ -370,10 +370,10 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
 
     processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
     tokenizer = _MemoTokenizer(getattr(tokenizer, "tokenizer", tokenizer))
-    items = []
+    items, read, json_text = [], 0, 0
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
-        state = _parsed(row.get("state"))
+        state = row.get("state")
         questions = _parsed(row.get("questions"))
         gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
         if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
@@ -398,6 +398,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
             kept[str(name)], targets, labels = clef_question, targets + [target], labels + [label]
         if not kept:
             continue
+        read, json_text = read + 1, json_text + _reads_apart_from_its_object(state)
         source = {"state": state, "questions": kept}
         try:
             images = _row_images(row)
@@ -423,6 +424,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
                 "source": source,
             }
         )
+    _report_json_text_states(json_text, read, report)
     return items
 
 
@@ -1745,7 +1747,11 @@ class FastDecisionModel:
     ) -> tuple:
         max_len = int(model.decision_config.get("max_len", 512))
         head_max_len = int(model.decision_config.get("head_max_len", 192))
-        items, report, skips = [], {"total": 0, "skipped": 0, "reason": None, "truncated": 0}, {}
+        items, report, skips = (
+            [],
+            {"total": 0, "skipped": 0, "reason": None, "truncated": 0, "json_text_states": 0},
+            {},
+        )
 
         def skip(
             index,
@@ -1858,7 +1864,6 @@ class FastDecisionModel:
         A Clef also reads ordered `images` when tokenizer is the processor from from_pretrained."""
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
-        state = _parsed(state)
         if getattr(model, "is_clef", False):
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
             # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.
@@ -1877,7 +1882,8 @@ class FastDecisionModel:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         if images:
             raise DecisionDataError("images require a Clef multimodal model and processor")
-        return _laya_decide(model, tokenizer, state, questions, predicted = True)["answers"]
+        decided = _laya_decide(model, tokenizer, _parsed(state), questions, predicted = True)
+        return decided["answers"]
 
     @staticmethod
     def evaluate(

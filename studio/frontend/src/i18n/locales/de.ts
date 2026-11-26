@@ -882,7 +882,7 @@ export const de = {
   chatMenu: {
     more: "Chat-Optionen",
     copy: "Kopieren",
-    addScheduledTask: "Geplante Aufgabe hinzufügen…",
+    addScheduledTask: "Geplante Aufgabe hinzufügen",
     compact: "Unterhaltung komprimieren",
     compactEmpty: "Noch nichts zu komprimieren",
     compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",

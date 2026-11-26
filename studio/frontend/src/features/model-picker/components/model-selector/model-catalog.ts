@@ -8,6 +8,7 @@ import {
   AUDIO_CPP_MODELS,
   type AudioCppModel,
   type AudioCppTask,
+  SEPARATION_GOAL_LABELS,
   audioCppDisplayName,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
@@ -186,6 +187,7 @@ const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
 };
 
 function audioGgufDescription(model: AudioCppModel): string {
+  if (model.task === "sep") return SEPARATION_GOAL_LABELS[model.goal ?? "stems"];
   const workflows = model.workflows;
   if (!workflows || workflows.includes("speak")) {
     return AUDIO_GGUF_DESCRIPTIONS[model.task];
@@ -206,7 +208,12 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
     description: audioGgufDescription(model),
     scope: "audio",
     task: model.task === "asr" ? "stt" : "tts",
-    artifacts: [gguf(model.id)],
+    artifacts: [
+      gguf(
+        model.id,
+        model.keywords && { keywords: ["gguf", "quantized", ...model.keywords] },
+      ),
+    ],
   }));
 
 // Sizes are resident GB used only for routing; GGUF entries have none (pickDefaultQuant sizes them).

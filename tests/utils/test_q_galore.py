@@ -818,3 +818,49 @@ def test_weight_quant_unrouted_weights_return_to_placeholders():
     optimizer.step()
     assert weight.shape == (1,)
     assert torch.equal(weight._q_data, q_data)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+@pytest.mark.parametrize("where", ["update_step", "project_back"])
+def test_failed_projected_step_restores_weight_grad_and_decay(monkeypatch, where):
+    """auto_find_batch_size catches an OOM from optimizer.step() and retries: the retry must see the
+    real weight, the full-rank gradient and the configured weight decay, not the zeroed low-rank swap."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    param = nn.Parameter(torch.full((2, 2), 1.0, device = device))
+    reference = nn.Parameter(param.detach().clone())
+    group = {"params": [param], "rank": 2, "scale": 1.0, "quant": False}
+    optimizer = _adamw_mod.QGaLoreAdamW8bit([group], lr = 0.1, weight_decay = 0.1)
+    reference_optimizer = torch.optim.AdamW([reference], lr = 0.1, weight_decay = 0.1)
+    gradient = torch.diag(torch.tensor([2.0, 1.0], device = device))
+    (param * gradient).sum().backward()
+    (reference * gradient).sum().backward()
+    weight_before = param.detach().clone()
+    grad_before = param.grad
+
+    if where == "update_step":
+        target, name = optimizer, "update_step"
+    else:
+        # The projector is built lazily inside step(): patch the class.
+        target, name = _projector_mod.GaLoreProjector, "project_back"
+    original = getattr(target, name)
+    calls = []
+
+    def fail_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, fail_once)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        optimizer.step()
+    assert torch.equal(param.detach(), weight_before)
+    assert param.grad is grad_before
+    assert optimizer.param_groups[0]["weight_decay"] == 0.1
+    assert "_wd_saved" not in optimizer.param_groups[0]
+    assert not hasattr(param, "_saved_data")
+
+    optimizer.step()
+    reference_optimizer.step()
+    torch.testing.assert_close(param, reference)

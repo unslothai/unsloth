@@ -110,6 +110,15 @@ def _local(tensor):
     return tensor
 
 
+def _with_local(value, local):
+    """`local` in the place of `value`: a DTensor keeps its wrapper (DCP sees the stock layout)."""
+    if DTensor is not None and isinstance(value, DTensor):
+        value = copy.copy(value)
+        value._local_tensor = local
+        return value
+    return local
+
+
 def _local_nbytes(tensor):
     local = _local(tensor)
     return local.numel() * local.element_size()
@@ -189,7 +198,7 @@ class _Ring:
         views, ready, _ = placed
         self.compute.wait_event(ready)
         for p, key, _, view, _, _ in views:
-            state[p][key] = view
+            state[p][key] = _with_local(state[p][key], view)
 
     def copy_out(self, placed, state):
         views, _, (start, end) = placed
@@ -200,15 +209,16 @@ class _Ring:
         with torch.cuda.stream(self.d2h):
             for p, key, host, view, offset, n in views:
                 current = state[p].get(key)
-                if current is view:
+                local = _local(current)
+                if local is view:
                     host.copy_(view, non_blocking = True)
-                elif _plain_copy_source(current, host):
+                elif _plain_copy_source(local, host):
                     # Replaced by the step (bfloat16 stochastic rounding stores new moments).
-                    host.copy_(current, non_blocking = True)
-                    current.record_stream(self.d2h)
+                    host.copy_(local, non_blocking = True)
+                    local.record_stream(self.d2h)
                 else:
                     continue
-                state[p][key] = host
+                state[p][key] = _with_local(current, host)
                 copied += n
                 if copied >= _RING_SEGMENT_BYTES:
                     event = torch.cuda.Event()
@@ -451,7 +461,8 @@ class _StateOffloader:
 
     def _ring_tensors(self, params):
         """(device, {param: [(param, key, host, padded bytes)]}) for one CUDA device, or None to stay
-        serial (ROCm, CPU, first step, DTensor / nested state, pageable memory, kill switch)."""
+        serial (ROCm, CPU, first step, nested state, pageable memory, kill switch). FSDP2 DTensor
+        state is staged by its local shard, the only part this rank holds."""
         if not _overlap_enabled() or not self.pin_memory:
             return None
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
@@ -469,8 +480,7 @@ class _StateOffloader:
                     if _held_tensors(value):
                         return None
                     continue
-                if DTensor is not None and isinstance(value, DTensor):
-                    return None
+                value = _local(value)
                 target = self.offloaded.get((p, key))
                 if target is None:
                     if value.device.type != "cpu":
