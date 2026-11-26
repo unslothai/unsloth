@@ -83,6 +83,7 @@ from .models._utils import (
     _peft_untied_lm_head,
     _strip_torchao_fake_quantization,
     lora_relative_to_original_base,
+    lora_saved_relative_to_original_base,
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .models.inkling2 import (
@@ -6569,6 +6570,35 @@ def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
     )
 
 
+def _lora_gguf_converter_input(model, tokenizer, lora_dir, scratch_dir):
+    """The adapter folder the converter reads. llama.cpp applies a GGUF LoRA to the original base at scale alpha / r,
+    but PiSSA, OLoRA, ... train on a rewritten base and rsLoRA scales by alpha / sqrt(r). Those are saved into
+    `scratch_dir` in llama.cpp's terms, so `lora_dir` stays as PEFT reads it."""
+    import json
+
+    configs = (getattr(model, "peft_config", None) or {}).values()
+    if not configs:
+        return lora_dir
+    with lora_saved_relative_to_original_base(model) as rewritten_base:
+        if not (rewritten_base or any(getattr(c, "use_rslora", False) for c in configs)):
+            return lora_dir
+        save_lora_to_custom_dir(model, tokenizer, scratch_dir)
+    path = os.path.join(scratch_dir, "adapter_config.json")
+    with open(path, encoding = "utf-8") as f:
+        config = json.load(f)
+    if config.get("use_rslora"):
+        if config.get("rank_pattern") or config.get("alpha_pattern"):
+            raise NotImplementedError(
+                "Unsloth: a GGUF LoRA stores a single alpha, so rsLoRA with rank_pattern or alpha_pattern cannot "
+                "be exported as one. Export the merged model as GGUF instead."
+            )
+        config["lora_alpha"] *= config["r"] ** 0.5
+        config["use_rslora"] = False
+        with open(path, "w", encoding = "utf-8") as f:
+            json.dump(config, f, indent = 2)
+    return scratch_dir
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6621,6 +6651,7 @@ def _unsloth_save_lora_gguf(
 
     base_config_dir = None
     inkling2_dir = None
+    scratch_dir = None
     # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -6648,10 +6679,11 @@ def _unsloth_save_lora_gguf(
             )
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
-        converter_input = lora_dir
+        scratch_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-adapter-")
+        converter_input = _lora_gguf_converter_input(model, tokenizer, lora_dir, scratch_dir)
         if is_inkling2_config(getattr(model, "config", None)):
             # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.
-            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(model, lora_dir)
+            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(model, converter_input)
         cmd = [
             sys.executable,
             converter,
@@ -6767,6 +6799,8 @@ def _unsloth_save_lora_gguf(
             shutil.rmtree(base_config_dir, ignore_errors = True)
         if inkling2_dir is not None:
             shutil.rmtree(inkling2_dir, ignore_errors = True)
+        if scratch_dir is not None:
+            shutil.rmtree(scratch_dir, ignore_errors = True)
 
 
 @_model_parallel_refuses_save("push_to_hub_ggml")

@@ -86,6 +86,7 @@ __all__ = [
     "RESIDUAL_INIT_LORA_WEIGHTS",
     "snapshot_residual_lora_init",
     "lora_relative_to_original_base",
+    "lora_saved_relative_to_original_base",
     "freeze_peft_variant_weights",
     "RaiseUninitialized",
     "fast_inference_setup",
@@ -9346,6 +9347,28 @@ def save_lora_relative_to_original_base(model):
     model._unsloth_residual_save = True
     model.save_pretrained = save_pretrained
     model.load_adapter = load_adapter
+
+
+@contextlib.contextmanager
+def lora_saved_relative_to_original_base(model):
+    """For an export that applies the adapter without PEFT re-running its init, such as a GGUF LoRA: inside,
+    `model.save_pretrained` writes the plain LoRA on the original base. Yields False if nothing needs converting."""
+    # A LoRA-GA model saves in that form already.
+    if getattr(model, "_unsloth_residual_save", False) or not any(
+        getattr(module, "_unsloth_initial_lora", None) for module in model.modules()
+    ):
+        yield False
+        return
+    wrapped = ("save_pretrained", "load_adapter", "_unsloth_residual_save")
+    before = {name: vars(model)[name] for name in wrapped if name in vars(model)}
+    save_lora_relative_to_original_base(model)
+    try:
+        yield True
+    finally:
+        for name in wrapped:
+            delattr(model, name)
+        for name, value in before.items():
+            setattr(model, name, value)
 
 
 @torch.no_grad()
