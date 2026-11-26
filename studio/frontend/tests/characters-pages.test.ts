@@ -148,7 +148,10 @@ test("the sidebar re-reads the chat index when another tab changes chats or this
 test("the profile resets per character, says not found only on a 404, and greets the persona", () => {
   assert.match(read("app/routes/characters.$characterId.tsx"), /<CharacterProfilePage key=\{characterId\}/);
   const profile = read("features/characters/pages/character-profile-page.tsx");
-  assert.match(profile, /isNotFound\(error\) && setMissing\(true\)/);
+  // Any other failure offers a retry instead of leaving the skeleton up.
+  assert.match(profile, /isNotFound\(error\) \? setMissing\(true\) : setLoadFailed\(true\)/);
+  assert.match(profile, /if \(loadFailed && !character\)[\s\S]*?<LoadFailed/);
+  assert.match(profile, /\}, \[characterId, attempt\]\);/);
   assert.match(profile, /resolvePersona\(null, personas, accountName\)\.name/);
   assert.doesNotMatch(profile, /user: "\{\{user\}\}"/);
 });

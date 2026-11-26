@@ -31619,8 +31619,13 @@ async def _proxy_to_external_provider(
                             if not bucket:
                                 _CANCEL_REGISTRY.pop(key, None)
 
+        _codex_body = _codex_stream()
+        _codex_stops = _normalize_stop_sequences(payload.stop)
+        if _codex_stops:
+            # Codex is not sent stop sequences either, so the cut is made here as for other providers.
+            _codex_body = _sse_frames_with_stops(_codex_body, _codex_stops, model)
         return StreamingResponse(
-            _codex_stream(),
+            _codex_body,
             media_type = "text/event-stream",
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -46425,6 +46430,21 @@ async def _enforce_stop_sequences(gen, stops: list[str], model: str):
     finally:
         # Ends the provider request once the stop is seen.
         await gen.aclose()
+
+
+async def _sse_frames_with_stops(frames, stops: list[str], model: str):
+    """``_enforce_stop_sequences`` over framed SSE events, each ending in a blank line."""
+
+    async def lines():
+        async for frame in frames:
+            yield frame.rstrip("\n")
+
+    try:
+        async for line in _enforce_stop_sequences(lines(), stops, model):
+            yield f"{line}\n\n"
+    finally:
+        # Closing the line view does not close the stream under it: end the provider request too.
+        await frames.aclose()
 
 
 def _split_connection_text(chunk: dict, think: Any, stop: _StopSequenceFilter) -> dict:

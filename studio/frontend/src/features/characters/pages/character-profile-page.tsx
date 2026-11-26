@@ -22,6 +22,7 @@ import { toggleFavorite, useOpenCharacterChat } from "../actions";
 import { getCharacter, isNotFound, listCharacterChats } from "../api";
 import { resolvePersona, useAccountName } from "../persona";
 import { CharacterActionsMenu } from "../components/character-actions-menu";
+import { LoadFailed } from "../components/load-failed";
 import { Portrait } from "../components/portrait";
 import { ActionText } from "../components/action-text";
 import { viewAvatar } from "../images";
@@ -38,6 +39,9 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
   const chatIndex = useCharactersStore((s) => s.chatIndex);
   const personas = useCharactersStore((s) => s.personas);
   const [missing, setMissing] = useState(false);
+  // A failed read that is not a 404 shows a retry instead of an endless skeleton.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [chats, setChats] = useState<CharacterChatSummary[] | null>(null);
   const [moreChats, setMoreChats] = useState(false);
   const { open: openChat, starting } = useOpenCharacterChat();
@@ -49,7 +53,7 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
     let live = true;
     getCharacter(characterId)
       .then((loaded) => live && useCharactersStore.getState().upsert(loaded))
-      .catch((error) => live && isNotFound(error) && setMissing(true));
+      .catch((error) => live && (isNotFound(error) ? setMissing(true) : setLoadFailed(true)));
     listCharacterChats(characterId)
       .then((list) => {
         if (!live) return;
@@ -64,7 +68,7 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
     return () => {
       live = false;
     };
-  }, [characterId]);
+  }, [characterId, attempt]);
 
   // Addressed to the persona a new chat would use, as the chat itself will be.
   const greeting = useMemo(() => {
@@ -78,6 +82,20 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
       <main className="mx-auto flex w-full max-w-5xl flex-col items-start gap-4 px-6 pt-10 font-heading sm:px-10">
         <BackLink />
         <p className="text-ui-16 text-muted-foreground">{t("characters.notFound")}</p>
+      </main>
+    );
+  }
+  if (loadFailed && !character) {
+    return (
+      <main className="mx-auto flex w-full max-w-5xl flex-col items-start gap-4 px-6 pt-10 font-heading sm:px-10">
+        <BackLink />
+        <LoadFailed
+          className="self-stretch"
+          onRetry={() => {
+            setLoadFailed(false);
+            setAttempt((n) => n + 1);
+          }}
+        />
       </main>
     );
   }

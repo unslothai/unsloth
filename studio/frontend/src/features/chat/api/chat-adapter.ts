@@ -7305,8 +7305,7 @@ export function createOpenAIStreamAdapter(
                       }
                     : {}),
                   auto_heal_tool_calls: runtime.autoHealToolCalls,
-                  // In character a reply says "I'll" all the time: the nudge would re-prompt finished replies.
-                  nudge_tool_calls: characterRun ? false : runtime.nudgeToolCalls,
+                  nudge_tool_calls: runtime.nudgeToolCalls,
                   deduplicate_tool_calls: runtime.deduplicateToolCalls,
                   max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
@@ -7329,8 +7328,11 @@ export function createOpenAIStreamAdapter(
                 retriedWithRefreshedKey,
               );
               if (mcpImage) requestPayload = { ...requestPayload, mcp_image: mcpImage };
-              // Stops a reply that runs on into another speaker's line.
-              if (characterRun) requestPayload = { ...requestPayload, stop: characterRun.stop };
+              // Stops a reply that runs on into another speaker's line. No tool nudge either, even when
+              // --enable-tools forces tools on: in character a reply says "I'll" all the time.
+              if (characterRun) {
+                requestPayload = { ...requestPayload, stop: characterRun.stop, nudge_tool_calls: false };
+              }
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
