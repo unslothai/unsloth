@@ -126,9 +126,7 @@ def _load(tmp_path, refused):
         and symbol.get_name() not in namespace
         and not hasattr(builtins, symbol.get_name())
     )
-    assert not missing, (
-        f"_unsloth_save_lora_gguf reads {missing}; add them to the test namespace"
-    )
+    assert not missing, f"_unsloth_save_lora_gguf reads {missing}; add them to the test namespace"
     exec(compile(module, str(_SAVE_PY), "exec"), namespace)
     return namespace["_unsloth_save_lora_gguf"]
 
