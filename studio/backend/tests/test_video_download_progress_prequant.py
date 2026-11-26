@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The video download counter counts the hosted pre-quantized DiT / text-encoder fetches.
-
-A load whose transformer or encoder comes from a hosted pre-cast checkpoint (``unsloth/Wan2.2-*-FP8``,
-``unsloth/LTX-2.5-FP8``) fetches that file BEFORE the base repo. The fetch plan only named the checkpoint and base
-roles, so the counter read "0 B of N GB" for the whole of those multi-GB transfers while the partial grew on disk.
-"""
+"""Video download progress counts hosted pre-cast DiT / text-encoder fetches made before the base pull."""
 
 from __future__ import annotations
 
@@ -107,7 +102,6 @@ def test_te_prequant_fetch_is_counted_while_its_partial_grows(fake_cache):
     backend = video_mod.VideoBackend()
     te = TePrequantSource(kind = "repo", location = PREQUANT, filename = "text_encoder_fp8.safetensors")
     expected, plan = _estimate(backend, te_sources = {"text_encoder": te})
-    # The encoder is in the total the bar shows, and the plan reads it from the repo the fetch hits.
     assert expected == 2 + 1 + 30 + 400
     _start_load(backend, plan, expected)
     assert backend.load_progress()["downloaded_bytes"] == 0

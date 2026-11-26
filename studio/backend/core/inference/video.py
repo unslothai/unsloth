@@ -2462,9 +2462,7 @@ def _plan_fetch(
 
 
 def _plan_first_listed(repo: str, info: Any, candidates: Any) -> Optional["_PlannedFetch"]:
-    """The plan for a fetch that takes the first of ``candidates`` the listing holds, from ``repo`` exactly (the hosted
-    pre-cast DiT / encoder fetches try their names in order and never swap in a mirror), else None. Unpinned: the
-    fetch resolves its own ref, and progress reads the blob by key."""
+    """Plan the first of ``candidates`` listed in ``repo`` (exact repo, no mirror swap), else None. Unpinned."""
     meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
     name = next((n for n in candidates if n in meta), None)
     if name is None:
@@ -2477,7 +2475,6 @@ def _plan_first_listed(repo: str, info: Any, candidates: Any) -> Optional["_Plan
 
 _FETCH_CHECKPOINT = "checkpoint"
 _FETCH_BASE = "base"
-# Hosted pre-cast checkpoints fetched ahead of the base pull; one role per fetched file.
 _FETCH_TE_PREQUANT = "te_prequant"
 _FETCH_DENOISER_PREQUANT = "denoiser_prequant"
 _FETCH_H3_TE_QUANT = "h3_te_quant"
@@ -7525,8 +7522,7 @@ class VideoBackend:
                 kwargs.get("hf_token"),
                 local_files_only = local_files_only,
             )
-            # The hosted DiT this load fetches ahead of the base: resolved once, so the plan (progress) and the fetch
-            # name the same files.
+            # Resolved once so the progress plan and the fetch name the same files.
             denoiser_sources = (
                 self._denoiser_prequant_source_list(
                     fam,
@@ -9695,10 +9691,7 @@ class VideoBackend:
         pin_revisions: Optional[dict[str, str]] = None,
         denoiser_sources: Optional[Sequence[tuple[Any, Optional[str]]]] = None,
     ) -> Optional[int]:
-        """Bytes this load pulls, minus replaced dense shards; None offline, where no download happens.
-
-        ``denoiser_sources``: ``(PrequantSource, scheme)`` per hosted denoiser checkpoint the load fetches before the
-        base pull. They and the pre-cast encoders are planned too, so progress counts those transfers."""
+        """Bytes this load pulls (incl. pre-cast DiT / encoder fetches), minus replaced dense shards; None offline."""
         if local_files_only:
             return None
         try:
@@ -9770,9 +9763,7 @@ class VideoBackend:
         h3_te_scheme: Optional[str] = None,
         denoiser_sources: Optional[Sequence[tuple[Any, Optional[str]]]] = None,
     ) -> dict[str, "_PlannedFetch"]:
-        """Plan entries for the hosted pre-cast checkpoints ``_run_load`` fetches before the base: each names the file
-        the fetch takes (same candidate order, same repo) so progress counts it while it downloads. Best effort per
-        file: an unlisted repo just leaves that fetch uncounted."""
+        """Plan the pre-cast files ``_run_load`` fetches before the base, mirroring its candidate order. Best effort."""
         planned: dict[str, _PlannedFetch] = {}
 
         def _add(role: str, repo: str, names: list) -> None:
@@ -9797,7 +9788,6 @@ class VideoBackend:
             )
 
             for component, source in (te_sources or {}).items():
-                # Only an encoder the plan expects pre-cast is fetched instead of its dense shards.
                 if component not in skip_te_components:
                     continue
                 if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
