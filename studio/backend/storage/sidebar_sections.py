@@ -157,10 +157,11 @@ def _merge(
                     for row in set(previous).difference(ids)
                     if pages.get(row) != key and projects.get(row) != key
                 }
+                # A sort switch compares the complete saved ranks. An ordinary refile inserts the row anew.
+                if not switched_to_manual:
+                    removed.update(assigned_rows.get(key, ()))
                 saved = [row for row in saved if row not in removed]
-                # A sort switch compares saved ranks to decide whether the visible order can win.
-                filed = () if switched_to_manual else assigned_rows.get(key, ())
-                previous = [row for row in previous if row not in removed and row not in filed]
+                previous = [row for row in previous if row not in removed]
             row_order[key] = _edited_order(
                 saved, previous, ids, importing, moves, switched_to_manual = switched_to_manual
             )

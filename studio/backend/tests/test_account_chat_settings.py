@@ -980,12 +980,13 @@ def test_sidebar_sections_accept_ids_already_valid_in_chat_history(client):
     assert saved["rowOrder"]["research"] == [thread_id, "existing"]
 
 
-@pytest.mark.parametrize("case", ["concurrent-manual", "sort-switch", "unpin"])
+@pytest.mark.parametrize("case", ["concurrent-manual", "sort-switch", "unpin", "unranked-row"])
 def test_sidebar_sections_replay_placements_for_rows_with_stale_ranks(client, case):
     from copy import deepcopy
 
     path = "/chat/sidebar-sections"
     sort = "updated" if case == "sort-switch" else "manual"
+    ranks = "ab" if case == "unranked-row" else "abc"
 
     def save(
         operation_id,
@@ -1004,18 +1005,20 @@ def test_sidebar_sections_replay_placements_for_rows_with_stale_ranks(client, ca
         "initial",
         {
             "sections": {"research": {"name": "Research", "sort": sort}},
-            "sectionByChatId": dict.fromkeys("abc", "research"),
-            "rowOrder": {"research": list("abc")},
+            "sectionByChatId": dict.fromkeys(ranks, "research"),
+            "rowOrder": {"research": list(ranks)},
         },
     )
     common = initial
     if case != "unpin":
         unfiled = deepcopy(initial)
         del unfiled["sectionByChatId"]["b"]
+        if case == "unranked-row":
+            unfiled["sectionByChatId"]["c"] = "research"
         common = save("unfile", unfiled, initial)
-    assert common["rowOrder"]["research"] == list("abc")
+    assert common["rowOrder"]["research"] == list(ranks)
 
-    if sort == "manual":
+    if case in ("concurrent-manual", "unpin"):
         reordered = deepcopy(common)
         reordered["rowOrder"]["research"] = list("ca")
         result = save(
@@ -1028,9 +1031,11 @@ def test_sidebar_sections_replay_placements_for_rows_with_stale_ranks(client, ca
 
     refiled = deepcopy(common)
     refiled["sectionByChatId"]["b"] = "research"
+    expected = "cba" if case == "unranked-row" else "cab"
     if sort == "updated":
         refiled["sections"]["research"]["sort"] = "manual"
-        refiled["rowOrder"]["research"] = list("cab")
+    if case in ("sort-switch", "unranked-row"):
+        refiled["rowOrder"]["research"] = list(expected)
     result = save(
         "refile",
         refiled,
@@ -1040,12 +1045,12 @@ def test_sidebar_sections_replay_placements_for_rows_with_stale_ranks(client, ca
                 "sectionId": "research",
                 "id": "b",
                 "targetId": "a",
-                "edge": "bottom",
+                "edge": "top" if case == "unranked-row" else "bottom",
                 "afterUnpin": case == "unpin",
             }
         ],
     )
-    assert result["rowOrder"]["research"] == list("cab")
+    assert result["rowOrder"]["research"] == list(expected)
     assert result["sectionByChatId"]["b"] == "research"
 
 
