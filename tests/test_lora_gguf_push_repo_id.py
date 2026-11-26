@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import ast
+import builtins
+import collections
 import os
 import shutil
+import symtable
 import sys
 from pathlib import Path
 
@@ -90,6 +93,14 @@ def _load(tmp_path, refused):
         "_LORA_GGUF_OUTTYPES": ("f32", "f16", "bf16", "q8_0", "auto"),
         "_clean_save_token": lambda token: token,
         "get_token": lambda: "hf_token",
+        "collections": collections,
+        "_lora_target_parameters": lambda model: [],
+        "is_inkling2_config": lambda config: False,
+        "inkling2_lora_gguf_adapter": lambda model, lora_dir: lora_dir,
+        "checkpoint_folder_quant_method": lambda path: None,
+        "_local_base_config_dir": lambda path: path,
+        "_converter_error_line": lambda tail: "",
+        "_lora_gguf_conversion_error": lambda code, line, targets: RuntimeError(line),
         "_lora_base_model_id": lambda model: "unsloth/base",
         "get_model_name": lambda name, load_in_4bit = False: name,
         "_model_basename": lambda name: name.split("/")[-1],
@@ -103,7 +114,22 @@ def _load(tmp_path, refused):
             repo_id
         ),
     }
-    exec(compile(ast.Module(nodes, []), str(_SAVE_PY), "exec"), namespace)
+    # Name any global the function reads that the namespace lacks, so a new helper in
+    # save.py shows up here instead of as a NameError at its call site.
+    module = ast.Module(nodes, [])
+    table = symtable.symtable(ast.unparse(module), str(_SAVE_PY), "exec")
+    (function,) = table.get_children()
+    missing = sorted(
+        symbol.get_name()
+        for symbol in function.get_symbols()
+        if symbol.is_global()
+        and symbol.get_name() not in namespace
+        and not hasattr(builtins, symbol.get_name())
+    )
+    assert not missing, (
+        f"_unsloth_save_lora_gguf reads {missing}; add them to the test namespace"
+    )
+    exec(compile(module, str(_SAVE_PY), "exec"), namespace)
     return namespace["_unsloth_save_lora_gguf"]
 
 
