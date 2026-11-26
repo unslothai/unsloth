@@ -927,3 +927,41 @@ def test_the_status_model_carries_request_batching():
     from models.inference import DiffusionStatusResponse
     status = DiffusionStatusResponse(request_batching = {"mode": "serial", "reason": "CUDA graphs"})
     assert status.model_dump()["request_batching"] == {"mode": "serial", "reason": "CUDA graphs"}
+
+
+def test_a_leader_stop_acknowledged_after_the_engine_finished_returns_no_images(studio):
+    """A Stop landing after the engine's last cancel check, while the leader is still a registered waiter, is
+    answered as cancelled; the leader must then hand back no images, like its members."""
+    import contextlib
+
+    app, backend, saved = studio
+    registered: list = []
+
+    @contextlib.contextmanager
+    def generation_waiter(cancel):
+        entry = (cancel, current_account_id())
+        registered.append(entry)
+        try:
+            yield
+        finally:
+            registered.remove(entry)
+
+    backend.generation_waiter = generation_waiter
+    real_generate = backend.generate
+
+    def generate(**kwargs):
+        result = real_generate(**kwargs)
+        # What stop_waiting_work("alice") does once the render is past its final check.
+        for cancel, owner in list(registered):
+            if owner == "alice":
+                cancel.set()
+        return result
+
+    backend.generate = generate
+    posts = [
+        ("/v1/images/generations", "alice", _openai("a fox")),
+        ("/v1/images/generations", "bob", _openai("a cat")),
+    ]
+    responses = _post_while_rendering(app, backend, posts, waiting = 2)
+    assert [r.status_code == 200 for r in responses] == [False, True]
+    assert [record["account"] for record in saved] == ["bob"]

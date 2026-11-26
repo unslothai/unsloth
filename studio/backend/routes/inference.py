@@ -56217,7 +56217,11 @@ async def _coalesced_image_generate(
                     result = await _image_generate_on_reserved_turn(
                         backend.generate, prompt = prompt, seed = seed, batch_size = n, **generate_kwargs
                     )
-            return result
+        # Read once the waiter is deregistered: a Stop that found it was answered as cancelled, so it hands
+        # back no images, like a member's.
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        return result
     finally:
         if "remove" in lead:
             lead["remove"]()
