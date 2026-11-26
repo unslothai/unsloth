@@ -13670,7 +13670,13 @@ class VideoBackend:
                     "so the LoRA has nothing to bake into."
                 )
         merged = sum(
-            video_lora.bake_into_module_(getattr(pipe, attr), files, device = device, label = label)
+            video_lora.bake_into_module_(
+                getattr(pipe, attr),
+                files,
+                device = device,
+                label = label,
+                family = getattr(fam, "name", None),
+            )
             for attr, label, files in targets
         )
         video_lora.mark_baked(pipe, tuple(e[:3] for e in baked), specs)
