@@ -39,7 +39,7 @@ def _edited_order(
     *,
     switched_to_manual = False,
 ):
-    if not importing and base != layout:
+    if not importing and base != layout and not switched_to_manual:
         common = set(base).intersection(layout)
         reordered = [key for key in base if key in common] != [
             key for key in layout if key in common
@@ -51,7 +51,7 @@ def _edited_order(
             ]
         elif not moves:
             return _merge_order(layout, saved)
-    if moves and base != layout:
+    if moves and (base != layout or switched_to_manual):
         if saved == base and (switched_to_manual or set(saved).issubset(layout)):
             return _merge_order(layout, saved)
         order = _merge_order(saved, layout)
@@ -139,9 +139,14 @@ def _merge(
                 eligible = set(saved) | imported_rows.get(key, set())
                 ids = [row for row in ids if row in eligible]
             if not importing:
-                # Browser-local pins can be absent from the editing browser's list.
+                # Pages and locally pinned projects can be absent from the editing browser's list.
                 pages = result["sectionByPageId"]
-                removed = {row for row in set(previous).difference(ids) if pages.get(row) != key}
+                projects = result["sectionByProjectId"]
+                removed = {
+                    row
+                    for row in set(previous).difference(ids)
+                    if pages.get(row) != key and projects.get(row) != key
+                }
                 saved = [row for row in saved if row not in removed]
                 previous = [row for row in previous if row not in removed]
             switched_to_manual = (

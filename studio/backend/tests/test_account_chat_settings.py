@@ -1066,18 +1066,22 @@ def test_sidebar_sections_cancelled_placements_keep_the_concurrent_order(client)
         ("", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc", "manual"),
         ("abcde", ("abdce", "d", "c", "top"), ("bcade", "a", "c", "bottom"), "bdcae", "manual"),
         ("apbc", ("bac", "b", "a", "top"), None, "bapc", "manual"),
+        ("ajbc", ("bac", "b", "a", "top"), None, "bajc", "manual"),
         ("abcd", ("cdba", "d", "c", "bottom"), None, "cdba", "updated"),
         ("axbc", ("bca", "b", "c", "top"), None, "bca", "updated"),
         ("abcp", ("cba", "b", "a", "top"), None, "cbap", "updated"),
+        ("ba", ("ab", "a", "b", "top"), ("ba", "b", "a", "top"), "ba", "updated"),
     ],
     ids = [
         "independent",
         "first-manual-order",
         "moved-anchor",
         "unseen-page",
+        "locally-pinned-project",
         "sort-switch",
         "sort-switch-hidden-row",
         "sort-switch-unseen-page",
+        "sort-switch-reuses-previous-manual-order",
     ],
 )
 def test_sidebar_sections_merge_concurrent_row_placements(
@@ -1104,8 +1108,9 @@ def test_sidebar_sections_merge_concurrent_row_placements(
         "initial",
         {
             "sections": {"work": {"name": "Work", "sort": sort}},
-            "sectionByChatId": {key: "work" for key in set(initial + first[0]) - {"p"}},
+            "sectionByChatId": {key: "work" for key in set(initial + first[0]) - {"p", "j"}},
             "sectionByPageId": {"p": "work"} if "p" in initial else {},
+            "sectionByProjectId": {"j": "work"} if "j" in initial else {},
             "rowOrder": {"work": list(initial)} if initial else {},
         },
     )
