@@ -119,7 +119,13 @@ def _step(epn, model, rank, world, mesh, vocab):
     return float(value), grads
 
 
-def _case(rank, world, tmp, family):
+def _case(
+    rank,
+    world,
+    tmp,
+    family,
+    parallel = False,
+):
     import torch.distributed as dist
     from test_ep_expert_lists_gloo import _spec
     from torch.distributed.device_mesh import init_device_mesh
@@ -143,8 +149,11 @@ def _case(rank, world, tmp, family):
     if not blocks or lists.list_shard_problem(blocks[0], world) is not None:
         return {"skip": "no per-expert ModuleList experts here"}
     vocab = tpn._text_config(full).vocab_size
+    if parallel:  # transformers 4.x loads shards on a thread pool
+        os.environ["HF_ENABLE_PARALLEL_LOADING"] = "true"
     with epn.expert_parallel_loading(mesh) as state:
         model = _load(ckpt)
+    os.environ.pop("HF_ENABLE_PARALLEL_LOADING", None)
     out["models"] = len(state["models"])
     out["stats"] = dict(model.__dict__.get("_unsloth_tp_load_stats") or {})
     out["held"], out["full"] = _held(model), _held(full)
@@ -220,9 +229,9 @@ def _spawn(
         return out
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_ep_list_load_reads_only_local_experts_and_matches_full_load(family):
-    results = _spawn("_case", family = family)
+@pytest.mark.parametrize("family, parallel", [(f, False) for f in FAMILIES] + [("qwen3_moe", True)])
+def test_ep_list_load_reads_only_local_experts_and_matches_full_load(family, parallel):
+    results = _spawn("_case", family = family, parallel = parallel)
     assert all(r is not None and "error" not in r for r in results), results
     if any("skip" in r for r in results):
         pytest.skip(results[0]["skip"])
@@ -231,7 +240,9 @@ def test_ep_list_load_reads_only_local_experts_and_matches_full_load(family):
         full_dense, full_experts = r["full"]
         # Every dense weight, half of the routed experts (the shared experts are dense here: not a ModuleList).
         assert dense == full_dense and experts * 2 == full_experts, (r["held"], r["full"])
+        # Other ranks' expert tensors were never read: dropped before the load, none freed after it.
         assert r["models"] == 1 and r["stats"]["remote_expert_tensors"] > 0, r["stats"]
+        assert r["stats"]["remote_loaded_then_freed"] == 0, r["stats"]
         assert r["remote"] > 0 and r["local_equal"], r
         assert "apply_expert_parallel" in r["unapplied_forward"], r["unapplied_forward"]
         assert r["left_remote"] == 0 and r["calls"] >= 1, r

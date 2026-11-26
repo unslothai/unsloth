@@ -56,6 +56,7 @@ import inspect
 import math
 import re
 import textwrap
+import threading
 import types
 from typing import Optional
 
@@ -5341,7 +5342,11 @@ def _ep_lists_load_4x(original, cls, name, args, kwargs, mesh, state):
         return seen[id(model)]
 
     def filtered(model, state_dict, *rest, **more):
-        if _TP_QUANTIZE_OWNER.get() is owner and isinstance(state_dict, dict):
+        # HF_ENABLE_PARALLEL_LOADING runs this on pool threads, which do not inherit the context variable.
+        ours = _TP_QUANTIZE_OWNER.get() is owner or (
+            state["active"] and threading.current_thread() is not threading.main_thread()
+        )
+        if ours and isinstance(state_dict, dict):
             skip = prefixes(model)
             if skip:
                 dropped = [k for k in state_dict if k.startswith(skip)]
@@ -5361,7 +5366,7 @@ def _ep_lists_load_4x(original, cls, name, args, kwargs, mesh, state):
         _TP_QUANTIZE_OWNER.reset(token)
         state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
-    _ep_finish_remote(model, ep, rank)
+    counts["remote_loaded_then_freed"] = _ep_finish_remote(model, ep, rank)  # 0: never read
     for p in model.parameters():
         if not p.is_meta:
             counts["kept_bytes"] += p.numel() * p.element_size()
