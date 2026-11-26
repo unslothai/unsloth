@@ -145,7 +145,7 @@ import {
   type PageModelRow,
   pageModels,
   emptyStateModels,
-  recommendedPageModels,
+  pickLabel,
   rowOnPage,
 } from "./page-models";
 import {
@@ -1170,9 +1170,9 @@ export function AudioPage({
     [pickRecommendedModel],
   );
   const recommendedActions = (page: AudioWorkflowId) =>
-    recommendedPageModels(page, MODELS_BY_MODE.speak, pagePrefs).map(
+    emptyStateModels(page, MODELS_BY_MODE.speak, pagePrefs).map(
       (model) => ({
-        label: `use ${model.name}`,
+        label: `use ${pickLabel(model.name)}`,
         onClick: () => handlePickRecommended(model.id),
       }),
     );

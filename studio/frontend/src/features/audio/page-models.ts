@@ -195,7 +195,8 @@ const RECOMMENDED_SPEAK_MODELS = [
   "VibeVoice-1.5B-GGUF",
 ];
 
-/** Up to three GGUF picks the audio runtime loads, never a Safetensors checkpoint. */
+/** Up to three GGUF picks the audio runtime loads, never a Safetensors checkpoint. The empty pane's
+ *  buttons and the blocker's menu both offer these, so the two never name different models. */
 export function emptyStateModels<T extends PageModelRow>(
   page: AudioWorkflowId,
   rows: readonly T[],
@@ -218,23 +219,9 @@ export function emptyStateModels<T extends PageModelRow>(
   return (picks.length > 0 ? picks : gguf).slice(0, 3);
 }
 
-/** The two models a page's footer note offers. */
-export function recommendedPageModels<T extends PageModelRow>(
-  page: AudioWorkflowId,
-  rows: readonly T[],
-  prefs: PageModelPrefs,
-): T[] {
-  const listed = pageModels(page, rows, prefs);
-  if (page !== "music") return listed.slice(0, 2);
-  return listed
-    .filter(
-      (row) =>
-        rankIn(RECOMMENDED_MUSIC_MODELS, row.id) <
-        RECOMMENDED_MUSIC_MODELS.length,
-    )
-    .sort(
-      (a, b) =>
-        rankIn(RECOMMENDED_MUSIC_MODELS, a.id) -
-        rankIn(RECOMMENDED_MUSIC_MODELS, b.id),
-    );
+const GGUF_SUFFIX = /-GGUF$/i;
+
+/** A pick's button text: the folder name without the runtime's `-GGUF` suffix. */
+export function pickLabel(name: string): string {
+  return name.replace(GGUF_SUFFIX, "");
 }
