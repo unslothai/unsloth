@@ -408,12 +408,17 @@ def _is_named(state_dict):
     return bool(ids) and all(isinstance(i, str) for i in ids)
 
 
-def portable_available(checkpoint):
-    """Collective: every rank sees optimizer.pt and an adapter in `checkpoint`."""
+def portable_available(checkpoint, model = None):
+    """Collective: every rank sees optimizer.pt and saved weights in `checkpoint` (at its root, or under an
+    adapter's own directory: PEFT saves an adapter not named "default" in <checkpoint>/<name>)."""
     from .fsdp2_native import _has_checkpoint_weights
 
-    ok = os.path.isfile(os.path.join(checkpoint, PORTABLE_OPTIMIZER)) and _has_checkpoint_weights(
-        checkpoint
+    directories = [checkpoint]
+    peft_config = getattr(model, "peft_config", None)
+    if isinstance(peft_config, dict):
+        directories += [os.path.join(checkpoint, name) for name in peft_config if name != "default"]
+    ok = os.path.isfile(os.path.join(checkpoint, PORTABLE_OPTIMIZER)) and any(
+        _has_checkpoint_weights(d) for d in directories
     )
     return _agree(ok)
 
@@ -468,6 +473,9 @@ def portable_load_weights(model, checkpoint):
     # The same names in the same order on every rank of a shard group (one file, one model): slice maps
     # are collectives over that group.
     targets = [(n, p) for n, p in model.named_parameters() if n in mapped and _restorable(p)]
+    from .fsdp2_native import _persistent_buffers
+
+    buffers = [(n, b) for n, b in _persistent_buffers(model) if n in mapped]
     with torch.no_grad():
         for n, p in targets:
             local = _local(p)
@@ -475,7 +483,17 @@ def portable_load_weights(model, checkpoint):
             local.copy_(
                 _to_local(n, mapped[n], smap, local).to(device = local.device, dtype = local.dtype)
             )
-    return len(targets)
+        # Persistent buffers (a routing correction bias) are whole on every rank; a sharded one is refused.
+        for n, b in buffers:
+            local = _local(b)
+            b_full = mapped[n]
+            if tuple(b_full.shape) != tuple(local.shape):
+                raise RuntimeError(
+                    f"Unsloth: the checkpoint buffer {n} has shape {tuple(b_full.shape)}, this rank holds "
+                    f"{tuple(local.shape)} of it; resume this checkpoint on the layout it was saved on."
+                )
+            local.copy_(b_full.to(device = local.device, dtype = local.dtype))
+    return len(targets) + len(buffers)
 
 
 def _named_from_positional(model, inner, state_dict):

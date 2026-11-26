@@ -79,6 +79,7 @@ def _case(
     resume_from = None,
     optim = "adamw_torch",
     aux = False,
+    adapter_name = "default",
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -165,7 +166,7 @@ def _case(
 
             def peft(m):
                 torch.manual_seed(1)
-                m = get_peft_model(m, config)
+                m = get_peft_model(m, config, adapter_name = adapter_name)
                 if aux:  # a frozen, inactive second adapter: PEFT saves it in <checkpoint>/aux
                     m.add_adapter("aux", config)
                     if resume_from is None:
@@ -222,7 +223,13 @@ def _case(
         "losses": [h["loss"] for h in logs],
         "grad_norms": [h["grad_norm"] for h in logs],
         "grads": grads,
-        "adapter": load_file(os.path.join(final, "adapter_model.safetensors")),
+        "adapter": load_file(
+            os.path.join(
+                final,
+                "" if adapter_name == "default" else adapter_name,
+                "adapter_model.safetensors",
+            )
+        ),
         "calls": calls,
         "optimizer": type(_inner(trainer.optimizer)).__module__
         + "."
@@ -535,3 +542,21 @@ def test_frozen_saved_tensors_are_restored_on_another_layout(tmp_path):
     for key, value in got["aux"].items():
         assert float(src["aux"][key].abs().max()) == 0.25, key  # the saved, perturbed values
         torch.testing.assert_close(value, src["aux"][key], msg = key)
+
+
+def test_named_adapter_checkpoint_resumes_under_tensor_parallel(tmp_path):
+    """The model's only adapter is not "default": PEFT saves it in <checkpoint>/<name>, and a one-process
+    checkpoint of it resumes under tp 2 as the uninterrupted run continued."""
+    tmp = str(tmp_path)
+    ckpt = _save_checkpoint("llama", os.path.join(tmp, "base"), {"num_hidden_layers": 4})
+    kw = dict(ckpt = ckpt, family = "llama", adapter_name = "main")
+    src = _run(tmp, "one", out = "named_src", **kw)
+    got = _run(
+        tmp,
+        "tp2",
+        out = "named_tp2",
+        resume_from = os.path.join(tmp, "named_src", f"checkpoint-{_SAVE_AT}"),
+        **kw,
+    )
+    assert got["calls"]["weights"] == 1 and got["calls"]["optimizer"] == 1, got["calls"]
+    _close(got, src, "one -> tp2, adapter 'main'", grads = False)

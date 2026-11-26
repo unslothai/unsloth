@@ -6236,7 +6236,7 @@ def _tp_resume_payload(self, checkpoint):
     from .portable_resume import _agree, portable_available
 
     if not _agree(error is None):
-        if portable_available(checkpoint):
+        if portable_available(checkpoint, self.model):
             _print_rank0(
                 f"Unsloth: {checkpoint} was written on another parallel layout; resuming from its 1-GPU adapter "
                 "and optimizer state, resharded."

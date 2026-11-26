@@ -1109,7 +1109,7 @@ def ep_trainer_setup(trainer):
                 resume_mode[checkpoint] = "rank"
             elif portable_resume._agree(
                 error is None or isinstance(error, EPLayoutChanged)
-            ) and portable_resume.portable_available(checkpoint):
+            ) and portable_resume.portable_available(checkpoint, model):
                 _tpn()._print_rank0(
                     f"Unsloth: {checkpoint} was written on another parallel layout; resuming from its 1-GPU "
                     "adapter and optimizer state, resharded."
