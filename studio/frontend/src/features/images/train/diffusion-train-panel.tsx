@@ -126,6 +126,7 @@ import { useSystemInfo } from "@/hooks/use-system";
 import { diffusionTrainGuideUrl } from "./diffusion-train-guides";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
 import { runningTrainingSelection } from "./diffusion-train-restore";
+import { basePrecisionLabel } from "./base-precision-label";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 import {
   MediaGenerationPresetControl,
@@ -1649,17 +1650,6 @@ export function DiffusionTrainPanel({
     </div>
   );
 
-  const precisionLabel = (
-    m: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto",
-  ): string => {
-    if (m === "auto") return "Auto";
-    if (m === "nf4") return "nf4 (lowest VRAM)";
-    if (m === "bf16") return "bf16 (fastest)";
-    if (m === "int8") return "int8";
-    if (m === "mxfp8") return "mxfp8 (Blackwell)";
-    return "fp8 (experimental)";
-  };
-
   // Columns key off this pane's width; a cell needs 150px, so 324px for two and 498px for three.
   const trainingSettings = (
     <div className="@container flex flex-col gap-6">
@@ -1860,7 +1850,7 @@ export function DiffusionTrainPanel({
 
         {isDiT ? (
           <div className={fieldClass}>
-            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; nf4 uses the least VRAM.">
+            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; 4-bit NF4 (not NVFP4) uses the least VRAM.">
               Base precision
             </FieldLabel>
             <Select
@@ -1881,7 +1871,7 @@ export function DiffusionTrainPanel({
                     value={m}
                     disabled={basePrequantized && DENSE_PRECISIONS.has(m)}
                   >
-                    {precisionLabel(m)}
+                    {basePrecisionLabel(m)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -1891,7 +1881,7 @@ export function DiffusionTrainPanel({
                 {familyUntrainable
                   ?
                     "This GPU cannot train this model family."
-                  : "This base is already 4-bit, so only nf4/auto apply."}
+                  : "This base is already 4-bit, so only NF4/auto apply."}
               </p>
             )}
           </div>
