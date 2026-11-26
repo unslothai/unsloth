@@ -39,6 +39,12 @@ def _clean(monkeypatch):
     ):
         if hasattr(us, name):
             monkeypatch.setattr(us, name, stub)
+    # The fake card is a CUDA build whatever torch runs the suite: a ROCm host torch (Studio's Windows AMD install)
+    # would otherwise turn the fallback off for every test. The ROCm refusal has its own tests.
+    from core import _torchao_stub
+
+    monkeypatch.setattr(_torchao_stub, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(_torchao_stub, "is_stubbed", lambda name: False)
     original = f8t.addmm_float8_unwrapped_inference
     yield
     us.uninstall()
@@ -466,3 +472,22 @@ def test_accumulator_check_waits_for_an_idle_fallback_card_to_be_used(monkeypatc
     tq._make_quant_config(tq.TQ_FP8)
     assert checked == [0, 1]
     assert us.gemm_path(1)["accumulator"] == "fp32"
+
+
+def test_a_rocm_torch_keeps_the_fallback_off(monkeypatch):
+    # The real ROCm check, not a stub: torch.version.hip set, as on Studio's Windows AMD torch (2.11.0+rocm7.14.0).
+    from core import _torchao_stub
+
+    monkeypatch.undo()
+    us._ROWWISE.clear()
+    monkeypatch.setattr(us, "_persisted_rowwise", lambda index: None)
+    monkeypatch.setattr(us, "_persist_rowwise", lambda index, verdict: None)
+    monkeypatch.setattr(us, "_has_context", lambda index: False)
+    monkeypatch.setattr(us, "_current_device", lambda: 0)
+    calls = _fake_card(monkeypatch, (11, 5), rowwise_ok = False)
+    monkeypatch.setattr(torch.version, "hip", "7.14.0", raising = False)
+    assert _torchao_stub.torch_is_rocm() is True
+    before = f8t.addmm_float8_unwrapped_inference
+    tq._make_quant_config(tq.TQ_FP8)
+    assert calls == [] and us.stats()["installed"] is False
+    assert f8t.addmm_float8_unwrapped_inference is before
