@@ -80,6 +80,10 @@ def _batch(step, rank):
     return {"input_ids": ids, "labels": ids.clone(), "use_cache": False}
 
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason = "RLIMIT_FSIZE (the full disk) is POSIX only"
+)
+
 _PG_TIMEOUT_S = 20  # a rank stranded in a collective fails after this, not after 30 minutes
 _FAST_S = 10  # every rank must raise well inside the collective timeout
 
