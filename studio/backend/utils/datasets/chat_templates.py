@@ -730,6 +730,11 @@ def apply_chat_template_to_dataset(
 
         dataset_template = None if native_alpaca else "alpaca"
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
+        uses_content_parts = hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer")
+
+        def _alpaca_message(role, text):
+            content = [{"type": "text", "text": text}] if uses_content_parts else text
+            return {"role": role, "content": content}
 
         preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
 
@@ -750,11 +755,11 @@ def apply_chat_template_to_dataset(
                     if context:
                         prompt += "\n\n" + context
                     messages = [
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": cell_text(output)},
+                        _alpaca_message("user", prompt),
+                        _alpaca_message("assistant", cell_text(output)),
                     ]
                     if isinstance(system, str) and system.strip():
-                        messages.insert(0, {"role": "system", "content": system})
+                        messages.insert(0, _alpaca_message("system", system))
                     try:
                         text = _render_messages(tokenizer, messages)
                     except Exception:
@@ -762,7 +767,7 @@ def apply_chat_template_to_dataset(
                             raise
                         # Templates without a system role carry explicit instructions in the user turn.
                         messages.pop(0)
-                        messages[0]["content"] = system + "\n\n" + prompt
+                        messages[0] = _alpaca_message("user", system + "\n\n" + prompt)
                         text = _render_messages(tokenizer, messages)
                     if not isinstance(text, str) or not text.strip():
                         raise ValueError("The model's chat template did not render the Alpaca example")

@@ -4,7 +4,7 @@
 import pytest
 from datasets import Dataset
 
-from utils.datasets import apply_chat_template_to_dataset
+from utils.datasets import apply_chat_template_to_dataset, format_and_template_dataset
 
 _LLAMA3_TEMPLATE = """
 {%- for message in messages %}
@@ -118,3 +118,19 @@ def test_processor_keeps_text_parts_for_list_only_templates():
     result = _format([row], _IDEFICS3_TEMPLATE, _JinjaProcessor)
 
     assert result["dataset"][0]["text"] == "user:hi thereassistant:hello back"
+
+
+def test_native_alpaca_keeps_text_for_list_only_templates():
+    dataset = Dataset.from_list(
+        [{"system": "Be brief.", "instruction": "Say hi", "input": "in French", "output": "Salut"}]
+    )
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Idefics3ForConditionalGeneration",
+        tokenizer = _JinjaProcessor(_IDEFICS3_TEMPLATE),
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    assert result["dataset"][0]["text"] == "system:Be brief.user:Say hi\n\nin Frenchassistant:Salut"
