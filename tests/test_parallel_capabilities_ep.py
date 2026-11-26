@@ -261,6 +261,9 @@ def test_gpt_oss_4bit_is_planned_when_the_experts_split_evenly():
     assert (
         message.startswith("Unsloth: ep x model: ") and "per-expert Linear lists" in message
     ), message
+    # The checkpoint's own expert count when the caller read its config (Studio's model facts).
+    assert "30 experts over 4" in caps._ep_blocker("gpt_oss", 4, load_in_4bit = True, experts = 30)
+    assert caps._ep_blocker("gpt_oss", 3, load_in_4bit = True, experts = 6) == ""
     status, cell = caps.cell_status(_ep_query(family = "gpt_oss", mode = "qlora", attention = "eager"))
     assert status == "supported" and cell.name == "MoE gpt_oss x qlora x aux off x ep", (
         status,

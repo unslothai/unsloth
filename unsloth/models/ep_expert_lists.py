@@ -446,9 +446,22 @@ def _skipping(block, skip):
         block._modules.update(held)
 
 
+# The 4.x shared expert children, whose output is only added after routing; a router of width H is never one.
+_SHARED = ("shared_expert", "shared_experts", "shared_mlp")
+
+
+def _draws_rng(block, skip):
+    # A dropout active now (PEFT set_adapter, train mode) must run in pass 1 too: the RNG ends after pass 1.
+    return any(
+        isinstance(m, nn.Dropout) and m.training and m.p > 0
+        for name, _ in skip
+        for m in block._modules[name].modules()
+    )
+
+
 @contextlib.contextmanager
 def _watch_shapes(block):
-    """Non-expert children mapping H to H (shared experts): {name: output dtype}."""
+    """Shared expert children mapping H to H: {name: output dtype}."""
     seen, handles = {}, []
 
     def hook(name):
@@ -463,8 +476,9 @@ def _watch_shapes(block):
 
         return record
 
-    for name, child in block.named_children():
-        if name != "experts" and isinstance(child, nn.Module):
+    for name in _SHARED:
+        child = block._modules.get(name)
+        if child is not None:
             handles.append(child.register_forward_hook(hook(name)))
     found = {}
     try:
@@ -546,8 +560,11 @@ def _list_forward(shard, prior):
         mode = bool(shard.block.training)
         if mode not in shard.skip:
             shard.skip[mode] = _learn_skips(shard, prior, args, kwargs, before, devices)
+        skip = shard.skip[mode]
+        if skip and _draws_rng(shard.block, skip):
+            skip = ()
         # Pass 1 output is discarded, so skip children that cannot change the expert calls.
-        with _skipping(shard.block, shard.skip[mode]):
+        with _skipping(shard.block, skip):
             _pass1(shard, prior, args, kwargs, calls)
         outputs, y_back = _exchange(shard, calls, like)
         shard.calls += 1

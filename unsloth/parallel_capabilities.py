@@ -1341,8 +1341,11 @@ def _family_ep_blocker(
     family,
     load_in_4bit = False,
     ep = None,
+    experts = None,
 ) -> str:
     counts = _EP_EVEN_4BIT_FAMILIES.get(family) if load_in_4bit else None
+    if counts and isinstance(experts, int) and experts > 0:
+        counts = (experts,)  # the checkpoint's own count when the caller read its config
     if counts and isinstance(ep, int) and ep > 1:
         uneven = [E for E in counts if E % ep]
         if uneven:
@@ -1930,6 +1933,7 @@ def _ep_blocker(
     model,
     ep,
     load_in_4bit = False,
+    experts = None,
 ) -> str:
     """Why apply_expert_parallel would refuse `model` at `ep` ranks, "" if it shards. Strings and
     structureless models fall back to _EP_BLOCKED_FAMILIES (and, for a load_in_4bit load,
@@ -1938,7 +1942,7 @@ def _ep_blocker(
         return ""
     family = model if isinstance(model, str) else _model_traits(model)[0]
     if not callable(getattr(model, "named_modules", None)):
-        return _family_ep_blocker(family, load_in_4bit, ep)
+        return _family_ep_blocker(family, load_in_4bit, ep, experts)
     try:
         from .models import ep_native, tp_native
 
@@ -1954,7 +1958,7 @@ def _ep_blocker(
             for block in tp_native.moe_blocks_with_experts(model)
         ]
     except Exception:
-        return _family_ep_blocker(family, load_in_4bit, ep)
+        return _family_ep_blocker(family, load_in_4bit, ep, experts)
     if any(problem is None for problem in problems):
         return ""
     reasons = (

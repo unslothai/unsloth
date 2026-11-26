@@ -85,6 +85,7 @@ def _case_list_family(
     gc = False,
     experts_and_router_only = False,
     warm = False,
+    shared_dropout = False,
 ):
     import torch.distributed as dist
     from peft import get_peft_model_state_dict
@@ -101,6 +102,17 @@ def _case_list_family(
             return
         with torch.no_grad():
             model(input_ids = rows[rank][0], use_cache = False)
+        if (
+            shared_dropout
+        ):  # after the warm forward, as PEFT set_adapter to an adapter with LoRA dropout would
+            for block in tpn.moe_blocks_with_experts(model):
+                for name in _SHARED:
+                    for m in getattr(block, name, torch.nn.Module()).modules():
+                        for adapter in list(getattr(m, "lora_dropout", {}).keys()):
+                            m.lora_dropout[adapter] = torch.nn.Dropout(0.0).train()
+                            m.lora_dropout[
+                                adapter
+                            ].p = 1e-9  # active, draws randomness, numerically a no-op
         for block in tpn.moe_blocks_with_experts(model):
             for name in _SHARED:
                 child = block._modules.get(name)
@@ -636,6 +648,30 @@ def test_ep_expert_lists_run_the_shared_expert_once(family, gc):
         got, want = r["shared_calls"]
         assert want > 0 and got == want, r["shared_calls"]
         assert any(r["pass1_skips"].values()), r["pass1_skips"]
+
+
+def test_ep_expert_lists_run_the_shared_expert_in_pass1_while_its_dropout_draws():
+    """An active dropout in the shared expert (switched on after pass 1 learned its skips) draws randomness, so pass
+    1 runs it again: the RNG ends where it would without the skip."""
+    results = _spawn("_case_list_family", warm = True, shared_dropout = True, **_spec("qwen2_moe"))
+    _check(results, 2)
+    for r in results:
+        got, want = r["shared_calls"]
+        assert want > 0 and got == 2 * want, r["shared_calls"]
+
+
+def test_ep_expert_lists_watch_only_shared_expert_children():
+    """A router as wide as the hidden size is H to H too, but only the shared expert children are candidates."""
+    from unsloth.models import ep_expert_lists as lists
+
+    block = torch.nn.Module()
+    block.gate = torch.nn.Linear(4, 4)
+    block.shared_expert = torch.nn.Linear(4, 4)
+    block.experts = torch.nn.ModuleList([torch.nn.Linear(4, 4)])
+    with lists._watch_shapes(block) as found:
+        x = torch.randn(3, 4)
+        block.gate(x), block.shared_expert(x), block.experts[0](x)
+    assert found == {"shared_expert": torch.float32}, found
 
 
 def test_ep_expert_lists_three_ranks_one_without_experts():
