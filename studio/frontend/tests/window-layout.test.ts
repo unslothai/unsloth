@@ -380,6 +380,16 @@ test("leaves on-screen and multi-monitor windows where they are", () => {
     ),
     null,
   );
+  // At 250% scaling the borders are wider than the 100% tolerance.
+  assert.equal(
+    calculateOnScreenRect(
+      rect(-19, 0, 1958, 2059),
+      [rect(0, 0, 3840, 2160)],
+      rect(0, 0, 3840, 2040),
+      2.5,
+    ),
+    null,
+  );
   // Spans both monitors, every part of it on one of them.
   assert.equal(
     calculateOnScreenRect(

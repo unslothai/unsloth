@@ -132,7 +132,7 @@ export function constrainWindowSize(
 }
 
 // Windows counts its invisible resize borders in the outer rectangle, so a snapped window pokes a
-// few pixels past the screen edge; that alone must not move it.
+// few pixels past the screen edge; that alone must not move it. The borders grow with the scale factor.
 const OFF_SCREEN_TOLERANCE_PX = 16;
 
 function overlapArea(a: PhysicalWindowRect, b: PhysicalWindowRect): number {
@@ -155,9 +155,10 @@ export function calculateOnScreenRect(
   window: PhysicalWindowRect,
   screens: PhysicalWindowRect[],
   workArea: PhysicalWindowRect,
+  scaleFactor = 1,
 ): PhysicalWindowRect | null {
   const inset = Math.min(
-    OFF_SCREEN_TOLERANCE_PX,
+    Math.round(OFF_SCREEN_TOLERANCE_PX * Math.max(1, scaleFactor)),
     Math.floor(window.size.width / 4),
     Math.floor(window.size.height / 4),
   );

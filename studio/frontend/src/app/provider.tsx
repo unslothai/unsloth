@@ -313,6 +313,7 @@ async function keepWindowOnScreen(
     { position, size: outerSize },
     screens.map((screen) => ({ position: screen.position, size: screen.size })),
     monitor.workArea,
+    monitor.scaleFactor,
   );
   if (!next) return;
 
