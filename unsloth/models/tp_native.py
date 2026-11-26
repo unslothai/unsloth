@@ -3683,6 +3683,22 @@ def vocab_parallel_active(head) -> bool:
     return bool(getattr(head, "_unsloth_vocab_parallel", False)) and _is_dtensor(_weight(head)[0])
 
 
+def _torch_checkpoint():
+    """torch's own checkpoint, also once unsloth_zoo's smart gradient checkpointing has replaced
+    torch.utils.checkpoint.checkpoint with its forced-reentrant, CPU-offloading version: chunk loops nested
+    in a checkpointed layer need non-reentrant recompute (one replay per backward, closed-over grads)."""
+    import torch.utils.checkpoint as module
+
+    for func in (
+        getattr(module, "_unsloth_pristine_checkpoint", None),
+        module.checkpoint,
+        getattr(module, "_old_checkpoint", None),
+    ):
+        if getattr(func, "__module__", None) == module.__name__:
+            return func
+    return module.checkpoint
+
+
 def vocab_parallel_cross_entropy(
     head,
     hidden_states,
@@ -3698,7 +3714,7 @@ def vocab_parallel_cross_entropy(
     recomputed in backward (one 1/tp chunk per rank); returns sum over valid tokens / n_items
     (mean if None), same on all tp ranks; hidden_states [..., hidden], labels [...]; shift=True
     shifts labels here."""
-    from torch.utils.checkpoint import checkpoint
+    checkpoint = _torch_checkpoint()
 
     group = head.__dict__["_unsloth_tp_group"]
     lo, width, _ = head.__dict__["_unsloth_vocab_rows"]
