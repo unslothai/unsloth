@@ -4130,11 +4130,28 @@ def _unsloth_vllm_watch_weight_resets(engine):
         engine.collective_rpc = _unsloth_collective_rpc
 
 
+def _unsloth_vllm_moe_relaid_out(module):
+    """True when this vLLM FusedMoE layer keeps its experts in a kernel layout, not the checkpoint's."""
+    quant_method = getattr(module, "quant_method", None)
+    backend = getattr(quant_method, "unquantized_backend", None)
+    if backend is not None:
+        # vLLM >= 0.2x picks one backend per layer; only the Triton ones keep checkpoint layout.
+        return str(getattr(backend, "name", backend)).upper() not in ("TRITON", "BATCHED_TRITON")
+    if type(quant_method).__name__ != "UnquantizedFusedMoEMethod":
+        # Quantized experts are repacked after load.
+        return True
+    # vLLM 0.11: AITER shuffles, VLLM_USE_FLASHINFER_MOE_FP16 swaps w1 / w3.
+    return bool(
+        getattr(quant_method, "rocm_aiter_moe_enabled", False)
+        or getattr(quant_method, "flashinfer_cutlass_moe_enabled", False)
+    )
+
+
 def _unsloth_vllm_reload_runner(llm, vllm_model):
     """vLLM's model runner when a sync must go through its in-place reload, else None.
     Unquantized MoE weights are re-laid out after load (FlashInfer TRTLLM / CUTLASS, vLLM's CUDA
     default on Blackwell; ROCm AITER), so a plain load_weights later writes checkpoint layout into
-    kernel layout and corrupts every expert. reload_weights(weights_iterator = ...) re-runs the
+    kernel layout and corrupts every expert. Triton experts (Hopper, Ampere, Ada) keep the layout. reload_weights(weights_iterator = ...) re-runs the
     post-load processing. Dense and MLA layers keep load_weights: MLA's W_UK_T / W_UV are views of
     kv_b_proj, so they follow it. UNSLOTH_VLLM_SYNC_RELOAD = 0 never reloads, 1 always does."""
     choice = os.environ.get("UNSLOTH_VLLM_SYNC_RELOAD", "auto").strip().lower()
@@ -4156,8 +4173,9 @@ def _unsloth_vllm_reload_runner(llm, vllm_model):
     relaid_out = getattr(vllm_model, "_unsloth_vllm_relaid_out", None)
     if relaid_out is None:
         modules = getattr(vllm_model, "modules", None)
-        # FusedMoE (every backend) holds w13_weight; re-laying out is decided per backend inside vLLM.
-        relaid_out = callable(modules) and any(hasattr(m, "w13_weight") for m in modules())
+        relaid_out = callable(modules) and any(
+            hasattr(m, "w13_weight") and _unsloth_vllm_moe_relaid_out(m) for m in modules()
+        )
         try:
             vllm_model._unsloth_vllm_relaid_out = relaid_out
         except Exception:

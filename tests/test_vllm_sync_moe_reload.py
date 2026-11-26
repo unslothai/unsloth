@@ -23,12 +23,19 @@ from tests.test_vllm_sync_skips_frozen_weights import (
 class _MoEEngine(torch.nn.Module):
     """Fake vLLM model: one FusedMoE-like module (w13_weight) plus a recorder."""
 
-    def __init__(self, moe = True):
+    def __init__(
+        self,
+        moe = True,
+        backend = "FLASHINFER_TRTLLM",
+    ):
         super().__init__()
         self.inner = _Engine()
         if moe:
             self.experts = torch.nn.Module()
             self.experts.w13_weight = torch.nn.Parameter(torch.zeros(2, 4, 4), requires_grad = False)
+            self.experts.quant_method = types.SimpleNamespace(
+                unquantized_backend = types.SimpleNamespace(name = backend)
+            )
 
     def load_weights(self, weights):
         weights = list(weights)
@@ -120,6 +127,39 @@ def test_reload_runner_selection(moe, new_api, env, reloads, monkeypatch):
     engine_model = _MoEEngine(moe)
     llm, runner = _llm(engine_model, new_api)
     assert (_unsloth_vllm_reload_runner(llm, engine_model) is runner) == reloads
+
+
+@pytest.mark.parametrize(
+    "backend, reloads",
+    [
+        ("FLASHINFER_TRTLLM", True),
+        ("FLASHINFER_CUTLASS", True),
+        ("AITER", True),
+        ("TRITON", False),
+        ("BATCHED_TRITON", False),
+    ],
+)
+def test_reload_only_for_backends_that_relay_out(backend, reloads, monkeypatch):
+    from unsloth.models.rl_replacements import _unsloth_vllm_reload_runner
+
+    monkeypatch.delenv("UNSLOTH_VLLM_SYNC_RELOAD", raising = False)
+    engine_model = _MoEEngine(backend = backend)
+    llm, runner = _llm(engine_model)
+    assert (_unsloth_vllm_reload_runner(llm, engine_model) is runner) == reloads
+
+
+def test_reload_for_quantized_or_old_vllm_moe():
+    from unsloth.models.rl_replacements import _unsloth_vllm_moe_relaid_out
+
+    class UnquantizedFusedMoEMethod:
+        rocm_aiter_moe_enabled = False
+        flashinfer_cutlass_moe_enabled = False
+
+    old = types.SimpleNamespace(quant_method = UnquantizedFusedMoEMethod())
+    assert not _unsloth_vllm_moe_relaid_out(old)
+    old.quant_method.flashinfer_cutlass_moe_enabled = True
+    assert _unsloth_vllm_moe_relaid_out(old)
+    assert _unsloth_vllm_moe_relaid_out(types.SimpleNamespace(quant_method = object()))
 
 
 def test_reload_runner_ignores_fake_engines_without_modules():
