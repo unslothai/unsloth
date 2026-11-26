@@ -201,7 +201,7 @@ export function useDatasetUploads() {
       );
       const uploaded = await uploadNativeTrainingDataset(
         grant.nativePathLease,
-        pandasJson && getFileExtension(filename) === ".json",
+        pandasJson && getFileExtension(path) === ".json",
       );
       bumpInventoryVersion();
       selectLocalDataset(uploaded.stored_path);
