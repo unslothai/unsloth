@@ -203,6 +203,7 @@ def _observed_rebuild(ranks_file, key, data):
 # "pure": the rank never runs the conftest, loads unsloth files itself, or imports more than the zygote's
 #   base before the conftest; the zygote then stops before the conftest and serves only those imports.
 _plans = {}
+_closures = {}  # rank function -> its test module's imports, from any observed case of it
 _offsets = {}  # ranks.jsonl path -> bytes read
 _GIVE_UP = 6  # starts again with no fork kept: the function's ranks are spawned as before
 _OBSERVED = os.path.join(_HERE, ".")  # placeholder, replaced by install()
@@ -231,6 +232,12 @@ def _learn():
             if event.get("event") in ("hit", "kept"):
                 plan["hits"] += 1
             elif event.get("event") == "observed":
+                try:
+                    target = json.loads(event.get("target"))[0]
+                except (TypeError, ValueError, IndexError):
+                    target = None
+                # The test module's imports are the same for every case of its function.
+                _closures[target] = list(event.get("first") or ())
                 plan.update(
                     observed = True,
                     first = list(event.get("first") or ()),
@@ -265,25 +272,62 @@ def _base_tops():
 def _popen(process_obj):
     if not enabled():
         return _original_popen(process_obj)
+    import threading
+
+    global _LOCK
+    if _LOCK is None:
+        _LOCK = threading.RLock()
+    with _LOCK:  # ranks started from several threads share the plans and the zygotes
+        return _popen_locked(process_obj)
+
+
+_LOCK = None
+
+
+def _popen_locked(process_obj):
     _learn()
     key = _plan_key(process_obj)
     plan = _plan(key)
-    if not plan["observed"]:
+    closure = _closures.get(_target_name(process_obj))
+    if closure is None:
         # Not seen yet: a plain spawn, watched, says what its ranks import.
         _record("spawn", target = key, why = "observed")
         return _ObservingPopen(process_obj, key)
-    if "torch" not in plan["first"]:
+    if "torch" not in closure:
         _record("spawn", target = key, why = "torch is left to the rank's code")
         return _original_popen(process_obj)
     if plan["restarts"] >= _GIVE_UP and plan["hits"] == 0:
         _record("spawn", target = key, why = "its forks kept starting again")
         return _original_popen(process_obj)
-    zygote = _zygote_for(process_obj, _mode(plan))
+    # A case seen running the conftest first may reuse a zygote's conftest run; any other case of a known
+    # function forks from a zygote that stops before the conftest, which serves only its test module's
+    # imports and so cannot have guessed wrong about what the case does next.
+    mode = {"first": closure, "pure": _mode(plan)["pure"] if plan["observed"] else True}
+    zygote = _zygote_for(process_obj, mode)
     if zygote is None or zygote.status().get("broken"):
         why = "no zygote for this kind yet" if zygote is None else "zygote broken"
         _record("spawn", target = key, why = why)
         return _original_popen(process_obj)
+    differs = _early_differs(zygote)
+    if differs:
+        # The zygote imported ahead under another value (a test sets it per test): a fork would only start
+        # again at once.
+        _record("spawn", target = key, why = f"env {differs} differs from the zygote's")
+        return _original_popen(process_obj)
     return _ZygotePopen(process_obj, zygote, key)
+
+
+def _early_differs(zygote):
+    """A variable the zygote's imports ahead read whose value the rank would not start with, or None."""
+    early = zygote.status().get("early_inputs")
+    if early is None:
+        return None  # still importing: the rank itself checks when it starts
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    for key, value in early.items():
+        if env.get(key) != value and key not in _DEVICE_MASKS:
+            return key
+    return None
 
 
 def _plan_key(process_obj) -> str:
@@ -855,6 +899,7 @@ def _preload(spec_path: str) -> None:
         }
         unknown_scans = sorted(s for s in recorder.scans if s not in _PREFIX_SCANS)
         status.update(
+            early_inputs = early_inputs,
             base_tops = sorted({name.split(".", 1)[0] for name in base}),
             first = list(spec.get("first", ())),
             pure = bool(spec.get("pure")),
