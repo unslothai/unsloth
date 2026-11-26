@@ -2369,6 +2369,34 @@ def _generation_defaults_for(
     return {"steps": int(steps), "guidance": float(guidance)}
 
 
+def _lora_fuse_denoisers(pipe: Any) -> list:
+    """The denoisers a LoRA fold touches: the UNet and every DiT, each once."""
+    denoisers = [m for m in (getattr(pipe, "unet", None), *_lora_fuse_dits(pipe)) if m is not None]
+    return list({id(m): m for m in denoisers}.values())
+
+
+def _lora_fusion_status(state: Any) -> Optional[dict]:
+    """``{fused, skipped_reason}`` for the active LoRA set, None when none is active; never raises."""
+    try:
+        from . import diffusion_lora_fuse as lora_fuse
+
+        pipe = state.pipe
+        if not getattr(pipe, "_unsloth_loras", ()):
+            return None
+        if lora_fuse.fused(pipe):
+            return {"fused": True, "skipped_reason": None}
+        reason = lora_fuse.lora_fusion_skip_reason(
+            pipe,
+            getattr(state, "offload_policy", None),
+            getattr(state, "memory_mode", None),
+            _lora_fuse_denoisers(pipe),
+        )
+        # None here: eligible, folded once the same set renders again.
+        return {"fused": False, "skipped_reason": reason}
+    except Exception:  # noqa: BLE001 - status never fails over a diagnostic
+        return None
+
+
 def _lora_fuse_dits(pipe: Any) -> list:
     from .diffusion_autoopt import targets as _targets
     try:
@@ -15825,16 +15853,17 @@ class DiffusionBackend:
 
         if not lora_fuse.enabled() or lora_fuse.fused(pipe):
             return
-        if getattr(pipe, "_unsloth_loras_baked", False):
-            return  # quantised bakes keep their own path
-        denoisers = [
-            m for m in (getattr(pipe, "unet", None), *_lora_fuse_dits(pipe)) if m is not None
-        ]
-        denoisers = list({id(m): m for m in denoisers}.values())
-        if not lora_fuse.denoisers_resident(
-            getattr(state, "offload_policy", None), getattr(state, "memory_mode", None), denoisers
+        denoisers = _lora_fuse_denoisers(pipe)
+        if (
+            lora_fuse.lora_fusion_skip_reason(
+                pipe,
+                getattr(state, "offload_policy", None),
+                getattr(state, "memory_mode", None),
+                denoisers,
+            )
+            is not None
         ):
-            return  # offloaded or streamed denoiser weights move every render
+            return
         if denoisers and lora_fuse.fuse(pipe, denoisers, logger):
             # graphs recorded the unfused forward; a CFG replica copied the unfused weights
             cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
@@ -18107,6 +18136,7 @@ class DiffusionBackend:
                 "resolved": None,
                 "generation_defaults": None,
                 "precision_options": None,
+                "lora_fusion": None,
             }
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
@@ -18227,6 +18257,8 @@ class DiffusionBackend:
             "conditioning": conditioning_capabilities(state.family, _state_workflows(state)),
             "supports_lora": lora_reason is None,
             "lora_unavailable_reason": lora_reason,
+            # Why an active LoRA set runs unfolded (not opted in, offloaded, quant-baked), so the UI can say so.
+            "lora_fusion": _lora_fusion_status(state),
             # Only Speed=Auto's 3rd-image compile blocks LoRA: a reload stays eager until then.
             "lora_after_reload": lora_load_ok
             and compiled
