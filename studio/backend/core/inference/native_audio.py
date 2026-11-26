@@ -711,9 +711,6 @@ def _native_audio_repo_files(
     return required
 
 
-_GGUF_SPLIT_PART = re.compile(r"-\d{5}-of-\d{5}(?=\.gguf$)", re.IGNORECASE)
-
-
 _GGUF_FLOAT_LABEL = re.compile(r"(?:^|[-_.])(fp(?:8|16|32))$")
 _GGUF_BPW = re.compile(r"-\d+(?:\.\d+)?bpw")
 
@@ -722,14 +719,14 @@ def _gguf_quants(siblings: list[Any]) -> dict[str, set[str]]:
     """Quant labels per GGUF model, read the way the Hub reads variants: split parts count once,
     projectors not at all, and a companion model (a codec, a VAE) is its own model rather than
     another quant."""
-    from hub.utils.gguf import quant_token_with_bpw
+    from hub.utils.gguf import _gguf_stem, quant_token_with_bpw
 
     models: dict[str, set[str]] = {}
     for sibling in siblings:
         path = str(getattr(sibling, "rfilename", "")).strip().replace("\\", "/")
         if not path.lower().endswith(".gguf") or "mmproj" in path.lower():
             continue
-        stem = _GGUF_SPLIT_PART.sub("", path.rsplit("/", 1)[-1].lower())[: -len(".gguf")]
+        stem = _gguf_stem(path).lower()
         quant = (quant_token_with_bpw(path) or "").lower()
         if not quant and (floating := _GGUF_FLOAT_LABEL.search(stem)):
             quant = floating.group(1)

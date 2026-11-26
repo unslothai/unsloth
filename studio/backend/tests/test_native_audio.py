@@ -342,6 +342,7 @@ def test_download_plan_still_lists_one_quant_beside_a_companion_gguf(monkeypatch
         ["Big-fp16.gguf", "Big-Q8_0.gguf"],
         ["Foo-PQ2_0.gguf", "Foo-Q2_0.gguf"],
         ["Q6_K/model-3.5bpw.gguf", "Q6_K/model-4.0bpw.gguf"],
+        ["Q4_K_M/Foo-001-of-002.gguf", "Q8_0/Foo-001-of-003.gguf"],
     ],
 )
 def test_download_plan_refuses_quants_named_by_folder_or_bare_label(monkeypatch, files):
