@@ -5075,15 +5075,16 @@ def _clip_chunk_counts(pipe: Any, prompt: str) -> Optional[tuple]:
 def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
     """What a prompt must share with its batch neighbours to render as it would alone; None = never batch it.
 
-    MiniMax-H3-Image loops per image when resident, so a batch gains nothing. Qwen-Image-2.1 gains about 3% from a
-    batch (A100, INT8) while an equal-length member lands about 35 dB PSNR from its solo render, and Auto serves it
-    serially under CUDA graphs anyway. FLUX.1 / Kontext pad T5 to one bucket (256 or 512) per call. SD / SDXL weight
-    and chunk prompts per call, so weighting and the 77-token chunk count must agree."""
-    from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME
+    MiniMax-H3-Image loops per image when resident, so a batch gains nothing. MOSS-Image runs every layer once per
+    sample, so a streamed batch of B pays B weight streams. Qwen-Image-2.1 gains about 3% from a batch (A100, INT8)
+    while an equal-length member lands about 35 dB PSNR from its solo render, and Auto serves it serially under CUDA
+    graphs anyway. FLUX.1 / Kontext pad T5 to one bucket (256 or 512) per call. SD / SDXL weight and chunk prompts per
+    call, so weighting and the 77-token chunk count must agree."""
+    from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
     from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS
 
     name = getattr(family, "name", None)
-    if name == MINIMAX_H3_IMAGE_FAMILY_NAME:
+    if name in (MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME):
         return None
     if type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS:
         return None
