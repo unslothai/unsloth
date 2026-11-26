@@ -178,12 +178,13 @@ def ep_refuse_per_expert_lists(model):
     if not isinstance(model, nn.Module) or is_expert_parallel(model):
         return
     tpn, lists = _tpn(), _lists()
-    problems = [
-        None
-        if lists.fused_list_problem(block, ep_env_size()) is None
-        else tpn.expert_shard_problem(block, ep_env_size())
-        for block in tpn.moe_blocks_with_experts(model)
-    ]
+    problems = []
+    for block in tpn.moe_blocks_with_experts(model):
+        why = lists.fused_list_problem(block, ep_env_size())
+        problem = None if why is None else tpn.expert_shard_problem(block, ep_env_size())
+        if isinstance(problem, str) and problem.startswith(_PER_EXPERT_LISTS) and why != problem:
+            problem = f"{problem}; not shardable as per-expert lists either: {why}"
+        problems.append(problem)
     message = _per_expert_lists_refusal(problems)
     if message is not None:
         raise NotImplementedError(message)
@@ -509,6 +510,13 @@ def apply_expert_parallel(model, mesh = None):
             # one experts call over per-expert Linear lists (zoo's load_in_4bit gpt-oss)
             fused_lists.append(block)
         else:
+            why = _lists().fused_list_problem(block, ep) if ep > 1 else None
+            if (
+                isinstance(problem, str)
+                and problem.startswith(_PER_EXPERT_LISTS)
+                and why != problem
+            ):
+                problem = f"{problem}; not shardable as per-expert lists either: {why}"
             kept.append((block, problem))
     for block, problem in kept:
         chain = tpn._experts_chain(block)

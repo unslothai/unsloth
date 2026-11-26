@@ -158,6 +158,81 @@ def _case_list_family(
     }
 
 
+def _case_portable(
+    rank,
+    world,
+    tmp,
+    repo,
+    overrides = None,
+):
+    """Resume on another layout (portable_resume) with per-expert modules: the 1-GPU optimizer state gathered from
+    an ep 2 step equals one process' after the same step, and a 1-GPU adapter loads into each rank's experts."""
+    import torch.distributed as dist
+    from peft import get_peft_model_state_dict
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.nn.parallel import DistributedDataParallel
+    from unsloth_models_loader import load_models_module
+
+    build, tpn, epn = _modules()
+    portable = load_models_module("portable_resume")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    ref = _build(build, repo, overrides, False)
+    vocab = tpn._text_config(ref).vocab_size
+    rows = [_rows(vocab, r) for r in range(world)]
+    n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
+
+    def adam(model):
+        return torch.optim.AdamW(
+            [p for p in model.parameters() if p.requires_grad], lr = 1e-2, foreach = False
+        )
+
+    ref_opt = adam(ref)
+    for ids, lab in rows:
+        (_sum_loss(ref, ids, lab) / n).backward()
+    ref_opt.step()
+    names = {id(p): k for k, p in ref.named_parameters()}
+    want = {names[id(p)]: {k: v.clone() for k, v in st.items()} for p, st in ref_opt.state.items()}
+    model = _build(build, repo, overrides, False)
+    epn.apply_expert_parallel(model, mesh)
+    opt = adam(model)
+    ddp = DistributedDataParallel(model)
+    (_sum_loss(ddp, *rows[rank]) * world / n).backward()
+    epn.ep_sync_expert_grads(model)
+    opt.step()
+    state, why = portable.portable_optimizer_state(model, opt)
+    worst, missing = 0.0, []
+    if rank == 0:
+        got = state["state"]
+        missing = sorted(set(want) ^ set(got))
+        for k in set(want) & set(got):
+            for key in ("exp_avg", "exp_avg_sq"):
+                worst = max(worst, float((got[k][key] - want[k][key]).abs().max()))
+    # A 1-GPU adapter (the one-process model after its step) loads into each rank's own experts.
+    ckpt = os.path.join(tmp, "ckpt")
+    if rank == 0:
+        ref.save_pretrained(ckpt)
+    dist.barrier()
+    fresh = _build(build, repo, overrides, False)
+    epn.apply_expert_parallel(fresh, mesh)
+    portable.portable_load_weights(fresh, ckpt)
+    ref_sd = {k: v for k, v in ref.named_parameters()}
+    load_worst = max(
+        float((p.detach() - ref_sd[k].detach()).abs().max())
+        for k, p in fresh.named_parameters()
+        if p.requires_grad and "lora_" in k
+    )
+    experts_loaded = sum(
+        1 for k, p in fresh.named_parameters() if ".experts." in k and "lora_" in k
+    )
+    return {
+        "why": why,
+        "missing": missing,
+        "worst": worst,
+        "load_worst": load_worst,
+        "experts_loaded": experts_loaded,
+    }
+
+
 def _case_generate(
     rank,
     world,
@@ -474,3 +549,12 @@ def test_ep_gpt_oss_linear_lists_match_one_process(gc):
     # unsloth_zoo's load_in_4bit gpt-oss layout (here 16-bit Linears): the fused experts call through ep_native's
     # exchange, each rank holding gate_up_projs / down_projs [lo, hi) under their global names.
     _check(_spawn("_case_fused_lists", gc = gc), 2)
+
+
+def test_ep_expert_lists_portable_resume_matches_one_process():
+    results = _spawn("_case_portable", **_spec("mixtral"))
+    assert all(r is not None and "error" not in r for r in results), results
+    assert results[0]["why"] is None and not results[0]["missing"], results[0]
+    assert results[0]["worst"] <= 1e-6, results[0]
+    for r in results:
+        assert r["experts_loaded"] > 0 and r["load_worst"] == 0.0, r

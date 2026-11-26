@@ -76,7 +76,8 @@ def _local(p):
 def _ep_layout(p):
     from .ep_native import _EP
     layout = getattr(p, _EP, None)
-    return None if layout is None or layout[0] == "4bit" else layout
+    # A per-expert module (ep_expert_lists) is whole on the rank holding it, like a pipeline stage's layer.
+    return None if layout is None or layout[0] in ("4bit", "list") else layout
 
 
 def _all_gather_object(obj):
