@@ -6426,7 +6426,7 @@ class DiffusionBackend:
     def _int8_defer_render(self, cancel: Any = None):
         """The deferred CUTLASS race (diffusion_int8_cutlass_defer) runs only between renders: this render waits for a
         race unit in flight (one weight shape), re-records its CUDA graphs once winners landed, and lets the race go
-        on once it ends and Studio stays idle. The wait ends when ``cancel`` (this generation's cancel event) is set."""
+        on once it ends and Studio stays idle."""
         refresh = int8_defer.render_begin(cancel = cancel)
         try:
             if refresh:
