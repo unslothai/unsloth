@@ -224,13 +224,74 @@ def _case_portable(
     experts_loaded = sum(
         1 for k, p in fresh.named_parameters() if ".experts." in k and "lora_" in k
     )
+    # One GPU's positional (int-keyed) optimizer.pt: mapped through the 1-GPU parameter order onto each rank.
+    order = [names[id(p)] for p in ref_opt.param_groups[0]["params"]]
+    portable_order = state["param_groups"][0]["params"] if rank == 0 else None
+    fresh_opt = adam(fresh)
+    portable.portable_load_optimizer(fresh, fresh_opt, ref_opt.state_dict())
+    fresh_names = {id(p): k for k, p in fresh.named_parameters()}
+    positional_worst = max(
+        float((st["exp_avg"] - want[fresh_names[id(p)]]["exp_avg"]).abs().max())
+        for p, st in fresh_opt.state.items()
+    )
     return {
         "why": why,
         "missing": missing,
         "worst": worst,
         "load_worst": load_worst,
         "experts_loaded": experts_loaded,
+        "order_ok": portable_order is None or portable_order == order,
+        "positional_worst": positional_worst,
+        "positional_n": len(fresh_opt.state),
     }
+
+
+class _RandomRouterMoE(torch.nn.Module):
+    """A block that loops its experts, with a sampling router (noise drawn every forward) and dropout inside each
+    expert, recording the router's draws: both passes of a forward must draw the same noise."""
+
+    def __init__(
+        self,
+        E = 4,
+        H = 8,
+    ):
+        super().__init__()
+        self.gate = torch.nn.Linear(H, E)
+        self.experts = torch.nn.ModuleList(
+            torch.nn.Sequential(torch.nn.Linear(H, H), torch.nn.Dropout(0.5)) for _ in range(E)
+        )
+        self.draws = []
+
+    def forward(self, x):
+        noise = torch.rand(x.shape[0], 1)
+        self.draws.append(noise.clone())
+        top = self.gate(x * (1 + noise)).softmax(-1).topk(2, dim = -1)
+        out = torch.zeros_like(x)
+        for e in range(len(self.experts)):
+            token, slot = torch.where(top.indices == e)
+            if token.numel():
+                out = out.index_add(
+                    0, token, self.experts[e](x[token]) * top.values[token, slot, None]
+                )
+        return out
+
+
+def _case_random_router(rank, world, tmp):
+    from torch.distributed.device_mesh import init_device_mesh
+
+    _, tpn, epn = _modules()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(_RandomRouterMoE()).train()
+    epn.apply_expert_parallel(model, mesh)
+    block = model[0]
+    torch.manual_seed(10 + rank)
+    same = []
+    for _ in range(3):
+        block.draws.clear()
+        model(torch.randn(6, 8)).sum().backward()
+        same.append(len(block.draws) == 2 and torch.equal(block.draws[0], block.draws[1]))
+    return {"same": same}
 
 
 def _case_generate(
@@ -558,3 +619,12 @@ def test_ep_expert_lists_portable_resume_matches_one_process():
     assert results[0]["worst"] <= 1e-6, results[0]
     for r in results:
         assert r["experts_loaded"] > 0 and r["load_worst"] == 0.0, r
+        assert r["order_ok"], r  # the 1-GPU parameter order, experts by global index
+        assert r["positional_n"] > 0 and r["positional_worst"] == 0.0, r
+
+
+def test_ep_expert_lists_both_passes_draw_the_same_router_randomness():
+    results = _spawn("_case_random_router")
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["same"] == [True, True, True], r

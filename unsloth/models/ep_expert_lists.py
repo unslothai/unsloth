@@ -119,6 +119,8 @@ class LocalExpertList(nn.ModuleList):
     """One per-expert ModuleList of a fused experts module under expert parallel: this rank's experts under their
     global indices (state dict names unchanged), indexed locally 0 .. hi - lo as the experts call sees them."""
 
+    _unsloth_global_expert_keys = True
+
     def __init__(self, local, lo):
         nn.Module.__init__(self)
         for e, module in local.items():
@@ -224,6 +226,10 @@ class ExpertList(nn.Module):
     len() and indexing cover all E experts; inside the block forward an index returns a call recorder / replayer,
     outside it only this rank's experts can be indexed."""
 
+    _unsloth_global_expert_keys = (
+        True  # child names are global expert indices (portable_resume orders by them)
+    )
+
     def __init__(self, local, experts, block_name):
         super().__init__()
         for e, module in local.items():
@@ -286,6 +292,16 @@ def _replay_message(lst, e, x, recorded):
         f"{recorded}. Its routing is not deterministic for one input (a sampling router?): train it without "
         "expert parallel."
     )
+
+
+def _rng_get(devices):
+    return torch.get_rng_state(), [torch.cuda.get_rng_state(d) for d in devices]
+
+
+def _rng_set(state, devices):
+    torch.set_rng_state(state[0])
+    for d, s in zip(devices, state[1]):
+        torch.cuda.set_rng_state(s, d)
 
 
 def _rng_devices(args, kwargs):
@@ -401,23 +417,29 @@ def _list_forward(shard, prior):
                 "Unsloth: expert parallel found no hidden states in the MoE block call."
             )
         calls = []
-        with torch.random.fork_rng(devices = _rng_devices(args, kwargs)):
-            lst._mode = ("record", calls)
-            try:
-                prior(
-                    *(_detach_inplace(a) for a in args),
-                    **{k: _detach_inplace(v) for k, v in kwargs.items()},
-                )
-            finally:
-                lst._mode = None
+        devices = _rng_devices(args, kwargs)
+        # Both passes draw the same randomness (router jitter, dropout); the experts draw after the router, as in
+        # one process, and the RNG ends where it would there.
+        before = _rng_get(devices)
+        lst._mode = ("record", calls)
+        try:
+            prior(
+                *(_detach_inplace(a) for a in args),
+                **{k: _detach_inplace(v) for k, v in kwargs.items()},
+            )
+        finally:
+            lst._mode = None
         outputs, y_back = _exchange(shard, calls, like)
         shard.calls += 1
+        after = _rng_get(devices)
+        _rng_set(before, devices)
         cursor = [0]
         lst._mode = ("replay", outputs, cursor)
         try:
             result = prior(*args, **kwargs)
         finally:
             lst._mode = None
+            _rng_set(after, devices)
         if cursor[0] != len(outputs):
             raise RuntimeError(
                 f"Unsloth: expert parallel recorded {len(outputs)} expert calls of {type(shard.block).__name__} but "

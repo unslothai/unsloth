@@ -116,9 +116,11 @@ def _tree_keys(model):
         for j, (name, p) in enumerate(module._parameters.items()):
             if p is not None:
                 keys.setdefault(prefix + name, path + ((0, j),))
+        # Per-expert containers (ep_expert_lists) hold only this rank's experts: order them by global index.
+        experts = getattr(module, "_unsloth_global_expert_keys", False)
         for c, (name, child) in enumerate(module._modules.items()):
             if child is not None:
-                walk(child, f"{prefix}{name}.", path + ((1, c),), seen)
+                walk(child, f"{prefix}{name}.", path + ((1, int(name) if experts else c),), seen)
 
     walk(model, "", (), set())
     return keys
