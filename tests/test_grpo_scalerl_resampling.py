@@ -21,10 +21,14 @@ def _trl_sources():
     import importlib.util
 
     trl_dir = importlib.util.find_spec("trl").submodule_search_locations[0]
-    out = {"installed": open(os.path.join(trl_dir, "trainer", "grpo_trainer.py")).read()}
+    out = {
+        "installed": open(
+            os.path.join(trl_dir, "trainer", "grpo_trainer.py"), encoding = "utf-8"
+        ).read()
+    }
     up = os.path.join(WS, "temp/upstream_rl/trl/trl/trainer/grpo_trainer.py")
     if os.path.exists(up):
-        out["upstream"] = open(up).read()
+        out["upstream"] = open(up, encoding = "utf-8").read()
     return out
 
 

@@ -12,7 +12,6 @@ step reads them), then reshards. Two gloo ranks on CPU, a real fully_shard tree.
 
 import importlib.util
 import os
-import socket
 import subprocess
 import sys
 import textwrap
@@ -129,9 +128,8 @@ _WORKER = textwrap.dedent(
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def test_generate_gathers_every_fsdp2_unit_and_reshards_after(tmp_path):
