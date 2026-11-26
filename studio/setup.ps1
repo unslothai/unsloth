@@ -7676,7 +7676,16 @@ function Get-TritonWindowsRocmSpec {
 # Defined before the fast path, which reads it too.
 function Get-TritonWindowsSpec {
     param([string]$TorchVersion, [bool]$WinArm64 = $false)
-    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
+    if ($WinArm64) {
+        # Same per-torch-minor upper bound as x64 (a triton-windows built for a newer torch does not pair with
+        # this one), floored at the first win_arm64 wheel. Torch below 2.14 has no win_arm64 pairing: open floor.
+        $x64Spec = Get-TritonWindowsSpec -TorchVersion $TorchVersion
+        if ($x64Spec -match '^triton-windows>=3\.(\d+),<(\S+)$' -and [int]$Matches[1] -ge 8) {
+            $woaFloor = if ([int]$Matches[1] -eq 8) { "3.8.0.post28" } else { "3.$($Matches[1])" }
+            return "triton-windows>=$woaFloor,<$($Matches[2])"
+        }
+        return "triton-windows>=3.8.0.post28"
+    }
     if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
         switch ([int]$Matches[1]) {
             12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
@@ -8283,8 +8292,8 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
         }
     }
 }
-# win_arm64's first triton-windows wheel is 3.8.0.post28.
-$_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
+# Until torch is read below: win_arm64's first triton-windows wheel is 3.8.0.post28.
+$_tritonSpec = Get-TritonWindowsSpec -TorchVersion "" -WinArm64 ([bool]$WinArm64Venv)
 # The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
