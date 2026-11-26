@@ -221,7 +221,9 @@ bitsandbytes==0.49.2 \
     --hash=sha256:2fc0830c5f7169be36e60e11f2be067c8f812dfcb829801a8703735842450750 \
     --hash=sha256:54b771f06e1a3c73af5c7f16ccf0fc23a846052813d4b008d10cb6e017dd1c8c \
     --hash=sha256:87be5975edeac5396d699ecbc39dfc47cf2c026daaf2d5852a94368611a6823f
-    # via -r vllm-linux-cu130-torch213.in
+    # via
+    #   -r vllm-linux-cu130-torch213.in
+    #   vllm-bnb-plugin
 blake3==1.0.10 \
     --hash=sha256:036e08a6ae385a6cb53ad9e16e02e48ce78f2062d7c3716c3a188aad19ac8808 \
     --hash=sha256:0571ed32093f8cdaaa7cb2229745fd4352a12cf6c39cebcdda7f7cde2924da70 \
@@ -4710,6 +4712,12 @@ vllm==0.30.0 \
     --hash=sha256:5f8f4e890c042ffa1c3e103f81c35e2d96f60a0a175ac43a4adbae7006bef62b \
     --hash=sha256:eb3e11bab695d085098579a6eda2d602419adec3826ebfbcce9a3ffa543eb62e \
     --hash=sha256:ef52ee58c410ead0b8afb190838fa4cbcb52075596f67862a03859d984966ac4
+    # via
+    #   -r vllm-linux-cu130-torch213.in
+    #   vllm-bnb-plugin
+vllm-bnb-plugin==0.0.3 \
+    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c \
+    --hash=sha256:e884654a25a8b2a15f41644e0be28b811a176ffbe31a58a9ccc22aefc6525c7c
     # via -r vllm-linux-cu130-torch213.in
 watchfiles==1.3.0 \
     --hash=sha256:000b9688fc8133037a8b075c8ebf98f32844ff8964dda61e85c1db547dafc441 \
