@@ -135,7 +135,7 @@ test("sidebar sync survives its account marker upgrade and rejects a different a
   assert.deepEqual(methods, ["GET", "POST", "GET"]);
 });
 
-test("a validation-rejected sidebar edit does not block the corrected layout", async (t) => {
+async function checkRejectedSidebarEdit(t: TestContext, status: number) {
   const posts: Edit[] = [];
   const initial = layouts.sidebarLayout(store.getInitialState());
   let rejectFirst: ((response: Response) => void) | undefined;
@@ -162,7 +162,7 @@ test("a validation-rejected sidebar edit does not block the corrected layout", a
   store.getState().deleteCustomSection(rejected);
   const corrected = store.getState().createCustomSection("Research")!;
   await setImmediate();
-  rejectFirst!(new Response(null, { status: 422 }));
+  rejectFirst!(new Response(null, { status }));
   await setImmediate();
 
   assert.equal(posts.length, 2);
@@ -173,6 +173,54 @@ test("a validation-rejected sidebar edit does not block the corrected layout", a
     { id: "projects", targetId: "pinned", edge: "top", sectionId: null },
   ]);
   assert.equal(store.getState().pendingLayoutEdit, undefined);
+}
+
+for (const status of [413, 422]) {
+  test(`a sidebar edit rejected with ${status} does not block the corrected layout`,
+    (t) => checkRejectedSidebarEdit(t, status));
+}
+
+test("explicit unpin placements sync even if they reuse the saved ranks", async (t) => {
+  const section = "research";
+  const scope = stores.customSectionScope(section);
+  const rows = ["a", "b", "c", "d"];
+  const initial = {
+    ...layouts.sidebarLayout(store.getInitialState()),
+    sections: { research: { name: "Research", sort: "manual" as const } },
+    sectionByChatId: Object.fromEntries(rows.map((id) => [id, section])),
+    rowOrder: { research: rows },
+    sectionOrder: ["pinned", "research", "projects"],
+  };
+  const posts: Edit[] = [];
+  let finishFirst!: (response: Response) => void;
+  const first = new Promise<Response>((resolve) => { finishFirst = resolve; });
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return Response.json(initial);
+    const post: Edit = JSON.parse(String(init.body));
+    posts.push(post);
+    if (posts.length === 3) return new Response(null, { status: 413 });
+    return posts.length === 1 ? first : Response.json(post.layout);
+  });
+  await setImmediate();
+
+  const firstMove = { id: "b", targetId: "a", edge: "bottom", afterUnpin: true } as const;
+  const secondMove = { id: "d", targetId: "c", edge: "bottom", afterUnpin: true } as const;
+  store.getState().setManualOrder(scope, rows, [firstMove]);
+  await setImmediate();
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].orderMoves, [{ ...firstMove, sectionId: section }]);
+
+  store.getState().setManualOrder(scope, rows, [secondMove]);
+  finishFirst(Response.json(initial));
+  await setImmediate();
+  assert.equal(posts.length, 2);
+  assert.deepEqual(posts[1].orderMoves, [{ ...secondMove, sectionId: section }]);
+
+  store.getState().setManualOrder(scope, rows, [firstMove]);
+  await setImmediate();
+  assert.equal(posts.length, 3);
+  assert.equal(store.getState().pendingLayoutEdit, undefined);
+  assert.deepEqual(store.getState().orderMoves, [{ ...firstMove, sectionId: section }]);
 });
 
 test("a peer can upload a later edit after retrying the closed tab's pending operation", async (t) => {

@@ -62,9 +62,9 @@ export function useSidebarSectionsSync(): void {
       const base = state.syncedLayout;
       const layout = sidebarLayout(state);
       const snapshot = JSON.stringify(layout);
-      const dirty = base === undefined
+      const dirty = state.orderMoves?.some((move) => move.afterUnpin) || (base === undefined
         ? state.customSections.length > 0 || layout.sectionOrder[0] === "projects"
-        : base !== snapshot;
+        : base !== snapshot);
 
       // Freeze the edit before sending it. Reloads and other tabs can retry the same operation
       // after a lost reply, even when the user has already made further changes.
@@ -98,11 +98,11 @@ export function useSidebarSectionsSync(): void {
           if (!current()) throw new Error("Sidebar session changed");
         } });
         if (!response.ok) {
-          if (response.status === 422 && edit && current()) {
+          if ((response.status === 413 || response.status === 422) && edit && current()) {
             reconcilePersistedSidebarOrganization();
             const now = store.getState();
             if (now.pendingLayoutEdit?.id === edit.id) {
-              // Validation rejected the write before applying it. Keep the visible edits retryable.
+              // The server refused the body before applying it. Keep the visible edits retryable.
               const latest = sidebarLayout(now);
               const orderMoves = [...(edit.orderMoves ?? []), ...(now.orderMoves ?? [])].filter(
                 ({ id, targetId, sectionId }) => {
@@ -128,7 +128,7 @@ export function useSidebarSectionsSync(): void {
           schedule();
           return;
         }
-        if (JSON.stringify(sidebarLayout(now)) !== sent) {
+        if (JSON.stringify(sidebarLayout(now)) !== sent || now.orderMoves?.some((move) => move.afterUnpin)) {
           if (edit) {
             // The tab that acknowledges the pending operation can send the next edit.
             peerEditedAt = undefined;

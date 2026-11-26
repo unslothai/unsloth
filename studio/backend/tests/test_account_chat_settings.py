@@ -980,11 +980,12 @@ def test_sidebar_sections_accept_ids_already_valid_in_chat_history(client):
     assert saved["rowOrder"]["research"] == [thread_id, "existing"]
 
 
-@pytest.mark.parametrize("sort", ["manual", "updated"], ids = ["concurrent-manual", "sort-switch"])
-def test_sidebar_sections_replay_placements_for_refiled_rows_with_stale_ranks(client, sort):
+@pytest.mark.parametrize("case", ["concurrent-manual", "sort-switch", "unpin"])
+def test_sidebar_sections_replay_placements_for_rows_with_stale_ranks(client, case):
     from copy import deepcopy
 
     path = "/chat/sidebar-sections"
+    sort = "updated" if case == "sort-switch" else "manual"
 
     def save(
         operation_id,
@@ -1007,9 +1008,11 @@ def test_sidebar_sections_replay_placements_for_refiled_rows_with_stale_ranks(cl
             "rowOrder": {"research": list("abc")},
         },
     )
-    unfiled = deepcopy(initial)
-    del unfiled["sectionByChatId"]["b"]
-    common = save("unfile", unfiled, initial)
+    common = initial
+    if case != "unpin":
+        unfiled = deepcopy(initial)
+        del unfiled["sectionByChatId"]["b"]
+        common = save("unfile", unfiled, initial)
     assert common["rowOrder"]["research"] == list("abc")
 
     if sort == "manual":
@@ -1032,7 +1035,15 @@ def test_sidebar_sections_replay_placements_for_refiled_rows_with_stale_ranks(cl
         "refile",
         refiled,
         common,
-        [{"sectionId": "research", "id": "b", "targetId": "a", "edge": "bottom"}],
+        [
+            {
+                "sectionId": "research",
+                "id": "b",
+                "targetId": "a",
+                "edge": "bottom",
+                "afterUnpin": case == "unpin",
+            }
+        ],
     )
     assert result["rowOrder"]["research"] == list("cab")
     assert result["sectionByChatId"]["b"] == "research"

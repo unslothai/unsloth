@@ -39,7 +39,9 @@ def _edited_order(
     *,
     switched_to_manual = False,
 ):
-    if not importing and base != layout and not switched_to_manual:
+    if base == layout and not switched_to_manual:
+        moves = [move for move in moves if move.get("afterUnpin")]
+    elif not importing and not switched_to_manual:
         common = set(base).intersection(layout)
         reordered = [key for key in base if key in common] != [
             key for key in layout if key in common
@@ -47,11 +49,15 @@ def _edited_order(
         if not reordered:
             # Membership edits can carry cancelled drags between unchanged rows.
             moves = [
-                move for move in moves if move["id"] not in common or move["targetId"] not in common
+                move
+                for move in moves
+                if move.get("afterUnpin")
+                or move["id"] not in common
+                or move["targetId"] not in common
             ]
         elif not moves:
             return _merge_order(layout, saved)
-    if moves and (base != layout or switched_to_manual):
+    if moves:
         if saved == base and (switched_to_manual or set(saved).issubset(layout)):
             return _merge_order(layout, saved)
         order = _merge_order(saved, layout)

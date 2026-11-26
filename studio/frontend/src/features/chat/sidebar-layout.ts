@@ -57,8 +57,10 @@ export function observeSidebarLayout(
   const finish = store.persist.onFinishHydration(() => { hydrating = false; });
   const unsubscribe = store.subscribe((state, previous) => {
     if (!hydrating && state.syncedLayout !== previous.syncedLayout) return;
+    const placedAfterUnpin = state.pendingLayoutEdit?.id === previous.pendingLayoutEdit?.id &&
+      state.orderMoves?.slice(previous.orderMoves?.length ?? 0).some((move) => move.afterUnpin);
     if (
-      state.customSections === previous.customSections &&
+      !placedAfterUnpin && state.customSections === previous.customSections &&
       state.sectionByChatId === previous.sectionByChatId &&
       state.sectionByProjectId === previous.sectionByProjectId &&
       state.sectionByPageId === previous.sectionByPageId &&
@@ -66,7 +68,7 @@ export function observeSidebarLayout(
       state.sectionOrder === previous.sectionOrder
     ) return;
     // Rehydration also allocates fresh arrays and maps for unchanged values.
-    if (JSON.stringify(sidebarLayout(state)) !== JSON.stringify(sidebarLayout(previous))) {
+    if (placedAfterUnpin || JSON.stringify(sidebarLayout(state)) !== JSON.stringify(sidebarLayout(previous))) {
       onChange(hydrating);
     }
   });

@@ -114,6 +114,7 @@ export interface SidebarOrderPlacement {
   id: string;
   targetId: string;
   edge: "top" | "bottom";
+  afterUnpin?: true;
 }
 
 interface SidebarOrderMove extends SidebarOrderPlacement {
@@ -126,6 +127,7 @@ function readOrderMoves(value: unknown): SidebarOrderMove[] | undefined {
     move !== null && typeof move === "object" &&
     typeof move.id === "string" && typeof move.targetId === "string" &&
     (move.sectionId === null || typeof move.sectionId === "string") &&
+    (move.afterUnpin === undefined || move.afterUnpin === true) &&
     (move.edge === "top" || move.edge === "bottom"),
   );
 }

@@ -376,6 +376,7 @@ test("a pinned chat dropped on a section loses its pin", () => {
   assert.equal(plan.effects.unpinChat, "p1");
   assert.deepEqual(plan.effects.fileInSection, { kind: "chat", id: "p1", sectionId: S });
   assert.deepEqual(plan.effects.orders[0].ids, ["lab", "s1", "p1"]);
+  assert.equal(plan.effects.orders[0].place?.afterUnpin, true);
 });
 
 test("an empty section takes a drop anywhere in it, and rings itself", () => {

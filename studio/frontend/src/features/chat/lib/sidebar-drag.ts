@@ -267,19 +267,26 @@ function planSectionDrop(
     };
   }
   const next = placeIdAt(ids, drag.id, target?.id ?? null, target?.edge ?? "bottom");
+  const unpinProject = drag.kind === "project" && ctx.pinnedProjectIds.has(drag.id);
+  const unpinChat = drag.kind === "chat" && ctx.pinnedChatIds.has(drag.id);
   const effects: SidebarDropEffects = {
     orders: [{
       scope,
       ids: next,
-      ...(target && { place: { id: drag.id, targetId: target.id, edge: target.edge } }),
+      ...(target && { place: {
+        id: drag.id,
+        targetId: target.id,
+        edge: target.edge,
+        ...((unpinProject || unpinChat) && { afterUnpin: true as const }),
+      } }),
     }],
     fileInSection: { kind: drag.kind, id: drag.id, sectionId },
     switchSort,
   };
-  if (drag.kind === "project" && ctx.pinnedProjectIds.has(drag.id)) {
+  if (unpinProject) {
     effects.unpinProject = drag.id;
   }
-  if (drag.kind === "chat" && ctx.pinnedChatIds.has(drag.id)) {
+  if (unpinChat) {
     effects.unpinChat = drag.id;
   }
   return { action: { kind: "section", sectionId }, cue, effects };

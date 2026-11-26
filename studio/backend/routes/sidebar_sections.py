@@ -40,6 +40,7 @@ class OrderMove(BaseModel):
     id: RowId
     targetId: RowId
     edge: Literal["top", "bottom"]
+    afterUnpin: bool = False
 
 
 class LayoutEdit(BaseModel):
