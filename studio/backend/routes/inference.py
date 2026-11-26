@@ -36097,17 +36097,24 @@ async def produce_openai_chat_completions(
                 gen = gguf_generate_with_tools()
                 raw_text = None
                 client_calls = None
+                # Content since the last run tool: the calling turn's own snapshot, <think> included.
+                round_has_content = False
                 turn_mark = snapshot_mark = _think_ledger_mark(_gguf_think_prov)
                 try:
                     for event in gen:
                         if cancel_event.is_set():
                             break
                         if event.get("type") == "client_tool_calls":
-                            # The calling turn's own text, not an earlier tool round's.
                             client_calls = event["tool_calls"]
-                            snapshot_mark = turn_mark
-                            raw_text = event.get("content") or ""
+                            if not round_has_content:
+                                # Not an earlier tool round's text.
+                                snapshot_mark = turn_mark
+                                raw_text = event.get("content") or ""
                             continue
+                        if event.get("type") == "tool_start" and not (
+                            event.get("provenance") or {}
+                        ).get("provisional"):
+                            round_has_content = False
                         if event.get("type") == "tool_start" or (
                             event.get("type") == "status" and not event.get("text")
                         ):
@@ -36122,6 +36129,7 @@ async def produce_openai_chat_completions(
                                 context_truncation, event
                             )
                         elif event.get("type") == "content":
+                            round_has_content = True
                             # Taken with the snapshot: a terminal empty status would move the mark past it.
                             snapshot_mark = turn_mark
                             # Content is cumulative within a turn and resets
@@ -46170,8 +46178,10 @@ async def chat_count_tokens(
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
-        if tools_to_use:
-            openai_tools = tools_to_use
+        # The GGUF loop renders the request's own tools after Unsloth's.
+        _count_client_tools = _client_tools_beside_studio_tools(payload, tools_to_use)
+        if tools_to_use or _count_client_tools:
+            openai_tools = tools_to_use + _count_client_tools
             openai_messages = _set_or_prepend_system_message(
                 openai_messages,
                 _apply_current_date_prompt(
@@ -46205,7 +46215,7 @@ async def chat_count_tokens(
             _count_auto_heal = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
-            _count_history_gate = _display_tool_name_gate(tools_to_use)
+            _count_history_gate = _display_tool_name_gate(openai_tools)
             openai_messages = [dict(msg) for msg in openai_messages]
             for _msg in openai_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):

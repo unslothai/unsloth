@@ -43407,6 +43407,15 @@ class LlamaCppBackend:
                 _client_calls = client_tool_calls_in(
                     tool_calls, client_tool_names, tool_controller.resolved_tool_name
                 )
+                if _client_calls and not has_structured_tc:
+                    # Textual repeats collapse and cap as Unsloth calls do below.
+                    if deduplicate_tool_calls:
+                        _unique_calls: dict = {}
+                        for _call in _client_calls:
+                            _fn = _call["function"]
+                            _unique_calls.setdefault((_fn["name"], _fn["arguments"]), _call)
+                        _client_calls = list(_unique_calls.values())
+                    _client_calls = _client_calls[:_MAX_TOOL_CALLS_PER_TURN]
                 if disable_parallel_tool_use:
                     _client_calls = _client_calls[:1]
                 if _client_calls:

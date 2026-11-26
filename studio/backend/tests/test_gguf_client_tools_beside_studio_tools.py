@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import routes.inference as inference_route
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.llama_cpp import LlamaCppBackend, client_tool_calls_in
 from .llama_backend_double import FakeLlamaCppBackend
 
@@ -345,6 +345,7 @@ def _route_client(monkeypatch, backend):
     app = FastAPI()
     app.include_router(inference_route.router)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 
@@ -413,3 +414,87 @@ def test_streaming_route_sends_tool_call_deltas_and_tool_calls_finish(monkeypatc
     assert deltas[-1]["finish_reason"] == "tool_calls"
     assert "Let me check." in "".join(d["delta"].get("content") or "" for d in deltas)
     assert response.text.rstrip().endswith("data: [DONE]")
+
+
+def test_repeated_textual_client_calls_collapse_to_one(monkeypatch):
+    block = (
+        '<tool_call>{"name": "mcp_homeassistant__call_action", '
+        '"arguments": {"query": "light.living_room on"}}</tool_call>'
+    )
+    backend, _payloads = _backend(monkeypatch, [[_sse({"content": block * 3}), _done()]])
+    executed = _executed(monkeypatch)
+
+    events = _loop(backend)
+
+    assert executed == []
+    [handed_back] = [e for e in events if e["type"] == "client_tool_calls"]
+    assert [call["function"]["name"] for call in handed_back["tool_calls"]] == [
+        "mcp_homeassistant__call_action"
+    ]
+
+
+class _ReasoningToolBackend(_RecordingToolBackend):
+    is_loaded = True
+    reasoning_always_on = True
+
+    def generate_chat_completion_with_tools(self, **kwargs):
+        self.kwargs = kwargs
+        yield {"type": "content", "text": "Searching first. "}
+        yield {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "c1"}
+        yield {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "c1", "result": ""}
+        yield {"type": "status", "text": ""}
+        # The loop records the wrap it adds around delta.reasoning_content.
+        thought = "The light state is in Home Assistant."
+        prov = kwargs["reasoning_provenance"]
+        prov["wrapped"] = prov.get("wrapped", 0) + 1
+        prov.setdefault("wraps", []).append({"len": len(thought)})
+        yield {"type": "content", "text": f"<think>{thought}</think>"}
+        yield {"type": "status", "text": ""}
+        yield {
+            "type": "client_tool_calls",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_ha",
+                    "type": "function",
+                    "function": {"name": "mcp_homeassistant__GetLiveContext", "arguments": "{}"},
+                }
+            ],
+        }
+        yield {"type": "metadata", "usage": {}, "timings": {}, "finish_reason": "tool_calls"}
+
+
+def test_non_streaming_client_call_keeps_the_calling_turns_reasoning(monkeypatch):
+    response = _route_client(monkeypatch, _ReasoningToolBackend()).post(
+        "/chat/completions", json = _request(stream = False)
+    )
+
+    assert response.status_code == 200
+    message = response.json()["choices"][0]["message"]
+    assert message["reasoning_content"] == "The light state is in Home Assistant."
+    assert message["content"] is None
+    assert message["tool_calls"][0]["id"] == "call_ha"
+
+
+class _CountingBackend(_RecordingToolBackend):
+    def _request_reasoning_kwargs(self, *_args, **_kwargs):
+        return {}
+
+
+def test_count_tokens_prices_client_tools_beside_studio_tools(monkeypatch):
+    priced = []
+
+    def fake_count(_backend, _payload, _messages, tools, *_args):
+        priced.append(tools)
+        return 1, {}, ""
+
+    monkeypatch.setattr(inference_route, "_count_chat_context_tokens", fake_count)
+    response = _route_client(monkeypatch, _CountingBackend()).post(
+        "/chat/count_tokens", json = _request(stream = False)
+    )
+
+    assert response.status_code == 200, response.text
+    assert [tool["function"]["name"] for tool in priced[0]] == [
+        "web_search",
+        "mcp_homeassistant__GetLiveContext",
+    ]
