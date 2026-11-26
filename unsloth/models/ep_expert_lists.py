@@ -465,6 +465,8 @@ def _grouped_spec(shard, lst, counts):
         return "experts of different types, or with hooks"
     if _fake_quantized(experts, names):
         return "fake-quantized (QAT) expert projections"
+    if _projection_hooks(experts, names):
+        return "hooks on expert projections"
     cache = shard.__dict__.setdefault("_grouped", {})
     key = tuple(id(m) for m in experts)
     hit = cache.get(key)
@@ -486,6 +488,16 @@ def _fake_quantized(experts, names):
                 base, "weight_fake_quantizer", None
             ) is not None or _has_activation_fake_quantizer(proj):
                 return True
+    return False
+
+
+def _projection_hooks(experts, names):
+    # The grouped builders read the weights without calling the projections, so their hooks would not run.
+    for expert in experts:
+        for name in names:
+            for m in expert._modules[name].modules():
+                if m._forward_hooks or m._forward_pre_hooks:
+                    return True
     return False
 
 
