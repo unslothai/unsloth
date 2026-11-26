@@ -86,12 +86,10 @@ class GaLoreProjector:
         self.scale = scale
         self.proj_type = proj_type
 
-        # Quantization settings for the projection matrix
         self.quant = quant
         self.quant_group_size = group_size
         self.quant_n_bit = n_bit
 
-        # Adaptive update scheduling state
         self.cos_threshold = cos_threshold
         self.gamma_proj = gamma_proj
         self.queue_size = queue_size
@@ -100,7 +98,6 @@ class GaLoreProjector:
         self.svd_count = 0
         self._ortho_float_cache = None
 
-        # Projection matrix state
         self.ortho_matrix = None
         self.ortho_matrix_scales = None
         self.ortho_matrix_zeros = None

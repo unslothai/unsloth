@@ -1740,8 +1740,7 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     if getattr(base, "_unsloth_legacy_resume", False):
         return scheduler
 
-    # On a per-instance subclass, not the instance: an instance attribute lands in state_dict and
-    # torch.save cannot pickle it.
+    # On the subclass, not the instance: attrs enter state_dict, which torch.save can't pickle.
     def load_state_dict(self, state_dict):
         state_dict = dict(state_dict)
         if getattr(built, "_unsloth_loaded_previous", False):
@@ -1794,9 +1793,8 @@ def _install_legacy_resume(
             )
             optimizer._unsloth_loaded_legacy = False
             return original(previous)
-        # Every recognisably legacy checkpoint, not only reshaped ones: torch takes group
-        # hyperparameters from the saved dict, so a LoRA resume, where the layouts coincide,
-        # would otherwise reload the 0.0 this change exists to correct.
+        # Migrate every recognisably legacy checkpoint, not only reshaped ones: torch takes group
+        # hyperparameters from saved dict, so same-layout LoRA resumes reload the 0.0 this fixes.
         migrated = _migrate_legacy_optimizer_state(
             state_dict, optimizer, legacy_params, legacy_sizes, group_roles
         )
@@ -1941,7 +1939,6 @@ class UnslothTrainer(SFTTrainer):
                     # GaLore group: keep as-is, since no embeddings are here.
                     new_groups.append(group)
                     continue
-                # Non-GaLore group: split out embedding params.
                 embed_params = []
                 other_params = []
                 for p in group["params"]:
@@ -2205,7 +2202,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 inspect.signature(TrainingArguments).parameters.keys()
             )
 
-            # Separate kwargs into trainer kwargs and config kwargs.
             trainer_kwargs = {}
             additional_config_kwargs = {}
             unknown_kwargs = {}
@@ -2246,7 +2242,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                     if key in config_fields or key in moved_params or key in migrated:
                         setattr(config, key, value)
 
-            # Reconstruct kwargs for Trainer.
             kwargs = trainer_kwargs
             kwargs["args"] = config
         _ensure_warnings_issued(args[0] if args else kwargs.get("model"))

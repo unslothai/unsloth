@@ -211,9 +211,8 @@ class _HalfTransportReduceScatter(_Base):
 
 
 def _group_grad_dtype(group):
-    """Returns the 16-bit grad dtype of all trainable params, or None; frozen params are ignored
-    (FSDP2 dtypes follow trainable ones); if any param is reduced outside DP (TP, DTensor / spmd)
-    or has an explicit grad dtype, the whole group keeps the stock collective."""
+    """Returns the 16-bit grad dtype of trainable params (frozen ignored) or None; a param reduced
+    outside DP (TP, DTensor, spmd) or with an explicit grad dtype makes the group stock."""
     params = [
         p
         for p in (getattr(group, "fsdp_params", None) or [])

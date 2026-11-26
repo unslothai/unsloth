@@ -604,9 +604,8 @@ def _find_parts(model) -> _Parts:
         base = getattr(child, "original_module", child)  # PEFT modules_to_save wraps it
         norm_like = "norm" in name.lower() or "Norm" in type(base).__name__
         too_big = bool(hidden) and sum(p.numel() for p in base.parameters()) > 4 * hidden
-        # A learned position or token-type table before the layers (GPT-2 wpe, OPT/BART/Whisper
-        # embed_positions) is indexed by positions, so later stages need nothing from it;
-        # token-indexed tables stay refused.
+        # Learned position or token-type tables (GPT-2 wpe, OPT/BART/Whisper embed_positions) are
+        # indexed by positions, so later stages need nothing; token-indexed tables stay refused.
         positional = (
             isinstance(base, nn.Embedding)
             and isinstance(vocab, int)
@@ -635,8 +634,7 @@ def _find_parts(model) -> _Parts:
         if _owner(child, lm_head)[0] is not None:
             continue
         if _owner(child, decoder)[0] is not None:
-            # A wrapper around the decoder (OPTModel.decoder, BartDecoderWrapper.decoder): fine when it holds
-            # nothing else.
+            # Decoder wrapper (e.g. OPTModel.decoder): fine when it holds nothing else.
             if all(id(p) in inside for p in child.parameters()):
                 continue
             # A multimodal wrapper (Qwen3_5Model, Gemma4Model): the decoder plus towers beside it.
@@ -1707,8 +1705,7 @@ class _StageContext:
         self.carry = (
             carry  # [(trailing shape, dtype)] for layers carrying several tensors, else None
         )
-        # carry_at(boundary) -> that layout at the stage boundary before layer `boundary`, when it depends on the
-        # cut (Inkling 2: the block attention residual stack grows by one entry per block); None = `carry`.
+        # carry_at(boundary): layout before a layer when it depends on the cut; None = carry.
         self.carry_at = None
         # (decoder, causal LM, sequence_segments or None) when the model runs one stage's layers itself
         # (pipeline_stage_forward), else None: the whole model forward with pass-through layers.
@@ -1970,8 +1967,7 @@ class _PPStageModule(nn.Module):
     def _stage_forward(self, x, *carry, **kwargs):
         ctx = self._pp_ctx
         moe = ctx.moe
-        # Every rank holds the batch: later stages get the real token ids too (the embedding stub ignores them),
-        # so model-level code reading input_ids (padding / pad-token masks, token types) sees what one GPU does.
+        # Later stages get real input_ids (stub ignores them), so model code matches one GPU.
         ids = kwargs.pop(_STAGE_IDS, None)
         if ctx.is_first:
             input_ids = x
@@ -2615,7 +2611,6 @@ class PipelineParallel:
         dp_mesh = self.dp_mesh if self.dp_mesh is not None else self.ddp_mesh
         dp_group = dp_mesh.get_group() if dp_mesh is not None else None
         if num_items_in_batch is None:
-            # Tokens the loss averages over in one process: shifted labels that are not ignored.
             count = (labels[:, 1:] != -100).sum()
             if dp_group is not None:
                 # ... over the whole global batch: every dp replica's slice.
@@ -2672,9 +2667,8 @@ class PipelineParallel:
         return m  # GPipe: every forward before any backward; multi-stage schedules: bounded by m
 
     def _size_frozen_table_memo(self, m):
-        """One memo slot per in-flight micro-batch for the frozen lookup tables on this stage, so each micro-batch's
-        checkpoint recompute finds its rows instead of reading the table again; a new memo step per optimizer
-        step. Returns the frozen table module (None: no tables here, or an unsloth_zoo without bounded memos)."""
+        """One memo slot per in-flight micro-batch (reset each step) so checkpoint recomputes find
+        rows; returns table module, None if no tables or unsloth_zoo lacks bounded memos."""
         tables = sys.modules.get("unsloth_zoo.frozen_table_store")
         if tables is None or not hasattr(tables, "set_frozen_table_memo_slots"):
             return None
@@ -2790,8 +2784,7 @@ class PipelineParallel:
         )
 
     def _grad_copies(self, grad):
-        """Returns (local tensor, copy count) for this rank's grad: plain grads repeat over world/pp
-        ranks; DTensor shards repeat over that count divided by shard dims."""
+        """Returns (local tensor, copy count): world/pp copies; DTensor divides by shard dims."""
         stage_ranks = torch.distributed.get_world_size() // self.num_stages if self.composed else 1
         try:
             from torch.distributed.tensor import DTensor, Replicate
@@ -2823,8 +2816,7 @@ class PipelineParallel:
         parameters = None,
         eps = 1e-6,
     ):
-        """Clips by the global 2-norm over all stages (squares summed over pp) and returns the norm;
-        with dp/tp each element is counted once (square sum / copy count) over the world."""
+        """Clips by global 2-norm over stages and returns it; dp/tp count each element once."""
         import torch.distributed as dist
 
         from .tp_native import _square_sum
@@ -2859,8 +2851,7 @@ class PipelineParallel:
         scaler.unscale_(optimizer)
 
     def _bind_scaler(self, scaler):
-        """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips.
-        Bound until scaler.update(), so the scaler pickles again where torch.amp allows it and holds no pipeline."""
+        """unscale_ and step agree on found_inf across stages; bound until scaler.update()."""
         import weakref
 
         bound = scaler.__dict__.get("_unsloth_pp_agree")

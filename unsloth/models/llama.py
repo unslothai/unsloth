@@ -282,7 +282,6 @@ from math import sqrt as math_sqrt
 
 KV_CACHE_INCREMENT = _decode_graphs.KV_CACHE_INCREMENT
 torch_nn_functional_softmax = torch.nn.functional.softmax
-# SDPA has GQA internally.
 SDPA_HAS_GQA = "enable_gqa" in (_torch_sdpa.__doc__ or "")
 # Decode paths here and in models importing this name avoid cuDNN on sm90 / sm100.
 from ..utils.attention_dispatch import (
@@ -634,8 +633,7 @@ def _gqa_decode_scores(Qn, Kn, out):
     Qg = Qn.view(bsz, n_kv_heads, n_groups, head_dim)
     out_g = out.view(bsz, n_kv_heads, n_groups, cached_len)
     if torch.compiler.is_compiling():
-        # Dynamo graph-breaks on out= into a strided view; out= skips autocast, the functional
-        # matmul is not, so keep it off: fp16 over bf16 Q / K overflows scores eager keeps finite.
+        # Dynamo graph-breaks on out=; autocast stays off since fp16 over bf16 Q/K overflows.
         with torch.autocast(Qn.device.type, enabled = False):
             out_g.copy_(torch_matmul(Qg, Kn.transpose(2, 3)))
     else:
@@ -909,7 +907,6 @@ def LlamaAttention_fast_forward_inference(
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    # When qlen == vlen and attn_mask is None, causal attention is the right choice.
     Q_len = Qn.shape[-2]
     K_len = Knn.shape[-2]
     if attention_mask is None and Q_len == K_len:
@@ -1003,7 +1000,6 @@ def _decode_attention_core(self, Qn, kv_seq_len, attention_mask, bsz, sdpa_gqa_w
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    # When qlen == vlen and attn_mask is None, causal attention is the right choice.
     Q_len = Qn.shape[-2]
     K_len = Knn.shape[-2]
     if attention_mask is None and Q_len == K_len:
@@ -2294,7 +2290,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         if shift_labels is not None:
             shift_labels = shift_labels.to(lm_head_device)
 
-        # Output last hidden states without logits if asked.
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if keep is not None:
                 hidden_states = slice_hidden_to_keep(hidden_states, keep)
@@ -2881,8 +2876,7 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         super().__init__()
         # cos/sin multiplier (1.0 except yarn / longrope); set before any cache build.
         self.attention_scaling = 1.0
-        # Derive inv_freq from the config like transformers so rope_scaling is not dropped; scaled
-        # subclasses are excluded to avoid double-scaling.
+        # Config inv_freq keeps rope_scaling; scaled subclasses are skipped (double-scaling).
         if config is not None:
             base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
@@ -4011,8 +4005,7 @@ class FastLlamaModel:
                 raise RuntimeError(
                     "Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
                 )
-            # vLLM cannot take a revision and fetches the default branch, so pinning only config and
-            # tokenizer would mix two refs in one model.
+            # vLLM fetches its default branch, so pinning only config and tokenizer mixes refs.
             if _vllm_will_load_weights(fast_inference, num_labels) and revision is not None:
                 logger.warning_once(
                     f"Unsloth: Ignoring revision = `{revision}` since vLLM loads weights from "

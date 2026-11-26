@@ -212,7 +212,6 @@ def _module_param_ids(base, getter):
 
 
 def _embedding_leaf_names(base):
-    """Leaf names (embed_tokens, lm_head, wte, ...) of the input / output embeddings."""
     targets = []
     for getter in ("get_input_embeddings", "get_output_embeddings"):
         try:
@@ -421,7 +420,6 @@ def _is_full_finetune(model):
 
 
 def _tower_params(model):
-    """Trainable vision / audio tower weights of a VLM."""
     config = getattr(_unwrapped_models(model)[-1], "config", None)
     if not any(
         getattr(c, key, None) is not None for c in _configs(config) for key in _SUBMODEL_CONFIG_KEYS

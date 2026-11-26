@@ -507,7 +507,6 @@ def _patch_class(cls):
         modules = {leaf: self._modules[leaf] for leaf in leaves}
         weights = {leaf: _merged_weight(modules[leaf]) for leaf in leaves} if names else {}
         fused_cover = [leaf for leaf in leaves if weights.get(leaf) is not None]
-        # Leave the fused kernel only when the non-fused path applies more adapters.
         use_slow = sum(leaf in called for leaf in leaves) > len(fused_cover)
         merged = []
         frame = _Frame(merged)

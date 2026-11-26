@@ -1592,8 +1592,7 @@ class FastSentenceTransformer(FastModel):
             )
         return resolved
 
-    # A whole model is not a module: its load() opens a modules.json of its own, which
-    # nothing here has read, and below 6.0 imports what that names from the folder.
+    # Whole models: their modules.json is unread here; below 6.0 load() imports what it names.
     _WHOLE_MODEL_CLASS_NAMES = frozenset(
         {"SentenceTransformer", "CrossEncoder", "SparseEncoder", "BaseModel"}
     )
@@ -1942,8 +1941,7 @@ class FastSentenceTransformer(FastModel):
                     resolved["revision"] = FastSentenceTransformer._snapshot_revision(cached)
                 return cached
             if cached is not None:
-                # Unreachable with a cached absence: pin the load to the cached snapshot's commit, since the load
-                # itself may reach a newer branch.
+                # Unreachable with cached absence: pin the cached commit, not a newer branch.
                 snapshot_commit = ""
                 for probe in (
                     "config.json",
@@ -2818,7 +2816,6 @@ class FastSentenceTransformer(FastModel):
                 model_kwargs["quantization_config"] = bnb_config
                 st_device = None
 
-            # Gradient checkpointing conflicts with torch.compile, so warn the user.
             _use_gc = use_gradient_checkpointing
             if _use_gc and _use_gc != False:
                 print("Unsloth Warning: Gradient checkpointing is incompatible with torch.compile.")
@@ -3792,7 +3789,6 @@ class _PatchAfterImportLoader(importlib.abc.Loader):
 
     def exec_module(self, module):
         self._loader.exec_module(module)
-        # Hand the module back its own loader, then patch the fully imported package.
         module.__loader__ = self._loader
         if getattr(module, "__spec__", None) is not None:
             module.__spec__.loader = self._loader

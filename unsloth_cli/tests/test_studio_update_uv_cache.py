@@ -254,9 +254,8 @@ def test_a_blank_value_is_replaced_even_when_the_default_cache_wins(
 
 
 def test_the_chosen_cache_is_named_rather_than_left_to_the_child(monkeypatch, tmp_path, caches):
-    """setup.sh changes directory before running uv, so a cache uv resolved from a
-    uv.toml beside the caller is not one the child would find again. Whichever cache
-    wins, it reaches the child as an explicit path."""
+    """setup.sh changes directory before uv runs, so a cache uv resolved from a uv.toml beside the
+    caller is not found by the child; pass the chosen cache explicitly."""
     studio_cache, default_cache = caches
     for warm, expected in ((default_cache, default_cache), (studio_cache, studio_cache)):
         # Reset both caches and the backfilled marker each iteration, or the previous run decides.
@@ -351,8 +350,7 @@ def test_a_metadata_only_default_cache_is_not_warm(monkeypatch, tmp_path, caches
 
 
 def test_a_default_cache_uv_cannot_name_does_not_block_the_redirect(monkeypatch, tmp_path, caches):
-    """No uv on PATH, or `uv cache dir` failing, must not strand the update on a cache
-    nobody can identify."""
+    """No uv on PATH or failing uv cache dir must not strand the update on an unnamed cache."""
     studio = _studio()
     studio_cache, _default = caches
     monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda cwd = None: None)
@@ -571,9 +569,8 @@ def test_a_caller_supplied_cache_is_never_promoted_to_the_marker(monkeypatch, tm
 
 
 def test_a_staged_update_parks_its_choice_in_the_stage(monkeypatch, tmp_path, caches):
-    """STUDIO_HOME names the LIVE install even in a staged child and the stage can still
-    be rejected, so the choice waits there for stage() to promote it. Dropping it left
-    desktop-only installs on the content fallback forever."""
+    """STUDIO_HOME names the live install even in a staged child; a rejectable stage parks the
+    choice for stage() to promote, else desktop-only installs stay on content fallback forever."""
     studio = _studio()
     _studio_cache, default_cache = caches
     _fill(default_cache)
@@ -793,9 +790,8 @@ def test_the_probe_leaves_uvs_tilde_alone(monkeypatch, tmp_path):
 
 
 def test_a_probe_that_blows_up_costs_a_preference_not_the_update(monkeypatch, tmp_path):
-    """subprocess.run is implemented with Popen, so any caller that fakes Popen reaches
-    this probe too. Raising through an update is not acceptable, and neither is reporting
-    no cache at all: it falls back to the platform default install.sh:646 uses."""
+    """subprocess.run goes through Popen, so a faked Popen reaches this probe; it must neither raise
+    nor report no cache, falling back to the platform default install.sh uses."""
     studio = _studio()
     monkeypatch.setattr(studio.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
@@ -1094,8 +1090,7 @@ def _simulate_case_folding(monkeypatch):
 
 
 def test_a_folded_bucket_name_counts_as_warmth(tmp_path, monkeypatch):
-    """On APFS or NTFS Archive-V0 is the directory uv writes at archive-v0; a case-sensitive match
-    called it cold while studio/setup.sh, which folds, called it warm; they split on Mac."""
+    """APFS or NTFS fold Archive-V0 to archive-v0, so the warmth check must fold case too."""
     studio = _studio()
     cache = tmp_path / "shared-uv"
     (cache / "Archive-V0" / "pkg").mkdir(parents = True)

@@ -178,7 +178,6 @@ def _given(
     names,
     tensors_only = False,
 ):
-    """Whether any of `names` gets a non-None value (a tensor value when tensors_only)."""
     check = _is_media_value if tensors_only else (lambda v: v is not None)
     if any(check(kwargs.get(name)) for name in names):
         return True
@@ -540,8 +539,7 @@ def _vision_modules(mm, tower):
 
 
 def _managed_by_fsdp(*modules):
-    """Whether any parameter issues a gradient collective: a DTensor (only where its gradient is not
-    None), or a replicated trainable one with the all-reduce hook."""
+    """Param issues a grad collective if DTensor with grad, or replicated trainable with hook."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
@@ -759,9 +757,8 @@ def _outside_backbone(model, chain):
 
 
 def _generic_media_plan(model, named):
-    """Outermost forward agrees on each media input (one bit per sorted candidate name) when a
-    multimodal model has trainable or FSDP params outside its language model; inputs with no
-    dummy raise on every rank on mismatch; returns (host, leftover modality) or None."""
+    """Outermost forward agrees per media input (1 bit per sorted name) when trainable or FSDP
+    params outside LM; no-dummy mismatches raise on all ranks; returns (host, leftover) or None."""
     chain = _forward_chain(model)
     candidates = _media_candidates(chain)
     if not candidates or not _is_multimodal(chain, candidates):
@@ -874,8 +871,7 @@ def install_vision_dummy(model):
         return None
 
     def embed_hook(module, args, output):
-        # Into the LM input like an image rank's masked_scatter; decoder inputs then require grad on
-        # every rank, so FSDP2 runs reduce-scatter at the same backward point, not deferred.
+        # Decoder inputs need grad on all ranks, so FSDP2 reduce-scatters in the same backward.
         total = state["pending"]
         if total is None or not isinstance(output, torch.Tensor):
             return None

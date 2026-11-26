@@ -16,7 +16,6 @@ import numpy as np
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Modules that need patching but may already be imported
 critical_modules = ["trl", "transformers", "peft"]
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
@@ -217,7 +216,6 @@ def _reraise_device_type_error_with_gpu_hint(exception):
     ) from exception
 
 
-# Try importing PyTorch and check version
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
     if Version(unsloth_zoo_version) < Version("2026.8.15"):
@@ -756,7 +754,6 @@ if DEVICE_TYPE == "cuda":
                 possible_cudas = [find_cuda.search(x) for x in possible_cudas]
                 possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
 
-                # Try linking cuda folder, or everything in local
                 if len(possible_cudas) == 0:
                     os.system("ldconfig /usr/local/")
                 else:
@@ -806,7 +803,6 @@ if DEVICE_TYPE == "cuda":
             )
     del libcuda_dirs
 elif DEVICE_TYPE == "hip":
-    # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
     # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.

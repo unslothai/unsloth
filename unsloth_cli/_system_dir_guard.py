@@ -61,7 +61,6 @@ def _normalize(path, pathmod):
 
 
 def system_dirs(windir, pathmod = _os.path):
-    """The Windows folders Unsloth refuses to run from."""
     # SysWOW64 too: a 32-bit elevated shell opens there, same unwritable folder.
     return [_normalize(pathmod.join(windir, name), pathmod) for name in ("System32", "SysWOW64")]
 
@@ -199,7 +198,6 @@ _PATH_TAKING_STUDIO_COMMANDS = ("run", "update")
 
 
 def _carries_a_value(arg):
-    """Whether this token can hold a value, attached or not."""
     if not arg.startswith("-"):
         return True
     if arg.startswith("--"):
@@ -412,7 +410,6 @@ _TOGGLE_TOKENS = frozenset(("1", "true", "yes", "on", "0", "false", "no", "off")
 
 
 def _names_a_path(name, value):
-    """Whether the working directory is what resolves this variable's value."""
     if name in _INLINE_JSON_ENV and value.startswith(("[", "{")):
         return False
     if name in _TOGGLE_ENV and value.lower() in _TOGGLE_TOKENS:
@@ -532,7 +529,6 @@ def relocation_target(
     makedirs = _os.makedirs,
     home_isdir = None,
 ):
-    """Where a desktop-managed command should run instead, or None."""
     home = safe_user_dir(environ, windir, pathmod, sep, expanduser)
     if not home:
         return None

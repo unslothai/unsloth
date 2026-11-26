@@ -131,8 +131,7 @@ def _checksum(weight):
         elif size == 1:
             flat = flat.view(torch.uint8)
         else:
-            # 4 bytes as one int32 word, 8-byte dtypes (float64) as two: the bits, never a value conversion
-            # (float64 weights below 1 in magnitude all converted to 0, so every such weight matched).
+            # Compare bits, not values: float64 |x| < 1 became 0, so all such weights matched.
             flat = flat.view(torch.int32)
         total = 0
         for start in range(0, flat.numel(), _CHUNK):
@@ -178,8 +177,7 @@ def _rewritten(quantizer, weight):
 
 
 def _unversioned_write(record, weight, state):
-    """An inference tensor has no version counter: an in place write (a reload under inference mode) keeps its
-    (pointer, None) state, so compare its values with the rounding checksum instead. False when it cannot tell."""
+    """Inference tensors have no version counter: compare values to the checksum; else False."""
     if (
         state is None
         or state[1] is not None

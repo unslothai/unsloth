@@ -325,10 +325,9 @@ def _same(tensor):
 
 
 def _detached(tensor):
-    # Pack hook of the non-reentrant trial; nothing backpropagates it, so it is freed when its
-    # output dies; returning the input makes a gc-invisible cycle (torch's saved_tensors_hooks
-    # warning) that kept each block's trial forward until exit (14 GiB between steps; Qwen3-30B-A3B,
-    # 32K tokens, aux loss on).
+    # Pack hook detaches: nothing backpropagates it, so it is freed with its output; returning the
+    # input makes a gc-invisible cycle keeping trial forwards alive (14 GiB between steps,
+    # Qwen3-30B-A3B, 32K tokens).
     return tensor.detach()
 
 
@@ -378,7 +377,6 @@ def _note_hidden_states_exposed(module, args, kwargs):
 
 
 def _watch_hidden_states(model):
-    """Hook the model and each decoder list's owner to record whether hidden states are returned."""
     modules = dict(model.named_modules())
     lists = {id(layer_list) for layer_list in _layer_lists(model)}
     owners = [model]
@@ -403,8 +401,7 @@ def _pool_outputs_stay_valid(layer, hidden_states):
 
 
 def _input_grad_must_leave_pool(hidden_states):
-    """True when the input gradient outlives the generation: a leaf's .grad (kept live, so the pool is
-    never released) or a checkpoint's backward, which recomputes (a new generation) before reading it."""
+    """True when the input grad outlives its generation: a leaf .grad or a checkpoint backward."""
     if not hidden_states.requires_grad:
         return False
     node = hidden_states.grad_fn
@@ -432,8 +429,7 @@ def _input_grad_must_leave_pool(hidden_states):
                 continue
             edge_fresh = fresh or allocates
             if allocates and i == 0 and name.startswith(_ADDITIVE_BACKWARD):
-                # addmm / baddbmm hand their additive input `grad` itself (beta = 1), unless it was
-                # broadcast (a bias), which the engine sums to its shape in new storage
+                # addmm/baddbmm pass grad through unless broadcast, which gets new storage.
                 full = 3 if name.startswith("Baddbmm") else 2
                 variable = getattr(n, "variable", None)
                 edge_fresh = fresh or (variable is not None and variable.dim() < full)
@@ -496,10 +492,8 @@ def _pool_grad_hook(param):
 
 
 def _param_grads_out_of_pool(layer):
-    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it.
-    Hooks follow requires_grad at each grad-mode call, not the first call: PEFT's set_adapter /
-    disable_adapter flip it, and the first graphed call can be a reference forward (TRL DPO's "ref"
-    adapter, disable_adapter) with the trained adapter frozen."""
+    """Copies a first .grad (pool memory a replay overwrites); hooks track requires_grad on each
+    grad-mode call, not just the first, since PEFT set_adapter or disable_adapter flip it."""
     if not torch.is_grad_enabled():
         return  # this call makes no parameter gradient
     hooked = layer.__dict__.get("_unsloth_block_grad_hooks")
@@ -529,8 +523,7 @@ def _in_nonreentrant_checkpoint():
 
 
 def _graphs_unsafe_moe(layer, note = True):
-    """MoE routing / grouped GEMMs read token counts the capture cannot hold (Qwen3-MoE: host copy
-    during capture, routing outputs overwritten by the next replay)."""
+    """MoE routing reads token counts the capture cannot hold; replay overwrites outputs."""
     moe = layer.__dict__.get("_unsloth_block_graphs_moe")
     if moe is None:
         # "experts" child: transformers 4.57 DeepSeek-V2 / V3, GLM4-MoE have no num_experts.
@@ -566,13 +559,7 @@ def _flex_block_mask_call(
     return False
 
 
-# Auto: graphs start when launch time is at least the ratio threshold x GPU time and all calls had one shape.
-# The ratio is measured on forward block calls only; the checkpoint recompute and backward launch more
-# per GPU millisecond, so on Ampere and newer a forward ratio near 1 already gains a lot: A100 Qwen3-4B
-# QLoRA 2x1024 measured 1.14-1.51 across fresh processes and ran 310 ms/step with graphs vs 390 ms
-# without, so a 1.2 threshold split one run setup into two speeds by host jitter. A100 ratios 0.55-0.92
-# gained nothing (-1.2% to +1.0%). On T4 (sm75) graphs were 4-7% slower at ratios 0.66-1.11 (Qwen3-0.6B
-# LoRA 2x1024), so below sm80 the threshold stays 1.2.
+# Auto turns graphs on when launch/GPU ratio reaches 1.0 on sm80+ or 1.2 below sm80, with one shape.
 _AUTO_WARMUP_PASSES = 2
 _AUTO_MEASURE_CALLS = 4
 _AUTO_SLEEP_CYCLES = 20_000_000  # ~10-15 ms: the block's launches queue behind it
@@ -658,8 +645,7 @@ def _auto_is_cuda(hidden_states):
 
 
 def _dynamo_callback_active():
-    """True when a torch.compile frame callback is set (a callable, or False for run-only frames);
-    it can differ by rank after recompile fallbacks."""
+    """True if a compile frame callback is set; can differ by rank after recompile fallbacks."""
     try:
         from torch._C._dynamo import eval_frame
         return eval_frame.get_eval_frame_callback() is not None
@@ -732,8 +718,7 @@ def _compiled_inside_ddp(ddp):
 
 
 def _auto_ddp_local_reason(ddp):
-    """Why this rank can never turn graphs on for this DDP model (None: it may). Read on every rank
-    at enrollment and sent as a vote of 0, so a rank-local answer still reaches every rank."""
+    """Why this rank can never turn graphs on (None: it may); a vote of 0 reaches all ranks."""
     if _CUDAGRAPH_MODE != "auto":
         return "UNSLOTH_BLOCK_CUDAGRAPHS is not auto"
     if not _enabled():
@@ -758,8 +743,7 @@ def _auto_ddp_local_reason(ddp):
 
 
 def _auto_ddp_vote_device(ddp):
-    """The rank's own GPU for NCCL (the module's parameter device, never the ambient current device:
-    with device_ids=None that can be another rank's GPU), the CPU otherwise (gloo, cpu:gloo)."""
+    """Module's parameter device for NCCL, never the ambient current device; CPU for gloo."""
     import torch.distributed as dist
 
     backend = str(dist.get_backend(ddp.process_group)).lower()
@@ -823,11 +807,9 @@ def _auto_ddp_enroll(ddp):
         "switching": False,
     }
     _AUTO_DDP_SESSIONS[ddp] = session
-    # On the DDP wrapper, not on ddp.module: a torch.compile of ddp.module (ddp.module.compile(),
-    # DDP(torch.compile(model))) on one rank only would trace a module hook away there while an eager
-    # rank votes, so the ranks would enter different collectives. The wrapper's own call stays eager
-    # under any compile of the module it wraps, so every rank reaches this hook; a compiled module is
-    # a vote of 0 there.
+    # Hook on the DDP wrapper, not ddp.module: a torch.compile of ddp.module on one rank would trace
+    # the hook away while eager ranks vote, so ranks enter different collectives; the wrapper call
+    # stays eager, so every rank reaches the hook; a compiled module votes 0.
     if _auto_ddp_pre_forward not in ddp._forward_pre_hooks.values():
         ddp.register_forward_pre_hook(_auto_ddp_pre_forward)
     previous = auto["ddp"]
@@ -848,10 +830,9 @@ def _join_enabled(ddp):
 
 
 def _auto_ddp_pre_forward(ddp, args):
-    # Plain function (torch.save(ddp) pickles it); runs eagerly before DDP forward (vote 0 if
-    # ddp.module is compiled); under torch.compile traces to nothing, so fullgraph=True works and
-    # fullgraph=False gets no break; compiled forwards never vote; local veto reaches other ranks at
-    # next eager vote.
+    # Plain function (torch.save pickles it); runs eagerly before DDP forward (vote 0 if ddp.module
+    # is compiled); traces to nothing under compile, so fullgraph=True works and fullgraph=False
+    # gets no break; compiled forwards never vote; local veto reaches ranks at next eager vote.
     if torch.compiler.is_compiling():
         return
     _auto_ddp_step(ddp, _dynamo_callback_active())
@@ -1005,8 +986,7 @@ def _auto_ddp_admit(session, layer):
 
 
 def _auto_ddp_call_reason(session, layer):
-    """Per block call of an enrolled run, on every path: None (this call may take part), why it
-    vetoes graphs, or _NOT_OURS (plain for this call only: outside the owning DDP forward)."""
+    """Block call: None (may take part), a veto reason, or _NOT_OURS (outside the DDP forward)."""
     owner = session["owner"]()
     if owner is None:
         return _NOT_OURS
@@ -1301,8 +1281,7 @@ def _region_recompile_limit(kinds):
     return max(16 * kinds + 16, 32)
 
 
-# gpt-oss builds its flex mask inside attention, so the block broke and recompiled per length;
-# DeepSeek-V4.1 top-k gather [B, S, min(index_topk, T), D] fails Inductor backward on torch 2.14
+# gpt-oss flex masks in attn recompile per length; DeepSeek-V4.1 Inductor fails on torch 2.14.
 _SKIP = {"GptOssDecoderLayer", "DeepseekV41DecoderLayer"}
 
 
@@ -1371,8 +1350,7 @@ def _rebind_globals(fn):
 
 
 def _inline_compiled(fn):
-    """Inside blocks call the original so dynamo inlines it (inlining the wrapper hits Unexpected
-    type CatchErrorsWrapper on torch 2.13 and 2.14); outside, the wrapper is unchanged."""
+    """Blocks call the original (dynamo inlines it); inlining the wrapper fails on torch 2.13, 2.14."""
     original = getattr(fn, "_torchdynamo_orig_callable", None)
     if (
         not isinstance(original, types.FunctionType)
@@ -1627,7 +1605,6 @@ def _causal_conv1d_adapter(original, depthwise_conv):
 
 
 def _namespaces(fn, depth = 3):
-    """Global namespaces a forward reaches through wrappers (closures) and module-level helpers."""
     seen, out, todo = set(), [], [(fn, 0)]
     while todo:
         f, d = todo.pop()
@@ -1708,8 +1685,7 @@ def _route_sm_count(modules = None):
 
 
 def _prepare_gdn(layer, hidden_states):
-    """Self-check fla's opaque op on this layer's shapes, then point the GatedDeltaNet forward's
-    chunk kernel at the adapter. Runs eagerly, before the first trace."""
+    """Eagerly self-checks fla's opaque op on this layer's shapes before the first trace."""
     gdn = getattr(layer, "linear_attn", None)
     if gdn is None or _GDN_OP[0] is not None:
         return
@@ -1934,8 +1910,7 @@ def _band_kernel_attention(query, key, value, window, scaling):
 
 
 def _band_kernel_ready(layer, hidden_states):
-    """Eager: the interval kernel may serve this sliding layer (CUDA sm80+, passed its self check at the
-    layer's head_dim). Checked per dtype; the router also reads the verdict for the call's dtype."""
+    """Eager: interval kernel on CUDA sm80+ if its self check passed for this head_dim/dtype."""
     if os.environ.get(_BAND_KERNEL_ENV, "1") == "0" or hidden_states is None:
         return False
     if not hidden_states.is_cuda or torch.version.hip is not None:
@@ -2148,8 +2123,7 @@ def _settle_mask_flags(layer, kwargs):
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
-# True only inside Unsloth's own compiled block (fullgraph=False, a graph break is legal), not when the
-# block is inlined into a user's torch.compile, which may be fullgraph=True. Read by unsloth_zoo.
+# True only in Unsloth's own block (fullgraph=False), not in a user's fullgraph=True compile.
 _IN_COMPILED_REGION = [False]
 _PACKED_MODULE = "unsloth.utils.hf_packed_attention"
 _DISPATCH_MODULE = "unsloth.utils.attention_dispatch"
@@ -2426,8 +2400,7 @@ def _checkpointing(forward, contract = None):
         outermost = type(self).forward is forward_with_checkpointing or (
             getattr(self.__dict__.get("forward"), "__func__", None) is forward_with_checkpointing
         )
-        # transformers >= 5.24: without grad there is no backward to replay the layer, so it runs as is, cache
-        # included (generating from a model left in training mode). 5.23 checkpoints it with the cache cleared.
+        # 5.24+: no-grad layers run as is, cache kept; 5.23 checkpoints and clears the cache.
         if (
             self.gradient_checkpointing
             and self.training
@@ -2478,7 +2451,6 @@ def _wrap(
     checkpoint_outside = getattr(cls.forward, "_unsloth_block_checkpoint_outside", False)
     contract = getattr(cls.forward, "_unsloth_block_checkpoint_contract", None)
     if _is_hf_checkpoint_wrapper(original):
-        # Compile the layer's own forward; checkpointing goes back outside the block (below).
         contract = _checkpoint_contract(original)
         original, checkpoint_outside = original.__wrapped__, True
     # Host-read packed lengths / PrefixGrouper segments stay stock.
@@ -2633,9 +2605,7 @@ def _wrap(
                     try:
                         return _graphs_run(self, hidden_states, args, kwargs)
                     except Exception as e:
-                        # DDP: a graph variant that fails to compile (its own first compile, after
-                        # the plain variant already passed the checked bit) falls back to plain and
-                        # votes 0, instead of ending one rank while the others wait for it.
+                        # DDP: failed graph compile runs plain and votes 0, so peers never wait.
                         if (
                             not ddp_run
                             or not _backend_compile_failed(e)
@@ -2771,10 +2741,8 @@ def _wrap(
             bit == 2 and not checked & 2 and not _IN_TRIAL[0] and _in_nonreentrant_checkpoint()
         )
         if (bit == 1 or nonreentrant) and not checked & trial_bit:
-            # Grad-mode trial runs first (RNG forked) and checkpoint recomputes must not demote
-            # below it; in a non-reentrant checkpoint (or a no-grad call in one) our saved-tensor
-            # hooks (detaching pack, see _detached) keep the trial graph out of the checkpoint
-            # frame, whose recompute would save fewer tensors.
+            # Grad-mode trial runs first (RNG forked); recomputes must not demote below it;
+            # detaching hooks (_detached) keep the trial out of non-reentrant checkpoint frames.
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             hooks = (
                 torch.autograd.graph.saved_tensors_hooks(_detached, _same)
@@ -2932,7 +2900,6 @@ def _layer_lists(model):
 
 
 def _layers(model):
-    """(layer, legacy) per decoder layer, shared modules once."""
     seen, layers = set(), []
     for layer_list, legacy in _find_layer_lists(model):
         for layer in layer_list:
@@ -2977,9 +2944,8 @@ def _lora_would_fold(experts):
 
 
 def _selective_dequant_requested(experts):
-    # zoo's selective / chunked bnb 4-bit expert dequant plans from host-read token counts, so it
-    # declines inside a trace: experts it should run on must stay out of the compiled block.
-    # Never getattr: on packed experts (MXFP4) gate_up_proj is a property that dequantizes the stack.
+    # zoo's selective/chunked bnb dequant plans from host token counts and declines in a trace, so
+    # experts stay out of the block; never getattr gate_up_proj on MXFP4 (it dequantizes).
     try:
         chunked = int(os.environ.get("UNSLOTH_MOE_DEQUANT_CHUNK_EXPERTS", "0")) > 0
     except ValueError:
@@ -3093,9 +3059,8 @@ def _install_router_capture_hooks(model):
 
 
 def _rebind_hooked_instances(model, cls, before):
-    """accelerate's device-map hooks (a model split over GPUs) call the forward bound at load, `_old_forward`, not
-    the class attribute. Left there, transformers' >= 5.23 checkpoint wrapper sees it is no longer the class forward
-    and runs the stock layer with neither checkpointing nor the compiled block: point them at the installed forward."""
+    """accelerate device-map hooks call the load-time _old_forward; if left, transformers >= 5.23
+    runs the stock layer without checkpointing or block; repoint them to installed forward."""
     rebound = 0
     for module in model.modules():
         if type(module) is not cls:
@@ -3204,8 +3169,7 @@ def patch_block_compile(model):
         _watch_hidden_states(model)
     model.__dict__["_unsloth_block_compile_installed"] = True
     if _CUDAGRAPH_MODE == "auto":
-        # A new model decides again: a launch-bound model loaded first must not turn graphs on for
-        # a GPU-bound one. Graphs that went off for shape churn stay off.
+        # New model decides; launch-bound first must not enable graphs; shape churn stays off.
         state = _CUDAGRAPH_STATE
         if _AUTO_DDP and state["off"] == "ddp":
             # DDP veto (voting 0) ends with its run; once its pool frees, a new model decides.

@@ -257,8 +257,7 @@ NATIVE_BACKEND_TABLE = (
         "type": "XLA",
         "action": "refuse",
         "label": "torch_xla (TPU / XLA)",
-        # accelerate/utils/imports.py:30-41 (USE_TORCH_XLA, default on), state.py:766-767: XLA wins
-        # whenever torch_xla imports.
+        # XLA wins whenever torch_xla imports; USE_TORCH_XLA defaults on.
         "package": "torch_xla",
         "unless_env_false": "USE_TORCH_XLA",
     },

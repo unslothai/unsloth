@@ -22,8 +22,7 @@ _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
 # True inside _block_compile's own compiled blocks (not a user's outer compile); see _leaves_block.
 IN_COMPILED_BLOCK = [False]
-# efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens;
-# int32_split: fast calls run in document groups to keep flash's varlen backward under int32.
+# efficient: fast SDPA mem-efficient calls; int32_split: doc groups keep flash under int32.
 HF_PACKED_ATTENTION_STATS = {
     "fast": 0,
     "fallback": 0,

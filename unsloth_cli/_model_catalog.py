@@ -375,8 +375,7 @@ def _preferred_complete_gguf(path: str) -> Optional[str]:
 
 
 def _cached_gguf_load_id(row: dict) -> str:
-    """Cached row's local GGUF, else its identifier: a bare repo id hits detect_gguf_model_remote,
-    whose GatedRepoError skips local fallback, so downloaded gated GGUFs read as non-GGUF."""
+    """Local GGUF if cached, else the id; a bare id's GatedRepoError skips local fallback."""
     load_id = row.get("load_id") or row["repo_id"]
     resolved = _preferred_complete_gguf(load_id)
     if resolved:

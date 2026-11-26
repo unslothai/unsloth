@@ -118,8 +118,7 @@ def _active_adapters(model):
 
 
 def _router_extra_args(module, parent):
-    # Routers taking e_score_correction_bias or expert_bias get the same-named tensor from the
-    # parent MoE block; None when a required argument has none
+    # Routers with e_score_correction_bias or expert_bias take it from the parent; else None.
     try:
         params = list(inspect.signature(module.forward).parameters.values())[1:]
     except (TypeError, ValueError):
@@ -188,8 +187,7 @@ _CHECK_LOGIT_STDS = (1.0, 4.0)
 
 
 def _check_formula(rr, module, x, extra):
-    """None if the zoo formula reproduces top-k weights, else why not; a stored False (sigmoid,
-    correction-bias, MiniMax-M2, HY-V3, LFM2-MoE) fails: replay silently keeps natural routing."""
+    """None if the formula matches top-k; stored False fails, silently keeping natural routing."""
     formula = getattr(module, "_unsloth_replay_formula", None)
     if formula is False or formula is None:
         return "routing replay has no weight formula for this router (e.g. sigmoid routing)"

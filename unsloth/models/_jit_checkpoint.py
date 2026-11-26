@@ -33,8 +33,7 @@ def _world():
 
 
 def _agreement_group(dist):
-    """A CPU (gloo) group: the vote is a host-side int, so it never waits for the device stream at a step
-    boundary. Collective to create, which is fine at install time (every rank builds the Trainer)."""
+    """CPU gloo group: host-side vote, no device sync; collective creation is fine at install."""
     if "gloo" in str(dist.get_backend()).lower():
         return None
     try:

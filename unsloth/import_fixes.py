@@ -77,7 +77,6 @@ def Version(version):
         )
 
 
-# Ignore logging messages
 class HideLoggingMessage(logging.Filter):
     __slots__ = ("text",)
 
@@ -155,7 +154,6 @@ def suppress_cuda_printf():
 if not UNSLOTH_ENABLE_LOGGING:
     import sys
 
-    # Applied to stderr for FBGEMM (pytorch/FBGEMM utils.py#L43-L52) and CUTLASS SM90-vs-SM100 MMA / arch / TMA errors.
     sys.stderr = HidePrintMessage(sys.stderr)
     # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/gemm/triton_gemm/utils.py#L43-L52
     sys.stderr.add_filter("TMA benchmarks will be running")
@@ -163,7 +161,6 @@ if not UNSLOTH_ENABLE_LOGGING:
     sys.stderr.add_filter("Arch conditional MMA instruction used without targeting")
     # CUTLASS arch conditional errors for various architectures
     sys.stderr.add_filter("CUTE_INVALID_CONTROL_PATH")
-    # CUTLASS TMA-related errors when not targeting correct architecture
     sys.stderr.add_filter("Trying to use tma without CUTE_ARCH_TMA")
     # Drop only torchao's cosmetic cpp-extension warning rather than raising its logger level.
     logging.getLogger("torchao").addFilter(
@@ -216,7 +213,6 @@ if not UNSLOTH_ENABLE_LOGGING:
         category = DeprecationWarning,
     )
 
-    # Resource warnings from internal socket/file operations
     warnings.filterwarnings("ignore", message = r"unclosed.*socket", category = ResourceWarning)
     warnings.filterwarnings("ignore", message = r"unclosed file.*dev/null", category = ResourceWarning)
 
@@ -1294,8 +1290,7 @@ def _remove_legacy_numpy_image_helpers(module):
         pass
 
 
-# transformers 5 backend methods reject or mis-handle numpy; `rescale` silently returns float64,
-# so patching cannot be gated on exceptions.
+# transformers 5 methods reject numpy; rescale silently gives float64, so patch unconditionally
 _IMAGE_METHOD_PATCH_FLAG = "_unsloth_numpy_image_method"
 
 # Names installed on a class, so the patch can be fully undone.
@@ -4818,8 +4813,7 @@ def fix_transformers_rope_scaling_drops_theta():
     owner = _rope_scaling_property_owner()
     if owner is not None and _rope_scaling_setter_is_patched(owner):
         return
-    # After a reload the cached LlamaConfig still inherits the old owner, so a probe that cannot
-    # see the live owner must not veto; the wrapper is a no-op when unneeded.
+    # Reload leaves the old owner inherited; a blind probe must not veto; no-op when unneeded.
     probe_can_see_owner = owner is None or _rope_probe_inherits(owner)
     if probe_can_see_owner and not _transformers_rope_scaling_assignment_drops_theta():
         return
@@ -6699,7 +6693,6 @@ def _is_custom_torch_build(raw_version_str):
     local = raw_version_str.split("+", 1)[1]
     if not local:
         return False
-    # fullmatch: cu/rocm need a trailing digit, cpu/xpu are exact, case-insensitive.
     return not re.fullmatch(r"cu\d[\d.]*|rocm\d[\d.]*|cpu|xpu", local, re.IGNORECASE)
 
 
@@ -7316,7 +7309,6 @@ def _torch_too_old_message(attribute, package, exception):
         f"a {package} with a torch that cannot serve it.",
     ]
     if floor is not None:
-        # A known floor means the attribute was added in that release, so this torch is the older side and upgrading is the remedy.
         lines += [
             f"torch.{attribute} first appears in torch {floor}, so this torch is the "
             f"older half.",
@@ -7643,7 +7635,6 @@ def _triton_distribution(offending_path = None):
             names = []
     if not names:
         names = [name for name in _TRITON_PROVIDERS if _installed_version(name) != "unknown"]
-    # The distribution that ships the offending file is tried first, ahead of list order, when metadata identifies it.
     owner = _distribution_owning_path(names, offending_path)
     if owner is not None:
         names = [owner] + [name for name in names if name != owner]
@@ -8794,7 +8785,6 @@ def fix_vllm_pdl_blackwell():
         # Old vLLM version without PDL support: nothing to patch.
         return
 
-    # vLLM version already includes the fix?
     VLLM_PDL_FIX_VERSION = "0.15.0"
     try:
         vllm_version = Version(importlib_version("vllm"))
@@ -10727,7 +10717,6 @@ def fix_peft_transformers_weight_conversion_import():
         importlib.import_module("peft.utils.transformers_weight_conversion")
         return False
     except ModuleNotFoundError as exc:
-        # Only act on our specific drift class.
         missing = getattr(exc, "name", "") or ""
         if missing not in (
             "transformers.conversion_mapping",
@@ -11515,14 +11504,12 @@ def _is_rocm_torch_build() -> bool:
     except Exception:
         pass
 
-    # Environment hints commonly present on ROCm runtimes.
     for key in _ROCM_ENV_HINT_KEYS:
         value = os.environ.get(key, "")
         if isinstance(value, str) and value.strip():
             _log_rocm_detection(f"Unsloth: ROCm detection matched environment key `{key}`.")
             return True
 
-    # Filesystem / driver hints for ROCm stacks.
     for path in _ROCM_PATH_HINTS:
         try:
             if path.exists():
@@ -11571,7 +11558,6 @@ def _iter_amdgpu_asic_id_table_candidates():
 
 
 def configure_amdgpu_asic_id_table_path():
-    # Honor an existing valid user-provided path.
     configured = os.environ.get(_AMDGPU_ASIC_ID_TABLE_PATH_ENV, "").strip()
     if configured:
         configured_path = Path(configured)
@@ -11581,7 +11567,6 @@ def configure_amdgpu_asic_id_table_path():
         except Exception:
             pass
 
-    # Only attempt this on ROCm-like environments.
     if not _is_rocm_torch_build():
         return None
 
@@ -12213,7 +12198,6 @@ def _get_vllm_cuda_mismatch_message(error):
     if wanted_cuda is None:
         return None
 
-    # Detect what CUDA version is actually available on the system
     system_cuda_display = None  # Human-readable, e.g. "13.0"
     system_cuda_major = None
     try:
@@ -12792,7 +12776,6 @@ def fix_peft_stale_torchao_import_error():
         try:
             return original(*args, **kwargs)
         except ImportError as exc:
-            # Only the version complaint; any other torchao import failure is a real problem and must still surface.
             message = str(exc)
             if _TORCHAO_STALE_VERSION_ERROR.search(message) is None:
                 raise
@@ -13379,9 +13362,8 @@ def disable_torchao_if_torch_too_old():
     return True
 
 
-# vLLM's separate process imports torchao itself, never sees a parent monkey-patch and fails the
-# same way; sitecustomize is the one hook reaching a process we do not launch (site imports it off
-# the inherited PYTHONPATH); a .pth needs a real site directory a library should not write into.
+# vLLM's subprocess imports torchao itself and never sees parent monkey-patches; only sitecustomize
+# (via PYTHONPATH) reaches unlaunched processes; a .pth would mean writing into a site dir.
 
 _SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
 
@@ -13942,8 +13924,7 @@ def _make_safe_int_mm(mod, original):
                 input.device
             )
 
-        # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads
-        # past the end of ``input`` when M is not a 64-multiple (illegal address), and copies the weight every call.
+        # Keep qdata.t() (cuBLASLt TN); row-major copies overread on sm89 when M % 64 != 0.
         if not mat2.is_contiguous() and not (keep_transposed and mat2.t().is_contiguous()):
             mat2 = mat2.contiguous()  # silently gives incorrect result without this
         if (not input.is_contiguous()) and (
@@ -14241,7 +14222,6 @@ def _dill_distribution_paths(root):
                     if not name or name.startswith("#"):
                         continue
                     name = name.replace("/", ".").split(".")[0]
-                    # One file on disk, or it claims nothing.
                     if os.path.isfile(os.path.join(root, name + ".py")):
                         add(root, name + ".py")
         except Exception:

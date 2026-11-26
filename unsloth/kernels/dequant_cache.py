@@ -199,8 +199,7 @@ def cached_count():
 
 
 def clear_dequant_cache(oom = False, release = False):
-    """Drop every cached weight (and the budgets: they are recomputed at the next optimizer step).
-    release=True also returns the freed blocks to the driver, for other processes."""
+    """Drop cached weights and budgets; release=True also returns freed blocks to the driver."""
     with _lock:
         held = bool(_CACHE)
         shrunk = [index for index, size in _HELD.items() if size > 0]
@@ -280,9 +279,8 @@ _SHRINK_UNSAFE = set()  # device indices whose last shrink was a size drop or me
 
 
 def _note_shrink(index, kind):
-    """Until the peak rises, peak - current counts freed cache; after a plain clear (evaluation,
-    inference, saving, end of training, smaller budget) the last transient still holds; size
-    drops or pressure stay conservative."""
+    """Until the peak rises, peak - current counts freed cache; after a plain clear the last
+    transient still holds; size drops or pressure stay conservative"""
     measured = _usable(index)
     peak = measured[2].get("allocated_bytes.all.peak", 0) if measured is not None else float("inf")
     _SHRINK_PEAK[index] = peak
@@ -291,8 +289,7 @@ def _note_shrink(index, kind):
 
 
 def _mark_growth(index):
-    """Growth past last measurement (more tokens, longer sequence, matmul rows, another run) uses
-    the conservative bound on a stale peak after a shrink; else the next safe point measures."""
+    """Growth past the last measurement marks a stale post-shrink peak unsafe until remeasured."""
     if index in _SHRINK_PEAK and index not in _SHRINK_UNSAFE:
         _SHRINK_UNSAFE.add(index)
         STATS["growth_marks"] += 1
@@ -343,7 +340,6 @@ def _evict(
     stat = "evictions",
     kind = "pressure",
 ):
-    """Drop the oldest entries of `index` until it holds at most target_bytes."""
     held = _cached_bytes(index)
     shrunk = False
     for key in [k for k, e in _CACHE.items() if e[4].device.index == index]:
@@ -371,8 +367,7 @@ def _on_optimizer_step(optimizer, args, kwargs):
             STATS["stale"] += 1
         _CHECKED.clear()
         if _HOOKS and not _PRE_RAN[0]:
-            # The model forward ran compiled as a whole, so its pre-forward shape guard never ran: a longer batch
-            # would allocate its masks and embeddings before any LoRA op could drop the cache. Cache nothing.
+            # Forward compiled as a whole skips the pre-forward hook, so nothing is cached.
             for index in list(_SEEN):
                 if _cached_bytes(index):
                     _evict(index, 0, kind = "budget")
@@ -604,8 +599,7 @@ def _is_bnb_nf4(quant_state):
 
 
 def rows_of(X):
-    """Rows of the matmul X @ W.t() (tokens): what the activations of the step scale with. 0 while tracing:
-    traced callers never read the cache here, and a shape test on a SymInt would add a guard."""
+    """Matmul rows (tokens) of X; 0 while tracing, since a shape test on a SymInt adds a guard."""
     if torch.compiler.is_compiling():
         return 0
     return X.numel() // X.shape[-1] if X.dim() > 1 and X.shape[-1] else X.numel()
@@ -649,8 +643,7 @@ def dequantize(
 
 
 # ----------------------------------------------------------------------------------------------------------
-# Opaque so the dense tensor never enters the graph and Inductor cannot reuse cached weight buffers;
-# plain CUDA kernels with no autograd wrapper, only called with grad off; cheaper than custom_op.
+# Opaque so Inductor cannot reuse dense weight buffers; grad-off CUDA, cheaper than custom_op.
 
 
 def _parts(quant_state):
@@ -923,8 +916,7 @@ def _user_callbacks(callbacks):
 
 
 def _has_nf4_weights(model):
-    """True when model holds a bitsandbytes NF4 weight the cache could serve: a parameter's quant state, or a
-    Linear4bit's own copy (FSDP2 all-gathers the packed bytes into a Parameter without it). Once per train()."""
+    """True if a module keeps an NF4 quant_state (FSDP2 Parameters lack it); once per train()."""
     try:
         for module in model.modules():
             if _is_bnb_nf4(module.__dict__.get("quant_state")):

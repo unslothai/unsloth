@@ -23,7 +23,6 @@ import torch
 __all__ = ["restore_remote_code_non_persistent_buffers"]
 
 _SCALAR_TYPES = (bool, int, float, str, type(None))
-# Arguments that only choose where buffers are built, not their values.
 _PLACEMENT_ARGUMENTS = ("device",)
 
 

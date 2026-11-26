@@ -130,8 +130,7 @@ class _PrefixCache:
 
 
 def _llada2_runner(base, ids, mask, position_ids, cache):
-    """LLaDA2's model forward only takes a square [B, 1, L, L] mask, so a cached step drives its layers directly
-    with the same mask preparation and logits dtype as its forward."""
+    """Calls LLaDA2 layers directly with its forward's [B, 1, L, L] mask prep and logits dtype."""
     inner = base.model
     hidden = inner.word_embeddings(ids)
     # LLaDA2.0 builds the 4D mask here; LLaDA2.1 dropped it, so layers take the mask as is.
@@ -257,8 +256,7 @@ def _llada2_graph(base, batch, block_length, total_length, dtype, device):
     capacity = -(-capacity // block_length) * block_length
     key = (batch, block_length, capacity, dtype, device)
     graphs = base.__dict__.setdefault("_unsloth_llada2_graphs", {})
-    # A graph replays raw weight addresses: once any parameter or buffer was re-pointed (`model.to(...)` there
-    # and back, a reload with assign, a re-stacked MoE), every captured graph would read freed memory.
+    # Graphs replay raw addresses; any re-pointed parameter or buffer would read freed memory.
     if graphs.get("weights") not in (None, _weight_addresses(base)):
         graphs.clear()
     graph = graphs.get(key)
@@ -423,8 +421,7 @@ def cached_block_sample(
     cache = _PrefixCache() if family == "llada2" else DynamicCache()
 
     def commit_then_step(commit_start, start, end):
-        """Commit x[:, commit_start:start] and run the first denoising step of x[:, start:end] in one forward,
-        then drop the active block's keys / values again: the active rows attend exactly as in a step forward."""
+        """Commit prefix and first step at once; crop active KV so rows match a step forward."""
         logits = run(x[:, commit_start:end], commit_start, end, cache, True)
         cache.crop(-(end - start))
         return logits[:, start - commit_start :]

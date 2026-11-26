@@ -282,7 +282,6 @@ def resolve_supplied_password(cli_value: "str | None", out: TextIO | None = None
 
 
 def validate_new_password(candidate: str, verify_current: Callable[[str], bool]) -> "str | None":
-    """Error if candidate is short, has spaces, or repeats the current password; else None."""
     if len(candidate) < MIN_PASSWORD_LENGTH:
         return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
     if any(ch.isspace() for ch in candidate):

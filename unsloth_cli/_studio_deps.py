@@ -110,8 +110,7 @@ def _venv_executables(root: Path) -> tuple[Path, ...]:
 
 
 def _venv_site_packages(root: Path) -> List[Path]:
-    """Active interpreter's site-packages only, since in-place upgrades leave stale lib/pythonX.Y
-    dirs; dedupe by real path (lib64 builds name one dir twice)."""
+    """Active site-packages (upgrades leave stale lib/pythonX.Y); dedupe by real path (lib64)."""
 
     def existing_inside_root(values) -> List[Path]:
         resolved_root = _resolved(root)
@@ -185,8 +184,7 @@ def _venv_site_packages(root: Path) -> List[Path]:
 
 
 def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:
-    """The first extra root holding pyvenv.cfg that is not this CLI's venv; the wheel ships studio/,
-    so the CLI would otherwise verify its own prefix."""
+    """First extra pyvenv.cfg root not this venv; wheel ships studio/, so it would self-verify."""
     running = _resolved(Path(sys.prefix))
     for root in extra_roots:
         if (root / "pyvenv.cfg").is_file() and _resolved(root) != running:
@@ -641,8 +639,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
 
 
 def running_outside_managed_venv(extra_roots: Sequence[Path] = ()) -> bool:
-    """True if this interpreter is not the managed venv the caller means; a pip-installed CLI can
-    drive an update into another venv, and answers here would describe the wrong tree."""
+    """True outside the managed venv; a pip-installed CLI can drive updates into another venv."""
     if not (Path(sys.prefix) / "pyvenv.cfg").is_file():
         # Not a venv: on Colab the system Python RECORDs legitimately list files the distro never installed.
         return True

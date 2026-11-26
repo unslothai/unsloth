@@ -71,7 +71,6 @@ def _device_free_bytes(device = None):
 
 
 def _resident_bytes(params, device):
-    """Bytes of `params` already stored on `device`."""
     if device is None:
         return 0
     target = torch.device(device)

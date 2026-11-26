@@ -28,8 +28,7 @@ import torch
 ENABLED = None
 # Whole-step graphs (attention captured too, over a power-of-two span of cache rows).
 FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
-# Largest batch the whole-step capture takes; larger batches keep the segmented (bit-exact) capture.
-# Batched decode measured slower whole-step on a T4 (+9-15%: GPU bound, nothing to hide).
+# Larger batches stay segmented (bit-exact); batched whole-step 9-15% slower on T4: GPU bound.
 FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
@@ -127,8 +126,7 @@ def _rocm_default_ok():
 
     if rocm_skinny_linear.triton is None:
         return False
-    # Process-wide (decode may run on any visible GPU, not the one current at import): every device must be
-    # a measured arch, so a gfx1151 beside another GPU keeps the eager default.
+    # Every visible GPU must be a measured arch (decode may use any), else the eager default.
     count = torch.cuda.device_count()
     archs = [torch.cuda.get_device_properties(i).gcnArchName.split(":")[0] for i in range(count)]
     return count > 0 and all(arch in rocm_skinny_linear._ARCHS for arch in archs)
@@ -335,7 +333,6 @@ def _call_bytes(
 
 
 def _allocator(device):
-    """(allocated, reserved, peak allocated) from one stats read."""
     try:
         stats = torch.cuda.memory_stats_as_nested_dict(device)
         return (
@@ -495,7 +492,6 @@ def decode_batch(
 
 
 def decode_batch_used(model):
-    """Batch size of the cache the last graph-mode decode ran on, or None."""
     for module in model.modules():
         d = module.__dict__
         store = d.get("_unsloth_graph_buffers")
@@ -560,7 +556,6 @@ def generate_with_fallback(
 
 
 def keep_only(model, bsz = None):
-    """Drops other sizes' decode buffers and graphs; the size that ran wins over bsz."""
     used = decode_batch_used(model)
     if used is not None:
         bsz = used
@@ -723,8 +718,7 @@ def alloc_decode_buffers(
                 bufs = None
                 BUFFER_EPOCH += 1
             with _no_inference_tensors():
-                # Zeroed: a captured step reads every row of its bucket, and a masked row still
-                # multiplies its V by 0, which is NaN for uninitialised NaN / inf bit patterns.
+                # Zeroed: graphs read every row; masked V*0 is NaN for uninitialised NaN/inf.
                 paged = _vmm_zeros((rows, 2, bsz, n_kv_heads, head_dim), dtype, device)
                 if paged is None:
                     paged = torch.zeros(
@@ -927,7 +921,6 @@ def invalidate(model):
 
 
 def release(model):
-    """Drops captured steps and the persistent decode buffers (frees their memory)."""
     global BUFFER_EPOCH
     found = False
     for module in model.modules():

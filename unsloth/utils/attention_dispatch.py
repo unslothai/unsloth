@@ -88,9 +88,8 @@ def _xformers_disabled_for_capability(
     probe = _xformers_runs_on_device,
     fa3_enabled = _xformers_fa3_enabled,
 ) -> bool:
-    # sm_120: xformers' cutlass op caps at sm_90 (capability-rejected), and flash-2 needs an sm_120
-    # kernel, so probe a real forward. sm_90 builds without sm_90a (FA3 off, _utils) may ship no
-    # sm_90 kernel (conda-forge xformers >= 0.0.33), so probe too; elsewhere xformers works.
+    # Probe sm_120 (xformers cutlass caps at sm_90, flash-2 needs sm_120) and sm_90 without sm_90a
+    # (FA3 off, _utils): such builds may ship no kernel (conda-forge xformers >= 0.0.33).
     if capability[0] >= 12 or (tuple(capability) == (9, 0) and not fa3_enabled()):
         return not probe()
     return False
@@ -467,8 +466,7 @@ decode_scaled_dot_product_attention.__doc__ = (
 ) + decode_scaled_dot_product_attention.__doc__
 
 
-# Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
-# device-0 verdict is wrong for layers a device_map places on another card.
+# Mixed-generation hosts: re-check per Q's device; device 0's verdict is wrong for other cards.
 _DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
 # Read at import so a traced call only indexes a tuple.
 _XFORMERS_FP32_UNSUPPORTED_BY_INDEX = tuple(c[0] >= 10 for c in _visible_capabilities())

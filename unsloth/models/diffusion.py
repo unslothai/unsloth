@@ -91,8 +91,7 @@ def is_diffusion_model(model):
 
 
 def _ensure_pad_token(model, tokenizer):
-    """Collators need a pad token (Nemotron-Labs-Diffusion ships none). Pad with EOS, as the objectives treat
-    padding as EOS-filled; never the [MASK] token. Only fills what is unset, so repeat calls change nothing."""
+    """Pad with EOS, never [MASK] (objectives treat padding as EOS); only if unset."""
     tok = getattr(tokenizer, "tokenizer", tokenizer)
     if tok is None or getattr(tok, "pad_token", None) is not None:
         return

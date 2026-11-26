@@ -104,7 +104,6 @@ class Progress:
             self._flush(wait = True)
 
     def close(self):
-        """Deliver the last queued frame, then never call on_frame again."""
         if self.on_frame is not None and not self.closed:
             self._flush(wait = True)
         self.closed = True

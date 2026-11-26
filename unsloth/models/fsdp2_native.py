@@ -85,8 +85,7 @@ _LEAF_TYPES = (
 class FSDP2Config:
     param_dtype: Optional[torch.dtype] = None  # None = model compute dtype (bf16; fp16 on T4)
     reduce_dtype: torch.dtype = torch.float32
-    # None = auto: fit-on-one-GPU models keep frozen weights replicated; otherwise reshard every
-    # block but the last.
+    # None = auto: frozen weights stay replicated if one GPU fits; else reshard all but last.
     reshard_after_forward: Optional[Union[bool, int]] = None
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
@@ -1994,8 +1993,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         and _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN") is not False
         and _supports_ignored_params(fully_shard)
     ):
-        # A frozen split table (Gemma4 / Gemma3n per-layer embeddings, 4.4 GiB) would be all-gathered whole
-        # every step: keep it whole on every rank like a frozen lookup table, as on 1 GPU.
+        # Frozen split tables (Gemma4 / Gemma3n, 4.4 GiB) stay whole: no per-step all-gather.
         frozen_split = [m for m in extra_units if not any(p.requires_grad for p in m.parameters())]
         if frozen_split:
             extra_units = [m for m in extra_units if not any(m is f for f in frozen_split)]
@@ -2727,11 +2725,9 @@ def _generate_request_bytes(model, args, kwargs):
             max_length = pick("max_length")
             if max_length is None:
                 return None
-            # generate bounds the output by max_length minus the ids it was given; cached history
-            # counts toward the cache rows below, not toward this subtraction (requested_new_tokens).
+            # new = max_length - prompt; cached history counts in cache rows below, not here.
             new = max(0, int(max_length) - prompt)
-        # Outputs generate keeps for the whole call: scores / logits are one fp32 batch x vocab tensor per
-        # generated token; attentions and hidden states per step cannot be sized here, so decline.
+        # Scores: fp32 batch x vocab per token; attentions and hidden states: decline.
         retained_per_token = 0
         if pick("return_dict_in_generate"):
             if pick("output_attentions") or pick("output_hidden_states"):
@@ -2798,8 +2794,7 @@ def _generate_request_bytes(model, args, kwargs):
         dense = dense or (isinstance(window, int) and window > 0 and keys >= window - 1)
         if dense:
             act += batch * prompt * keys * (3 * width + 2)
-        # Mixture of experts: each token is copied to its top-k experts (input, gate / up / activation and
-        # output per copy) next to the float32 router logits.
+        # MoE: token copied per top-k expert (input, gate/up/act, output); fp32 router logits.
         experts = 0
         for name in ("num_experts", "num_local_experts", "n_routed_experts"):
             value = getattr(config, name, None)
@@ -2934,8 +2929,7 @@ class _GenerateBlockStream:
 
     def __init__(self, units):
         self.units = units  # {block index: FSDP unit}
-        # CPU-offloaded shards live on the host between gathers: the decode loops must not repair
-        # per-layer devices from them (the gathered blocks publish their own device on enter).
+        # CPU-offloaded shards stay on host: decode loops must not repair devices from them.
         self.keeps_weights_on_device = not _units_offload_to_cpu(units.values())
 
     def enter(self, index):
@@ -3026,8 +3020,7 @@ def native_fsdp2_unsharded(
     if FSDPModule is None or not is_native_fsdp2(model):
         yield model
         return
-    # Re-entrant: the wrapped generate() enters again inside an outer block. Only the outermost
-    # enter gathers and only the outermost exit reshards (per sharded root).
+    # Re-entrant: only the outermost enter gathers and the outermost exit reshards, per root.
     root = _native_root(model)
     depth = root.__dict__.get("_unsloth_unsharded_depth", 0)
     root.__dict__["_unsloth_unsharded_depth"] = depth + 1
@@ -4687,9 +4680,8 @@ def _scaler_for_native(trainer):
                     t = getattr(optimizer, name, None)
                     if isinstance(t, torch.Tensor) and t.device.type != "cpu":
                         setattr(optimizer, name, t.cpu())
-                # Fused optimizers still step on inf grads (kernel skips), which advances the lr
-                # schedule; skip here too (found_inf is a host tensor, no sync); CPU offload
-                # switches adamw_torch to fused, one lr step ahead.
+                # Fused optimizers step on inf grads (advancing lr); skip here too (host found_inf,
+                # no sync). CPU offload switches adamw_torch to fused, one lr step ahead.
                 found_inf = getattr(optimizer, "found_inf", None)
                 if isinstance(found_inf, torch.Tensor) and bool(found_inf.sum() > 0):
                     return None
@@ -5305,7 +5297,6 @@ def _refuse_projection_optim(training_args):
             "UNSLOTH_FSDP2."
         )
     if "adafactor" in name:
-        # Factored second moments need whole rows / columns; step one fails on DTensor shards.
         raise ValueError(
             f"Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with optim = '{name}': Adafactor "
             "factors each weight's second moment over whole rows and columns, and native FSDP2 hands "
@@ -5395,7 +5386,6 @@ def native_fsdp2_trainer_setup(
         if tp_dp_mesh is None:
             _refuse_tensor_parallel_model(model)
         if model_init is not None:
-            # train / hyperparameter_search call model_init: fresh model would be unsharded.
             raise RuntimeError(
                 "Unsloth: native FSDP2 does not support `Trainer(model_init = ...)` or "
                 "`hyperparameter_search`: the model model_init returns would not be sharded. Build "

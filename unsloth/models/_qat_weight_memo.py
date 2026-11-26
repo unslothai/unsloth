@@ -196,8 +196,7 @@ def _rebudget():
         free, total, reserved, allocated, peak = stats
         state = _DEVICE.setdefault(device, {"main_peak": 0, "cum_peak": 0, "max_used": 0})
         if peak > state["cum_peak"]:
-            # New high water mark since the last step: the cache fills in the first forward after a
-            # step, so it is full at the peak; eval peaks hold no cache and need no room.
+            # Cache is full at peak (it fills in the first forward); eval peaks need no room.
             state["main_peak"] = max(state["main_peak"], peak - max(state["max_used"], budget[1]))
         state["cum_peak"] = peak
         limit = _cache_limit(
@@ -369,8 +368,7 @@ def _memo_forward(quantizer, w, forward):
             _drop_all()  # switched off mid-run: give the cached copies back
         return forward(quantizer, w)
     if _STATE["disabled"] or not quantizer.training:
-        # After an out of memory error, or in eval mode (evaluation, generation): free every cached
-        # weight so these phases have the memory they had without the cache, and pass through.
+        # After out of memory or in eval mode, free every cached weight and pass through.
         if _STATE["live"]:
             if not _STATE["disabled"]:
                 _STATS["eval_drops"] += 1
@@ -391,7 +389,6 @@ def _memo_forward(quantizer, w, forward):
         return forward(quantizer, w)
     out = forward(quantizer, w)
     if not same:
-        # First sighting of this tensor: remember it; cache on the next call with the same tensor.
         memo.drop()
         try:
             memo.storage = weakref.ref(storage)

@@ -188,12 +188,10 @@ _BF16_AUTOCAST_ONLY = "_unsloth_fused_lora_bf16_autocast_only"
 
 
 def _autocast_master_dtype(module, projs, X):
-    # float32 master weights under bfloat16 autocast: a float32 model trained with bf16 = True, or with
-    # neither flag on a bf16 GPU (rl.py picks bf16 autocast). PEFT's forward adds the LoRA term to a base
-    # output autocast already rounded to bfloat16, so a LoRA update under half a bfloat16 ulp of it is lost
-    # (about 95% of it at |lora_B| ~ 2e-5, the first Adam steps at lr 2e-5). Returns bfloat16 when every base
-    # is a frozen, plain float32 weight: the caller then casts X and the bases as autocast would and runs
-    # the fused kernels, which round base + LoRA once, exactly like a bfloat16 model. Else None.
+    # float32 master weights under bf16 autocast (bf16 = True, or neither flag on a bf16 GPU) lose
+    # LoRA updates under half a bf16 ulp once PEFT adds them to the rounded base; returns bfloat16
+    # only if every base is a frozen plain float32 weight (fused path rounds base + LoRA once), else
+    # None.
     if X.dtype is not torch.float32 and not (
         X.dtype is torch.bfloat16 and module.__dict__.get(_BF16_AUTOCAST_ONLY, False)
     ):
@@ -235,8 +233,7 @@ def _autocast_master_dtype(module, projs, X):
 
 
 def _is_plain_lora(proj):
-    # One enabled unmerged adapter, no dropout module, no lora_B bias (default config); else general
-    # path. Reads PEFT's __dict__ directly: getattr costs more than the routing it guards.
+    # One enabled unmerged adapter, no dropout or lora_B bias; __dict__ read beats getattr.
     state = proj.__dict__
     adapter = state.get("_active_adapter")
     if type(adapter) is not str:
@@ -326,8 +323,7 @@ def _lora_dropout_and_bias(projs, X):
 
 
 def _dropout_forward(X, p):
-    # Same RNG draws and rounding as torch.nn.Dropout under autograd: native_dropout on CUDA / XPU
-    # (ATen's fused path), a bernoulli_ noise tensor in X's dtype on CPU.
+    # Matches torch.nn.Dropout RNG: native_dropout on CUDA/XPU, bernoulli_ in X's dtype on CPU.
     if not p:
         return X, None
     if X.device.type == "cpu":
@@ -447,8 +443,7 @@ def _shared_lora_backward(
     need_A = None,
     need_B = None,
 ):
-    # LoRA grads of projections sharing X and S: X is read once for all d_A and A @ X.t(), and dX starts
-    # as S * dB @ A.t() for the base GEMMs to accumulate onto. Each d_A.t() is a row block of one buffer.
+    # Shared X, S: X read once; dX starts as S * dB @ A.t() that base GEMMs accumulate onto.
     need_A = (True,) * len(As) if need_A is None else need_A
     need_B = (True,) * len(Bs) if need_B is None else need_B
     A_rows = torch.cat([A.t() for A in As], 0)
@@ -532,8 +527,7 @@ def _lora_bias_grad(dY, S):
 
 
 def _may_overwrite_input(X):
-    # Backward writes dX into X; not when an RMSNorm saved X (its output) for its own backward,
-    # including through a view of it (tiled MLP chunks).
+    # Backward writes dX into X, unsafe when an RMSNorm saved X, even via a view (tiled MLP).
     if _is_compiling():
         return True
     base = X._base
@@ -1468,8 +1462,7 @@ class LoRA_QKV(torch.autograd.Function):
             None if mask is None else mask.view(-1, hd) for mask in (Q_mask, K_mask, V_mask)
         )
 
-        # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, both scaled by QS; K and V below are
-        # identical with their own scales.
+        # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, scaled by QS; K, V alike.
         d_QA, d_QB = _lora_AB_grads(X, Q_mask, Q_p, q_dB, QA, QB, dQ, QS, need_QA, need_QB)
         d_KA, d_KB = _lora_AB_grads(X, K_mask, K_p, k_dB, KA, KB, dK, KS, need_KA, need_KB)
         d_VA, d_VB = _lora_AB_grads(X, V_mask, V_p, v_dB, VA, VB, dV, VS, need_VA, need_VB)
@@ -1479,7 +1472,6 @@ class LoRA_QKV(torch.autograd.Function):
         d_KBias = _lora_bias_grad(dK, KS) if K_has_bias else None
         d_VBias = _lora_bias_grad(dV, VS) if V_has_bias else None
 
-        # Combine the per-projection derivatives into dX.
         if has_fp8_dgrad(QW_quant):
             dX = QW_quant.dgrad(dQ, QW)
         else:
@@ -1738,7 +1730,6 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
     elif self.merged:
         result = self.base_layer(x, *args, **kwargs)
     else:
-        # Fastpath
         if len(self.active_adapters) == 1:
             active_adapter = self.active_adapters[0]
             if active_adapter not in self.lora_A.keys():

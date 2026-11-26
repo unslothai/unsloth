@@ -111,8 +111,7 @@ def _refuse_dropout(dropout_p, training):
 
 
 def _recompute_rows(chunk, full_seq, run, grad_out, row_inputs, full_inputs, needs):
-    """Backward of query-chunked op: recomputes chunks; run(start, end, *rows, *full) -> [B, rows,
-    H, D]; row_inputs sliced on dim 2, full_inputs not; needs = ctx.needs_input_grad."""
+    """Backward recomputes chunks; run -> [B, rows, H, D]; only row_inputs sliced, on dim 2."""
     row_need, full_need = needs[: len(row_inputs)], needs[len(row_inputs) :]
     row_grads = [torch.zeros_like(t) if n else None for t, n in zip(row_inputs, row_need)]
     full_grads = [

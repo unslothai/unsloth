@@ -1143,9 +1143,8 @@ _BYTE_CHECK_CHUNK = 64 << 20
 
 
 def _equal_bytes(a, b):
-    """torch.equal of two flat uint8 views without a second full copy on either device: on one
-    device they are compared in place, otherwise in bounded slices on the loaded tensor's device (a
-    checkpoint held on the host is never copied onto the accelerator next to the gathered weight)."""
+    """torch.equal of flat uint8 views, no second full copy: in place on one device, else bounded
+    slices on the loaded tensor's device so a host checkpoint never lands on the accelerator."""
     if a.numel() != b.numel():
         return False
     if a.device == b.device:
@@ -1479,8 +1478,7 @@ def _like_param(p, local):
 
 
 def _fsdp_managed_param_ids(model):
-    """ids of FSDP2-managed params, or None when no FSDP2 state is readable (treat all DTensors as FSDP2's).
-    A readable state managing no params (every trainable param ignored) gives an empty set."""
+    """FSDP2 param ids; None if state unreadable (all DTensors count); empty if none managed."""
     ids = set()
     found = False
     for unit in fsdp2_units(model):

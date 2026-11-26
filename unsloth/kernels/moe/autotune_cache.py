@@ -363,10 +363,8 @@ def _run_moe_autotuning_on(
         dtype = dtype if weight_dtype is None else weight_dtype,
     )
 
-    # Dummy routing data
     m_sizes = torch.randint(1, total_tokens // num_experts + 1, (num_experts,), device = device)
     m_sizes = m_sizes * (total_tokens // m_sizes.sum().item())
-    # Adjust to exact total
     diff = total_tokens - m_sizes.sum().item()
     if diff != 0:
         m_sizes[0] += diff

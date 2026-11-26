@@ -35,8 +35,7 @@ def _encoder_sdpa(
     scaling = None,
     **kwargs,
 ):
-    # transformers' SDPA attention without unsloth_zoo's wrappers, which carry a __module__ that
-    # torch 2.11's dynamo cannot guard, so the compiled layers fell back to eager on Linux.
+    # SDPA, no unsloth_zoo wrapper: its __module__ defeats torch 2.11 dynamo; eager on Linux.
     out = torch.nn.functional.scaled_dot_product_attention(
         query, key, value, attn_mask = attention_mask, dropout_p = dropout, scale = scaling
     )

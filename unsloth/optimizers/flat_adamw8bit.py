@@ -237,8 +237,7 @@ def _state_ok(p, state, step):
 
 
 def _live_plans(optimizer):
-    """Read-only check of the whole optimizer, every step, before anything is allocated. Returns
-    [(gindex, group, plan, fresh)] for the fused update, or None when every group must run stock."""
+    """Read-only, per step, before any allocation: fused-update plans, or None to run stock."""
     if not flat_adamw8bit_enabled() or _unsupported_args(optimizer) or _wrapped_instance(optimizer):
         return None
     mng = optimizer.mng

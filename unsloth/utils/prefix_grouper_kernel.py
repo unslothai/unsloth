@@ -83,8 +83,7 @@ _ROCM_FLEX_STATIC = bool(getattr(torch.version, "hip", None)) and (
 _flex_attention_static = (
     torch.compile(_rocm_static_flex_entry, dynamic = False) if _ROCM_FLEX_STATIC else None
 )
-# Inside an enclosing graph the dynamic = False compile above is inlined into the caller's graph, so the padded
-# length would stay symbolic there: unsloth_zoo specializes the Q / K / V sequence sizes at trace time instead.
+# Inlined into caller's graph, padded length is symbolic; unsloth_zoo specializes Q/K/V sizes.
 _specialize_flex_shapes = None
 if _ROCM_FLEX_STATIC:
     try:
@@ -415,8 +414,7 @@ _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
 
 def _make_mask_mod(group_of_kv, is_prefix, suffix_of_kv):
-    """Same group, and kv is a prefix token or in the same suffix as q; one kv <= q guard covers
-    both, since every prefix index precedes every suffix index; matches the SDPA oracle."""
+    """Same group; kv is prefix or q's suffix; kv <= q covers both, prefixes precede suffixes."""
 
     def mask_mod(b, h, q_idx, kv_idx):
         same_group = group_of_kv[q_idx] == group_of_kv[kv_idx]

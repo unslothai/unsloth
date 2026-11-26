@@ -870,8 +870,7 @@ def _wait_for_server(
 
 
 def _cli_api_key_secret_path(name: str) -> Path:
-    """Digest identity: shared stems (foo/bar vs foo?bar, cli vs CLI) cannot share an API key;
-    ASCII-only keeps names under NAME_MAX; multibyte names re-minted per launch (issue 10595)."""
+    """Stems need own keys; ASCII-only fits NAME_MAX; multibyte names re-minted (issue 10595)."""
     safe = "".join(
         ch if (ch.isascii() and ch.isalnum()) or ch in "-_" else "_" for ch in name
     ).strip("_")
@@ -1490,8 +1489,7 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
 
 
 def _child_self_suppresses(*, in_studio_venv: bool, child_run_py: Optional[Path]) -> bool:
-    """True when the child serving Unsloth is provably THIS install's backend, which suppresses the
-    seeded credential, so the strip can be skipped. False on ANY doubt."""
+    """True only if the child is provably this install's backend; False on any doubt."""
     if in_studio_venv:
         return True
     if child_run_py is None:
@@ -2102,7 +2100,6 @@ def studio_default(
     host = _normalize_wildcard_bind_host(host)
     _require_unambiguous_ephemeral_bind(host, port)
 
-    # --verbose restores the per-request access logs suppressed by default.
     if verbose:
         _enable_verbose_access_logs()
     if disable_dns_pinning:
@@ -3781,9 +3778,8 @@ _UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 
 def _uv_no_cache_requested() -> bool:
-    """uv --no-cache discards its cache and outranks --cache-dir, so recording it aims updates at a
-    nonexistent cache; UV_NO_CACHE is not stripped, so a padded value leaves the uv cache on and
-    this must not stand the selection down."""
+    """uv --no-cache outranks --cache-dir, so recording it aims at a missing cache; UV_NO_CACHE is
+    not stripped, so padded values leave uv cache on and must not stand the selection down."""
     return (os.environ.get("UV_NO_CACHE") or "").lower() in _UV_TRUE
 
 
@@ -3875,8 +3871,7 @@ def _uv_is_store_name(name: str) -> bool:
 
 
 def _uv_cache_folds_case(cache_dir: Path) -> bool:
-    """Measured on the cache filesystem, not assumed from the platform, exactly as install.sh
-    does it: default APFS folds, ext4 does not, and a Mac can have either mounted."""
+    """Probed like install.sh: APFS folds, ext4 does not, and a Mac can have either mounted."""
     probe = cache_dir / f".unsloth-case-probe.{os.getpid()}-A"
     try:
         probe.mkdir()
@@ -3900,7 +3895,6 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
     probes = [cache_dir]
     folds = _uv_cache_folds_case(cache_dir)
     try:
-        # Only the directories uv owns.
         for entry in cache_dir.iterdir():
             if not _uv_is_store_name(entry.name):
                 # On APFS or NTFS `Python-V0` is the same path as `python-v0`.
@@ -4179,8 +4173,7 @@ def _installer_script_candidates(installer_name: str) -> List[Path]:
 
 
 def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
-    """Every candidate that exists, not just the first: an unlaunchable candidate must still
-    leave the next one to try before the network is reached."""
+    """All existing candidates, so an unlaunchable one still leaves the next before any fetch."""
     found: List[Path] = []
     for candidate in candidates:
         try:
@@ -4486,7 +4479,6 @@ def update(
         # Constructed after the idle scan (pinned by test_studio_runtime_gate).
         launcher_transaction = _WindowsLauncherUpdateTransaction()
         if staging:
-            # A staged run writes no launcher.
             launcher_transaction.enabled = False
         with launcher_transaction as launcher_update:
             _run_setup_script(verbose = verbose, repo_root = repo_root)
@@ -4689,8 +4681,7 @@ class _WindowsLauncherUpdateTransaction:
             return False
 
     def _move_launcher_aside(self) -> None:
-        """Frees the canonical launcher path so the installer can publish a replacement (uv deletes
-        third-party scripts and hard-errors when in use); non-fatal, it costs only the upgrade."""
+        """Frees launcher path: uv deletes third-party scripts, hard-errors in use; non-fatal."""
         assert self.launcher is not None and self.stale is not None
         if not self._is_valid_pe(self.launcher):
             return
@@ -4783,8 +4774,7 @@ class _WindowsLauncherUpdateTransaction:
         return None
 
     def _launcher_health_error(self) -> Optional[str]:
-        """Whether the update left a working CLI; asks the signed interpreter on an Application
-        Control denial, else good installs roll back (issue 8490)."""
+        """Signed interpreter on App Control denial; else good installs roll back (issue 8490)."""
         error = self._launcher_runs_error()
         if error is self._POLICY_BLOCKED:
             return self._interpreter_health_error(error)

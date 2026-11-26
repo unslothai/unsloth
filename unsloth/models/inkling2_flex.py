@@ -141,7 +141,6 @@ def _count(key):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Kernel
 
 
 @functools.lru_cache(maxsize = None)
@@ -324,9 +323,8 @@ def _auto_min_length(device):
             return int(override)
         except ValueError:
             pass
-    # ROCm reports gfx numbers as capability (gfx1151 = (11, 5)), so the sm80 rule would take every AMD card. This
-    # path compiles flex with dynamic shapes, which gave inf / NaN LoRA gradients on gfx1151 after a recompile
-    # (unsloth-zoo#2663); AMD stays eager unless forced.
+    # ROCm reports gfx numbers as capability, so the sm80 rule would take every AMD card; dynamic
+    # flex gave inf/NaN LoRA grads on gfx1151 (unsloth-zoo#2663); AMD stays eager unless forced.
     if getattr(torch.version, "hip", None):
         return None
     capability = _capability(device)
@@ -434,8 +432,7 @@ def _mask_interface(*args, **kwargs):
     return _block_or_eager_mask(*args, **kwargs)
 
 
-# Unsloth compiles transformers' mask builders (dynamic, not fullgraph); building the BlockMask inside that trace graph
-# breaks on the padding check and hands create_block_mask to dynamo, so this builder always runs eagerly.
+# BlockMask built inside the compiled trace breaks on the padding check, so it runs eagerly.
 @torch.compiler.disable
 def _block_or_eager_mask(
     batch_size,
@@ -487,8 +484,7 @@ def _block_or_eager_mask(
 
 
 def _attention_interface(module, query, key, value, attention_mask, **kwargs):
-    """ATTN_KEY in the AttentionInterface: the language attention layers call their patched forward instead, so only
-    the block / message attention residuals (learned queries, no mask) and unpatched callers land here: eager."""
+    """ATTN_KEY eager fallback: only block/message residuals and unpatched callers reach it."""
     eager = getattr(sys.modules.get(type(module).__module__), "eager_attention_forward", None)
     if eager is None:
         from transformers.integrations.sdpa_attention import sdpa_attention_forward as eager
@@ -805,8 +801,7 @@ def _patch_classes(model):
 
 
 def _rebind_hooked_instances(model, classes):
-    """accelerate's device-map hooks call _old_forward, bound at load, not the class attribute;
-    point them at the wrapped forward or split models would run eager attention on flex masks."""
+    """Repoint accelerate hooks' load-time _old_forward, or split models run eager attention."""
     rebound = 0
     for module in model.modules():
         cls = type(module)

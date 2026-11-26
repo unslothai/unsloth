@@ -705,8 +705,7 @@ def _metric_style(trainer):
 
 
 def _entropy_count(trainer, chunk):
-    """Tokens TRL averages entropy over: the label mask on fused-head TRL, else the attention mask or
-    every position when padding-free."""
+    """Entropy tokens: label mask (fused-head TRL), else attention mask (all if padding-free)."""
     if _metric_style(trainer) == "labels":
         return _label_count(chunk)
     if "attention_mask" in chunk:
@@ -738,10 +737,9 @@ def _is_multi_process(accelerator):
 
 
 def _can_merge_metrics(trainer, model, chunks, accelerator):
-    """Fold per-chunk entries only when token weighting provably reproduces TRL's unsplit value:
-    with several processes only under an initialized process group and without Liger (whose older
-    TRL paths average per-rank ratios), no prompt-learning PEFT (virtual token logits are counted
-    differently per version), one label source, and known TRL metric code."""
+    """Fold chunk entries only when token weighting reproduces TRL's unsplit value: no Liger (older
+    paths average per-rank ratios), no prompt-learning PEFT (logit counts vary by version), one
+    label source, known TRL metric code; multi-process needs an initialized process group."""
     if _is_multi_process(accelerator):
         import torch.distributed as dist
         if not (dist.is_available() and dist.is_initialized()):

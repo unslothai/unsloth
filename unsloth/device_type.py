@@ -219,8 +219,7 @@ def cuda_visible_capabilities(with_index = False):
 
 
 def cuda_gate_capabilities():
-    """Capabilities for a process-wide gate: all readable cards, incl. the current device when
-    readable (pre-mixed-host rule), so it is never less strict and sees known old cards."""
+    """Process-wide gate: all readable cards and current device if readable, never less strict."""
     caps = cuda_visible_capabilities()
     if caps:
         return caps

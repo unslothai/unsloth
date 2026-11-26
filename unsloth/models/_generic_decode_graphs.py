@@ -61,8 +61,7 @@ MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "16"))
 _FREE_MARGIN_BYTES = 256 * 1024 * 1024
 # A kept cache longer than this many times the call's own length is not reused (attention reads every slot).
 _KEEP_MAX_RATIO = 2
-# Captures in a row without a replay: the key changes every step, so the rest of the call decodes eagerly.
-# A healthy call captures at most twice in a row (window filling, then full).
+# Back-to-back captures without replay (key changes each step) go eager; healthy is at most 2.
 _MAX_UNREPLAYED_CAPTURES = 4
 PLANS = collections.Counter()
 EAGER_REDOS = 0
@@ -305,7 +304,6 @@ class _SegmentRecorder:
             hit = self.moved.get(key)
             if hit is not None:
                 return hit[1]
-            # First crossing of this tensor to `card`: the segment ends here, the copy runs eagerly.
             self.end()
             dst = value.to(target)
             self.moved[key] = (value, dst)
@@ -1506,8 +1504,7 @@ def _host_state_reason(before, after, q_len):
 
 
 def _snapshot(cache, rows = True):
-    """Host and device length counters a step advances, plus undo for full sliding-window rolls (not
-    idempotent); rows=False keeps counters only"""
+    """Length counters, sliding-window roll undo (not idempotent); rows=False: counters only."""
     host, device = [], []
     rolling = None
     for layer in cache.layers:
@@ -1858,8 +1855,7 @@ def _step_type_ids(kwargs, q_len):
 
 
 def _mrope_positions(model, kwargs):
-    """kwargs with the decode position_ids the model's forward would derive, computed outside the
-    graph (same ops, so the same values); unchanged when they do not apply."""
+    """Decode position_ids the forward would derive, computed outside the graph; else as is."""
     if kwargs.get("position_ids") is not None:
         return kwargs
     if getattr(getattr(model, "config", None), "model_type", None) not in _MROPE_MODEL_TYPES:
@@ -2315,8 +2311,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
 
 
 def _validate(state, key, entry, forward, kwargs, cache):
-    """First replay of a key must match the eager step bitwise, else the key is refused. Eager runs
-    last, so generation continues from its result and cache rows."""
+    """First replay of a key must match eager bitwise or the key is refused; eager runs last."""
     state.validations += 1
     start = _snapshot(_self_attention_cache(cache))
     _replay(state, entry)

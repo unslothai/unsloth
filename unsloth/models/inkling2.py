@@ -951,8 +951,7 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
         lora_config = json.load(f)
     alpha = float(lora_config.get("lora_alpha") or 0)
 
-    # PEFT saves the "default" adapter at the top of adapter_dir (others go to subfolders), and that is the one the
-    # converter reads, so its live scaling is the one to fold, whichever adapter is active.
+    # Converter reads the default adapter; fold its live scaling even if another is active.
     if "default" in (getattr(model, "peft_config", None) or {}):
         adapter = "default"
     else:

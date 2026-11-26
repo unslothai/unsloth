@@ -296,8 +296,7 @@ def _dst_lock(dst):
 
 
 def _drop_lock_file(dst):
-    """Remove ``dst``.lock once ``dst`` is published. Safe while held: every later critical section, even one that
-    still waits on the unlinked inode, only re-reads the completion marker, which is never removed again."""
+    """Unlink dst.lock after publish; waiters re-read only the never-removed completion marker."""
     try:
         os.unlink(dst + ".lock")
     except OSError:

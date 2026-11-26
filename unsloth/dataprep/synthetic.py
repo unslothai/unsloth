@@ -288,7 +288,6 @@ class SyntheticDataKit:
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
                 engine_args["dtype"] = dtype_val.split(".")[-1]
-            # Only allow valid vLLM choices
             valid_dtypes = {"auto", "bfloat16", "float", "float16", "float32", "half"}
             if engine_args["dtype"] not in valid_dtypes:
                 engine_args["dtype"] = "auto"
@@ -317,7 +316,6 @@ class SyntheticDataKit:
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
-                # Ignore --enforce-eager True
                 subprocess_commands += [
                     "--" + flag,
                 ]
@@ -507,7 +505,6 @@ class SyntheticDataKit:
         self.cleanup()
 
     def chunk_data(self, filename = None):
-        # Chunks data by max tokens and generation length
         assert filename is not None
         assert os.path.exists(filename)
         assert hasattr(self, "tokenizer")
@@ -533,7 +530,6 @@ class SyntheticDataKit:
             )
         input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
-        # Get left and right boundaries
         length = len(input_ids)
         if length <= max_tokens:
             # Fits one window: the multi-chunk path would drop it or slice wrong tokens when shorter than overlap.

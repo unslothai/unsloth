@@ -202,8 +202,7 @@ def _ep_experts(shard, prior, hidden, index, weights):
     lo, hi = shard.lo, shard.hi
     row, slot = ((got_index >= lo) & (got_index < hi)).nonzero(as_tuple = True)
     if row.numel() == 0:
-        # Nothing routed here: one zero row through the experts keeps their gradients defined (zeros). It is tied
-        # to the received tensors so this rank still runs the exchange's backward that every other rank runs.
+        # Nothing routed: zero row keeps expert grads defined; ranks run the exchange backward.
         xc = got_x.new_zeros((1, x.shape[-1])) + got_x[:0].sum()
         ic = got_index.new_zeros((1, 1))
         wc = got_w.new_zeros((1, 1)) + got_w[:0].sum()
@@ -240,8 +239,7 @@ def _ep_experts_forward(shard, prior):
 
 
 def _localize(shard, ep):
-    """The DTensor shards tp_native made -> plain local parameters (DDP-ignored, any optimizer steps them),
-    each tagged with how to gather it back: (dim, groups, per, E, E_pad)."""
+    """DDP-ignored local params from DTensor shards; each tagged (dim, groups, per, E, E_pad)."""
     tpn = _tpn()
     for owner, name in shard.swaps:
         dt = owner._parameters[name]
@@ -610,10 +608,9 @@ def ep_full_adapter_state_dict(
     adapter = None,
     dst = None,
 ):
-    """Collective over ep ranks returning the state dict with experts gathered to the 1-GPU shape;
-    with an adapter only its expert tensors are gathered (frozen base stacks stay local, else
-    every rank holds all experts); dst alone receives them on CPU; other ranks get None; other
-    replica groups skip it."""
+    """Collective over ep ranks returning the state dict, experts gathered to the 1-GPU shape; with
+    an adapter only expert tensors are gathered (frozen base stays local, else every rank holds
+    all experts); dst alone gets them on CPU, others None; other replica groups skip it."""
     import torch.distributed as dist
 
     if adapter is None:

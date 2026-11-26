@@ -217,10 +217,9 @@ def _is_untouched(
     value,
     mirrored_from = None,
 ):
-    """True if value is indistinguishable from name's declared default, read from mirrored_from's
-    __init__ when given, since a generated config may mirror a base parameter under another
-    default; comparing against the wrong one would read an Unsloth-injected default as a caller
-    choice and block the rename."""
+    """True if value equals name's declared default, read from mirrored_from's __init__ when given,
+    since a generated config may mirror a base parameter under another default; the wrong one
+    would read an Unsloth-injected default as a caller choice and block the rename."""
     default = _MISSING
     if mirrored_from is not None:
         default = _init_default(mirrored_from, name)

@@ -51,7 +51,6 @@ def num_experts_of(config) -> Optional[int]:
 
 
 def _experts_count(module) -> Optional[int]:
-    """Experts count: ModuleList/ModuleDict length, num_experts, or leading dim of 3-D params."""
     if isinstance(module, (torch.nn.ModuleList, torch.nn.ModuleDict)) and len(module) > 1:
         return len(module)
     for key in _EXPERT_COUNT_KEYS:
@@ -81,7 +80,6 @@ def _router_width(module) -> Optional[int]:
 
 
 def _is_stacked_experts(module, n_cfg) -> bool:
-    """Module holding all experts as 3-D params [num_experts, ...], any name; not convolutions."""
     if not n_cfg or isinstance(module, torch.nn.modules.conv._ConvNd):
         return False
     return any(p.dim() == 3 and p.shape[0] == n_cfg for p in module.parameters(recurse = False))
@@ -245,8 +243,7 @@ def _language_roots(model):
             if any(_is_block_stack(m) for m in modules[name].modules()):
                 roots.append((name, modules[name]))
                 break
-    # Keep a root only if no other candidate lies inside it (Idefics3: get_decoder() is the whole
-    # model); unrelated roots: get_decoder() wins (T5: shared embedding sits above both stacks).
+    # Drop roots with a candidate inside (Idefics3); unrelated roots: get_decoder() wins (T5).
     roots = [
         (n, m)
         for n, m in roots
@@ -256,10 +253,9 @@ def _language_roots(model):
 
 
 def decoder_layers(model):
-    """Returns (fqn prefix, number of layers) of the longest ModuleList of blocks holding Linear
-    layers in the language decoder (beside the input embedding, or HF get_decoder()); experts
-    lists and lists nested in another are ignored. Vision / audio / encoder stacks lose to other
-    stacks; an encoder-only model keeps its single stack; (None, 0) when there is none."""
+    """Returns (fqn prefix, layer count) of the longest Linear-block ModuleList in the language
+    decoder (beside input embedding or get_decoder()); expert and nested lists ignored; vision /
+    audio / encoder stacks lose to others; encoder-only keeps its one stack; (None, 0) if none."""
     root, decoder = _language_roots(model)
     candidates = []
     for name, module in decoder.named_modules():

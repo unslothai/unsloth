@@ -120,8 +120,7 @@ def _conversion_rules_head():
 
 
 def register_deepseek_v41():
-    """Register the native classes with the Auto factories; returns (config_class, model_class) or None when
-    transformers ships its own deepseek_v41."""
+    """Register with Auto factories; returns (config, model) or None if transformers has it."""
     global _REGISTERED
     if transformers_has_deepseek_v41():
         return None

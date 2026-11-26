@@ -111,7 +111,6 @@ def Qwen3MoeDecoderLayer_fast_forward(
         )
         hidden_states += residual
 
-        # MoE Router MLP.
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(self.mlp, hidden_states)
@@ -132,7 +131,6 @@ def Qwen3MoeDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # MoE Router MLP.
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, reuse_grad = True

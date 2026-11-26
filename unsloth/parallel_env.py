@@ -606,7 +606,6 @@ class ParallelLayout:
 
     @property
     def dims(self):
-        """[(name, size)] of the root mesh, pp outermost and tp innermost; size-1 axes left out."""
         dp_name = "dp_shard" if self.fsdp2 else "dp_replicate"
         dims = [("pp", self.pp), (dp_name, self.dp), ("cp", self.cp), ("tp", self.tp)]
         return [(name, size) for name, size in dims if size > 1]
@@ -802,8 +801,7 @@ def describe_trainer_layout(
     layout = None,
     cp_manager = None,
 ):
-    """One line: the resolved mesh (pp, dp_replicate, dp_shard, cp, tp), schedule and micro-batches, effective
-    batch, context parallel backend, attention backend and gradient checkpointing mode."""
+    """One line: mesh, schedule, micro-batches, effective batch, CP, attention, checkpointing."""
     world = _dist_value("get_world_size", 1)
     cp = cp_manager.size if cp_manager is not None else getattr(layout, "cp", 1)
     pp = getattr(layout, "pp", 1)
