@@ -80,13 +80,10 @@ def _cpp_wrapper_reason():
             return "no CUDA device"
     except Exception:
         return "no CUDA device"
-    try:
-        import shutil
+    # Inductor builds with $CXX, else g++ on Linux; asking Inductor itself may try to install one.
+    import shutil
 
-        from torch._inductor.cpp_builder import get_cpp_compiler
-        if shutil.which(get_cpp_compiler()) is None:
-            return "no C++ compiler"
-    except Exception:
+    if shutil.which(os.environ.get("CXX") or "g++") is None:
         return "no C++ compiler"
     return None
 
@@ -2633,9 +2630,13 @@ def _wrap(
     }
 
     def cpp_wanted(kwargs):
-        # Packed rows never take CUDA graphs, so they need not wait for auto mode's verdict.
-        return cpp["on"] and (
-            not auto or _CUDAGRAPH_STATE["auto"]["phase"] == "off" or _packed_kwargs(kwargs)
+        # Packed rows never take CUDA graphs, so they need not wait for auto mode's verdict. Never inside
+        # a non-reentrant checkpoint: a switch between its forward and recompute would change what the
+        # two save.
+        return (
+            cpp["on"]
+            and not _in_nonreentrant_checkpoint()
+            and (not auto or _CUDAGRAPH_STATE["auto"]["phase"] == "off" or _packed_kwargs(kwargs))
         )
 
     def cpp_in_use(self, kwargs):
@@ -2670,7 +2671,13 @@ def _wrap(
     def python_wrapper_fallback(e):
         """A failed C++ build (compiler, headers, an op it cannot wrap): this class's blocks go back to
         the Python wrapper region. False when the C++ wrapper was not in use."""
-        if cpp["region"] is None or not cpp["on"] or not _backend_compile_failed(e):
+        if (
+            cpp["region"] is None
+            or not cpp["on"]
+            or not _backend_compile_failed(e)
+            # An OOM wrapped by the compiler is not a failed C++ build.
+            or isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError)
+        ):
             return False
         cpp["on"] = False
         CPP_WRAPPER_STATS["fallbacks"] += 1

@@ -29,6 +29,8 @@ def _block_env(monkeypatch):
         "UNSLOTH_COMPILE_DISABLE",
         "UNSLOTH_FORCE_FLOAT32",
         "UNSLOTH_BLOCK_CPP_WRAPPER",
+        "UNSLOTH_BLOCK_CPP_WRAPPER_AFTER",
+        "CXX",
     ):
         monkeypatch.delenv(key, raising = False)
 
@@ -89,14 +91,11 @@ def test_reason_follows_the_switch_platform_torch_and_compiler(monkeypatch):
 
     import shutil
 
-    import torch._inductor.cpp_builder as cpp_builder
-
     monkeypatch.setattr(torch.version, "hip", None)
     monkeypatch.setattr(torch.version, "cuda", "13.0")
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(torch, "__version__", "2.14.1+cu130")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(cpp_builder, "get_cpp_compiler", lambda: "g++")
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
     assert M._cpp_wrapper_reason() is None
     monkeypatch.setattr(shutil, "which", lambda name: None)
@@ -177,6 +176,7 @@ def test_cpp_region_waits_for_a_long_run(monkeypatch, capsys):
         layer = cls2()
         layer(x)
         del layer
+        calls.clear()
         fresh = cls2()
         for _ in range(4):
             fresh(x)
@@ -187,6 +187,32 @@ def test_forcing_it_on_builds_at_once(monkeypatch):
     monkeypatch.setenv("UNSLOTH_BLOCK_CPP_WRAPPER", "1")
     M = _load()
     assert M._CPP_WRAPPER_AFTER == 0
+
+
+def test_wrapped_oom_is_not_a_failed_cpp_build(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
+    M = _load()
+    monkeypatch.setattr(M, "_CPP_WRAPPER_REASON", None)
+    monkeypatch.setattr(M, "_CPP_WRAPPER_AFTER", 0)
+
+    def fake_compile(fn, **kwargs):
+        cpp = bool((kwargs.get("options") or {}).get("cpp_wrapper"))
+
+        def compiled(*args, **kw):
+            if cpp:
+                e = BackendCompilerFailed("compile ran out of memory")
+                e.inner_exception = torch.OutOfMemoryError("CUDA out of memory")
+                raise e
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, dict(M._COMPILE_OPTIONS))
+    with torch.no_grad():
+        cls()(torch.randn(2, 4, 8))
+    assert M.CPP_WRAPPER_STATS["fallbacks"] == 0
 
 
 def test_kill_switch_keeps_the_python_wrapper(monkeypatch):
