@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""How much of a LoRA update survives a quantized merged export.
+"""How much of a LoRA update survives FP8 / FP4 re-quantization after the 16-bit merge (arXiv 2611.32064).
 
-The FP8 / FP4 exports merge the adapter at 16 bit and then re-quantize, so a small update can round
-away entirely (arXiv 2611.32064 reports 93% of the update norm lost in a mixed FP8 / NVFP4 release).
-On a few sampled LoRA layers this compares the exported change D = Q(W + dW) - Q(W) with dW, using a
-reference quantizer of the export's weight format. The norm ratio ||D|| / ||dW|| alone cannot show a
-loss: once dW is below the rounding step, D is a scatter of whole-step flips and its norm is several
-times ||dW||. The survival reported is cos(D, dW), the share of the exported change that follows the
-update (1 = the update itself, 0 = rounding noise). Read-only: nothing on the model changes."""
+Survival = cos(D, dW) with D = Q(W + dW) - Q(W) on a few sampled layers. Not ||D|| / ||dW||: below the
+rounding step D is whole-step flips whose norm is several times ||dW||. Read-only."""
 
 import math
 
