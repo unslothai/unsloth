@@ -109,7 +109,11 @@ if triton is not None:
         tl.store(V + i, _round_bf16(v, r2), valid)
 
     @triton.jit
-    def _bnb_quantize(Q, x, SIGNED: tl.constexpr):
+    def _bnb_quantize(
+        Q,
+        x,
+        SIGNED: tl.constexpr,  # signed code (first moment) starts the search from -1, unsigned from 0
+    ):
         # bitsandbytes' quantize_2D: binary search, then the nearer side by midpoint.
         pivot = tl.full(x.shape, 127, tl.int32)
         upper_pivot = tl.full(x.shape, 255, tl.int32)
@@ -150,7 +154,7 @@ if triton is not None:
         EPS_C2,  # correction2 * eps
         STEP_SIZE,  # -lr * correction2 / correction1
         DECAY,  # 1 - lr * weight_decay
-        HAS_DECAY: tl.constexpr,
+        HAS_DECAY: tl.constexpr,  # weight_decay > 0: bitsandbytes skips the decay multiply at 0
         BLOCK: tl.constexpr,  # 256: one absmax per program
     ):
         # bitsandbytes' kOptimizerStatic8bit2StateBlockwise on the bfloat16 weight, rounded stochastically.
@@ -201,8 +205,8 @@ if triton is not None:
         EPS_C2,  # correction2 * eps
         STEP_SIZE,  # -lr * correction2 / correction1
         DECAY,  # 1 - lr * weight_decay
-        HAS_DECAY: tl.constexpr,
-        BLOCK: tl.constexpr,
+        HAS_DECAY: tl.constexpr,  # weight_decay > 0: bitsandbytes skips the decay multiply at 0
+        BLOCK: tl.constexpr,  # elements per program, fixed at _BLOCK
     ):
         # bitsandbytes' kOptimizer32bit2State on the bfloat16 weight, rounded stochastically.
         i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
@@ -306,6 +310,8 @@ def _bnb_launch(p, g, state, step, config, seed):
                 float(decay),
                 HAS_DECAY = weight_decay > 0.0,
                 BLOCK = _BLOCK,
+                # bitsandbytes builds with --use_fast_math (fmad on): contract as it does
+                enable_fp_fusion = True,
             )
         return
     with torch.cuda.device(p.device):
@@ -327,6 +333,8 @@ def _bnb_launch(p, g, state, step, config, seed):
             float(decay),
             HAS_DECAY = weight_decay > 0.0,
             BLOCK = _BNB_BLOCK,
+            # bitsandbytes builds with --use_fast_math (fmad on): contract as it does, so states match bitwise
+            enable_fp_fusion = True,
         )
 
 
