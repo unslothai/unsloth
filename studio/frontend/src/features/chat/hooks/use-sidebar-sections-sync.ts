@@ -23,13 +23,15 @@ import {
   useSidebarOrganizationStore as store,
 } from "../stores/sidebar-organization-store";
 
+const SIDEBAR_POLL_INTERVAL_MS = 30_000;
+
 export function useSidebarSectionsSync(): void {
   useEffect(() => {
     const account = browserAccountKey();
     let mounted = true;
     let request: AbortController | undefined;
     let scheduled = false;
-    let mirrored = false;
+    let peerEditedAt: number | undefined;
 
     function allowed() {
       return mounted && !accountTransitionPending() &&
@@ -62,7 +64,8 @@ export function useSidebarSectionsSync(): void {
       // after a lost reply, even when the user has already made further changes.
       let edit = state.pendingLayoutEdit;
       if (!edit && dirty) {
-        if (mirrored) return;
+        // Give the editing tab a poll interval to save before a peer takes over.
+        if (peerEditedAt !== undefined && Date.now() - peerEditedAt < SIDEBAR_POLL_INTERVAL_MS) return;
         edit = { id: createNavigationNonce(), layout: snapshot, orderMoves: state.orderMoves };
       }
       const sent = edit?.layout ?? snapshot;
@@ -105,9 +108,9 @@ export function useSidebarSectionsSync(): void {
         if (JSON.stringify(sidebarLayout(now)) !== sent) {
           if (edit) {
             // The tab that acknowledges the pending operation can send the next edit.
-            mirrored = false;
+            peerEditedAt = undefined;
             store.setState({ syncedLayout: sent, pendingLayoutEdit: undefined });
-          } else if (!mirrored && base === undefined) {
+          } else if (peerEditedAt === undefined && base === undefined) {
             // The first GET started before this local edit. Use the pre-edit view
             // as the base for the user's next write.
             store.setState({ syncedLayout: sent });
@@ -138,11 +141,11 @@ export function useSidebarSectionsSync(): void {
     }
 
     const unsubscribe = observeSidebarLayout((fromStorage) => {
-      mirrored = fromStorage;
+      peerEditedAt = fromStorage ? Date.now() : undefined;
       if (!fromStorage) schedule();
     });
     const visible = () => { if (document.visibilityState === "visible") void refresh(); };
-    const poll = window.setInterval(visible, 30_000);
+    const poll = window.setInterval(visible, SIDEBAR_POLL_INTERVAL_MS);
     window.addEventListener("focus", visible);
     window.addEventListener("online", visible);
     window.addEventListener(AUTH_SESSION_STORED_EVENT, visible);

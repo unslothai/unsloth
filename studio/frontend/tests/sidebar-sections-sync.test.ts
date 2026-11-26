@@ -143,6 +143,36 @@ test("a peer can upload a later edit after retrying the closed tab's pending ope
   assert.deepEqual(posts[1].layout.sectionByChatId, { chat: "research" });
 });
 
+test("a surviving peer uploads a mirrored edit that never acquired a pending operation", async (t) => {
+  let now = 1_000;
+  t.mock.method(Date, "now", () => now);
+  const posts: Edit[] = [];
+  const initial = layouts.sidebarLayout(store.getInitialState());
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return Response.json(initial);
+    const post: Edit = JSON.parse(String(init.body));
+    posts.push(post);
+    return Response.json(post.layout);
+  });
+  await setImmediate();
+  writeFromPeer({
+    customSections: [{ name: "Research", sort: "manual", id: "research" }],
+    sectionByChatId: { chat: "research" },
+    sectionOrder: ["pinned", "research", "projects"],
+  });
+  assert.equal(store.getState().pendingLayoutEdit, undefined);
+
+  window.dispatchEvent(new Event("focus"));
+  await setImmediate();
+  assert.equal(posts.length, 0);
+
+  now += 30_001;
+  window.dispatchEvent(new Event("focus"));
+  await setImmediate();
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].layout.sectionByChatId, { chat: "research" });
+});
+
 test("a reorder during the initial load uses an edit instead of a legacy import", async (t) => {
   const posts: Edit[] = [];
   const initial = layouts.sidebarLayout(store.getInitialState());
