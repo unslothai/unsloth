@@ -2096,6 +2096,10 @@ function VideoGenerator({
   useEffect(() => {
     setPlannedPrecisionOptions(null);
   }, [residentPrecisionKey]);
+  // And with a failed load, which abandons the pick it planned (the selects snap back to the resident build).
+  useEffect(() => {
+    if (failedLoadReseed > 0) setPlannedPrecisionOptions(null);
+  }, [failedLoadReseed]);
   // Schemes the loaded (else last planned) family or card refuses (Wan NVFP4's failed accuracy gate): disabled in
   // Precision with the reason, and a held one falls back to Auto rather than being refused at load.
   const precisionDenials = activePrecisionDenials(
@@ -3387,7 +3391,11 @@ function VideoGenerator({
           pickToast.dismiss(pickToastId);
           return true;
         }
-        setPlannedPrecisionOptions({ gpu: gpuSelectionKey(advanced.gpu_ids), options: plan.precision_options ?? null });
+        setPlannedPrecisionOptions({
+          gpu: gpuSelectionKey(advanced.gpu_ids),
+          options: plan.precision_options ?? null,
+          repos: [repoId, opts.displayRepoId],
+        });
         // The shared envelope's half of the incompatible-pairing check; video has no live path here.
         incompatible = plan.incompatible_reason ?? null;
         incompatibleCode = plan.incompatible_code ?? null;

@@ -53,8 +53,16 @@ test("a held denied pick falls back to Auto", () => {
 });
 
 test("the loaded build's denials apply to a load on its card; with nothing loaded the matching plan's apply", () => {
-  const planned = { gpu: "auto", options: { fp8: "x" } };
-  assert.equal(activePrecisionDenials({ loaded: true, precision_options: WAN }, planned, "auto"), WAN);
+  const planned = { gpu: "auto", options: { fp8: "x" }, repos: ["Wan-AI/Wan2.2-TI2V-5B-Diffusers"] };
+  // A plan for the resident model itself defers to its status.
+  assert.equal(
+    activePrecisionDenials(
+      { loaded: true, repo_id: "Wan-AI/Wan2.2-TI2V-5B-Diffusers", precision_options: WAN },
+      planned,
+      "auto",
+    ),
+    WAN,
+  );
   assert.equal(activePrecisionDenials({ loaded: false, precision_options: null }, planned, "auto"), planned.options);
   assert.equal(activePrecisionDenials({ loaded: true }, planned, "auto"), planned.options);
   assert.equal(activePrecisionDenials(null, null), null);
@@ -87,8 +95,10 @@ for (const path of ["features/images/images-page.tsx", "features/video/video-pag
     assert.match(src, /setTransformerQuant\(\(v\) => deniedSelectionFallback\(v, precisionDenials\)\);/);
     assert.match(
       src,
-      /setPlannedPrecisionOptions\(\{ gpu: gpuSelectionKey\(advanced\.gpu_ids\), options: plan\.precision_options \?\? null \}\);/,
+      /setPlannedPrecisionOptions\(\{\s*gpu: gpuSelectionKey\(advanced\.gpu_ids\),\s*options: plan\.precision_options \?\? null,\s*repos: \[repoId, opts\.displayRepoId\],\s*\}\);/,
     );
+    // A failed load abandons the pick, so its plan goes too.
+    assert.match(src, /useEffect\(\(\) => \{\s*if \(failedLoadReseed > 0\) setPlannedPrecisionOptions\(null\);\s*\}, \[failedLoadReseed\]\);/);
   });
 }
 
@@ -114,4 +124,23 @@ test("a plan's denials are dropped whenever the resident build changes", () => {
     // Declared after status, which it reads during render.
     assert.ok(src.indexOf("precisionResidentKey(status)") > src.indexOf("const [status, setStatus]"), path);
   }
+});
+
+// Recheck r10: with Wan resident (NVFP4 refused) a plan for FLUX on the same GPU, which permits NVFP4, lost to Wan's
+// status, so NVFP4 stayed disabled and a held NVFP4 reset to Auto.
+test("a plan for a different model wins over the resident family's refusals on the same GPU", () => {
+  const wan = {
+    loaded: true,
+    repo_id: "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+    precision_options: WAN,
+    precision_options_card: 0,
+  };
+  const flux = { gpu: "auto", options: { int8: null, fp8: null, nvfp4: null, mxfp8: null }, repos: ["black-forest-labs/FLUX.1-dev"] };
+  assert.equal(activePrecisionDenials(wan, flux, "auto"), flux.options);
+  assert.equal(activePrecisionDenials(wan, { ...flux, gpu: "0" }, "0"), flux.options);
+  // The display id counts as the same model.
+  const viaDisplay = { ...flux, repos: ["unsloth/Wan-mirror", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"] };
+  assert.equal(activePrecisionDenials(wan, viaDisplay, "auto"), WAN);
+  // A plan for another selection does not describe this target.
+  assert.equal(activePrecisionDenials(wan, { ...flux, gpu: "1" }, "auto"), WAN);
 });

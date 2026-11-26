@@ -32,7 +32,12 @@ export function deniedSelectionFallback<T extends string>(value: T, denials: Pre
 }
 
 /** A download plan's denials, with the GPU selection ("auto" or a card index) the plan was made for. */
-export type PlannedPrecision = { gpu: string; options: PrecisionOptions } | null;
+export type PlannedPrecision = {
+  gpu: string;
+  options: PrecisionOptions;
+  /** The picked model (and its display id) the plan describes. */
+  repos?: readonly (string | null | undefined)[];
+} | null;
 
 /**
  * Identity of the resident build, "none" when nothing is loaded. A plan's denials belong to the pick that planned
@@ -55,18 +60,28 @@ export function gpuSelectionKey(gpuIds: readonly number[] | null | undefined): s
 }
 
 /**
- * The denials that describe the next load on `targetGpu`: the loaded build's when that load targets the resident's
- * card (Auto, or the card the status judged them on), else the last plan's for that same selection, else none. A
- * kernel-probe failure is per card, so picking another GPU must not inherit the resident card's verdicts.
+ * The denials that describe the next load on `targetGpu`. A plan for that selection describes the pick in flight, so
+ * it wins unless it is for the resident model itself (then the loaded build's status is the authority). Otherwise the
+ * loaded build's apply when that load targets the resident's card (Auto, or the physical card the status judged them
+ * on). A kernel-probe failure is per card, and a family refusal is per model: neither may leak to another.
  */
 export function activePrecisionDenials(
   status:
-    | { loaded?: boolean | null; precision_options?: PrecisionOptions; precision_options_card?: number | null }
+    | {
+        loaded?: boolean | null;
+        repo_id?: string | null;
+        display_repo_id?: string | null;
+        precision_options?: PrecisionOptions;
+        precision_options_card?: number | null;
+      }
     | null
     | undefined,
   planned: PlannedPrecision,
   targetGpu = "auto",
 ): PrecisionOptions {
+  const resident = status?.loaded ? [status.repo_id, status.display_repo_id].filter(Boolean) : [];
+  const plannedForResident = (planned?.repos ?? []).some((repo) => repo && resident.includes(repo));
+  if (planned && planned.gpu === targetGpu && !plannedForResident) return planned.options ?? null;
   const card = status?.precision_options_card;
   const residentTarget = targetGpu === "auto" || (card != null && String(card) === targetGpu);
   if (status?.loaded && status.precision_options && residentTarget) return status.precision_options;

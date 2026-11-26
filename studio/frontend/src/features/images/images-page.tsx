@@ -4047,6 +4047,10 @@ export function ImagesPage({
   useEffect(() => {
     setPlannedPrecisionOptions(null);
   }, [residentPrecisionKey]);
+  // And with a failed load, which abandons the pick it planned (the selects snap back to the resident build).
+  useEffect(() => {
+    if (failedLoadReseed > 0) setPlannedPrecisionOptions(null);
+  }, [failedLoadReseed]);
   const precisionDenials = activePrecisionDenials(
     status,
     plannedPrecisionOptions,
@@ -4666,7 +4670,11 @@ export function ImagesPage({
           return true;
         }
         if (!downloadOnly) {
-          setPlannedPrecisionOptions({ gpu: gpuSelectionKey(advanced.gpu_ids), options: plan.precision_options ?? null });
+          setPlannedPrecisionOptions({
+            gpu: gpuSelectionKey(advanced.gpu_ids),
+            options: plan.precision_options ?? null,
+            repos: [repoId, opts.displayRepoId],
+          });
         }
         if (downloadOnly && plan.plan_failed) {
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
