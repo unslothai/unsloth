@@ -95,7 +95,7 @@ def test_engaged_after_placement_before_graph_arming():
 
 
 def test_the_h3_modular_load_engages_before_graph_arming():
-    # The MiniMax-H3 load returns from its own loader before the shared call site above.
+    # H3 returns from its own loader before the shared call site.
     (fn,) = _functions("_load_h3_modular_pipeline")
     src = ast.get_source_segment(VIDEO_SRC.read_text(encoding = "utf-8"), fn)
     assert "_engage_video_expandable" in _calls(fn)

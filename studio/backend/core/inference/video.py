@@ -14608,7 +14608,7 @@ class VideoBackend:
                     )
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
-        # Weights placed, before the first forward and any graph capture: the denoise maps expandable segments.
+        # Must precede the first forward and any graph capture.
         _engage_video_expandable(target)
         # H3 declines graphs; this only acts when a family override forces them.
         graph_applied = arm_graphs_after_placement(
