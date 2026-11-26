@@ -91,16 +91,32 @@ AUTO_CFG_PARALLEL_IDLE_UTIL_PCT = 5.0
 
 def _idle_card(probe: Any, own_mib: int = 0) -> bool:
     """``own_mib``: memory this load's own components (a companion split's text encoders) hold on the card. It is not
-    another process's, so it is not counted as in use, and the card's utilisation is not read either: those encoders
-    run there right before the denoiser's first step, which a utilisation sample cannot tell from foreign work."""
+    another process's, so it is not counted as in use. Utilisation is always checked: NVML cannot say whose kernels
+    ran, so a busy reading on a card holding this load's encoder is re-read once they are done
+    (:func:`_settled_util_pct`), never waived."""
     free, total = getattr(probe, "free_mib", None), getattr(probe, "total_mib", None)
     if free is None or total is None:
         return False
     own = max(0, int(own_mib or 0))
     util = getattr(probe, "util_pct", None)
-    if not own and util is not None and float(util) > AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:
+    if util is not None and float(util) > AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:
         return False
     return int(total) - int(free) - own <= AUTO_CFG_PARALLEL_IDLE_USED_MIB
+
+
+# nvidia-smi's utilization.gpu covers the last sample period (1/6 s to 1 s by card): wait past it before a re-read
+_UTIL_SETTLE_S = 1.2
+
+
+def _settled_util_pct(ordinal: int, util: Optional[float], own_mib: int) -> Optional[float]:
+    """``util`` of a card, re-read once after :data:`_UTIL_SETTLE_S` when it reads busy while this load's encoder is on
+    the card: the encoder may just have run there (it runs before the first step), and by the re-read it has
+    finished, so what the re-read still sees is another process's work. Otherwise ``util`` unchanged."""
+    if not own_mib or util is None or float(util) <= AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:
+        return util
+    time.sleep(_UTIL_SETTLE_S)
+    again = _smi_util_pct(int(ordinal))
+    return util if again is None else again
 
 
 def automatic_partner(
@@ -1570,22 +1586,35 @@ def _replica_shares_component(name: str) -> bool:
 
 
 def _own_mib_on_cards(pipe: Any, names: Sequence[str]) -> dict[int, int]:
-    """ordinal -> MiB of ``names`` (this load's components) resident on each CUDA card now."""
+    """ordinal -> MiB of ``names`` (this load's components) resident on each CUDA card now, counted per tensor, so a
+    component spread over cards (or partly on the host) is credited only where its bytes are."""
     torch = _torch()
-    out: dict[int, int] = {}
+    from .diffusion_memory import _storage_nbytes
+
+    nbytes: dict[int, int] = {}
+    seen: set[int] = set()
     components = getattr(pipe, "components", {}) or {}
     for name in names:
         module = components.get(name) if isinstance(components, Mapping) else None
         if not isinstance(module, torch.nn.Module):
             continue
         try:
-            device = _module_device(module)
+            tensors = (*module.parameters(), *module.buffers())
         except Exception:  # noqa: BLE001 - unreadable: not counted
             continue
-        if device is None or getattr(device, "type", None) != "cuda" or device.index is None:
-            continue
-        out[int(device.index)] = out.get(int(device.index), 0) + _module_mib(module)
-    return out
+        for t in tensors:
+            if id(t) in seen:
+                continue
+            seen.add(id(t))
+            device = getattr(t, "device", None)
+            if getattr(device, "type", None) != "cuda" or device.index is None:
+                continue
+            try:
+                size = sum(_storage_nbytes(t))
+            except Exception:  # noqa: BLE001
+                continue
+            nbytes[int(device.index)] = nbytes.get(int(device.index), 0) + int(size)
+    return {o: b >> 20 for o, b in nbytes.items()}
 
 
 def _replica_over_planned_split(
@@ -4328,7 +4357,13 @@ class CfgParallelRouter:
             automatic = getattr(self, "automatic_idle_only", False)
             # Outside the load scope: read the card directly, before the memory read opens our context (3-7% busy).
             own_mib = int(getattr(self, "own_mib", 0) or 0)
-            util = _smi_util_pct(self.secondary.index) if automatic and not own_mib else None
+            util = (
+                _settled_util_pct(
+                    self.secondary.index, _smi_util_pct(self.secondary.index), own_mib
+                )
+                if automatic
+                else None
+            )
             free, total = self._secondary_free_total_mib()
             if automatic:
                 if not _idle_card(
@@ -4917,6 +4952,13 @@ def install_cfg_parallel(
             if str(placed[n]).startswith("cuda:") and str(placed[n]).rpartition(":")[2].isdigit()
         }
         own.update(_own_mib_on_cards(pipe, shared))
+        if automatic:
+            for o, mib in own.items():
+                probe = probes.get(o)
+                if probe is not None:
+                    settled = _settled_util_pct(o, probe.util_pct, max(1, int(mib)))
+                    if settled != probe.util_pct:
+                        probes[o] = dataclasses.replace(probe, util_pct = settled)
         if automatic:
             # nothing else may live on a card Automatic borrows for a replica (busy: memory in use or computing)
             need = replica_need_mib(denoiser)
