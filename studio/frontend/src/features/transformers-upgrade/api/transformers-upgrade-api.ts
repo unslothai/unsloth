@@ -21,6 +21,8 @@ interface TransformersUpgradeCheckResponse {
   // biome-ignore lint/style/useNamingConvention: API schema
   forces_16bit?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
+  sidecar_keeps_4bit?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
   install_breaks_exact_resume?: boolean;
 }
 
@@ -59,6 +61,7 @@ export async function checkTransformersUpgrade(
     requiresTrustRemoteCode: Boolean(data.requires_trust_remote_code),
     latestTierActive: Boolean(data.latest_tier_active),
     forces16Bit: Boolean(data.forces_16bit),
+    sidecarKeeps4Bit: Boolean(data.sidecar_keeps_4bit),
     installBreaksExactResume: Boolean(data.install_breaks_exact_resume),
   };
 }
@@ -73,20 +76,30 @@ interface InstallLatestTransformersResponse {
   latest_version?: string | null;
   /** On a version-mismatch failure: transformers main's current version. */
   latest_main_version?: string | null;
+  /** An automatic install was not attempted: ask the user; `message` says why. */
+  requires_consent?: boolean;
+  /** Package scan verdict for a PyPI install; "flagged" installs are refused. */
+  scan_status?: "clean" | "review" | "flagged" | null;
 }
 
 /** Synchronous, can take minutes. `forceCancelActive` carries the user's "stop N chats" answer;
- * without it the install 409s on those chats. */
+ * without it the install 409s on those chats. `auto` installs without the user's confirmation,
+ * which the server allows only for a PyPI release whose package scan is clean. */
 export async function installLatestTransformers(
   version: string,
   forceCancelActive = false,
+  auto = false,
 ): Promise<InstallLatestTransformersResponse> {
   const response = await authFetch(
     "/api/inference/install-latest-transformers",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ version, force_cancel_active: forceCancelActive }),
+      body: JSON.stringify({
+        version,
+        force_cancel_active: forceCancelActive,
+        auto,
+      }),
     },
   );
   if (!response.ok) {

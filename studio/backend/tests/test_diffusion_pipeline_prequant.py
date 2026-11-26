@@ -714,6 +714,26 @@ def test_the_load_is_pinned_to_the_plan_that_scoped_the_pull(monkeypatch, hub):
     assert PREQUANT_REPO in backend.loading_repo_ids() or backend._loading is None
 
 
+def test_an_unseeded_dit_swap_is_the_fp16_card_hosted_int8_read(monkeypatch, hub):
+    """No seed, yet the plan staged a hosted file in place of the DiT shards (the fp16-card int8 ConvRot read): the
+    load is told so, the file is fetched with the plan's accounting, and the dense shards are left out."""
+    backend, seen, fetched = _run_load_backend(monkeypatch, planned = None)
+    entry = ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-INT8-ConvRot.safetensors", PREQUANT_BYTES)
+    monkeypatch.setattr(DiffusionBackend, "_dit_prequant_plan_source", lambda *_a, **_k: entry)
+    backend._run_load(repo_id = Z_IMAGE_REPO, model_kind = "pipeline", _load_token = 1)
+
+    assert seen["_fp16_hosted_planned"] is True
+    assert seen["_pipeline_prequant_planned"] is None
+    assert seen["_pipeline_prequant_skipped"] == tuple(DENOISER_SHARDS)
+    assert fetched == [entry]
+
+
+def test_a_seeded_dit_swap_is_not_the_fp16_card_hosted_int8_read(monkeypatch, hub):
+    backend, seen, _fetched = _run_load_backend(monkeypatch, planned = "fp8")
+    backend._run_load(repo_id = Z_IMAGE_REPO, model_kind = "pipeline", _load_token = 1)
+    assert seen["_fp16_hosted_planned"] is False
+
+
 def test_an_artifact_that_does_not_resolve_keeps_the_released_shards(monkeypatch, hub):
     """An artifact that does not resolve on the Hub keeps the released shards in the pull."""
     backend, seen, fetched = _run_load_backend(monkeypatch, planned = "fp8", verified = False)

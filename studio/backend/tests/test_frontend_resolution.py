@@ -254,6 +254,7 @@ def _run_frontend_mount(*, tunnel_only, resolves):
     )
     code = compile(ast.Module(body = [block], type_ignores = []), str(_RUN_PY), "exec")
     mounted = []
+    helpers = _load_helpers_only()
     ns = {
         "frontend_path": Path("/nonexistent/studio/frontend/dist"),
         "_serve_frontend": True,
@@ -262,7 +263,8 @@ def _run_frontend_mount(*, tunnel_only, resolves):
         "setup_frontend": lambda app, chosen, *, tunnel_only: (
             mounted.append((chosen, tunnel_only)) or True
         ),
-        "_missing_frontend_is_fatal": _load_helpers_only()["_missing_frontend_is_fatal"],
+        "_missing_frontend_is_fatal": helpers["_missing_frontend_is_fatal"],
+        "_studio_root": helpers["_studio_root"],
         "app": object(),
         "silent": True,
         "logger": logging.getLogger("test_frontend_resolution"),

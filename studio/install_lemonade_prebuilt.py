@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import urllib.request
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -29,6 +30,11 @@ if _STUDIO_DIR not in sys.path:
 
 import prebuilt_core as core  # noqa: E402
 from backend.utils.auth_safe import auth_safe_open  # noqa: E402
+from backend.utils.npu_runtime_config import (  # noqa: E402
+    LEMONADE_ARCHIVE_ENV,
+    custom_runtime_configured,
+    local_lemonade_archive,
+)
 
 PINS_PATH = Path(_STUDIO_DIR) / "lemonade_prebuilt_pins.json"
 MARKER_NAME = "UNSLOTH_LEMONADE_INFO.json"
@@ -54,6 +60,20 @@ def load_pins(path: Path = PINS_PATH) -> dict:
     return pins
 
 
+@lru_cache(maxsize = 8)
+def _archive_sha256(path: Path, _signature: tuple[int, int, int]) -> str:
+    return core.sha256_file(path)
+
+
+def _local_archive_asset(archive: Path, key: str) -> dict:
+    suffix = ".zip" if key == "windows-x64" else ".tar.gz"
+    if not archive.is_absolute() or not archive.name.endswith(suffix) or not archive.is_file():
+        raise RuntimeError(f"{LEMONADE_ARCHIVE_ENV} must be an absolute path to a {suffix} file.")
+    info = archive.stat()
+    sha256 = _archive_sha256(archive, (info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+    return {"name": archive.name, "sha256": sha256, "size": info.st_size}
+
+
 def host_asset_key() -> Optional[str]:
     """The pin key for this OS and CPU, or None where Lemonade publishes no FastFlowLM build."""
     machine = platform.machine().lower()
@@ -72,6 +92,10 @@ def lemond_name() -> str:
 
 def install_dir(root: Path, pins: Optional[dict] = None) -> Path:
     pins = pins or load_pins()
+    archive = local_lemonade_archive()
+    key = host_asset_key()
+    if archive is not None and key is not None:
+        return Path(root) / ("local-" + _local_archive_asset(archive, key)["sha256"])
     return Path(root) / pins["lemonade"]["version"]
 
 
@@ -86,7 +110,9 @@ def _read_marker(directory: Path) -> Optional[dict]:
 def direct_flm() -> bool:
     """Run FastFlowLM without Lemonade; UNSLOTH_NPU_LEMONADE=1 keeps lemond."""
     return (
-        host_asset_key() is not None and os.environ.get("UNSLOTH_NPU_LEMONADE", "").strip() != "1"
+        host_asset_key() is not None
+        and not custom_runtime_configured()
+        and os.environ.get("UNSLOTH_NPU_LEMONADE", "").strip() != "1"
     )
 
 
@@ -124,11 +150,16 @@ def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
     marker = _read_marker(target)
     if marker is None:
         return None
-    asset = pins["lemonade"]["assets"][key]
+    archive = local_lemonade_archive()
+    asset = (
+        _local_archive_asset(archive, key)
+        if archive is not None
+        else pins["lemonade"]["assets"][key]
+    )
     if marker.get("sha256") != asset["sha256"] or marker.get("asset") != asset["name"]:
         return None
     # A FastFlowLM-only pin change must rewrite backend_versions.json, whose version lemond installs.
-    if marker.get("fastflowlm") != pins["fastflowlm"]:
+    if archive is None and marker.get("fastflowlm") != pins["fastflowlm"]:
         return None
     binary = target / lemond_name()
     return binary if binary.is_file() else None
@@ -211,22 +242,36 @@ def install(
         host = _install_flm_direct(root, pins, key, progress, cancel)
         remove_lemond_installs(root)
         return host
-    target = install_dir(root, pins)
+    source = local_lemonade_archive()
+    asset = (
+        _local_archive_asset(source, key) if source is not None else pins["lemonade"]["assets"][key]
+    )
+    target = root / ("local-" + asset["sha256"]) if source is not None else install_dir(root, pins)
     with core.install_lock(core.install_lock_path(target)):
         existing = installed_lemond(root, pins)
         if existing is not None:
             return existing
-        asset = pins["lemonade"]["assets"][key]
-        url = core.release_asset_download_url(
-            pins["lemonade"]["repo"], f"v{pins['lemonade']['version']}", asset["name"]
-        )
         root.mkdir(parents = True, exist_ok = True)
         with tempfile.TemporaryDirectory(prefix = ".lemonade-install-", dir = root) as scratch:
             scratch_dir = Path(scratch)
             archive = scratch_dir / asset["name"]
-            _download(
-                url, archive, expected_sha256 = asset["sha256"], progress = progress, cancel = cancel
-            )
+            if source is None:
+                url = core.release_asset_download_url(
+                    pins["lemonade"]["repo"], f"v{pins['lemonade']['version']}", asset["name"]
+                )
+                _download(
+                    url, archive, expected_sha256 = asset["sha256"], progress = progress, cancel = cancel
+                )
+            else:
+                if cancel is not None and cancel.is_set():
+                    raise LemonadeInstallCancelled("Lemonade installation was cancelled.")
+                shutil.copyfile(source, archive)
+                if core.sha256_file(archive) != asset["sha256"]:
+                    raise RuntimeError(
+                        f"{LEMONADE_ARCHIVE_ENV} changed during installation. Try again."
+                    )
+                if cancel is not None and cancel.is_set():
+                    raise LemonadeInstallCancelled("Lemonade installation was cancelled.")
             extracted = scratch_dir / "extracted"
             extracted.mkdir()
             core.extract_archive(archive, extracted)
@@ -235,11 +280,12 @@ def install(
             if not binaries:
                 raise RuntimeError(f"{asset['name']} does not contain {lemond_name()}.")
             payload = binaries[0].parent
-            _pin_fastflowlm_checksum(payload / "resources", pins)
+            if source is None:
+                _pin_fastflowlm_checksum(payload / "resources", pins)
             (payload / MARKER_NAME).write_text(
                 json.dumps(
                     {
-                        "version": pins["lemonade"]["version"],
+                        "version": pins["lemonade"]["version"] if source is None else asset["name"],
                         "asset": asset["name"],
                         "sha256": asset["sha256"],
                         "fastflowlm": pins["fastflowlm"],

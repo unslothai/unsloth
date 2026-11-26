@@ -402,7 +402,7 @@ async def load_llm(
     model: str,
     variant: Optional[str],
     max_seq_length: Optional[int],
-    load_in_4bit: bool,
+    load_in_4bit: Optional[bool],
     hf_token: Optional[str],
     kind: str = "llm",
     deadline: Optional[float] = None,
@@ -413,11 +413,12 @@ async def load_llm(
     is_lora: bool = False,
     precheck: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> LoadResult:
-    body: dict[str, Any] = {
-        "model_path": model,
-        "load_in_4bit": load_in_4bit,
-        "max_seq_length": max_seq_length or 0,
-    }
+    # Unset options come from the model's saved launch settings, as with the CLI.
+    body: dict[str, Any] = {"model_path": model, "use_saved_settings": True}
+    if max_seq_length is not None:
+        body["max_seq_length"] = max_seq_length
+    if load_in_4bit is not None:
+        body["load_in_4bit"] = load_in_4bit
     if variant:
         body["gguf_variant"] = variant
     if is_lora:
@@ -488,7 +489,7 @@ async def load_llm(
         run = run,
         # A load asked with other placement fields is a different load, not one to follow.
         options = (
-            max_seq_length or 0,
+            max_seq_length,
             load_in_4bit,
             device,
             alongside,
@@ -498,9 +499,10 @@ async def load_llm(
         hub_token = token,
         # A load asked with its own settings is never the one already running; following it would
         # skip them (and the CPU check).
-        attach = not max_seq_length
-        and load_in_4bit
-        and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
+        attach = all(
+            v is None
+            for v in (max_seq_length, load_in_4bit, device, alongside, kv_cache_type, gpu_layers)
+        ),
     )
 
 
@@ -554,15 +556,24 @@ async def unload_llm(
     else:
         # The route unloads by checkpoint id, listed in the same order as serving.
         target = dict(zip(serving, checkpoints)).get(model, model)
+        # Two loaded quants of one repo share its id: the route unloads the one the id reaches.
+        copies = [
+            c for s, c in zip(serving, checkpoints) if s == model and c.startswith(f"{model}:")
+        ]
+        if len(copies) > 1:
+            target = model
     await route_json(
         "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
     )
     # An id that matches nothing still answers success, so compare what is resident before and after.
     _serving, _checkpoints, after = await _llm_resident(caller)
     was_loaded = bool({model, target} & before)
-    return UnloadResult(
-        kind = kind, model = model, unloaded = was_loaded and not ({model, target} & after)
-    )
+    # The other quant of its repo keeps the id resident, so only a copy's own name tells.
+    named = [c for c in checkpoints if model is not None and c.startswith(f"{model}:")]
+    if target in named:
+        named = [target]
+    unloaded = any(c not in after for c in named) if named else not ({model, target} & after)
+    return UnloadResult(kind = kind, model = model, unloaded = was_loaded and unloaded)
 
 
 MEDIA_ROUTES = {

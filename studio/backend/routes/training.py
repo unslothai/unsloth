@@ -121,6 +121,7 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    ParallelPlanRequest,
     DiffusionCaptionUpdateRequest,
     DiffusionDatasetExample,
     DiffusionDatasetExamplesResponse,
@@ -1756,6 +1757,50 @@ async def get_drafter_capability(
     return {**answer, "model_name": shown}
 
 
+@router.get("/parallel/capabilities")
+async def get_parallel_capabilities(current_subject: str = Depends(get_current_subject)):
+    from core.training import parallel_plan
+    from utils.hardware import gpu_query
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(parallel_plan.capabilities)
+
+
+@router.post("/parallel/plan")
+async def plan_parallel_training(
+    request: ParallelPlanRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """A refused mode comes back in `error`, not as a 400, so the Train page can show it inline."""
+    from core.training import parallel_plan
+    from models.inference import resolve_inventory_handle
+
+    values = request.model_dump()
+    values["drafter"] = (
+        values["drafter"] if request.drafter is not None and request.drafter.enabled else None
+    )
+    name = resolve_inventory_handle((request.model_name or "").strip())
+    if not name:
+        raise HTTPException(status_code = 400, detail = "model_name is required")
+    values["model_name"] = name
+    managed = managed_account()
+    token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
+
+    def _plan():
+        sizing = values
+        if managed:
+            # Same rule as the training routes: a managed account reads only Hub ids or its own workspace paths.
+            try:
+                account_path(name, reference = True, shared_cache = True)
+                _authorize_cache_fallback(name)
+            except HTTPException:
+                sizing = {**values, "model_name": None}  # host-only plan, no model facts
+        return parallel_plan.plan_for_request(sizing, hf_token = token, inline_error = True)
+
+    return await asyncio.to_thread(_plan)
+
+
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization, gpu_query
@@ -2349,10 +2394,123 @@ async def _admit_training_request(
                 request.model_name,
             )
 
+    if request.parallel_mode is not None or request.parallel_spec:
+        await _plan_parallel_training(request, training_kwargs, hf_token)
+
     return _AdmittedTrainingRequest(
         training_kwargs = training_kwargs,
         hf_token = hf_token,
         resume_run = resume_run,
+    )
+
+
+def _parallel_plan_input(training_kwargs: dict, request) -> dict:
+    keys = (
+        "model_name",
+        "training_type",
+        "load_in_4bit",
+        "batch_size",
+        "max_seq_length",
+        "lora_r",
+        "target_modules",
+        "gradient_checkpointing",
+        "optim",
+        "gpu_ids",
+        "offload_layers",
+        "packing",
+        "is_dataset_image",
+        "is_dataset_audio",
+        "is_embedding",
+        "is_decision",
+        "batch_members",
+        "drafter",
+    )
+    values = {key: training_kwargs.get(key) for key in keys}
+    values["batch_members"] = _PENDING_BATCH.get() is not None
+    values["parallel_mode"] = request.parallel_mode
+    values["parallel_spec"] = request.parallel_spec
+    return values
+
+
+def _parent_mask_takes_gpu_ids() -> bool:
+    try:
+        from utils.hardware import hardware as hw
+        return bool(hw._get_parent_visible_gpu_spec().get("supports_explicit_gpu_ids", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _parent_visible_gpu_order() -> list:
+    try:
+        from utils.hardware import hardware as hw
+        return list(hw.get_parent_visible_gpu_ids())
+    except Exception:
+        return []
+
+
+async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> None:
+    """Resolve parallel_mode before any VRAM moves: a refused layout is a 400."""
+    from core.training import parallel_plan
+
+    def _plan():
+        # Fresh telemetry, not the capabilities route's cached read.
+        host = parallel_plan.detect_host(max_age_s = 0)
+        plan = parallel_plan.plan_for_request(
+            _parallel_plan_input(training_kwargs, request), hf_token = hf_token, host = host
+        )
+        return plan, len(host.get("gpus") or [])
+
+    try:
+        plan, n_visible = await asyncio.to_thread(_plan)
+    except parallel_plan.ParallelPlanError as exc:
+        raise HTTPException(status_code = 400, detail = exc.payload) from None
+    pin = bool(plan["gpu_ids"])
+    if pin and not _parent_mask_takes_gpu_ids():
+        if len(plan["gpu_ids"]) < n_visible:
+            # A UUID / MIG / tile mask cannot be narrowed by id, so a subset of its GPUs cannot be honored.
+            raise HTTPException(
+                status_code = 400,
+                detail = {
+                    "code": "parallel_gpu_ids",
+                    "mode": plan["mode"],
+                    "message": (
+                        f"{plan['mode']} on GPU(s) {plan['gpu_ids']} needs a subset of the {n_visible} GPUs Studio "
+                        "sees, and this GPU visibility mask (UUID / MIG entries) cannot be narrowed by index."
+                    ),
+                    "alternative": "use every visible GPU, or start Studio with numeric CUDA_VISIBLE_DEVICES",
+                },
+            )
+        pin = False  # every visible GPU, which is what the plan counted
+        if plan["launcher"] == "multi_process":
+            # Rank r runs on the r-th device of the inherited mask: report gpu_ids in that order, or
+            # None when the mask names no telemetry index.
+            order = _parent_visible_gpu_order()
+            plan["gpu_ids"] = order if sorted(order) == sorted(plan["gpu_ids"]) else None
+    training_kwargs["parallel"] = {
+        key: plan[key]
+        for key in (
+            "requested_mode",
+            "mode",
+            "world_size",
+            "gpu_ids",
+            "spec",
+            "launcher",
+            "distributed_backend",
+            "reason",
+            "env",
+        )
+        if key in plan
+    }
+    if pin:
+        # The worker's mask lists these ids in this order, so rank r runs on gpu_ids[r].
+        training_kwargs["gpu_ids"] = list(plan["gpu_ids"])
+    logger.info(
+        "Multi-GPU plan: mode=%s world_size=%s gpu_ids=%s spec=%s (%s)",
+        plan["mode"],
+        plan["world_size"],
+        plan["gpu_ids"],
+        plan["spec"],
+        plan["reason"],
     )
 
 
@@ -2541,6 +2699,9 @@ async def start_training(
                 )
 
                 def _can_keep_resident_models():
+                    if (training_kwargs.get("parallel") or {}).get("launcher") == "multi_process":
+                        # Per-card sizing below assumes one process: free resident models rather than guess.
+                        return False, {"mode": "multi_process", "reason": "multi_process"}
                     members = batch_members or [training_kwargs]
                     return can_keep_chat_during_training(
                         model_name = training_kwargs["model_name"],
@@ -3008,6 +3169,7 @@ def _build_training_status(
         error = error_message,
         warnings = warnings,
         details = details,
+        parallel = getattr(backend, "parallel_plan", None) if exposes_owner_state else None,
         metric_history = metric_history,
     )
 

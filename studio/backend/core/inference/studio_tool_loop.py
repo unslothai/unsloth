@@ -108,6 +108,7 @@ from core.inference.tool_stream_exec import (
 from core.inference.tools import (
     build_rag_autoinject,
     execute_tool,
+    PythonCallAnalyses,
     is_high_risk_tool_call,
     mcp_image_share,
     mcp_image_targets,
@@ -2046,6 +2047,7 @@ async def _stream_with_studio_tools(
             permission_mode, bypass_permissions = live_permissions.apply(
                 permission_mode, bypass_permissions
             )
+            python_analyses = PythonCallAnalyses() if name == "python" else None
             needs_confirmation = needs_tool_confirmation(
                 confirm_tool_calls = confirm_tool_calls,
                 bypass_permissions = bypass_permissions,
@@ -2057,6 +2059,7 @@ async def _stream_with_studio_tools(
                 sandbox_level = sandbox_level,
                 session_id = session_id,
                 thread_id = thread_id,
+                python_analyses = python_analyses,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirmation = needs_confirmation or image_share is not None
@@ -2069,6 +2072,7 @@ async def _stream_with_studio_tools(
                 prompted = needs_confirmation,
                 is_high_risk = is_high_risk_tool_call,
                 sandbox_level = sandbox_level,
+                python_analyses = python_analyses,
             )
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
@@ -2170,6 +2174,7 @@ async def _stream_with_studio_tools(
                 share = image_share,
                 index = call_index,
                 sent_tools = active_tools,
+                analyses = python_analyses,
             ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
@@ -2223,6 +2228,8 @@ async def _stream_with_studio_tools(
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 if share is not None:
                     kwargs["mcp_image"] = share["image"]
+                if analyses is not None and accepts_kwarg(execute_tool, "python_analyses"):
+                    kwargs["python_analyses"] = analyses
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             tool_stream: Any = started_fetches.pop(call_index, None)
@@ -2300,7 +2307,14 @@ async def _stream_with_studio_tools(
                         break
                     started_fetches[next_index] = _StartedToolStream(
                         scoped_tool_stream(
-                            partial(_invoke, call = spec, approved = False, strict = False, share = None),
+                            partial(
+                                _invoke,
+                                call = spec,
+                                approved = False,
+                                strict = False,
+                                share = None,
+                                analyses = None,
+                            ),
                             tool_name = spec.tool_name,
                             tool_call_id = spec.card_id,
                             cancel_event = cancel_event,

@@ -25,7 +25,7 @@ def _shared_setup_1(monkeypatch):
 
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(tl, "_disabled", lambda: False)
-    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "hf_env_offline", lambda: False)
     monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
     monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
 

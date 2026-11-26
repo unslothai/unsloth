@@ -93,6 +93,10 @@ export const TRAINING_FIELD_ROUTE: Record<keyof TrainingStartRequest, "openai" |
   offload_layers: "host",
   offload_vram_gb: "host",
   offload_vram_gb_per_device: "host",
+  // This machine's GPUs.
+  parallel_mode: "host",
+  parallel_spec: "host",
+  gpu_ids: "host",
   prefetch_depth: "host",
   enable_wandb: "host",
   wandb_token: "host",

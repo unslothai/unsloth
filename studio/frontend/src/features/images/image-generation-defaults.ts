@@ -28,13 +28,13 @@ const MODEL_DEFAULTS: Array<{
   { match: "kontext", steps: 20, guidance: 2.5 },
   { match: "flux.1", steps: 20, guidance: 3.5 },
   { match: "flux1", steps: 20, guidance: 3.5 },
-  // FLUX.3 Image Klein (the BFL reference): base 50 steps at CFG 3.5, distilled 16 steps at CFG 1. Base first.
+  // FLUX.3 Image Klein (BFL reference): base 50 steps CFG 4, distilled 16 steps CFG 1. Base first.
   // Every alias the backend registers for the two families, and the canonical family names (an opaque path
   // resolves through the explicit family).
-  { match: "flux.3-klein-base", steps: 50, guidance: 3.5 },
-  { match: "flux-3-image-klein-base", steps: 50, guidance: 3.5 },
-  { match: "flux3-image-klein-base", steps: 50, guidance: 3.5 },
-  { match: "flux3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux.3-klein-base", steps: 50, guidance: 4 },
+  { match: "flux-3-image-klein-base", steps: 50, guidance: 4 },
+  { match: "flux3-image-klein-base", steps: 50, guidance: 4 },
+  { match: "flux3-klein-base", steps: 50, guidance: 4 },
   { match: "flux.3-klein", steps: 16, guidance: 1 },
   { match: "flux-3-image-klein", steps: 16, guidance: 1 },
   { match: "flux3-image-klein", steps: 16, guidance: 1 },

@@ -70,12 +70,11 @@ except ImportError:
     sys.modules.setdefault("httpx", _hx)
 
 
-from utils.models.model_config import _env_offline
 from utils.transformers_version import (
     _check_config_needs_550,
     _check_tokenizer_config_needs_v5,
-    _env_offline as _env_offline_tv,
 )
+from utils.utils import hf_env_offline
 import importlib.util
 import json
 import pathlib
@@ -89,23 +88,21 @@ def clean_offline_env(monkeypatch):
 
 class TestEnvOffline:
     def test_unset_is_false(self, clean_offline_env):
-        assert _env_offline() is False
-        assert _env_offline_tv() is False
+        assert hf_env_offline() is False
 
     def test_hf_hub_offline_truthy_values(self, monkeypatch, clean_offline_env):
         for val in ("1", "true", "yes", "TRUE", "Yes"):
             monkeypatch.setenv("HF_HUB_OFFLINE", val)
-            assert _env_offline() is True
-            assert _env_offline_tv() is True
+            assert hf_env_offline() is True
 
     def test_transformers_offline_alone_triggers(self, monkeypatch, clean_offline_env):
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-        assert _env_offline() is True
+        assert hf_env_offline() is True
 
     def test_falsy_values(self, monkeypatch, clean_offline_env):
         for val in ("", "0", "false", "no"):
             monkeypatch.setenv("HF_HUB_OFFLINE", val)
-            assert _env_offline() is False
+            assert hf_env_offline() is False
 
 
 class TestTransformersVersionOfflineShortCircuits:

@@ -124,6 +124,37 @@ def test_local_json_seed_preview_keeps_its_values_as_written(monkeypatch, tmp_pa
     assert rows == records
 
 
+@pytest.mark.parametrize("filename", ["seed.jsonl", "seed.json", "seed.csv"])
+def test_a_utf8_bom_seed_upload_previews_and_runs_with_its_columns(monkeypatch, tmp_path, filename):
+    from models.data_recipe import SeedInspectUploadRequest
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "SEED_UPLOAD_DIR", tmp_path / "seed-uploads")
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    records = [{"zip": "01234", "qty": "3"}, {"zip": "90210", "qty": "4"}]
+    if filename.endswith(".jsonl"):
+        body = "\n".join(json.dumps(record) for record in records)
+    elif filename.endswith(".json"):
+        body = json.dumps(records)
+    else:
+        body = "zip,qty\n01234,3\n90210,4\n"
+
+    response = seed_route.inspect_seed_upload(
+        SeedInspectUploadRequest(
+            filename = filename,
+            content_base64 = base64.b64encode(b"\xef\xbb\xbf" + body.encode()).decode(),
+        )
+    )
+
+    assert response.columns == ["zip", "qty"]
+    assert response.preview_rows == records
+    stored = Path(response.resolved_path)
+    duckdb = pytest.importorskip("duckdb")
+    # The recipe run reads the stored file this way (data_designer seed_reader).
+    run_columns = [row[0] for row in duckdb.sql(f"DESCRIBE SELECT * FROM '{stored}'").fetchall()]
+    assert run_columns == ["zip", "qty"]
+
+
 def test_local_parquet_seed_preview_reads_typed_rows(monkeypatch, tmp_path):
     pd = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")

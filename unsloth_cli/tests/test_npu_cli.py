@@ -606,7 +606,7 @@ def _npu_load_payload(
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             return io.BytesIO(json.dumps(status).encode())
         sent.append(payload)
         return io.BytesIO(b'{"status": "already_loaded"}')
