@@ -30,6 +30,11 @@ export function useNvfp4Diffusion(): boolean {
   return useGpuInfo().nvfp4Diffusion;
 }
 
+/** Whether every NVIDIA card here runs NVFP4 natively (Blackwell), whatever the backend switch says. */
+export function useNvfp4Capable(): boolean {
+  return useGpuInfo().checkpointQuantFormats.includes("nvfp4");
+}
+
 /** Whether /api/system answered, so a false useNvfp4Diffusion() is not just the unloaded default. */
 export function useNvfp4DiffusionKnown(): boolean {
   return useGpuInfo().budgetKnown;
