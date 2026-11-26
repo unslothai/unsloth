@@ -391,8 +391,7 @@ def fp8_stored_by_header(
     name: str = "",
     keep_fp32: Any = (),
 ) -> bool:
-    """Header rule for fp8 layers kept as codes, shared by the host RAM estimate and the planner; the loader can only
-    widen more (charged live)."""
+    """Rule for fp8 codes shared by RAM estimate and planner; loader only widens, charged live."""
     return fmt in FP8_FORMATS and len(shape or ()) == 2 and not keeps_fp32(name, keep_fp32)
 
 
@@ -1200,8 +1199,7 @@ def fp8_widen_chosen(
 
 
 def comfy_fp8_storage(target: Any = None, *, lora: bool = False) -> bool:
-    """Whether fp8 storage can run: same weights as the load-time dequant, half the bytes. Off for a LoRA (needs
-    dense Linears) and torch without float8."""
+    """fp8 storage (same weights as dequant); off for LoRA (needs dense Linears) or no float8."""
     if lora or fp8_storage_disabled():
         return False
     try:

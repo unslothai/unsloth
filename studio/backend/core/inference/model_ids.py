@@ -103,7 +103,6 @@ def mlx_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
 
 
 def mlx_host_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
-    """Return the MLX replacement, excluding diffusion models."""
     import utils.hardware.hardware as hw
     from core.inference.diffusion_families import detect_family
 
@@ -129,6 +128,5 @@ DEEPSEEK_OCR_MAX_IMAGE_SIDE = 2048
 
 
 def is_deepseek_ocr(model) -> bool:
-    """A loaded DeepSeek-OCR model, which generates through its own infer()."""
     architectures = getattr(getattr(model, "config", None), "architectures", None) or ()
     return hasattr(model, "infer") and not _DEEPSEEK_OCR_ARCHITECTURES.isdisjoint(architectures)

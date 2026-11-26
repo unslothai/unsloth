@@ -30,7 +30,6 @@ def system_ram_gb() -> Optional[float]:
 def npu_memory_window_gb(
     total_ram_gb: Optional[float], platform: Optional[str] = None
 ) -> Optional[float]:
-    """About how much memory this machine can give the NPU, or None when RAM is unknown."""
     if not total_ram_gb or total_ram_gb <= 0:
         return None
     if (platform or sys.platform) == "win32":
@@ -45,7 +44,6 @@ def npu_memory_needed_gb(size_gb: Optional[float]) -> Optional[float]:
 
 
 def fits_npu_memory(size_gb: Optional[float], window_gb: Optional[float]) -> Optional[bool]:
-    """Whether a model of this size loads within the window; None when either is unknown."""
     needed = npu_memory_needed_gb(size_gb)
     if needed is None or window_gb is None:
         return None

@@ -331,8 +331,7 @@ def _local_gguf_entry(
     *,
     exact_snapshot: bool = False,
 ) -> Optional[_LocalGgufEntry]:
-    """Build an entry only when GGUF quants are on disk (not Transformers/safetensors), listing only
-    those; load_path must be a concrete local path so /load never fetches remotely."""
+    """Only on-disk GGUF quants; load_path must be local so /load never fetches remotely."""
     from pathlib import Path
 
     # The lister every stored per-model setting is keyed by, so one file has one identity.
@@ -788,8 +787,7 @@ def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
 
 
 def _advertises_this_ollama_row(info) -> bool:
-    """Whether an Ollama row's catalog id is the one the resolver loads for it: two roots can hold
-    one tag. Asks the index, so it cannot be called from inside a scan."""
+    """Whether a row is loaded for its tag (roots can share a tag); index-based, not in scans."""
     from hub.services.models.ollama import is_ollama_manifest_ref
 
     raw_id = getattr(info, "id", None)

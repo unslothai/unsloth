@@ -159,7 +159,6 @@ def main() -> int:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
     def _find_lib(directory, stem):
-        """Find an unversioned library or a versioned runtime soname."""
         path = os.path.join(directory, stem)
         if os.path.isfile(path):
             return path

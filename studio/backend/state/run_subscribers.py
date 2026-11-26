@@ -59,7 +59,6 @@ def subscriber_departed(
 
 
 def is_attended(run_id: str, account_id: str = "") -> bool:
-    """Whether ANY follower of ``account_id``'s ``run_id`` has been heard from recently."""
     if not run_id:
         return False
     key = _key(account_id, run_id)
@@ -79,7 +78,6 @@ def is_attended(run_id: str, account_id: str = "") -> bool:
 
 
 def attendance_for_tests(run_id: str, account_id: str = "") -> int:
-    """How many followers are currently stamped for ``account_id``'s ``run_id``."""
     with _LOCK:
         return len(_SEEN.get(_key(account_id, run_id)) or {})
 

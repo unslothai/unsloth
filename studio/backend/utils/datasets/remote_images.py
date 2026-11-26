@@ -164,8 +164,7 @@ def fetch_opted_in_image_bytes(url):
 
 
 def _disable_ghostscript() -> None:
-    """Pillow opens any cell starting with %!PS as EPS and renders it with the host's ``gs``, with no
-    timeout: a dataset row would run PostScript of its author's choosing. No dataset image needs it."""
+    """No dataset image needs EPS: a %!PS cell would run author PostScript via gs, no timeout."""
     try:
         from PIL import EpsImagePlugin
     except Exception:

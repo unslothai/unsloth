@@ -149,8 +149,7 @@ def family_render_cudnn_scope(family: Any, device: Any) -> Any:
 
 
 def snapshot_backend_flags() -> Optional[dict]:
-    """Capture the process-wide torch backend flags this layer may mutate, for restore on unload. None
-    without torch. Each flag is read defensively: a build missing one still captures the rest."""
+    """Snapshot process-wide torch flags for restore; None without torch; missing ones skipped."""
     try:
         import torch
     except Exception:  # noqa: BLE001 - no torch -> nothing to snapshot/restore
@@ -342,8 +341,7 @@ def resolve_speed_mode(
 def int8_attention_speed_active(
     speed_mode: Optional[str], effective_speed: str, deferred: bool
 ) -> bool:
-    """Auto INT8 attention races at load when speed is active, or unset with no deferred profile;
-    speed off stays bit-identical."""
+    """INT8 attention races at load: on if speed active or unset-undeferred; off bit-identical."""
     return effective_speed != SPEED_OFF or (speed_mode is None and not deferred)
 
 
@@ -1057,8 +1055,7 @@ def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
                 touched.append(module)
             relaid += 1
     if touched:
-        # Relaid because fusion is planned; fusion matched by structure may still be rejected at its first decode,
-        # which restores these weights' layout (diffusion_vae_fused._restore_contiguous_layout).
+        # Relaid for fusion; may be rejected at first decode, undone via diffusion_vae_fused.
         vae.__dict__.setdefault("_unsloth_channels_last_modules", []).extend(touched)
     if logger is not None:
         logger.info(
@@ -2242,8 +2239,7 @@ def _enable_fp16_accumulation(
 
 
 def _quantised_projections(pipe: Any) -> bool:
-    """Whether a denoiser keeps native int8 / fp8 or packed nvfp4 / mxfp8 / W4A8 / W6A8 Linears, whose ``.weight`` is a dense
-    widen: diffusers' fuse would concatenate those into a persistent dense ``to_qkv`` beside the compact buffers."""
+    """Denoiser keeps native int8/fp8 or packed Linears; fusing would add a dense to_qkv copy."""
     from .diffusion_grouped_int8 import is_grouped_linear
     from .diffusion_native_quant import is_native_linear
     from .diffusion_packed_block import is_packed_block_linear
@@ -2264,8 +2260,7 @@ def _quantised_projections(pipe: Any) -> bool:
 
 
 def _layerwise_cast_projections(pipe: Any) -> bool:
-    """Whether a denoiser Linear carries diffusers' layerwise-casting hook (weights stored in one dtype, cast per call,
-    e.g. a memory-mapped small-host denoiser): a fused ``to_qkv`` is a plain Linear without that hook."""
+    """Denoiser Linear has layerwise-casting hook; fused to_qkv is a plain Linear without it."""
     import torch
 
     for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):

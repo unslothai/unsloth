@@ -44,8 +44,7 @@ _last_attended = float("-inf")
 _unattended: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "keepwarm_unattended", default = False
 )
-# The (id, quant) idle-unload last freed, so an alias/unknown request that would otherwise 503 against an empty backend
-# can reload it (set on unload, cleared on reload). The quant lets the reload restore the exact freed variant.
+# Idle-unloaded (id, quant): alias requests reload it, not 503; quant restores that variant.
 _last_unloaded_model = None
 _last_unloaded_mlx = False
 _last_unloaded_intent = None
@@ -293,8 +292,7 @@ def other_non_preview_pending_count() -> int:
 
 
 def note_preview_swap() -> None:
-    """Record that a preview swap loaded a new checkpoint; non-preview requests blocked on the
-    lifecycle gate see the counter advance and are rejected instead of running."""
+    """Bump per preview swap; blocked non-preview requests on the lifecycle gate are rejected."""
     global _preview_swap_generation
     with _lock:
         _preview_swap_generation += 1
@@ -395,8 +393,7 @@ def set_current_response_scope(scope) -> None:
 
 
 def mark_current_response_failed() -> None:
-    """Flag the current response failed via the middleware contextvar, so an OpenAI-family stream
-    error deep in a generator still blocks the slot claim."""
+    """Flags a failed response; OpenAI-family generator stream errors still block the claim."""
     mark_response_failed(_current_response_scope.get())
 
 
@@ -418,8 +415,7 @@ def untrack_current_media_request(scope) -> None:
 
 
 def untrack_current_request(scope) -> None:
-    """Drop this request from the in-flight count when it won't use the local GGUF, so
-    external-provider traffic cannot trip the swap busy guard; idempotent."""
+    """Untrack a non-local-GGUF request so it cannot trip the swap busy guard; idempotent."""
     if not isinstance(scope, dict) or scope.get(_UNTRACKED_SCOPE_KEY):
         return
     scope[_UNTRACKED_SCOPE_KEY] = True
@@ -861,7 +857,6 @@ class LlamaKeepWarmMiddleware:
         async def send_wrapper(message):
             if message.get("type") == "http.response.start":
                 status["code"] = message.get("status")
-            # Terminal body frame marks a clean end of a (possibly streaming) response.
             is_terminal = message.get("type") == "http.response.body" and not message.get(
                 "more_body", False
             )

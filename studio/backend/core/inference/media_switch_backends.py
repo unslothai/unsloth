@@ -33,7 +33,6 @@ def backend_for(owner: str) -> Any:
 
 
 def other_owner(owner: str) -> str:
-    """The media backend this one would take the GPU from."""
     return VIDEO if owner == DIFFUSION else DIFFUSION
 
 

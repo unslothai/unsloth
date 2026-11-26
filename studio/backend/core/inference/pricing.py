@@ -80,7 +80,6 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
     # o-series / gpt-4.5 are left off the pricing page
 }
 
-# Shared multipliers (all Anthropic models).
 ANTHROPIC_CACHE_5M_WRITE_MULT = 1.25
 ANTHROPIC_CACHE_1H_WRITE_MULT = 2.0
 ANTHROPIC_CACHE_READ_MULT = 0.1
@@ -118,7 +117,6 @@ def _launch_prices(
     prices: dict[str, float],
     today: Optional[_dt.date] = None,
 ) -> dict[str, float]:
-    """Overlay a still-running launch rate onto a standard-rate table row."""
     if provider != "anthropic":
         return prices
     for key, (ends, launch) in _LAUNCH_PRICING.items():

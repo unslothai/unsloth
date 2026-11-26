@@ -31,7 +31,6 @@ def clear_bootstrap_deadline() -> None:
 
 
 def bootstrap_deadline_remaining_seconds() -> Optional[int]:
-    """Seconds until shutdown, or None when untimed; floored at 0 for calls after expiry."""
     if _deadline_at is None:
         return None
     return max(0, int(round(_deadline_at - time.monotonic())))
@@ -155,7 +154,6 @@ def arm_bootstrap_timeout(
     timeout_seconds: int,
     logger = None,
 ) -> "threading.Timer":
-    """Start a daemon timer that enforces the deadline. Returns the Timer."""
     record_bootstrap_deadline(timeout_seconds)
     timer = threading.Timer(
         timeout_seconds,

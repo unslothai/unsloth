@@ -56,11 +56,10 @@ class OAICompatTransport:
         | None = None,
         **request_kwargs: Any,
     ) -> None:
-        """message_fitter may be coroutine or async generator yielding progress lines then
-        (messages, max_tokens, line); overflow_refitter same shape, runs once per request when
-        provider refuses as too long before output; first_turn_overrides replace kwargs on turn 1
-        only; reply_limit (only when the caller set no max_tokens) sizes each round's max_tokens from
-        what its fitted prompt leaves of the window"""
+        """message_fitter: coroutine or async generator yielding progress lines, then (messages,
+        max_tokens, line); overflow_refitter: same shape, once per request on too-long refusal
+        before output; first_turn_overrides: replace kwargs on turn 1 only; reply_limit (only if
+        no max_tokens) sizes it from the fitted prompt's leftover window."""
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message

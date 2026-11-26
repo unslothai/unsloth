@@ -61,8 +61,7 @@ def test_gpu_utilization_payload_carries_the_aggregate(win_rocm, monkeypatch):
 
 
 def test_loaded_card_agrees_with_the_per_device_figures(win_rocm, monkeypatch):
-    """The #7072 case, a model resident on the W7900: 40 GiB exceeds the smaller card, so both rows
-    get a value and the aggregate must equal their sum."""
+    """On W7900 (#7072), 40 GiB exceeds the smaller card: both rows get values that must sum."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     loaded = [
         ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),

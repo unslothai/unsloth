@@ -2581,8 +2581,7 @@ UNREACHABLE_ADVICE = "It is probably not running. Tell the user to start it; wai
 
 
 def server_unreachable(exc: BaseException) -> bool:
-    """A refused or unanswered connection anywhere in the cause chain (httpx is vendored, so match by type name).
-    A TLS failure is not one: httpx raises ConnectError for an untrusted certificate too, but the server answered."""
+    """Refused/unanswered connection in cause chain; name match (httpx vendored); TLS excluded."""
     chain, seen = [], 0
     while exc is not None and seen < 10:
         chain.append(exc)

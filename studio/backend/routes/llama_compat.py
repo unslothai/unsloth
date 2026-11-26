@@ -409,8 +409,7 @@ async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str
     resolved = await _resolve_local(model_id)
     path = resolved[0] if resolved else None
     base, suffix = split_model_ref(model_id)
-    # Only a quant the caller named: a bare id resolves to the preferred quant, not the resident one.
-    # The resolver's spelling of it, which maps a legacy label (BF16) onto the current quant.
+    # Only a named quant pins; bare ids mean the preferred quant; legacy BF16 maps to current.
     from core.inference.local_model_resolver import (
         local_gguf_pinned_variant,
         local_gguf_same_build,

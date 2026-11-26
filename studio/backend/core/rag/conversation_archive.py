@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Search index over evicted turns in a per-thread RAG scope; transcript untouched; cumulative,
-never reset per compaction; entry points no-op on failure."""
+"""Per-thread index of evicted turns; transcript untouched; never reset; no-op on failure."""
 
 from __future__ import annotations
 
@@ -99,7 +98,6 @@ _session: contextvars.ContextVar[Optional[_RecallSession]] = contextvars.Context
 
 @contextmanager
 def recall_session():
-    """Recalls inside share one session; a nested entry joins the outer one."""
     if _session.get() is not None:
         yield
         return
@@ -304,7 +302,6 @@ def _without_retrieval(group: list[dict]) -> list[dict]:
                     keep_calls.append(call)
             if len(keep_calls) != len(calls):
                 if not keep_calls and not _text_of(message.get("content")).strip():
-                    # Nothing left of it but the search.
                     continue
                 message = {**message, "tool_calls": keep_calls}
         if str(message.get("role") or "") == "tool":
@@ -665,8 +662,7 @@ def _prewarm_thread(
     messages: list[dict],
     stopped: Callable[[], bool] = lambda: False,
 ) -> None:
-    """Embed this thread's not-yet-archived turns into the vector cache, oldest first (the next to be
-    evicted). Writes nothing to the archive, so an edit or rewind cannot strand a stale row."""
+    """Embeds unarchived turns oldest first; writes nothing to the archive, so none goes stale."""
     if not can_archive(thread_id):
         return
     from core.inference.context_window import group_turns
@@ -1755,7 +1751,6 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         if prefix_stop == 0:
             return False
 
-        # Within that range, find the first split whose tail occurs in stored.
         left, right = 0, prefix_stop
         while left < right:
             mid = (left + right) // 2
@@ -2083,7 +2078,6 @@ def _probe_entries(text: str) -> list[tuple[str, bool]]:
 
 
 def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
-    """Whether one archived chunk still exists in the saved thread."""
     probes = _probes_for(text)
     if not probes or not transcript:
         return False
@@ -2120,7 +2114,6 @@ def _scan_probes(
                 ):
                     return None
                 if opened_at is None:
-                    # Same exemption at the front of the run as inside it.
                     opened_at = 0 if partial_ok else found
                     opened_index = index
                 cursor = found + len(probe)
@@ -2405,7 +2398,6 @@ def _lexical_pass_uncached(
 
 
 def _both_ends(oldest: list, newest: list) -> list:
-    """One candidate list from a run fetched from each end, oldest side first, no repeats."""
     seen = {hit.chunk_id for hit in oldest}
     return oldest + [hit for hit in newest if hit.chunk_id not in seen]
 
@@ -2709,7 +2701,6 @@ def _recall(
 
 
 def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
-    """The scope's documents, optionally cut at ``created_before`` (see `delete_for_thread`)."""
     if not created_before:
         return ("SELECT id, stored_path FROM documents WHERE scope=?", (scope,))
     return (

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reversible, failure-safe, compile-safe accuracy-neutral patches of shared diffusers classes;
-uninstall on off-tier loads and on unload; the chat/diffusion arbiter ensures one active pipe, so
-class-level state is safe"""
+"""Reversible, failure-safe, compile-safe, accuracy-neutral patches of shared diffusers classes;
+uninstalled on off-tier loads and unload; one active pipe makes class-level state safe."""
 
 from __future__ import annotations
 

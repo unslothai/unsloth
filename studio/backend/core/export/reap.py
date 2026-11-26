@@ -61,8 +61,7 @@ def _model_parallel(distributed) -> bool:
     )
 
 
-# Quantization a 16-bit load unpacks (gpt-oss mxfp4; bitsandbytes only for Hub ids Unsloth maps to
-# 16-bit); anything else stays packed and Core refuses it only after a full load.
+# 16-bit loads unpack mxfp4; bitsandbytes for mapped Hub ids; others stay packed, refused late.
 _UNPACKED_QUANT_METHODS = {"mxfp4"}
 # Older ModelOpt exports declare quantization here (attach_hf_quant_config reads it too).
 _HF_QUANT_CONFIG = "hf_quant_config.json"

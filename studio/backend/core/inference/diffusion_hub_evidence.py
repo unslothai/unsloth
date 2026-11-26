@@ -15,9 +15,8 @@ from typing import Any, Optional
 _SINGLE_FILE_SUFFIXES = (".safetensors", ".sft", ".gguf")
 _GGUF_TABLE_BYTES = 1024 * 1024
 
-# (repo id lowercased, filename) -> (monotonic time read, family name or None for a header that names no family).
-# Only bridges a request's prefetch to the validation and load that follow it; a refresh REPLACES an entry (never
-# clears it first, so an overlapping request keeps seeing the last good read), and an entry expires on its own.
+# (repo id lowercased, filename) -> (monotonic time, family or None); bridges prefetch to validation
+# and load; refresh replaces, never clears first (overlapping reads keep last good value).
 _HEADER_VERDICTS: dict[tuple[str, str], tuple[float, Optional[str]]] = {}
 _LOCK = threading.Lock()
 _MAX_VERDICTS = 1024

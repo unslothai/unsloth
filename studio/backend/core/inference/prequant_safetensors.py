@@ -128,8 +128,7 @@ def plain_safetensors_supported() -> bool:
 
 
 def _unviewed(tensor: Any) -> Any:
-    """Returns ``tensor`` as a base-less alias of the same storage (no copy), so a streamed buffer
-    re-pointed via ``.data =`` cannot pin the whole-file mapping."""
+    """Base-less no-copy alias of the storage; a re-pointed .data cannot pin the file mapping."""
     if getattr(tensor, "_base", None) is None or type(tensor).__name__ != "Tensor":
         return tensor
     import torch
@@ -146,8 +145,7 @@ def load_plain_prequant_safetensors(
     device: str = "cpu",
     skip_names: Iterable[str] = (),
 ) -> dict:
-    """Reads plain-tensor prequant file without torchao; refuses subclass metadata and unlisted
-    tensors; skip_names are validated but never read."""
+    """Reads without torchao; refuses subclass metadata, unlisted tensors; skip_names unread."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:

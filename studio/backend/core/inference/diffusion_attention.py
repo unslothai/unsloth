@@ -92,8 +92,7 @@ def _cuda_capability() -> Optional[tuple[int, int]]:
 
 
 def _backend_arch_supported(backend: str) -> bool:
-    """False only when ``backend`` needs a CUDA arch outside this device's range. Unknown
-    capability returns True (never block on a guess; the run-time failure falls back to native)."""
+    """False only if the CUDA arch is outside backend's range; unknown is True, never blocking."""
     bounds = _ARCH_CAPABILITY.get(backend)
     if bounds is None:
         return True
@@ -1543,8 +1542,7 @@ _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
 # Unrun probes defer per DiT, not verdicts; a transient shortfall cannot disable a working kernel
 ROCM_FLASH_DEFERRED_ATTR = "_unsloth_rocm_flash_deferred"
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
-# The native SDPA baseline the in-memory verdicts were timed against; when it moves (a later load re-enables or disables
-# the fused SDPA kernels), both in-memory caches are dropped and the disk cache, keyed on it, decides again.
+# SDPA baseline for verdicts; if it moves, in-memory caches drop and keyed disk cache decides.
 _ROCM_FLASH_BASELINE: list = [None]
 # ``torch.fx.experimental.symbolic_shapes.statically_known_true`` when this torch's Dynamo traces it in graph (no
 # guard), else None. Resolved outside tracing, when the dispatch guard installs.
@@ -1880,8 +1878,7 @@ def _rocm_flash_bucket_reason(
 def _native_sdpa_fused_serves(
     device: Any, dtype: Any, heads: int, head_dim: int, tokens: int, kv_tokens: int, batch: int
 ) -> bool:
-    """Whether native SDPA takes an enabled fused (flash / memory-efficient) kernel at exactly this shape, asked of
-    torch's own dispatcher with zero-size-storage views; otherwise (or when it cannot say) it runs the math backend."""
+    """True if torch's dispatcher takes an enabled fused kernel at this shape; else math."""
     try:
         import torch
         from torch.backends.cuda import (
@@ -3174,8 +3171,7 @@ def _version_tuple(text: str) -> tuple[int, ...]:
 
 
 def _sage_version_too_old() -> Optional[str]:
-    """Why an installed sageattention is below diffusers' floor (PyPI's 1.0.6 is SageAttention 1), else None. Not
-    cached: a later install may replace it."""
+    """Why sageattention is below diffusers' floor, else None; uncached (reinstall may fix it)."""
     try:
         from importlib.metadata import PackageNotFoundError, version
 
@@ -3503,8 +3499,7 @@ def _pinned_constraints_file() -> Optional[str]:
 
 
 def _refresh_diffusers_kernels_version(logger: Any = None) -> None:
-    """diffusers reads the kernels version once at import and gates flash_4_hub on it: refresh it after an upgrade, only
-    while ``kernels`` is not imported yet (an imported old version runs until a restart)."""
+    """Refresh diffusers' kernels version only before kernels is imported; after that, restart."""
     import sys
 
     if "kernels" in sys.modules:
@@ -3679,8 +3674,7 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
         except Exception as exc:  # noqa: BLE001 -- must never break a model load
             return (None, f"the xFormers wheel could not be resolved ({exc})")
         if env is None:
-            # Not cached: no wheel_platform_tag (macOS, Windows on ARM) is deterministic, a busy-box
-            # probe timeout is transient; Linux aarch64 gets a platform_tag and lands below.
+            # Uncached: no wheel_platform_tag on macOS/Windows ARM; timeouts are transient.
             return (
                 None,
                 "torch could not be probed, or this platform has no xFormers wheel "
@@ -4172,9 +4166,8 @@ def explicit_pick_fallback(
     speed_active: bool,
     family: Any = None,
 ) -> Optional[str]:
-    """Closest kernel for an explicit pick that cannot run, keeping strided processors and fused
-    QK-RoPE; flash maps to SDPA flash kernel (same algorithm, no flash_attn package); others to
-    auto cuDNN; None unless NVIDIA with speed on (speed off must stay bit-identical)."""
+    """Closest kernel to an unrunnable pick, keeping strided processors and fused QK-RoPE; flash to
+    SDPA flash, others auto cuDNN; None unless NVIDIA and speed on; speed off bit-identical."""
     try:
         alias = normalize_attention_backend(requested)
     except ValueError:
@@ -4571,8 +4564,7 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
         logger.warning("diffusion.attention: %s unavailable (%s); using default", what, exc)
 
 
-# HunyuanVideo-1.5: trim padded text before joint attention so fused SDPA needs no dense mask;
-# lossless but not bit-identical; trimmed length varies, so compile must stay dynamic=None.
+# Trims padding for fused SDPA; lossless, not bit-identical; varying length needs dynamic=None.
 _HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
 _HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
 _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"
@@ -4832,7 +4824,6 @@ def _install_null_processors(dit: Any, logger: Any) -> bool:
         if type(proc).__name__ != _HUNYUAN15_PROCESSOR_CLS:
             continue
         new = cls()
-        # carry over any backend/parallel config the stock processor already held
         new._attention_backend = getattr(proc, "_attention_backend", None)
         new._parallel_config = getattr(proc, "_parallel_config", None)
         try:

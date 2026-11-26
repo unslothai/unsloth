@@ -324,8 +324,7 @@ def load_h3_quantized_text_encoder(
         # One slot past the read layer, so the read lands on the raw state, not the post-norm one.
         text_config.num_hidden_layers = H3_TE_READ_LAYER + 1
 
-        # Params to meta (replaced by assign=True); non-persistent rotary buffers must be real on CPU,
-        # else a dense 51 GB CPU rebuild.
+        # Non-persistent rotary buffers must be real on CPU, else a dense 51 GB CPU rebuild.
         with init_empty_weights(include_buffers = False):
             encoder = transformers.Qwen3VLForConditionalGeneration(config)
 
@@ -738,8 +737,7 @@ def _arena_view(arena: Any, tensor: Any, offset: int) -> Any:
 
 
 def _fill_arena(arena: Any, *, entries: list) -> None:
-    """Copies each tensor to its offset and zeroes the rest, on a thread pool (copy_, zero_ and their page faults
-    release the GIL). Writing every byte faults the arena's pages in the copy itself, with no separate zero pass."""
+    """Copy and zero on a thread pool (GIL released); the copy faults pages in; no zero pass."""
     jobs = []  # (destination, source tensor or None to zero)
     end = 0
     for tensor, _owners, offset in entries:
@@ -985,8 +983,7 @@ def stream_h3_text_encoder(
         if "record_stream" in params:
             kwargs["record_stream"] = True
         if "low_cpu_mem_usage" in params:
-            # Already pinned in place, so diffusers' pin_memory() returns the same tensor: no second host copy.
-            # With the table left mapped, the onload pins only what is not pinned yet: nothing once the table is out.
+            # Pinned tensors are not copied; with the table mapped, onload pins only the rest.
             kwargs["low_cpu_mem_usage"] = not pin or table is not None
         elif not pin:
             return None

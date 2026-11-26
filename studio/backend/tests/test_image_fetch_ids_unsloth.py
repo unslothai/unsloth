@@ -44,8 +44,7 @@ _UNMIRRORED: dict[str, str] = {
     "nvidia/qwen-image-flash": "Qwen-Image-Flash",
 }
 
-# Third-party DENOISER artifacts the catalog still offers. Not a companion fetch and not licence-blocked: there is
-# simply no unsloth GGUF of FLUX.1 Krea dev yet. Its companions already come from unsloth/FLUX.1-Krea-dev.
+# Not licence-blocked: no unsloth GGUF yet; companions come from unsloth/FLUX.1-Krea-dev.
 _THIRD_PARTY_DENOISER_ROWS: frozenset[str] = frozenset({"quantstack/flux.1-krea-dev-gguf"})
 
 # GGUF/bnb companions come from the card tag, as no family table names card-tag-only variants.
@@ -246,7 +245,6 @@ def _catalog_rows() -> list[tuple[str, str]]:
 
 
 def _catalog_fetch_id(helper: str, repo: str) -> str:
-    # bf16Mirror rows already load the unsloth copy; the rest reach the backend by their own id.
     if helper == "bf16Mirror":
         return f"unsloth/{repo.split('/', 1)[1]}"
     return _fetch_id(repo)

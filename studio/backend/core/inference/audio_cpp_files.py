@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Weights are HF cache files (Model Hub and deletion see them); materialize hardlinks them by real
-name into a farm beside the cache, since audio.cpp picks loaders by extension after resolving
-symlinks. Real-file caches skip it, except on Windows (short path avoids the 260-char limit)."""
+"""Hardlinks weights by real name into a farm beside the cache, as audio.cpp picks loaders by
+extension after resolving symlinks; real-file caches skip it except on Windows (260-char limit)."""
 
 from __future__ import annotations
 

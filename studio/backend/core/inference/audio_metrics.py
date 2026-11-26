@@ -448,7 +448,6 @@ def match_score(expected: str, heard: str) -> Optional[float]:
     hyp_ids = np.array([ids.setdefault(word, len(ids)) for word in hyp])
     steps = np.arange(len(hyp) + 1)
     previous = steps.copy()
-    # One row of the edit-distance table per expected word, a whole row at a time.
     for i, word in enumerate(ref_ids, 1):
         current = np.empty_like(previous)
         current[0] = i

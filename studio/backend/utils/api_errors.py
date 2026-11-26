@@ -96,7 +96,6 @@ def anthropic_error_body(
 
 
 def is_anthropic_path(path: str) -> bool:
-    """True iff ``path`` belongs to the Anthropic surface (``/v1/messages*``)."""
     return path.startswith("/v1/messages")
 
 
@@ -105,7 +104,6 @@ _NATIVE_ERROR_PATHS = frozenset({"/v1/systemone"})
 
 
 def wants_api_error_envelope(path: str) -> bool:
-    """True for OpenAI/Anthropic-compatible surfaces: /v1/* and preview /p/<run>[/<ckpt>]/v1/*."""
     if path in _NATIVE_ERROR_PATHS:
         return False
     return path.startswith("/v1/") or (path.startswith("/p/") and "/v1/" in path)
@@ -283,7 +281,6 @@ def install_api_error_handlers(app) -> None:
             return Response(status_code = exc.status_code, headers = headers)
         if wants_api_error_envelope(path):
             detail = exc.detail
-            # Already a fully-formed envelope: pass through untouched.
             if isinstance(detail, dict) and ("error" in detail or detail.get("type") == "error"):
                 return JSONResponse(
                     status_code = exc.status_code,

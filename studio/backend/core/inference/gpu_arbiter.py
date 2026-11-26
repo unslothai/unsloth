@@ -21,7 +21,6 @@ VIDEO = "video"
 # A Decision API llama.cpp server on the GPU (the PyTorch Clef worker is not arbitrated).
 DECISIONS = "decisions"
 
-# What each kind is called in refusals and eviction reports.
 KIND_LABELS = {CHAT: "chat", DIFFUSION: "image", VIDEO: "video", DECISIONS: "decisions"}
 # Residents that "always" protects; a Decision API server is still evicted as before.
 _KEPT_UNDER_ALWAYS = frozenset({CHAT, DIFFUSION, VIDEO})
@@ -512,7 +511,6 @@ def public_slots(slots: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def note_evictions(slots: Iterable[dict[str, Any]], evicted: Optional[list] = None) -> None:
-    """Report models a route unloaded itself, to ``evicted`` or the current eviction sink."""
     sink = evicted if evicted is not None else eviction_sink.get()
     if sink is not None:
         sink.extend(public_slots(slots))
@@ -808,7 +806,6 @@ def acquire_for(
             if owner in _accounts:
                 _owner_account, _prior_account = _accounts.pop(owner)
             elif prev_owner is None or prev_owner not in _residents:
-                # The evicted owner's accounts carry over, as they did with a single owner.
                 _owner_account, _prior_account = prev_pair
             else:
                 _owner_account, _prior_account = None, None
@@ -819,7 +816,6 @@ def acquire_for(
         if owner == CHAT and held_before is not ...:
             from core.inference import model_slots
             if register is None and not replacing and gpus_now is None:
-                # A re-assert places nothing new.
                 gpus_now = held_before
             elif alongside or model_slots.holds_vram():
                 # Every chat model kept loaded counts, not just the newest; unknown (None) means every GPU.
@@ -832,7 +828,6 @@ def acquire_for(
             result = register() if register is not None else None
         except BaseException:
             if held_before is not ...:
-                # The model already loaded stays where it was.
                 _residents[owner] = held_before
             raise
         if owner in (DIFFUSION, VIDEO) and register is not None:
@@ -954,7 +949,6 @@ def restore_media_need(owner: str) -> None:
 
 
 def release(owner: str) -> None:
-    """Drop ``owner``'s residency (no-op if it isn't resident)."""
     with _lock:
         if owner == DIFFUSION and owner in _view():
             _stop_prompt_upsampler()
@@ -983,7 +977,6 @@ def current_owner() -> Optional[str]:
 
 
 def owner_account(owner: Optional[str] = None) -> Optional[str]:
-    """Account whose load put ``owner`` (default: the last claimant) on the GPU."""
     if owner is None or owner == _owner:
         return _owner_account
     return _accounts.get(owner, (None, None))[0]

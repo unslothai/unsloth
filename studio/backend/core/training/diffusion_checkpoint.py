@@ -1116,7 +1116,6 @@ def resumed_into_this_dir(cfg: Any, output_dir: "str | os.PathLike[str]") -> boo
         candidate = Path(str(source)).expanduser().resolve()
     except OSError:
         return False
-    # The request names either the bundle itself or the directory holding it.
     return candidate == root or candidate.parent == root
 
 

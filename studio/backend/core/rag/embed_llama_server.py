@@ -492,8 +492,7 @@ class LlamaServerBackend:
         # Companion repo, then the naming variants, then the model repo itself.
         repo = desired
         candidates = list(dict.fromkeys([repo, *config.gguf_repo_candidates(model)]))
-        # Only the preferred repo: a file cached under the fallback must not pre-empt a companion repo the
-        # hub can still resolve.
+        # Only the preferred repo: a fallback-cached file must not beat a resolvable companion.
         cached = self._resolve_cached_gguf(desired)
         if cached is not None:
             # Retire the pending marker here, or the model stays cache-only for the life of the install and a
@@ -522,8 +521,7 @@ class LlamaServerBackend:
                         clear_stored_download_pending(model)
                     except Exception:  # noqa: BLE001 - a settings write must not fail a load
                         pass
-                # Serve a stand-in rather than fail the index, but leave the marker: retiring on it would pin this
-                # model to the wrong quant.
+                # Serve a stand-in; retiring the marker would pin the model to the wrong quant.
                 return self._adopt_model_path(cached, desired)
             # Typed: the same condition the ST path raises, and /v1/embeddings answers it
             # with a 409. Bare, it fell into the catch-all as a 502 naming nothing.

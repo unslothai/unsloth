@@ -110,7 +110,6 @@ def probe_torch_wheel_env(
                     "torch_mm = parts[0] + '.' + minor; "
                     "print(json.dumps({"
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
-                    # Differs from python_tag only on a free-threaded build (cp314t).
                     "'abi_tag': f'cp{sys.version_info.major}{sys.version_info.minor}' + ('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else ''), "
                     "'torch_mm': torch_mm, "
                     # xFormers publishes one wheel per exact torch PATCH and per CUDA MINOR, so 'torch_mm' / 'cuda_major' cannot pick between them. Full release + full CUDA version: cu126 and cu128 are different builds of the same version string.
@@ -231,8 +230,7 @@ _UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
     ("linux_aarch64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
 }
 
-# Extra cells carrying only some packages: on Linux torch 2.10 to 2.12 ours replace upstream
-# causal-conv1d and mamba-ssm; upstream flash-attn 2.8.1 is smaller than ours, so it stays upstream.
+# Linux torch 2.10-2.12: our causal-conv1d/mamba-ssm (flash-attn 2.8.1 smaller, so upstream).
 _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
     "linux_x86_64": frozenset({"causal_conv1d", "mamba_ssm"}),
     "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),

@@ -192,8 +192,7 @@ def get_stored_embedding_model() -> str | None:
 
 
 def _get_stored_state(fresh: bool = False) -> _StoredState:
-    """Reads the override as one snapshot: its resolution is one JSON value so model/repo/backend
-    cannot tear; legacy fields share the same SQL statement for older builds."""
+    """One JSON value: model/repo/backend cannot tear; legacy fields share the SQL statement."""
     key = (current_account_id(), EMBEDDING_RESOLUTION_SETTING_KEY)
     now = time.monotonic()
     with _lock:

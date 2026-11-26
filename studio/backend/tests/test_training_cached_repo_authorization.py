@@ -214,7 +214,6 @@ def test_local_dataset_paths_in_the_cache_require_caller_authorization(monkeypat
 
     monkeypatch.setattr(training_routes, "cached_read_refused", refuse)
 
-    # An API key with no token of its own: refused, and told which repository to get access to.
     with pytest.raises(HTTPException) as error:
         training_routes._refuse_unauthorized_cached_local_paths([target], False)
     assert error.value.status_code == 422
@@ -530,8 +529,7 @@ def test_a_metadata_less_probe_ignores_repo_boilerplate(cache_root):
 
 
 def test_a_shadowed_hub_dataset_is_not_the_source():
-    """load_and_format_dataset takes local_datasets, then s3_config, ahead of dataset_source, so a
-    payload carrying both never reads the Hub cache and must not be refused over it."""
+    """Shadowed by local_datasets or s3_config, a Hub dataset is neither read nor refused."""
     from types import SimpleNamespace
 
     from routes.training import _hf_dataset_is_the_source

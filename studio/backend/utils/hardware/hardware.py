@@ -447,8 +447,7 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
     return found
 
 
-# The gfx target is the silicon's: kept until re-detection rather than re-running rocminfo (it starts HSA)
-# every 60 s inventory pass. Keyed on the resolved binaries and the masks / overrides the CLIs inherit.
+# Cached until re-detection, not re-run rocminfo (starts HSA); keyed on binaries and masks.
 _GFX_CANDIDATE_ENV = (
     "ROCR_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -863,7 +862,6 @@ def _torch_version_label() -> Optional[str]:
         return None
 
 
-# A mask hides that vendor's devices and nothing else.
 _VISIBILITY_MASK_VENDORS: Dict[str, frozenset] = {
     # HIP honours CUDA_VISIBLE_DEVICES too, so an AMD-only box launched with it emptied is a deliberately masked host, not a broken one.
     "CUDA_VISIBLE_DEVICES": frozenset({"nvidia", "amd"}),
@@ -1535,7 +1533,6 @@ def settle_the_no_torch_verdict(epoch: int) -> bool:
             return False
         if not CHAT_ONLY or CHAT_ONLY_REASON != "mlx_unavailable":
             return False
-        # Recorded only after confirming this probe's verdict is still live.
         _NO_TORCH_SETTLED_EPOCH = epoch
         CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = "no_torch", None
         return True
@@ -3053,7 +3050,6 @@ def get_package_versions() -> Dict[str, Optional[str]]:
         except PackageNotFoundError:
             versions[name] = None
 
-    # GPU runtime versions bundled with torch (CUDA, ROCm/HIP, Intel XPU).
     try:
         import torch
 
@@ -6239,7 +6235,6 @@ def resolve_requested_gpu_ids(
             f"Parent-visible GPUs: {parent_visible_ids}"
         )
 
-    # Reject negative IDs.
     negative_ids = [gpu_id for gpu_id in requested_ids if gpu_id < 0]
     if negative_ids:
         raise ValueError(
@@ -7424,8 +7419,7 @@ def prepare_gpu_selection(
 
 
 def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    """Swaps a MIG card's whole-card nvidia-smi memory for the slice CUDA exposes (NVML), or drops
-    the reading when none exists so ranking skips it; other devices pass unchanged."""
+    """Swaps MIG cards' nvidia-smi memory for NVML slices; drops it if none; others unchanged."""
     if IS_ROCM or not devices or get_device() != DeviceType.CUDA:
         return devices
     try:
@@ -7529,7 +7523,6 @@ def get_physical_gpu_count() -> int:
             _physical_gpu_count = count
             _physical_gpu_count_from_smi = True
             return _physical_gpu_count
-        # SMI unavailable: fall back to torch.
         count = _torch_get_physical_gpu_count()
         _physical_gpu_count = count if count is not None else 1
         return _physical_gpu_count
@@ -7559,7 +7552,6 @@ def _backend_visible_devices_env() -> Optional[str]:
 
 def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
     """llama.cpp Vulkan devices, or None when Vulkan is not installed."""
-    # Vulkan is a llama.cpp inference backend, not a training device.
     try:
         from core.inference.llama_cpp import (
             LlamaCppBackend,
@@ -7884,7 +7876,6 @@ def _repair_smi_visible_devices(
             dev["memory_total_gb"] = td["total_gb"]
         if not td.get("_cuda_integrated"):
             continue
-        # A READABLE total is only widened on a confirmed integrated part.
         if _integrated_total_is_understated(dev.get("memory_total_gb"), td["total_gb"]):
             dev["memory_total_gb"] = td["total_gb"]
         dev["unified_memory"] = True
@@ -7990,7 +7981,6 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
         unrepaired_smi_result: Optional[Dict[str, Any]] = None
         # nvidia-smi answered and listed no card under this mask: the one proof of "no GPU".
         smi_answered_empty = False
-        # Try native SMI first (nvidia-smi; skipped for ROCm).
         if device == DeviceType.CUDA and not IS_ROCM:
             try:
                 from . import nvidia
@@ -8076,7 +8066,6 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 }
                 for td in torch_devices
             ]
-            # Never report fewer devices than nvidia-smi saw.
             if unrepaired_smi_result is not None and len(devices) < len(
                 unrepaired_smi_result.get("devices") or []
             ):
@@ -8185,7 +8174,6 @@ def get_visible_gpu_count() -> int:
             if xpu_visible:
                 # Fallback: count unique root device IDs from the mask, where "0.0,0.1" is 1 root, not 2. Without torch the hierarchy mode is unknown, so root-device counting is the conservative choice.
                 if xpu_visible == "*":
-                    # Documented wildcard: all physical XPUs visible.
                     _visible_gpu_count = get_physical_gpu_count()
                 else:
                     # FLAT entries are tile handles (one PVC card exposes two), so only COMPOSITE ids are bounded by cards.
@@ -8435,7 +8423,6 @@ _STUDIO_NUM_PROC_CAP = 8
 
 def safe_num_proc(desired: Optional[int] = None) -> int:
     """A safe ``num_proc`` for ``dataset.map()``, auto-computed from os.cpu_count() when ``desired`` is None, always >= 1. Always 1 on Windows, which spawns rather than forks, so re-importing torch/transformers/unsloth per worker beats single-process only for huge datasets. Capped to 4 when several GPUs are VISIBLE to this process, since the NVIDIA driver's background threads make os.fork() deadlock-prone; the cap does not apply when CUDA_VISIBLE_DEVICES restricts to one GPU."""
-    # spawn platforms: re-importing per worker is usually slower than single-process.
     if sys.platform in ("win32", "darwin"):
         return 1
 

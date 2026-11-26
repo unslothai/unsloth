@@ -79,8 +79,7 @@ _RAGGED_SWA_FIELDS = {
 
 @pytest.fixture
 def ragged_swa_gguf(tmp_path):
-    """Gemma-class sliding-window layers carry a narrower V, padded to the model-wide maximum
-    without flash attention, so even an f16 cache moves; a quantized V forces flash attention on."""
+    """Narrow SWA V pads to max without flash attention, so f16 moves; quantized V forces it."""
     fields = {"general.architecture": "gemma3"}
     fields.update({f"gemma3.{k}": v for k, v in _RAGGED_SWA_FIELDS.items()})
     path = tmp_path / "ragged-swa.gguf"

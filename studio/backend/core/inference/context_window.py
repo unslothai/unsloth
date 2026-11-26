@@ -499,8 +499,7 @@ _REFUSED_PHRASE = (
 )
 # Must not read as tool OUTPUT: the model concluded its file was mangled.
 _COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided to save room. Not tool output; the file on disk holds it."
-# Same receipt for tools that write no file (`python`, `terminal`, search, MCP): the file wording told the model a
-# `code` argument was on disk.
+# Neutral receipt for python, terminal, search, MCP; file wording said code arg was on disk.
 _COMPLETED_NEUTRAL_PHRASE = (
     "of arguments you sent, elided to save room; the call already ran. Not tool output"
 )
@@ -539,8 +538,7 @@ def compaction_receipt_field(
     return None
 
 
-# A reply opening like this reports a call that ran and did NOT do what was asked, so the file wording would describe
-# a write that never landed.
+# Failed replies ran but missed the ask; file wording would claim a write that never landed.
 _FAILED_REPLY_MARKERS = ("error", "failed", "not found", "no such file", "traceback")
 
 # `_fit_result_to_room` swaps even an `Error: ...` for a stub without the markers above.
@@ -548,8 +546,7 @@ _INCONCLUSIVE_REPLY_MARKERS = ("no context room left", "chars for the model;")
 
 
 def _reply_proves_a_write(name: str, content: object) -> bool:
-    """The tool NAME is wrong both ways: a failed `edit_file` is not a write and a `python` call can
-    be one. File wording needs a file tool AND a non-failure reply."""
+    """Needs a file tool and a non-failure reply: the name alone misleads, as python can write."""
     if name not in _FILE_WRITING_TOOLS:
         return False
     if not isinstance(content, str):
@@ -571,8 +568,7 @@ def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[
 
 
 def compact_refused_tool_arguments(messages: list[dict], call_id: str) -> list[dict]:
-    """Drop a declined call's arguments, named as never sent; tool_calls render once a tool message
-    answers them, and the refusal is one, so declining costs the prompt."""
+    """Drop declined call's arguments, named as never sent; refusal replies still cost prompt."""
     return _compact_one_call(messages, call_id, _REFUSED_PHRASE)
 
 
@@ -604,8 +600,7 @@ def _compact_one_call(
     call_id: str,
     phrase: Optional[str] = None,
 ) -> list[dict]:
-    """Rewrite one call's arguments to a receipt worded by `phrase`; `None` lets the tool choose,
-    since only file tools may claim the content is on disk."""
+    """Receipt worded by phrase; None lets the tool choose, as only file tools may claim disk."""
     if not call_id:
         return messages
     target = _last_index_with_call(messages, call_id)
@@ -791,8 +786,7 @@ def _latest_turn_count(
 
 
 def _shared_prompt_tokens(count_tokens: Callable[[list[dict]], int]) -> int:
-    """Token cost of the rendered prompt before any message: template wrapper plus tool catalogue;
-    measured, not estimated, since it is subtracted from the counts that decide blame."""
+    """Measured token cost of an empty prompt (template, tools), subtracted from blame counts."""
     try:
         return max(0, int(count_tokens([])))
     except Exception:
@@ -1112,9 +1106,8 @@ def fit_oversized_attachments(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
 ) -> list[dict]:
-    """Cuts oversized sandbox-backed attachments per message so a turn renders the same on later
-    requests: the newest turn keeps its start, older turns the path; rewrites ``content`` in
-    place, since eviction matches by identity and a copy would be archived as evicted."""
+    """Cuts oversized sandbox-backed attachments so later requests render the same (newest keeps its
+    start, older the path); rewrites in place, since a copy would be archived as evicted."""
     if not context_length or context_length <= 1:
         return messages
     attached = [

@@ -189,7 +189,6 @@ def companion_bytes_from_declared(
 
 
 def _base_key(base_repo: Optional[str]) -> str:
-    """Return the canonical, case-insensitive key used by per-base tables."""
     from .diffusion_families import canonical_base
     return canonical_base(base_repo).strip().lower()
 
@@ -455,7 +454,6 @@ _RESOLVED_COMPARABLE = frozenset({"transformer_quant", "text_encoder_quant"})
 
 
 def _resolved_norm(value: Any) -> str:
-    """A control value folded to its comparison key; every "off" spelling folds to ""."""
     if value is None:
         return ""
     text = str(value).strip().lower().replace("-", "_")
@@ -500,7 +498,6 @@ def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any
 
 
 def format_resolved_for_log(record: Optional[dict[str, dict[str, Any]]]) -> str:
-    """Resolved record as one ``name=value(source)`` log line."""
     parts = []
     for name, entry in (record or {}).items():
         value = entry.get("value")
@@ -523,7 +520,6 @@ def format_generation_for_log(
     upscale: Any = None,
     loras: Any = None,
 ) -> str:
-    """One-line log summary of a generate() result."""
     images = result.get("images") or ()
     size = getattr(images[0], "size", None) if images else None
     if not isinstance(size, tuple):

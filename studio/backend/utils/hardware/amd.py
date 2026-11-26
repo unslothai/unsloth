@@ -196,7 +196,6 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
         unit = str(value.get("unit", "")).strip().lower()
         raw_value = value.get("value")
     elif isinstance(value, str):
-        # Extract unit suffix from strings like "192 GiB" or "8192 MB"
         m = re.match(r"^\s*([\d.]+)\s*([A-Za-z]+)\s*$", value.strip())
         if m:
             unit = m.group(2).lower()
@@ -1391,10 +1390,8 @@ def _a_per_gpu_mask_narrows_the_runtime() -> bool:
 
 
 def _shell_word(value: str) -> str:
-    """Quote value as one shell word for a pasted command: winbind DOMAIN prefixes or whitespace
-    could be split or expanded, so usermod names the wrong account or runs unintended text under
-    sudo; shlex.quote leaves plain names unchanged, and install.sh's _shell_quote uses the same
-    safe set."""
+    """Quote as one word: winbind DOMAIN prefixes or whitespace could split or expand, so usermod
+    names the wrong account or runs unintended text under sudo; same safe set as install.sh."""
     if value == "$USER":
         # The no-pwd placeholder is meant to be expanded, not named.
         return value

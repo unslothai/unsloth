@@ -49,8 +49,7 @@ def mark(
     thought: str,
     close_marker: str = "",
 ) -> bool:
-    """Records the cut thought for the thread's next request. Only for threads Studio persists, since
-    recovery reads the thread back; an API client's next request is left as it was."""
+    """Records the cut thought; only for Studio-persisted threads, as recovery reads them back."""
     if not thread_id or not thought.strip() or not _persisted(thread_id):
         return False
     with _lock:

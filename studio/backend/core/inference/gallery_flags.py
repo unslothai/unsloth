@@ -179,8 +179,7 @@ def _entry(items: dict[str, Any], item_id: str) -> dict[str, Any]:
 
 
 def read(directory: Path) -> dict[str, dict[str, Any]]:
-    """Untrusted stores read as no flags: a lost pin beats an unlisted gallery; deletes need
-    read_trusted."""
+    """Untrusted: no flags (a lost pin beats an unlisted gallery); deletes need read_trusted."""
     with _lock:
         items = _load(directory)[0].get("items", {})
     return {k: v for k, v in items.items() if isinstance(v, dict)}
@@ -348,8 +347,7 @@ def forget_locked(directory: Path, item_ids) -> None:
 
 
 def _between(high: Optional[float], low: Optional[float], *, top: float) -> Optional[float]:
-    """Key between high and low (descending), or None if both are None; top is used at the group
-    head so newer media sorts first."""
+    """Key between high and low (descending); group heads use top so newer media sorts first."""
     if high is not None and low is not None:
         mid = (high + low) / 2
         # Out of float precision: tie with the upper neighbour.

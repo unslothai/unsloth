@@ -538,7 +538,6 @@ def test_the_status_route_reports_what_a_self_sizing_load_asked_for():
         encoding = "utf-8"
     )
     assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
-    # The non-GGUF branch is covered by behaviour in test_non_gguf_reload_settings.py.
-    # The parent cannot recompute the group once the worker holds the model: it mirrors all.
+    # Parent cannot recompute the group once the worker holds the model, so it mirrors all.
     src = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text("utf-8")
     assert '"native_context_length",\n                "max_context_length",' in src

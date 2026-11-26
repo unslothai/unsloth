@@ -188,8 +188,7 @@ def _to_source_geometry(img: Any, source: Any, what: str, resample: Any) -> Any:
 
 
 def apply_localized_edit(source: Any, localized: LocalizedEdit, budget: list[int]) -> list[Any]:
-    """The images the localized edit contributes, source first: ``[marked_source]`` for annotate
-    and paint, ``[source, mask]`` for a separate mask. Alpha outside the marks is preserved."""
+    """Annotate/paint: [marked_source]; mask: [source, mask]; alpha outside the marks is kept."""
     from PIL import Image
 
     if localized.mode == "annotate":
@@ -256,7 +255,6 @@ def edit_takes_extra_images(fam: Any) -> bool:
 
 
 def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, Any]:
-    """UI offers for ``fam`` given its workflows; localized editing only where unified edit is."""
     localized = bool(getattr(fam, "unified_edit", False)) and "edit" in workflows
     # The page's unified Edit form (Image 1 + extras, output sized from Image 1) fits a reference-edit family too.
     unified = localized or (bool(getattr(fam, "reference_edit", False)) and "edit" in workflows)

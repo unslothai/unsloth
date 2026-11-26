@@ -13,9 +13,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Optional
 
-# Companions converted to float32 at load (convolutions, no per-layer cast): video VAE, latent upsampler, audio VAE +
-# vocoder, decimal GB at bf16; their float32 copies are anonymous memory. The 6.34 GB connectors are Linears and stay
-# bf16, memory-mapped, read only while a prompt is encoded.
+# Video VAE, latent upsampler, audio VAE and vocoder widen to float32 (convs, no per-layer cast):
+# anonymous memory; 6.34 GB Linear connectors stay bf16, mapped, read only while encoding.
 _WIDENED_COMPANIONS_GB = 1.45 + 1.0 + 0.37
 _CONNECTORS_GB = 6.34
 # Host RAM beside the weights: two torch+CUDA processes, offload staging and page cache; calibrated
@@ -132,9 +131,8 @@ def decide_lowram(
     loras_active: bool = False,
     resolve_te: bool = True,
 ) -> Ltx25LowRam:
-    """Whether this LTX-2.5 load takes the low-RAM route, else a refusal; never raises. Prices what
-    the load reads: the encoder the loader resolves from the raw request (resolve_te; Speed off
-    keeps the dense one) and the hosted int8 DiT only where read."""
+    """Whether this LTX-2.5 load takes the low-RAM route, else a refusal; never raises. Prices the
+    encoder (resolve_te; Speed off keeps dense) and the hosted int8 DiT where read."""
     skip = lowram_ineligible(fam, target, model_kind = model_kind)
     if skip:
         return Ltx25LowRam(False, skip)
@@ -239,8 +237,7 @@ _CAST_HOOK = "layerwise_casting"
 
 
 def _storage_cast_hook_class():
-    """Layerwise-casting hook (diffusers): casts bf16 weights only for the call, restored in a
-    finally so no float32 weight survives an error; memory-mapped weights keep their mapping."""
+    """Diffusers hook: casts bf16 weights per call, restored even on error; mapping kept."""
     from diffusers.hooks.layerwise_casting import LayerwiseCastingHook
 
     class StorageCastHook(LayerwiseCastingHook):
@@ -271,10 +268,9 @@ def _storage_cast_hook_class():
 
 
 def upcast_compute_(pipe: Any, compute_dtype: Any) -> dict[str, int]:
-    """Runs the bf16-stored pipeline in compute_dtype: Linear and conv weights stay bf16, cast per
-    call; int8 codes are never read; other bf16 tensors convert now; returns MiB left at bf16;
-    stays eager as casts are Python hooks (compile_eligible declines fp16-incompatible families
-    on fp16)."""
+    """Runs the bf16-stored pipeline in compute_dtype: Linear/conv weights stay bf16, cast per call;
+    int8 codes never read; other bf16 tensors convert now; returns MiB left at bf16; eager as
+    casts are Python hooks (compile_eligible declines fp16-incompatible families on fp16)."""
     import torch
     from diffusers.hooks import HookRegistry
 

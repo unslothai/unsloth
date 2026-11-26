@@ -38,7 +38,6 @@ class AmbientAuthorizedToken(str):
 
 
 def hf_token_arg(hf_token: Optional[str], *, allow_ambient_token: bool) -> HfTokenArg:
-    """Return the explicit token, or choose ambient versus anonymous access."""
     token = (hf_token or "").strip()
     if token:
         return AmbientAuthorizedToken(token) if allow_ambient_token else token
@@ -990,7 +989,6 @@ _hub_token_rejections: ContextVar[Optional[HubTokenRejections]] = ContextVar(
 
 @contextmanager
 def collecting_hub_token_rejections():
-    """Scope one request's rejection notes; nested scopes share the outer one."""
     existing = _hub_token_rejections.get()
     if existing is not None:
         yield existing
@@ -1019,7 +1017,6 @@ def hub_token_rejections() -> Optional[HubTokenRejections]:
 
 
 def _sent_credential(hf_token: HfTokenArg) -> Optional[str]:
-    """The credential a read with *hf_token* puts on the wire, or None when it sends none."""
     if is_anonymous(hf_token):
         return None
     if isinstance(hf_token, str):
@@ -1082,7 +1079,6 @@ def is_token_rejection(exc: BaseException) -> bool:
 
 
 def is_rejected_credential_error(exc: BaseException, hf_token: HfTokenArg) -> bool:
-    """Whether *exc* is Hugging Face refusing the credential a read with *hf_token* sent."""
     if is_anonymous(hf_token) or _is_probe_timeout(exc):
         return False
     return is_token_rejection(exc) and _sent_credential(hf_token) is not None

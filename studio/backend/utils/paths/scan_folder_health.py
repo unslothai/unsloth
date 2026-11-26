@@ -128,7 +128,6 @@ def record_scan_failure(path: str, error: OSError) -> None:
 
 
 def record_scan_slow(path: str) -> None:
-    """Remember that a scan of ``path`` was abandoned for taking too long."""
     _record(path, STATUS_SLOW, path)
 
 
@@ -170,7 +169,6 @@ def _recheck_cause(path: str) -> None:
 
 
 def scan_folder_status(path: str) -> str:
-    """Last known status for ``path``. A dict lookup, never touches the disk."""
     if not _failed:
         return STATUS_OK
     entry = _failed.get(path)

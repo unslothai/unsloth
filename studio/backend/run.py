@@ -880,8 +880,7 @@ def _is_port_free(host: str, port: int) -> bool:
         for probe in sockets:
             probe.close()
 
-    # A successful bind can still sit beside a live listener, so a connect that lands means taken. Short
-    # timeout: Windows only refuses a free port after ~2 s of SYN retries.
+    # Connect decides: a bind can succeed beside a live listener. Short timeout: Windows ~2s.
     if is_wildcard_host(host):
         targets = [
             (socket.AF_INET, ("127.0.0.1", port)),
@@ -1676,7 +1675,6 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
 
     out: list[Path] = []
     venv_dir = _studio_root() / "unsloth_studio"
-    # Installer venv site-packages.
     for pattern in (
         "lib/python*/site-packages/studio/frontend/dist",
         "Lib/site-packages/studio/frontend/dist",
@@ -1952,8 +1950,7 @@ def _setup_server_disk_logging():
 def _cloudflare_tunnel_should_start(
     *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
 ) -> bool:
-    """Whether to start the Cloudflare tunnel. --secure exposes only the tunnel (loopback bind), so it
-    tunnels even api-only; otherwise tunnel wildcard binds, never api-only (Tauri) or Colab."""
+    """No Colab; --secure tunnels (loopback bind), else only wildcard binds, not api-only."""
     if is_colab or not cloudflare:
         return False
     if secure:
@@ -2645,8 +2642,7 @@ def run_server(
             return _protocol
 
         async def _start_loopback_http(self):
-            # Plain HTTP on an ephemeral loopback port for Studio's own /v1 self-calls (utils/studio_tls.py). Kept out
-            # of self.servers: _final_bound_port and _bound_request_host read the user's listener from there.
+            # Plain HTTP loopback for self-calls; not in self.servers, which port lookups read.
             self.loopback_http = await asyncio.get_running_loop().create_server(
                 self._protocol_factory(), host = "127.0.0.1", port = 0, backlog = self.config.backlog
             )

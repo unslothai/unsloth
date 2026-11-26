@@ -33,12 +33,10 @@ H3_CPU_NATIVE_HOST_GB = 5.1
 # Activations, GGUF dequant scratch and the tiled VAE decode for a short clip at the smallest size: the LTX-2.5 peak
 # above minus its resident weights (28.7 - 8.5 - 18.4 = 1.8 GB), rounded down so the estimate stays under it.
 CPU_VIDEO_WORKING_SET_GB = 1.5
-# Families measured on CPU at their default size, where the working set is larger. Wan2.1-T2V-1.3B pipeline at
-# 832x480x33 (2 steps + decode), Colab CPU-HM: 9.45 GB RssAnon / Pss_Anon peak = DiT 5.68 (float32 file) + VAE 0.51
-# + 3.26 working set; priced at 3.0 so the estimate (9.1 GB) stays just under the measurement.
+# Wan2.1-T2V-1.3B at 832x480x33 on CPU measured 9.45 GB RssAnon peak = DiT 5.68 (float32 file) + VAE
+# 0.51 + 3.26 working set; priced at 3.0 so the 9.1 GB estimate stays under the measurement.
 CPU_VIDEO_WORKING_SET_GB_BY_FAMILY = {"wan2.1-t2v-1.3b": 3.0}
-# Official Diffusers repos whose text_encoder/ is stored in float32 (umT5, 22.72 GB): the float32 CPU target reads it
-# as views of the file mapping, no conversion, so it adds no anonymous memory (Wan2.1 1.3B above: 22.8 GB RssFile).
+# Float32 umT5 text_encoder/ (22.72 GB) reads as file-mapped views on CPU: no anonymous memory.
 STORED_FP32_TEXT_ENCODER_FAMILIES = frozenset({"wan2.1-t2v-1.3b", "wan2.1-t2v-14b"})
 
 

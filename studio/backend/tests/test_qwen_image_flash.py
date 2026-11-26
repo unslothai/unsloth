@@ -53,7 +53,6 @@ def test_flash_resolves_to_itself_despite_its_card_tag(fam, monkeypatch):
         diffusion_mod._resolve_base_repo("someone/qwen-image-anime", None, fam, None)
         == "Qwen/Qwen-Image"
     )
-    # An explicit base from the caller always wins.
     assert (
         diffusion_mod._resolve_base_repo(FLASH, "Qwen/Qwen-Image", fam, None) == "Qwen/Qwen-Image"
     )

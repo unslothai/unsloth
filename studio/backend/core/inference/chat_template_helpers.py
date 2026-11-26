@@ -82,8 +82,7 @@ _ATEM_TAGS = (
     "</atem:parameter>",
 )
 
-# Control markup from user/system/tool turns must not reach the prompt raw (it can forge turns,
-# #7066); the closed name list keeps "<div>" as typed; Unicode escapes keep this file ASCII.
+# Stops user/system/tool markup forging turns (#7066); closed names keep <div>; ASCII file.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     # Phi-4 Mini closes with "<|/tool|>" / "<|/tool_call|>".
@@ -191,7 +190,6 @@ _TTS_MARKUP_BY_CODEC = {
     ),
     # Higgs v3 tokenizes user text directly before adding its own <|audio|> boundary.
     "higgs_tts3": re.compile(r"<(?=\|(?:tts|ref_audio|ref_text|text|audio)\|>)"),
-    # minimax wraps lyrics with chatml, caption, lyric, and audio stream boundaries.
     "minimax_music3": re.compile(
         r"<(?=\|(?:im_(?:start|end)|caption_(?:start|end)|lyrics_(?:start|end)"
         r"|audio_(?:start|end|cfg))\|>)"
@@ -895,8 +893,7 @@ def neutralize_control_markup_in_messages(
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
-        # Concatenated into the header by a recipient-addressed template, so one carrying markup forged a whole system
-        # turn (#7066). Never holds delimiters.
+        # Header-joined recipient: markup forged a system turn (#7066); never holds delimiters.
         recipient = msg.get("recipient")
         if isinstance(recipient, str) and recipient:
             new_recipient = neutralize_control_markup(recipient, markup)
@@ -1059,22 +1056,19 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         "required",
         "pattern",
         "default",
-        # Under format assertion (or a custom validator) this is a constraint the MCP server checks, so a rewrite
-        # leaves the model targeting a different contract from the one the server enforces, exactly as for "pattern".
+        # Under format assertion the server enforces it; a rewrite targets another contract.
         "format",
         # contentEncoding and contentMediaType are machine-valued strings a validator decodes against; contentSchema stays out since the scan reads it.
         "contentEncoding",
         "contentMediaType",
         # Discriminator leaves are machine-valued identifiers; server resolves the original.
         "discriminator",
-        # Same shape: an OpenAPI xml object is "name" / "namespace" / "prefix" plus two booleans, all serialization
-        # identifiers and no prose, so a rewrite would advertise element names the server does not produce.
+        # xml name, namespace, prefix are identifiers; a rewrite advertises unproduced names.
         "xml",
         # References are resolved, not read; "$ref" can also name an external URI.
         "$ref",
         "$id",
         "$anchor",
-        # The dialect a validator resolves the whole schema against.
         "$schema",
         "$dynamicRef",
         "$dynamicAnchor",
@@ -1948,7 +1942,6 @@ class InklingMessageNormalizer:
         continued: bool = False,
     ):
         self._buffer = ""
-        # Where the prompt left off: an opened thought, a continued message's content, or a header.
         self._state = "thought" if in_reasoning else "text" if continued else "header"
         self._thought_seen = in_reasoning
         self._think_open = False
@@ -2197,8 +2190,7 @@ class RecipientChannelNormalizer:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush a naturally completed stream, closing an open reasoning block and keeping any call
-        that closed inside a block the model never terminated."""
+        """Flush a finished stream: close open reasoning and keep calls in unterminated blocks."""
         output = self._flush(keep_calls = True)
         if self._in_reasoning:
             output += _THINK_CLOSE
@@ -2971,8 +2963,7 @@ def apply_chat_template_for_generation(
             _fallback_markup = markup_for_tokenizer(tokenizer, None)
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
-    # Anything not continuable (an empty partial included, matching the route guard and render_prompt_with_boundary)
-    # renders as an ordinary new turn.
+    # Not continuable, empty partials too (matching render_prompt_with_boundary): a new turn.
     _continue_text = trailing_assistant_text(messages) if continue_final_message else None
     _continuing = bool(_continue_text)
     _resumes_thought = (

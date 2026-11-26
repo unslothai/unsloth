@@ -18,7 +18,6 @@ from loggers import get_logger
 _SECRET_PREFIXES = ("sk-unsloth-", "desktop-")
 # A prefix plus a generous token: bounds the reverse search on a multi-megabyte chunk.
 _SECRET_SCAN_TAIL = 128
-# What ends a credential token in tool output: whitespace, quoting and closing punctuation.
 _SECRET_TERMINATORS = frozenset(" \t\r\n\"'`,;)]}")
 
 
@@ -79,7 +78,6 @@ TOOL_HEARTBEAT_INTERVAL_S = 10.0
 # delay before the first approval keepalive so it cannot coalesce with the gated card.
 TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
 
-# How often the wrapper wakes to poll for output / completion / cancellation.
 _POLL_INTERVAL_S = 0.25
 
 # A cancel-ignoring tool is left as a daemon rather than blocking teardown.

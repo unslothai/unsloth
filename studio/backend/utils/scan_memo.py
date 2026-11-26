@@ -28,7 +28,6 @@ def invalidate_scan_memos() -> None:
 
 @contextmanager
 def scan_memo() -> Iterator[None]:
-    """Memoize lookups inside; a nested scope joins the outer one."""
     current = _scope.get()
     if current is not None and _CLOSED not in current:
         yield
@@ -63,7 +62,6 @@ def memoized(key: Hashable, compute: Callable[[], _T]) -> _T:
 
 
 def in_scan_memo(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Run a sync or async function inside scan_memo()."""
     if inspect.iscoroutinefunction(fn):
 
         @functools.wraps(fn)

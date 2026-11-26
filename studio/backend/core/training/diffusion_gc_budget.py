@@ -103,8 +103,7 @@ def _memory_allocated() -> int:
 
 
 SAVE_ATTENTION_ENV = "UNSLOTH_DIFFUSION_GC_SAVE_ATTENTION"
-# Attention calls with at least this many keys keep their outputs; shorter ones (Wan's 512-token text cross-attention)
-# cost little to recompute next to the bytes they would hold.
+# Calls with >= this many keys keep outputs; Wan's 512-token text cross-attn is cheap to redo.
 _SAVE_ATTENTION_MIN_KEYS = 1024
 
 
@@ -188,7 +187,6 @@ class _Checkpoint:
         self.saved_attention_bytes += int(nbytes)
 
     def drop_saved_attention(self) -> bool:
-        """Recompute attention again from the next call on; returns whether outputs were being kept."""
         had = self.context_fn is not None and self.saved_attention > 0
         self.context_fn = None
         return had
@@ -251,8 +249,7 @@ class BudgetedCheckpoint:
     def __call__(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         owner = _owner(function)
         if getattr(owner, SWAPPED_ATTR, False):
-            # Swapped blocks stream weights from host RAM; kept activations would hold them on the
-            # card: always checkpoint them (never measured or planned); their swap hooks copy the
+            # Swapped blocks are always checkpointed (never measured or planned): swap hooks copy
             # next block's weights in reverse on recompute, which selective checkpoints reject.
             return self.swapped(function, *args, **kwargs)
         idx = self._block_index(owner)
@@ -322,7 +319,6 @@ class BudgetedCheckpoint:
 
     @property
     def spare_bytes(self) -> int:
-        """Planned room the kept activations leave unused (0 once disabled or stepped down)."""
         if self.disabled or self.step_downs:
             return 0
         return max(0, self.headroom - self.kept_bytes)
@@ -624,8 +620,7 @@ def is_out_of_memory(exc: BaseException) -> bool:
 
 
 def enable_budgeted_checkpointing(model: Any, device: str) -> Optional[BudgetedCheckpoint]:
-    """Install the budgeted checkpoint on a diffusers model; None when the mode, device or model does not allow it
-    (the caller then checkpoints every block as before)."""
+    """None when the mode, device or model disallows it; callers then checkpoint every block."""
     if gc_budget_mode() != "auto" or device != "cuda":
         return None
     # Off on a discrete Windows ROCm card until measured; UNSLOTH_DIFFUSION_GC_MODE=auto (set explicitly) opts in.

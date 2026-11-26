@@ -68,8 +68,7 @@ def dmd_sigmas(timesteps: tuple[int, ...]) -> list[float]:
 
 
 def renoise_seed(seed: int) -> int:
-    """Re-noise seed derived deterministically from the request seed but never equal to it: the
-    pipeline draws the initial latent from that seed, so reuse would repeat the initial noise."""
+    """Derived from the request seed, never equal to it: reuse would repeat the initial noise."""
     import hashlib
 
     digest = hashlib.sha256(f"unsloth-dmd-renoise:{int(seed)}".encode()).digest()

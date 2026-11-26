@@ -171,7 +171,6 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
             record = buffer[position:newline]
             position = newline + 1
             if dropping:
-                # The rest of a record already given up on.
                 dropping = False
                 yield OVERSIZED_MARKER
             elif len(record) > MAX_RECORD_BYTES:

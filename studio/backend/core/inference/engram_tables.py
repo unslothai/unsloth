@@ -50,7 +50,6 @@ def engram_tables(files: Iterable[tuple[str, int]]) -> list[EngramTable]:
         precision = engram_table_precision(filename)
         if precision is None or not size:
             continue
-        # One table per precision; a duplicate label keeps the first listed.
         tables.setdefault(precision.upper(), EngramTable(precision, filename, int(size)))
     return sorted(tables.values(), key = lambda t: (-t.size_bytes, t.precision))
 

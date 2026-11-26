@@ -10,8 +10,7 @@ import json
 import os
 import sys
 
-# First, ahead of everything below: no later failure in this file can leave the hook unregistered.
-# The static host check cannot see DNS aliases or redirects; every connect does see the final address.
+# Hook registers before any failure; host checks miss DNS aliases, so connects are checked.
 _METADATA_NAMES = frozenset(
     (
         "metadata",
@@ -650,8 +649,7 @@ def _config_chooses_location(
     encoding = "utf-8" if sys.flags.utf8_mode else locale.getpreferredencoding(False)
 
     def load(files):
-        # One parser per file as pip's Configuration._load_file: a [DEFAULT] applies inside its own file only;
-        # keys normalised as its _normalize_name (lower case, _ -> -, a leading -- dropped).
+        # One parser per file: [DEFAULT] applies in its file only; keys normalised like pip.
         merged = {}
         for path in files:
             parser = configparser.RawConfigParser()

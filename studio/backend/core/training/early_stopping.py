@@ -152,7 +152,6 @@ def attach_early_stopping(
     value: Any,
     user_stopped = None,
 ):
-    """Add the callback to an HF trainer that evaluates; returns it, or None when off or there is nothing to watch."""
     patience = early_stopping_patience(value)
     if patience == 0:
         return None

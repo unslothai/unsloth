@@ -14,9 +14,8 @@ DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
 def canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
-    """Canonicalise an Origin to (scheme, host, port); default ports and case vary, so a string
-    compare misclassifies. Returns None on unparseable input so callers fall to the safer
-    cross-origin default."""
+    """Canonical (scheme, host, port) of an Origin: default ports and case vary so string compares
+    misclassify; None if unparseable, so callers take the safer cross-origin default."""
     scheme = (scheme or "").strip().lower()
     if not scheme or not netloc:
         return None
@@ -52,7 +51,6 @@ def canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]
 
 
 def origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
-    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
     if not url:
         return None
     try:

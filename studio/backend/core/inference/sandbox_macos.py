@@ -255,7 +255,6 @@ def _validated(path: str) -> str:
 
 
 def _within(path: str, root: str) -> bool:
-    """Whether ``path`` is ``root`` or sits under it, by whole path components."""
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
@@ -457,7 +456,6 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
 
 
 def _contained_optional_roots() -> tuple[str, ...]:
-    """Optional search roots whose resolved target stays inside an approved prefix."""
     kept: list[str] = []
     for root in _OPTIONAL_READ_ROOTS:
         resolved = os.path.realpath(root)

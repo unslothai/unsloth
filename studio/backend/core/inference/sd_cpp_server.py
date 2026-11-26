@@ -561,8 +561,7 @@ class SdCppServer:
             self._dispose()
 
     def _dispose(self) -> None:
-        """Closes the httpx client and drops the atexit handler, which would pin each reloaded
-        instance; the backend never reuses a disposed server."""
+        """Closes httpx client; drops atexit hook (would pin reloaded instances); never reused."""
         try:
             atexit.unregister(self.stop)
         except Exception:  # noqa: BLE001

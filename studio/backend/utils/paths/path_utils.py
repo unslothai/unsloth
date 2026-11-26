@@ -117,7 +117,6 @@ def normalize_path(path: str) -> str:
         return path
 
     if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
-        # Map to /mnt/<drive>/ only under WSL; native Windows keeps the drive letter.
         if _IS_WSL:
             drive = path[0].lower()
             rest = path[3:].replace("\\", "/")
@@ -251,7 +250,6 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             if cached_path.is_dir():
                 _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
                 return cached
-            # Stale entry -- drop it and re-scan below
             _CACHE_CASE_RESOLUTION_MEMO.pop(model_name, None)
 
     expected_lower = expected_dir.lower()

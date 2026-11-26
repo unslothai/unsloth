@@ -22,8 +22,7 @@ from typing import Any, Optional
 
 ROCM_IMAGE_HOSTED_INT8_ENV = "UNSLOTH_ROCM_IMAGE_HOSTED_INT8"
 
-# gfx archs where the hosted W8A8 read was measured on hardware (gfx1151, Linux AMD CI). The RDNA W8A8 kernels accept
-# every gfx11xx / gfx12xx card, but no other arch has a speed or quality number, so they keep the at-load build.
+# Hosted W8A8 measured only on gfx1151; other gfx11xx/gfx12xx cards keep the at-load build.
 ROCM_IMAGE_HOSTED_INT8_ARCHS = frozenset({"gfx1151"})
 
 

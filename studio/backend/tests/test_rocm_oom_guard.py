@@ -179,7 +179,6 @@ class TestDeviceNameFallback:
             "AMD Radeon(TM) 660M",
             # gfx1036 Raphael / Dragon Range, gfx1037 Mendocino
             "AMD Radeon(TM) 610M",
-            # case variants
             "RADEON 8060S GRAPHICS",
             "radeon 8050s",
             "RADEON 860M",

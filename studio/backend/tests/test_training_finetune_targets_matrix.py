@@ -25,7 +25,6 @@ from models import TrainingStartRequest
 
 TRAINING_TYPES = ("LoRA/QLoRA", "Full Finetuning", "Continued Pretraining")
 
-# Only "vlm" and "audio_vlm" forward the selectors on CUDA.
 BRANCHES = ("text", "vlm", "audio_vlm", "codec", "whisper", "snac")
 _CUDA_BRANCHES_READING_SELECTORS = ("vlm", "audio_vlm")
 
@@ -490,8 +489,7 @@ def test_mlx_still_rejects_an_empty_module_selection_on_the_defaults():
 
 
 def test_the_error_names_every_field_the_caller_has_to_set():
-    """An all-false request has to be actionable: the message must name the four request
-    fields, not the internal flag names, so an API caller can fix it without reading source."""
+    """The error must name the request fields, not internal flags, so an API caller can fix it."""
     config = _request_config("LoRA/QLoRA", "vlm", SELECTOR_CASES["all_false"], None)
 
     with pytest.raises(ValueError) as excinfo:

@@ -30,7 +30,6 @@ def _roster(out):
 
 
 def _more(out):
-    """The N in "and N more", or 0."""
     m = re.search(r"and (\d+) more", _roster(out))
     return int(m.group(1)) if m else 0
 
@@ -154,7 +153,6 @@ def test_roster_reads_a_database_missing_only_the_newer_columns(rag_home, fresh_
 
 
 def test_roster_is_quiet_on_an_empty_database(rag_home, fresh_process):
-    """A5."""
     _write_legacy_db(rag_home, rows = ())
     assert _roster(_nudge({"project_id": "p1"})) == ""
 
@@ -234,8 +232,7 @@ _HOSTILE = [
 
 @pytest.mark.parametrize("label,filename,forbidden", _HOSTILE, ids = [c[0] for c in _HOSTILE])
 def test_no_control_or_format_character_reaches_the_prompt(rag_conn, label, filename, forbidden):
-    """B1/B2: quoting is no boundary for characters that render as nothing; a direction override
-    reorders later text, so a file name could rewrite the prompt (CVE-2021-42574)."""
+    """Zero-width/bidi characters defeat quoting and can rewrite the prompt (CVE-2021-42574)."""
     _doc(rag_conn, "project_p1", "d1", filename)
     out = _nudge({"project_id": "p1"})
     assert forbidden not in out, f"{label}: {forbidden!r} survived into {out!r}"
@@ -300,7 +297,6 @@ def test_a_very_deep_linked_folder_path_cannot_blow_up_the_prompt(rag_conn):
 
 @pytest.mark.parametrize("n", [119, 120, 121, 400])
 def test_name_length_boundaries(rag_conn, n):
-    """B6."""
     from routes import inference
 
     _doc(rag_conn, "project_p1", "d1", "x" * n)

@@ -182,7 +182,6 @@ def _is_preset_flag(flag: Optional[str]) -> bool:
 
 
 def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]:
-    """``(flag, value)`` for each OWNER_ONLY_PATH_FLAGS occurrence in ``args``, in order."""
     tokens = [str(a) for a in args or ()]
     found: list[tuple[str, str]] = []
     for i, raw in enumerate(tokens):
@@ -196,7 +195,6 @@ def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]
 
 
 def owner_only_path_flags(args: Optional[Iterable[str]]) -> list[str]:
-    """The OWNER_ONLY_PATH_FLAGS present in ``args``, in first-seen order."""
     return list(dict.fromkeys(flag for flag, _ in owner_only_path_args(args)))
 
 
@@ -267,13 +265,11 @@ def _is_spawnable(token: str) -> bool:
 
 
 def _has_control_characters(token: str) -> bool:
-    """A NUL, or any C0 control other than tab and newline."""
     return any(ch == "\x00" or (ord(ch) < 32 and ch not in "\t\n") for ch in token)
 
 
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
-    """Validate user-supplied llama-server args; returns a flat list ready to extend the command, or
-    raises ValueError naming the offending flag on the first managed token."""
+    """Return the args as a flat list, or raise ValueError naming the first managed flag."""
     if not args:
         return []
     out: list[str] = []
@@ -337,7 +333,6 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                 f"'{value[:32]}' as two separate arguments, not '{token[:64]}'"
             )
         else:
-            # Its own value when attached, otherwise the tokens that follow.
             attached = _value_is_attached(token, flag)
             if pending_two_value > 0:
                 raise ValueError(f"llama-server flag '{two_value_flag}' takes two values")
@@ -386,8 +381,7 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         flag: str,
         source: list = None,
     ) -> bool:
-        """True when the token's value is the next token, not its own; source defaults to the input
-        list; trimming passes the shortened list, where next means the one just removed."""
+        """True when the value is the next token; trimming passes the shortened list as source."""
         if _value_is_attached(token, flag):
             return False
         seq = tokens if source is None else source
@@ -568,7 +562,6 @@ _DIO_ON_FLAGS: frozenset[str] = frozenset({"--direct-io", "-dio"})
 _DIO_OFF_FLAGS: frozenset[str] = frozenset({"--no-direct-io", "-ndio"})
 _DIO_FLAGS: frozenset[str] = _DIO_ON_FLAGS | _DIO_OFF_FLAGS
 _LOAD_MODE_ALIAS_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | frozenset({"--mmap"}) | _DIO_FLAGS
-# Every spelling that asks for a full-model host buffer.
 _RAM_RESERVING_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | _DIO_OFF_FLAGS
 # llama.cpp reads these before argv, so inherited values survive token stripping.
 MEMORY_ENV_VARS: tuple[str, ...] = (
@@ -651,7 +644,6 @@ def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[in
 
 
 def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[int]) -> int:
-    """Resolve explicit counts only, with extra arguments taking precedence."""
     override = parse_ctx_checkpoints_override(args)
     return int(override if override is not None else (requested or 0))
 
@@ -734,8 +726,7 @@ def _last_flag_value(
     preserve_raw: bool = False,
     validate_value: Optional[Callable[[str], object]] = None,
 ) -> Optional[str]:
-    """Last-wins string value among flags in extras, or None; handles --flag=value and --flag value;
-    raises on a missing or empty value; shared by cache and split-mode parsers."""
+    """Last-wins string value of flags in extras, or None; raises on a missing or empty value."""
     if not args:
         return None
 
@@ -1061,7 +1052,6 @@ def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
 
 
 def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_parallel: bool) -> bool:
-    """An explicit --split-mode in extras overrides the toggle; tensor-parallel is on only for tensor."""
     override = parse_split_mode_override(args)
     if override is None:
         return fallback_tensor_parallel
@@ -1818,8 +1808,7 @@ def resolve_effective_load_state(
     *,
     auto_unmapped: bool = False,
 ) -> tuple[bool, bool, bool]:
-    """Returns (mlock, reserves_ram, direct_io); every branch sets all three so DirectIO cannot
-    drift; auto_unmapped (iGPU lacking mmap_support) makes auto none (load_tensors), not mmap."""
+    """All three set so DirectIO cannot drift; auto_unmapped (iGPU) makes auto none, not mmap."""
     mlock, reserves_ram, direct_io, auto = _resolve_load_state(argv, env)
     if auto and auto_unmapped:
         return False, True, False
@@ -1876,11 +1865,9 @@ def _resolve_load_state(
             i += 1
             continue
         if flag in _MLOCK_FLAGS:
-            # Only the mlock bit matters: mlock and mmap+mlock both replace an earlier DirectIO mode.
             mlock, direct_io, auto = True, False, False
             i += 1
         elif flag in _NO_MMAP_FLAGS:
-            # --no-mmap resets the whole mode, clearing an earlier --mlock.
             mlock = False
             reserves_ram = True
             direct_io = False

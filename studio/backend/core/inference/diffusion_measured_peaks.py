@@ -24,8 +24,7 @@ PHASE_DECODE_UNPADDED = "decode_unpadded"
 PHASE_UNPADDED = "unpadded"
 PHASES = (PHASE_PRE_DECODE, PHASE_DECODE, PHASE_DECODE_UNPADDED, PHASE_UNPADDED)
 _FILE_NAME = "diffusion_measured_peaks.json"
-# 2: non-txt2img workflows record under their own ``wf:`` key. Version 1 kept every workflow's max-wins peak on the
-# load key (an edit's larger peak inflated txt2img forever), so ``_migrate_v1`` keeps only what the phase format wrote.
+# v1 let an edit's peak inflate txt2img; v2 adds wf: keys; _migrate_v1 keeps phase data only.
 _VERSION = 2
 _WORKFLOW_KEY_PART = "|wf:"
 _MAX_ENTRIES = 512
@@ -206,8 +205,7 @@ def _read(path: Path, fresh: bool = False) -> dict:
 
 @contextlib.contextmanager
 def _file_lock(path: Path):
-    """Exclusive lock on ``<store>.lock`` across processes sharing the cache root (two Studio servers, a worker), so a
-    read / merge / replace cannot overwrite another process's higher peak. Advisory; held only for the merge."""
+    """Advisory lock on <store>.lock across processes; a merge cannot overwrite a higher peak."""
     path.parent.mkdir(parents = True, exist_ok = True)
     handle = open(str(path) + ".lock", "a+b")
     try:
@@ -502,8 +500,7 @@ _windows: dict[str, "weakref.WeakSet[_Window]"] = {}
 
 
 def open_window(device: Any) -> _Window:
-    """Opens a peak measurement window on device; resetting the peak is allocator-wide, so
-    overlapping windows on a card spoil each other; abandoned windows drop out once unreferenced."""
+    """Peak reset is allocator-wide, so overlapping windows on one device spoil each other."""
     window = _Window()
     with _windows_lock:
         live = _windows.setdefault(str(device), weakref.WeakSet())
@@ -599,8 +596,7 @@ class PeakProbe:
             from .diffusion_cuda_graph import synchronize_outside_capture
 
             synchronize_outside_capture(self.device)
-            # Stable-range bytes sit outside the allocator: count their high-water mark (not what is still mapped:
-            # a model-offload range is unmapped before decode ends) so the peak stays on the stock scale.
+            # Off-allocator bytes: high-water, not mapped; offload unmaps before decode ends.
             peak = (
                 int(torch.cuda.max_memory_allocated(self.device))
                 + _range_peak_bytes(self.device)

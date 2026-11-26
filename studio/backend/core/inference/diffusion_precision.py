@@ -30,7 +30,6 @@ TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4, TE_QUANT_INT8, TE_QUANT_FP8_DYNA
 # The modes that go through torchao; plain fp8 is a layerwise torch cast and needs none.
 _TE_TORCHAO_MODES = frozenset({TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4})
 
-# Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
 # int8 TE needs decoder blocks kept bf16; families without a te_int8_skip schedule fall back to fp8.
@@ -396,8 +395,7 @@ def _quantize_text_encoders(
         and hosted_int8
         and _hosts_te_int8_for_all_but_small(family, hosted_int8, present)
     ):
-        # FLUX.1's CLIP-L, HunyuanImage's ByT5: the hosted file covers the big encoder, and casting a sub-GB pooled /
-        # glyph encoder in place would be a runtime-only conversion the file does not carry. Leave them bf16.
+        # Hosted file covers only the big encoder; FLUX.1 CLIP-L, HunyuanImage ByT5 stay bf16.
         dense = [a for a in present if a not in hosted_int8]
         return TEQuantOutcome(
             TE_QUANT_INT8,
@@ -407,8 +405,7 @@ def _quantize_text_encoders(
     if picked_automatically and not any(
         _hosted_te_scheme(getattr(pipe, a)) == mode for a in present
     ):
-        # The automatic default is the measured hosted file and nothing else: a runtime cast (fp8, torchao int8) has a
-        # dense bf16 peak and is not what was measured, so without the file the released bf16 encoder stays.
+        # Auto is only the measured hosted file; runtime casts peak at dense bf16; bf16 stays.
         label = "int8 ConvRot" if mode == TE_QUANT_INT8 else mode
         why = "is not available (not published yet, offline, or refused, see the server log)"
         if mode == TE_QUANT_INT8 and _family_hosts_te_int8(family):
@@ -422,8 +419,7 @@ def _quantize_text_encoders(
             RESOLVED_FELL_BACK,
         )
     if picked_automatically:
-        # The automatic default is the hosted file and nothing more: a sibling it does not replace (Kontext's CLIP-L)
-        # stays bf16 rather than taking a runtime cast nobody measured. The hosted encoders arrive with their hooks.
+        # Auto is the hosted file; Kontext's CLIP-L stays bf16 as runtime casts are unmeasured.
         hosted = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == mode]
         dense = [a for a in present if a not in hosted]
         return TEQuantOutcome(
@@ -868,7 +864,6 @@ def _install_dtype_override(cls: type) -> None:
 
 
 def _has_layerwise_hooks(encoder: Any) -> bool:
-    """True when any submodule already carries the diffusers layerwise-casting hook."""
     modules = getattr(encoder, "modules", None)
     if not callable(modules):
         return False

@@ -151,8 +151,7 @@ def test_repeated_call_is_cached():
 
 
 def test_scan_is_amortized_not_quadratic(monkeypatch):
-    """Prose-only text costs constant work per token since the sentinel scan resumes; a cheaper full
-    strip once made a ratio against it meaningless, so count characters, not time."""
+    """Constant work per token as the scan resumes; count characters, a cheap strip skews time."""
     scanned = []
     real = tool_call_parser._first_sentinel
 

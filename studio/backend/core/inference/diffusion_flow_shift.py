@@ -17,8 +17,7 @@ def comfy_sigmas_enabled() -> bool:
     return os.environ.get(COMFY_SIGMAS_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-# The scheduler's float32 s*t / (1 + (s - 1)*t): e^mu past 80 overflows to NaN sigmas; below -5, 1 + (s - 1) cancels
-# (sigma_max already 1.07 at mu -8, inf at -20).
+# float32 s*t / (1 + (s - 1)*t): e^mu past 80 overflows to NaN; below -5, 1 + (s - 1) cancels.
 FLUX_MU_RANGE = (-5.0, 80.0)
 
 
@@ -224,8 +223,7 @@ def requested_flow_shift(
     height: Optional[int] = None,
     defaults: Optional[dict] = None,
 ) -> Optional[float]:
-    """The static flow shift a request asks for (None keeps today's schedule); missing base or max
-    shift comes from shift_control's defaults; ValueError for a field the node does not take"""
+    """None keeps today's schedule; base/max use shift_control defaults; ValueError if unused."""
     if shift is None and base_shift is None and max_shift is None:
         return None
     if node not in SHIFT_NODES:

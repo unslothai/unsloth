@@ -174,7 +174,6 @@ def test_unmarked_or_unrotated_modules_keep_the_stock_path(env, monkeypatch):
 def test_install_scopes_to_flux1_with_rotated_linears(env, monkeypatch):
     torch, f1, fused, _gemm = env
     model = _tiny(torch, f1)
-    # no ConvRot Linears: nothing installed, nothing marked
     res = fused.install(model)
     assert res["rotated"] == 0 and not fused.is_installed()
     assert not any(fused._F1_MARK in m.__dict__ for m in model.modules())  # noqa: SLF001

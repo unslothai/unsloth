@@ -233,8 +233,7 @@ def test_the_precision_selector_names_only_training_precisions():
 
 
 def test_the_precision_selector_fallback_is_a_subset_of_what_the_backend_can_report(monkeypatch):
-    """With no /diffusion/info report the panel falls back to a hardcoded array. It must stay
-    inside what the backend could actually have said, or the first paint offers a dead option."""
+    """No-report fallback modes must be backend-reportable, or the panel offers a dead option."""
     returns = re.findall(r"return\s*\[([^\]]*)\]", _strip_comments(_precision_memo_block()))
     fallback = _STRING_LITERAL.findall(returns[-1])
     assert len(fallback) >= 2, f"failed to parse the fallback array: {returns[-1]!r}"

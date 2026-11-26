@@ -48,8 +48,7 @@ def pertap_conv3d(
     dilation: tuple,
     groups: int = 1,
 ) -> Any:
-    """``F.conv3d(x, weight, bias, stride, padding, dilation, groups)`` (zero padding, int tuples) as one Conv2d per
-    temporal tap over output-frame chunks, taps summed in fp32, bias added once; returns a contiguous tensor."""
+    """Conv3d as one Conv2d per temporal tap (zero padding); fp32 sum, bias once, contiguous."""
     import torch
     import torch.nn.functional as F
 

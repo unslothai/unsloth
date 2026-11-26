@@ -43,7 +43,6 @@ class CallerProfile:
     catalog_only: bool = False
 
     def withheld(self, facts: Mapping[str, Collection[str]]) -> dict[str, str]:
-        """Each withheld tool with the reason, in ``facts`` order."""
         return {
             name: REASONS[fact]
             for name, tool_facts in facts.items()

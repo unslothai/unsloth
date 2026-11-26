@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 pipeline, gated to the ltx-2.5 family (no other family reaches this module); Gemma 4
-encoder runs in a worker on the .venv_t5_510 transformers 5.10 sidecar"""
+"""LTX-2.5 pipeline (ltx-2.5 family only); Gemma 4 encoder runs in a transformers 5.10 worker."""
 
 from __future__ import annotations
 
@@ -71,8 +70,7 @@ LATENT_UPSAMPLER_SUBFOLDER = "latent_upsampler"
 TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # Encoder CUDA context (~0.6 GB on Hopper / Blackwell) and allocator slack, beyond weights.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# Auto takes the hosted int8 file only when confirmed, else bf16 (never quantizes at load). A100-40 LPIPS vs bf16
-# 0.133 (bf16 encoder 0.141), peak host 71 -> 52 GiB. Env =0 keeps bf16 auto, =1 makes auto an explicit int8.
+# Auto: hosted int8 if confirmed, else bf16 (no load-time quant); env =0 keeps bf16, =1 int8.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
@@ -481,8 +479,7 @@ def load_latent_upsampler(
 
 
 def is_ltx25_single_file_base(base: Optional[str], *, fold_mirror: bool = True) -> bool:
-    """Whether ``base`` is the split single-file release (hub id) or a local folder with its layout (the encoder file
-    and the conv VAE beside the DiTs), rather than a Diffusers pack."""
+    """True for a split single-file release (hub id) or its local layout, not a Diffusers pack."""
     text = (base or "").strip()
     if not text:
         return False
@@ -1253,7 +1250,6 @@ class Ltx25TextEncoderClient:
         # encode_prompt calls, one per render: the second means a render (and the server's pins) has finished.
         self.renders = 0
 
-    # process management
     def start(self) -> None:
         import multiprocessing as mp
 
@@ -1397,7 +1393,6 @@ class Ltx25TextEncoderClient:
             proc.kill()
         logger.info("video.ltx25_te: encoder worker stopped")
 
-    # encoding
     def stop_if_busy(self) -> bool:
         """Stop a worker still running an abandoned encode, freeing its card memory; the next encode restarts it."""
         if self._inflight is None or not self.alive():

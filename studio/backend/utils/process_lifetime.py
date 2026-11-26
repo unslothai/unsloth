@@ -251,8 +251,7 @@ def bind_current_process_to_parent_lifetime() -> None:
         # Only arm PDEATHSIG: a getppid() == 1 test would kill a parent-is-pid-1 process.
         _pdeathsig_preexec(os.getppid())
         return
-    # Orphan check uses the creator's sentinel, not a pid compare: under forkserver the kernel
-    # parent is the fork server.
+    # Use the creator's sentinel, since under forkserver the kernel parent is the fork server.
     _pdeathsig_preexec(os.getppid())
     try:
         if not parent.is_alive():
@@ -985,8 +984,7 @@ def _windows_collect_descendants_known(
     return found, complete
 
 
-# Kills are asynchronous on both platforms, so wait briefly before calling a pid a survivor;
-# false survivors keep records and cause reap sweeps on every later launch.
+# Kills are async: wait before calling a pid a survivor, or false survivors keep records.
 _KILL_SETTLE_SECONDS = 0.5
 _KILL_SETTLE_POLL_SECONDS = 0.01
 
@@ -1421,7 +1419,6 @@ def _pid_alive(pid: int) -> bool:
                 # ACCESS_DENIED means alive but another user's; else it is gone.
                 return _last_error(ctypes) == ERROR_ACCESS_DENIED
             try:
-                # Signalled means exited; still waiting means running.
                 return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
             finally:
                 kernel32.CloseHandle(handle)
@@ -1571,8 +1568,7 @@ def seconds_since_quit_signal() -> Optional[float]:
 
 
 def begin_process_lifecycle() -> None:
-    """Clears the shutdown latch for hosts that call run_server again; in-process callers like
-    studio/backend/colab.py reuse the interpreter, so an uncleared latch refuses every spawn."""
+    """Clear the shutdown latch so in-process reruns (studio/backend/colab.py) can spawn again."""
     global _quit_signal_at
     _shutdown_latch.clear()
     _quit_signal_at = None

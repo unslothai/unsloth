@@ -37,7 +37,6 @@ IMATRIX_WEIGHTED_RE = re.compile(
 
 
 def is_imatrix_filename(path: str) -> bool:
-    """Exclude calibration files, but retain imatrix-weighted models."""
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
     if IMATRIX_TOKEN_RE.search(stem) and not IMATRIX_WEIGHTED_RE.search(stem):

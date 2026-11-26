@@ -39,7 +39,6 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 from utils.hardware import amd
 
-# No /dev or POSIX groups on Windows; macOS still runs the faked-Linux cases.
 pytestmark = pytest.mark.skipif(
     platform.system() == "Windows",
     reason = (
@@ -427,7 +426,6 @@ def _pins(
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+rocm7.0",
                   _pins(rocm_intent = False, hip_runtime = False), (_USERMOD,), ()),
                  id = "an_amd_only_host_needs_no_runtime_evidence"),
-    # CUDA wheel on an AMD host: the hint is appended and reinstall advice kept.
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+cu128",
                   _pins(rocm_intent = False, hip_runtime = False),
                   (_USERMOD, "Repair installation"), ()),
@@ -510,7 +508,6 @@ def test_the_health_hint_for_the_train_tooltip(monkeypatch, linux, case):
         assert _USERMOD in hint
     else:
         assert hint is None
-    # A verdict detection did not record gets nothing.
     assert hardware.chat_only_permission_hint("no_gpu", None) is None
 
 
@@ -1324,8 +1321,7 @@ def test_the_installer_says_the_missing_render_node_with_nothing_closed():
 
 
 def test_the_installer_stays_quiet_on_a_host_with_no_amd_gpu():
-    """Its control, and the same vendor trap: without the KFD topology test this fires on
-    every host whose /dev/dri holds another vendor's nodes, or none at all."""
+    """Control: without the KFD topology test, other vendors' or no /dev/dri nodes would fire."""
     out = _install_sh_hint("", render_present = False, amd_present = False)
     assert out.strip() == ""
 
@@ -1333,7 +1329,6 @@ def test_the_installer_stays_quiet_on_a_host_with_no_amd_gpu():
 @pytest.mark.parametrize("case", [
     pytest.param((True, None, False), id = "an_ordinary_node_reports_no_acl"),
     pytest.param((False, None, False), id = "a_path_that_cannot_be_read_reports_no_acl"),
-    # os.listxattr returns str names for a str path.
     pytest.param((True, ["security.selinux", "system.posix_acl_access"], True),
                  id = "the_acl_probe_matches_the_name_type_listxattr_returns"),
     pytest.param((True, [b"system.posix_acl_access"], True),
@@ -3266,10 +3261,9 @@ def test_a_declared_32_bit_manifest_reaches_the_empty_probe_reason(monkeypatch, 
 ])
 # fmt: on
 def test_the_pasted_command_quotes_the_names_that_need_it(monkeypatch, linux, case):
-    """Pasted commands need quoting for NSS names (winbind returns DOMAIN-prefixed names the shell
-    de-escapes, leaving usermod an absent account) and for spaced group names, which would
-    silently split; shlex.quote quotes only when needed; fails before the fix that interpolated
-    names raw."""
+    """Pasted commands need quoting for NSS names (winbind DOMAIN-prefixed names the shell
+    de-escapes, leaving usermod an absent account) and spaced group names, which would silently
+    split; shlex.quote quotes only when needed; fails before the raw-interpolation fix."""
     account, group, command, unquoted = case
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(amd, "_repair_account", lambda: account)

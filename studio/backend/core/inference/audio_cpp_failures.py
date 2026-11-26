@@ -133,8 +133,7 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-# GiB; resident = weights * per_weight + fixed. The generic lines are per-backend fallbacks for
-# unmeasured families; a lower CUDA line would run a held-out measured family out of memory.
+# Generic lines serve unmeasured families; a lower CUDA line would OOM a held-out measured one.
 _GENERIC_PROFILE = (2.5, 1.5)
 _VULKAN_GENERIC_PROFILE = (1.85, 4.5)
 # Peak keeps growing with the input, so no line fit to peaks holds: the CUDA fallback everywhere.
@@ -205,7 +204,6 @@ def _may_have_pre_ampere_nvidia_card() -> bool:
 
 
 def gpu_estimate_applies(audio_type: Optional[str]) -> bool:
-    """Whether the placement check sizes an Auto load of ``audio_type`` with its estimate."""
     import utils.hardware as hardware
     from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
     from core.inference.audio_device import audio_load_runs_on_cpu

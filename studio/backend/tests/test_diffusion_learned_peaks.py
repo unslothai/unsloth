@@ -1374,8 +1374,7 @@ def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
 
 
 def test_the_setup_oom_retry_frees_what_the_failed_setup_allocated(monkeypatch):
-    """The failed setup's traceback holds its frames, so the stored failure is only type + message: a 4 MiB
-    allocation made before the OOM is gone by the time the retry installs again, and after it."""
+    """Only type and message are stored: a traceback would pin the failed setup's allocations."""
     import weakref
 
     torch = pytest.importorskip("torch")

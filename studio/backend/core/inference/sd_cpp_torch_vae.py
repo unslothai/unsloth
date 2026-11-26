@@ -105,8 +105,7 @@ def _load_decoder(vae_path: str) -> Any:
         return vae
 
 
-# Host RAM one torch decode needs: fp32 decoder activations at full resolution (the 128-channel up blocks hold a few
-# [128, H, W] tensors at once) plus the decoder weights. 4.4 GB was the whole Studio-side peak at 1024 px.
+# fp32 full-res activations (128-channel up blocks) and weights; 4.4 GB peak at 1024 px.
 _DECODE_BYTES_PER_PIXEL = 3072
 _DECODE_FIXED_BYTES = 512 << 20
 _DECODE_RESERVE_BYTES = 1 << 30

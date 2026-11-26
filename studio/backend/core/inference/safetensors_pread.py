@@ -17,8 +17,7 @@ PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 _lock = threading.Lock()
 _depth = 0
 _original: Any = None
-# per load thread, so concurrent media loads never share rules: (target dtype or None = fp32-only video rule, kept dirs,
-# every shard)
+# Per thread so media loads share no rules: dtype (None = fp32-only video), kept dirs, shards.
 _local = threading.local()
 
 

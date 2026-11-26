@@ -77,7 +77,6 @@ def invalidate_multi_model_cache() -> None:
 
 
 def set_multi_model_mode(value: Any) -> bool:
-    """Store the mode and return whether it changed."""
     if not isinstance(value, str) or value not in _VALID_MODES:
         raise ValueError("Keep multiple models loaded must be off, fit or always.")
 

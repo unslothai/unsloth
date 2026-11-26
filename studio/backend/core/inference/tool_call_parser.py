@@ -257,8 +257,7 @@ def starved_result_message(tool_name: str, result: str) -> str:
 
 
 def repeated_result_message(tool_name: str, times: int, last_result: str) -> str:
-    """Appended to a result returned unchanged several times; the last result is kept, as it may be
-    the truncation notice causing the repeats, and dropping it leaves the model with less."""
+    """Appended to an unchanged repeat; keeps the last, which may be the truncation notice."""
     return (
         f"{last_result}\n\n"
         f"[{tool_name} returned exactly this {times} times; it will not change. Continue "
@@ -293,8 +292,7 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
 
 
 def continue_after_length_message() -> str:
-    """User message appended when a turn ended inside its reasoning: act now, since thinking used
-    the whole window and more thinking would repeat the ending."""
+    """Appended when a turn ends mid-reasoning: act now; more thinking would repeat the ending."""
     return (
         "You ran out of room while thinking, so nothing was produced. Stop thinking and "
         "act: call a tool or answer now. If it will not all fit, deliver the first part "
@@ -1816,8 +1814,7 @@ class StreamingMarkupStripper:
         return restored if restored is not None else _tool_healing.strip_outside_think(text, _seg)
 
     def reset(self):
-        """Required before a new buffer: _is_extension only samples the ends, so a different buffer
-        can pass."""
+        """Call before new buffers: _is_extension samples the ends, so another buffer can pass."""
         self._reset()
 
     def _note(self, text: str):
@@ -2251,8 +2248,7 @@ def parse_tool_calls_from_text(
         # Equal-length mask keeps spans valid; wrapped calls nested in blocked args stay data.
         content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
 
-        # A leading bare-JSON value is decided first so quoted XML or Mistral markup in its strings
-        # stays data; the Mistral guard's preamble tolerance would otherwise claim it.
+        # Decide a leading bare-JSON value first so quoted XML or Mistral markup stays data.
         skipped = False
         while _xml_signal_inside_leading_bare_json(content):
             calls = _parse_llama3_bare_json(
@@ -2281,8 +2277,7 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-        # A DISABLED wrapper-less Gemma call is prose: drop the span and parse the tail BEFORE the Mistral guard,
-        # whose preamble tolerance would otherwise parse a quoted trigger.
+        # Drop disabled bare Gemma calls before the Mistral guard parses a quoted trigger.
         _prose_end = _disabled_gemma_call_end_containing_signal(content, enabled_tool_names)
         if _prose_end is None:
             break
@@ -2504,8 +2499,7 @@ def _parse_closed_call_unescaped_quotes(content: str, *, id_offset: int) -> list
 
 
 def _loads_call_object(text: str, *, relaxed: bool = True):
-    """A wrapped call's JSON object: strict first; near-JSON a model sampled (single quotes, a trailing comma,
-    True/None, unquoted keys) only when strict fails and healing is on. None when neither reads an object."""
+    """Strict JSON first, then near-JSON if healing is on; None when neither reads an object."""
     try:
         return json.loads(text)
     except (json.JSONDecodeError, ValueError):
@@ -2905,7 +2899,6 @@ def _parse_llama3_bare_json(
     cursor = 0
     n = len(stripped)
     while cursor < n:
-        # Skip whitespace and the Llama-3 ``;`` inter-call separator.
         while cursor < n and stripped[cursor] in " \t\n\r;":
             cursor += 1
         if cursor >= n or stripped[cursor] != "{":
@@ -3427,7 +3420,6 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
 
     while True:
         probe = strip_llama3_leading_sentinels(remainder.lstrip())
-        # Skip the Llama-3 ``;`` inter-call separator between chained calls.
         if stripped_any or kept:
             probe = probe.lstrip(" \t\n\r;")
         # Separator before ``probe`` shows only if its object is kept; stripping only trims a prefix.
@@ -3901,7 +3893,6 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
             i += 1
         raw_val = body[vstart:i].strip()
         if raw_val[:1] in "{[":
-            # Only a fully consumed, closed parse; otherwise keep the raw string.
             parsed, end, closed = _gemma_parse_value(raw_val, 0)
             out[key] = (
                 _gemma_strip_quoted_leaves(parsed)

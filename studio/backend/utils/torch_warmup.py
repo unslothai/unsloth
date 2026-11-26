@@ -31,7 +31,6 @@ _status: dict = {"started": False, "finished": False, "stages": {}}
 
 
 def _is_extension_module(name: str) -> bool:
-    """True if sys.modules[name] is a compiled extension, not Python source."""
     module = sys.modules.get(name)
     origin = getattr(getattr(module, "__spec__", None), "origin", None) or getattr(
         module, "__file__", None
@@ -117,7 +116,6 @@ def purge_partial_import(package: str) -> list:
     # Track what actually went: a partway bail must not report a clean slate that never happened.
     removed = []
     for name in stale:
-        # Same race, per pop: bail the moment the parent is back.
         if package in sys.modules:
             logger.warning(
                 "stopped purging %s partway: another importer republished it. The "
@@ -153,7 +151,6 @@ _BARE_IMPORT_STAGES = frozenset({"datasets"})
 
 @contextmanager
 def _held_import_lock(name: str, package: Optional[str]):
-    """Hold ``package``'s import lock for a bare-import stage; a no-op for the rest."""
     if package is None or name not in _BARE_IMPORT_STAGES:
         yield
         return
@@ -691,8 +688,7 @@ def _early_quant_probe() -> None:
 
 
 def _kick_early_quant_probe() -> Optional[threading.Thread]:
-    """Start the quant smoke probe's child during the warm instead of after the diffusers import (a load posted right
-    after the warm waited ~3 s for it). ``UNSLOTH_DIFFUSION_PROBE_EARLY=0`` keeps the old timing."""
+    """Quant probe child starts in the warm; UNSLOTH_DIFFUSION_PROBE_EARLY=0 keeps old timing."""
     if os.environ.get(EARLY_PROBE_ENV_VAR, "").strip().lower() in ("0", "false", "no", "off"):
         return None
     thread = threading.Thread(target = _early_quant_probe, name = "early-quant-probe", daemon = True)
@@ -829,7 +825,6 @@ def prewarm_diffusers_if_image_models_exist(*, warm_quantization: bool = True) -
 
 
 def warm_status() -> dict:
-    """Snapshot of the warm for diagnostics and tests."""
     return {
         "started": _status["started"],
         "finished": _status["finished"],

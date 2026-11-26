@@ -935,9 +935,8 @@ def _video_block_backends(target: Any, family: Optional[str]) -> dict:
 
 
 def _video_comfy_reprice(plan: Any, bf16_plan: Any = None) -> bool:
-    """Whether a ComfyUI DiT is re-priced with the offloaded backends: an offloaded plan (fp8 layers dequantize on
-    NVIDIA), or an MPS plan past its resident margin (MPS never offloads; its offloaded backends are its resident ones
-    plus fp8 storage)."""
+    """Whether a ComfyUI DiT is re-priced with offloaded backends: an offloaded plan (fp8 layers
+    dequantize on NVIDIA), or an MPS plan past its resident margin (MPS never offloads)."""
     return not _video_comfy_resident(plan, bf16_plan) or mps_plan_tight(plan)
 
 
@@ -1084,10 +1083,9 @@ def _draft_decode_ctx(pipe: Any, fam: Any, device: Any, requested: Optional[bool
 
 
 def _decodes_untiled_when_fits(family: str, offload_policy: str, device: str, speed: str) -> bool:
-    """Untiled when it fits (free memory read at decode time); not under sequential offload, nor on SPEED_OFF
-    (bit-identical) except Cosmos3, whose reference pipeline decodes untiled (stock tiles seam at 480 / 832 px).
-    On a CPU host "fits" is usable host RAM: the stock tiles recompute their overlaps (Wan2.2 at 896x512: 15 tiles
-    covering 1.6x the frame's pixels), and the decode is the slowest stage there."""
+    """Untiled when free memory fits (read at decode), not under sequential offload or on SPEED_OFF
+    (bit-identical) except Cosmos3 (reference untiled; tiles seam at 480/832 px); on CPU fits is
+    host RAM: stock tiles recompute overlaps (Wan2.2 896x512: 15 tiles, 1.6x pixels)."""
     if device not in ("cuda", "cpu") or offload_policy not in (
         OFFLOAD_NONE,
         OFFLOAD_MODEL,
@@ -1215,9 +1213,8 @@ def h3_fp16_host_shortfall(
     model_kind: str,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
-    """Why a MiniMax-H3 Diffusers load cannot fit a GPU without native bf16, else None. There every precision lands on
-    the released components promoted to float32 (only an explicit int8 conditioner stays int8), all held in host RAM.
-    Never raises; unreadable sizes or RAM refuse nothing."""
+    """Why a MiniMax-H3 load cannot fit a GPU without native bf16, else None; parts go float32 in
+    host RAM (explicit int8 conditioner aside); never raises, unknown sizes refuse nothing."""
     try:
         import torch
 
@@ -1345,9 +1342,8 @@ def ltx25_fp16_host_shortfall(
     speed_mode: Optional[str] = None,
     loras_active: bool = False,
 ) -> Optional[str]:
-    """Why an LTX-2.5 Diffusers load cannot fit host RAM on a non-bf16 GPU, else None: fp16 targets
-    widen the pipeline and the encoder worker's Gemma 4 to float32 in host RAM; never raises, and
-    kill switches or an unreadable size refuse nothing."""
+    """Why an LTX-2.5 load cannot fit host RAM on a non-bf16 GPU (else None): fp16 widens pipeline
+    and Gemma 4 to float32; kill switches or unreadable sizes refuse nothing; never raises."""
     try:
         import torch
 
@@ -2238,7 +2234,6 @@ class _VideoLoadState:
     fetch_base: Optional[str] = None
     # Content-detected checkpoint variant identifier (LTX-2.3 "ltx-2.3-22b-distilled" / "-dev"), read before the names.
     variant_id: Optional[str] = None
-    # Resident MiniMax-H3 denoiser partition, if any.
     h3_task: Optional[str] = None
     offload_policy: str = "none"
     vae_tiling: bool = True
@@ -2303,9 +2298,8 @@ class _VideoLoadingState:
     error_code: Optional[str] = None
     # Companion repos pulled besides repo_id / base_repo; mirrors _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
-    # Fetch ROLE ("checkpoint" / "base") maps to the one plan settled at estimate time (repo, pinned
-    # revision, blob key and size per file), written only by the owning worker, replaced whole on
-    # re-estimate, never patched by a fetch site; load_progress reads nothing else.
+    # Fetch ROLE (checkpoint/base) maps to one plan settled at estimate time, written only by its
+    # owner, replaced whole, never patched by fetch sites; load_progress reads nothing else.
     fetch_plan: dict[str, "_PlannedFetch"] = field(default_factory = dict)
     # Dead ``<key>.<8 hex>.incomplete`` sizes when a plan first named the file; a re-plan only adds entries.
     incomplete_baseline: dict[str, int] = field(default_factory = dict)
@@ -2959,10 +2953,9 @@ def _video_fetch_repo(
             if _upstream_whole_in_one_root(repo_id, tuple(files)):
                 return repo_id
         else:
-            # No names to check: pick the more complete cached side (upstream on a tie), as the
-            # any-weight default would keep a partial upstream; gated upstreams win only if whole,
-            # since a missing file would 401 from vendor repo; a load that cannot download keeps the
-            # cached upstream unless the mirror is cached.
+            # With no names, pick the more complete cached side (upstream on a tie, as any-weight
+            # keeps a partial upstream); gated upstreams win only if whole, since a missing file
+            # would 401; a no-download load keeps cached upstream unless the mirror is cached.
             (up, up_whole), mir = (
                 _video_cached_completeness_detail(repo_id),
                 _video_cached_completeness(mirror),
@@ -2989,9 +2982,8 @@ def _can_download() -> bool:
 
 
 def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
-    """Repo to read base's index from, the one its base pull stages: the upstream only when its
-    cached snapshot holds every component (text_encoder aside, as an H3 load may skip those
-    shards), else the mirror, unless the load cannot download and only the upstream is cached."""
+    """Repo for base's index: upstream only if fully cached (text_encoder aside, H3 may skip it),
+    else the mirror, unless the load cannot download and only upstream is cached."""
     from .diffusion_families import _is_local_path, mirror_repo
 
     if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip() or _is_local_path(base):
@@ -4017,8 +4009,7 @@ def _h3_auto_denoiser_scheme(
 
 
 def _checkpoint_files(gguf_filename: Optional[str], kind: str) -> tuple[str, ...]:
-    """The checkpoint file(s) a gguf / single_file pick reads: the pick, plus its partner expert when the name
-    pairs one (only a dual-expert family gets past validation with such a name, and a single-DiT one never asks)."""
+    """The pick, plus its partner expert when the name pairs one (never for pipeline kinds)."""
     if not gguf_filename:
         return ()
     partner = moe_partner_filename(gguf_filename) if kind != "pipeline" else None
@@ -5709,8 +5700,7 @@ def _video_group_hooked(module: Any) -> bool:
 
 
 def _video_calibration_companions(pipe: Any) -> dict[str, str]:
-    """Run-once companion key entry: whether LTX-2 text connectors stream or sit resident (a
-    resident sample omits their streamed window, so peaks never mix); empty without them."""
+    """Run-once key: LTX-2 connectors streamed or resident; empty without, so peaks never mix."""
     try:
         from .diffusion_memory import run_once_companions
         companions = run_once_companions(pipe)
@@ -6208,10 +6198,9 @@ def _ltx25_denoise_price_mib(
     cfg: bool,
     fps: Optional[float] = None,
 ) -> Optional[int]:
-    """Denoise headroom above the floor for measured LTX-2.5 renders (distilled two-stage, no CFG),
-    else None; the dev checkpoint and CFG do not release prompt rows, so they are excluded. Never
-    above base overhead plus the parked encoder, so a request the old price admitted stays
-    admitted."""
+    """Denoise headroom above the floor for measured LTX-2.5 distilled two-stage renders (no CFG),
+    else None; dev checkpoint and CFG do not release prompt rows, so excluded; never above base
+    overhead plus the parked encoder, so a request the old price admitted stays admitted."""
     if (os.environ.get(VIDEO_LTX25_DENOISE_PRICE_ENV) or "").strip().lower() in (
         "0",
         "off",
@@ -6391,8 +6380,6 @@ def _calibration_revision(state: Any) -> Optional[str]:
 
 
 def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
-    """Attribute names of the denoisers on pipe to optimise: transformer, plus transformer_2 for an
-    MoE family whose second expert is actually present."""
     names = ["transformer"]
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         names.append("transformer_2")
@@ -6777,8 +6764,7 @@ class VideoBackend:
         touches the loaded pipeline goes through this: the weights are on ``state.gpu_ordinal``
         and ``state.device`` is un-indexed, so an unpinned thread resolves to its own card."""
         target = self._device_target(state.gpu_ordinal)
-        # Pins back onto the weights' card, since a previous pinned load may have left this shared
-        # thread elsewhere; skipped if the pin above already set it.
+        # Re-pin to the weights' card: a shared thread may have been left on another card.
         if state.gpu_ordinal is None or state.placed_ordinal != state.gpu_ordinal:
             pin_cuda_ordinal(state.placed_ordinal)
         return target
@@ -6924,7 +6910,6 @@ class VideoBackend:
 
         if is_h3_native(fam, kind):
             validate_h3_transformer_filename(gguf_filename or "")
-            # The GGUF filename and explicit task must name the same partition.
             picked = h3_transformer_task(gguf_filename or "")
             if h3_task and h3_task != picked:
                 raise ValueError(
@@ -7129,9 +7114,8 @@ class VideoBackend:
                 transformer_quant = updates.get("transformer_quant", transformer_quant)
                 text_encoder_quant = updates.get("text_encoder_quant", text_encoder_quant)
         # Resolved once here and carried to the worker: a bad pick is the route's 400, and VRAM
-        # cannot re-rank it after the weights land; gated on the backend (XPU/MPS/CPU ignore
-        # physical ids); re-ranked only when the caller has not already done so, since VRAM moves
-        # between preflight and here.
+        # cannot re-rank after the weights land; gated on the backend (XPU/MPS/CPU ignore physical
+        # ids); re-ranked only if the caller has not, since VRAM moves between preflight and here.
         auto_ordinal = gpu_ordinal is None and not gpu_ids
         if gpu_ordinal is None and gpu_ids:
             gpu_ordinal = (
@@ -7205,7 +7189,6 @@ class VideoBackend:
         h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
         # Protect both mirror and repack ids: an install may hold the components under either.
         claimed_assets = (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
-        # Claim the hosted LTX-2.3 FP8 DiT repo with _loading.
         if _ltx23_prequant_serves_on_card(
             fam,
             resolve_video_model_kind(gguf_filename, model_kind),
@@ -7485,9 +7468,8 @@ class VideoBackend:
                         # Baseline first: load_progress reads lock-free and counts partials once a plan is set.
                         self._loading.incomplete_baseline = self._plan_partials(planned_files)
                         self._loading.fetch_plan = planned_files
-                    # The conditioner artifact lives in a third repo (neither repo_id nor
-                    # base_repo), so register it as an asset repo or the delete-cached guard could
-                    # remove it mid-fetch or mid-assembly; the native H3 path does the same.
+                    # Conditioner lives in a third repo (neither repo_id nor base_repo): register as
+                    # an asset repo or delete-cached guard may remove it mid-fetch/assembly.
                     if h3_te_scheme:
                         self._loading.asset_repos = self._loading.asset_repos + (
                             h3_te_quant_source(h3_te_scheme),
@@ -7523,8 +7505,7 @@ class VideoBackend:
                 fetch_partner = bool(
                     getattr(fam, "is_moe", False) and kind != "pipeline" and partner
                 )
-                # One choice for the pick and its partner expert, settled on both names so both come
-                # from one repo; reuses the estimate's plan if any, else settles here.
+                # Pick and partner expert share one repo; reuses the estimate's plan if any.
                 checkpoint_plan = planned_files.get(_FETCH_CHECKPOINT)
                 checkpoint_repo = (
                     checkpoint_plan.repo
@@ -7563,8 +7544,7 @@ class VideoBackend:
                         reuse_other_cache_root = True,
                         local_files_only = local_files_only,
                     )
-            # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE +
-            # tokenizer; recompute the estimate.
+            # LTX-2.3 supplies VAEs/vocoder/connectors; base pull shrinks, recompute estimate.
             ltx23 = False
             if fam is not None and fam.name == "ltx-2" and kind != "pipeline":
                 from .video_ltx2 import is_ltx23_checkpoint
@@ -7752,8 +7732,7 @@ class VideoBackend:
                 base_plan.repo if base_plan is not None else None
             )
             if kwargs["_base_fetch_repo"] is None and kind != "pipeline":
-                # Cache-only load: nameless assembly counts every index component, so an upstream
-                # with replaced folders or unused 2.3 VAEs outscores the mirror the load reads.
+                # Cache-only: nameless assembly counts all index parts, so upstream may win.
                 kwargs["_base_fetch_repo"] = _video_offline_base_choice(
                     base,
                     tuple(p.rstrip("/") for p in VideoBackend._LTX23_BASE_PREFIXES)
@@ -7999,8 +7978,7 @@ class VideoBackend:
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend: CPU policy, and no VIDEO claim held.
         if sd_cpp_args_mod.forces_cpu_backend(native_device):
             native_device = "cpu"
-        # Accelerator decision's basis, or None if never asked (a CPU or MPS target never consults
-        # it); re-checked under the reader claim so a mid-load swap cannot change it.
+        # Accelerator basis (None if never asked); re-checked under the claim against a swap.
         listed_accelerator: Optional[bool] = None
         decided_accelerator: Any = _UNREAD_ACCELERATOR
         if target.backend not in ("cpu", "mps"):
@@ -8209,7 +8187,6 @@ class VideoBackend:
                 not in ("0", "false", "no", "off")
                 and sd_cpp_supports_sage_attn(binary)
             )
-            # The CPU fallback runs on no card, so drop the ordinal.
             native_ordinal = None if native_device == "cpu" else gpu_ordinal
             # Under the claim like every other probe here; None on the CPU fallback
             native_device_name = (
@@ -8550,8 +8527,7 @@ class VideoBackend:
             release_if(VIDEO, lambda: token is None or token == self._load_token)
 
     def _close_pending_ltx25_encoder(self, token: Any = _ANY_LOAD) -> None:
-        """Stops an LTX-2.5 encoder worker whose load never committed (failed, cancelled or
-        superseded); with token, a newer load's worker is left alone."""
+        """Stops an uncommitted LTX-2.5 encoder worker; a token spares a newer load's worker."""
         with self._lock:
             pending = self._ltx25_pending_encoder
             if pending is None or (token is not _ANY_LOAD and pending[0] != token):
@@ -8589,8 +8565,7 @@ class VideoBackend:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
         if getattr(fam, "name", None) == "ltx-2.5":
-            # The sidecar worker loads LTX-2.5's hosted int8 ConvRot Gemma 4 encoder; resolving it here is what lets
-            # the plan, the estimate and the pre-fetch stage that file and drop the dense text_encoder/ shards.
+            # Hosted int8 encoder resolved here; plan, estimate and prefetch skip dense shards.
             from .video_ltx25 import ltx25_te_prequant_sources
             return ltx25_te_prequant_sources(
                 text_encoder_quant, base or str(getattr(fam, "base_repo", "") or "")
@@ -8658,8 +8633,7 @@ class VideoBackend:
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
                 path = Path(
                     hf_hub_download_with_xet_fallback(
-                        # The repo the base pull reads: a fresh install fetches the index from the mirror, never the
-                        # vendor id, and an upstream cache holding only an older index does not win it.
+                        # Index from mirror, not vendor id; a stale upstream cache never wins.
                         _video_index_repo(base, local_files_only = local_files_only),
                         "modular_model_index.json",
                         hf_token,
@@ -8916,8 +8890,7 @@ class VideoBackend:
                     base = base,
                     speed_mode = speed_mode,
                 ):
-                    # The low-RAM route offloads the DiT on an fp16-only card: read the hosted int8 file (25 GB) as
-                    # native Linears instead of pulling the 42 GB dense shards and quantising them at load.
+                    # Fp16-only low-RAM: read 25 GB hosted int8 file, not 42 GB dense shards.
                     hosted = _video_native_hosted_scheme(fam, TQ_INT8, target)
                     if native_hosted is not None and hosted is not None:
                         native_hosted.append(hosted)
@@ -9690,9 +9663,8 @@ class VideoBackend:
         te_planned, _ = video_te_quant_request(
             fam, text_encoder_quant, base = base, speed_mode = load_kwargs.get("speed_mode")
         )
-        # The same resolution the load makes, so an H3 auto pick the loader will serve from a hosted checkpoint is not
-        # staged dense here first: that is 66.3 GB the panel downloads and the load never opens, and the replacement
-        # would then arrive outside this plan.
+        # Same resolution as the load: an H3 auto pick the loader serves from a hosted checkpoint is
+        # not staged dense first (66.3 GB unopened), else the swap lands outside the plan.
         transformer_quant = (
             self._h3_planned_auto_denoiser_scheme(
                 fam,
@@ -9914,8 +9886,7 @@ class VideoBackend:
                 )
                 base_revision = getattr(info, "sha", None) if fetch_base == listing else None
                 if fetch_base.lower() != (listing or "").lower():
-                    # An upstream kept for its complete cache: probe THAT snapshot (its commit, its sizes), as
-                    # _plan_fetch does for the load, not the mirror head, whose sizes may be a newer revision.
+                    # Probe that upstream snapshot (its commit, sizes), not the mirror head.
                     cached = _cached_snapshot_plan(fetch_base, [n for n, _ in base_files])
                     if cached is not None:
                         base_revision = cached[0]
@@ -10260,8 +10231,7 @@ class VideoBackend:
                 return None
             from huggingface_hub import HfApi
 
-            # Listed from the mirror (byte identical, so the same names and sizes), then the fetch repo is settled
-            # against the EXACT names: an upstream snapshot that already holds every one of them keeps being used.
+            # Mirror listing; an upstream snapshot holding all exact names keeps being used.
             listing = _video_listing_repo(base)
             info = hub_reachability.model_info(
                 HfApi(token = hf_token or None),
@@ -10758,8 +10728,7 @@ class VideoBackend:
         te_auto_retry = (
             text_encoder_quant if text_encoder_quant_auto and te_auto_unavailable else None
         )
-        # LTX-2.5 on an fp16-only card whose host cannot hold the float32 load: plan and load as a bf16 card (hosted int8
-        # DiT, bf16 companions), then compute in float32 below. ``lowram_target`` is the real card, restored then.
+        # LTX-2.5 fp16-only low-RAM: plan as bf16, compute in float32, restore the real card.
         lowram_target = None
         if fam.name == "ltx-2.5":
             from .video_ltx25_lowram import decide_lowram, storage_target
@@ -11452,8 +11421,7 @@ class VideoBackend:
                 base_repo = base,
                 bind_device = _video_sidecar_multigpu(fam),
             )
-            # Installed only while this load is current: a load superseded during the start must not overwrite the
-            # newer load's worker (whose token-scoped cleanup could then never find it).
+            # Install if current: overwriting a newer worker orphans it from token cleanup.
             with self._lock:
                 superseded = _load_token is not None and _load_token != self._load_token
                 if not superseded:
@@ -12762,8 +12730,7 @@ class VideoBackend:
                     is_gguf = gguf_transformer,
                     family = family,
                     speed_mode = effective_speed,
-                    # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled
-                    # DiT crashes)
+                    # Auto cache may engage, so fullgraph is dropped: FBCache crashes under it.
                     cache_active = cache_graph_break or cache_may_toggle,
                     offload_active = speed_offload,
                     cuda_graph_default = False,
@@ -16323,8 +16290,7 @@ class VideoBackend:
                     return render_call()
 
                 try:
-                    # The draft decoder first: the decode-phase / finite / uint8 wrappers progress_ctx installs then
-                    # wrap whichever decoder runs, so the decode phase (and its residency release) still fires.
+                    # Draft decoder first; the decode phase still fires whichever decoder runs.
                     with grad_ctx, protect_ctx, draft_ctx, progress_ctx(), sigma_ctx:
                         output = render_thread.run("video", _render_streamed_after_oom)
                 except _VideoGenerationCancelled:
@@ -17453,8 +17419,7 @@ class VideoBackend:
             self._ltx25_pending_encoder = None
         if pending_encoder is not None:
             _stop_ltx25_encoder(pending_encoder[1])
-        # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free
-        # while the clip still holds it.
+        # Await the signalled generation before freeing, else VRAM reads free while still held.
         with self._generate_lock:
             with self._lock:
                 try:

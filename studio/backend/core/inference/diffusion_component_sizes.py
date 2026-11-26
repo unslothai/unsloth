@@ -948,8 +948,7 @@ def video_loaded_roles(
     sizes: Optional[ComponentSizes] = None,
     dev: bool = False,
 ) -> tuple[str, ...]:
-    """Every folder this load reads: the required roles plus each optional one the family, Studio (when attached) or
-    the snapshot's manifest loads. A cached snapshot missing any of them is incomplete."""
+    """Every folder this load reads; a cached snapshot missing any of them is incomplete."""
     manifest = sizes.manifest if sizes is not None else None
     roles = list(video_required_roles(fam))
     if _second_expert_loaded(fam, sizes):

@@ -595,8 +595,7 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
-    # Measured on a B200: the loop peaks near 44 GB, but a 20-step run peaked at 77.76 GB with the 63 GiB Qwen3-VL
-    # conditioner resident, so 72 sizes users onto a card that OOMs later.
+    # Loop peaks ~44 GB, but 20-step runs hit 77.76 GB with Qwen3-VL resident; 72 GB cards OOM.
     "minimax-h3": {
         "params": "31B",
         "qlora_vram_gb": 80,
@@ -1649,8 +1648,7 @@ class PermutationBatchSampler:
             restored = [int(i) for i in order]
         except (TypeError, ValueError):
             return False
-        # A shortened or duplicate-carrying order is in range and plausible, so the cycle reshuffles early or serves
-        # the same image twice with the RNG already past the original draw.
+        # Duplicate or short saved orders would reshuffle early or repeat images; reject them.
         if restored and sorted(restored) != list(range(self._n)):
             return False
         self._order = restored
@@ -1772,8 +1770,7 @@ _H3_CANVAS_MULTIPLE = 32
 
 
 def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
-    """Returns the reason this config cannot train MiniMax-H3 (video or image), else None; never raises. Config-only,
-    so the route can check before freeing residents."""
+    """Returns MiniMax-H3 refusal or None; never raises; config-only, checked before eviction."""
     family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
     if family == "minimax-h3-image":
         return h3_image_train_unsupported_reason(cfg)
@@ -2330,8 +2327,7 @@ _NOT_A_CHECKPOINT_FOLDER = (
 
 
 def _single_file_shape(base_model: str) -> Optional[str]:
-    """ "file" / "folder" when a local base is, or holds (an A1111 / ComfyUI models folder), a single-file
-    checkpoint, else None. Wording only, never a verdict."""
+    """file' or 'folder' (holds one) for a local single-file base, else None; wording only."""
     try:
         path = Path(str(base_model or "").strip()).expanduser()
         if path.is_file():

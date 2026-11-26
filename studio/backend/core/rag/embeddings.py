@@ -172,8 +172,7 @@ def download_required(model_name: str | None = None) -> bool:
 
 
 def _ambient_hf_token() -> str | None:
-    """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
-    the scan can reach a gated/private repo instead of failing open. None if unavailable."""
+    """HF_TOKEN or cached login, so gated repos scan instead of failing open; None if absent."""
     if managed_account():
         return False
     try:
@@ -389,8 +388,7 @@ def _one_line(text: str) -> str:
 
 
 def _emit_load_reports(report) -> None:
-    """Re-emit swallowed load-report lines on our logger: debug for legacy-key notices, warning for
-    anything that could change embeddings; drains the list so retries do not repeat them."""
+    """Re-emit load reports; warn if they could change embeddings, else debug; drains the list."""
     serious = report.is_serious()
     for text in report.reports:
         if serious:
@@ -1241,8 +1239,7 @@ def _current_backend_key() -> str:
 
 
 def _backend_cache_key(raw: str, key: str) -> str:
-    """Cache key for a built backend; it carries the RESOLVED choice, not just the raw config, so a
-    model needing the other backend rebuilds rather than reusing the previous backend."""
+    """Cache key uses the resolved backend, so a model needing the other one rebuilds."""
     return f"{raw}\x00{key}"
 
 

@@ -199,8 +199,7 @@ def _c_cuda_mask():
     return None if raw is None else raw.decode(errors = "replace").strip()
 
 
-# A run that hid every GPU must never open a context: a CPU test that rewrites the mask and reaches a real CUDA
-# init would open one on each card it names (xdist workers held 600-900 MiB on six GPUs), so that init fails it.
+# A run hiding every GPU must not open CUDA contexts; a CPU test reaching real CUDA init fails.
 _SESSION_HID_GPUS = os.name != "nt" and _c_cuda_mask() in ("", "-1")
 _cuda_init_state = {"cpu_test": False, "attempts": []}
 
@@ -296,8 +295,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse = True)
 def _no_deleted_torch_config_entries():
-    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
-    tests/_shared/torch_config_guard.py."""
+    """A test leaving a dynamo/inductor config entry deleted errors at its teardown."""
     from torch_config_guard import check_after_test, install_delete_recorder
 
     install_delete_recorder()
@@ -307,8 +305,7 @@ def _no_deleted_torch_config_entries():
 
 @pytest.fixture(autouse = True)
 def _zoo_without_gdn_decode_kernel(monkeypatch):
-    # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
-    # older-zoo answer so results do not follow the host. Tests of the newer zoo patch it back.
+    # Pin the older-zoo causal-conv1d answer for Qwen3.5/Qwen3-Next so results ignore the host.
     ssm_runtime = sys.modules.get("utils.ssm_runtime")
     if ssm_runtime is None:
         try:
@@ -373,8 +370,7 @@ def _forget_hub_gguf_listings():
 
 @pytest.fixture(autouse = True)
 def _forget_mcp_discovery_state():
-    # Discovery caches and cool-offs are keyed by server id, which tests reuse as s1; leftovers make
-    # later tests skip discovery, and test_mcp_http_sessions asserts an empty cache.
+    # Discovery caches key on server id reused as s1 by tests; leftovers make later ones skip.
     def _forget():
         client = sys.modules.get("core.inference.mcp_client")
         if client is not None:
@@ -1001,9 +997,8 @@ def engine_port_slot_hooks(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _engine_ports_no_other_worker_can_take(monkeypatch, request):
-    """managed_engine._free_port releases an ephemeral port the engine binds later; in that gap any
-    bind(0) can take it and answer /health, so a start that should time out returns ready; each
-    worker gets its own ports below the ephemeral range, which bind(0) never hands out."""
+    """_free_port frees a port the engine binds later; bind(0) can take it and answer /health, so a
+    timed-out start reads ready; worker ports sit below the range bind(0) never hands out."""
     module = sys.modules.get("core.inference.managed_engine")
     if module is None:
         return
@@ -1269,8 +1264,7 @@ def _outbound_network_guard():
 
         patch.setattr(hf_http, "time", _NoBackoffClock())
 
-    # A configured proxy would be dialled instead of the test server, so bypass it via NO_PROXY.
-    # Bypass, not allow, so the proxy cannot carry Hub traffic. Session scope for session fixtures.
+    # Bypass, not allow, the configured proxy via NO_PROXY so it cannot carry Hub traffic.
     if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
         combined = no_proxy_with_test_servers(
             os.environ.get("NO_PROXY"), os.environ.get("no_proxy")
@@ -1427,8 +1421,7 @@ def rag_conn(rag_home):
 
     from storage import rag_db
 
-    # Same gate as RAG tests: a sqlite3 that cannot load extensions (macos-15 runner) never has RAG
-    # and the product reports it rather than failing; other sqlite-vec failures still error.
+    # Skip if sqlite3 cannot load extensions (macos-15); other sqlite-vec failures still error.
     if not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"):
         pytest.skip("sqlite-vec cannot be loaded by this Python's sqlite3")
     conn = rag_db.get_connection()

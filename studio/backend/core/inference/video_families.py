@@ -200,7 +200,6 @@ class VideoFamily:
     pipeline_class: str
     transformer_class: str
     base_repo: str
-    # Pipeline kwarg carrying the guidance value.
     cfg_kwarg: str = "guidance_scale"
     # The pipe attribute holding the denoiser (all current video families are DiTs).
     denoiser_attr: str = "transformer"
@@ -311,10 +310,8 @@ class VideoFamily:
     # Fixed __call__ kwargs per request; keys missing from the pipeline signature are skipped.
     call_kwargs: tuple[tuple[str, object], ...] = field(default_factory = tuple)
     default_audio_flow_shift: Optional[float] = None
-    # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
-    # True: a keyframe keeps the chosen (or default) canvas instead of a source-aspect one, as MiniMax-H3's reference
-    # workflow does; the page then selects "Match source" only when asked.
+    # True: a keyframe keeps the chosen or default canvas, not source-aspect (as MiniMax-H3 does).
     keyframes_keep_canvas: bool = False
     # The page's Default preset size (a preset), when it is not resolution_presets[0]; requests without a size still
     # take resolution_presets[0].
@@ -473,7 +470,6 @@ def local_cosmos3_pipeline_family(path: Optional[str]) -> Optional[str]:
     return sizes.get(hidden) if sizes and isinstance(hidden, int) else None
 
 
-# --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
 
 # int8 small-M exclusions (on top of diffusion_transformer_quant._INT8_EXCLUDE_NAME_TOKENS); baked into the published
 # int8 artifacts, so each moves only with a rebuild and republish.
@@ -1654,8 +1650,7 @@ def validate_video_request_shape(
     validate_video_fps(fam, fps)
     presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
     if presets and (width is not None or height is not None):
-        # A half-specified request resolves against the default preset, as generate() does. Keyed on None, not
-        # falsiness: an explicit 0 is refused rather than replaced (the request model bounds it at 32 anyway).
+        # Half-given size uses the default preset; keyed on None, so an explicit 0 is refused.
         want_w = presets[0][0] if width is None else int(width)
         want_h = presets[0][1] if height is None else int(height)
         if (want_w, want_h) not in presets:
@@ -1928,8 +1923,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("fastwan2.1-t2v-1.3b", 3, 1.0),
     ("cosmos3-nano", 35, 6.0),
     ("cosmos3-edge", 20, 6.0),
-    # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
-    # are the family defaults). Its head bank was distilled for that partition.
+    # PDD baked: ComfyUI's 8 Euler steps, CFG 1, simple schedule; head bank distilled for this.
     ("pdd", 8, 1.0),
     ("distilled", 8, 1.0),
     # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.

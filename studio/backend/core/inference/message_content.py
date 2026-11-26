@@ -13,7 +13,6 @@ _PASTED_TEXT_CLOSE = "</pasted_text>"
 
 
 def content_to_text(content: Any) -> str:
-    """Plain text of content: text parts newline-joined, non-text dropped, None as empty."""
     if content is None:
         return ""
     if isinstance(content, str):
@@ -25,7 +24,6 @@ def content_to_text(content: Any) -> str:
                 if item:
                     parts.append(item)
             elif isinstance(item, dict):
-                # Skip non-text parts (image_url, input_audio, ...).
                 part_type = item.get("type")
                 if part_type is not None and part_type != "text":
                     continue
@@ -37,7 +35,6 @@ def content_to_text(content: Any) -> str:
 
 
 def named_turn(turn: dict, source: Any) -> dict:
-    """Carry the participant ``name`` of the message a backend rebuilt *turn* from."""
     if isinstance(source, dict) and source.get("name"):
         turn["name"] = source["name"]
     return turn

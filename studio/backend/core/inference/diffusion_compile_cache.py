@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torch Mega-cache of denoiser compile; exact-match fingerprint, a mismatch yields a miss not an
-error; best-effort; manifest is the commit point over content-addressed bundles; old cache.bin
-manifests stay valid, format version not bumped; LRU never evicts open or last-hour keys"""
+"""Denoiser Torch Mega-cache; exact-match fingerprint (mismatch: miss, not error); best-effort;
+manifest commit point; old cache.bin manifests stay valid; LRU never evicts open/last-hour keys."""
 
 from __future__ import annotations
 
@@ -119,8 +118,7 @@ def _toolchain_path_unparseable(value: str) -> bool:
 
 
 def _parseable_cache_fallback(key: str, intended: str) -> str | None:
-    """storage_roots' ready-to-publish fallback, or None when this module is reached without
-    studio/backend on sys.path, where there is no safe directory to offer."""
+    """storage_roots' fallback, or None when studio/backend is not on sys.path (no safe dir)."""
     try:
         from utils.paths.storage_roots import parseable_cache_fallback
     except ImportError:

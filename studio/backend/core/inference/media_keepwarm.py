@@ -156,7 +156,6 @@ _TRACKED_PATHS = {
 
 
 def owner_for_path(path: str) -> Optional[str]:
-    """Which media backend a tracked inference path generates or loads on, if any."""
     return _TRACKED_PATHS.get(path)
 
 

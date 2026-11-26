@@ -435,7 +435,6 @@ def test_the_predicate_is_the_whole_rule():
     """Direct table for the one function every site above shares."""
     # A blank CLI total: the DGX Spark shape, always widened.
     assert hw._integrated_total_is_understated(None, 121.0) is True
-    # A carve-out: the N1X shape.
     assert hw._integrated_total_is_understated(N1X_CARVE_OUT_GB, N1X_POOL_GB) is True
     assert hw._integrated_total_is_understated(45.39, 45.39) is False
     assert hw._integrated_total_is_understated(45.39, 45.40) is False

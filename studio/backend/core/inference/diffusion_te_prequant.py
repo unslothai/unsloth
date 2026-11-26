@@ -362,9 +362,8 @@ TE_PREQUANT_BUDGET_SCALE = 0.65
 # The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
 # 17,534,339,488 for the dense encoder, 0.533, rounded up.
 TE_INT8_CONVROT_BUDGET_SCALE = 0.56
-# Per-family int8 ConvRot budget scales where the default understates (an encoder whose bf16
-# embedding table is a large share keeps more bytes dense): measured ratios, rounded up: Lumina-2
-# 0.613, Krea-2 0.591, FLUX.3 0.591, Wan UMT5 0.593, HunyuanImage-2.1 0.579 (its Qwen-Image file).
+# Per-family int8 ConvRot scales: default understates for large bf16 embedding tables; measured,
+# rounded up: Lumina-2 0.613, Krea-2 0.591, FLUX.3 0.591, Wan UMT5 0.593, HunyuanImage-2.1 0.579.
 _TE_INT8_CONVROT_BUDGET_SCALES = {
     "hunyuanimage-2.1": 0.60,
     "lumina-2": 0.62,
@@ -494,7 +493,6 @@ def explicit_int8_hosted_components(
             if component == "text_encoder_4":
                 from .diffusion_hidream import HIDREAM_LLAMA_REPO
                 standalone = {"text_encoder_4": HIDREAM_LLAMA_REPO}
-            # TE4 is matched against its own standalone repo, the rest against the selected base.
             component_base = standalone.get(component) or base or getattr(fam, "base_repo", "")
             with _cache_only_scope(local_files_only):
                 got = te_prequant_sources_for_base(
@@ -547,8 +545,7 @@ def explicit_int8_unavailable_reason(
     supplied: Iterable[str] = (),
     local_files_only: Optional[bool] = None,
 ) -> Optional[str]:
-    """Why an explicit int8 request cannot use ``fam``'s int8 ConvRot files, or None if it can;
-    names each unconfirmed file so an int8-only host (Apple Silicon) reports it; never raises."""
+    """Why int8 can't use fam's files (unconfirmed ones named), or None; never raises."""
     token = _TE_INT8_INCLUDE_PENDING.set(True)
     try:
         name = str(getattr(fam, "name", "") or "").strip().lower()
@@ -641,7 +638,6 @@ def te_prequant_sources_confirmed(
         except Exception:  # noqa: BLE001
             local_files_only = False
     if local_files_only or _hub_offline():
-        # A load that may not fetch can only use what is on disk.
         return False
     key = tuple(
         sorted((c, s.location, tuple(te_candidate_filenames(s))) for c, s in pending.items())
@@ -707,9 +703,8 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "qwen/qwen-image-2.1-turbo",
         }
     ),
-    # UMT5-XXL: Wan2.2 TI2V-5B and T2V-A14B ship byte-identical bf16 text_encoder/ shards, Wan2.1 T2V-1.3B and 14B
-    # byte-identical fp32 ones, and every Wan2.1 fp32 tensor rounds to the Wan2.2 bf16 one bit for bit (all 242,
-    # compared 2026-10-16), so a bf16 load of either gives bit-identical prompt embeddings.
+    # UMT5-XXL: Wan2.2 and Wan2.1 shards are byte-identical per pair; Wan2.1 fp32 rounds to Wan2.2
+    # bf16 bit for bit, so bf16 loads give bit-identical prompt embeddings.
     frozenset(
         {
             "wan-ai/wan2.2-ti2v-5b-diffusers",
@@ -1164,8 +1159,7 @@ def resolve_te_prequant_source(
             and fp8.location.lower() == repo_id.lower()
             and not _family_has_torchao_int8(fam)
         ):
-            # A family with a keep-bf16 int8 schedule (Qwen-Image and its releases, FLUX.2-dev) keeps the on-the-fly
-            # torchao int8 as the fallback for a missing file, as before the file existed; fp8 comes after that.
+            # Keep-bf16 families: on-the-fly torchao int8 for a missing file first, then fp8.
             fallback = te_candidate_filenames(fp8)
         return TePrequantSource(
             kind = "repo",
@@ -1337,8 +1331,7 @@ def te_variant_family_view(fam: Any, base: Optional[str]) -> Any:
     return fam
 
 
-# Weight files a dense encoder holds; other files (config.json, shard index, tokenizer) are kept
-# when a pre-cast checkpoint replaces them, since its loader meta-inits from the base config.
+# Config, shard index and tokenizer stay: the pre-cast loader meta-inits from the base config.
 _TE_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pth", ".pt", ".msgpack", ".h5")
 
 
@@ -2293,7 +2286,6 @@ def te_prequant_hub_files(
             _warn(logger, f"hub_files:{source.location}", exc)
             continue
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
-        # First candidate the repo holds and this install can open, in resolver order.
         from .diffusion_prequant import prefer_cached_pickle_twins
 
         ordered = prefer_cached_pickle_twins(

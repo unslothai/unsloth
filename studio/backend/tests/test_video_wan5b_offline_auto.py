@@ -200,7 +200,6 @@ def test_online_no_cache_auto_plans_bf16(monkeypatch):
 
 @pytest.mark.usefixtures("fake_runtime")
 def test_online_int8_cached_auto_still_plans_bf16(monkeypatch):
-    # A cached hosted int8 does not pull an ONLINE auto load off the bf16 rule.
     from core.inference import video as V
     from core.inference.video_families import detect_video_family
 

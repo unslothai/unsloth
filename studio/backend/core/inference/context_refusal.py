@@ -56,7 +56,6 @@ def clear() -> None:
 
 
 def latest_refusal() -> Optional[dict]:
-    """The most recent fit on this request that could not fit, if there was one."""
     slot = _slot()
     return slot["refusal"] if slot else None
 
@@ -93,9 +92,8 @@ def _blame_latest_turn(context_tokens: int):
         return None
     # Use the WINDOW (not prompt_target) and the turn without shared floor; llama-server admits on size.
     window = recorded_context or context_tokens
-    # Only on a counted turn, so the claim rests on a measured size; a turn that renders as nothing
-    # alone is counted by difference, so every Gemma tool result can earn this wording; role not
-    # defaulted to user, since describe_oversize gives an unnameable role generic advice.
+    # Counted turns only, since the claim needs a measured size; Gemma tool results qualify, counted
+    # by difference; role not defaulted to user, as unnameable roles get generic advice.
     role = str(refusal.get("latest_turn_role") or "")
     return role, not (window and latest_turn >= window)
 

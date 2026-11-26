@@ -647,14 +647,12 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             module._unsloth_video_peaks = peaks
         peaks[work] = max(extra, peaks.get(work, 0))
         key = getattr(module, "_unsloth_video_calibration_key", None)
-        # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of the keyed and persisted peaks
-        # a load keyed with CUDA graphs whose graphs no longer run (a poisoned wrapper after a failed capture runs
-        # eager without counting a new failure) records an eager peak a graph-capturing load would undershoot
+        # A failed capture absorbed an OOM: keep its peak out of keyed and persisted peaks; poisoned
+        # graphs make a keyed load record an eager peak that capturing loads undershoot.
         if (
             key is not None
             and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0)
-            # a vocoder that fell back to its stored dtype (out of memory, or short of room) ran a pass this key
-            # does not describe: its peak is not the float32 decode's
+            # Vocoder fell back to stored dtype (OOM, no room); not the float32 decode's peak.
             and getattr(module, "_unsloth_video_vocoder_fallbacks", None)
             in (None, _vocoder_fallbacks())
             and _keyed_graphs_live(pipe, key)

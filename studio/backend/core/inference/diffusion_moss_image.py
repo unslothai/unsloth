@@ -462,8 +462,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
         return _compute_dtype(self.video_embedder)
 
     def refine_text(self, encoder_hidden_states):
-        """The text refiner over [B, L, text_dim] at full length L (no padding): [B, L, dim]. Depends on neither the
-        latent nor the timestep, so it is step-invariant; the RoPE text positions depend only on L."""
+        """Unpadded [B, L, text_dim] -> [B, L, dim]; step-invariant as RoPE depends only on L."""
         length = encoder_hidden_states.shape[1]
         device = encoder_hidden_states.device
         _, text_tables = self.rope.tables(1, 1, length, device, self._activation_dtype())
@@ -685,8 +684,7 @@ def percent_to_sigma(percent: float, shift: float) -> float:
 
 
 def _offloaded(module: Any) -> bool:
-    """Accelerate / diffusers offload hooks move weights per call: the pre-refined text path calls a submodule outside
-    the forward, so an offloaded transformer keeps the reference per-step refine."""
+    """Offloaded: keep the per-step refine; pre-refined path calls a submodule outside forward."""
     if module is None:
         return True
     for sub in module.modules():
@@ -1120,8 +1118,7 @@ def _tokenizer_class(repo_id: str, common: dict[str, Any]) -> Any:
 
 
 def drop_vision_tower(text_encoder: Any) -> bool:
-    """Free Qwen3.5's vision tower (~0.4 B params): MOSS feeds the encoder text only, and the text forward never touches
-    it (images enter only through ``pixel_values``). True when it was dropped."""
+    """Frees Qwen3.5's vision tower (~0.4 B params) as MOSS feeds text only; True if dropped."""
     visual = getattr(text_encoder, "visual", None)
     if not isinstance(visual, nn.Module):
         return False

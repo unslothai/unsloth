@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Descendants of one process from /proc/<pid>/task/<tid>/children, so /api/system polls skip
-psutil's recursive children(), which reads every process on the host (~180 ms at ~10k processes)."""
+"""Descendants via /proc/<pid>/task/<tid>/children, not psutil's recursive children() scan."""
 
 import os
 import sys

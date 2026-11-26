@@ -84,8 +84,7 @@ def apply_patch(
 
 
 def revert_patch(target: Any, attr: str) -> bool:
-    """Restore ``target.attr`` from the original stashed by ``apply_patch``. Idempotent; returns
-    False (never raises) if nothing is stored or unsloth_zoo is unavailable."""
+    """Undo apply_patch; idempotent, False (never raises) if nothing stored or no unsloth_zoo."""
     restore_original = _helper("restore")
     if restore_original is None:
         return False

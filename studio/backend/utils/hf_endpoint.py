@@ -35,7 +35,6 @@ _FORBIDDEN_CHARS = frozenset(" \t\r\n\f\v;,'\"\\")
 
 
 def _split(candidate: str):
-    """``urlsplit`` that answers None instead of raising on a malformed host."""
     try:
         return urlsplit(candidate)
     except ValueError:

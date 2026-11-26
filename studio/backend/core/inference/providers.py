@@ -567,7 +567,6 @@ def provider_default_models(
 
 
 def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
-    """Return a user-configurable provider, excluding Studio-managed runtimes."""
     info = PROVIDER_REGISTRY.get(provider_type)
     return None if info is None or info.get("managed") else info
 
@@ -746,7 +745,6 @@ def _canonical_host(hostname: str) -> str:
 
 
 def _metadata_host(hostname: str) -> bool:
-    """True when ``hostname`` names a cloud metadata service."""
     # Strip the IPv6 scope id: it dials the same host but compares unequal.
     hostname = hostname.translate(_IDNA_DOTS).rstrip(".").split("%")[0]
     hostname = _canonical_host(hostname)
@@ -763,8 +761,7 @@ def _metadata_host(hostname: str) -> bool:
     return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
 
 
-# Resolve names to catch DNS aliases of metadata IPs. Short: sync validator in async handlers
-# blocks the event loop; a timeout counts as unknown (allowed on the default path).
+# Metadata IP DNS aliases; short timeout (sync blocks async); timeout allowed on default path.
 _DNS_TIMEOUT_SECONDS = 0.5
 _DNS_CACHE_TTL_SECONDS = 300.0
 _DNS_CACHE_MAX_ENTRIES = 512
@@ -936,7 +933,6 @@ def _is_public(ip) -> bool:
 
 
 def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str) -> None:
-    """Raise when ``hostname`` is, or resolves to, a non-public address."""
     try:
         addresses = [ipaddress.ip_address(hostname)]
     except ValueError:

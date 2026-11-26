@@ -52,7 +52,6 @@ def _truncate_middle(text: str, limit: int, tail: int) -> str:
 
 
 def truncate_exception(event_dict: dict) -> dict:
-    """Structlog processor: bound the rendered exception, its message and the event."""
     if _MAX_EXC_CHARS <= 0:
         return event_dict
     text = event_dict.get("exception")

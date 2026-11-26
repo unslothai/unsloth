@@ -235,7 +235,6 @@ def iter_sd_cpp_records(stream) -> Iterator[str]:
         records, pending = split_progress_records(pending)
         for rec in records:
             yield strip_ansi(rec)
-    # EOF: hand over any final line the child left unterminated.
     if pending:
         yield strip_ansi(pending)
 

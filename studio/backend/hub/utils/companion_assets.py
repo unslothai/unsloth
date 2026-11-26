@@ -60,8 +60,7 @@ def read_companion_links() -> dict[str, list[str]]:
     for checkpoint, bases in raw.items():
         if not isinstance(checkpoint, str) or not isinstance(bases, list):
             continue
-        # A link to a repo nothing loads from any more is dropped on read (and so from the file on the next write):
-        # it would otherwise pin a retired sd-cli repack for as long as the GGUF that once fetched it stays installed.
+        # Drop links to unused repos, else a retired sd-cli repack stays pinned by its GGUF.
         clean = [
             b.strip()
             for b in bases

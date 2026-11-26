@@ -40,7 +40,6 @@ def get_helper_precache_enabled() -> bool:
 
 
 def set_helper_precache_enabled(value: Any) -> bool:
-    """Persist whether Unsloth should pre-cache the Helper LLM at startup."""
     parsed = _coerce_bool(value)
     if parsed is None:
         raise ValueError("Helper LLM startup pre-cache must be true or false.")

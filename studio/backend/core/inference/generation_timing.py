@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Prefill/decode timing; each stamp waits for the device or prefill reads too fast; leaf module:
-torch and transformers only, no unsloth or peft imports"""
+"""Prefill/decode timing; stamps wait on the device; leaf module, torch and transformers only."""
 
 import time
 
@@ -55,14 +54,12 @@ class GenerationTimer:
 
     @property
     def prompt_ms(self):
-        """Prefill wall time, or None when generation never reached its first logits."""
         if self.started_at is None or self.prefill_ended_at is None:
             return None
         return max(0.0, (self.prefill_ended_at - self.started_at) * 1000.0)
 
     @property
     def predicted_ms(self):
-        """Decode wall time, or None when the prefill boundary or the end is unknown."""
         if self.prefill_ended_at is None or self.ended_at is None:
             return None
         return max(0.0, (self.ended_at - self.prefill_ended_at) * 1000.0)

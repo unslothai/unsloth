@@ -173,7 +173,6 @@ def install(
 
 
 def _target_device(pipe: Any, bound: inspect.BoundArguments) -> Any:
-    """Hit tensors go to explicit ``device``, else the pipeline's execution device, else CPU."""
     device = bound.arguments.get("device")
     if device is not None:
         return device

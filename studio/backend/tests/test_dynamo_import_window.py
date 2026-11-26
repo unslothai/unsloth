@@ -101,8 +101,7 @@ def test_the_warm_closes_the_window_before_it_starts_a_thread():
 
 
 def test_the_stage_list_and_its_purge_contract_are_untouched():
-    """The dynamo fix sits inside an existing _STAGES stage; purging torch on failure is never
-    right, so the stage list stays pinned."""
+    """Dynamo fix lives in an existing _STAGES stage; purging torch on failure is never right."""
     from utils import torch_warmup
     assert [name for name, _ in torch_warmup._STAGES] == [
         "hardware",

@@ -279,7 +279,6 @@ def is_hidden_model(*values: str | None) -> bool:
             continue
         low = v.lower()
         if _HF_REPO_ID_RE.match(v):
-            # A repo id ("owner/name"): match the hidden set exactly.
             if low in hidden_repo_ids:
                 return True
             continue

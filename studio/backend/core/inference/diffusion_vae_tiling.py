@@ -607,8 +607,7 @@ def stock_tiles(vae: Any) -> Optional[tuple[int, int]]:
 
 
 def stock_layout_ok(stock: tuple[int, int], height: int, width: int) -> bool:
-    """Whether every stock tile is >= 32 latents and every overlap >= 16. diffusers starts a tile every ``tile -
-    overlap`` latents until the canvas ends, so the last tile can be a sliver (8 latents on a 200-latent side)."""
+    """Whether stock tile >= 32 latents, overlap >= 16; diffusers' last tile can be a sliver."""
     tile, overlap = stock
     if tile < TILE_LATENTS or overlap < OVERLAP_LATENTS:
         return False

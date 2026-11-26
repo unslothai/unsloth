@@ -1012,7 +1012,6 @@ def test_the_shell_flag_is_trimmed_like_its_python_twin(value):
 
 @pytest.mark.parametrize("value", ["  ", "", "tru e", None])
 def test_trimming_does_not_widen_what_counts_as_a_request(value):
-    """The control."""
     assert _shell_request_flag(value) is False
 
 
@@ -1218,8 +1217,7 @@ def test_a_mask_that_exposes_no_device_leaves_cuda_alone(mask):
 
 
 def test_an_unset_mask_is_not_a_no_gpu_selection():
-    """Its control, and the reason ${VAR+x} rather than ${VAR:-}: an unset mask hides nothing, and
-    reading it like a set-but-empty one would keep CUDA on every host."""
+    """Unset mask hides nothing: use ${VAR+x}, not ${VAR:-}, or CUDA stays on every host."""
     assert _route_shell_masked(["gfx1100"]) is True
 
 
@@ -1430,8 +1428,7 @@ def test_a_declared_arch_decides_before_the_inventory():
 
 
 def test_a_declared_arch_that_is_routable_still_deposes_cuda():
-    """The control, and the #7301 host: the declaration exists to serve a runtime-less card, so a
-    routable one must still win even when the inventory disagrees with it."""
+    """Declared arch serves runtime-less cards; routable declaration beats inventory (#7301)."""
     assert _route_shell_masked(["gfx1010"], UNSLOTH_ROCM_GFX_ARCH = "gfx1100") is True
 
 
@@ -1655,7 +1652,6 @@ def test_a_repeated_rocr_ordinal_does_not_invent_a_device(stack, monkeypatch):
 
 
 def test_two_distinct_rocr_ordinals_still_expose_both_devices(stack, monkeypatch):
-    """The control."""
     assert (
         _viable_masked(
             stack,
@@ -2159,8 +2155,7 @@ def test_a_disqualified_family_is_not_put_back_by_the_target():
 
 
 def _unreadable_version_host(stack, monkeypatch, gfx: str) -> None:
-    """A mixed NVIDIA + AMD host whose ROCm version cannot be read, carrying healthy CUDA torch:
-    the build the stand-down leaves in place when nothing replaces it."""
+    """NVIDIA+AMD host, unreadable ROCm version: healthy CUDA torch stays unless replaced."""
     _mixed_host(stack, monkeypatch, archs = [gfx], kfd = [gfx], rocm = None)
 
 

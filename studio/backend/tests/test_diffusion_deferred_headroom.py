@@ -108,8 +108,7 @@ def engage(monkeypatch):
 
 
 def test_profile_declined_when_the_render_would_not_fit(card, engage):
-    # SDXL 2048^2 at 8 GiB on an L4: eager peak 6197 MiB, 544 MiB free beside a 7234 MiB cache
-    # (the tiny U-Net's fused copies are KiB: the peak sits 300 MiB inside capacity, short of the margin)
+    # SDXL 2048^2 at 8 GiB on an L4: peak sits 300 MiB inside capacity, short of the margin.
     card.update(peak = 7778 - 300, free = 544, reserved = 7234)
     state, engaged = engage()
     assert not engaged

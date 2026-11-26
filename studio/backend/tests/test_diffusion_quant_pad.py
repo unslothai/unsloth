@@ -121,8 +121,7 @@ def test_no_padding_at_or_above_pad_to():
 
 
 def test_zero_rows_return_the_projected_width():
-    """torchao hands a zero-row activation back UNPROJECTED, so a downstream width-sensitive add
-    crashes. The wrapper has no row 0 to replicate either, so it synthesises the empty result."""
+    """torchao returns zero-row output unprojected (adds crash); the wrapper synthesises it."""
     inner = _RecordingLinear(8, 6)
     wrapped = PadToMinM(inner)
     out = wrapped(torch.randn(0, 8))
@@ -216,8 +215,7 @@ def test_activation_granularity_probe_reads_both_torchao_layouts():
 
 
 def test_wrap_raises_rather_than_skipping_an_unprovable_linear():
-    """Silence is the worst outcome: a half-padded transformer compiles on the modules that were
-    wrapped and crashes inside ``_int_mm`` on the ones that were not."""
+    """Skipping an unprovable linear leaves a half-padded model that crashes inside _int_mm."""
     model = _Tiny()
     model.context_embedder = _fake_quantized_linear(per_row = False)
     with pytest.raises(RuntimeError, match = "provably per row"):
@@ -230,8 +228,7 @@ def test_wrap_raises_rather_than_skipping_an_unprovable_linear():
 
 
 def test_wrap_skips_dense_and_already_wrapped_linears():
-    """Dense F.linear has no row floor and a PadToMinM is not an nn.Linear, so one gate skips both
-    and a second pass cannot double the padding."""
+    """Skip dense F.linear (no row floor) and PadToMinM: padding must never apply twice."""
     model = _Tiny()
     assert wrap_small_m_linears(model, ["context_embedder"]) == ()
     assert isinstance(model.context_embedder, nn.Linear)

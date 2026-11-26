@@ -1693,8 +1693,7 @@ _BODY_PROTECTED_PREFIXES = (
     # llama-server passthrough POSTs; keyless inference scope admits them.
     "/tokenize",
     "/detokenize",
-    # Everything else, root routes included (/models/load); FastAPI reads the body before auth, so
-    # unlisted prefixes let unauthenticated clients stream unbounded bodies.
+    # Bodies read before auth: unlisted prefixes let unauthenticated clients stream unbounded.
     "/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -3839,8 +3838,7 @@ def setup_frontend(
         # Unknown /api and /v1 paths raise a real 404 so the api_errors handlers pick the right envelope.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
-        # MCP clients probe these before connecting; the app shell with a 200 reads as an OAuth server, and
-        # they would start a login Unsloth Studio does not offer instead of sending the API key.
+        # MCP clients read a 200 app shell as OAuth and log in instead of sending the API key.
         if full_path.startswith(".well-known/oauth-"):
             raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):

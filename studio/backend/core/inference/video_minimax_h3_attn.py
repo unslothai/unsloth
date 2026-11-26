@@ -125,10 +125,9 @@ def h3_int8_load_gate(
     adapters: bool,
     capability: Optional[tuple],
 ) -> H3Int8Gate:
-    """Gate for mode off/auto/force (per-load On/Off over UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL);
-    force (env 1 or explicit INT8 backend) runs INT8 every step, no arch check; Auto only on
-    evidenced config, off H3_INT8_AUTO_OFF_ARCHS; h3_int8_exact_steps() installed only if Auto
-    engages"""
+    """Gate for off/auto/force (per-load On/Off over UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL); force
+    (env 1 or explicit INT8 backend) runs INT8 every step, no arch check; auto only on evidenced
+    config, off on H3_INT8_AUTO_OFF_ARCHS; h3_int8_exact_steps() only if auto engages."""
     forced = mode == "force" or (mode != "off" and _i8.requested(attention_backend))
     # Auto only on the evidenced config: Studio attention, speed on, hosted INT8 ConvRot, diffusers, no adapters
     auto_config = (
@@ -187,8 +186,7 @@ def h3_attention_backend(
     requested: Optional[str] = None,
     target: Any = None,
 ) -> Optional[str]:
-    """Moves only the automatic cuDNN pick (``requested`` auto / unset), and only to flash on a measured-faster arch
-    whose torch build actually has flash SDPA; anything else unchanged (keep ``selected`` so ``_AutoCudnn`` survives)."""
+    """Auto cuDNN goes to flash on measured-faster archs with flash SDPA; _AutoCudnn kept."""
     if selected != _CUDNN or not _enabled(ATTN_ARCH_ENV):
         return selected
     try:
@@ -571,8 +569,7 @@ def int8_attention_exact_start_impl(q: Any, k: Any, v: Any, flag: Any, kernel: i
 
 
 def _exact_start_taken(state: dict) -> Optional[int]:
-    """Steps the render has taken, from its scheduler's step index (None: no index, so INT8); the
-    render began at the first index seen, less one, so N exact steps run wherever it starts."""
+    """Steps taken (None if no index, so INT8); N exact steps run wherever the render starts."""
     pipe = state["pipe"]()
     scheduler = getattr(pipe, "scheduler", None) if pipe is not None else None
     if scheduler is None or not hasattr(scheduler, "_step_index"):
@@ -740,7 +737,6 @@ def finish_h3_int8_auto(
 
 
 def int8_exact_start_count(transformer: Any) -> int:
-    """Engagement census: strided processors whose INT8 calls go through the exact-start op."""
     return sum(
         bool(getattr(getattr(m, "processor", None), "_unsloth_int8_exact", False))
         for m in _h3_attention_modules(transformer)
@@ -748,7 +744,6 @@ def int8_exact_start_count(transformer: Any) -> int:
 
 
 def strided_sage_count(transformer: Any) -> int:
-    """Engagement census: strided processors that run a Sage backend themselves."""
     count = 0
     for m in _h3_attention_modules(transformer):
         proc = getattr(m, "processor", None)

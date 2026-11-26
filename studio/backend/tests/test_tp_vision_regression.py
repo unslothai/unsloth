@@ -122,7 +122,6 @@ _ALLOWED_TP_DROP_GUARDS = {
     "_tp_weight_budget_mib <= _tp_required_mib",
     # Manual mode, Auto layers: --fit is incompatible with a tensor split.
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers < 0)",
-    # Manual mode, explicit layers: a tensor split still needs >= 2 GPUs in use.
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers >= 0) and (self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2)",
     # Manual mode, zero layers: tensor mode under the CPU-only mask aborts the server.
     "gpu_memory_mode == 'manual' and gpu_layers == 0",
@@ -237,7 +236,6 @@ def test_recorded_tensor_abort_is_per_model():
         assert LlamaCppBackend._tensor_split_aborts(b, "model-a") is False
         LlamaCppBackend._record_tensor_split_abort(b, "model-a")
         assert LlamaCppBackend._tensor_split_aborts(b, "model-a") is True
-        # a different model on the same binary is unaffected
         assert LlamaCppBackend._tensor_split_aborts(b, "model-b") is False
     finally:
         LlamaCppBackend._tensor_split_abort_keys.discard(
@@ -369,7 +367,6 @@ def test_compute_buffer_downgrade_preserves_multi_gpu_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     gate = src.find("plan_tp and len(tp_gpus) < 2")
     assert gate != -1
-    # Bound to exactly this block: from its gate to the next (budget) downgrade.
     nxt = src.find("_tp_weight_budget_mib <= _tp_required_mib", gate)
     assert nxt != -1
     block = src[gate:nxt]
@@ -523,7 +520,6 @@ def test_should_record_tensor_split_abort_decision():
     """Only marker AND (signal crash OR Windows abort) records; an or/and typo must fail here."""
     f = LlamaCppBackend._should_record_tensor_split_abort
     marker = "ggml-backend-meta.cpp:541: GGML_ASSERT(x.axis != GGML_BACKEND_SPLIT_AXIS_0) failed"
-    # marker + a hard crash records, across every platform's abort encoding
     assert f(-6, marker) is True  # POSIX SIGABRT
     assert f(-11, marker) is True  # POSIX SIGSEGV
     assert f(3, marker) is True  # Windows CRT abort() exit (not a signal)

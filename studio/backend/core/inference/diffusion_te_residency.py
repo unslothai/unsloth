@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text-encoder residency on a discrete CUDA card, per render: encoders stay (whole or in resident
-groups) only while priced peak plus slack fits free memory, else stream from host before denoise;
-outputs bit-identical; UNSLOTH_DIFFUSION_TE_RESIDENCY=0 keeps load placement."""
+"""Per-render residency on a discrete CUDA card: encoders stream from host when priced peak plus
+slack won't fit; outputs bit-identical; UNSLOTH_DIFFUSION_TE_RESIDENCY=0 keeps load placement."""
 
 from __future__ import annotations
 
@@ -354,7 +353,6 @@ class EncoderResidency:
         return freed
 
     def restore(self, reason: str) -> bool:
-        """Put the encoders back on the card; True when they are resident afterwards."""
         with self._lock:
             if not self.streamed:
                 return True
@@ -463,9 +461,8 @@ class EncoderResidency:
         at_least_mib: int = 0,
         need_mib: Optional[int] = None,
     ) -> int:
-        """Another load wants the card: stream the encoders now (they come back at a later encode if they fit). Not
-        when they hold less than ``at_least_mib``: the caller would have to free the whole model anyway. Not when
-        ``need_mib`` (the other load's size) and the slack already fit in live free memory: nothing is short."""
+        """Stream the encoders now for another load; skipped when under at_least_mib (caller would
+        free the whole model) or if need_mib plus slack already fit live free memory."""
         with self._lock:
             resident = self.resident_mib()
             if resident <= 0 or resident < int(at_least_mib or 0):

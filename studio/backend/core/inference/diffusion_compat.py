@@ -119,8 +119,7 @@ def _snapshot_revision(path: Optional[str]) -> Optional[str]:
 
 
 def _hub_revision(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> Optional[str]:
-    """The commit the Hub currently serves this file at, or None when it cannot be asked; one HEAD
-    request with no body, and an offline or erroring host leaves the verdict alone."""
+    """Hub commit for this file, or None when unanswerable; a failing host keeps the verdict."""
     from core.inference import hub_reachability
 
     if hub_reachability.hub_unreachable():
@@ -255,7 +254,6 @@ def flux2_inner_dim_for_pick(
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     token = normalize_token(hf_token)
-    # File identity is part of the memo key.
     local = _local_gguf_path(repo_id, gguf_filename)
     key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
     # Memo before the offline bail, so begin_load reuses a plan-time answer.
@@ -265,9 +263,8 @@ def flux2_inner_dim_for_pick(
     if local is None and not allow_network:
         return None
     if local is not None:
-        # Same prefix parse as the remote path; the loader backstop memory-maps the whole multi-GB
-        # checkpoint, so it runs only when the prefix says nothing, and a header past the cap is
-        # still answered.
+        # Same prefix parse as the remote path; loader backstop memory-maps the multi-GB checkpoint,
+        # so it runs only when prefix says nothing; a header past the cap is still answered.
         inner_dim = gguf_flux2_inner_dim_from_header(_read_local_header(local))
         if inner_dim is None:
             inner_dim = gguf_flux2_inner_dim(local)

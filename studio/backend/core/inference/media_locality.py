@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Proves a media model is downloaded via the download planner (tri-state); refuses unless complete;
-auto-switch never downloads; a planner failure is not proof."""
+"""Proves a media model is complete; auto-switch never downloads; planner failure is not proof."""
 
 from __future__ import annotations
 
@@ -468,8 +467,7 @@ def missing_download_bytes(
         repo = flux3_seeded_cache_repo(target.model_path) if owner == DIFFUSION else None
         if repo is None:
             return UNSIZED_MISSING
-        # A FLUX.3 pre-quantized seed snapshot has no dense transformer shards, so ask the planner
-        # about the repo the switch loads from cache, not dense weights the load never opens.
+        # FLUX.3 seed snapshots have no dense shards: plan the cached repo, not dense weights.
         family_override = seeded_family_override(target.model_path, repo)
         target = replace(target, model_path = repo)
         local_pipeline = False

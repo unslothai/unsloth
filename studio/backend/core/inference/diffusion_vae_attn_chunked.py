@@ -146,8 +146,7 @@ def vae_has_untrusted_head(vae: Any) -> bool:
 
 
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
-    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes.
-    A Windows ROCm head wider than 256 counts as no: the kernels that take it there compute it wrong."""
+    """True on CUDA or MPS prefill; Windows ROCm heads over 256 no; other devices/errors yes."""
     import torch
 
     device_type = getattr(getattr(q, "device", None), "type", None)

@@ -56,8 +56,7 @@ class UntiledVae:
 
 @dataclass(frozen = True)
 class FamilyProfile:
-    # int8 name tokens left dense on top of the generic M = 1 tokens (``_int_mm`` needs M > 16, or a measured quality
-    # lever). Baked into published int8 artifacts.
+    # Int8 tokens dense beyond generic M=1 (_int_mm needs M > 16, or quality lever); baked in.
     int8_exclude_tokens: tuple[str, ...] = ()
     # Subset of ``int8_exclude_tokens`` a STREAMED build quantises anyway (``int8_text_stream_scope``).
     int8_runtime_quant_tokens: tuple[str, ...] = ()
@@ -143,14 +142,12 @@ def profile_table(attr: str, *, quant: bool = False) -> dict[str, Any]:
 
 
 def compile_from_render_one_reason(family: Any) -> Optional[str]:
-    """``FamilyProfile.compile_from_render_one`` of ``family`` (a registry row or a stand-in with its ``name``)."""
     if family is None:
         return None
     return profile_for(family).compile_from_render_one
 
 
 def profile_for(family: Any) -> FamilyProfile:
-    """Profile from family.profile, else the registry profile for its exact name, else empty."""
     profile = getattr(family, "profile", None)
     if isinstance(profile, FamilyProfile):
         return profile

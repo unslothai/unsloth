@@ -30,14 +30,12 @@ def step_cache_runner_reason(base: Any, runner: Any) -> Optional[str]:
 
 
 def auto_cache_steps(base: Any, runner: Any, steps: int) -> tuple[int, Optional[str]]:
-    """Returns (steps, reason) for AUTO cache toggle: 0 if runner can't host it, else steps."""
     reason = step_cache_runner_reason(base, runner)
     return (0, reason) if reason else (int(steps), None)
 
 
 def shares_denoiser(base: Any, runner: Any) -> bool:
-    """Whether ``runner`` drives a denoiser module of ``base`` (from_pipe workflows, class swaps and multi-stage
-    runners built from ``base``'s components do); the same denoiser resolution diffusion_multistage holds."""
+    """Runner drives base's denoiser (from_pipe, class swap); resolved as diffusion_multistage."""
     if runner is None or runner is base:
         return True
     from ..diffusion_multistage import _denoisers  # noqa: PLC0415

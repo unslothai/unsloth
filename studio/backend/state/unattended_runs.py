@@ -144,7 +144,6 @@ async def _run() -> None:
 
 
 def start() -> None:
-    """Start the watchdog on the running loop. Idempotent within one lifespan."""
     global _task
     if _task is not None and not _task.done():
         return

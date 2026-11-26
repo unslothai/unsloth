@@ -2,9 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Rank 0 spawns 1..N-1 as subprocesses (daemonic processes cannot have children); ranks share the
-seeded global micro-batch (N GPUs at batch b = one at N*b) and all-reduce LoRA grads before
-clipping; only rank 0 writes outputs; ranks 1..N-1 wait for its cache, weights, then join the
-collective."""
+seeded global micro-batch (N GPUs at batch b = one at N*b), all-reduce LoRA grads before
+clipping; only rank 0 writes; others wait for its cache and weights, then join the collective."""
 
 from __future__ import annotations
 
@@ -97,8 +96,7 @@ class DistContext:
         params,
         loss = None,
     ):
-        """Average every trainable gradient (None counts as zero) and the step loss in one flat fp32 all-reduce;
-        returns the averaged loss (float), or None when ``loss`` was None."""
+        """Average grads (None as zero) and loss in one fp32 all-reduce; returns loss or None."""
         import torch
         import torch.distributed as dist
 

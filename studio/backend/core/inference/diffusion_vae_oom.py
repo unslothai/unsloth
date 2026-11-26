@@ -248,8 +248,7 @@ def _to_host(module: Any) -> None:
 
 
 def _placement(module: Any, device: Any) -> str:
-    """How a component sits on the card: "plain" (whole there, no hooks), "torchao_resident" (whole there, torchao
-    weights, no hooks), "groups" (resident offload groups), or "managed" (an offload mechanism places it)."""
+    """Plain/torchao_resident (whole, no hooks), groups (resident offload), or managed (hooks)."""
     if getattr(module, "_unsloth_resident_room", None):
         return "groups"
     if _hooked(module):
@@ -328,7 +327,6 @@ class DeferredReturn:
         self.pending.append((label, undo))
 
     def attempt(self) -> bool:
-        """Retry every pending undo in order; True once none is left."""
         while self.pending:
             label, undo = self.pending[0]
             try:
@@ -336,8 +334,7 @@ class DeferredReturn:
             except Exception as exc:  # noqa: BLE001
                 if not self.required:
                     return False
-                # its weights are on the host and nothing would move them: running it would fail on the wrong
-                # device, so say why (an out-of-memory keeps "out of memory" in the text for the OOM handlers)
+                # Host-held weights fail on wrong device; keep 'out of memory' for OOM handlers
                 module = self.module_ref()
                 raise RuntimeError(
                     f"{type(module).__name__} ({label.split(':', 1)[-1]}) is still on the host after a VAE decode "
@@ -706,7 +703,6 @@ def _remove_vae_offload(vae: Any, device: Any) -> None:
 
 
 def _groups_hooked(pipe: Any) -> bool:
-    """Every component placed by resident offload groups still carries its group offloading hooks."""
     comps = [
         m
         for m in (getattr(pipe, "components", {}) or {}).values()
@@ -726,7 +722,6 @@ def _vae_hooked(vae: Any) -> bool:
 
 
 def _vae_streams(vae: Any) -> bool:
-    """Checked, not assumed: VAE hooks on, every weight on the host; it decodes streamed."""
     return _vae_hooked(vae) and _whole_on_host(vae)
 
 
@@ -741,8 +736,7 @@ def _park_vae(vae: Any, device: Any) -> None:
 
 
 def _undo_vae_offload(vae: Any, device: Any) -> None:
-    """Hooks off and weights back on the card; if that fails, the VAE is parked streamed (``_park_vae``) and the
-    error raised, so the caller can retry later."""
+    """Hooks off, weights on card; on failure the VAE is parked streamed and the error raised."""
     try:
         _remove_vae_offload(vae, device)
     except Exception:
@@ -799,10 +793,9 @@ def _ladder_steps(
     can_tile: bool,
     eager_rung: bool = False,
 ) -> list:
-    """The ladder's rungs, the one list both the ``_decode`` retry and the outer decode scope climb, in order:
-    (name, tiled, offload_vae, eager). "freed": the rest of the pipeline off the card, the same decode again;
-    "eager" (scope only, a compiled guard below): every compiled guard on its eager path, where the ``_decode``
-    ladder runs too; "tiled": stock tile sizes; "offload": the VAE's weights streamed from the host."""
+    """Ladder rungs, in order, for the _decode retry and the outer scope: freed (rest of pipeline
+    off the card, decode again); eager (scope only, a compiled guard below: eager path, where
+    _decode ladder runs); tiled (stock tile sizes); offload (VAE weights streamed from host)."""
     steps: list = [("freed", tiled_now, False, False)]
     if eager_rung:
         steps.append(("eager", tiled_now, False, True))
@@ -878,8 +871,7 @@ def install(
     logger: Any = None,
     pipe: Any = None,
 ) -> bool:
-    """Wraps vae._decode with the offload-first OOM ladder, public decode with the recovery scope;
-    idempotent. pipe (weak reference) lets step (a) move its other components off the card."""
+    """OOM ladder on vae._decode, scope on decode; idempotent; pipe lets step (a) free others."""
     if vae is None or oom_retry_disabled():
         return False
     if pipe is not None:
@@ -931,8 +923,7 @@ def install(
                 depth[0] -= 1
                 if owns:
                     _close_scope(vae, holder, z)
-                    # reached without the scope: a later rewrap (a compile fallback restoring its eager decode, a
-                    # speed layer run after load) dropped or covered it; put it back on top for the next decode
+                    # A later rewrap drops the scope; put it back on top for the next decode.
                     ensure_outermost(vae, logger)
 
         def _retrying(z: Any, args: tuple, kwargs: dict, holder: dict) -> Any:
@@ -1038,7 +1029,6 @@ _BELOW_SCOPE_MARKERS = ("_unsloth_compiled_decode", "_unsloth_untiled_decode", "
 
 
 def _scope_intact(vae: Any) -> bool:
-    """Scope layer active and reachable from public decode; no below-scope wrapper above it."""
     layer = vae.__dict__.get(_RECORD_ATTR, {}).get("scope")
     if layer is None or not layer.active or layer.owner is not vae:
         return False
@@ -1169,9 +1159,8 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
 
 
 def uninstall(vae: Any) -> None:
-    """Removes everything install and its retries added: the _decode layer, the decode scope or
-    compiled guard (cut out when outermost, else a pass-through), and every deferred return,
-    settled first; one the full card cannot take stays as its module's only way back."""
+    """Removes what install added (_decode layer, decode scope or compiled guard, deferred returns,
+    settled first); one the full card cannot take stays as its module's only way back."""
     record = vae.__dict__.get(_RECORD_ATTR, {})
     decode_layers.unwrap(record.pop("scope", None))
     for ref in record.pop("deferred", []):

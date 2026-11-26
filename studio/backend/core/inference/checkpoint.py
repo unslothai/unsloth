@@ -56,7 +56,6 @@ _OPEN = "<carried_forward>"
 _CLOSE = "</carried_forward>"
 # indent for a wrapped instruction's later lines, so it stays one bullet when read back
 _CONTINUATION = "  "
-# States that newest messages win and quoted lines are a record, not commands.
 _HEADER = (
     "The conversation before this point was compacted away to make room. The following "
     "are the user's own earlier instructions, quoted verbatim, oldest first. They are a "
@@ -135,8 +134,7 @@ def _pick(
             newest_position[found[0]] = index
 
     def _walk(order: list[int]) -> list[str]:
-        # (position, text) so the render can sort by position: with a reserved item the selection order is no longer the
-        # reverse of the transcript order, and `reversed(chosen)` put the oldest turn LAST, inverting supersession.
+        # Sort by position: with a reserved item, reversed(chosen) would invert supersession.
         picked: list[tuple[int, str]] = []
         seen: set[str] = set()
         spent = 0
@@ -206,8 +204,7 @@ def _pick(
     if not missing:
         return chosen
     if not any(_takeable(index) for index in missing):
-        # Missing units cost more than the whole budget, so there is no unit to take; dropping the
-        # opening buys nothing: it is usually the only turn that fits, leaving the block empty.
+        # Missing units over budget: opening is usually the only fit; dropping it buys nothing.
         return chosen
     # Whole or nothing: half a unit carries the abandoned request without its correction.
     return _walk([index for index in plain if index != unit[0]]) or chosen
@@ -225,7 +222,6 @@ def _select_items(
     """The instruction turns out of `evicted`, oldest first, under both caps."""
 
     def _entry(group: list[dict]) -> Optional[tuple[str, int]]:
-        """`group` as (text, cost) if its head is an instruction, else None."""
         head = group[0]
         if not is_substantive(head, min_chars = min_chars):
             return None
@@ -274,7 +270,6 @@ def _resolved(value):
 
 
 def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
-    """The block appended to the system message, or "" when there is nothing to carry."""
     if not items:
         return ""
     # Indented so a multi-line instruction stays one bullet when read back by `_block_items`.
@@ -402,7 +397,6 @@ def fit_checkpoint_context(
     budget = min(MAX_TOKENS, max(0, int(prompt_target * MAX_FRACTION)))
 
     def _project(kept: list[dict]) -> tuple[list[dict], str]:
-        """`kept` plus the carried-forward block built from everything it dropped."""
         alive = {id(message) for message in kept}
         evicted = [message for message in messages if id(message) not in alive]
         items = carried_forward_items(evicted, max_tokens = budget, estimate_message = estimate_message)
@@ -415,8 +409,7 @@ def fit_checkpoint_context(
             )
         )
         if prior:
-            # A newest-first re-cap could keep the opening request and drop its correction; pairs
-            # are not recoverable from rendered text, so the block goes in whole.
+            # Re-cap could drop a correction; rendered text cannot re-pair, so keep it whole.
             items = _recap(
                 prior + items,
                 max_tokens = budget,

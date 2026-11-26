@@ -59,9 +59,8 @@ _forward_patched = False
 
 
 def _q8_0_blocks_dequant_cast(raw: Any, dtype: Any) -> Any:
-    """Q8_0 bytes (n_blocks*34) become (n_blocks, 32) in dtype; Inductor fuses the fp16 product,
-    rounding once to dtype (no fp16 overflow to inf); int16 bitcast forces fp16 store rounding; &
-    -1 stops folding; eager no-op."""
+    """Q8_0 bytes (n_blocks*34) to (n_blocks, 32) in dtype; Inductor fuses fp16 product (rounds
+    once, no overflow); int16 bitcast forces store rounding; & -1 stops folding; eager no-op."""
     import torch  # noqa: PLC0415
 
     blocks = raw.reshape(-1, _Q8_0_TYPE_SIZE)

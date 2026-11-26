@@ -23,7 +23,6 @@ from core.inference.context_window import (
 
 @pytest.fixture(autouse = True)
 def _unknown_window(monkeypatch):
-    """Default to "no model loaded", and to "the caller did not price the thread"."""
     monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: None)
     ctx_token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
     room_token = tools._REQUEST_RESULT_BUDGET.set(None)
@@ -1744,8 +1743,7 @@ class TestSpillingDoesNotCopyTheResultAgain:
         assert spilled.endswith(f"{whole}.txt"), spilled
 
     def test_a_chunk_boundary_does_not_change_the_bytes(self, tmp_path, monkeypatch):
-        """UTF-8 encodes a code point at a time, so slicing the string cannot split one.
-        Forced small, so every multi-byte character in this text straddles a boundary."""
+        """3-char chunks straddle each multi-byte character; slicing never splits code points."""
         monkeypatch.setattr(tools, "_SPILL_HASH_CHUNK_CHARS", 3)
         text = "aé漢🙂" * 2_000
 
@@ -1777,8 +1775,7 @@ class TestAToolResultIsPricedOnceOnTheNativePath:
         )["result_budget_tokens"]
 
     def test_a_wide_result_costs_what_the_same_text_costs_anywhere(self):
-        """CJK is already a token a character in the estimate. Charging a result for being
-        a result on top of that prices it at two, which is not a rate any tokenizer has."""
+        """CJK is one token per character; a tool result must not add a result charge on top."""
         text = "文字" * 700
 
         as_result = self._budget({"role": "tool", "content": text})

@@ -57,11 +57,9 @@ AUTO_DITS = frozenset(
         "ZImageTransformer2DModel",
     }
 )
-# AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
-# INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
+# Quantized-only under Auto; measured vs INT8-ConvRot, so a bf16 load keeps its attention.
 AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
-# Unset switch leaves these alone in two-expert pipelines (a transformer_2): with the kernel, Wan
-# 2.2 A14B drifts into a different clip; Wan 2.2 5B keeps its race.
+# Auto skips two-expert pipelines: Wan 2.2 A14B drifts to another clip; 5B keeps its race.
 AUTO_SINGLE_EXPERT_ONLY = frozenset({"WanTransformer3DModel"})
 
 
@@ -131,8 +129,7 @@ def native_block_modules(dit: Any) -> set:
 LONG_RACE_TOKENS = (16384, 8192)
 # the card race wins at 4096 tokens but not 1024: one more point decides the floor between them
 MID_RACE_TOKENS = 2048
-# no route below this many query or key tokens, forced or not: short calls are dominated by quantiser launches
-# and lose to every incumbent measured (126 tokens: 6x slower)
+# No route below this many query or key tokens, forced or not: short calls are quantiser-bound.
 MIN_TOKENS = 1024
 # eager decisions cached per (route, call signature)
 _DECISION_CACHE_MAX = 512
@@ -682,8 +679,7 @@ def mid_verdict(
 
 
 def _secondary_cards(primary: int, dits: Any = ()) -> tuple:
-    """Other CUDA cards of this load's multi-GPU selection (layer split or CFG replica puts DiT
-    blocks there); outside a load (deferred speed profile, 3rd image), the cards dits run on."""
+    """Other CUDA cards of this load (layer split or CFG replica); outside one, where dits run."""
     try:
         from .diffusion_multigpu import current_selection
         selection = current_selection()

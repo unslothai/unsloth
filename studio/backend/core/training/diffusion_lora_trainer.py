@@ -456,8 +456,7 @@ def run_diffusion_lora_training(
         for m in (unet, vae, *text_encoders):
             m.requires_grad_(False)
         vae.to(device, dtype = torch.float32)
-        # ROCm: the VAE's single-head attention (head dim 512) takes the routed exact path inference uses; Windows
-        # ROCm's fused kernels return garbage there, which would encode every training latent wrong.
+        # Windows ROCm fused kernels garble VAE attention at head dim 512; use the exact path.
         from core.inference.diffusion_vae_attn_chunked import install as _route_vae_attention
 
         _route_vae_attention(vae)
@@ -598,8 +597,7 @@ def run_diffusion_lora_training(
         # Env override and over-budget fallback disable the cache; the paths draw crops from different RNGs.
         identity = with_cache_mode(identity, latent_cache is not None)
 
-        # Each image once per cycle so short runs see all; bucketed batches draw from one bucket to
-        # stack.
+        # Each image once a cycle (short runs see all); bucketed batches stack from one bucket.
         index_sampler = (
             PermutationBatchSampler(len(pairs), rng)
             if canvases is None
@@ -665,8 +663,7 @@ def run_diffusion_lora_training(
                 sampler = index_sampler,
                 rng_streams = rng_streams,
                 progress = {"running_loss": running_loss, "grad_scaler": scaler.state_dict()},
-                # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them
-                # before this run produced anything, so cancelling a retrain destroyed the thing being retrained.
+                # Keep discard_existing False: a periodic save would delete the source bundles.
                 discard_existing = False,
                 # A branched resume must not prune the higher-numbered checkpoints it did not write.
                 preexisting = preexisting_checkpoints,
@@ -968,9 +965,8 @@ def run_diffusion_lora_training(
                 # A lower-step partial would be outranked by the earlier run's leftovers.
                 discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
         else:
-            # save_steps writes bundles as the run goes, so without this a discard leaves up to
-            # save_total_limit copies of the optimizer state in a directory the user got no artifact from:
-            # invisible to every scanner, unresumable, with no delete path in the UI.
+            # save_steps writes bundles mid-run; a discard must clear them or up to save_total_limit
+            # optimizer-state copies remain, invisible, unresumable, with no UI delete path.
             clear_own_checkpoints(out_dir, preexisting_checkpoints)
             discard_samples(sample_owner)
             try:
@@ -1006,8 +1002,7 @@ def _make_lora_optimizer(
 
 
 def _drain_stop_queue(stop_queue: Any, event_queue: Any) -> Any:
-    """Drain the queue, returning the last stop message (True or a dict with save=False) else False;
-    a vram lend/return message (idle GPU cache) is served between steps, never a stop."""
+    """Last stop message (True or save=False dict) or False; vram lend/return msgs never stop."""
     got: Any = None
     saw = False
     try:

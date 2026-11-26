@@ -62,8 +62,7 @@ def test_a_reopenable_http_partial_can_be_resumed(cache):
 
 
 def test_a_nonce_partial_cannot_be_resumed_by_any_writer(cache):
-    """The bug: hub <= 1.17 is installed and the marker says HTTP, so a version-only check
-    said Resume. This file was written by a 1.18+ client and will be purged, not continued."""
+    """Version-only check resumed HTTP partials on hub<=1.17; 1.18+ nonce partial is purged."""
     _record("http", cache)
     _partial(cache, NONCE_PARTIAL)
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False

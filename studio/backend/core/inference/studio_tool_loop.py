@@ -499,7 +499,6 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
 
     for i, ch in enumerate(text):
         if in_string:
-            # A backslash escapes one character, so a run of them toggles.
             if escaped:
                 escaped = False
             elif ch == "\\":
@@ -949,8 +948,7 @@ class _Turn:
                 current["extra_content"] = {**current.get("extra_content", {}), **extra}
             function = raw_call.get("function")
             if isinstance(function, dict):
-                # llama-server resends the whole growing name, OpenAI streams fragments: a fragment starting
-                # with the current name replaces it, anything else appends.
+                # llama-server resends names; OpenAI fragments: prefix replaces, else appends.
                 fragment = function.get("name")
                 name_before = current["function"]["name"]
                 # Never rename a closed object that has a name: one tool's arguments would land under another's name.
@@ -991,7 +989,6 @@ class _Turn:
         extra_before: dict[str, Any] | None,
         incoming_extra: dict[str, Any] | None,
     ) -> None:
-        """Give every call after the first in one slot a call of its own."""
         complete, tail = self._scan(key, current["function"]["arguments"])
         segments = complete + ([tail] if tail else [])
         if len(segments) < 2:
@@ -1117,7 +1114,6 @@ class _Turn:
 
 
 def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str) -> str:
-    """Re-emit a chunk with its content replaced by what the healer released."""
     new_delta = {key: value for key, value in choice.get("delta", {}).items() if key != "content"}
     if text:
         new_delta["content"] = text
@@ -1813,8 +1809,7 @@ async def _stream_with_studio_tools(
                     elif kind == "tool_call":
                         turn.healed.append(value)
 
-            # Arm even without held_final: a provider closing on [DONE] alone would otherwise end with no
-            # finish_reason, which openai-node rejects. Truncated turns keep their reason.
+            # Arm without held_final: [DONE]-only lacks finish_reason; openai-node rejects it.
             if (
                 turn.healed
                 and turn.finish_reason not in ("length", "content_filter")
@@ -1845,8 +1840,7 @@ async def _stream_with_studio_tools(
             if context > 0:
                 usage_totals["context_tokens"] = context
 
-        # The provider turn is over, whichever way it ended. Said explicitly because a turn closed on [DONE] alone
-        # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel.
+        # Runs on each turn end: a [DONE]-only turn has no finish_reason to mark its boundary.
         if policy.on_provider_turn_end is not None:
             policy.on_provider_turn_end()
 

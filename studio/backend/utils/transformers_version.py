@@ -303,7 +303,6 @@ TRANSFORMERS_510_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma4-12b",
 )
 
-# Lowercase substrings for models that require the transformers 5.5 sidecar.
 TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
     "gemma4",  # Gemma-4 alternate naming
@@ -431,7 +430,6 @@ _VENV_LLMCOMPRESSOR_DIR = str(_studio_root() / ".venv_llmcompressor")
 _VENV_T5_LATEST_DIR = str(_studio_root() / ".venv_t5_latest")
 _LATEST_PIN_MARKER = ".unsloth_pinned_transformers"
 
-# Tier precedence: higher rank wins in _higher_tier. "latest" outranks every fixed tier.
 _TIER_RANK = {"default": 0, "457": 0.5, "530": 1, "550": 2, "510": 3, "latest": 4}
 
 
@@ -906,7 +904,6 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     if hf_env_offline():
         return False
 
-    # --- Fall back to fetching from HuggingFace ---
     import urllib.error
     import urllib.request
 
@@ -1377,7 +1374,6 @@ def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
     global _latest_repair_failed_at
     if tier != "default":
-        # latest requires a valid pin and the kill switch off.
         if tier == "latest" and (_latest_tier_disabled() or latest_venv_pinned_version() is None):
             return None
         root = {
@@ -2610,7 +2606,6 @@ def _mark_studio_owned(venv_dir: str) -> None:
         pass
 
 
-# An unavailable wheel is asked for once per session.
 _OPTIONAL_TOP_UP_ATTEMPTED: set[tuple[str, str]] = set()
 
 
@@ -3466,8 +3461,7 @@ def _read_swap_lock(path: Path) -> dict | None:
 
 
 def try_begin_sidecar_swap(kind: str = "install") -> bool:
-    """Reserve the sidecar swap window; False if one is held here or, via the lock file, by any
-    worker subprocess. kind is install (consented) or repair (lazy venv repair)."""
+    """Reserve sidecar swap (kind: install or repair); False if held here or by any worker."""
     global _sidecar_swap_active, _sidecar_swap_token, _sidecar_swap_kind
     with _sidecar_swap_lock:
         if _sidecar_swap_active:
@@ -3576,7 +3570,6 @@ def _stage_and_swap_latest_venv(
         try:
             os.rename(staging, _VENV_T5_LATEST_DIR)
         except OSError:
-            # Restore the previous sidecar if the final swap fails.
             if not os.path.isdir(_VENV_T5_LATEST_DIR) and os.path.isdir(retired):
                 os.rename(retired, _VENV_T5_LATEST_DIR)
             raise
@@ -3592,8 +3585,7 @@ def _stage_and_swap_latest_venv(
 
 
 def _workers_active_for_repair() -> bool:
-    """Best-effort: any parent-visible chat/training/export worker alive. Never
-    raises; unavailable backends (worker subprocess, early startup) count idle."""
+    """Best-effort: live chat/training/export worker; never raises; unavailable counts idle."""
     try:
         from core.training import get_training_backend
         if get_training_backend().is_training_active():
@@ -4019,7 +4011,6 @@ def ensure_transformers_version(model_name: str) -> None:
         in_memory,
     )
 
-    # --- Already correct? ---
     if in_memory is not None:
         if in_memory == target_version:
             logger.info(
@@ -4039,9 +4030,7 @@ def ensure_transformers_version(model_name: str) -> None:
             )
             return
 
-    # --- Switch version ---
     if venv_dir is not None:
-        # First remove any other 5.x venv from sys.path.
         _deactivate_5x()
         if not ensure_fn():
             raise RuntimeError(

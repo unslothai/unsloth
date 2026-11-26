@@ -66,7 +66,6 @@ def denoiser_dits(pipe: Any) -> list:
 
 
 def denoiser_unet(pipe: Any) -> Any:
-    """The pipe's U-Net when its class is on the whole-compile list, else None."""
     unet = getattr(pipe, "unet", None)
     if unet is not None and type(unet).__name__ in UNET_WHOLE_COMPILE:
         return unet

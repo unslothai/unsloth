@@ -801,8 +801,7 @@ def _cached_download_paths(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
-    """Both repo files at one revision, or None (the download state's completion check). A pinned revision is the
-    one just downloaded, so it checks the default quant the download fetched; without one, any cached quant counts."""
+    """Both repo files at one revision or None; pinned checks the default quant, else any cached quant."""
     if revision is None:
         model, mmproj = _cached_pair(hub_cache)
     else:
@@ -1324,7 +1323,6 @@ class PromptUpsamplerSidecar:
     def holds_vram(self) -> bool:
         return self.loaded and bool(self._gpu_layers)
 
-    # keep-alive
     def _cancel_idle_locked(self) -> None:
         if self._idle_timer is not None:
             self._idle_timer.cancel()
@@ -1905,8 +1903,7 @@ def _cuda_device_count() -> int:
 
 
 def cancel_warm_start() -> bool:
-    """Cancel a warm start still launching (it holds the image engine's generation slot until up),
-    for a teardown, model switch or unenhanced render; never creates the sidecar or blocks."""
+    """Cancel a launching warm start (holds the generation slot); never creates the sidecar or blocks."""
     sidecar = _sidecar
     return sidecar is not None and sidecar.cancel_warm_start()
 
@@ -2361,6 +2358,5 @@ def enhance_for_generation(
         with suppress(Exception):
             sidecar.release_if_tight()
     if outcome.statuses and not outcome.captions:
-        # Nothing applied: the batch-level status is the first reason.
         outcome.status = next(iter(outcome.statuses.values()))
     return outcome

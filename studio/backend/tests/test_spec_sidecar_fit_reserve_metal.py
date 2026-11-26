@@ -180,8 +180,7 @@ def test_every_context_gate_prices_the_draft_micro_batch(tmp_path, monkeypatch):
 def test_metal_auto_drops_a_sidecar_an_explicit_context_cannot_hold(
     tmp_path, monkeypatch, budget_gib, wired_gib
 ):
-    """An explicit context launches verbatim: 65,536 tokens at 128 KiB hold the target (Off
-    loads), not target + sidecar, so Auto drops the sidecar instead of refusing."""
+    """Explicit 65,536 at 128 KiB holds the target; Auto drops the sidecar instead of refusing."""
     kw = dict(n_ctx = 65_536, kv_per_token = 128 * 1024, budget_gib = budget_gib, wired_gib = wired_gib)
     off, _, _ = metal_cmd(tmp_path, monkeypatch, "off", **kw)
     assert h.last(off, "-c") == "65536"

@@ -144,8 +144,7 @@ _FLUX_TARGETS = (
 _QWEN_TARGETS = _FLUX_TARGETS
 # Attention + SwiGLU (DiffSynth-Studio's Z-Image recipe); old attention-only runs keep theirs on resume.
 _ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3")
-# The Krea 2 authors' recommended defaults (their DreamBooth script): attention + SwiGLU + text-fusion projector +
-# conditioning embedders. For long runs they suggest narrowing to attention.
+# Krea 2 authors' defaults (attn + SwiGLU + projector + embedders); long runs: attention only.
 _KREA2_TARGETS = (
     "img_in",
     "final_layer.linear",
@@ -424,8 +423,7 @@ def _load_dit_transformer(
 
 
 def _load_fp8_prequant_transformer(transformer_cls, cfg, device):
-    """The family's hosted fp8 denoiser (the file Studio inference uses) as the fp8 base, skipping the bf16 transformer
-    download; None (load bf16 and quantize, as before) when none is mapped for this exact base or it fails to load."""
+    """Hosted fp8 denoiser as fp8 base (skips bf16 download); None if unmapped or load fails."""
     import logging
 
     from core.training.diffusion_fp8_prequant import load_fp8_transformer, resolve_fp8_checkpoint
@@ -663,8 +661,7 @@ def _probe_lowp(
 def _lowp_swap_spec(
     transformer, mode: Optional[str], family: Optional[str], device
 ) -> Optional[dict]:
-    """install_dit_block_swap's ``lowp`` for a frozen fp8 / W8A8 base, after the GEMM probe the resident path runs.
-    No fallback: the run asked for this base and block swap together, so a probe failure refuses the run."""
+    """Lowp spec for install_dit_block_swap; no fallback: a failed GEMM probe refuses the run."""
     if mode is None:
         return None
     import torch
@@ -1226,8 +1223,7 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 f"base_precision={mode!r} is not available on this host: torchao is the "
                 "non-functional Windows-ROCm stub. Use base_precision='nf4', 'bf16', or 'auto'."
             )
-        # mxfp8 needs sm100+ (fails after a full dense load); fp8 needs sm89+ (fails in the training
-        # loop).
+        # mxfp8 needs sm100+ (fails after dense load); fp8 needs sm89+ (fails mid-training).
         if mode == "fp8" and device == "cuda":
             try:
                 import torch
@@ -1680,8 +1676,7 @@ def _krea2_encode_prompts(pipe, captions, device):
     out = []
     with torch.no_grad():
         for cap in captions:
-            # encode_prompt pads to max_sequence_length ([1, 512] mask). Kept padded: the persistent text cache is
-            # shared with older builds, whose collate concatenates fixed 512-row entries; _krea2_collate trims.
+            # Kept padded to 512 for older builds sharing the text cache; _krea2_collate trims.
             pe, mask = pipe.encode_prompt(
                 prompt = cap,
                 device = device,
@@ -1693,9 +1688,8 @@ def _krea2_encode_prompts(pipe, captions, device):
 
 
 def _krea2_text_rows(pe, mask):
-    """Returns valid rows of a Krea 2 prompt as (pe [1, L, layers, D], all-true mask [1, L]);
-    dropping padded rows is exact (text at rotary origin, no fusion positions, padded row only a
-    masked key sliced away wherever placed); cuts 512 - L rows per step (a third at 512 px)."""
+    """Returns valid rows as (pe [1, L, layers, D], all-true mask [1, L]); dropping padding is exact
+    since padded rows are only masked keys; cuts 512 - L rows per step."""
     import torch
 
     if mask is None:
@@ -1721,8 +1715,7 @@ def _krea2_collate(
     import torch
     import torch.nn.functional as F
 
-    # Valid rows only (older caches still hold the 512-row padded form), padded back to the batch's longest prompt
-    # or the compile pin ``pad_to``; no padding at all means no mask, so attention runs unmasked.
+    # Valid rows (old caches pad to 512); re-pad to longest or pad_to; no mask if unpadded.
     rows = [_krea2_text_rows(pe, mask) for pe, mask in entries]
     target = max(pad_to or 0, max(pe.shape[1] for pe, _ in rows))
     # Decided on the host (the rows come from host-pinned embeds): a device .all() would sync every step.
@@ -2153,9 +2146,8 @@ def _flux2_klein_save(
     )
 
 
-# FLUX.3 Klein: diffusers ships only modular blocks, so each helper below mirrors one Flux3AutoBlocks text-to-image
-# block (diffusers 0.42). Recipe per train_dreambooth_lora_flux3_klein.py: undistilled base, target noise - latents,
-# u uniform through the constant 6.93 shift. Suffixes also match image_cond (never run in t2i, so stays zero).
+# FLUX.3 Klein mirrors Flux3AutoBlocks t2i (diffusers 0.42, modular only): undistilled base, target
+# noise - latents, u uniform through 6.93 shift; suffixes match image_cond, unused in t2i.
 _FLUX3_TARGETS = (
     "to_q",
     "to_k",
@@ -4493,8 +4485,7 @@ def _train_dit(
     # LoRA EMA shadows ONLY the trainable adapter params; initialised after the precision conversions so it tracks the final fp32 objects.
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
-    # A resume runs only the remaining steps, so the nf4 compile break-even is judged on those.
-    # fp32 islands are unmeasured under regional compile.
+    # nf4 compile break-even on remaining steps; fp32 islands unmeasured under regional compile
     if fp16_amp:
         _warn_fp16_compile_declined(cfg, on_event)
     compiled = (
@@ -4616,8 +4607,7 @@ def _train_dit(
     transformer.train()
     n_images = len(image_paths)
     batch_size = cfg.train_batch_size
-    # Permutation-cycle index sampler (shared with the SDXL trainer): visits every image once per cycle, so a short
-    # run covers the whole dataset. Bucketed runs draw each batch from one bucket so its latents stack into one shape.
+    # Permutation cycles cover all images in short runs; buckets stack latents into one shape.
     index_sampler = (
         PermutationBatchSampler(n_images, rng)
         if canvases is None

@@ -67,7 +67,6 @@ def busy() -> bool:
 
 
 def resident() -> list[ExtraSlot]:
-    """Every kept slot that may still hold a model: the routed ones and the stuck ones."""
     return [*slots, *stuck]
 
 
@@ -306,7 +305,6 @@ def unload_extra_models(
 
 
 def unload_idle() -> int:
-    """Drop every kept model no request is using or loading."""
     filling = loading[0] if loading else None
     idle = [s for s in list(slots) if s is not filling and not s.generations and not s.refs]
     return len(evict_these(idle))

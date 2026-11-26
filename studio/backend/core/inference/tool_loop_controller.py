@@ -66,8 +66,7 @@ def _looks_like_broken_json(raw: str) -> bool:
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
-        # A token cut mid-way reports at its start, so check that the rest is one unfinished token.
-        # A bad property name is malformed, not truncated, and stays healable.
+        # A cut token reports at its start; a bad property name is malformed and healable.
         if error.msg.startswith("Expecting property name"):
             return False
         # A complete document with trailing junk lost nothing.
@@ -782,7 +781,6 @@ def coerce_tool_arguments(
 
 
 def tool_event_provenance(**flags: object) -> dict[str, object]:
-    """Return provenance metadata with falsey flags omitted."""
     provenance: dict[str, object] = {"source": "local"}
     for key, value in flags.items():
         if value is not None and value is not False:
@@ -1426,8 +1424,7 @@ class ToolLoopController:
             and not repeatable(tool_name)
             and tool_name != MCP_TOOL_SEARCH_NAME
         ):
-            # Browser tools act on the page as it is now, so a repeat is new work (two such no-ops
-            # ended the turn); media repeats get a fresh seed.
+            # Browser repeats hit the live page (new work; 2 no-ops end a turn); media reseeds.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 

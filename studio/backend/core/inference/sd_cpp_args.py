@@ -142,10 +142,9 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
-# Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
-# Read from the diffusion GGUF only (A100, Q8_0 DiT + Q4_K_M encoder: 1.57x); the env is process-wide, but prompt rows
-# stay below it. Drop the env once the pin carries fork patch 0016, the build's own Q8_0-only default.
+# Fork patch 0001: Q8_0-only BF16 dequant + cuBLAS for matmuls with >= N rows, not int8 MMQ
+# (k-quants are weight-error bound); Ada/Ampere/Orin keep MMQ (2x faster); env read only from
+# diffusion GGUF, process-wide, prompt rows stay below; drop once pin has fork patch 0016.
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -611,8 +610,7 @@ def sd_cpp_build_number(tag: Optional[str]) -> Optional[int]:
 
 @functools.lru_cache(maxsize = 8)
 def _installed_sd_cpp_tag(binary: str) -> Optional[str]:
-    """The release tag Studio's installer recorded next to ``binary`` (the binary sits at or a few levels under the
-    install root). None for a binary the installer did not place (``SD_CLI_PATH``, PATH, a source build)."""
+    """Installer's release tag beside binary; None for SD_CLI_PATH, PATH or source builds."""
     import json
     from pathlib import Path
 
@@ -1204,7 +1202,6 @@ def build_sd_cpp_command(
         raise ValueError("diffusion_model path is required")
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
-    # A --mask without --init-img is invalid (inpaint needs a source image), so reject it here.
     if params.mask and not params.init_img:
         raise ValueError("init_img is required when mask is set (inpaint needs a source image)")
 

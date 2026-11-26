@@ -291,8 +291,7 @@ def test_unreadable_geometry_keeps_the_stock_decode():
     assert vt.install(vae) is False
 
 
-# bf16 decode peak per latent of tile area, (unfused, fused) MiB: one untiled ``_decode`` of a t x t latent, t = 8 to
-# 128, on the real diffusers VAE weights (B200, diffusers 0.41.0.dev0, temp calibration run); the worst side per VAE.
+# bf16 peak MiB/latent of tile area (unfused/fused); diffusers 0.41.0.dev0; worst side per VAE.
 _MEASURED_MIB_PER_LATENT = {
     "AutoencoderKLQwenImage": (8, 0.270, 0.179),  # Qwen-Image / Qwen-Image-Edit / Krea-2
     "AutoencoderKLQwenImage21": (
@@ -512,8 +511,7 @@ def test_no_stock_fallback_where_the_stock_tile_is_as_large(monkeypatch, build):
 
 
 def test_floor_fit_uses_the_fused_peak_so_qwen_image_21_keeps_its_wide_floor(monkeypatch):
-    """Qwen-Image-2.1's fused floor tile peaks at ~0.43 GiB: it stays on the wide floor down to that (where #12696
-    would OOM), not at the 1.7 GiB unfused figure."""
+    """Fused 0.43 GiB peak (not 1.7 unfused) keeps Qwen-Image-2.1 wide tiles where #12696 OOMs."""
     vae = _qwen_image_21()
     assert vt.install(vae)
     vae._unsloth_vae_fused_installed = 5
@@ -619,8 +617,7 @@ OWN_TILER = {
 
 
 def test_every_image_family_vae_is_covered_or_kept_stock_on_purpose():
-    """A new image family (or a diffusers that renames a VAE) must land on a VAE whose tile geometry the rule reads,
-    or be listed in KEEP_STOCK with the measured reason: a VAE the rule cannot read keeps stock tiles silently."""
+    """Unreadable VAEs keep stock tiles: new families need a readable VAE or KEEP_STOCK entry."""
     readable = {
         "AutoencoderKL",
         "AutoencoderKLFlux2",

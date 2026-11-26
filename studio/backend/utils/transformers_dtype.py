@@ -21,5 +21,4 @@ def _has_torch_dtype_kwarg() -> bool:
 
 
 def dtype_kwargs(value) -> dict:
-    """Returns {"torch_dtype": value} or {"dtype": value} for splatting into a load call."""
     return {"torch_dtype" if _has_torch_dtype_kwarg() else "dtype": value}

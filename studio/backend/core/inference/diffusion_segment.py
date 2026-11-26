@@ -144,8 +144,7 @@ _GPU_NEED_MIB = 4096
 # Tight rule: after a call, unload below this free MiB or fraction; denoising never overlaps.
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
-# bf16's measured drop in mem_get_info free after a Find (reserve + workspace, above its allocated peak), so the bf16
-# pick is not read as tight by _after_call and unloaded. auto goes 8-bit only if free minus this reads tight.
+# bf16 drop after a Find, not read as tight; auto goes 8-bit only if free minus it reads tight.
 _BF16_RESIDENT_MIB = 2560
 
 
@@ -230,8 +229,7 @@ def _override_dir() -> Optional[str]:
         and (
             has(SEGMENTER_WEIGHTS_FILE)
             or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json"))
-            # or only a pre-quantized detector file the precision setting may load (dequantized where it cannot
-            # run quantized); one the setting rejects (fp8 under auto, any under bf16) is not a loadable model
+            # Pre-quant file counts if precision allows (fp8 not under auto, none under bf16).
             or any(
                 _loadable(variant, a) and has(a.filename) and not _broken(str(path), a)
                 for a in variant.prequant
@@ -750,8 +748,7 @@ def _precision_summary(
     supported: bool,
     override: bool,
 ) -> dict:
-    """The status route's precision fields: what runs (the loaded model), else what a load on this host would use
-    (on disk), else what a download would fetch. ``size_bytes`` is that download's size until it is on disk."""
+    """Loaded model, else on-disk load, else download; size_bytes: download size until on disk."""
     from core.inference.diffusion_segment_quant import requested_precision
 
     body = {"precision_requested": requested_precision()}
@@ -861,9 +858,8 @@ def auto_memory_tight(device: str) -> bool:
 
 
 def _other_owner_on(ordinal: Optional[int]) -> Optional[str]:
-    """The GPU arbiter's resident other than the image model on CUDA card ``ordinal`` (one with unknown GPUs counts
-    for every card; ``ordinal`` None is Apple's single Metal device, which every resident shares), else None. Called under the run lock after the handover fence: a later handover waits for the
-    call (or aborts) instead."""
+    """Other owner on CUDA card ordinal (unknown GPUs count on every card; None is Apple's Metal
+    device); called under the run lock after the handover fence, so later handovers wait."""
     try:
         from core.inference import gpu_arbiter
         held = gpu_arbiter.residents()
@@ -1201,8 +1197,7 @@ class MaskSegmenter:
         self._handover_epoch = 0
         # The device of the call in flight: "" until it is chosen, None when no call runs.
         self._call_device: Optional[str] = None
-        # Set (under _state_lock) once the call in flight has read its release flag: a release that times out after
-        # that is not honoured by the call, so it waits out the call's short tail itself.
+        # Set under _state_lock once read; a later timed-out release waits out the tail.
         self._call_settled = False
         # A GPU model moved to host RAM by release(park = True), with what _load matches it against; the next call on
         # the same card, weights and dtype moves it back instead of reading the files again. Never counts as loaded.
@@ -1340,8 +1335,7 @@ class MaskSegmenter:
                     dequantize = True,
                 )
             except Exception as exc:
-                # Not a quantized-kernel problem: the file itself does not load. Stop counting it as downloaded so
-                # the next status offers the bf16 download rather than failing every request on the same file.
+                # Fails even dequantized: stop counting it as downloaded so bf16 is offered.
                 _BROKEN_PREQUANT.add(_prequant_key(plan.model_dir, plan.artifact))
                 _free_device_cache(device)
                 raise RuntimeError(
@@ -1554,8 +1548,7 @@ class MaskSegmenter:
                 honoured = self._call_device is not None and not self._call_settled
                 on_accelerator = self._call_on_accelerator()
             if wait and not honoured:
-                # The call ended (or is ending) without seeing the flag: its tail is short, so wait it out and unload
-                # here rather than leave the weights resident for the next owner.
+                # Call ended without seeing the flag: wait out its short tail, then unload.
                 acquired = self._run_lock.acquire(timeout = _SETTLE_TIMEOUT_SECONDS)
         if not acquired:
             if handover and on_accelerator:
@@ -1764,8 +1757,7 @@ class MaskSegmenter:
             caps: dict[str, int] = {}
             for concept in concepts:
                 caps[concept.text] = max(caps.get(concept.text, 0), concept.max_detections)
-            # Per text only its kept scores and boxes outlive the forward: the union of a text's best-``cap`` masks
-            # covers every occurrence's best-``k`` (k <= cap), so the masks are OR-ed in at once and dropped.
+            # Per text, OR of the best-cap masks covers every best-k (k <= cap); then dropped.
             kept: dict[str, tuple[Any, Any, list]] = {}
             for concept in concepts:
                 if concept.text not in kept:
@@ -1902,8 +1894,7 @@ def render_fence() -> Iterator[None]:
 
 
 def _take_render_slot() -> tuple[Any, str]:
-    """Takes the active engine's generation lock, else (None, why): ``generating`` while a render or
-    model transition holds it, ``loading`` during a load. No lock: no slot. Never blocks."""
+    """Take the active generation lock, else (None, why): generating or loading; never blocks."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
         engine = get_active_diffusion_engine()

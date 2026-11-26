@@ -264,8 +264,7 @@ def has_site_cookies(subject: str, url: str) -> bool:
 
 
 def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
-    """What ``document.cookie`` may see on ``url``'s site, at any path, in the frame's own form
-    (browser.py): ``"<name>=<path>"`` to ``"<deadline ms>|<value>"``. HttpOnly ones stay here."""
+    """document.cookie on url's site, any path: name=path to deadline ms|value; not HttpOnly."""
     return _page_entries(_site_cookies(subject, url))
 
 

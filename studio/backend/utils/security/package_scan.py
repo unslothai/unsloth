@@ -541,8 +541,7 @@ def _scan(packages: Sequence[str], primary: str) -> PackageScanResult:
         return PackageScanResult(REVIEW, f"{primary} is not pinned to an exact release")
     if _offline():
         return PackageScanResult(REVIEW, "Unsloth is offline, so the release could not be scanned")
-    # Run every check before answering: flagged anywhere wins over a review elsewhere, since a
-    # confirmed install still proceeds past review but never past flagged.
+    # Run every check; flagged beats review; a confirmed install passes review, never flagged.
     hashes: dict = {}
     review = None
     for spec, name, version in pinned:

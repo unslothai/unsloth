@@ -151,8 +151,7 @@ def test_a_model_loaded_before_this_existed_is_read_as_gpu():
 
 
 def test_a_gguf_audio_model_on_a_cpu_only_runtime_is_resident_in_cpu_ram(monkeypatch):
-    """Auto on a CPU-only runtime lands in CPU RAM: the orchestrator must record that, and a repeat
-    Auto load must neither reload it nor take the GPU from a running Images/Video pipeline."""
+    """Auto on CPU-only lands in CPU RAM; a repeat Auto load must not reload or take the GPU."""
     import inspect
 
     from core.inference import audio_cpp_server, orchestrator
@@ -167,8 +166,7 @@ def test_a_gguf_audio_model_on_a_cpu_only_runtime_is_resident_in_cpu_ram(monkeyp
 
 
 def test_an_auto_load_on_a_cpu_only_runtime_reaches_the_worker_as_cpu(monkeypatch):
-    """The worker hides the accelerators and no card is sized only for an explicit CPU load, so the
-    orchestrator must turn Auto into CPU when the runtime can only run there."""
+    """The worker hides accelerators, so Auto must turn into CPU on a CPU-only runtime."""
     import threading
 
     from core.inference import audio_cpp_server

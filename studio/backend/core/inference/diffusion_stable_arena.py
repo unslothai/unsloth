@@ -20,7 +20,6 @@ _ARENA_ATTR = "_unsloth_stable_arena"
 _ALIGN = 512
 _OFF = ("0", "off", "false", "no")
 
-# CUDA driver enums
 _CU_MEM_ALLOCATION_TYPE_PINNED = 1
 _CU_MEM_LOCATION_TYPE_DEVICE = 1
 _CU_MEM_ACCESS_FLAGS_PROT_READWRITE = 3
@@ -279,8 +278,7 @@ class VmmArena:
                 _check(_set_access_settled(lib, self.va, self.size, access), "cuMemSetAccess")
                 base = torch.as_tensor(_CudaArray(self.va, self.size), device = self.device)
             except BaseException:
-                # The range is mapped but not yet in self._handle, so any failure unmaps and
-                # releases it; the arena stays retryable and the stock fallback holds the only copy.
+                # Unmap on failure (not in self._handle); retryable; stock holds the only copy
                 lib.cuMemUnmap(self.va, self.size)
                 lib.cuMemRelease(handle.value)
                 raise
@@ -353,9 +351,8 @@ class VmmArena:
                 pass
 
     def close_from_finalizer(self) -> None:
-        """``close`` for weakref finalizers: never blocks on the capture gate (the finalizer's thread may hold its
-        lock). Runs now when no capture records and the lock is free, else at the next gated point; the memory is
-        freed only after a device sync with no capture recording, as ``unmap`` does."""
+        """Never blocks on the capture gate (the finalizer thread may hold the lock); frees after
+        device sync, if no capture records and lock is free, else at next gated point"""
         if self.closed:
             return
         from .diffusion_cuda_graph import release_when_capture_idle
@@ -450,8 +447,7 @@ class ModuleArena:
         self._module = weakref.ref(module)
         self._stock_to = type(module).to
         module.__dict__["to"] = self._to
-        # accelerate's remove_hook_from_module pops ``to`` from the instance (its _accelerate_added_attributes) and
-        # diffusers re-hooks before every render: put it back before the hook's pre-forward onloads the module.
+        # remove_hook_from_module pops instance 'to'; diffusers re-hooks; restore before onload
         self._reinstall_handle = module.register_forward_pre_hook(self._reinstall)
         weakref.finalize(module, ModuleArena._finalize, self.__dict__)
 
@@ -673,7 +669,6 @@ class ModuleArena:
         return out
 
     def _release(self, module: Any) -> None:
-        """Unmap the range once no tensor of the module lives in it (its weights went back to the host)."""
         if self.arena is None or not self.arena.mapped or self._referenced(module):
             return
         self.arena.unmap()
@@ -731,8 +726,7 @@ def arena_of(module: Any) -> Optional[ModuleArena]:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Resident groups get a reserved address range: stock re-pins after an encode land at new addresses
-# and re-record the step graph each prompt; opt out with UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0.
+# Reserved address range so CUDA graphs replay; UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0 opts out
 
 REPIN_ENV = "UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE"
 _REPIN_ATTR = "_unsloth_repin_range"
@@ -745,8 +739,7 @@ def repin_disabled() -> bool:
 
 
 def want_stable_repin(module: Any) -> Optional[str]:
-    """Mark ``module`` (a block-offloaded denoiser whose step records a graph) so its group re-pins land in stable
-    ranges from now on. Returns why not, else None."""
+    """Marks a block-offloaded denoiser for stable graph re-pins; returns why not, else None"""
     if repin_disabled():
         return f"disabled by {REPIN_ENV}=0"
     try:
@@ -897,9 +890,8 @@ def pin_group_in_range(
     device: Any,
     swap_wrapper: Any,
 ) -> set:
-    """Copies pending tensors into the range from host_of(t) on the current stream (caller syncs);
-    layout fixed by the first re-pin's pending tensors; slots keyed by position in tensors; tied
-    tensors placed elsewhere take no room; returns placed ids; others move the stock way."""
+    """Copies pending tensors from host_of(t) into range (caller syncs); layout fixed by first
+    re-pin; tied tensors placed elsewhere take no room; returns placed ids, others stock-moved"""
     import torch
 
     device = torch.device(device)

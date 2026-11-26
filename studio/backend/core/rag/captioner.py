@@ -204,8 +204,7 @@ def ocr_pages(
     endpoint: tuple[str, str] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[int, str]:
-    """OCR of page PNGs to text via the vision model, returned keyed by 1-based page number; {} if
-    no model or no pages; caller owns the on/off policy; capped by OCR_MAX_PAGES."""
+    """OCR via vision model; 1-based page keys; {} if none; caller gates; cap at OCR_MAX_PAGES."""
     if not page_pngs:
         return {}
     ep = endpoint or vision_endpoint()

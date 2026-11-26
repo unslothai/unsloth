@@ -226,8 +226,7 @@ def test_a_short_kernel_failure_still_turns_the_card_off(monkeypatch):
 
 
 def test_a_config_without_long_keys_is_checked_and_run_as_before(monkeypatch):
-    """(c) No long_keys (sm89 hd128): the check runs only the plain and the sharp probe at 1000 tokens, records no
-    long verdict, and every call length runs the one config."""
+    """No long_keys (sm89 hd128): 1000-token probes, no long verdict; one config for all calls."""
     calls, _ = _fake_card(monkeypatch)
     found = I._check("cuda", torch.float32, 24, PLAIN_HD, None, timed = False)
     assert found["ok"] and "long" not in found

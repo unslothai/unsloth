@@ -236,9 +236,8 @@ def _base_sample_sigmas(
         elif not explicit_base and named_base:
             # Cache-only (e.g. the OpenAI route's auto-switch) reads no card: the pick's own name decides.
             base = named_base
-        # Read from the repo the plan staged it under (_grid_fetch_repo: the base's unsloth mirror unless the
-        # upstream already holds it), never the vendor id directly. Cache-only reads try both roots, as the plan's
-        # locality check and _fetch_assets do, and the upstream id too, so an index cached under either still counts.
+        # Read the repo the plan staged it under (_grid_fetch_repo: unsloth mirror unless upstream
+        # has it), never the vendor id; cache-only reads try both roots and the upstream id.
         fetch = _grid_fetch_repo(base, hf_token)
         repos = tuple(dict.fromkeys((fetch, base))) if local_files_only else (fetch,)
         roots = (hub_cache_dir(), None) if local_files_only else (hub_cache_dir(),)
@@ -1111,9 +1110,8 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
 
 
 def _card_lookup_inventory() -> dict:
-    """The physical inventory for naming a selected card. Off the event loop a cold cache is read
-    blocking: the non-blocking read answers "unknown" until its refresh lands, which on a host whose
-    torch works is the first load, so that load's failure was recorded against every card."""
+    """Physical GPU inventory for naming a card; off the event loop a cold read blocks, since a
+    non-blocking read says unknown and the first load's failure is recorded against every card."""
     from utils.hardware.hardware import get_physical_gpu_inventory
 
     inventory = get_physical_gpu_inventory(block = False)
@@ -2029,8 +2027,7 @@ def _record_diverts(
     fingerprint: Optional[dict] = None,
     card: Optional[str] = None,
 ) -> bool:
-    """Whether one record moves this host off its own accelerator. For a named *card*, evidence from
-    other named cards says nothing; evidence no card was named for still applies."""
+    """Whether it diverts; a named card ignores other cards' evidence; unnamed evidence counts."""
     if not isinstance(record, dict):
         return False
     if not _fingerprint_still_applies(
@@ -2070,8 +2067,7 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
 
 
 def _applicable_record(klass: str, record: Optional[dict]) -> Optional[dict]:
-    """The evidence in *record* that still counts on this host: old-rule ambiguous Vulkan strikes are
-    dropped, and outside the CPU-torch route only decisive Vulkan evidence diverts."""
+    """What counts: old-rule ambiguous Vulkan dropped; off CPU-torch, only decisive Vulkan."""
     record = _record_under_current_rule(klass, record)
     if klass == "vulkan" and not _vulkan_cpu_rung_applies():
         return _decisive_evidence_only(record)
@@ -2274,8 +2270,7 @@ _REPEATED_DEVICE_LOSS_HINT = (
 
 
 def _device_loss_cpu_fallback_applies(state: Any) -> bool:
-    """Whether a repeated Vulkan device loss may move this load to the CPU backend: only the CPU-torch Vulkan
-    route (the one with a CPU rung, as on main), the Vulkan-to-CPU fallback enabled, and no user-picked GPU."""
+    """Repeated device loss: CPU-torch Vulkan route only, fallback enabled, no user-picked GPU."""
     if getattr(state, "device", None) != "vulkan" or getattr(state, "off_torch_device", None):
         return False
     if getattr(state, "gpu_explicit", False):
@@ -2735,8 +2730,7 @@ def note_accelerator_failure_from_output(
     source: str = "diffusion",
     card: Optional[str] = None,
 ) -> None:
-    """Records an sd.cpp build that cannot run here when its output says so; never raises; the image
-    path runs the same sd-cli but records none of these."""
+    """Records an unrunnable build from its output; never raises; image path records none."""
     if not binary or not output:
         return
     try:
@@ -2767,8 +2761,7 @@ def note_unlaunchable_accelerator_build(
     source: str = "diffusion",
     card: Optional[str] = None,
 ) -> None:
-    """Record that the build ``binary`` came from could not be LAUNCHED here; the other recorder
-    reads output a loader death never writes. Ambiguous: a missing execute bit looks the same."""
+    """Record an unlaunchable build (no output to read); a missing execute bit looks the same."""
     if not binary:
         return
     try:
@@ -3654,8 +3647,7 @@ def _local_entry_not_found_error() -> type[BaseException]:
 
 
 def _with_mirrors(repo_ids) -> tuple[str, ...]:
-    """repo_ids plus each one's ungated mirror and community repack, de-duplicated in order; the
-    delete-cached guard re-decides per load, so naming them all cannot under-protect."""
+    """Repo ids, their ungated mirrors and repacks; extras are safe, the guard re-decides."""
     out: list[str] = []
     for rid in repo_ids:
         if not rid:
@@ -3996,9 +3988,8 @@ class SdCppDiffusionBackend:
         inner_dim = self._flux2_inner_dim(
             repo_id, gguf_filename, fam, hf_token, allow_network = False
         )
-        # Records companion links for the repos _asset_specs fetches so the delete guard protects
-        # them; FLUX.2 encoder is in a GGUF repo, not the base, which alone left the encoder
-        # deletable while its GGUF stayed installed; best-effort, never fails a load
+        # Companion links for _asset_specs repos so the delete guard protects them; FLUX.2's encoder
+        # is in a GGUF repo, not the base (which alone left it deletable); best-effort.
         try:
             from hub.utils.companion_assets import record_companion_link
             for asset_repo in dict.fromkeys(
@@ -4101,8 +4092,7 @@ class SdCppDiffusionBackend:
                         "sd-server at %s is present but not runnable; trying one-shot sd-cli.",
                         server_binary,
                     )
-                    # Resolve ONCE and keep it: two calls can answer with two different binaries if an install lands
-                    # between them, and the state below reads the accelerator off whichever object it ends up holding.
+                    # Resolve once: an install between calls could mean two different binaries.
                     fallback: Optional[SdCppEngine] = None
                     try:
                         fallback = self._resolve_engine()
@@ -4239,8 +4229,7 @@ class SdCppDiffusionBackend:
                     torch_device == "cpu" and off_torch is None and klass in ("vulkan", "cuda")
                 )
                 placed = klass if unmeasured else torch_device
-                # The fallback ladder can leave a CUDA / XPU torch running the CPU build. Not
-                # MPS: the macOS bundle is recorded as cpu and still renders on Metal.
+                # CUDA/XPU torch may run the CPU build; MPS does not (bundle renders on Metal).
                 if klass == "cpu" and off_torch is None and torch_device in ("cuda", "xpu"):
                     placed = "cpu"
                 # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
@@ -4273,10 +4262,9 @@ class SdCppDiffusionBackend:
             def _diffusion_weight_types() -> Optional[frozenset[str]]:
                 return sd_cpp_args_mod.gguf_quantized_weight_types(files.diffusion_model)
 
-            # The device pin is added where flags reach a binary, since the binary can change later
-            # (deferred install, post-download re-resolve, one-shot fallback); the route's card
-            # applies only while placement is CUDA, as a deferred upgrade can move a CPU-bundle load
-            # back onto the selected GPU.
+            # Device pin is added where flags reach a binary, which can change later (deferred
+            # install, re-resolve, one-shot fallback); the route's card applies only while placement
+            # is CUDA, as a deferred upgrade can move a CPU-bundle load onto the selected GPU.
             selected_ordinal = gpu_ordinal
 
             def _ordinal() -> Optional[int]:
@@ -4447,9 +4435,8 @@ class SdCppDiffusionBackend:
                         if not usable or fallback is None:
                             raise start_exc
                         engine = fallback
-                        # Vetted here, so pinned here: this engine was resolved after the download, inside the claim,
-                        # and holding it to the pre-download answer would refuse the fallback on an install this load
-                        # already lived through.
+                        # Pinned here: the fallback was resolved after the download; the
+                        # pre-download answer would refuse it.
                         engine_accelerator = _installed_accelerator_of(
                             getattr(fallback, "binary", None)
                         )
@@ -4638,8 +4625,7 @@ class SdCppDiffusionBackend:
 
         # Stage from the fetch repo: some asset repos are gated and anonymous staging would 401.
         fetch_repo = _fetch_repo_map(specs, hf_token)
-        # Merge, do not reassign: two upstream repos can share one fetch repo, and a plain
-        # comprehension would drop whichever landed first from the staged entry and footprint.
+        # Merge, don't reassign: two upstreams can share a fetch repo; reassigning drops one.
         merged: dict[str, list[str]] = {}
         for repo, names in by_repo.items():
             into = merged.setdefault(fetch_repo[repo], [])
@@ -4789,8 +4775,7 @@ class SdCppDiffusionBackend:
         *,
         allow_network: bool = True,
     ) -> Optional[int]:
-        """The checkpoint's own FLUX.2 size, or None; a memoised header-only probe shared by
-        callers, skipped for other families whose static encoder table must stay network-free."""
+        """FLUX.2 size or None via memoised header-only probe; others skip it (network-free)."""
         if fam.name != "flux.2-klein":
             return None
         return flux2_inner_dim_for_pick(
@@ -5003,8 +4988,7 @@ class SdCppDiffusionBackend:
         )
 
     def _native_edit_ready(self, state: Optional[_SdState]) -> bool:
-        """Whether this load can run an edit natively: unified-edit needs its projector and the build's edit marker;
-        edit-only needs its projector if it declares one, and the marker only if it declares one."""
+        """Unified edit needs projector and edit marker; edit-only needs each only if declared."""
         if state is None:
             return False
         fam = state.family
@@ -5465,8 +5449,7 @@ class SdCppDiffusionBackend:
                 for m in materialized
             ]
 
-        # One deadline for the whole request, shared by its chunks (the server caps images per job,
-        # so batches are chunked); each chunk gets what is left so a long batch ends on time.
+        # One deadline for all chunks (server caps images per job); each gets what is left.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
         # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False

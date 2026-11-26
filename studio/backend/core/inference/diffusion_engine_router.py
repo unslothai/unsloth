@@ -182,13 +182,11 @@ def _masked_vendors() -> set:
         return {"amd", "intel", "nvidia"}
 
 
-# PCI vendors of the cards this route renders on.
 _RENDER_NODE_VENDORS = {"0x1002": "amd", "0x8086": "intel"}
 
 
 def _accessible_render_vendors(vendors) -> set:
-    """Vendors with a readable, writable /dev/dri render node (else Vulkan sees none); empty if
-    another vendor's GPU (virtio, VMware) has an openable node sd.cpp could take first."""
+    """Vendors with an openable /dev/dri node; empty if an unknown vendor's node opens first."""
     import glob
 
     found = set()
@@ -783,9 +781,8 @@ _pending_engine_pick: Optional[tuple[Optional[str], Any, Any]] = None
 
 
 def _settle_engine_pick_locked() -> None:
-    """Commit the pending pick once its engine holds a NEW loaded state. A background load that fails before it
-    publishes keeps the old state resident, and with it the old pick; one that tore the old state down leaves nothing
-    loaded to label, and a later load replaces the pending entry."""
+    """Commit the pending pick once its engine holds a new loaded state; a load failing before
+    publish keeps the old pick; after a teardown, a later load replaces the pending entry."""
     global _engine_pick, _pending_engine_pick
     if _pending_engine_pick is None:
         return
@@ -957,7 +954,6 @@ def select_and_activate_engine(
                 logger.warning(
                     "sd-server at %s is present but not runnable; not using it", server_binary
                 )
-                # Held for the single recorder below.
                 unlaunchable_server = server_binary
                 server_binary = None
             # Probe runnability first, else a non-runnable binary fails inside the background load.
@@ -970,7 +966,6 @@ def select_and_activate_engine(
             unlaunchable_cli: Optional[str] = None
             if binary and SdCppEngine(binary = binary).version() is None:
                 logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
-                # Records the failure reason for the refusal.
                 _server_binary_runnable(binary)
                 unlaunchable_cli = binary
                 binary = None
@@ -1023,7 +1018,6 @@ def select_and_activate_engine(
         lora_guard(choice)
         return _activate(ENGINE_SD_CPP, None)
 
-    # Explain the diffusers choice for status/telemetry.
     if not policy_eligible:
         reason = f"GPU backend '{backend}' uses diffusers"
     elif not fam_ok:

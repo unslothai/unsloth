@@ -180,8 +180,7 @@ def auto_static_settings(
 
 
 def _call_signature(args: tuple, kwargs: dict) -> tuple:
-    """Reuse key: latent shape, prefix-KV mode (an ``extract`` call returns a longer sequence), container. The latent
-    is the first positional argument, else ``hidden_states`` (DiTs) or ``sample`` (U-Nets) by keyword."""
+    """Reuse key: latent shape, prefix-KV mode (extract returns a longer sequence), container."""
     hidden = kwargs.get("hidden_states", kwargs.get("sample", args[0] if args else None))
     if _is_tensor(hidden):
         shape = tuple(hidden.shape)
@@ -416,9 +415,8 @@ class StaticStepSkip:
         owner: Optional[str] = None,
         compute_all: bool = False,
     ) -> "StaticStepSkip":
-        """Start a forward of ``steps`` denoise steps (None: compute all); ``keep_stats`` sums across chunks.
-        ``owner`` (arming only) rebinds the counters; a new owner never inherits the previous one's.
-        ``compute_all``: count this generation but skip nothing (an auto skip on an unmeasured workflow)."""
+        """steps None computes all; keep_stats sums across chunks; a new owner never inherits
+        counts; compute_all counts but skips nothing (an auto skip on an unmeasured workflow)."""
         self.plan = (
             static_schedule(
                 steps,
@@ -490,8 +488,7 @@ class StaticStepSkip:
     def _compute(self, args: tuple, kwargs: dict) -> Any:
         call = self.compiled_call
         if call is None or _eager_forced():
-            # Under force_eager (a detailer pass) the eager gate already runs ``_call_impl``, which read this layer
-            # from ``forward``: compute eagerly here rather than enter the compiled (graphed) call at a new size.
+            # force_eager: compute eagerly; the graphed call must not be entered at a new size.
             return self._forward(args, kwargs)
         self._inside = True
         try:
@@ -688,7 +685,6 @@ def _eager_forced() -> bool:
 
 
 def unfront_compiled_call(module: Any, call: Any, restore: Any) -> None:
-    """Undo ``front_compiled_call`` for ``call`` (the fronted callable), leaving ``restore`` in its place."""
     skip = getattr(module, "__dict__", {}).get(_SLOT)
     if isinstance(skip, StaticStepSkip) and skip.compiled_call is call:
         skip.compiled_call = restore

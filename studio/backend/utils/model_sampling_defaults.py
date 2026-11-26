@@ -109,7 +109,6 @@ def sampling_defaults_key(model_id: str) -> str:
 
 
 def saved_sampling_defaults(model_id: Optional[str]) -> dict[str, Any]:
-    """The saved defaults for ``model_id``, or ``{}``."""
     if not model_id or not isinstance(model_id, str):
         return {}
     exact, folded = _index(current_account())

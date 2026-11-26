@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which OS user owns a loopback TCP client, from /proc/net/tcp{,6} (Linux; None when unknown).
-Keeps the first-run password off pages fetched by another local account."""
+"""Peer OS user (/proc/net/tcp{,6}), None if unknown; keeps first-run password from others."""
 
 from __future__ import annotations
 

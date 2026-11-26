@@ -234,8 +234,7 @@ _DIT_PREFIX = "model.diffusion_model."
 
 
 def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, ...]]:
-    """Tensor name -> shape from the checkpoint HEADER only (no weight data). GGUF shapes come back
-    in GGML (reversed) order, so callers should membership-test, not assume a dimension position."""
+    """Name -> shape from the header only; GGUF shapes are GGML-reversed, so membership-test."""
     names_shapes: dict[str, tuple[int, ...]] = {}
     path = str(checkpoint_path)
     if path.lower().endswith(".gguf"):
@@ -830,8 +829,7 @@ _LTX23_NO_HASH: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def ltx23_identity_without_hashing() -> Iterator[None]:
-    """For planning (the download plan and its precision check): a local file with the official size and no stored
-    verdict reads as official instead of being hashed there, like an uncached Hub pick; the load hashes it."""
+    """Planning: local file, official size, no verdict: read as official; the load hashes it."""
     token = _LTX23_NO_HASH.set(True)
     try:
         yield
@@ -975,8 +973,7 @@ def _ltx23_hub_cached_file(repo_id: str, filename: str) -> Optional[Path]:
 def ltx23_prequant_eligible(
     checkpoint_filename: Optional[str], repo_id: Optional[str] = None
 ) -> bool:
-    """Whether the hosted DiT may replace this pick's own: the official file by name AND identity (local content, or
-    the official Hub repo, its cached copy verified by content; the load re-checks)."""
+    """Hosted DiT may replace the pick if file name and content are official; load re-checks."""
     if not checkpoint_filename or not repo_id:
         return False
     if Path(str(checkpoint_filename)).name.lower() not in LTX23_PREQUANT_SOURCE_FILES:
@@ -1171,10 +1168,9 @@ def install_stg_compile_adapter(transformer: Any) -> int:
     return count
 
 
-# LTX-2.x text masks: the connectors replace padding with learned registers and return an all-ones mask, which the DiT
-# turns into an all-zero additive bias. That bias is a no-op, but it sends every text cross-attention to the
-# mem-efficient kernel, and Inductor materialises it at [batch, heads, video tokens, text tokens] (0.9 GB per call at
-# 1280x704x121). Dropping an all-ones mask keeps the maths and lets SDPA pick flash. =0 keeps the mask.
+# LTX-2.x all-ones text mask becomes an all-zero additive bias (a no-op) that forces the
+# mem-efficient kernel; Inductor materialises [batch, heads, video, text] (0.9 GB per call at
+# 1280x704x121); dropping it lets SDPA pick flash, =0 keeps the mask.
 LTX2_FULL_MASK_ENV = "UNSLOTH_LTX2_DROP_FULL_TEXT_MASK"
 _LTX2_TRANSFORMER_CLS = "LTX2VideoTransformer3DModel"
 _LTX2_MASK_KEYS = ("encoder_attention_mask", "audio_encoder_attention_mask")
@@ -1475,8 +1471,7 @@ def unpark_ltx2_vae_encoder(
     offload_policy: Any,
     logger: Any = None,
 ) -> int:
-    """For image-conditioned requests, move a parked encoder onto the card for the whole request
-    (per-call moves would copy it four times) and report its MiB; 0 if not parked."""
+    """Image-conditioned: parked encoder moves to card once per request; returns MiB, or 0."""
     vae = getattr(pipe, "vae", None)
     if vae is None or not ltx2_vae_encoder_parks(vae, offload_policy):
         return 0
@@ -1820,8 +1815,7 @@ def _no_autocast(device_type: str) -> Any:
 
 
 def _stage_fp32(module: Any) -> list:
-    """Float32 copies of every floating parameter / buffer not already float32, as (owner, name, is_param, copy).
-    Allocates only: the module is untouched, so an out-of-memory here leaves nothing to roll back."""
+    """Float32 copies (owner, name, is_param, copy); allocates only, so OOM needs no rollback."""
     import torch
 
     staged = []
@@ -1837,8 +1831,7 @@ def _stage_fp32(module: Any) -> list:
 
 @contextlib.contextmanager
 def _swapped_in(staged: list) -> Iterator[None]:
-    """Point the module at the staged float32 tensors for the call and back after. Reference swaps only (``.data``
-    on the existing Parameters, buffer dict entries): nothing allocates, so the restore cannot fail half way."""
+    """Swap staged fp32 in and back by reference; nothing allocates, so restore cannot fail."""
     saved = []
     try:
         for owner, name, is_param, copy in staged:
@@ -1989,10 +1982,9 @@ def _note_fallback(reason: str) -> None:
 
 
 def install_vocoder_fp32_forward(vocoder: Any) -> None:
-    """Runs the vocoder forward in float32 returning a float32 waveform; idempotent, never raises:
-    eager OOM or low card room runs the stored dtype unchanged; under torch.compile it is
-    traceable, using CUDA autocast in float32 or the stored dtype where float32 needs eager-only
-    staging."""
+    """Runs the vocoder forward in float32 returning a float32 waveform; idempotent and never
+    raises; eager OOM or low card room runs the stored dtype; under torch.compile it uses CUDA
+    autocast in float32, or the stored dtype where float32 needs eager-only staging."""
     try:
         import torch
         import types

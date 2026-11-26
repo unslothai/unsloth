@@ -913,7 +913,6 @@ def _free_steps(
             logger.warning("gpu_residency: could not stream the image text encoders: %s", exc)
         if freed and done():
             return freed
-    # 4. The idle image or video model on these GPUs.
     for name in overlapping():
         if name in MEDIA_OWNERS and not any(_media_busy(name)) and not foreign_on(name, acting):
             _evict_resident(name, acting, evicted, freed)
@@ -938,7 +937,6 @@ def _free_steps(
             _record_evicted([reports[id(victim)] for victim in dropped], evicted, freed)
             if dropped and done():
                 return freed
-    # 6. The active chat model.
     if owner != arb.CHAT and arb.CHAT in overlapping():
         _evict_resident(arb.CHAT, acting, evicted, freed)
     return freed
@@ -966,7 +964,6 @@ def media_fit_kwargs(
     gpu_ordinal: Optional[int],
     policy: Optional[str] = None,
 ) -> dict:
-    """The acquire_for keywords for an image or video load: the policy and, when known, what it will hold."""
     policy = policy or current_policy()
     if policy == "off":
         return {}

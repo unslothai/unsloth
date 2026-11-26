@@ -121,7 +121,6 @@ def test_a_user_initiated_load_still_calls_every_one_of_them(monkeypatch, tmp_pa
 
     assert WAN_GGUF in calls.model_info and mirror_repo(WAN_BASE) in calls.model_info
     assert WAN_BASE not in calls.model_info
-    # And the checkpoint is FETCHED, not looked up.
     assert calls.downloads == [(WAN_GGUF, WAN_FILE, False)]
 
 

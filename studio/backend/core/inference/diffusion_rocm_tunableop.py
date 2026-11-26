@@ -42,8 +42,7 @@ _STATE: dict = {
 _TABLE_DIR = Path(__file__).resolve().parent / "rocm_gemm_tables"
 # Tables with this stem suffix also carry training GEMM rows (NT / NN).
 TRAIN_SUFFIX = "_train"
-# Tables were measured at torch's default hipBLASLt workspace; torch 2.11-2.14 drops a saved solution needing more
-# without falling back, which can leave the GEMM output unwritten.
+# Measured at torch's default hipBLASLt workspace; torch 2.11-2.14 can leave output unwritten.
 _WORKSPACE_ENVS = ("HIPBLASLT_WORKSPACE_SIZE", "CUBLASLT_WORKSPACE_SIZE")
 
 

@@ -23,8 +23,7 @@ STDIO_URL = "npx fake-stateful-server"
 
 
 class _FakeProactorLoop(asyncio.SelectorEventLoop):
-    """Stands in for the Proactor loop Linux cannot construct; only its identity matters, since the
-    win32 branch must ask for a Proactor."""
+    """Stands in for the Proactor loop Linux cannot build; win32 asks only for its identity."""
 
 
 @pytest.fixture

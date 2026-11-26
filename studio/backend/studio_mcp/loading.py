@@ -79,8 +79,7 @@ class LoadJob(job_store.Job):
     fraction: Optional[float] = None
     # Each distinct (fraction, phase) the load went through, for every caller following it.
     marks: list[tuple[float, str]] = field(default_factory = list, repr = False)
-    # The STT download this load started, so unload_model can stop it, and whether the STT load
-    # request is out (it then runs to the end: cancelling its in-process route does not stop it).
+    # STT download (unload_model can stop it); posted: request out, cancelling won't stop it.
     download: Optional[dict] = None
     posted: bool = False
     # A media load POST, shielded: cancelling the job leaves it running, since the route registers its load from a thread.
@@ -186,7 +185,6 @@ def _early(job: LoadJob) -> LoadResult:
 
 
 def outcome(job: LoadJob) -> LoadResult:
-    """A finished load's result; a failed or cancelled one raises its error."""
     if job.status == "completed" and isinstance(job.result, LoadResult):
         return job.result
     if job.status == "cancelled":
@@ -266,7 +264,6 @@ async def start_load(
     return await wait_load(ctx, job, deadline)
 
 
-# The load_model kinds that load through the chat route.
 CHAT_ROUTE_KINDS = ("llm", "tts", "audio")
 ROUTE_KINDS = {"chat": "llm", "audio": "audio", "image": "image", "video": "video"}
 

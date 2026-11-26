@@ -230,8 +230,7 @@ def _env_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-# Model-visible cap on python/terminal tool results. The live UI stream is capped separately and higher, so
-# _truncate's notice stays mode-neutral (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
+# Model-visible cap; UI stream is capped higher, so _truncate's notice stays mode-neutral.
 _MAX_OUTPUT_CHARS = _env_int(tool_result_limit.MAX_CHARS_ENV, tool_result_limit.DEFAULT_MAX_CHARS)
 
 
@@ -993,7 +992,6 @@ _FIND_EXEC_SEMICOLONS = frozenset({";", "\\;"})
 _SEPARATOR_CHARS = frozenset("".join(_SHELL_SEPARATORS))
 # Any non-whitespace, non-quote, non-punctuation char keeps the same word split.
 _QUOTED_SEPARATOR_MARK = "\x00"
-# Glob characters bash expands against the filesystem, plus the placeholder for a QUOTED word.
 _GLOB_CHARS = frozenset("*?[")
 _QUOTED_GLOB_MARK = "\x01"
 # A quoted redirection char is an ordinary word the command receives.
@@ -1020,8 +1018,7 @@ def _punctuation_lexer(text: str, punctuation: str) -> "shlex.shlex":
 
 
 def _looks_like_separator(token: str) -> bool:
-    """A lexed token is a shell operator, not a word a command receives, if it is a known separator
-    or a run of punctuation_chars (as bash builds `|&`, `;;`, `;&`)."""
+    """Known separators and punctuation_chars runs (|&, ;;, ;&) are operators, not arguments."""
     if token in _SHELL_SEPARATORS:
         return True
     return bool(token) and not (set(token) - _OPERATOR_TOKEN_CHARS)
@@ -1065,8 +1062,7 @@ _TEST_BUILTINS = frozenset({"[", "[[", "]", "]]"})
 
 
 def _is_unresolved_command_glob(base: str) -> bool:
-    """Whether a command word is a glob bash expands to some other name (`/bin/r[m]` runs rm). A
-    pattern with no literal character is not one, and the test builtins are not patterns."""
+    """Glob like /bin/r[m] runs rm; a pattern with no literal char and test builtins are not."""
     if base in _TEST_BUILTINS or not any(ch in base for ch in "*?["):
         return False
     return any(ch.isalnum() for ch in base)
@@ -1258,7 +1254,6 @@ def _sed_invocation(
         else:
             # Which script sed compiles depends on permutation; keep both as alternatives, not one program.
             joined.append(first_positional)
-    # Complete when a separator closed the invocation, or when the window already covered every remaining argument.
     scan_overflowed = not hit_separator and len(tokens) > start + 1 + limit
     # A pending -f value means the operand was never read: the program is unknown, not absent.
     joined = [piece.replace(_ANSI_C_NEWLINE_MARK, "\n") for piece in joined]
@@ -1334,7 +1329,6 @@ def _sed_exec_payloads(program: str) -> "list[str]":
     i = 0
     while i < n:
         if program[i] in " \t\n;{}":
-            # Separators and block braces carry no command.
             i += 1
             continue
         if program[i] == "#":
@@ -1456,8 +1450,7 @@ def _resolve_program_vars(program: str, env: "dict[str, str]") -> str:
 
 
 def _sed_program_variants(program: str, env: "dict[str, str]") -> "list[str]":
-    """The sed program as written, plus the variable-resolved and arithmetic-collapsed forms. All
-    are screened, because any spelling can be the one holding the `e`."""
+    """Program, variable-resolved and arithmetic-collapsed forms; any spelling can hold the e."""
     if "$" not in program:
         return [program]
     variants = [program]
@@ -1491,7 +1484,6 @@ def _sed_program_unresolved(variants: "list[str]", live: "set[str]") -> bool:
 def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) -> "frozenset[int]":
     """Quoted `;` lexes as a bare `;`, so quoted separators are found by masking and re-lexing."""
     if not any(_looks_like_separator(token) for token in tokens):
-        # Nothing to tell apart: skip the quote walk and the second lex.
         return frozenset()
     if _QUOTED_SEPARATOR_MARK in text:
         return frozenset()  # the mark is not ours to read back
@@ -1867,7 +1859,6 @@ _BLOCKED_WORD_RE_WITH_ASSIGNMENTS = _blocked_word_re(True)
 def _join_escaped_newlines(text: str) -> str:
     """Removes backslash-LF only where the shell does: not in single quotes, comments, or before CRLF."""
     if "\\\n" not in text:
-        # Nothing to join: return the input after one C-level scan.
         return text
     out: list[str] = []
     i, n = 0, len(text)
@@ -2057,7 +2048,6 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
             if wrapper and (
                 token.startswith("-") or _ASSIGNMENT_RE.match(token) or token.lstrip("-").isdigit()
             ):
-                # `env -i`, `env A=b`, `timeout 5`: the wrapper's own argument.
                 i += 1
                 continue
             base = _token_basename(token)
@@ -2133,7 +2123,6 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
             ):
                 skip_operand = True
                 continue
-            # Keep expect_command while a wrapper prefix awaits its command.
             if not prefix_pending:
                 expect_command = False
             continue
@@ -2142,10 +2131,8 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
         # A redirection may precede the command word (`</dev/null rm -rf x`).
         if _REDIR_PREFIX_RE.match(token):
             continue
-        # FOO=bar assignment prefix; next non-assignment token is the command.
         if _ASSIGNMENT_RE.match(token):
             continue
-        # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
         if prefix_pending and token.lstrip("-").isdigit():
             continue
         coproc_name_here = after_coproc and _is_coproc_name(tokens, token_index)
@@ -2193,8 +2180,7 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
         if attached:
             attached_base = _token_basename(attached.split()[0])
             if _is_sed_command(attached_base):
-                # Screen the forwarded sed's program from the flag; fd 9 runs nothing here, but forwarding
-                # spellings would otherwise be a free pass.
+                # Screen attached sed programs too; forwarding spellings would otherwise pass.
                 sed_indexes.append(i)
             if attached_base in _BLOCKED_COMMANDS:
                 blocked.add(attached_base)
@@ -2325,12 +2311,10 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
                 else:
                     blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
 
-    # On a -c or /c flag, find the shell name behind it and scan the nested command.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
-        # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
         is_unix_c = tok_lower == "-c" or (
             tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
         )
@@ -2578,7 +2562,6 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
         "jq",
     }
 )
-# Flags that make a read-only command write or execute.
 _AUTO_UNSAFE_COMMAND_FLAGS = {
     # --files0-from reads input paths from a file, bypassing path checks.
     "sort": frozenset(
@@ -2753,7 +2736,6 @@ _AUTO_EXEC_MCP_COMPOUND_RE = re.compile(
 # Verbs that may run without a prompt: reads and ordinary writes.
 _AUTO_KNOWN_MCP_VERBS = frozenset(
     {
-        # read / inspect
         "get",
         "list",
         "read",
@@ -2810,7 +2792,6 @@ _AUTO_KNOWN_MCP_VERBS = frozenset(
         "predict",
         "infer",
         "evaluate",
-        # ordinary writes
         "create",
         "add",
         "insert",
@@ -2878,7 +2859,6 @@ _AUTO_KNOWN_MCP_VERBS = frozenset(
         "poll",
         "wait",
         "sleep",
-        # browser / ui drivers
         "navigate",
         "click",
         "type",
@@ -2893,7 +2873,6 @@ _AUTO_KNOWN_MCP_VERBS = frozenset(
         "scrape",
         "fill",
         "focus",
-        # data shaping
         "sort",
         "filter",
         "group",
@@ -2921,7 +2900,6 @@ _AUTO_KNOWN_MCP_VERBS = frozenset(
         "simulate",
         "plot",
         "chart",
-        # build / ship
         "build",
         "compile",
         "bundle",
@@ -2998,7 +2976,6 @@ _AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
     r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo|promote)(?:[_\-]|$)",
     re.IGNORECASE,
 )
-# Money movement and other irreversible external effects.
 _AUTO_HIGH_IMPACT_MCP_RE = re.compile(
     r"(?:^|[_\-])(?:transfer|payout|payment|pay|charge|refund|wire|remit|"
     r"withdraw|deposit|invoice|subscription|subscriptions|billing|"
@@ -3035,14 +3012,12 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "aiohttp",
         # hf_hub_download and snapshot_download fetch remote files over the network into an on-disk cache.
         "huggingface_hub",
-        # websockets opens a network connection; socketserver binds a listener.
         "websockets",
         "socketserver",
         "ftplib",
         "smtplib",
         "telnetlib",
         "paramiko",
-        # Mail, news, RPC and browser clients open outbound connections (imaplib, poplib, xmlrpc.client).
         "imaplib",
         "poplib",
         "nntplib",
@@ -3058,7 +3033,6 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "dbm",
         # sqlite3.connect(path) creates or mutates a database file with no open()/writer attribute, like dbm.
         "sqlite3",
-        # runpy runs a script/module as code.
         "runpy",
         # ensurepip.bootstrap and venv.create write to disk and can fetch/install packages.
         "ensurepip",
@@ -3110,14 +3084,12 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "connect",
         "bind",
         "sendall",
-        # pathlib link creators, os node/metadata mutators, dynamic import.
         "symlink_to",
         "hardlink_to",
         "link_to",
         "mkfifo",
         "mknod",
         "utime",
-        # os.setxattr / os.removexattr mutate extended attributes, like chmod.
         "setxattr",
         "removexattr",
         "import_module",
@@ -3131,13 +3103,11 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "create_subprocess_shell",
         "subprocess_exec",
         "subprocess_shell",
-        # asyncio outbound connections / listeners, like socket.connect.
         "open_connection",
         "create_connection",
         "create_server",
         "create_unix_connection",
         "create_unix_server",
-        # more asyncio listen/connect + UDP/raw socket helpers.
         "start_server",
         "start_unix_server",
         "open_unix_connection",
@@ -3512,7 +3482,6 @@ _CREDENTIAL_BASENAME_RE = re.compile(
 )
 
 
-# An assignment to one of the studio home variables, anywhere in the command.
 _STUDIO_HOME_ASSIGN_RE = re.compile(
     r"(?:^|[;&|(\s])(?:export\s+|set\s+)?(" + "|".join(_STUDIO_HOME_ENV_VARS) + r")\s*=",
     re.IGNORECASE,
@@ -3547,7 +3516,6 @@ def _assignment_is_inert(text: str, index: int) -> bool:
         if escaped:
             escaped = False
         elif character == "\\" and quote != "'":
-            # A backslash escapes the next char wherever a single quote is not open.
             escaped = True
         elif quote:
             if character == quote:
@@ -3865,8 +3833,7 @@ def _references_studio_credential(text: str) -> bool:
         )
     ]
     if matched:
-        # On case-sensitive filesystems require the original case for literal markers; variable and
-        # `~` spellings keep the folded answer.
+        # Case-sensitive: literal markers need original case; variable and ~ forms stay folded.
         raw_candidates = {text, normalized, unescaped, canonical}
         if _CASE_SENSITIVE_PATHS and not any(
             original in candidate
@@ -3896,7 +3863,6 @@ def _references_studio_credential(text: str) -> bool:
     )
 
 
-# Any run of text that could be a path argument, used to read one token at a time.
 _PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]+")
 # `cd -` and `popd` return; matched in one pass so order is kept.
 _DIRECTORY_MOVE_RE = re.compile(
@@ -4070,7 +4036,6 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
             walked = [(offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked]
             # Closed spans: re-entering the same directory is a new span, not a repeat.
             seen.clear()
-            # Re-open spans for the directories the return lands in.
             for cwd, until in states:
                 if cwd == workdir or until <= match.end() or (cwd, until) in seen:
                     continue
@@ -4336,7 +4301,6 @@ def _calls_in_uncalled_scopes(tree) -> "set[int]":
 _PY_TREE_COPY_CALLS = frozenset({"copytree", "make_archive", "copy_tree", "unpack_archive"})
 # Recursive walks reach `auth/` too; shallow listings read nothing inside it.
 _PY_TREE_WALK_CALLS = frozenset("walk rglob glob iglob".split())
-# `glob` is shallow unless its pattern descends.
 _PY_SHALLOW_UNLESS_RECURSIVE = frozenset({"glob", "iglob"})
 _PY_TREE_ROOT_CALLS = _PY_TREE_COPY_CALLS | _PY_TREE_WALK_CALLS
 # One C-speed scan instead of a substring test per name.
@@ -4435,7 +4399,6 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     # Possible directories: a failed `chdir` may be caught and execution continues.
     chdir_modules = _chdir_modules(tree)
     chdir_names = _chdir_names(tree, chdir_modules)
-    # A `chdir` in an uncalled function never runs.
     inert_moves = _calls_in_uncalled_scopes(tree)
     name_bases = _literal_name_bases(tree)
     # `os.open("../..")` fds joined with a later `dir_fd =` open by the kernel.
@@ -4998,9 +4961,8 @@ _studio_home_lowered_cache: "tuple | None" = None
 
 
 def _studio_home_spellings_lowered() -> "tuple[str, ...]":
-    """Studio root spellings as source text, memoized on the marker table they come from since
-    rebuilding them per python snippet showed up; Windows roots need three forms (backslash,
-    doubled in python literals, forward slash), identical on posix."""
+    """Studio root spellings as source text, memoized since per-snippet rebuilds showed up; Windows
+    needs backslash, python-doubled and forward-slash forms, identical on posix."""
     global _studio_home_lowered_cache
     markers = _studio_auth_dir_markers()[0]
     if _studio_home_lowered_cache is None or _studio_home_lowered_cache[0] is not markers:
@@ -5062,7 +5024,6 @@ _SHELL_VAR_RE = re.compile(r"\$\{(\w+)(?::[^{}]*)?\}|\$(\w+)")
 _SHELL_PARAM_REPL_RE = re.compile(r"\$\{(\w+)/(/)?([^/{}]*)/([^{}]*)\}")
 # Apply case modification (${p,,}) before scanning.
 _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
-# Resolve indirect expansion ${!p}.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
 _SHELL_PARAM_VALUE_OP_RE = re.compile(r"\$\{([A-Za-z_]\w*)(:?)([-=+])([^{}]*)\}")
 # A NAME=value word is an assignment (not an argument) after one of these characters or keywords.
@@ -5153,7 +5114,6 @@ _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
 # Each pass doubles resolved alias hops; leftover work after the cap fails closed.
 _MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
-# Where the memoised node list is parked on a parsed tree (see _tree_nodes).
 _TREE_NODES_ATTR = "_unsloth_walk_nodes"
 
 
@@ -5197,7 +5157,6 @@ def _references_sensitive_path(text: str) -> bool:
     if norm != text and _SENSITIVE_PATH_RE.search(norm):
         return True
     debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
-    # Earlier checks already returned; only the credential test and de-bracketed rewrite still decide.
     return bool(
         _references_studio_credential(text)
         or (debracket != text and _SENSITIVE_PATH_RE.search(debracket))
@@ -5727,7 +5686,6 @@ def _folded_path(
                     name = stem + arg
                 return head + name
             if isinstance(func, ast.Attribute) and func.attr in _PATH_PASSTHROUGH_ATTRS:
-                # Path-preserving normalizers fold their path arg, or the receiver for the Path method form.
                 return fold(node.args[0]) if node.args else fold(func.value)
             if isinstance(func, ast.Attribute) and func.attr == "join":
                 # str.join has the separator as receiver; tell it apart from os.path.join(*pieces).
@@ -5742,11 +5700,9 @@ def _folded_path(
                     return sep.join(pieces)
                 parts = [(fold(a) or "\x00") for a in node.args]
                 return _posix_join(parts)
-            # A bare os.path.join alias (from os.path import join): join(*pieces).
             if isinstance(func, ast.Name) and func.id in join_names:
                 parts = [(fold(a) or "\x00") for a in node.args]
                 return _posix_join(parts)
-            # A bare/qualified/aliased pathlib constructor (Path(...), P(...)).
             if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
                 isinstance(func, ast.Name) and func.id in ctors
             ):
@@ -6046,7 +6002,6 @@ def _is_literal_false(node: ast.AST) -> bool:
 
 
 def _is_inert_loader_arg(node: ast.AST, mmap_slot: bool) -> bool:
-    # False, None, or a string in load's mmap_mode slot.
     return isinstance(node, ast.Constant) and (
         node.value is None or node.value is False or (mmap_slot and isinstance(node.value, str))
     )
@@ -6144,7 +6099,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         return False
 
     def _methodcaller_writes(call) -> bool:
-        # operator.methodcaller is unsafe when its method name is a known writer/mutator or non-constant.
         if not call.args:
             return False
         first = call.args[0]
@@ -6289,7 +6243,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     invoker_aliases.add(alias.asname or alias.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             value = node.value
-            # AnnAssign (f: object = open) has a single target, no destructuring.
             if isinstance(node, ast.AnnAssign):
                 assign_targets = [node.target]
             else:
@@ -6467,7 +6420,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     elif _did in dynamic_aliases:
                         dynamic_aliases.add(_param.arg)
                 elif isinstance(_default, ast.Attribute):
-                    # A writer, archive ctor or .open default binds the parameter; benign attributes like np.mean do not.
                     if _default.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
                         writer_aliases.add(_param.arg)
                     elif _default.attr in _ARCHIVE_CTOR_NAMES:
@@ -6582,7 +6534,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 ):
                     return True
             elif isinstance(node, (ast.BinOp, ast.JoinedStr)):
-                # Sensitive paths built by concatenation, pathlib, f-strings, or literal variables are caught.
                 if _folded_is_sensitive(
                     _folded_path(node, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
                 ):
@@ -6594,7 +6545,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 ):
                     return True
                 func = node.func
-                # Unwrap x.__call__(args) so it reaches the checks below.
                 if isinstance(func, ast.Attribute) and func.attr == "__call__":
                     func = func.value
                 if isinstance(func, (ast.Call, ast.Subscript)):
@@ -6615,8 +6565,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     )
                 ):
                     return True
-                # A write callable passed as an argument to any call can run inside a helper without
-                # a direct open()/writer site; benign callables like len are fine.
+                # Passed write callables can run in a helper; benign ones like len are fine.
                 if any(_passed_write_callable(a) for a in node.args) or any(
                     _passed_write_callable(kw.value) for kw in node.keywords
                 ):
@@ -6844,7 +6793,6 @@ _SQL_DDL_OBJECTS = (
     r"table|database|schema|index|view|function|procedure|trigger|"
     r"sequence|role|user|extension|type|domain|aggregate|policy"
 )
-# Modifiers between the DDL verb and object (CREATE OR REPLACE VIEW, DROP MATERIALIZED VIEW).
 _SQL_DDL_MODIFIERS = (
     r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|recursive)\s+)*"
 )
@@ -6995,8 +6943,7 @@ def _mcp_arguments_mutate(arguments) -> bool:
     return walk(arguments)
 
 
-# render_html runs arbitrary HTML/JS and can egress under the preview CSP when artifact network
-# access is on. Relative, url(#id) and data: refs are not matched.
+# render_html egresses with artifact network on; relative, fragment and data: refs unmatched.
 _RENDER_HTML_NETWORK_RE = re.compile(
     r"\bfetch\s*\(|"
     r"XMLHttpRequest|"
@@ -7076,9 +7023,8 @@ _TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal", "edit_file"})
 
 
 def has_text_only_provisional_card(name: str) -> bool:
-    """True when streaming arguments before approval shows only text, so a long code payload does
-    not leave the chat blank while it is written; nothing runs before approval; MCP calls qualify
-    too, since editor scripts are just as long."""
+    """True when pre-approval streaming shows only text, so long code payloads do not blank the
+    chat; nothing runs before approval; MCP calls qualify, as editor scripts are long."""
     return name in _TEXT_PREVIEW_TOOLS or name.startswith(MCP_TOOL_PREFIX)
 
 
@@ -7132,11 +7078,9 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     return True
 
 
-# High risk regardless of arguments; ordinary dev commands run. The hard blocks, rlimits and
-# env scrubbing still apply beneath this prompt.
+# High risk regardless of arguments; hard blocks, rlimits and env scrubbing still apply.
 _HIGH_RISK_COMMANDS = frozenset(
     {
-        # privilege escalation
         "sudo",
         "su",
         "doas",
@@ -7168,7 +7112,6 @@ _HIGH_RISK_COMMANDS = frozenset(
         "poweroff",
         # setcap grants file capabilities, a privilege change without sudo.
         "setcap",
-        # accounts / persistence / system services
         "crontab",
         # atd runs the payload later, outside this call's blocklist, rlimits and cancellation.
         "at",
@@ -7193,14 +7136,12 @@ _HIGH_RISK_COMMANDS = frozenset(
         "chpasswd",
         "visudo",
         "chsh",
-        # firewall / mounts
         "iptables",
         "ip6tables",
         "nft",
         "ufw",
         "mount",
         "umount",
-        # remote exec / raw network transfer
         "ssh",
         "slogin",
         "scp",
@@ -7797,8 +7738,7 @@ def _is_inline_code_interpreter(name: str) -> bool:
 
 
 def _short_flag_cluster(token: str) -> "list[str]":
-    """Split a combined short-option token into single flags (`-qf` -> ['-q', '-f']); a long option,
-    a `-x=value` form or a bare `-` returns []."""
+    """Split combined flags (`-qf` -> ['-q', '-f']); long, `-x=value` and bare `-` return []."""
     if len(token) < 3 or not token.startswith("-") or token.startswith("--") or "=" in token:
         return []
     return ["-" + ch for ch in token[1:]]
@@ -8277,13 +8217,11 @@ def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
     segments.append(current)
     kept: list = []
     for seg in segments:
-        # Skip leading NAME=value prefixes to find the command word.
         i = 0
         while i < len(seg) and re.match(r"^[A-Za-z_]\w*=", seg[i]):
             i += 1
         if i >= len(seg):
             continue
-        # Step past a wrapper (env curl, timeout 5 curl) to the real client.
         while i < len(seg):
             base = os.path.basename(seg[i].strip(";&|()`{}")).lower()
             if base not in _CLIENT_WRAPPERS:
@@ -8300,8 +8238,7 @@ def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
 
 
 def _command_is_network_exec_or_exfil(command: str) -> bool:
-    """curl/wget used to run remote code (piped into a shell, or via process substitution) or to
-    upload local data. Plain downloads stay out. Fails closed on an unparseable command."""
+    """curl/wget run remote code or upload local data; downloads ok; unparseable fails closed."""
     low = command.lower()
     # A non-curl/wget client (nc, ssh, socat) or openssl's TLS socket is a remote reach; gate it first.
     if _NETWORK_CLIENT_AT_CMD_RE.search(command) or _OPENSSL_NETWORK_RE.search(low):
@@ -9285,13 +9222,11 @@ def _python_is_high_risk(code: str) -> bool:
         return isinstance(node, ast.Attribute) and node.attr in _PY_PROCESS_KILL_ATTRS
 
     def _is_destructive_attr(attr: str, value) -> bool:
-        # Unlink/rmtree-style names flag on any receiver; `remove` only on the os module or its alias.
         if attr in _PY_DESTRUCTIVE_FS_ATTRS:
             return True
         return attr in _PY_DESTRUCTIVE_FS_OS_ATTRS and _is_os_module_ref(value)
 
     def _module_dict_target(value):
-        # The module namespace as a dict: vars(os) or os.__dict__.
         if isinstance(value, ast.Attribute) and value.attr == "__dict__":
             return value.value
         if (
@@ -9724,7 +9659,6 @@ def _python_is_high_risk(code: str) -> bool:
                 name = func.attr
         if name not in ("exec", "eval", "compile", "__import__"):
             continue
-        # The source is the first positional, or the source=/name= keyword when called by keyword.
         arg = node.args[0] if node.args else None
         if arg is None:
             for kw in node.keywords:
@@ -9820,8 +9754,7 @@ def _canon_win_path(p: str) -> str:
 
 
 def _augment_native_program_roots(roots: list[str]) -> list[str]:
-    """Adds the native Program Files sibling for x86 roots by stripping the (x86) suffix, so a
-    32-bit process, whose known-folder ids map only to x86, still trusts a 64-bit Git install."""
+    """Adds native Program Files sibling for (x86) roots so 32-bit processes trust 64-bit Git."""
     out = list(roots)
     for root in roots:
         base = root.rstrip("\\/")
@@ -9951,7 +9884,6 @@ def _safe_path(shell: "str | None" = None) -> "tuple[str, str]":
     exe_dir = os.path.dirname(sys.executable)
     path_entries = [exe_dir] if exe_dir else []
 
-    # If a virtualenv is active, include its bin/Scripts directory.
     venv = os.environ.get("VIRTUAL_ENV")
     if venv:
         venv_bin = os.path.join(venv, "Scripts" if sys.platform == "win32" else "bin")
@@ -9968,8 +9900,7 @@ def _safe_path(shell: "str | None" = None) -> "tuple[str, str]":
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
 
-    # Inherit the host git's dir only under a system install root; user-writable shim dirs would
-    # let a planted rg.exe run as an auto-approved command.
+    # Host git dir only under system roots; user-writable shims let a planted rg.exe auto-run.
     git_ext = ""
     if sys.platform == "win32":
         # Canonical path, scanning past untrusted shims; cannot be retargeted via a junction later.
@@ -10123,7 +10054,6 @@ _BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
         "GIT_CONFIG_SYSTEM",
         "CARGO_HOME",
         "RCLONE_CONFIG",
-        # auth-helper scripts that hand creds to git/ssh
         "GIT_ASKPASS",
         "SSH_ASKPASS",
         # shell startup hook: bash -c sources $BASH_ENV (can re-export secrets)
@@ -10337,8 +10267,7 @@ def _sandbox_preexec():
         except (OSError, AttributeError):
             pass
 
-        # CLONE_NEWNET not applied: with userns it blocks allowlisted egress too. Network policy is
-        # the AST host check and the bash blocklist.
+        # CLONE_NEWNET skipped: userns blocks allowlisted egress; AST host check and blocklist.
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
@@ -10473,8 +10402,7 @@ def _sandbox_exec_shims() -> "tuple[str, str] | None":
 
 
 def _sandbox_rlimit_args() -> "list[str] | None":
-    """The limits _sandbox_preexec would set, as prlimit flags; None if one could fail there (it skips a failing
-    limit, prlimit refuses the launch), so the caller keeps the pre-exec for that host."""
+    """Prlimit flags for pre-exec limits, or None where prlimit would refuse; pre-exec stays."""
     if _resource is None:
         return None
     wanted = []
@@ -10717,8 +10645,7 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
                 os_sandbox.session_package_paths(packages)
             )
             env["PYTHONNOUSERSITE"] = "1"
-            # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
-            # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
+            # Copy only approved CLIs, last on PATH; probes never reach the rest of the folder.
             requested = None
             # Reversed, so the scheme's own scripts dir wins a name clash, as it does on PATH.
             for scripts in reversed(os_sandbox.session_script_dirs(packages)):
@@ -10870,8 +10797,7 @@ def _prepare_tool_launch(
             off_workdir = not user_folder,
             host_script = host_script,
         )
-    # Picked project folders are host access, decided up front and never after a scan finding, which
-    # tool code could plant to drop its boundary; scans also refuse common repos and walk big trees.
+    # Picked folders are host access, decided up front; a planted scan finding cannot drop it.
     if user_folder and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_working_folder")
     try:
@@ -11369,8 +11295,7 @@ def _usable_session_id(session_id: str) -> bool:
 
 
 def _orphan_records_dir() -> str:
-    """Where a kept project workspace's path is recorded: one small file per project, named by its
-    id, since the row that knew the path is gone and a custom workspace cannot be derived."""
+    """One file per project id, since the row is gone and a custom workspace cannot be derived."""
     try:
         from utils.paths.storage_roots import account_path
         return str(account_path("orphaned-projects"))
@@ -11444,8 +11369,7 @@ def _write_orphan_record(kind: str, record_id: str, record: dict) -> None:
 
 
 def record_kept_sandbox(session_id: str) -> None:
-    """Records a chat sandbox kept because a fork still shows its files: the user asked for them to
-    go and the chat is gone, so only the fork's own delete finishes the job."""
+    """Records a kept chat sandbox a fork still shows; only the fork's own delete finishes it."""
     if not session_id:
         return
     try:
@@ -11508,8 +11432,7 @@ def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
 
 
 def _recorded_workspace_remains(workspace: str, root: "str | None") -> bool:
-    """Whether the sandbox or project root a record names is still on disk: a partly failed delete
-    leaves the rest, and dropping the record would lose the path and the user's request."""
+    """Whether a recorded sandbox or root is still on disk; if so, keep its path and request."""
     for path in (workspace, root):
         if path and os.path.isdir(path) and not os.path.islink(path):
             return True
@@ -11627,8 +11550,7 @@ def _orphaned_project_workdir(project_id: str) -> "str | None":
 
 
 def _thread_exists(thread_id: str, unknown: bool = False) -> bool:
-    """Whether a chat of the user's has this id; a failed check returns the unknown value, so
-    deleting callers pass True to keep files, and routing callers pass False."""
+    """Chat exists with this id; a failed check gives unknown (True keeps files, False routes)."""
     try:
         from storage.studio_db import get_chat_thread
         return get_chat_thread(thread_id) is not None
@@ -11822,9 +11744,8 @@ def _mark_sandbox(workdir: str, session_id: str) -> None:
 
 
 def _marker_owner(workdir: str) -> "str | None":
-    """The id this directory was created for, when it says. Anything that is not an id reads as no
-    owner rather than as somebody else's: a tool writing over this file would otherwise send its
-    own chat to a fresh directory on the next launch, leaving its files behind."""
+    """The id this directory was created for, when its marker says so; a non-id reads as no owner,
+    not someone else's, so a tool overwriting the marker cannot strand files."""
     marker = os.path.join(workdir, _SANDBOX_MARKER)
     if os.path.islink(marker):
         return None  # not a marker we wrote, and not one to follow
@@ -11852,8 +11773,7 @@ def _session_dir(root: str, session_id: str) -> str:
 
 
 def _name_suffix(session_id: str) -> str:
-    """Short stable hash tail so one chat keeps its directory; surrogatepass as in _sandbox_name,
-    since a strict encode of a lone-surrogate id would raise instead of stepping aside."""
+    """Stable short hash tail per chat; surrogatepass so a lone surrogate id does not raise."""
     encoded = session_id.encode("utf-8", "surrogatepass")
     return hashlib.sha256(encoded).hexdigest()[:8]
 
@@ -11867,8 +11787,7 @@ _claimed_here: "set[str]" = set()
 
 
 def _claim_sandbox(workdir: str, session_id: str) -> bool:
-    """Writes the marker if absent and reports whether this id owns it; O_EXCL means of two racing
-    processes exactly one claims the directory, the other is told to go elsewhere."""
+    """Writes the marker if absent; O_EXCL lets one of two racing processes claim it."""
     marker = os.path.join(workdir, _SANDBOX_MARKER)
     name = _sandbox_name(session_id)
     try:
@@ -11912,7 +11831,6 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
         if _root_is_ours() and _marker_owner(workdir) is None:
             _mark_sandbox(workdir, session_id)
             return workdir
-        # Somebody else's: take our own name; the fallback gets the same test.
         workdir = _free_fallback_dir(root, session_id)
         if workdir is None or not _contained_in_root(workdir, root):
             return _sandbox_fallback(root, "_invalid")
@@ -11922,8 +11840,7 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
 
 
 def _marked_sandbox_in(root: str, session_id: str) -> "str | None":
-    """Directory in root whose marker names this chat, if any; it is what finds a fresh fallback
-    again on a later launch, read or delete. Bounded: the root may hold many folders."""
+    """Directory in root whose marker names this chat, so a later launch finds the fallback."""
     name = _sandbox_name(session_id)
     # Only names derived from this id: tools can write any owner into the marker.
     candidates = [os.path.join(root, name), *_fallback_candidates(root, session_id)]
@@ -12241,8 +12158,7 @@ def _migrate_legacy_sandbox(root: str) -> None:
 
 
 def _migrate_legacy_sandbox_locked(root: str) -> bool:
-    """True when the legacy root holds nothing movable; a collision is not a failure, since the new
-    root already has that session and the legacy copy is left for the user to find."""
+    """True when nothing movable is left; a collision is not a failure, the legacy copy stays."""
     global _legacy_sandbox_migrated
     legacy = _legacy_sandbox_root()
     try:
@@ -12346,8 +12262,7 @@ _nothing_lock = threading.Lock()
 
 
 def _nothing_to_serve(name: str) -> str:
-    """A path outside every user root; the name is derived first because callers pass the request id
-    straight in, and an absolute id like /etc would make os.path.join drop the root."""
+    """Path outside every root; the name is derived first, else an absolute id drops the root."""
     global _NOTHING_ROOT
     leaf = _sandbox_name(name)
     with _nothing_lock:
@@ -12363,8 +12278,7 @@ def _nothing_to_serve(name: str) -> str:
 
 
 def _contained_in_root(workdir: str, root: str) -> bool:
-    """Whether a resolved path is still inside the sandbox root; also applied to cached paths, since
-    a directory replaced by a symlink after caching would serve from its new target."""
+    """Resolved path is inside root; cached paths too, since a symlink can swap them in later."""
     try:
         resolved, base = os.path.realpath(workdir), os.path.realpath(root)
         # commonpath, not prefix: a filesystem root already ends in a separator.
@@ -12452,8 +12366,7 @@ def _get_workdir(session_id: str | None = None) -> str:
                 os.chmod(sandbox_root_path, 0o700)
             except OSError:
                 pass
-        # Only ours: a shared root can already hold a directory with this name, and tightening it would cut off
-        # whoever else uses it. Never the user's project folder.
+        # Only ours: tightening a shared root cuts others off; never the user's project folder.
         if (created or _sandbox_is_ours(workdir)) and (
             not project_workdir or _is_managed_project_workdir(session_id, project_workdir)
         ):
@@ -12519,14 +12432,12 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         if ours:
             return ours
     if os.path.isdir(workdir) and not _owned_by_session(workdir, session_id):
-        # Somebody else's, so this session has nothing here to serve.
         return _nothing_to_serve(session_id)
     return workdir
 
 
 def migrate_legacy_sandbox_in_background() -> "threading.Thread":
-    """Move the legacy sandbox up at startup, off every request: across filesystems it copies every
-    session, which listings and downloads on the event loop cannot wait on."""
+    """Legacy sandbox migration, run off requests; cross-filesystem moves copy every session."""
 
     def _run() -> None:
         try:
@@ -12566,8 +12477,7 @@ def _drain_detached_deletes() -> None:
 
 
 def _retry_detached_delete(target: str, tries: int) -> None:
-    """Retry a tree that ignore_errors left behind: a scanner-held file is transient (common on
-    Windows), and the user was already told the files went, so no waiting for the next sweep."""
+    """Retries now rather than at the next sweep; scanner-held files are transient on Windows."""
     if tries + 1 >= _MAX_DETACHED_DELETE_TRIES:
         logger.warning("Could not delete %s; the next sweep retries it", target)
         return
@@ -12770,8 +12680,7 @@ def project_session_id(project_id: str) -> str:
 
 
 def wait_for_sessions_idle(session_ids, timeout: float = 10.0) -> bool:
-    """Wait until no tool call runs for these sessions; True if none does. Cancelling only sets an
-    event, so a call in the executor may still use its working directory briefly."""
+    """True if no tool call is still running; cancel only sets an event, so a call may linger."""
     keys = {_session_key(session_id) for session_id in session_ids or []}
     if not keys:
         return True
@@ -12787,8 +12696,7 @@ def wait_for_sessions_idle(session_ids, timeout: float = 10.0) -> bool:
 
 
 def sandbox_removal_deferred(session_id: str) -> bool:
-    """Whether this session's removal is queued behind a running tool call that may still write
-    files after the sandbox looked empty, so the caller cannot yet know what is kept."""
+    """True if removal waits on a tool that may still write after the sandbox looked empty."""
     if not session_id:
         return False
     with _active_sessions_lock:
@@ -13032,8 +12940,7 @@ def _edit_file_receipt(
     count: int,
     change_at: int = 0,
 ) -> str:
-    """A bounded, line-numbered unified diff; it windows the text around the first change and caps
-    the lazy difflib stream, since either bound alone leaks."""
+    """Line-numbered diff windowed near the first change and capped; either bound alone leaks."""
     import difflib
     import itertools
 
@@ -13069,7 +12976,6 @@ def _edit_file_receipt(
         else f"{line[:_EDIT_FILE_DIFF_LINE_CHARS]}... (+{len(line) - _EDIT_FILE_DIFF_LINE_CHARS} chars)"
         for line in diff
     ]
-    # Shift hunks from window to real file line numbers.
     if first_line > 1:
         diff = [_edit_file_shift_hunk(line, first_line - 1) for line in diff]
     body = "\n".join(diff)
@@ -13098,9 +13004,8 @@ def _edit_file_replace_all(value: object) -> "bool | None":
 
 
 def _edit_file_created_sentinel(target: str, workdir: str) -> str:
-    """The __FILES__ row for a file edit_file just created, so its card offers a download; only
-    files the download route can serve qualify (inside workdir, within depth, every segment
-    servable), and edits are not reported since the creating row already downloads current bytes."""
+    """__FILES__ row offering a download for a new file; only servable paths (inside workdir, within
+    depth) qualify; edits are skipped since the creating row already serves current bytes."""
     try:
         root = os.path.realpath(workdir)
         relative = os.path.relpath(target, root)
@@ -13121,8 +13026,7 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
 def _edit_file_parent(
     target: str, workdir: "str | None", create_dirs: bool
 ) -> "tuple[int | None, str]":
-    """(folder fd or None, name); confined POSIX writes open each parent below workdir without
-    following links, so a swapped link fails; unconfined calls and Windows keep the path."""
+    """(dir fd or None, name); POSIX confined opens parents no-follow, so swapped links fail."""
     if workdir is None or not file_history.DIR_FD_WALK:
         if create_dirs:
             os.makedirs(os.path.dirname(target) or ".", exist_ok = True)
@@ -13346,8 +13250,7 @@ def _edit_file(
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace exact strings in a file. See the notes above. The receipt can echo a model-chosen name, so it is
-    defused before the files row of a created file is appended."""
+    """Receipt can echo a model-chosen name, so it is defused before a created file is listed."""
     created: "list[str]" = []
     history: dict = {}
     try:
@@ -13768,7 +13671,6 @@ EDIT_FILE_TOOL = {
     "type": "function",
     "function": {
         "name": "edit_file",
-        # The description steers models off heredocs.
         "description": (
             "Change a file by replacing exact strings. Prefer this over rewriting a "
             "file with python or a shell heredoc: it sends only what changes. Copy each "
@@ -14769,8 +14671,7 @@ def _mcp_tool_prefix(server: dict) -> str:
 
 
 def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
-    """Maps composed function names to raw MCP tool names; names already valid as function.name are
-    claimed first, so no alias can take them."""
+    """Maps composed names to raw MCP names; names valid as function.name win over aliases."""
     prefix = _mcp_tool_prefix(server)
     raw_names = [
         tool["name"] for tool in mcp_tools if tool.get("name") and tool_visible_to(tool, "model")
@@ -15763,9 +15664,8 @@ def _search_knowledge_base_with_budget(
         if deadline is not None and time.monotonic() >= deadline:
             return "Error: knowledge base search timed out."
 
-    # The running search owns the admission slot until it stops; the worker frees it once in
-    # finally, since freeing on caller timeout or cancel lets a second search overlap
-    # embedding/index/GPU work, breaking the capacity-of-one bound.
+    # The worker frees the admission slot in finally, since freeing on caller timeout or cancel lets
+    # a second search overlap embedding/index/GPU work, breaking the capacity-of-one bound.
     _slot_lock = threading.Lock()
     _slot_released = False
 
@@ -16188,7 +16088,6 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
 
     floor_override = rag_scope.get("autoinject_min_score")
     floor = float(floor_override) if floor_override is not None else _autoinject_floor()
-    # Cap at the lean top_k, but honor a lower user setting.
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     # Zero or below is no limit to the search, which then returns its own default count.
@@ -16900,16 +16799,14 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
-# Fake-IP DNS (Clash/sing-box/Surge TUN) answers from 198.18.0.0/15; allowed only once the resolver probe sees it
-# (else any public domain could point into the range). Literals stay refused.
+# Fake-IP 198.18.0.0/15 is allowed only once the resolver probe sees it; literals stay refused.
 _FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 _FAKE_IP_PROBE_TTL = 60.0
 _fake_ip_probe: list = [None, False]  # (monotonic time checked, answer)
 
 
 def _resolver_is_fake_ip() -> bool:
-    """Whether the system resolver answers a name nobody registered from the fake-IP range, as fake-IP DNS answers every
-    name and real DNS says NXDOMAIN. Without this, any public domain could point into the range."""
+    """True if the resolver answers an unknown fake-IP name; else any domain could point there."""
     import secrets
     import socket
 
@@ -17012,7 +16909,6 @@ def _is_text_candidate_content_type(content_type: str | None) -> bool:
     return False
 
 
-# First path segments on github.com that are site pages, not repo owners.
 _GITHUB_NON_OWNER_SEGMENTS = frozenset(
     {
         "about",
@@ -17088,9 +16984,8 @@ def _github_blob_raw_url(url: str) -> str | None:
     return f"https://raw.githubusercontent.com/{owner}/{repo}/" + "/".join(parts[3:])
 
 
-# A single fetch can chain several steps (README API attempt, HTML fallback, up to five redirect hops, each reading a
-# body). A per-operation socket timeout bounds one stalled step but not their sum, and nothing aborts on client
-# disconnect, so one overall wall-clock deadline (plus a cooperative cancel_event) bounds the whole fetch instead.
+# A per-socket timeout bounds one step, not a fetch chaining README, HTML and redirect hops; nothing
+# aborts on client disconnect, so one deadline and cancel_event bound the whole fetch.
 def _fetch_budget_exceeded(deadline, cancel_event):
     """User-facing error string when the fetch must stop early, else None."""
     if cancel_event is not None and cancel_event.is_set():
@@ -17619,8 +17514,7 @@ def _fetch_url_raw(
                 local = _host_problem(current_host)
                 if local:
                     return f"Blocked: {local}.", "", ""
-                # Enterprise proxies need the hostname in CONNECT for policy and TLS interception, and they resolve
-                # it, so nothing rebinds behind us.
+                # Proxy needs CONNECT hostname (policy, TLS); it resolves, so nothing rebinds.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
             else:
                 # Pin the first validated IP against DNS rebinding; the rest are below.
@@ -17915,8 +17809,7 @@ def _looks_like_html(body: str) -> bool:
     return bool(_HTML_LEADING_RE.match(probe))
 
 
-# Only a real document opener, so a Markdown README starting with an HTML block is not
-# collapsed by html_to_markdown.
+# Only real document openers match, so a Markdown README starting with HTML is not collapsed.
 _HTML_DOCUMENT_RE = re.compile(r"<(?:!doctype\s+html\b|/?(?:html|head|body)\b)")
 
 
@@ -17984,8 +17877,7 @@ def _tool_result_char_budget() -> int:
 
 
 def _other_tool_result_char_budget(name = None) -> int:
-    """Web, edit and the other built-in tools keep the install cap: their results are bounded by their own caps. An MCP
-    result has none, so it follows the Settings > Chat limit like Python and Terminal (#13576)."""
+    """Built-in tools keep the install cap; MCP results follow Settings > Chat limit (#13576)."""
     if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX):
         return _tool_result_char_budget()
     return _result_char_budget(_MAX_OUTPUT_CHARS)
@@ -18083,19 +17975,16 @@ def _dense_prefix_chars(text: str, token_budget: float) -> int:
     return length
 
 
-# Probe as a user turn: some templates (Gemma-4) drop standalone tool messages, so their
-# payload would go unpriced, and Mistral rejects most tool call ids.
+# User turn: some templates (Gemma-4) drop tool messages; Mistral rejects most tool call ids.
 _PROBE_ROLE = "user"
 
 # Far past real text (densest 128 chars/token); dropped content gives hundreds or infinity.
 _MAX_PROBE_CHARS_PER_TOKEN = 256
 
-# Counts are a pure function of (model, template, window, chunk) and cost two llama-server
-# calls. Keyed on the server process: user extra args can override the chat template.
+# Keyed on the server process: user extra args can override the chat template.
 _PROBE_COUNT_CACHE: dict = {}
 
-# Tool calls run in threads; the LRU touch and eviction are not atomic. Held only around dict
-# work, never across a count; a duplicate measurement is harmless.
+# Tool calls run in threads: LRU touch and eviction are not atomic; lock only dict work.
 _PROBE_COUNT_LOCK = threading.Lock()
 
 # Named so the two special cases cannot drift from a bare "".
@@ -18132,8 +18021,7 @@ def _probe_identity(llama, ctx: int):
 
 
 def _probe_cache(llama, ctx: int) -> dict:
-    """Count cache for the model serving this request; a fresh per-call dict when it has no
-    identity, so callers keep one code path and nothing is reused."""
+    """Per-model count cache; a fresh dict when there is no identity, so nothing is reused."""
     identity = _probe_identity(llama, ctx)
     if identity is None:
         return {}
@@ -18236,8 +18124,7 @@ def _loaded_token_counter(ctx: int):
             _remember(chunk, value)
         return value
 
-    # Empty-turn baseline: a template rendering no content shows as a count that does not move.
-    # Left in the total (errs smaller).
+    # Empty-turn baseline (no content, count does not move) stays in the total, errs smaller.
     baseline: list[int] = []
 
     def _framing() -> int:
@@ -18288,8 +18175,7 @@ def _exact_prefix_chars(
     counter = _loaded_token_counter(ctx)
     if counter is None:
         return chars
-    # Returns a measured fit, the caller's estimate, or the floor, never an unmeasured shrink:
-    # cutting prose off dense-then-English output raises the remaining density.
+    # Returns a measured fit, the estimate, or the floor, never an unmeasured shrink.
     previous = None  # the last (chars, tokens) pair, for the secant step below
     for _ in range(_EXACT_FIT_PASSES):
         # A count that already fits can skip pricing the baseline. See `_count`.
@@ -18572,8 +18458,7 @@ def _ddgs_wait_recording(
 
 
 def _ddgs_text(client, query, max_results, backend) -> list:
-    """Wraps client.text to keep answers ddgs drops: its batch wait returns at the first failure,
-    losing slower engines' results (#15143); the executor has joined them by return."""
+    """Keeps slower engines' results that a first failure drops (#15143); executor joins them."""
     _DDGS_PENDING.futures = []
     try:
         results, error = client.text(query, max_results = max_results, backend = backend), None
@@ -19032,7 +18917,6 @@ def _web_search(
     image_queries = None,
 ) -> str:
     """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
-    # Direct URL fetch mode.
     if url and url.strip():
         return _fetch_page_text(
             url.strip(),
@@ -19417,8 +19301,7 @@ def _network_candidates_possible(nodes) -> bool:
 
 
 def _check_signal_escape_patterns(code: str):
-    """Returns (safe, details) for patterns escaping signal-based timeouts; vendored from
-    unsloth_zoo.rl_environments since unsloth_zoo needs GPU drivers and fails on Apple Silicon."""
+    """Returns (safe, details); vendored: unsloth_zoo needs GPU drivers, fails on Apple Silicon"""
     tree, _parse_error = _parse_python(code)
     if _parse_error is not None:
         e = _parse_error
@@ -19454,7 +19337,6 @@ def _check_signal_escape_patterns(code: str):
             return full_name in names
         return False
 
-    # Dangerous os/subprocess functions that can execute shell commands.
     _SHELL_EXEC_FUNCS = frozenset(
         {
             "os.system",
@@ -19551,7 +19433,6 @@ def _check_signal_escape_patterns(code: str):
     ) | {"modules"}
 
     def _module_expr(dotted):
-        # posix and nt are the os module under its platform name.
         top, _, rest = dotted.partition(".")
         if top in ("posix", "nt"):
             dotted = "os" + (f".{rest}" if rest else "")
@@ -19897,13 +19778,11 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Shell escape detection: resolve the FQ function name for os.*/subprocess.*
             self._followed.add(id(func))
             self._flag_shell_reference(self._shell_method_named_by, node)
             shell_func = self._converged(self._shell_func_of, func)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
-                # Expand **kwargs dicts to inspect their keys.
                 expanded_kwargs: dict[str, ast.AST] = {}
                 has_opaque_kwargs = False
                 for kw in node.keywords:
@@ -20156,7 +20035,6 @@ def _check_signal_escape_patterns(code: str):
         }
     )
     _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
-    # Calls whose first positional is the host or URL.
     _NETWORK_URL_ARG0_FQ = frozenset(
         {
             "socket.create_connection",
@@ -20381,7 +20259,6 @@ def _check_signal_escape_patterns(code: str):
             "preupload_lfs_files",
         }
     )
-    # Cloud-metadata / link-local hosts.
     _METADATA_HOST_LITERALS = {
         "169.254.169.254",
         "fd00:ec2::254",
@@ -20400,14 +20277,12 @@ def _check_signal_escape_patterns(code: str):
     # Allowlist kept explicit so each entry is auditable.
     _TRUSTED_PUBLIC_HOST_LITERALS = frozenset(
         {
-            # search
             "www.google.com",
             "google.com",
             "www.bing.com",
             "bing.com",
             "duckduckgo.com",
             "html.duckduckgo.com",
-            # encyclopedic / reference
             "wikipedia.org",
             "www.wikipedia.org",
             "wikimedia.org",
@@ -20418,7 +20293,6 @@ def _check_signal_escape_patterns(code: str):
             "www.britannica.com",
             "openlibrary.org",
             "www.openstreetmap.org",
-            # ML / dev / data
             "huggingface.co",
             "hf.co",
             "github.com",
@@ -20432,7 +20306,6 @@ def _check_signal_escape_patterns(code: str):
             "registry.npmjs.org",
             "crates.io",
             "static.crates.io",
-            # docs
             "docs.python.org",
             "python.org",
             "www.python.org",
@@ -20451,7 +20324,6 @@ def _check_signal_escape_patterns(code: str):
             "matplotlib.org",
             "fastapi.tiangolo.com",
             "starlette.io",
-            # academic
             "arxiv.org",
             "export.arxiv.org",
             "scholar.google.com",
@@ -20464,25 +20336,21 @@ def _check_signal_escape_patterns(code: str):
             "www.medrxiv.org",
             "pubmed.ncbi.nlm.nih.gov",
             "www.ncbi.nlm.nih.gov",
-            # Q&A / community
             "stackoverflow.com",
             "stackexchange.com",
             "askubuntu.com",
             "superuser.com",
             "serverfault.com",
-            # standards
             "www.w3.org",
             "tools.ietf.org",
             "datatracker.ietf.org",
             "www.rfc-editor.org",
-            # reputable news
             "www.bbc.com",
             "www.bbc.co.uk",
             "www.reuters.com",
             "apnews.com",
             "www.nature.com",
             "www.science.org",
-            # government / open data
             "data.gov",
             "catalog.data.gov",
             "www.census.gov",
@@ -20491,7 +20359,6 @@ def _check_signal_escape_patterns(code: str):
             "www.cdc.gov",
             "www.nih.gov",
             "www.who.int",
-            # weather / time
             "api.weather.gov",
             "worldtimeapi.org",
         }
@@ -20617,8 +20484,7 @@ def _check_signal_escape_patterns(code: str):
     _hf_in_scope = _module_has_hf_import(tree)
 
     def _method_call_hf_upload_name(node: ast.Call) -> str | None:
-        """Return the HF upload method name or None, for Attribute and bare-Name calls; bare names
-        fire only with an HF import in scope so paramiko/boto3 don't false-positive."""
+        """Returns HF upload method or None; bare names need HF import to spare paramiko/boto3."""
         if not _hf_in_scope:
             return None
         f = node.func
@@ -20909,9 +20775,8 @@ def _check_signal_escape_patterns(code: str):
         return "://" not in target
 
     def _local_database_names(nodes) -> frozenset:
-        """Names that can only ever hold sqlite3 or duckdb across the whole source; scope-blind on
-        purpose, so any other binding or star import fails closed to the host check; `db =
-        sqlite3` copies are kept and resolved with a worklist so long chains stay linear."""
+        """Names that only ever hold sqlite3 or duckdb; scope-blind by design, so other bindings or
+        star imports fail closed; copies resolve via a worklist so long chains stay linear."""
         imported: set[str] = set()
         other: set[str] = set()
         copies: dict[str, set[str]] = {}
@@ -21450,8 +21315,7 @@ def _check_signal_escape_patterns(code: str):
             return found
 
         def _shadowing_names(self, node) -> "list[str]":
-            """Names a node binds in the enclosing scope, the only scope that can shadow an import;
-            a def or class binds its own name there and its parameters inside itself."""
+            """Names bound in the enclosing scope, the only scope that can shadow an import."""
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 return [node.name]
             if isinstance(node, ast.Lambda):
@@ -22506,8 +22370,7 @@ def _check_code_safety(
 
 
 def _adopt_tool_pid(pid: "int | None") -> None:
-    """Records a tool pid for the startup sweep, since macOS has no parent-death signal and a force
-    quit would orphan it; best-effort, never breaks a tool call."""
+    """Records tool pid for the startup sweep (macOS lacks parent-death signals); best-effort."""
     if not pid:
         return
     try:
@@ -23135,9 +22998,8 @@ _DIR_FD_WRITES = (
 )
 
 
-# A tool sharing the directory can swap an in-flight temp name for a symlink. Linking must not follow it, or the
-# backend hard-links the symlink's target (any host file it can read) into the sandbox. Windows hard links never
-# follow a symlink source, and os.link there takes no such flag.
+# A tool in the directory can swap a temp name for a symlink; linking must not follow it, or the
+# target is hard-linked into the sandbox. Windows hard links never follow a symlink source.
 _LINK_NOFOLLOW = (
     {"follow_symlinks": False} if os.link in getattr(os, "supports_follow_symlinks", set()) else {}
 )
@@ -23467,8 +23329,7 @@ def _file_digest(path: str, expected_size: "int | None" = None) -> "str | None":
     flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
     fd = None
     try:
-        # Windows has no O_NOFOLLOW: refuse a link up front, and a link swapped in before the
-        # open shows up as a different file once it is open.
+        # No O_NOFOLLOW on Windows: refuse links; a link swapped before open is another file.
         named = None if no_follow else os.lstat(path)
         if named is not None and not stat.S_ISREG(named.st_mode):
             return None
@@ -23573,8 +23434,7 @@ def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | No
 
 
 def _spill_phrase(spill: str, complete: bool) -> str:
-    """Notice phrase naming the spill, full or partial; lower case because the caller capitalises
-    it, and case-folding a whole sentence would fold the path."""
+    """Lower case as the caller capitalises it; case-folding the sentence would fold the path."""
     if complete:
         return f"full output saved to {spill}"
     return f"the first {_SPILL_MAX_BYTES} bytes of it are saved to {spill}"
@@ -23772,8 +23632,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
                 continue
             if _unlink_verified_spill(root, path, owned):
                 removed.add(path)
-        # Manifest follows the files: a name left after its file is gone would still count as owned.
-        # Sandbox removal drops the record without this lock; a recreated directory must not inherit it.
+        # Manifest written after the files; a recreated directory must not inherit the record.
         if not os.path.exists(_spill_record_path(root)):
             identity = None
         _write_spill_manifest(
@@ -24859,7 +24718,6 @@ def _bash_exec(
         # A same-UID child can read /proc/<ppid>/environ; best-effort since the child env is scrubbed.
         _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
-        # Fail closed if the /proc/<parent>/environ path cannot be closed.
         return (
             "Execution error: could not harden the Unsloth process against "
             "/proc environment reads; refusing bypass execution."

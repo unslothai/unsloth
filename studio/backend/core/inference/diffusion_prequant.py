@@ -106,7 +106,6 @@ def _prequant_safe_globals() -> list:
 
 _SAFE_GLOBALS_LOCK = _threading.Lock()
 _SAFE_GLOBALS_REGISTERED: Optional[bool] = None
-# Filled in by the registration: which of the names above this install actually resolved.
 _RESOLVED_SAFE_GLOBALS: set = set()
 
 # Globals each scheme's checkpoints name, read via pickletools; unused names are not required.
@@ -392,7 +391,6 @@ def _local_prequant_path_allowed(path: str) -> bool:
     symlink cannot point an allowlisted name at a file outside the allowed roots."""
     import os
 
-    # Studio's own pre-quant cache root only.
     try:
         from .diffusion_prequant_cache import path_in_cache
         if path_in_cache(path):
@@ -679,7 +677,6 @@ def prefer_cached_pickle_twins(
         def _reusable(name: str) -> bool:
             if not _ok(name) or not _cached(name):
                 return False
-            # same pickle trust rule as below
             if name.lower().endswith(_PICKLE_SUFFIXES):
                 return not prefer_safetensors and _verified(name)
             return True
@@ -966,10 +963,8 @@ def resolve_prequant_source(
     base_repo: Optional[str] = None,
     task: Optional[str] = None,
 ) -> Optional[PrequantSource]:
-    """Returns the source for (fam, scheme): path_override, else hosted repo (variant per
-    base_repo), else None to quantise dense; task (MiniMax-H3 partitions) only selects a more
-    specific filename, unset resolves as before; names are repo-root, since a nested checkpoint
-    would 404 and silently go dense."""
+    """Path override, else hosted repo (variant per base_repo), else None to quantise dense; task
+    only selects a more specific filename; a nested name would 404 and silently go dense."""
     if nvfp4_blocked(scheme):
         return None
     override = (path_override or "").strip()
@@ -2255,8 +2250,7 @@ def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
 
 
 def _reports_rejected_cache_entry(fn: Any) -> Any:
-    """Report an unusable cache entry so the dense fallback build replaces it; a forced fp8 accumulate mismatch is
-    the request's choice, not a fault, and leaves the entry alone."""
+    """Flags a bad cache entry for rebuild; a forced fp8 accumulate mismatch leaves it alone."""
 
     @functools.wraps(fn)
     def wrapper(transformer_cls: Any, base: str, source: Any, *args: Any, **kwargs: Any) -> Any:

@@ -778,8 +778,7 @@ def _one_card_rejection(plan: Any, primary: int) -> PlacementCandidate:
 
 
 # One card plus a copy before a layer split when a copy fits and streaming is hidden; below
-# STREAM_HIDDEN_FRACTION exposed, card speed spread (T4s 10% apart) decides instead; splits add no
-# parallelism
+# STREAM_HIDDEN_FRACTION exposed, card speed spread decides instead; splits add no parallelism.
 STREAM_HIDDEN_FRACTION = 0.05
 STREAM_GATE_ENV = "UNSLOTH_DIFFUSION_SPLIT_STREAM_GATE"
 _GEMM_PROBES: dict = {}
@@ -946,9 +945,8 @@ def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> 
     if exposed >= STREAM_HIDDEN_FRACTION:
         return None
     if streamed > 0:
-        # Split vs whole depends on which card runs cooler (FLUX.1-dev -7.7% to +4.4%, Klein-9B 0%
-        # to +14% on T4 VMs), so main split stays and no image is slower than main; applies when
-        # primary holds whole denoiser
+        # Split vs whole depends on which card runs cooler, so main's split stays (no image slower
+        # than main); applies when primary holds the whole denoiser.
         return None
     return (
         f"one card plus a copy on cuda:{partner}: streaming is hidden behind compute ({_gib(streamed)} per step in "
@@ -981,8 +979,7 @@ def _copy_partner(pipe: Any, selection: Any) -> Optional[int]:
 _STREAM_ESTIMATES: "weakref.WeakKeyDictionary[Any, dict]" = weakref.WeakKeyDictionary()
 
 
-# Guided loads: one card plus a CFG replica running the second branch concurrently beats a split, which runs both
-# branches serially (Kaggle 2x T4, Wan 2.2 5B: 3.9 vs 4.9 s/step). ``0`` = split first; ``force`` = replica, unpriced.
+# A concurrent CFG replica beats a serial split; 0 = split first, force = unpriced replica.
 CFG_REPLICA_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_CFG_REPLICA_PLACEMENT"
 # The FLOP price under-reads a real forward (T4 Wan 5B: 1.13 s priced, 2.5 s measured), so the real margin is wider.
 REPLICA_MIN_GAIN = 1.05
@@ -1063,7 +1060,6 @@ def video_default_tokens(pipe: Any, width: int, height: int, frames: int) -> Opt
         return None
 
 
-# These classes never run their guidance branches on two cards.
 REPLICA_LAYOUT_UNSPLITTABLE: dict[str, str] = {
     "HiDreamImageTransformer2DModel": "the pipeline batches both branches inside its llama states (dim 1), which no "
     "cut separates",
@@ -4228,8 +4224,7 @@ class CfgParallelRouter:
         return free, total
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
-        # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place
-        # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
+        # Unpredicted: inputs copied after the primary; in-place edits make the copy stale.
         self.prefetched.clear()
         _mirror_hook_state(self.pairs)
         sig = self._signature(args, kwargs)
@@ -4358,9 +4353,8 @@ class UnetCfgParallelRouter(CfgParallelRouter):
         return _join_batch(first, second)
 
 
-# DiT classes whose batch may be cut along dim 0 (every per-sample input is a dim-0 tensor; ids, when unbatched, keep
-# a leading size that is the token count, never the batch). Z-Image passes per-sample lists and has its own split.
-# Lumina 2: a half pads captions to its own longest, and the padding is masked out (fp order only).
+# Batch-cut DiT classes need per-sample dim-0 tensors (unbatched ids lead with the token count);
+# Z-Image has its own split; Lumina 2 pads captions per half, masked (fp order only).
 _DIT_BATCH_SPLIT_KWARGS = {
     "FluxTransformer2DModel": frozenset(
         {
@@ -4587,8 +4581,7 @@ def cfg_parallel_decline(
 
     if is_layer_split(denoiser):
         return "denoiser is split across cards (layer split)"
-    # Whole-module / sequential offload page the denoiser per call; a group / streaming plan is fine only when it left
-    # the denoiser itself resident (encoders streamed), which shows as a denoiser without offload hooks.
+    # Model/sequential offload pages the denoiser; group/streaming only if it stays resident.
     if offload_policy in ("model", "sequential"):
         return f"denoiser is offloaded ({offload_policy})"
     hooked = _hooks_present(denoiser)

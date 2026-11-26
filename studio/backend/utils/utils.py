@@ -106,7 +106,6 @@ def _stdlib_proxy_for_url(url: str) -> Optional[str]:
         pass
     proxies = {k.lower(): v for k, v in getproxies().items()}
     scheme = (parsed.scheme or "https").lower()
-    # select_proxy order: scheme://host, then scheme, then the all catch-all.
     for key in (f"{scheme}://{host}", scheme, "all"):
         value = proxies.get(key)
         if value:

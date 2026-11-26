@@ -96,7 +96,6 @@ def build_default_output_dir_name(
 
 
 def model_segment_from_default_output_dir_name(output_dir_name: str) -> Optional[str]:
-    """Return the encoded model segment from a default run folder name."""
     parts = str(output_dir_name or "").rsplit("_", 1)
     # isascii() first: str.isdigit() accepts every Unicode decimal digit.
     if len(parts) != 2 or not (parts[1].isascii() and parts[1].isdigit()):

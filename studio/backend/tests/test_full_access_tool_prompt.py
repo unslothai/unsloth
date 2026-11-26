@@ -324,7 +324,6 @@ def test_a_chosen_project_folder_is_named_in_every_mode(full_access):
     assert "rather than asking the user to upload or paste them" in nudge
     # A read can fail or an approval be denied: the model reports that, not a blanket "no access".
     assert "if a read fails or is denied, say what failed" in nudge
-    # Additive: nothing the nudge said before is dropped.
     assert nudge == plain + " " + _project_folder_tip({"python", "terminal"})
     assert ("where Unsloth Studio is running" in nudge) == full_access
 

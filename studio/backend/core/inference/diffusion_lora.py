@@ -693,7 +693,6 @@ def _pick_repo_weight_file(
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
-    # Prefer a lora-hinting filename, else the first safetensors, else a gguf.
     for f in safes:
         if "lora" in f.lower():
             return f
@@ -765,8 +764,7 @@ def resolve_specs(
     return out
 
 
-# sd.cpp reads fused FLUX.1 q/k/v as numbered pieces, stopping at a gap; quantized GGUFs drop
-# uncovered targets, so staging pads gaps with rank-1 zero pairs to keep partial adapters' updates.
+# Gaps in fused FLUX.1 q/k/v stop sd.cpp and GGUFs drop them; zero pairs keep partial updates.
 _FLUX1_SPLIT_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})
 _FLUX1_SPLIT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("transformer_blocks", ("attn.to_q", "attn.to_k", "attn.to_v")),
@@ -782,8 +780,7 @@ _SAFETENSORS_DTYPE_BYTES = {
     "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
 }  # fmt: skip
 _FLUX1_MLP_RATIO = 4
-# Shapes come from the adapter's own header. Real FLUX.1 pieces (hidden 3072, rank 1) add well under 1 MiB in
-# total, so a header claiming more is not a FLUX.1 adapter and is staged as-is instead of padded.
+# Real FLUX.1 pieces (hidden 3072, rank 1) total under 1 MiB; a bigger header is not padded.
 _FLUX1_MAX_SPLIT_PAD_BYTES = 256 * 1024 * 1024
 
 
@@ -975,7 +972,6 @@ def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
 
 
 def _fmt_weight(w: float) -> str:
-    # Stable, compact float formatting (no trailing zeros): 1.0 -> "1", 0.75 -> "0.75".
     s = f"{w:.4f}".rstrip("0").rstrip(".")
     return s or "0"
 

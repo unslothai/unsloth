@@ -155,8 +155,7 @@ def _digest(files: list) -> str:
 
 
 def _materialise(src: Path, manifest: dict) -> Path:
-    """Copy the shipped files into a writable per-stack dir (MIOpen may append records there). A dir already seeded
-    from the same shipped bytes is kept as is, so records MIOpen added since survive; a new shipped db replaces it."""
+    """Writable copy (MIOpen appends records); kept if seeded from same bytes, else replaced."""
     from .diffusion_compile_cache import cache_root
 
     files = _db_files(src, manifest)

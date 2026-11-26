@@ -22,9 +22,8 @@ def _hip_sees(
     count,
     totals = None,
 ):
-    """Declare HIP's own inventory: how many devices it opens, and the total memory
-    it reports per physical id. Empty totals mean torch could not describe the
-    devices, which the probe fails open on."""
+    """Declares HIP's device count and per-physical-id total memory; empty totals mean torch could
+    not describe the devices, so the probe fails open."""
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_device_count", staticmethod(lambda: count))
     monkeypatch.setattr(
         LlamaCppBackend,

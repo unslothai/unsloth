@@ -31,8 +31,7 @@ _INT8PACK_ALIGN = 32
 # chip's own bf16 GEMM by this much (M1: about 1.3x; M3 parity; M5 4x behind, as its 16-bit GEMM uses matrix units).
 _INT8PACK_MIN_SPEEDUP = 1.10
 _INT8PACK_PROBE_ROWS = 1024
-# (dtype, in_features, out_features) of the probed layer -> verdict for this process (one chip per process). Each
-# quantised transformer's layers carry their own verdict, so a later model with other shapes is probed afresh.
+# Per (dtype, in_features, out_features) verdict, per process; other shapes are probed afresh.
 _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
@@ -380,8 +379,7 @@ def rocm_rdna_w8a8_ready(ordinal: Optional[int] = None) -> bool:
 
 
 def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
-    """Compiled ``_w8a8_rows`` for an input on ``device`` (current card when None), or None if disabled, no inductor
-    runtime, a ROCm arch other than RDNA3 / RDNA4, or already failed on that card."""
+    """Compiled fn or None if disabled, no inductor, non-RDNA3/4 ROCm, or failed on that card."""
     if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
         return None
     devices = _FUSED_STATE.get("devices")
@@ -429,8 +427,7 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
         return fn
     # Registered in eager, before any trace reads the handle.
     _FUSED_STATE["row_major"] = _row_major_op()
-    # Every key exists before the first trace: older dynamo guards on len(_FUSED_STATE), so adding
-    # "calls" after the first call would recompile each compiled function once.
+    # Older dynamo guards on len(_FUSED_STATE), so every key must exist before first trace.
     _FUSED_STATE.setdefault("calls", 0)
     fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
     # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
@@ -1033,7 +1030,6 @@ def native_linear_class():
             return x.device.type == "mps" and x.numel() > 0 and self._int8pack_layer_ok(x.dtype)
 
         def int8pack_engaged(self, dtype: Any) -> bool:
-            """Whether a ``dtype`` forward on the stored device takes the Metal int8 kernel."""
             device = self.weight_q.device
             return (
                 device.type == "mps"
@@ -1102,7 +1098,6 @@ def is_native_linear(module: Any) -> bool:
 
 
 def is_native_quantised(module: Any) -> bool:
-    """Whether any layer of ``module`` has been swapped for a native weight-only Linear."""
     try:
         return any(is_native_linear(sub) for sub in module.modules())
     except Exception:  # noqa: BLE001 -- a probe must never replace the failure it describes

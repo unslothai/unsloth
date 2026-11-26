@@ -167,8 +167,7 @@ def test_a_peak_no_phase_recorded_render_explains_keeps_the_whole_render_reserve
 
 
 def test_encoders_that_cannot_all_stay_resident_size_against_the_pre_decode_phase(qwen_pipe):
-    """16 GiB: the transformer streams, so the unpadded check does not apply; the encoders size against encode +
-    steps (padded), and the decode borrows the difference."""
+    """Encoders size against padded encode + steps at 16 GiB; decode borrows the difference."""
     plan = _qwen_flat_plan(budget_mib = 13132, total_mib = 16384)
     _record(B200["peak"])
     before = _refine(qwen_pipe, plan)
@@ -471,7 +470,6 @@ def test_decode_streams_lent_encoders_only_when_free_memory_is_short(monkeypatch
     assert calls == [6785 + dm._DECODE_SLACK_MIB - 5000]
     # a larger canvas scales the learned decode the way the store does
     assert dm.decode_need_mib(pipe._unsloth_decode_lend, width = 2048, height = 2048) == 6785 * 4
-    # no lend, no check
     assert dm.release_for_decode(types.SimpleNamespace(), width = 1024, height = 1024) is None
 
 
@@ -638,8 +636,7 @@ def _write_v1(store, entries):
 
 
 def test_pre_workflow_store_peak_no_longer_sizes_txt2img(qwen_pipe, store):
-    """Before workflow keys every workflow recorded max-wins under the load key: an old edit peak there must not
-    reserve for text-to-image (nor block the phase split) once a txt2img render records its own peak."""
+    """Pre-workflow peaks under the load key must not size or block txt2img once it has one."""
     plan = _qwen_flat_plan()
     fresh = _refine(qwen_pipe, plan)
     base = mp.model_key(

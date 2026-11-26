@@ -207,7 +207,6 @@ class TestMtpReserveIsRepricedPerCandidate:
         assert use_fit is False and gi == [0] and slots == 2
 
     def test_holding_the_reserve_at_the_requested_count_would_reject_them_all(self):
-        # Charging every candidate the 4-slot reserve made even one slot look too big.
         gi, use_fit, slots = self._fit(lambda _s, _ub: int(500 * 4 * MIB))
         assert use_fit is True and gi is None and slots == 4
 

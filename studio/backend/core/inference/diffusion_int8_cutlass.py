@@ -91,9 +91,7 @@ def row_bucket(m: int) -> int:
 
 
 FILL_TIE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES"
-# Race timings this close to the fastest winner are a tie. L4, 3072x9216 at 4224 rows: the same tile's sustained race
-# timing moved 1.7-5.7% between loads, and a 256-row tile won by 2.1% while it runs 2.4% slower sustained at 4176 rows
-# (2252 vs 1779 us in the pipeline) than the 128-row tile it beat.
+# Timings within 3% of the fastest winner are a tie; sustained timings moved 1.7-5.7% between loads.
 _FILL_TIE = 0.03
 
 
@@ -616,7 +614,6 @@ _CLOCK_DRIFT = 0.05
 
 
 def sustained_decides(m: int, short: dict, sustained: dict, base_name: str) -> tuple:
-    """(decide on the sustained timings, today's sustained / short - 1)."""
     try:
         drift = float(sustained[base_name]) / float(short[base_name]) - 1.0
     except (KeyError, TypeError, ZeroDivisionError):

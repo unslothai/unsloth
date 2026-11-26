@@ -304,8 +304,7 @@ def eligible_replay_images(
 
 
 def replay_image_total(messages: Sequence[dict], parsed: "dict | None" = None) -> int:
-    """Pictures counted as the tool loop admits them (per result quota, at most the cap per parallel
-    batch); parsed collects each result's images for eligible_replay_images."""
+    """Counts images the loop admits (per-result quota, batch cap); fills parsed for replay."""
     call_names = resolve_tool_names(messages)
     total = 0
     batch = 0
@@ -924,8 +923,7 @@ def promote_history(
     reserve_for_caller: bool = False,
     limit: "int | None" = MAX_TOTAL_MODEL_IMAGES,
 ) -> list[dict]:
-    """Strips the envelope from tool text either way, so text-only models never see base64. limit
-    None keeps every picture, for a compacting chat whose tool loop keeps them too."""
+    """Strips envelopes either way (text-only models never see base64); limit None keeps all."""
     out, _payloads, promoted = _promote(
         messages, vision, local = False, reserve_for_caller = reserve_for_caller, limit = limit
     )
@@ -941,8 +939,7 @@ def promote_history_local(
     decode_cache: "dict | None" = None,
     caller_images: Sequence = (),
 ) -> tuple[list[dict], list[str]]:
-    """For backends taking pixels beside the prompt; caller_images supplies pixels for existing
-    markers, which keep their positions and survive trimming"""
+    """Pixel-beside-prompt backends; caller_images fills existing markers, kept through trims."""
     out, payloads, _promoted = _promote(
         messages, vision, local = True, decode_cache = decode_cache, caller_images = caller_images
     )

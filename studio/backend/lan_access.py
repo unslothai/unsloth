@@ -217,7 +217,6 @@ def _already_served(address: str, port: int) -> bool:
 
 
 def _bind_listener(address: str, port: int) -> socket.socket:
-    """A listening socket on exactly ``address:port``."""
     if sys.platform == "darwin" and _already_served(address, port):
         # BSD SO_REUSEADDR binds under another app's 0.0.0.0 listener and steals its LAN traffic.
         raise OSError(errno.EADDRINUSE, f"{address}:{port} is already served")
@@ -478,7 +477,6 @@ def stop_lan_listener() -> bool:
 
 
 def lan_listener_status() -> dict:
-    """Runtime view of the listener: whether it serves, where, and why not."""
     with _lock:
         return {
             "running": _server is not None,

@@ -103,11 +103,9 @@ _SYSTEM_READ_SILENT_ROOTS = (
     "/run",
     # Older name of /run; on macOS the real location is /private/var/run, which /etc/resolv.conf links into, so resolved paths must stay silent.
     "/var/run",
-    # macOS
     "/System",
     "/Library",
     "/Applications",
-    # Windows
     "C:\\Windows",
     "C:\\Program Files",
     "C:\\Program Files (x86)",
@@ -444,8 +442,7 @@ def _uncovered_runtime_subtree(path: str, roots) -> bool:
 
 
 def _follows_its_own_root_link(candidate: str, resolved: str, roots) -> bool:
-    """A root linking INTO a runtime subtree exempts only candidates under it that resolve inside
-    that target; a broad root (/var/run -> /run) exempts nothing"""
+    """Links into runtime subtrees exempt only what resolves inside; a broad root exempts none"""
     for root in roots:
         if not _contained_in(candidate, (root,)):
             continue
@@ -630,7 +627,6 @@ _PATH_READ_COMMANDS = frozenset(
 )
 
 
-# Commands whose file operands are CREATED or OVERWRITTEN.
 _PATH_WRITE_COMMANDS = frozenset(
     {
         # A permission change modifies file metadata, so it is a write; its first operand is a mode or owner.
@@ -710,7 +706,6 @@ _PATH_ARG_SKIP = {
 _PATH_SKIP_FIRST_ARG_ONLY = frozenset({"tar"})
 
 
-# Long spellings of archive write modes, including --delete and --concatenate.
 _ARCHIVE_CREATE_LONG_FLAGS = frozenset(
     {"--create", "--append", "--update", "--delete", "--concatenate", "--catenate"}
 )
@@ -1040,7 +1035,6 @@ _PATH_FLAG_SPECS = {
 }
 
 
-# ripgrep's own path options, on top of the grep spec it inherits below.
 _RG_EXTRA_FLAG_SPEC = {
     "--ignore-file": "read",
     "--pre": "skip",
@@ -1084,7 +1078,6 @@ _WRAPPER_LEADING_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _PATH_HINT_RE = re.compile(r"[/~\\:]")
 
 
-# `sed -i` rewrites its operands in place, unlike a plain sed.
 _SED_INPLACE_FLAGS = ("-i", "--in-place")
 # A short option that consumes the rest of its token as a value, so `perl -Ilib` is not an `-i`.
 _SHORT_OPTION_VALUE_CHARS = "eflI"
@@ -1109,7 +1102,6 @@ _REDIR_WRITE_RE = re.compile(r"^\d*(?:>>?\|?|&>>?)$")
 _REDIR_READ_RE = re.compile(r"^\d*<$")
 
 
-# The here-document and here-string forms, matched only to skip the word that follows them.
 _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 
 
@@ -1242,7 +1234,6 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     and a flag value that is not a path (``head -n 5``) cannot look absolute. Redirection targets
     are included whichever command owns them, since ``> /abs/file`` truncates that file regardless.
     """
-    # Absolute operands need a root, tilde, backslash or drive colon; otherwise skip the scan.
     if not any(_PATH_HINT_RE.search(t) for t in tokens):
         return []
     # shlex does not split on < and >, so `echo X>/media/x` is one token.
@@ -1497,7 +1488,6 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 index += 1
                 continue
             if candidate.startswith("-") and candidate != "-":
-                # A wrapper flag that takes a separate value consumes the token after it.
                 index += 1
                 takes_value = _WRAPPER_VALUE_FLAGS_BY_CMD.get(base)
                 if (
@@ -1585,7 +1575,6 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         # Long spellings carry the same mode: `tar --create --file=/models/out.tar` was misread as a READ.
         or any(arg.split("=", 1)[0] in _ARCHIVE_CREATE_LONG_FLAGS for arg in args)
     )
-    # Whether the archive came from `-f`/`--file` rather than from the first positional.
     archive_from_flag = command in _PATH_ARCHIVE_COMMANDS and any(
         arg.split("=", 1)[0] in ("-f", "--file")
         or (arg.startswith("-") and not arg.startswith("--") and "f" in arg.lstrip("-"))
@@ -1959,7 +1948,6 @@ def _lex_keeping_backslashes(text: str) -> "list[str] | None":
     return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 
 
-# A token can only carry an absolute path if it holds a separator, a tilde or a drive colon.
 _ABSOLUTE_HINT_RE = re.compile(r"[/~\\]|^[A-Za-z]:")
 
 
@@ -2498,7 +2486,6 @@ def _python_path_bindings(
             targets, value = [node.target], node.value
         else:
             continue
-        # Tuple targets bind elementwise, per target.
         pairs = []
         for target in targets:
             if isinstance(target, ast.Tuple) and isinstance(value, (ast.Tuple, ast.List)):
@@ -2559,8 +2546,7 @@ def _capped_alternates(values) -> "list[str]":
     if len(values) <= _MAX_REBOUND_ALTERNATES:
         return values
 
-    # Ranked by approval cost so the cap never drops a value that needs it. Write-silent roots are
-    # a subset of read-silent ones, so the ranking covers both modes.
+    # Ranked by approval cost so the cap keeps needy values; covers both read and write modes.
     def rank(value: str) -> int:
         if _path_needs_approval(value):
             return 0
@@ -2862,7 +2848,6 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # torch.save / joblib.dump put the destination second, unlike numpy.save.
             add(second, True)
         elif name in _PY_PATH_EXTRACT_CALLS:
-            # Extraction destination is the first arg for extractall, the second for extract.
             add(second if name == "extract" else first, True)
             for keyword in _call_keywords(node):
                 if keyword.arg == "path":

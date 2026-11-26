@@ -231,8 +231,7 @@ def _lowp_scale_bytes(linear) -> int:
 
 
 def _frozen_bytes(module, targets = frozenset()) -> int:
-    """Host bytes swapping ``module`` frees: its frozen parameters, plus the codes of an already converted frozen
-    fp8 / W8A8 Linear (a buffer until it is swapped). A Linear in ``targets`` (ids) counts as its converted codes."""
+    """Host RAM freed by swapping: frozen params + fp8/W8A8 codes; targets count as converted."""
     total = 0
     for m in module.modules():
         conv = id(m) in targets
@@ -277,8 +276,7 @@ def activation_reserve_bytes(
     n_blocks: int,
     batch: int = 1,
 ) -> int:
-    """VRAM kept free for one fully checkpointed step: saved block inputs, one block's recompute, fixed headroom.
-    ``total_vram`` is the VRAM the run can use (install passes min(free, total))."""
+    """Checkpointed-step VRAM reserve; total_vram is usable, install passes min(free, total)."""
     elems = max(1, tokens) * max(1, hidden) * max(1, batch)
     act = elems * (_SAVED_PER_BLOCK * max(1, n_blocks) + 2 * _RECOMPUTE_FACTOR)
     return int(max(_RESERVE_MIN_BYTES, _RESERVE_FRACTION * total_vram) + act)
@@ -531,8 +529,7 @@ def compile_swapped_blocks(
 
 
 def reset_block_swaps(transformer) -> int:
-    """After an out-of-memory error mid-step: give every slot back and arm the first blocks, so the rerun starts from
-    a clean pool (no block left resident or marked as held by the failed graph). Returns the swappers reset."""
+    """OOM mid-step: free all slots, arm first blocks for clean rerun; returns swappers reset."""
     n = 0
     for s in getattr(transformer, "_unsloth_block_swaps", None) or ():
         try:

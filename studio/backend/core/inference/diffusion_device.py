@@ -164,8 +164,7 @@ def install_frame_pad_fix(
 
 
 def mps_synchronize() -> None:
-    """A blocking read waits on the stream's serial queue; torch.mps.synchronize() (torch <= 2.13) commits
-    off it and aborts ("already committed command buffer") while another thread copies (pytorch#197836)."""
+    """torch.mps.synchronize() (torch <= 2.13) aborts with a concurrent copy (pytorch#197836)."""
     import torch
     torch.zeros(1, device = "mps").cpu()
 
@@ -176,8 +175,7 @@ def install_vae_sync(
     *,
     logger: Any = None,
 ) -> bool:
-    """Sync Metal after each VAE decoder/encoder call (per tile or frame): Metal cannot reuse a
-    buffer until queued work holding it finishes; empty_cache cannot return intermediates."""
+    """Sync per VAE call: queued work pins Metal buffers, and empty_cache can't free them."""
     if target.device != "mps":
         return False
     vae = getattr(pipe, "vae", None)
@@ -294,8 +292,7 @@ def install_rocm_vae_bf16_decode(
     if mode == "weights" and not parts:
         mode = "autocast"  # no separable decode half: cast nothing
 
-    # The wrapped decode lives in a mutable slot (as the fp16 decode's does): a layer that must sit under this cast (a
-    # compiled decode guard under the OOM scope) can be found and rewrapped in place.
+    # Decode sits in a mutable slot so a compiled guard under this cast can be rewrapped.
     slot = types.SimpleNamespace(decode = decode)
     if mode == "weights":
         for part in parts:
@@ -367,7 +364,6 @@ def resolve_selected_cuda_ordinal(
 
 
 def _ranking_room_mib(free_mib: int, total_mib: Optional[int]) -> int:
-    """What a card offers a primary pick."""
     from .diffusion_memory import DeviceMemory, _safe_device_budget_mib, _user_budget_reserve_mib
 
     if _user_budget_reserve_mib(1 << 20) <= 0:
@@ -1005,9 +1001,8 @@ _MPS_CAP_OS_RESERVE_FRAC = 0.10
 def mps_high_watermark_ratio(
     recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
 ) -> Optional[float]:
-    """Caps Metal allocations at RAM minus an OS reserve, never below the recommended working set;
-    None if a reading is missing. torch's 1.7x default exceeds RAM and swaps; 0.0 lifts the
-    limit; a finite cap raises an OOM RuntimeError that batch backoff and VAE tile retry handle."""
+    """Caps Metal at RAM minus OS reserve, not below the working set (None if unread); 0.0 lifts it
+    (torch's 1.7x default swaps); finite caps raise OOM that backoff and tile retry handle."""
     try:
         recommended = int(recommended_bytes or 0)
         total = int(total_ram_bytes or 0)

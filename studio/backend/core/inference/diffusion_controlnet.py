@@ -16,8 +16,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 # Control map types. "passthrough": the supplied image IS the control map. "canny": derive an edge map here.
 CONTROL_TYPES = ("passthrough", "canny")
 
-# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated off like LoRA, along
-# with GGUF-via-diffusers.
+# Torchao tensor subclasses can't host ControlNet; gated off like LoRA and GGUF-via-diffusers.
 _DIFFUSERS_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
 
 
@@ -75,7 +74,6 @@ def controlnets_dir() -> Path:
 
 
 def sanitize_id(raw: str) -> str:
-    """Filesystem-safe id from a repo id / folder name."""
     stem = raw.rsplit("/", 1)[-1]
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
     return stem or "controlnet"

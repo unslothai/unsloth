@@ -1097,8 +1097,7 @@ def _install_kernel(
     if failure_key in _FAILED_INSTALLS:
         logger.info("%s already failed to install in this process; not retrying", display_name)
         if extension is not None and _is_importable(import_name):
-            # A later load reinstalled the extension-free copy after this route failed: drop it, or
-            # this load takes mamba_ssm's fast path and fails in selective_scan_fn.
+            # Drop the copy, or mamba_ssm's fast path fails in selective_scan_fn.
             if _drop_extension_free_copy(import_name, display_name, pypi_name, extension, run):
                 _note_removed(newly_installed, import_name)
         return False
@@ -1168,8 +1167,7 @@ def _install_kernel(
             installed = False
         finally:
             if installed is False:
-                # A failed replacement removes the extension-free copy too: left in place, a Mamba-1
-                # load would take mamba_ssm's fast path and fail in selective_scan_fn.
+                # Failed replacements remove the copy; else Mamba-1 fails in selective_scan_fn.
                 _remove_broken(pypi_name, display_name, run)
                 if replacing:
                     forget_imported_modules(import_name, extension)
@@ -1389,7 +1387,6 @@ def ensure_ssm_runtime(
     mamba_ssm_fatal = bool(mamba_ssm_required and mamba_ssm_fatal)
     if wants_causal_conv1d is None:
         wants_causal_conv1d = model_wants_causal_conv1d(model_name)
-    # Every mamba-ssm model also runs causal-conv1d.
     wants_causal_conv1d = wants_causal_conv1d or is_ssm
     installed: list[str] = []
     if not (wants_causal_conv1d or is_ssm):
