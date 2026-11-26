@@ -1360,3 +1360,52 @@ def test_an_opening_that_does_not_fit_preserves_existing_citation_ids(rag_conn, 
     assert re.findall(r'<chunk id="(\d+)"', text) == ["1", "2"]
     assert [source["citationId"] for source in json.loads(sources)] == [1, 2]
     assert "Bravo opening" not in text
+
+
+def test_budgeted_attachment_overview_keeps_the_ranked_lead(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "a", "alpha.txt", "h1", ["Alpha opening"], tokens = [8000])
+    _add_doc(rag_conn, scope, "b", "bravo.txt", "h2", ["Bravo opening"], tokens = [8000])
+    hits = [
+        {"chunkId": "a:1", "documentId": "a", "text": "Controlling terms"},
+        {"chunkId": "a:2", "documentId": "a", "text": "Secondary terms"},
+    ]
+    monkeypatch.setattr(
+        tool,
+        "search_for_autoinject",
+        lambda **scope: None if scope["min_dense_score"] is not None else (tool.render_sources(hits), hits),
+    )
+    monkeypatch.setattr(
+        inf_tools, "_text_token_cost", lambda text, _: 200 * text.count("<chunk id=")
+    )
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Compare the attached documents on their terms"),
+        {"thread_id": "t1", "autoinject": False, "context_length": 2048, "default_top_k": 2},
+    )
+    text = _injected_text(result)
+    assert "Controlling terms" in text
+    assert "Bravo opening" in text
+    assert "Alpha opening" not in text
+
+
+def test_named_subset_does_not_force_every_attachment_into_the_overview(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    for doc in ("alpha", "bravo", "charlie"):
+        _add_doc(rag_conn, scope, doc, doc + ".txt", doc, [doc + " opening"], tokens = [8000])
+    hits = [
+        {"chunkId": "alpha:0", "documentId": "alpha", "text": "Alpha terms"},
+        {"chunkId": "bravo:0", "documentId": "bravo", "text": "Bravo terms"},
+        {"chunkId": "alpha:1", "documentId": "alpha", "text": "Liquidated damages clause"},
+    ]
+    monkeypatch.setattr(
+        tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits)
+    )
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Compare the attached documents alpha.txt and bravo.txt. Ignore charlie.txt."),
+        {"thread_id": "t1", "default_top_k": 3},
+    )
+    text = _injected_text(result)
+    assert "Liquidated damages clause" in text
+    assert "charlie opening" not in text

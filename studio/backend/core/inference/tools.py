@@ -16282,13 +16282,16 @@ _ATTACHMENT_OVERVIEW = re.compile(
     r"(?:these |the )?(?P<two>two) |"
     r"(?:the |these )(?=attached ))(?:attached )?"
     r"(?:files|docs|documents|attachments|pdfs|reports)\b"
+    r"(?=\s*(?:[.!?]?\s*$|(?:on|about|regarding|in|with respect to)\b))"
     r"|^\s*what\s+are\s+(?:these|the attached)\s+"
     r"(?:files|docs|documents|attachments|pdfs|reports)\s+about\s*\??\s*$",
     re.IGNORECASE,
 )
 
 
-def _cover_thread_attachments(query, thread_id, thread_docs, hits, top_k, document_opening):
+def _cover_thread_attachments(
+    query, thread_id, thread_docs, hits, top_k, document_opening, ranked_thread_lead = None
+):
     """Keep one hit per attachment and preserve any project hits."""
     if not thread_docs or not 1 < len(thread_docs) <= top_k:
         return None
@@ -16298,6 +16301,8 @@ def _cover_thread_attachments(query, thread_id, thread_docs, hits, top_k, docume
         and (request.group("two") or (request.group("quantifier") or "").lower() == "both")
     ):
         return None
+    if ranked_thread_lead is not None:
+        hits = sorted(hits, key = lambda hit: hit.get("chunkId") != ranked_thread_lead)
     covered = set()
     required, extra = [], []
     for hit in hits:
@@ -16416,8 +16421,10 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
 
     thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
     opening_ids: set = set()
+    ranked_thread_lead = None
 
     def retrieve_thread_unfloored(*, max_tokens = None):
+        nonlocal ranked_thread_lead
         # Lexical-only misses generic requests ("summarize this"), so retry with the dense leg.
         if thread_docs is not None and not thread_docs:
             return None
@@ -16450,6 +16457,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             # render_sources renumbered these hits in place for the merged list.
             return render_sources(found[1]), found[1]
         opening_ids.update(seen)
+        ranked_thread_lead = found[1][0].get("chunkId")
         return kept
 
     def _strong_thread_match() -> bool:
@@ -16532,7 +16540,8 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             return None
         try:
             covered = _cover_thread_attachments(
-                query, thread_id, thread_docs, found[1] if found else [], top_k, document_opening
+                query, thread_id, thread_docs, found[1] if found else [], top_k, document_opening,
+                ranked_thread_lead,
             )
         except Exception:
             logger.warning("RAG attachment coverage failed", exc_info = True)
