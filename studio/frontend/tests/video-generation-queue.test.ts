@@ -75,11 +75,25 @@ test("after a reload the oldest queued job is resumed, whatever its source", () 
     job("failed", "failed", { created_at: 50 }),
     job("oldest", "queued", { created_at: 100, source: "api", queue_position: 3, eta_seconds: 400 }),
     job("chat", "queued", { created_at: 200, source: "chat" }),
-    job("starting", "starting", { created_at: 10 }),
   ];
   assert.deepEqual(oldestQueuedVideo(jobs), { videoId: "oldest", position: 3, etaSeconds: 400 });
-  assert.equal(oldestQueuedVideo([job("a", "cancelled"), job("b", "starting")]), null);
+  assert.equal(oldestQueuedVideo([job("a", "cancelled"), job("b", "failed")]), null);
   assert.equal(oldestQueuedVideo([]), null);
+});
+
+test("after a reload a job caught starting is resumed too, and its start keeps being followed", () => {
+  const jobs = [
+    job("queued", "queued", { created_at: 200 }),
+    job("starting", "starting", { created_at: 10, queue_position: 1, eta_seconds: 0 }),
+  ];
+  assert.deepEqual(oldestQueuedVideo(jobs), { videoId: "starting", position: 1, etaSeconds: 0 });
+  assert.equal(queuedVideoNext(jobs, "starting").kind, "queued");
+});
+
+test("Cancel while rendering names the followed clip, so a successor of the account is never stopped", () => {
+  const page = readSrc("features/video/video-page.tsx");
+  assert.match(page, /cancelVideoGeneration\(\s*queuedVideoId \?\? genVideoId\.current \?\? undefined,?\s*\)/);
+  assert.doesNotMatch(page, /cancelVideoGeneration\(queuedVideoId \?\? undefined\)/);
 });
 
 test("a progress record tagged with another job is not ours", () => {
@@ -151,7 +165,6 @@ test("the page queues on submit, cancels by id and resumes the queue on mount", 
   const page = readSrc("features/video/video-page.tsx");
   assert.match(page, /if \(accepted\.status === "queued" && accepted\.video_id\) \{\s*startQueuePoll\(/);
   assert.match(page, /startGenPoll\(accepted\.video_id \?\? null\);/);
-  assert.match(page, /cancelVideoGeneration\(queuedVideoId \?\? undefined\)/);
   assert.match(page, /const queued = oldestQueuedVideo\(await getVideoQueue\(\)\);/);
   assert.match(page, /if \(next\.kind === "started"\) \{\s*startGenPoll\(job\.videoId\);/);
   assert.match(page, /queuedVideoLabel\(queuedVideo\.position, queuedVideo\.etaSeconds\)/);

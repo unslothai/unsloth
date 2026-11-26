@@ -4033,7 +4033,11 @@ function VideoGenerator({
     setStopping(true);
     try {
       // A queued job is dropped by id; a rendering one stops at the next step.
-      const { cancelled } = await cancelVideoGeneration(queuedVideoId ?? undefined);
+      // While rendering, the followed clip's id: the queue may already have started a successor of
+      // this account, and a bare cancel would stop that one instead.
+      const { cancelled } = await cancelVideoGeneration(
+        queuedVideoId ?? genVideoId.current ?? undefined,
+      );
       if (!cancelled) {
         setStopping(false);
         return;

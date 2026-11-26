@@ -45,7 +45,8 @@ export function queuedVideoNext(jobs: VideoQueueJob[], videoId: string): QueuedV
 export function oldestQueuedVideo(jobs: VideoQueueJob[]): QueuedVideo | null {
   let oldest: VideoQueueJob | null = null;
   for (const job of jobs) {
-    if (job.status !== "queued") continue;
+    // "starting" too: it has no progress record yet, and its start may still take a model load.
+    if (job.status !== "queued" && job.status !== "starting") continue;
     if (oldest === null || job.created_at < oldest.created_at) oldest = job;
   }
   return oldest
