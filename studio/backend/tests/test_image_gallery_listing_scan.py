@@ -103,15 +103,17 @@ def test_listing_matches_the_glob_listing(monkeypatch, full_entry_stat, folds_ca
     _mixed_gallery()
     monkeypatch.setattr(images, "_ENTRY_STAT_IS_FULL", full_entry_stat)
     monkeypatch.setattr(images, "_GLOB_FOLDS_CASE", folds_case)
-    if folds_case:
-        real_glob = Path.glob
-        monkeypatch.setattr(
-            Path,
-            "glob",
-            lambda self, pattern: [
-                p for p in real_glob(self, "*") if p.name.lower().endswith(pattern[1:])
-            ],
-        )
+    # Emulate the host's glob case rule either way, so both cells run on every OS.
+    real_glob = Path.glob
+    monkeypatch.setattr(
+        Path,
+        "glob",
+        lambda self, pattern: [
+            p
+            for p in real_glob(self, "*")
+            if (p.name.lower() if folds_case else p.name).endswith(pattern[1:])
+        ],
+    )
     for archived in (False, True):
         expected = _glob_order(archived)
         assert [r["id"] for r in images.list_images(archived = archived)] == expected
@@ -150,7 +152,9 @@ def test_a_rewrite_between_listings_is_reread(monkeypatch, full_entry_stat):
     monkeypatch.setattr(images, "_ENTRY_STAT_IS_FULL", full_entry_stat)
     _png("img.png", 1, _T0)
     assert images.list_images()[0]["seed"] == 1
-    _png("img.png", 2, _T0)
+    # Same size and mtime: POSIX ctime catches the rewrite; Windows st_ctime is creation time,
+    # so there (on base too) only the new mtime a real rewrite gets does.
+    _png("img.png", 2, _T0 if os.name != "nt" else _T0 + 1_000_000)
     assert images.list_images()[0]["seed"] == 2
 
 
