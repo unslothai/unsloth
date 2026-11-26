@@ -149,12 +149,26 @@ def test_table_family_keeps_covered_weights(gfx, monkeypatch):
     assert wp.STATS["skipped_table"] == 1
 
 
-def test_other_family_ignores_foreign_rows(gfx, monkeypatch):
-    """Wan's token counts never reach klein's / Qwen's rows, so a shared (N, K) is padded as without a table."""
+def test_default_keeps_every_covered_shape_for_any_family(gfx, monkeypatch):
+    """Env unset: a GEMM main served from the table keeps its contiguous weight, so the render stays byte-identical."""
     _table_on(monkeypatch)
+    dit = Dit()
+    assert wp.pad_weights(dit, family = "wan2.2-ti2v-5b") == 1
+    assert dit.attn.weight.is_contiguous() and _padded(dit.ffn)
+    assert wp.STATS["skipped_table"] == 1
+
+
+def test_explicit_pitch_uses_the_family_rule(gfx, monkeypatch):
+    """Env set: a family the table was not tuned for pads a shared (N, K) as without a table."""
+    _table_on(monkeypatch)
+    monkeypatch.setenv(wp.PITCH_ENV, "64")
     dit = Dit()
     assert wp.pad_weights(dit, family = "wan2.2-ti2v-5b") == 2
     assert wp.STATS["skipped_table"] == 0
+    dit = Dit()
+    assert (
+        wp.pad_weights(dit, family = "qwen-image-2.1") == 1
+    )  # table family keeps its rows either way
 
 
 def test_no_table_pads_table_families(gfx):

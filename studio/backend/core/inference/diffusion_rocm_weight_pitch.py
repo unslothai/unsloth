@@ -8,12 +8,17 @@ untuned hipBLASLt, P = 64: block linear sums 1.09x Wan 5B, 1.26x Krea-2, 1.31x Q
 FLUX.3 klein; real Krea-2 block 1.21x; Wan 2.2 5B 832x480x49 denoise 42.2 -> 38.8 s. Weight memory +P / K (0.4-2%).
 
 A TunableOp row is keyed on the leading dimension, so a padded weight misses the shipped table (0.90-0.94x on Qwen /
-klein GEMMs). With a table active, a family the table was tuned for (``TABLE_FAMILIES``, or any family while the user
-tunes or has a local tuned cache) keeps every weight whose (N, K) has a row in the loaded results contiguous; other
-families' token counts never reach those rows, so they are padded as without a table.
+klein GEMMs) and its GEMM takes another solution. By default (env unset) every weight whose (N, K) has a row in the
+loaded TunableOp results stays contiguous, whatever the family: a padded GEMM was never served from the table, so
+the render stays byte-identical to main (AMD CI gfx1151: klein, Qwen-Image-2.1, Wan on Windows). On Linux the
+shipped klein / Qwen table also holds rows for some Wan 5B shapes (3072 x 3072 attention projections, M = 1
+timestep rows), so the default pads only Wan's FFN there. ``UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH=<P>`` keeps only the
+family rule: a family the table was tuned for (``TABLE_FAMILIES``, or any family while the user tunes or has a local
+tuned cache) keeps its covered weights, other families pad every eligible weight (Wan 5B Linux: denoise -8.2%, but
+small GEMMs leave their tuned rows, LPIPS 0.12 against main after 8 steps).
 
-``UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH``: unset = on (P = 64) for ``DEFAULT_ON_ARCHES``; ``0`` off; ``<P>`` (a
-multiple of 8) forces it with pitch P on any gfx11xx card. Counts land in ``STATS``."""
+``UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH``: unset = on (P = 64, table rows kept) for ``DEFAULT_ON_ARCHES``; ``0`` off;
+``<P>`` (a multiple of 8) forces pitch P on any gfx11xx card with the family rule. Counts land in ``STATS``."""
 
 from __future__ import annotations
 
@@ -152,6 +157,17 @@ def install(
     return 1
 
 
+def _release_old_storage(torch: Any) -> None:
+    """The contiguous weights just replaced go back to the caching allocator; hand them to the driver so the re-store
+    costs P / K, not a second copy of the denoiser (AMD CI Wan 5B: reserved +5.2 GiB otherwise; on an APU that is
+    system RAM)."""
+    try:
+        if torch.cuda.is_available() and not torch.cuda.is_current_stream_capturing():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - a later allocation reuses the blocks anyway
+        pass
+
+
 def pad_weights(
     module: Any,
     logger: Any = None,
@@ -195,7 +211,8 @@ def pad_weights(
                 skipped_other += 1
                 continue
             if guard is None:
-                guard = shapes is not None and _table_family(family, arch)
+                # env unset: keep every covered (N, K) (byte-identical to main); explicit pitch: the family rule
+                guard = shapes is not None and (not _env() or _table_family(family, arch))
             N, K = w.shape
             if guard and ("*" in shapes or (int(N), int(K)) in shapes):
                 skipped_table += 1
