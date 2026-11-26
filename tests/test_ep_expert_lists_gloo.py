@@ -709,24 +709,29 @@ def test_ep_expert_lists_grouped_experts_only_for_standard_expert_mlps():
     lst = torch.nn.Module()
     for e in range(4):
         lst.add_module(str(e), qwen3_moe.Qwen3MoeMLP(config, intermediate_size = 8))
-    shard = types.SimpleNamespace(lo = 2, hi = 4)
-    experts, names = lists._grouped_spec(shard, lst)
-    assert list(experts) == [lst._modules["2"], lst._modules["3"]] and names == (
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-    )
-    assert lists._grouped_spec(shard, lst)[0] is experts  # cached per shard
-    rows = torch.randn(3, 16)
-    assert lists._grouped_locals(shard, lst, rows, torch.arange(3), [2, 1]) is None
-    assert shard.grouped_declined == "cpu torch.float32 rows", shard.grouped_declined
-    patched = types.SimpleNamespace(lo = 0, hi = 2)
-    lst._modules["0"].forward = lambda x: x
-    assert "hooks" in lists._grouped_spec(patched, lst)
-    os.environ[lists._GROUPED_ENV] = "0"
+    saved = os.environ.pop(lists._GROUPED_ENV, None)  # the caller's kill switch must not leak in
     try:
+        shard = types.SimpleNamespace(lo = 2, hi = 4)
+        experts, names = lists._grouped_spec(shard, lst, [3, 1])
+        assert list(experts) == [lst._modules["2"], lst._modules["3"]]
+        assert names == ("gate_proj", "up_proj", "down_proj")
+        assert lists._grouped_spec(shard, lst, [3, 1])[0] is experts  # the ModuleList is reused
+        # Only experts that received rows: one with none keeps unset gradients, as in the loop.
+        assert list(lists._grouped_spec(shard, lst, [0, 2])[0]) == [lst._modules["3"]]
+        rows = torch.randn(3, 16)
+        assert lists._grouped_locals(shard, lst, rows, torch.arange(3), [2, 1]) is None
+        assert shard.grouped_declined == "cpu torch.float32 rows", shard.grouped_declined
+        # A hook or patched forward added after a cached call still sends the block to the loop.
+        lst._modules["3"].register_forward_hook(lambda *a: None)
+        assert "hooks" in lists._grouped_spec(shard, lst, [3, 1])
+        lst._modules["0"].forward = lambda x: x
+        assert "hooks" in lists._grouped_spec(types.SimpleNamespace(lo = 0, hi = 2), lst, [1, 1])
+        os.environ[lists._GROUPED_ENV] = "0"
         assert (
-            lists._grouped_spec(types.SimpleNamespace(lo = 2, hi = 4), lst) == f"{lists._GROUPED_ENV}=0"
+            lists._grouped_spec(types.SimpleNamespace(lo = 2, hi = 4), lst, [1, 1])
+            == f"{lists._GROUPED_ENV}=0"
         )
     finally:
-        os.environ.pop(lists._GROUPED_ENV)
+        os.environ.pop(lists._GROUPED_ENV, None)
+        if saved is not None:
+            os.environ[lists._GROUPED_ENV] = saved

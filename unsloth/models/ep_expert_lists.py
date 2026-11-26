@@ -442,19 +442,14 @@ _GROUPED_MLPS = {
 _GROUPED_ENV = "UNSLOTH_EP_GROUPED_EXPERTS"
 
 
-def _grouped_spec(shard, lst):
-    """(experts as one ModuleList, projection names) for this rank's experts, cached per shard, or a reason."""
+def _grouped_spec(shard, lst, counts):
+    """(the experts that received rows as one ModuleList, projection names), or a reason. Only routed experts go in,
+    so an expert with no rows keeps unset gradients, as in the loop. The checks run every call (hooks and patched
+    forwards can appear later); the ModuleList, which the zoo kernels cache their dequant tables on, is reused."""
     lo, hi = shard.lo, shard.hi
     if hi <= lo or os.environ.get(_GROUPED_ENV, "1") == "0":
         return "no local experts" if hi <= lo else f"{_GROUPED_ENV}=0"
-    experts = [lst._modules[str(e)] for e in range(lo, hi)]
-    hit = shard.__dict__.get("_grouped")
-    if (
-        hit is not None
-        and len(hit[0]) == len(experts)
-        and all(a is b for a, b in zip(hit[0], experts))
-    ):
-        return hit
+    experts = [lst._modules[str(lo + j)] for j, count in enumerate(counts) if count]
     kind = type(experts[0])
     names = _GROUPED_MLPS.get(kind.__name__)
     if (
@@ -468,9 +463,14 @@ def _grouped_spec(shard, lst):
         for m in experts
     ):
         return "experts of different types, or with hooks"
-    # A ModuleList the zoo kernels can cache their stacked-dequant tables on (not attached to the model).
-    shard.__dict__["_grouped"] = hit = (nn.ModuleList(experts), names)
-    return hit
+    cache = shard.__dict__.setdefault("_grouped", {})
+    key = tuple(id(m) for m in experts)
+    hit = cache.get(key)
+    if hit is None:
+        if len(cache) >= 8:
+            cache.pop(next(iter(cache)))
+        cache[key] = hit = nn.ModuleList(experts)  # not attached to the model
+    return hit, names
 
 
 def _grouped_locals(shard, lst, got_x, perm, counts):
@@ -481,7 +481,7 @@ def _grouped_locals(shard, lst, got_x, perm, counts):
         if not got_x.is_cuda
         or got_x.dtype not in (torch.float16, torch.bfloat16)
         or got_x.shape[0] == 0
-        else _grouped_spec(shard, lst)
+        else _grouped_spec(shard, lst, counts)
     )
     if isinstance(found, str):
         shard.grouped_declined = found
@@ -503,7 +503,8 @@ def _grouped_locals(shard, lst, got_x, perm, counts):
         shard.grouped_declined = lora
         return None
     projs = zoo._expert_projs(experts, spec)
-    offsets = torch.tensor(counts, dtype = torch.int64).cumsum(0).to(torch.int32).to(got_x.device)
+    routed = [count for count in counts if count]
+    offsets = torch.tensor(routed, dtype = torch.int64).cumsum(0).to(torch.int32).to(got_x.device)
     x = got_x.index_select(0, perm)
     gate_up = zoo._grouped_expert_gemm(
         x, offsets, lambda: zoo._build_gate_up_stack(experts, spec, dtype, projs), True
