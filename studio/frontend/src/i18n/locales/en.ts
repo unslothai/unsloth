@@ -1727,6 +1727,7 @@ export const en = {
       levelHigh: "High",
       levelLow: "Low",
       levelHighShort: "Adds OS isolation to Python and Terminal",
+      godotMcpWarning: "Godot MCP runs code outside Unsloth’s sandbox, even with Sandbox High on. That code can access any file Godot can, including files outside your project.",
       levelLowShort: "Software only. Risky code asks first",
       levelFullAccessNote: "Full access turns the sandbox off. This setting applies again when you pick another level.",
       learnMore: "Learn more",
@@ -2216,7 +2217,7 @@ export const en = {
           auto:
             "Runs routine tool calls on its own and only asks when an action looks risky, such as reading credentials, escalating privileges or running destructive commands.",
           off:
-            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer. Without a working OS sandbox, risky calls ask first.",
+            "Enabled MCP tools use the server’s permissions and can run without asking. Python and Terminal use the selected sandbox level. Risky calls to those tools still ask when OS isolation is unavailable or Sandbox Low is selected.",
           full:
             "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access.",
         },

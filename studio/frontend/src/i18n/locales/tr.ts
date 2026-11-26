@@ -1871,6 +1871,7 @@ export const tr = {
       levelHigh: "Yüksek",
       levelLow: "Düşük",
       levelHighShort: "Python ve Terminal'e işletim sistemi yalıtımı ekler",
+      godotMcpWarning: "Godot MCP, korumalı alan düzeyi yüksek olsa bile kodu Godot’un izinleriyle Unsloth’un korumalı alanı dışında çalıştırır. Bu kod, projenizin dışındaki dosyalara erişebilir.",
       levelLowShort: "Yalnızca yazılım. Riskli kod önce onay ister",
       levelFullAccessNote:
         "Tam erişim korumalı alanı kapatır. Başka bir düzey seçtiğinizde bu ayar yeniden geçerli olur.",
@@ -2369,7 +2370,7 @@ export const tr = {
         details: {
           ask: "Terminal ve Python kodu, web aramaları, dosya düzenlemeleri ve MCP araçları dahil her araç çağrısından önce sorar. Harici bir sağlayıcının çalıştırdığı araçlar duraklatılmaz.",
           auto: "Rutin araç çağrılarını kendi başına çalıştırır ve yalnızca kimlik bilgilerini okumak, ayrıcalıkları yükseltmek veya yıkıcı komutlar çalıştırmak gibi riskli görünen bir eylemde sorar.",
-          off: "Her araç çağrısını sormadan çalıştırır. Python ve terminal kodu yine korumalı alanda çalışır; bu, bilgisayarınızda hangi dosyalara erişebileceklerini sınırlar. Çalışan bir işletim sistemi korumalı alanı yoksa riskli çağrılar önce onay ister.",
+          off: "Etkin MCP araçları sunucunun izinlerini kullanır ve onay istemeden çalışabilir. Python ve Terminal seçilen korumalı alan düzeyini kullanır. İşletim sistemi yalıtımı kullanılamıyorsa veya korumalı alan düzeyi düşükse bu araçların riskli çağrıları yine onay ister.",
           full: "Her araç çağrısını sormadan çalıştırır ve kod korumalı alanını kapatır; böylece Python ve terminal kodu, hesabınızın erişebildiği her dosyayı okuyabilir ve değiştirebilir.",
         },
       },

@@ -1895,6 +1895,7 @@ export const nl = {
       levelHigh: "Hoog",
       levelLow: "Laag",
       levelHighShort: "Voegt OS-isolatie toe aan Python en Terminal",
+      godotMcpWarning: "Godot MCP voert code uit met de rechten van Godot, buiten de sandbox van Unsloth, ook als het sandboxniveau Hoog is. De code kan bestanden buiten je project openen.",
       levelLowShort: "Alleen software. Riskante code vraagt eerst",
       levelFullAccessNote:
         "Volledige toegang schakelt de sandbox uit. Deze instelling geldt weer zodra je een ander niveau kiest.",
@@ -2410,7 +2411,7 @@ export const nl = {
         details: {
           ask: "Vraagt vóór elke toolaanroep, inclusief terminal- en Python-code, zoekopdrachten op het web, bestandsbewerkingen en MCP-tools. Tools die door een externe provider worden uitgevoerd, worden niet gepauzeerd.",
           auto: "Voert routinematige toolaanroepen zelf uit en vraagt alleen wanneer een actie riskant lijkt, zoals het lezen van inloggegevens, het verhogen van rechten of het uitvoeren van destructieve opdrachten.",
-          off: "Voert elke toolaanroep uit zonder te vragen. Python- en terminalcode draaien nog steeds in de sandbox, die beperkt welke bestanden ze op je computer kunnen bereiken. Zonder werkende OS-sandbox wordt bij riskante aanroepen eerst om toestemming gevraagd.",
+          off: "Ingeschakelde MCP-tools gebruiken de rechten van de server en kunnen zonder bevestiging worden uitgevoerd. Python en Terminal gebruiken het gekozen sandboxniveau. Riskante aanroepen van deze tools vragen nog steeds om toestemming als OS-isolatie ontbreekt of het sandboxniveau Laag is geselecteerd.",
           full: "Voert elke toolaanroep uit zonder te vragen en schakelt de codesandbox uit, zodat Python- en terminalcode elk bestand kunnen lezen en wijzigen waartoe je account toegang heeft.",
         },
       },
