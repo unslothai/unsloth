@@ -11,8 +11,6 @@ const { applyStemGain, volumeIsWritable } = await import(
   "../src/features/audio/hooks/use-stem-transport.ts"
 );
 
-// 19131: stems routed through an AudioContext stayed silent, with the transport on "playing",
-// whenever that context could not start; the source preview, a plain element, played fine.
 test("stems play plain elements, and only iOS builds a Web Audio graph for the gains", () => {
   const hook = readSrc("features/audio/hooks/use-stem-transport.ts");
   assert.match(hook, /const context = elementVolumeWorks\(\) \? null : ensureGraph\(\);/);

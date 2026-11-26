@@ -52,7 +52,6 @@ function setGain(voice: StemVoice, value: number, context: AudioContext) {
   voice.gain?.gain.setTargetAtTime(value, context.currentTime, 0.015);
 }
 
-/** Gains are 0..1, so the element's own volume plays them, and silence mutes it. */
 export function applyStemGain(
   element: Pick<HTMLMediaElement, "volume" | "muted">,
   gain: number,
@@ -62,7 +61,6 @@ export function applyStemGain(
   element.volume = value;
 }
 
-/** False on iOS Safari, which pins `volume` at 1: only there do the gains need a Web Audio graph. */
 export function volumeIsWritable(element: Pick<HTMLMediaElement, "volume">): boolean {
   element.volume = 0.5;
   return element.volume === 0.5;
@@ -75,10 +73,9 @@ function elementVolumeWorks(): boolean {
   return volumeWritable;
 }
 
-/** Media elements, not decoded buffers, so memory stays near the blob size. Gains go to each
- *  element's volume: an element routed into an AudioContext is silent until that context runs, and
- *  one that never starts (no output device, say) left every stem silent while the transport said
- *  "playing". Only where volume cannot be set (iOS) do the gains go through gain nodes. */
+/** Media elements, not decoded buffers, so memory stays near the blob size. Gains set volume, as a
+ *  stem routed into an AudioContext that never starts stays silent; only iOS, which pins volume at 1,
+ *  uses gain nodes. */
 export function useStemTransport({
   sources,
   gains,
@@ -179,7 +176,7 @@ export function useStemTransport({
     [],
   );
 
-  // iOS only: created on the first Play, a user gesture, so the browser lets the context run.
+  // Created on the first Play, a user gesture, so the browser lets the context run.
   const ensureGraph = useCallback((): AudioContext => {
     let context = contextRef.current;
     if (!context) {
