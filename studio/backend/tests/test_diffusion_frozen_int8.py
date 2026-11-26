@@ -588,13 +588,17 @@ def test_an_oom_inside_fp8_quantization_is_not_recorded_as_fp8_or_bf16(monkeypat
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
 def test_declares_the_dense_compute_dtype_not_its_int8_storage(dtype):
-    # MOSS-Image casts a projection's input to the dtype the layer computes in; read off the int8 weight
-    # buffer that was int8 and truncated the normalised activations before q / k / v and ffn_up_gate.
-    from core.inference.diffusion_moss_image import _compute_dtype
-
+    # Callers that cast a projection's input to the dtype the layer computes in read ``compute_dtype``; the int8
+    # weight buffer is storage, and reading it truncated MOSS-Image's activations to integers.
     m = fi8.FrozenInt8Linear(nn.Linear(64, 32, bias = False).to(dtype))
     assert m.weight.dtype == torch.int8
     assert m.compute_dtype == dtype
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_moss_casts_a_frozen_int8_projection_input_to_the_dense_dtype(dtype):
+    pytest.importorskip("diffusers")
+    from core.inference.diffusion_moss_image import _compute_dtype
+
+    m = fi8.FrozenInt8Linear(nn.Linear(64, 32, bias = False).to(dtype))
     assert _compute_dtype(m) == dtype
-    x = torch.full((2, 64), 0.37, dtype = dtype)
-    assert x.to(_compute_dtype(m)).unique().tolist() != [0]
