@@ -250,7 +250,6 @@ def _cached_core(
     batch_size = hidden_states.shape[0]
     device = hidden_states.device
     hidden_states = model.img_in(hidden_states)
-    # Keep the stock (batch, total, dim) layout so the blocks see the same strides.
     full = torch.empty((batch_size, total, hidden_states.shape[2]), dtype = text_dtype, device = device)
     full[:, prefix_len:] = hidden_states[:, hidden_states.shape[1] - (total - prefix_len) :]
 
@@ -319,8 +318,7 @@ def _cached_step(
     )
 
 
-# ---------------------------------------------------------------------------------------------- CUDA graph step
-# CUDA graph step: graph_plan makes a decode step all-tensor inputs; step 0 stays eager.
+# graph_plan makes a decode step all-tensor inputs; step 0 stays eager.
 # K/V, RoPE and index inputs are sticky: copied only when a different tensor is passed.
 
 GRAPH_STICKY = ("text_positions", "vlm_text", "rotary_emb", "modulation_mask", "kv")

@@ -67,7 +67,6 @@ def _inputs(
             batch, 1
         ),
         "cond": cond_rows,
-        # Each image has its own noise: only the prefix is shared.
         "latents": torch.randn(batch, th * tw, 8, generator = g),
     }
 
