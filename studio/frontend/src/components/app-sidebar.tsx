@@ -2756,7 +2756,7 @@ export function AppSidebar() {
 
   const manualOrderWritesRef = useRef(new Map<string, number>());
   const writeManualOrder = useCallback(
-    (scope: string, ids: string[]) => {
+    (scope: string, ids: string[], place?: SidebarDropEffects["orders"][number]["place"]) => {
       const writes = manualOrderWritesRef.current;
       const generation = (writes.get(scope) ?? 0) + 1;
       writes.set(scope, generation);
@@ -2772,7 +2772,7 @@ export function AppSidebar() {
                 : null;
       const query = slot ? chatRowSlots[slot]?.query : undefined;
       if (!slot || !query || !chatRowLists[slot]?.hasMore) {
-        setManualOrder(scope, ids);
+        setManualOrder(scope, ids, place);
         setPendingManualOrder(({ [scope]: _superseded, ...rest }) => rest);
         return;
       }
@@ -2781,7 +2781,7 @@ export function AppSidebar() {
       setPendingManualOrder((pending) => ({ ...pending, [scope]: shown }));
       const settle = (order: string[]) => {
         if (writes.get(scope) !== generation) return;
-        setManualOrder(scope, order);
+        setManualOrder(scope, order, place);
         setPendingManualOrder(({ [scope]: _settled, ...rest }) => rest);
       };
       // a partial order would rank every unloaded row ahead of the ones just arranged, so it is never
@@ -3101,6 +3101,7 @@ export function AppSidebar() {
         writeManualOrder(
           order.scope,
           before ? landedOrder(order, before[order.scope]) : order.ids,
+          order.place,
         );
       }
       if (superseded) return;
@@ -3198,7 +3199,12 @@ export function AppSidebar() {
     const next = moveIdBy(orderedIds, item.id, delta);
     if (next === orderedIds) return;
     const resorts = sort !== undefined && sort.value !== "manual";
-    writeManualOrder(item.scope, next);
+    const targetId = orderedIds[next.indexOf(item.id)];
+    writeManualOrder(item.scope, next, {
+      id: item.id,
+      targetId,
+      edge: delta < 0 ? "top" : "bottom",
+    });
     if (resorts) {
       sort.set("manual");
       toast.info(t("shell.organize.switchedToManual"));

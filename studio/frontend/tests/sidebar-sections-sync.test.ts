@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { setImmediate } from "node:timers/promises";
+import test, { type TestContext } from "node:test";
+
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+const data = new Map<string, string>();
+const localStorage = {
+  getItem: (key: string) => data.get(key) ?? null,
+  setItem: (key: string, value: string) => void data.set(key, value),
+};
+const window = Object.assign(new EventTarget(), {
+  localStorage,
+  setInterval,
+  clearInterval,
+});
+const document = Object.assign(new EventTarget(), { visibilityState: "visible" });
+Object.assign(globalThis, { localStorage, window, document });
+
+const layouts = await import("../src/features/chat/sidebar-layout.ts");
+const stores = await import("../src/features/chat/stores/sidebar-organization-store.ts");
+const store = stores.useSidebarOrganizationStore;
+type Layout = ReturnType<typeof layouts.sidebarLayout>;
+type Edit = {
+  operationId: string;
+  base: Layout | null;
+  layout: Layout;
+  orderMoves?: unknown[];
+};
+
+function mount(
+  t: TestContext,
+  authFetch: (url: string, init: RequestInit) => Promise<Response>,
+) {
+  store.setState(store.getInitialState(), true);
+  store.setState({ pendingLayoutEdit: undefined, syncedLayout: undefined });
+  const hook = loadWithStubs<{ useSidebarSectionsSync(): void }>(
+    new URL("../src/features/chat/hooks/use-sidebar-sections-sync.ts", import.meta.url),
+    {
+      react: { useEffect: (effect: () => () => void) => t.after(effect()) },
+      sonner: { toast: { error: () => {} } },
+      "@/features/auth": {
+        AUTH_SESSION_STORED_EVENT: "auth-stored",
+        authFetch,
+        ensureAuthSessionMark: () => "test-session",
+        getAuthSessionMark: () => "test-session",
+        hasSettledAuthSession: () => true,
+      },
+      "@/lib/account-transition": {
+        accountTransitionPending: () => false,
+        BROWSER_ACCOUNT_FENCE_KEY: "auth-fence",
+        browserAccountKey: () => "test-account",
+      },
+      "@/lib/desktop-update-activity": { isBackendDownForDesktopUpdate: () => false },
+      "@/lib/navigation-nonce": { createNavigationNonce: () => "next-edit" },
+      "../sidebar-layout": layouts,
+      "../stores/sidebar-organization-store": stores,
+    },
+  );
+  hook.useSidebarSectionsSync();
+}
+
+function writeFromPeer(update: Record<string, unknown>) {
+  const key = stores.SIDEBAR_ORGANIZATION_STORAGE_KEY;
+  const saved = JSON.parse(localStorage.getItem(key) ?? "{}");
+  localStorage.setItem(key, JSON.stringify({ ...saved, state: { ...saved.state, ...update } }));
+  window.dispatchEvent(Object.assign(new Event("storage"), { key }));
+}
+
+test("a peer can upload a later edit after retrying the closed tab's pending operation", async (t) => {
+  const posts: Edit[] = [];
+  const initial = layouts.sidebarLayout(store.getInitialState());
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return Response.json(initial);
+    const post = JSON.parse(String(init.body));
+    posts.push(post);
+    return Response.json(post.layout);
+  });
+  await setImmediate();
+
+  const research = { name: "Research", sort: "manual" as const };
+  const creation = {
+    ...initial,
+    sections: { research },
+    sectionOrder: ["pinned", "research", "projects"],
+  };
+  writeFromPeer({
+    customSections: [{ ...research, id: "research" }],
+    sectionOrder: creation.sectionOrder,
+    pendingLayoutEdit: { id: "first-edit", layout: JSON.stringify(creation) },
+  });
+  writeFromPeer({ sectionByChatId: { chat: "research" } });
+  await setImmediate();
+  assert.equal(posts.length, 0);
+
+  window.dispatchEvent(new Event("focus"));
+  await setImmediate();
+  assert.equal(posts.length, 2);
+  assert.equal(posts[0].operationId, "first-edit");
+  assert.deepEqual(posts[1].base, JSON.parse(JSON.stringify(creation)));
+  assert.deepEqual(posts[1].layout.sectionByChatId, { chat: "research" });
+});
+
+test("a reorder during the initial load uses an edit instead of a legacy import", async (t) => {
+  const posts: Edit[] = [];
+  const initial = layouts.sidebarLayout(store.getInitialState());
+  const remote = {
+    ...initial,
+    sections: { research: { name: "Research", sort: "manual" as const } },
+    sectionOrder: ["pinned", "research", "projects"],
+  };
+  let resolveGet!: (response: Response) => void;
+  const initialGet = new Promise<Response>((resolve) => {
+    resolveGet = resolve;
+  });
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return initialGet;
+    const post = JSON.parse(String(init.body));
+    posts.push(post);
+    return Response.json({ ...remote, sectionOrder: ["projects", "pinned", "research"] });
+  });
+
+  store.getState().moveSection("projects", "pinned", "top");
+  await setImmediate();
+  resolveGet(Response.json(remote));
+  await setImmediate();
+
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].base, JSON.parse(JSON.stringify(initial)));
+  assert.deepEqual(posts[0].layout.sectionOrder, ["projects", "pinned"]);
+  assert.deepEqual(posts[0].orderMoves, [{
+    sectionId: null, id: "projects", targetId: "pinned", edge: "top",
+  }]);
+  assert.equal(store.getState().sectionOrder[0], "projects");
+});

@@ -16,6 +16,7 @@ import {
   type SidebarChatSort,
   type SidebarProjectSort,
   type SidebarOrganizeBy,
+  type SidebarOrderPlacement,
 } from "../stores/sidebar-organization-store.ts";
 
 /** `page` is a pinned browser page: shown in Pinned or a custom section only. */
@@ -87,11 +88,7 @@ export type SidebarDropCue =
   | { ring: string };
 
 /** Kept with the order snapshot so a late move can re-aim instead of overwriting newer order. */
-export interface SidebarDropPlace {
-  id: string;
-  targetId: string;
-  edge: DropEdge;
-}
+export type SidebarDropPlace = SidebarOrderPlacement;
 
 export interface SidebarDropEffects {
   orders: Array<{ scope: string; ids: string[]; place?: SidebarDropPlace }>;
@@ -263,12 +260,19 @@ function planSectionDrop(
     return {
       action: { kind: "reorder" },
       cue,
-      effects: { orders: [{ scope, ids: next }], switchSort },
+      effects: {
+        orders: [{ scope, ids: next, place: { id: drag.id, targetId: target.id, edge: target.edge } }],
+        switchSort,
+      },
     };
   }
   const next = placeIdAt(ids, drag.id, target?.id ?? null, target?.edge ?? "bottom");
   const effects: SidebarDropEffects = {
-    orders: [{ scope, ids: next }],
+    orders: [{
+      scope,
+      ids: next,
+      ...(target && { place: { id: drag.id, targetId: target.id, edge: target.edge } }),
+    }],
     fileInSection: { kind: drag.kind, id: drag.id, sectionId },
     switchSort,
   };

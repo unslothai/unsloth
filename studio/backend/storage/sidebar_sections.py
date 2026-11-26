@@ -30,7 +30,15 @@ def _merge_order(primary: list[str], other: list[str]) -> list[str]:
     return list(dict.fromkeys(result))
 
 
-def _edited_order(saved, base, layout, importing):
+def _edited_order(saved, base, layout, importing, moves):
+    if moves:
+        order = _merge_order(saved, layout)
+        for move in moves:
+            row, target = move["id"], move["targetId"]
+            if row != target and row in order and target in order:
+                order.remove(row)
+                order.insert(order.index(target) + (move["edge"] == "bottom"), row)
+        return order
     if not importing and base != layout:
         # Insertions and deletions alone leave a concurrent reorder intact.
         common = set(base).intersection(layout)
@@ -39,7 +47,7 @@ def _edited_order(saved, base, layout, importing):
     return _merge_order(saved, layout)
 
 
-def _merge(stored, base, layout, *, importing):
+def _merge(stored, base, layout, *, importing, order_moves = ()):
     # Null values are tombstones: a late browser import cannot restore a deletion or unfiling.
     sections = dict(stored.get("sections", {}))
     for key in base["sections"].keys() | layout["sections"].keys():
@@ -78,13 +86,23 @@ def _merge(stored, base, layout, *, importing):
             key: value if value in live else None for key, value in assignments.items()
         }
 
+    moves_by_section = {}
+    for move in order_moves:
+        moves_by_section.setdefault(move["sectionId"], []).append(move)
     saved_order = stored.get("sectionOrder", [])
-    order = _edited_order(saved_order, base["sectionOrder"], layout["sectionOrder"], importing)
+    order = _edited_order(
+        saved_order,
+        base["sectionOrder"],
+        layout["sectionOrder"],
+        importing,
+        moves_by_section.get(None, ()),
+    )
     result["sectionOrder"] = [key for key in order if key in live or key in ("pinned", "projects")]
     row_order = dict(stored.get("rowOrder", {}))
     for key, ids in layout["rowOrder"].items():
         previous = base["rowOrder"].get(key, [])
-        if importing or ids != previous or key not in row_order:
+        moves = moves_by_section.get(key, ())
+        if importing or ids != previous or key not in row_order or moves:
             saved = row_order.get(key, [])
             if importing and key in row_order:
                 # Only newly imported rows receive a rank from this browser. Existing rows
@@ -93,8 +111,10 @@ def _merge(stored, base, layout, *, importing):
                 ids = [row for row in ids if row in eligible]
             if not importing:
                 removed = set(previous).difference(ids)
-                saved = [row for row in saved if row not in removed]
-            row_order[key] = _edited_order(saved, previous, ids, importing)
+                # Browser-local pins can be absent from the editing browser's list.
+                pages = result["sectionByPageId"]
+                saved = [row for row in saved if row not in removed or pages.get(row) == key]
+            row_order[key] = _edited_order(saved, previous, ids, importing, moves)
     result["rowOrder"] = {key: ids for key, ids in row_order.items() if key in live}
     return result
 
@@ -110,7 +130,7 @@ def get_sidebar_layout():
     return _visible(get_app_setting(_KEY, {}))
 
 
-def save_sidebar_layout(operation_id, base, layout, *, importing):
+def save_sidebar_layout(operation_id, base, layout, *, importing, order_moves = ()):
     with closing(get_connection()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (_KEY,)).fetchone()
@@ -120,7 +140,7 @@ def save_sidebar_layout(operation_id, base, layout, *, importing):
             "INSERT OR IGNORE INTO sidebar_section_edits (id) VALUES (?)", (operation_id,)
         )
         if inserted.rowcount:
-            merged = _merge(stored, base, layout, importing = importing)
+            merged = _merge(stored, base, layout, importing = importing, order_moves = order_moves)
             conn.execute(
                 """INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)
                    ON CONFLICT(key) DO UPDATE SET

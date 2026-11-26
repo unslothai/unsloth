@@ -997,3 +997,55 @@ def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client):
     # The stale client deleting A saw the pair in A. Its deletion must leave the pair in B.
     result = client.post(path, json = {"operationId": "delete", "base": current, "layout": {}})
     assert result.json()["sectionByChatId"] == {"comparison-pair": "b"}
+
+
+@pytest.mark.parametrize(
+    ("initial", "first", "second", "expected"),
+    [
+        ("abcd", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc"),
+        ("", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc"),
+        ("abcde", ("abdce", "d", "c", "top"), ("bcade", "a", "c", "bottom"), "bdcae"),
+        ("apbc", ("bac", "b", "a", "top"), None, "bapc"),
+    ],
+    ids = ["independent", "first-manual-order", "moved-anchor", "unseen-page"],
+)
+def test_sidebar_sections_merge_concurrent_row_placements(client, initial, first, second, expected):
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+
+    def save(operation_id, layout, base = None, moves = ()):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    common = save(
+        "initial",
+        {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": {key: "work" for key in set(first[0]) - {"p"}},
+            "sectionByPageId": {"p": "work"} if "p" in initial else {},
+            "rowOrder": {"work": list(initial)} if initial else {},
+        },
+    )
+
+    def place(operation_id, order_and_move):
+        order, row, target, edge = order_and_move
+        edited = deepcopy(common)
+        edited["rowOrder"]["work"] = list(order)
+        return save(
+            operation_id,
+            edited,
+            common,
+            [{"sectionId": "work", "id": row, "targetId": target, "edge": edge}],
+        )
+
+    result = place("first", first)
+    if second is not None:
+        assert result["rowOrder"]["work"] == list(first[0])
+        result = place("second", second)
+    assert result["rowOrder"]["work"] == list(expected)
+    assert place("first", first)["rowOrder"]["work"] == list(expected)

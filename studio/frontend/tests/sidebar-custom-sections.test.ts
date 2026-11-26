@@ -356,7 +356,11 @@ test("a Recents chat dropped on a section is filed there, in the slot shown", ()
   );
   assert.deepEqual(plan.action, { kind: "section", sectionId: S });
   assert.deepEqual(plan.effects.fileInSection, { kind: "chat", id: "r1", sectionId: S });
-  assert.deepEqual(plan.effects.orders, [{ scope: SCOPE, ids: ["lab", "r1", "s1"] }]);
+  assert.deepEqual(plan.effects.orders, [{
+    scope: SCOPE,
+    ids: ["lab", "r1", "s1"],
+    place: { id: "r1", targetId: "s1", edge: "top" },
+  }]);
   assert.equal(plan.effects.unpinChat, undefined);
 });
 
@@ -414,7 +418,11 @@ test("a row already in the section reorders, switching a sorted section to Manua
   );
   assert.equal(plan.action.kind, "reorder");
   assert.equal(plan.effects.fileInSection, undefined);
-  assert.deepEqual(plan.effects.orders, [{ scope: SCOPE, ids: ["s1", "lab"] }]);
+  assert.deepEqual(plan.effects.orders, [{
+    scope: SCOPE,
+    ids: ["s1", "lab"],
+    place: { id: "s1", targetId: "lab", edge: "top" },
+  }]);
   assert.equal(plan.effects.switchSort, SCOPE);
 });
 
@@ -1004,7 +1012,11 @@ test("a pinned page files into a custom section and comes back to Pinned", () =>
   );
   assert.deepEqual(into.action, { kind: "section", sectionId: S });
   assert.deepEqual(into.effects.fileInSection, { kind: "page", id: "pg", sectionId: S });
-  assert.deepEqual(into.effects.orders, [{ scope: SCOPE, ids: ["lab", "s1", "pg"] }]);
+  assert.deepEqual(into.effects.orders, [{
+    scope: SCOPE,
+    ids: ["lab", "s1", "pg"],
+    place: { id: "pg", targetId: "s1", edge: "bottom" },
+  }]);
   assert.equal(into.effects.unpinChat, undefined);
 
   const filed = context({
@@ -1019,7 +1031,11 @@ test("a pinned page files into a custom section and comes back to Pinned", () =>
   assert.deepEqual(back.effects.orders, [{ scope: PINNED_ORDER_SCOPE, ids: ["pg", "p1"] }]);
   const reorder = plannedDrop(planSidebarDrop(page("pg", SCOPE, SCOPE), chatRow(SCOPE, SCOPE, "s1"), "top", filed));
   assert.deepEqual(reorder.action, { kind: "reorder" });
-  assert.deepEqual(reorder.effects.orders, [{ scope: SCOPE, ids: ["lab", "pg", "s1"] }]);
+  assert.deepEqual(reorder.effects.orders, [{
+    scope: SCOPE,
+    ids: ["lab", "pg", "s1"],
+    place: { id: "pg", targetId: "s1", edge: "top" },
+  }]);
 });
 
 test("a pinned page has no place in Recents, Projects or a folder", () => {

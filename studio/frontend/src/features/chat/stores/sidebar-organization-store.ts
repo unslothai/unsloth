@@ -106,10 +106,31 @@ function withoutSection(
   return next;
 }
 
+export interface SidebarOrderPlacement {
+  id: string;
+  targetId: string;
+  edge: "top" | "bottom";
+}
+
+interface SidebarOrderMove extends SidebarOrderPlacement {
+  sectionId: string | null;
+}
+
+function readOrderMoves(value: unknown): SidebarOrderMove[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((move): move is SidebarOrderMove =>
+    move !== null && typeof move === "object" &&
+    typeof move.id === "string" && typeof move.targetId === "string" &&
+    (move.sectionId === null || typeof move.sectionId === "string") &&
+    (move.edge === "top" || move.edge === "bottom"),
+  );
+}
+
 export interface SidebarOrganizationState {
   /** Last acknowledged shared layout, persisted with the view so offline edits survive reload. */
   syncedLayout?: string;
-  pendingLayoutEdit?: { id: string; layout: string };
+  pendingLayoutEdit?: { id: string; layout: string; orderMoves?: SidebarOrderMove[] };
+  orderMoves?: SidebarOrderMove[];
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
   pinnedSort: SidebarChatSort;
@@ -129,7 +150,7 @@ export interface SidebarOrganizationState {
   setChatSort: (value: SidebarChatSort) => void;
   setPinnedSort: (value: SidebarChatSort) => void;
   setProjectSort: (value: SidebarProjectSort) => void;
-  setManualOrder: (scope: string, ids: string[]) => void;
+  setManualOrder: (scope: string, ids: string[], place?: SidebarOrderPlacement) => void;
   createCustomSection: (name: string) => string | null;
   renameCustomSection: (sectionId: string, name: string) => void;
   deleteCustomSection: (sectionId: string) => void;
@@ -327,7 +348,10 @@ export function mergePersistedOrganization(
   return {
     ...current,
     pendingLayoutEdit: typeof saved?.pendingLayoutEdit?.id === "string" &&
-      typeof saved.pendingLayoutEdit.layout === "string" ? saved.pendingLayoutEdit : undefined,
+      typeof saved.pendingLayoutEdit.layout === "string"
+      ? { ...saved.pendingLayoutEdit, orderMoves: readOrderMoves(saved.pendingLayoutEdit.orderMoves) }
+      : undefined,
+    orderMoves: readOrderMoves(saved?.orderMoves),
     syncedLayout: typeof saved?.syncedLayout === "string" ? saved.syncedLayout : undefined,
     organizeBy,
     chatSort,
@@ -362,10 +386,16 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       setChatSort: (value) => set({ chatSort: value }),
       setPinnedSort: (value) => set({ pinnedSort: value }),
       setProjectSort: (value) => set({ projectSort: value }),
-      setManualOrder: (scope, ids) =>
-        set((state) => ({
-          manualOrder: { ...state.manualOrder, [scope]: ids },
-        })),
+      setManualOrder: (scope, ids, place) =>
+        set((state) => {
+          const sectionId = customSectionIdOf(scope);
+          return {
+            manualOrder: { ...state.manualOrder, [scope]: ids },
+            ...(place && sectionId !== null && {
+              orderMoves: [...(state.orderMoves ?? []), { ...place, sectionId }],
+            }),
+          };
+        }),
       createCustomSection: (name) => {
         const clean = normalizeSectionName(name);
         if (!clean) return null;
@@ -420,6 +450,9 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           return {
             sectionOrder: next,
             customSections: inSectionOrder(state.customSections, next),
+            orderMoves: [
+              ...(state.orderMoves ?? []), { sectionId: null, id: key, targetId: targetKey, edge },
+            ],
           };
         }),
       setPendingNewChatSection: (pending) => set({ pendingNewChatSection: pending }),

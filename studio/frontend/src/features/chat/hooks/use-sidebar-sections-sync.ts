@@ -63,8 +63,10 @@ export function useSidebarSectionsSync(): void {
       let edit = state.pendingLayoutEdit;
       if (!edit && dirty) {
         if (mirrored) return;
-        edit = { id: createNavigationNonce(), layout: snapshot };
-        store.setState({ pendingLayoutEdit: edit });
+        edit = { id: createNavigationNonce(), layout: snapshot, orderMoves: state.orderMoves };
+        store.setState({ pendingLayoutEdit: edit, orderMoves: undefined });
+      } else if (!edit && state.orderMoves?.length) {
+        store.setState({ orderMoves: undefined });
       }
       const sent = edit?.layout ?? snapshot;
       const cached = localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY);
@@ -81,6 +83,7 @@ export function useSidebarSectionsSync(): void {
               operationId: edit.id,
               base: base ? JSON.parse(base) : null,
               layout: JSON.parse(sent),
+              orderMoves: edit.orderMoves,
             }),
           }),
         }, { beforeRetry: () => {
@@ -100,8 +103,15 @@ export function useSidebarSectionsSync(): void {
           return;
         }
         if (JSON.stringify(sidebarLayout(now)) !== sent) {
-          // Keep the new local view. Its next diff starts at the snapshot just acknowledged.
-          if (edit) store.setState({ syncedLayout: sent, pendingLayoutEdit: undefined });
+          if (edit) {
+            // The tab that acknowledges the pending operation can send the next edit.
+            mirrored = false;
+            store.setState({ syncedLayout: sent, pendingLayoutEdit: undefined });
+          } else if (!mirrored && base === undefined) {
+            // The first GET started before this local edit. Use the pre-edit view
+            // as the base for the user's next write.
+            store.setState({ syncedLayout: sent });
+          }
           schedule();
           return;
         }

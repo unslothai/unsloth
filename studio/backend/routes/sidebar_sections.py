@@ -33,11 +33,19 @@ class Layout(BaseModel):
     sectionOrder: Order = Field(default_factory = list)
 
 
+class OrderMove(BaseModel):
+    sectionId: Optional[Id]
+    id: Id
+    targetId: Id
+    edge: Literal["top", "bottom"]
+
+
 class LayoutEdit(BaseModel):
     operationId: Annotated[str, Field(min_length = 1, max_length = 128)]
     # A browser with no acknowledged layout is importing its legacy data.
     base: Optional[Layout]
     layout: Layout
+    orderMoves: list[OrderMove] = Field(default_factory = list)
 
 
 @router.get("/sidebar-sections", response_model = Layout, response_model_exclude_none = True)
@@ -52,4 +60,5 @@ def sync_sidebar_sections(edit: LayoutEdit):
         (edit.base or Layout()).model_dump(exclude_none = True),
         edit.layout.model_dump(exclude_none = True),
         importing = edit.base is None,
+        order_moves = [move.model_dump() for move in edit.orderMoves],
     )
