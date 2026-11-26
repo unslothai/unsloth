@@ -1965,6 +1965,11 @@ def _sync_jobs() -> None:
         progress = 0
         completed_at: Optional[int] = None
         error: Optional[dict] = None
+        if gen.get("video_id") != job.id:
+            # A clip past its GPU work encodes after handing the progress record to the next clip.
+            encoding = _encoding_outcome(job.id)
+            if encoding is not None:
+                gen = encoding
         if gen.get("video_id") == job.id:
             phase = gen.get("phase")
             if phase == "queued":
@@ -2021,10 +2026,25 @@ def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEO
     deadline = _time.monotonic() + timeout
     while _time.monotonic() < deadline:
         gen = backend.generate_progress()
-        if gen.get("video_id") != video_id or not gen.get("active"):
+        if (gen.get("video_id") != video_id or not gen.get("active")) and _encoding_outcome(
+            video_id
+        ) is None:
             return True
         _time.sleep(0.05)
     return False
+
+
+def _encoding_outcome(video_id: str) -> Optional[dict]:
+    """The caller's clip ``video_id`` while it encodes after its GPU work (the backend answers it as exporting)."""
+    from core.inference.video import get_video_backend
+
+    outcome_of = getattr(get_video_backend(), "generate_outcome", None)
+    if not callable(outcome_of):
+        return None
+    outcome = outcome_of(video_id, current_account_id())
+    if outcome is None or not outcome.get("active"):
+        return None
+    return outcome
 
 
 def _lookup_video(video_id: str) -> Optional[VideoJob]:
