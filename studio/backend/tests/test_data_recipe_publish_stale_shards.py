@@ -23,6 +23,7 @@ class _Hub(HfApi):
         self.files = dict(files)
         self.fail_folder = fail_folder
         self.commits = []
+        self.client_calls = []
 
     def list_repo_files(self, *args, **kwargs):
         return list(self.files)
@@ -57,6 +58,7 @@ def _publish(monkeypatch, tmp_path, hub, local_files):
             self._api = hub
 
         def __getattr__(self, name):
+            hub.client_calls.append(name)
             return lambda **kwargs: None
 
     modules = {
@@ -179,3 +181,4 @@ def test_an_old_run_with_a_processor_on_a_main_dataset_path_is_not_published(
 
     assert hub.files == {"data/batch_00000.parquet": b"published-main"}
     assert hub.commits == []
+    assert "_create_or_get_repo" not in hub.client_calls
