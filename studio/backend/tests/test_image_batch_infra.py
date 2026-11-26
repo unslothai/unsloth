@@ -680,7 +680,7 @@ def test_a_losing_size_drops_its_batched_graphs(monkeypatch):
     monkeypatch.setattr(race, "record", lambda *a: True)
     dropped = []
     handle = types.SimpleNamespace(
-        drop_batched = lambda size: dropped.append(size) or 1, bypass = lambda on: None
+        drop_batched = lambda size: dropped.append(size) or 1, set_bypass = lambda on: None
     )
     generate, clock, _ = _fake_generate(lambda rows: float(rows))
     report = race.run_race(
@@ -869,3 +869,35 @@ def _queue_four(run_batch):
         return await asyncio.gather(*tasks)
 
     return asyncio.run(run())
+
+
+def test_the_batched_eager_arm_really_runs_eager(monkeypatch):
+    """The eager arm flips every graph handle's set_bypass around its calls (and only its calls)."""
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+    seen = []
+    state_flag = {"bypassed": False}
+    handle = types.SimpleNamespace(
+        set_bypass = lambda on: state_flag.update(bypassed = bool(on)), drop_batched = lambda size: 0
+    )
+    generate, clock, _ = _fake_generate(lambda rows: 1.0)
+
+    def recording(**kw):
+        seen.append((len(kw.get("prompts") or [None]), state_flag["bypassed"]))
+        return generate(**kw)
+
+    race.run_race(
+        recording,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 3,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    assert (2, True) in seen and (2, False) in seen
+    assert all(
+        not bypassed for rows, bypassed in seen if rows == 1
+    ), "serial renders keep their graphs"
+    assert state_flag["bypassed"] is False

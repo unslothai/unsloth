@@ -378,17 +378,18 @@ def _max_abs(a: Any, b: Any) -> Optional[int]:
 
 @contextmanager
 def _graphs_bypassed(handles: Sequence[Any]) -> Iterator[None]:
+    """The batched-eager arm: every graph handle runs eager (``set_bypass``) and keeps its graphs."""
     flipped = []
     try:
         for handle in handles:
-            if hasattr(handle, "bypass"):
-                handle.bypass(True)
+            if callable(getattr(handle, "set_bypass", None)):
+                handle.set_bypass(True)
                 flipped.append(handle)
         yield
     finally:
         for handle in flipped:
             try:
-                handle.bypass(False)
+                handle.set_bypass(False)
             except Exception:  # noqa: BLE001
                 pass
 
