@@ -6630,6 +6630,36 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     return (pipe,)
 
 
+def _encode_after_return(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+    """Run a deferred MP4 encode once ``generate``'s own frame has returned, so its locals and closures (pipeline,
+    load state, step callbacks) are freed and an unload during the encode really frees the weights.
+    ``_on_gpu_released`` (begin_generate's worker) runs first with the result; on that path the request's resolved
+    inputs also drop their load state, since the worker's kwargs keep the object alive until the thread ends."""
+
+    @functools.wraps(fn)
+    def wrapper(
+        self,
+        *args: Any,
+        _on_gpu_released: Any = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        result = fn(self, *args, **kwargs)
+        finish = result.pop("_finish_encode", None) if isinstance(result, dict) else None
+        if finish is None:
+            return result
+        if _on_gpu_released is not None:
+            resolved = kwargs.get("_resolved_inputs")
+            if resolved is not None:
+                object.__setattr__(resolved, "state", None)
+        kwargs.clear()
+        if _on_gpu_released is not None:
+            _on_gpu_released(result)
+        result["mp4_bytes"] = finish(_on_gpu_released is None)
+        return result
+
+    return wrapper
+
+
 def _host_copy(value: Any) -> Any:
     """A device tensor as an exact host copy, so an encode after _generate_lock issues no CUDA work."""
     device = getattr(value, "device", None)
@@ -15897,6 +15927,7 @@ class VideoBackend:
     @keeps_system_awake
     @holds_inference
     @vram_budget_scope("video")
+    @_encode_after_return
     def generate(
         self,
         *,
@@ -15926,11 +15957,10 @@ class VideoBackend:
         live_preview: Optional[bool] = None,
         # Wan only: decode the final latent with the tiny VAE (fast, lower fidelity). None = UNSLOTH_VIDEO_DRAFT_DECODE.
         draft_decode: Optional[bool] = None,
-        # begin_generate's worker: called with the result between the GPU part and the encode after the lock.
-        _on_gpu_released: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> dict[str, Any]:
         """Render one clip. The GPU part runs under _generate_lock; the CPU MP4 encode of a clip that was not
-        streamed during its decode runs after the lock is released, so a queued successor's GPU work overlaps it."""
+        streamed during its decode runs after this frame returns (_encode_after_return), so a queued successor's GPU
+        work overlaps it and no pipeline reference outlives the lock."""
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
@@ -17071,12 +17101,8 @@ class VideoBackend:
                 output = video_frames = encode_args = None
                 release_pinned_host_memory()
                 _release_held_cache_writes(getattr(state, "pipe", None), "the first render ended")
-        if finish_encode is None:
-            return result
-        # The lock is free: a queued clip's GPU work runs while this clip encodes on the CPU.
-        if _on_gpu_released is not None:
-            _on_gpu_released(result)
-        result["mp4_bytes"] = finish_encode(_on_gpu_released is None)
+        if finish_encode is not None:
+            result["_finish_encode"] = finish_encode
         return result
 
     def _detached_encoder(

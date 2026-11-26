@@ -304,3 +304,46 @@ def test_a_stop_after_the_last_cancel_check_is_not_answered_true(ltx, monkeypatc
     assert backend.cancel_generate(expected_video_id = "vid-a") is False
     release.set()
     _wait(lambda: (_outcome(backend, "vid-a") or {}).get("phase") == "completed", what = "A saved")
+
+
+def _unload_frees_the_pipeline_during_the_encode(backend, enc):
+    import gc
+    import weakref
+
+    assert enc.entered.acquire(timeout = 10)
+    pipe_ref = weakref.ref(backend._state.pipe)
+    state_ref = weakref.ref(backend._state)
+    backend.unload()
+    gc.collect()
+    # The encode is still blocked: only host copies may be alive, never the pipeline or its load state.
+    assert len(enc.gates) == 1 and not enc.gates[0].is_set()
+    assert state_ref() is None, gc.get_referrers(state_ref()) if state_ref() else None
+    assert pipe_ref() is None, gc.get_referrers(pipe_ref()) if pipe_ref() else None
+
+
+def test_an_unload_during_a_queued_clips_encode_frees_its_pipeline(ltx):
+    backend, enc = ltx
+    backend.begin_generate(prompt = "first", steps = 2, video_id = "vid-a")
+    _unload_frees_the_pipeline_during_the_encode(backend, enc)
+    enc.open(0)
+    _wait(lambda: (_outcome(backend, "vid-a") or {}).get("phase") == "completed", what = "A saved")
+    assert Path(gallery_module.owned_video_path("vid-a")).read_bytes() == b"MP4-0"
+
+
+def test_an_unload_during_a_direct_encode_frees_its_pipeline(ltx):
+    backend, enc = ltx
+    out: dict = {}
+
+    def run():
+        try:
+            out["r"] = backend.generate(prompt = "a fox", steps = 2)
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = exc
+
+    t = threading.Thread(target = run)
+    t.start()
+    _unload_frees_the_pipeline_during_the_encode(backend, enc)
+    enc.open(0)
+    t.join(10)
+    # As on main, an unload signals the direct render's cancel, so its clip is discarded.
+    assert str(out.get("error")) == VIDEO_CANCELLED_MSG
