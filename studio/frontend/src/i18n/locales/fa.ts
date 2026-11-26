@@ -4647,6 +4647,13 @@ export const fa = {
       targetFormat: "قالب هدف",
       targetFormatTooltip:
         "قالب دادهٔ آموزشی شما. تشخیص خودکار برای بیشتر مجموعه‌داده‌ها کار می‌کند.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "اطلاعات جریان‌دهی مجموعه‌داده",
       streaming: {
         label: "فعال کردن جریان‌دهی",

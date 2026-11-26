@@ -173,6 +173,7 @@ export const DEFAULT_HYPERPARAMS = {
   drafterDraftSteps: 3,
   packing: true,
   trainOnCompletions: true,
+  chatTemplate: "",
   gradientCheckpointing: "unsloth" as const,
   offloadLayers: 0 as number | "auto",
   offloadVramGb: null as number | null,

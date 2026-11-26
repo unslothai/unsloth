@@ -4286,6 +4286,13 @@ export const zhCN = {
       advanced: "高级",
       targetFormat: "目标格式",
       targetFormatTooltip: "训练数据的格式。自动检测对大多数数据集都有效。",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "数据集流式传输信息",
       streaming: {
         label: "启用流式传输",

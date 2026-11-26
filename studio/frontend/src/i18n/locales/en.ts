@@ -4376,6 +4376,13 @@ export const en = {
       targetFormat: "Target Format",
       targetFormatTooltip:
         "Format of your training data. Auto-detect works for most datasets.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "Dataset streaming information",
       streaming: {
         label: "Enable streaming",

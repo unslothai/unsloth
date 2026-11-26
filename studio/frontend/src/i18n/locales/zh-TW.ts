@@ -4448,6 +4448,13 @@ export const zhTW = {
       advanced: "進階",
       targetFormat: "目標格式",
       targetFormatTooltip: "訓練資料的格式。「自動偵測」適用於大多數資料集。",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "資料集串流資訊",
       streaming: {
         label: "啟用串流",

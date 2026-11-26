@@ -158,6 +158,7 @@ test("every extra setting the form changes reaches the example, and nothing host
     use_loftq: true,
     use_dora: true,
     train_on_completions: false,
+    chat_template: "{% for message in messages %}{{ message.content }}{% endfor %}",
     finetune_vision_layers: true,
     finetune_language_layers: false,
     finetune_attention_modules: false,

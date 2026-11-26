@@ -130,6 +130,7 @@ export function runConfigDraftSelections(
       format === "raw"
         ? format
         : "auto",
+    chatTemplate: stringValue(config.chat_template) ?? "",
     datasetManualMapping,
     datasetSystemPrompt: stringValue(mapping.__system_prompt) ?? "",
     datasetLabelMapping,

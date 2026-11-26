@@ -303,6 +303,10 @@ export function buildTrainingStartPayload(
       isEmbedding || isDecision || isCpt || isRawText
         ? false
         : config.trainOnCompletions,
+    chat_template:
+      isEmbedding || isDecision || isCpt || isRawText || !config.chatTemplate.trim()
+        ? null
+        : config.chatTemplate,
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,

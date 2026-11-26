@@ -8,6 +8,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -49,24 +50,30 @@ const DATASET_STREAMING_BLOCKER_KEYS: Record<
 };
 
 export function DatasetAdvancedSettings({
+  chatTemplate,
   datasetFormat,
   datasetSliceEnd,
   datasetSliceStart,
   datasetStreaming,
   isDecisionModel,
+  isEmbeddingModel,
   isStreamingSupported,
+  onEditChatTemplate,
   setDatasetFormat,
   setDatasetSliceEnd,
   setDatasetSliceStart,
   setDatasetStreaming,
   streamingBlockers,
 }: {
+  chatTemplate: string;
   datasetFormat: DatasetFormat;
   datasetSliceEnd: string | null;
   datasetSliceStart: string | null;
   datasetStreaming: boolean;
   isDecisionModel: boolean;
+  isEmbeddingModel: boolean;
   isStreamingSupported: boolean;
+  onEditChatTemplate: () => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDatasetSliceEnd: (value: string | null) => void;
   setDatasetSliceStart: (value: string | null) => void;
@@ -75,6 +82,8 @@ export function DatasetAdvancedSettings({
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  const showChatTemplate =
+    !isDecisionModel && !isEmbeddingModel && datasetFormat !== "raw";
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -222,6 +231,48 @@ export function DatasetAdvancedSettings({
               />
             </div>
           </div>
+          {showChatTemplate && (
+            <div className="flex flex-col gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                {t("studio.dataset.chatTemplate")}
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      aria-label={t("studio.dataset.chatTemplateTooltip")}
+                      className={cn(
+                        "rounded-sm text-foreground/70 hover:text-foreground",
+                        PICKER_FOCUS_VISIBLE_CLASS,
+                      )}
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {t("studio.dataset.chatTemplateTooltip")}
+                  </TooltipContent>
+                </Tooltip>
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onEditChatTemplate}
+                >
+                  {t("studio.dataset.chatTemplateEdit")}
+                </Button>
+                {chatTemplate.trim() ? (
+                  <span className="text-ui-11 text-muted-foreground">
+                    {t("studio.dataset.chatTemplateCustom")}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          )}
           {!isDecisionModel && (
             <div className="flex items-center gap-2">
               <Checkbox

@@ -1687,6 +1687,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...(trainOnCompletions ? { datasetStreaming: false } : {}),
           });
         },
+        setChatTemplate: (chatTemplate) => setUserEdit({ chatTemplate }),
         setGradientCheckpointing: (gradientCheckpointing) =>
           setUserEdit({ gradientCheckpointing }),
         setOffloadLayers: (offloadLayers) => setUserEdit({ offloadLayers }),

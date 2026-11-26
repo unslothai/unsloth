@@ -338,6 +338,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
+        "chat_template": values.get("chat_template"),
         "train_on_completions": values.get(
             "train_on_completions",
             not (

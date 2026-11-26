@@ -4360,6 +4360,13 @@ export const ar = {
       targetFormat: "التنسيق المستهدف",
       targetFormatTooltip:
         "تنسيق بيانات التدريب الخاصة بك. يعمل الاكتشاف التلقائي مع معظم مجموعات البيانات.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "معلومات بث مجموعة البيانات",
       streaming: {
         label: "تفعيل البث",

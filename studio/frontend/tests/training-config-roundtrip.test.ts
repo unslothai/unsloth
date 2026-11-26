@@ -102,6 +102,35 @@ test("a tuned model recipe survives an unrelated import", () => {
   assert.equal(after.loraAlpha, 16);
 });
 
+
+test("a custom chat template survives YAML export and import", () => {
+  seedTunedModelDefaults();
+  const template = "{% for message in messages %}{{ message.content }}{% endfor %}";
+  useTrainingConfigStore.setState({ chatTemplate: template });
+
+  const exported = serializeConfigToYaml(
+    useTrainingConfigStore.getState(),
+    false,
+  );
+  assert.match(exported, /chat_template:/);
+
+  useTrainingConfigStore.setState({ chatTemplate: "" });
+  importConfig(exported);
+  assert.equal(useTrainingConfigStore.getState().chatTemplate, template);
+});
+
+test("an empty chat template is omitted from YAML export", () => {
+  seedTunedModelDefaults();
+  useTrainingConfigStore.setState({ chatTemplate: "  \n" });
+
+  const exported = serializeConfigToYaml(
+    useTrainingConfigStore.getState(),
+    false,
+  );
+
+  assert.doesNotMatch(exported, /chat_template:/);
+});
+
 test("gradient_checkpointing is read from a YAML boolean as well as a string", () => {
   seedTunedModelDefaults();
   assert.equal(
