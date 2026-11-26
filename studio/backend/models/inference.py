@@ -6507,6 +6507,12 @@ class DiffusionStatusResponse(BaseModel):
         "denoiser calls (whole-step, per block, per-card segments, and the per-block graphs a whole-step graph falls "
         "back to), and the process's dynamo frame and graph-break totals; null when nothing is loaded.",
     )
+    request_batching: Optional[Dict[str, str]] = Field(
+        None,
+        description = "How concurrent text-to-image requests share pipeline calls on this load: mode 'any', "
+        "'compiled_sizes' (static compile, only batch sizes already compiled) or 'serial' (CUDA graphs, every request "
+        "renders alone), with the reason; null when nothing is loaded.",
+    )
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     evicted: List[str] = Field(
         default_factory = list,

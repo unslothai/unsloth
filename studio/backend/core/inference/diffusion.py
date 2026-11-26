@@ -18076,18 +18076,42 @@ class DiffusionBackend:
                 private = True
         return prompt_key, private
 
-    def coalesce_batch_sizes(self, width: int, height: int) -> Optional[frozenset]:
-        """Batch sizes a coalesced txt2img call may use at ``width`` x ``height``: None = any. A static compile or
-        CUDA graphs key their artifacts on the batch, so a new size would compile or capture inside the slot (and an
-        OOM split resets every graph): only sizes this load already compiled at this size are offered."""
+    def request_batching(self) -> Optional[dict[str, str]]:
+        """How concurrent requests share calls on this load, for status: ``mode`` is ``any`` (any batch size),
+        ``compiled_sizes`` (static compile: only batch sizes this load already compiled) or ``serial`` (CUDA graphs:
+        every request renders alone), with the reason. None when nothing is loaded."""
         state = self._state
         if state is None:
+            return None
+        if getattr(state, "cuda_graphs", ()):
+            # A graph replays one batch size: a new size captures (seconds, and its own memory pool) inside the slot
+            # while everyone waits, and an OOM split drops every graph. Graph replay already keeps the card busy,
+            # so a batch measured no faster than serial replay.
+            return {
+                "mode": "serial",
+                "reason": "CUDA graphs replay one batch size; concurrent requests render one at a time",
+            }
+        if "compiled" in (state.speed_optims or ()) and compiled_shapes_are_static(
+            state.pipe, state.speed_mode
+        ):
+            return {
+                "mode": "compiled_sizes",
+                "reason": "static compile: concurrent requests share a call only at batch sizes already compiled",
+            }
+        return {
+            "mode": "any",
+            "reason": "concurrent requests with the same settings share one call",
+        }
+
+    def coalesce_batch_sizes(self, width: int, height: int) -> Optional[frozenset]:
+        """Batch sizes a coalesced txt2img call may use at ``width`` x ``height``: None = any, empty = none (CUDA
+        graphs serve serially; ``request_batching``). A static compile keys its artifacts on the batch, so a new
+        size would compile inside the slot: only sizes this load already compiled at this size are offered."""
+        policy = self.request_batching()
+        state = self._state
+        if policy is None or policy["mode"] == "serial":
             return frozenset()
-        static = bool(getattr(state, "cuda_graphs", ())) or (
-            "compiled" in (state.speed_optims or ())
-            and compiled_shapes_are_static(state.pipe, state.speed_mode)
-        )
-        if not static:
+        if policy["mode"] == "any":
             return None
         dims = (int(width), int(height))
         shapes = getattr(state.compile_cache_ctx, "shapes", None) or ()
@@ -18503,6 +18527,7 @@ class DiffusionBackend:
                 tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
                 or getattr(state, "cuda_graphs", ())
             ),
+            "request_batching": self.request_batching(),
             "cfg_batch": cfg_batch_status(state.pipe),
             "zimage_cfg_split": zimage_cfg_split_status(state.pipe),
             "resolved": resolved,

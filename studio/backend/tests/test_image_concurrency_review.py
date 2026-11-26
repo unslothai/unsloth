@@ -344,8 +344,9 @@ def test_the_engine_offers_only_compiled_batch_sizes_on_a_static_load(monkeypatc
     assert engine.coalesce_batch_sizes(1024, 1024) == frozenset()
     monkeypatch.setattr(diffusion_module, "compiled_shapes_are_static", lambda pipe, mode: False)
     assert engine.coalesce_batch_sizes(512, 512) is None
+    # CUDA graphs serve serially, compiled sizes or not.
     engine._state.cuda_graphs = (object(),)
-    assert engine.coalesce_batch_sizes(512, 512) == frozenset({1, 4})
+    assert engine.coalesce_batch_sizes(512, 512) == frozenset()
 
 
 def test_a_batch_keeps_the_longest_arrival_prefix_that_fits(monkeypatch):
@@ -902,3 +903,29 @@ def test_failure_recovery_renders_only_admitted_sizes():
     # The halves (size 2) are not admitted: every member falls back to rendering alone.
     assert attempts == [4]
     assert results == [None, None, None, None]
+
+
+def test_status_tells_how_concurrent_requests_are_served(monkeypatch):
+    import core.inference.diffusion as diffusion_module
+    from core.inference.diffusion import DiffusionBackend
+
+    engine = DiffusionBackend()
+    assert engine.request_batching() is None
+    engine._state = types.SimpleNamespace(
+        speed_optims = (), speed_mode = "off", pipe = None, cuda_graphs = (), compile_cache_ctx = None
+    )
+    assert engine.request_batching()["mode"] == "any"
+    assert engine.coalesce_batch_sizes(512, 512) is None
+    engine._state.speed_optims = ("compiled",)
+    monkeypatch.setattr(diffusion_module, "compiled_shapes_are_static", lambda pipe, mode: True)
+    assert engine.request_batching()["mode"] == "compiled_sizes"
+    engine._state.cuda_graphs = (object(),)
+    policy = engine.request_batching()
+    assert policy["mode"] == "serial" and "CUDA graphs" in policy["reason"]
+    assert engine.coalesce_batch_sizes(512, 512) == frozenset()
+
+
+def test_the_status_model_carries_request_batching():
+    from models.inference import DiffusionStatusResponse
+    status = DiffusionStatusResponse(request_batching = {"mode": "serial", "reason": "CUDA graphs"})
+    assert status.model_dump()["request_batching"] == {"mode": "serial", "reason": "CUDA graphs"}
