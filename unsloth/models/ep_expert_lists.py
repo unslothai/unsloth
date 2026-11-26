@@ -64,6 +64,121 @@ def list_shard_problem(block, ep = None):
     return None
 
 
+_LINEAR_LISTS = "per-expert Linear lists"
+
+
+def fused_list_problem(block, ep = None):
+    """Why expert parallel cannot shard `block`'s experts module that takes the fused experts call over per-expert
+    Linear lists (unsloth_zoo's GptOssExpertsBnb4bit, the load_in_4bit gpt-oss layout), None when it can."""
+    tpn = _tpn()
+    chain = tpn._experts_chain(block)
+    if len(chain) != 1:
+        return "a wrapper around the experts module"
+    problem = tpn.expert_shard_problem(block, ep)
+    if not (isinstance(problem, str) and problem.startswith(_LINEAR_LISTS)):
+        return problem or "fused expert stacks"
+    leaf = chain[0]
+    E = leaf.__dict__.get("num_experts")
+    if isinstance(ep, int) and (E % ep or E < ep):
+        return f"{E} experts do not split evenly over {ep} ranks"
+    lists = _linear_lists(leaf)
+    if any(p is not None for p in leaf._parameters.values()):
+        return "expert parameters beside the per-expert lists"
+    if any(_has_params(child) for name, child in leaf.named_children() if name not in lists):
+        return "expert submodules beside the per-expert lists"
+    if any(b is not None and b.numel() for b in leaf._buffers.values()):
+        return "expert buffers"
+    for name in lists:
+        problem = list_shard_problem(_Holder(leaf._modules[name]), ep)
+        if problem is not None:
+            return f"{name}: {problem}"
+    return None
+
+
+class _Holder(nn.Module):
+    def __init__(self, experts):
+        super().__init__()
+        self.experts = experts
+
+
+def _has_params(module):
+    return any(True for _ in module.parameters())
+
+
+def _linear_lists(leaf):
+    E = leaf.__dict__.get("num_experts")
+    return sorted(
+        name
+        for name, child in leaf.named_children()
+        if type(child) is nn.ModuleList and len(child) == E and _has_params(child)
+    )
+
+
+class LocalExpertList(nn.ModuleList):
+    """One per-expert ModuleList of a fused experts module under expert parallel: this rank's experts under their
+    global indices (state dict names unchanged), indexed locally 0 .. hi - lo as the experts call sees them."""
+
+    def __init__(self, local, lo):
+        nn.Module.__init__(self)
+        for e, module in local.items():
+            self.add_module(str(e), module)
+        self.__dict__["_lo"] = lo
+        self.__dict__["_count"] = len(local)
+
+    def __len__(self):
+        return self.__dict__["_count"]
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return [self[j] for j in range(*i.indices(len(self)))]
+        j = operator.index(i)
+        if j < 0:
+            j += len(self)
+        if not 0 <= j < len(self):
+            raise IndexError(f"local expert index {j} out of range ({len(self)} on this rank)")
+        return self._modules[str(self.__dict__["_lo"] + j)]
+
+    def __iter__(self):
+        lo = self.__dict__["_lo"]
+        return iter([self._modules[str(lo + j)] for j in range(len(self))])
+
+    def __setitem__(self, i, module):
+        raise TypeError("Unsloth: expert parallel expert lists are fixed")
+
+    def append(self, module):
+        raise TypeError("Unsloth: expert parallel expert lists are fixed")
+
+
+def shard_fused_lists(block, mesh, rank, ep):
+    """Keep experts [lo, hi) of every per-expert list of `block`'s experts module (global names, local indexing)
+    and route its fused experts call through ep_native's token exchange."""
+    epn, tpn = _ep(), _tpn()
+    leaf = block._modules["experts"]
+    E = leaf.num_experts
+    per_rank = E // ep
+    lo, hi = rank * per_rank, (rank + 1) * per_rank
+    shard = _ListShard(block, lo, hi, per_rank, E, mesh.get_group(), ep)
+    for name in _linear_lists(leaf):
+        full = leaf._modules[name]
+        local = LocalExpertList({e: full[e] for e in range(lo, hi)}, lo)
+        local.__dict__["_template"] = _meta_copy(full[0])
+        leaf._modules[name] = local
+        shard.containers.append(local)
+        for p in local.parameters():
+            setattr(p, epn._EP, (LIST, E, ep))
+    # ep_native's exchange: it reads the rank's [lo, hi), per_rank and the experts count from a tp_native shard.
+    exchange = tpn._ExpertShard(block, leaf, lo, hi, per_rank, E, mesh.get_group())
+    exchange.ep, exchange.calls = ep, 0
+    exchange.full_attrs.append((leaf, "num_experts", E))
+    leaf.num_experts = per_rank
+    prior = leaf.__dict__.get("forward", leaf.forward)
+    leaf.forward = epn._ep_experts_forward(exchange, prior)
+    block.__dict__["_unsloth_tp_expert_shard"] = exchange
+    block.__dict__[_SHARD] = shard
+    shard.exchange = exchange
+    return exchange
+
+
 class _ListShard:
     """This rank owns global experts [lo, hi) of one block."""
 
@@ -71,6 +186,7 @@ class _ListShard:
         self.block, self.lo, self.hi, self.per_rank = block, lo, hi, per_rank
         self.experts, self.group, self.ep = experts, group, ep
         self.calls = 0  # block forwards that went through the exchange (engagement count)
+        self.containers = []  # modules holding this rank's experts under their global indices
 
 
 class _Proxy:
@@ -328,6 +444,7 @@ def shard_expert_list(block, mesh, rank, ep):
     lst.__dict__["_template"] = _meta_copy(experts[0])
     block._modules["experts"] = lst
     shard = _ListShard(block, lo, hi, per_rank, E, mesh.get_group(), ep)
+    shard.containers.append(lst)
     for p in lst.parameters():
         setattr(p, epn._EP, (LIST, E, ep))
     prior = block.__dict__.get("forward", block.forward)
@@ -351,8 +468,7 @@ def gather_list_state(
     names = {id(m): n for n, m in model.named_modules()}
     receives = dst is None or dist.get_rank() == dst
     merged = {} if receives else None
-    for block in list_blocks(model):
-        shard, lst = block.__dict__[_SHARD], block._modules["experts"]
+    for block, shard, lst in _containers(model):
         prefix = names[id(lst)]
         template = lst.__dict__["_template"]
         entries = [
@@ -404,6 +520,13 @@ def list_blocks(model):
     return [m for m in model.modules() if is_listed(m)]
 
 
+def _containers(model):
+    for block in list_blocks(model):
+        shard = block.__dict__[_SHARD]
+        for lst in shard.containers:
+            yield block, shard, lst
+
+
 _HOOK_DICTS = (
     "_forward_hooks",
     "_forward_hooks_with_kwargs",
@@ -444,10 +567,9 @@ def remote_experts_for_save(model):
     as meta stand-ins under their global indices, removed again after."""
     added = []
     try:
-        for block in list_blocks(model):
-            lst = block._modules["experts"]
+        for _, shard, lst in _containers(model):
             template = lst.__dict__["_template"]
-            for e in range(lst.num_experts):
+            for e in range(shard.experts):
                 if str(e) not in lst._modules:
                     lst._modules[str(e)] = _meta_copy(template)
                     added.append((lst, str(e)))

@@ -177,9 +177,11 @@ def ep_refuse_per_expert_lists(model):
     experts are per-expert Linear lists (zoo's GptOssExpertsBnb4bit for a load_in_4bit gpt-oss)."""
     if not isinstance(model, nn.Module) or is_expert_parallel(model):
         return
-    tpn = _tpn()
+    tpn, lists = _tpn(), _lists()
     problems = [
-        tpn.expert_shard_problem(block, ep_env_size())
+        None
+        if lists.fused_list_problem(block, ep_env_size()) is None
+        else tpn.expert_shard_problem(block, ep_env_size())
         for block in tpn.moe_blocks_with_experts(model)
     ]
     message = _per_expert_lists_refusal(problems)
@@ -495,15 +497,17 @@ def apply_expert_parallel(model, mesh = None):
             "Unsloth: expert parallel cannot be combined with tensor parallel / FSDP2."
         )
     blocks = tpn.moe_blocks_with_experts(model)
-    sharded, kept, listed = [], [], []
+    sharded, kept, listed, fused_lists = [], [], [], []
     for block in blocks:
         problem = tpn.expert_shard_problem(block, ep)
         if problem is None and ep > 1:
             sharded.append(block)
         elif ep > 1 and _lists().list_shard_problem(block, ep) is None:
-            listed.append(
-                block
-            )  # transformers 4.x per-expert ModuleList: the block loops its experts itself
+            # transformers 4.x per-expert ModuleList: the block loops its experts itself
+            listed.append(block)
+        elif ep > 1 and _lists().fused_list_problem(block, ep) is None:
+            # one experts call over per-expert Linear lists (zoo's load_in_4bit gpt-oss)
+            fused_lists.append(block)
         else:
             kept.append((block, problem))
     for block, problem in kept:
@@ -516,7 +520,7 @@ def apply_expert_parallel(model, mesh = None):
                 f"Unsloth: expert_parallel_loading kept only this rank's experts of "
                 f"{type(block).__name__}, but they cannot be sharded now ({problem}); load in full."
             )
-    if not sharded and not listed:
+    if not sharded and not listed and not fused_lists:
         message = _per_expert_lists_refusal([p for _, p in kept]) if ep > 1 else None
         if message is not None:
             raise NotImplementedError(message)
@@ -537,6 +541,12 @@ def apply_expert_parallel(model, mesh = None):
         _guard_bypass(block, shard)
     for block in listed:
         _lists().shard_expert_list(block, ep_mesh, rank, ep)
+    for block in fused_lists:
+        shard = _lists().shard_fused_lists(block, ep_mesh, rank, ep)
+        plain = _BLOCK_FORWARDS.get(type(block).__name__)
+        if plain is not None:
+            block.forward = plain(block)
+        _guard_bypass(block, shard)
     for _, p in _ep_params(model):
         if p.requires_grad:
             # DDP averages the other gradients over the world; an expert's is the sum over its ep group's losses
@@ -558,14 +568,18 @@ def apply_expert_parallel(model, mesh = None):
         first = (
             sharded[0].__dict__["_unsloth_tp_expert_shard"]
             if sharded
-            else listed[0].__dict__[_lists()._SHARD]
+            else (listed or fused_lists)[0].__dict__[_lists()._SHARD]
         )
         print(
             f"Unsloth: expert parallel ep={ep}"
             + (f" x {rep_mesh.size()} replicas" if rep_mesh is not None else "")
-            + f": {len(sharded) + len(listed)} mixture-of-experts blocks keep "
+            + f": {len(sharded) + len(listed) + len(fused_lists)} mixture-of-experts blocks keep "
             f"{first.per_rank} of {first.experts} routed experts per rank"
-            + (f" ({len(listed)} as per-expert modules)" if listed else "")
+            + (
+                f" ({len(listed) + len(fused_lists)} as per-expert modules)"
+                if listed or fused_lists
+                else ""
+            )
             + (f", {len(kept)} kept whole" if kept else "")
             + "."
         )

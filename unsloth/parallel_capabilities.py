@@ -1925,6 +1925,7 @@ def _ep_blocker(
         problems = [
             None
             if ep_expert_lists.list_shard_problem(block, ep) is None
+            or ep_expert_lists.fused_list_problem(block, ep) is None
             else tp_native.expert_shard_problem(block, ep)
             for block in tp_native.moe_blocks_with_experts(model)
         ]

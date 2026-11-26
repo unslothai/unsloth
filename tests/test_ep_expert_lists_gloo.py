@@ -187,6 +187,146 @@ def _case_generate(
     return {"want": want, "got": got}
 
 
+def _gpt_oss_linear_lists(gc = False):
+    """A tiny gpt-oss whose experts are unsloth_zoo's GptOssExpertsBnb4bit (the load_in_4bit layout: one fused
+    experts call over per-expert Linear lists), here with plain fp32 Linears; LoRA on every Linear."""
+    os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+    os.environ.setdefault("UNSLOTH_FORCE_CPU", "1")  # zoo on a CPU-only rank
+    import transformers
+    from peft import LoraConfig, get_peft_model
+
+    try:
+        from unsloth_zoo.temporary_patches.gpt_oss import GptOssExpertsBnb4bit
+    except Exception as exc:  # zoo not importable here
+        return None, f"unsloth_zoo GptOssExpertsBnb4bit unavailable: {type(exc).__name__}: {exc}"[
+            :400
+        ]
+    config = transformers.GptOssConfig(
+        vocab_size = 128,
+        hidden_size = 32,
+        intermediate_size = 16,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 16,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        sliding_window = 8,
+        layer_types = ["sliding_attention", "full_attention"],
+        tie_word_embeddings = False,
+    )
+    config.dtype = torch.float32
+    config._attn_implementation = "eager"
+    torch.manual_seed(0)
+    model = transformers.AutoModelForCausalLM.from_config(config, dtype = torch.float32)
+    g = torch.Generator().manual_seed(7)
+    for layer in model.model.layers:
+        experts = GptOssExpertsBnb4bit(config)
+        with torch.no_grad():
+            for p in experts.parameters():
+                p.copy_(torch.randn(p.shape, generator = g) * 0.1)
+        layer.mlp.experts = experts
+    model = get_peft_model(
+        model, LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+    )
+    g = torch.Generator().manual_seed(1234)
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if "lora_B" in name:
+                p.copy_(torch.randn(p.shape, generator = g) * 0.02)
+    if gc:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+        model.enable_input_require_grads()
+    return model.train(), None
+
+
+def _case_fused_lists(
+    rank,
+    world,
+    tmp,
+    gc = False,
+):
+    import torch.distributed as dist
+    from peft import get_peft_model_state_dict
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.nn.parallel import DistributedDataParallel
+
+    _, tpn, epn = _modules()
+    lists = epn._lists()
+    ref, why = _gpt_oss_linear_lists(gc)
+    if ref is None:
+        return {"skip": why}
+    block = tpn.moe_blocks_with_experts(ref)[0]
+    assert tpn.expert_shard_problem(block, world).startswith(
+        "per-expert Linear lists"
+    ), tpn.expert_shard_problem(block, world)
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    rows = [_rows(128, r) for r in range(world)]
+    n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
+    for ids, lab in rows:
+        (_sum_loss(ref, ids, lab) / n).backward()
+    want = {k: p.grad.detach().clone() for k, p in ref.named_parameters() if p.grad is not None}
+    want_loss = sum(float(_sum_loss(ref, i, lab).detach()) for i, lab in rows) / n
+    want_norm = float(
+        torch.nn.utils.clip_grad_norm_([p for p in ref.parameters() if p.grad is not None], 1e9)
+    )
+    want_adapter = {k: v.detach().clone() for k, v in get_peft_model_state_dict(ref).items()}
+    model, _ = _gpt_oss_linear_lists(gc)
+    epn.ep_refuse_per_expert_lists(model)  # the from_pretrained check no longer refuses this layout
+    epn.apply_expert_parallel(model, mesh)
+    group = epn._mesh(model).get_group()
+    ddp = DistributedDataParallel(model)
+    loss = _sum_loss(ddp, *rows[rank]) * world / n
+    loss.backward()
+    value = loss.detach() / world
+    dist.all_reduce(value)
+    mine = {
+        k: p.grad.detach().clone()
+        for k, p in model.named_parameters()
+        if p.grad is not None and getattr(p, epn._EP, (None,))[0] == lists.LIST
+    }
+    parts = [None] * world
+    dist.all_gather_object(parts, mine, group = group)
+    got = {
+        k: p.grad.detach().clone()
+        for k, p in model.named_parameters()
+        if p.grad is not None and k not in mine
+    }
+    for part in parts:
+        got.update(part)
+    norm = float(
+        epn.ep_clip_grad_norm_(
+            [p for p in model.parameters() if p.grad is not None], 1e9, group = group
+        )
+    )
+    out_dir = os.path.join(tmp, "adapter")
+    model.save_pretrained(out_dir)
+    dist.barrier()
+    saved = None
+    if rank == 0:
+        from safetensors.torch import load_file
+        saved = load_file(os.path.join(out_dir, "adapter_model.safetensors"))
+    held = sorted(
+        {
+            int(k.split("_projs.")[1].split(".")[0])
+            for k, _ in model.named_parameters()
+            if "_projs." in k
+        }
+    )
+    exchange = lists.list_blocks(model)[0].__dict__["_unsloth_tp_expert_shard"]
+    return {
+        "loss": (float(value), want_loss),
+        "norm": (norm, want_norm),
+        "grads": (got, want),
+        "adapter": (saved, want_adapter),
+        "blocks": len(lists.list_blocks(model)),
+        "moe_blocks": len(tpn.moe_blocks_with_experts(model)),
+        "held": held,
+        "range": (exchange.lo, exchange.hi, exchange.experts),
+        "calls": exchange.calls,
+    }
+
+
 def _case_refuse_stacked_read(rank, world, tmp, repo):
     """A block forward that reads an expert's weights instead of calling it is refused on every rank."""
     from torch.distributed.device_mesh import init_device_mesh
@@ -327,3 +467,10 @@ def test_ep_expert_lists_generate_with_uneven_lengths_matches_one_process(family
         pytest.skip(results[0]["skip"])
     for r in results:
         assert torch.equal(r["got"], r["want"]), r
+
+
+@pytest.mark.parametrize("gc", (False, True))
+def test_ep_gpt_oss_linear_lists_match_one_process(gc):
+    # unsloth_zoo's load_in_4bit gpt-oss layout (here 16-bit Linears): the fused experts call through ep_native's
+    # exchange, each rank holding gate_up_projs / down_projs [lo, hi) under their global names.
+    _check(_spawn("_case_fused_lists", gc = gc), 2)
