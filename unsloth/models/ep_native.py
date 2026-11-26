@@ -282,6 +282,51 @@ def _destinations(owner, ep):
     return owner.new_zeros((owner.shape[0], ep), dtype = torch.bool).scatter_(1, owner, True)
 
 
+_EP_ROWS_ENV = "UNSLOTH_EP_EXPERT_ROWS"
+
+
+def _ep_expert_rows():
+    """N rows per checkpointed experts call on this rank (no per-chunk collective); unset or 0 = one call."""
+    value = os.environ.get(_EP_ROWS_ENV, "").strip()
+    if not value:
+        return None
+    try:
+        rows = int(value)
+    except ValueError:
+        rows = -1
+    if rows < 0:
+        raise ValueError(f"Unsloth: {_EP_ROWS_ENV}={value!r} must be a row count >= 0 (0 = off).")
+    return rows or None
+
+
+def _ep_expert_chunk(shard, prior, dense, got_x, row, ic, wc):
+    xc = got_x.index_select(0, row)
+    if dense:
+        # 4.x gpt-oss experts take E from routing_weights' width: rebuild it dense over the local experts.
+        wc = wc.new_zeros((wc.shape[0], shard.per_rank)).scatter(1, ic, wc)
+    with _tpn()._expert_locals(shard):
+        yc = prior(xc, ic, wc)
+    return yc.reshape(-1, yc.shape[-1])
+
+
+def _ep_experts_chunked(shard, prior, dense, got_x, row, ic, wc, rows):
+    from torch.utils.checkpoint import checkpoint
+
+    y_got = None
+    for start in range(0, row.numel(), rows):
+        part = slice(start, start + rows)
+        args = (shard, prior, dense, got_x, row[part], ic[part], wc[part])
+        if torch.is_grad_enabled():
+            yc = checkpoint(_ep_expert_chunk, *args, use_reentrant = False)
+        else:
+            yc = _ep_expert_chunk(*args)
+        if y_got is None:
+            y_got = yc.new_zeros((got_x.shape[0], yc.shape[-1]))
+        y_got.index_add_(0, row[part], yc)
+    shard.chunked_calls = getattr(shard, "chunked_calls", 0) + 1
+    return y_got
+
+
 # Data-dependent splits and all_to_all: kept out of Dynamo graphs.
 @_compiler_disable
 def _ep_experts(shard, prior, hidden, index, weights):
@@ -320,6 +365,21 @@ def _ep_experts(shard, prior, hidden, index, weights):
     )
     lo, hi = shard.lo, shard.hi
     row, slot = ((got_index >= lo) & (got_index < hi)).nonzero(as_tuple = True)
+    chunk = _ep_expert_rows()
+    if chunk is not None and row.numel() > chunk:
+        y_got = _ep_experts_chunked(
+            shard,
+            prior,
+            dense,
+            got_x,
+            row,
+            (got_index[row, slot] - lo).unsqueeze(1),
+            got_w[row, slot].unsqueeze(1),
+            chunk,
+        )
+        (y_back,) = _Exchange.apply(recv, send, group, y_got)
+        y = y_back.new_zeros((tokens, y_back.shape[-1])).index_add(0, token, y_back)
+        return y.reshape(*shape[:-1], y.shape[-1])
     if row.numel() == 0:
         # Nothing routed here: one zero row through the experts keeps their gradients defined (zeros). It is tied
         # to the received tensors so this rank still runs the exchange's backward that every other rank runs.
