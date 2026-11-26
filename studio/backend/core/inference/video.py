@@ -392,6 +392,33 @@ def _grouped_form_status(pipe: Any) -> Optional[dict]:
         return None
 
 
+def _video_fp8_gemm_status(state: Any) -> Optional[dict]:
+    """Which fp8 GEMM the loaded fp8 denoiser(s) / text encoder run, as the images status reports it: torchao
+    row-wise, or the unit-scale fallback on a torch build without the row-wise kernel (Windows wheels).
+    None for a load without fp8. Never raises."""
+    try:
+        pipe = getattr(state, "pipe", None)
+        component = None
+        if str(getattr(state, "transformer_quant", None) or "").lower() == "fp8":
+            component = "transformer"
+        elif str(getattr(state, "text_encoder_quant", None) or "").lower().startswith("fp8"):
+            component = "text_encoder"
+        if component is None:
+            return None
+        from .diffusion_fp8_unit_scale import gemm_path
+
+        index = None
+        module = getattr(pipe, component, None)
+        for param in module.parameters() if module is not None else ():
+            device = getattr(param, "device", None)
+            if getattr(device, "type", None) == "cuda":
+                index = device.index
+                break
+        return {**gemm_path(index), "component": component}
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
+
+
 def _grouped_form_note(model: Any) -> str:
     try:
         from .diffusion_grouped_int8 import grouped_form_note
@@ -18003,6 +18030,7 @@ class VideoBackend:
             "lora_refusal": video_lora.load_refusal(fam, state.kind, None),
             **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
             "text_encoder_quant": state.text_encoder_quant,
+            "fp8_gemm": _video_fp8_gemm_status(state),
             "has_audio": fam.has_audio,
             "prompt_hint": fam.prompt_hint,
             "supports_cfg": fam.supports_cfg,

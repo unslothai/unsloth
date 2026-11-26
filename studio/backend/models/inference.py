@@ -8561,6 +8561,12 @@ class VideoStatusResponse(BaseModel):
         "(null = the dense bf16 encoder is loaded). An int8 request without a per-family "
         "keep-bf16 schedule is reported as the fp8 it fell back to.",
     )
+    fp8_gemm: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Which fp8 GEMM an fp8 load runs: path 'torchao_rowwise', or 'unit_scale_fallback' when this "
+        "torch build has no row-wise fp8 kernel on the card (Windows wheels), plus the per-card probe verdict and "
+        "eager call counts; null for a load without fp8.",
+    )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"
     )
