@@ -28,6 +28,7 @@ import { useT } from "@/i18n";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import {
   formatFootprintBytes,
+  pickerOrderedGgufVariants,
   pinKey,
   usePinnedModelsStore,
 } from "@/features/model-picker";
@@ -36,6 +37,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import {
   type GgufFitClass,
+  classifyGgufFit,
   classifyGgufVariantFit,
   ggufVariantLookupTableBytes,
 } from "@/lib/gguf-fit";
@@ -559,6 +561,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   liveActive,
   showFitInfo,
   unifiedBudget,
+  recommended,
   onSelect,
   onDelete,
 }: {
@@ -569,6 +572,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   liveActive: boolean;
   showFitInfo: boolean;
   unifiedBudget: boolean;
+  recommended: boolean;
   onSelect: (quant: string) => void;
   onDelete: (quant: string) => void;
 }) {
@@ -642,6 +646,11 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
                 : "Partial download. Select it, then use the button on the card to finish it."}
             </TooltipContent>
           </Tooltip>
+        )}
+        {!item.downloaded && !item.partial && recommended && (
+          <span className="shrink-0 text-ui-9 font-sans font-medium text-primary">
+            recommended
+          </span>
         )}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -719,7 +728,7 @@ export function GgufDownloadCard({
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
   const localVariantPath = showMemoryBar ? null : cachePath?.trim() || null;
-  const { variants, loading, error, refreshError, refresh } =
+  const { variants, defaultVariant, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
@@ -759,26 +768,29 @@ export function GgufDownloadCard({
 
   // Use the live VRAM budget so the badge agrees with the memory bar and the loader.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
-
-  const rawSortedVariants = useMemo(() => {
-    if (!variants) return null;
-    return sortDownloadableGgufVariants(variants, {
+  const fitResources = useMemo(
+    () => ({
       gpuGb,
       gpuCount,
       audioCppCardGb,
       systemRamGb,
       budgetFraction,
       unifiedLoadBudgetGb,
-    });
-  }, [
-    variants,
-    gpuGb,
-    gpuCount,
-    audioCppCardGb,
-    systemRamGb,
-    budgetFraction,
-    unifiedLoadBudgetGb,
-  ]);
+    }),
+    [
+      gpuGb,
+      gpuCount,
+      audioCppCardGb,
+      systemRamGb,
+      budgetFraction,
+      unifiedLoadBudgetGb,
+    ],
+  );
+
+  const rawSortedVariants = useMemo(() => {
+    if (!variants) return null;
+    return sortDownloadableGgufVariants(variants, fitResources);
+  }, [variants, fitResources]);
   const selectLiveGgufVariantStates = useMemo(
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
@@ -931,6 +943,24 @@ export function GgufDownloadCard({
     isActive && activeQuant && ggufVariantsMatch(selected?.quant, activeQuant);
   // Media fit is the diffusion planner's question; no verdict beats a wrong one.
   const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));
+  const anyBudgetGb = (gpuGb ?? 0) > 0 || (systemRamGb ?? 0) > 0;
+  const recommendedQuants = useMemo(() => {
+    if (!variants || !showFitInfo || !anyBudgetGb) return new Set<string>();
+    return pickerOrderedGgufVariants(variants, defaultVariant, {
+      fitOf: (sizeBytes) => classifyGgufFit(sizeBytes, fitResources),
+      anyBudget: anyBudgetGb,
+      budgetKnown: true,
+      cardGb: audioCppCardGb ?? gpuGb ?? 0,
+    }).recommended;
+  }, [
+    variants,
+    showFitInfo,
+    anyBudgetGb,
+    defaultVariant,
+    fitResources,
+    audioCppCardGb,
+    gpuGb,
+  ]);
   const selectedFit = selected
     ? classifyGgufVariantFit(selected, {
         gpuGb,
@@ -956,6 +986,11 @@ export function GgufDownloadCard({
   const selectedVariantKey = selectedQuant
     ? normalizeGgufVariantIdentity(selectedQuant)
     : null;
+  const selectedIsRecommended =
+    selected != null &&
+    !selected.downloaded &&
+    !selected.partial &&
+    recommendedQuants.has(selected.quant);
   const activeVariantKey = activeQuant
     ? normalizeGgufVariantIdentity(activeQuant)
     : null;
@@ -1243,6 +1278,11 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
+                {selectedIsRecommended && (
+                  <span className="shrink-0 text-ui-9 font-sans font-medium text-primary">
+                    recommended
+                  </span>
+                )}
                 <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
                 {selected &&
                   selectedDownloadSizeLabel &&
@@ -1289,6 +1329,7 @@ export function GgufDownloadCard({
                     liveActive={liveActive}
                     showFitInfo={showFitInfo}
                     unifiedBudget={unifiedLoadBudgetGb != null}
+                    recommended={recommendedQuants.has(item.quant)}
                     onSelect={handleSelectVariant}
                     onDelete={handleDeleteVariant}
                   />
