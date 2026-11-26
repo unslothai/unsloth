@@ -2521,3 +2521,15 @@ def test_a_plain_multi_image_request_keeps_todays_graph_rules(stub_torch):
     handle = _armed()
     handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
     assert handle.stats["captures"] == 1 and handle.stats["batch_captures"] == 0
+
+
+@side_stream
+def test_dropping_one_batch_size_keeps_the_others_and_size_one(stub_torch):
+    handle = _armed()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    for rows in (2, 4):
+        with cg.batch_rows(rows, capture = True):
+            handle(_t((rows, 4)), timestep = _t((rows,)), return_dict = False)
+    assert handle.drop_batched(2) == 1
+    assert sorted(handle._batched.values()) == [4] and len(handle.cache) == 2
+    assert handle.drop_batched() == 1 and len(handle.cache) == 1

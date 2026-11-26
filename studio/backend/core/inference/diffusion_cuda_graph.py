@@ -1578,6 +1578,19 @@ class GraphedForward:
             return "not enough free memory for a batched graph"
         return None
 
+    def drop_batched(self, size: Optional[int] = None) -> int:
+        """Drop the batched graphs (of ``size`` only, when given); the size-1 graphs stay. Returns how many."""
+        batched = getattr(self, "_batched", {})
+        keys = [k for k, v in batched.items() if size is None or v == int(size)]
+        gone = [getattr(self.cache.pop(k), "pool_token", None) for k in keys if k in self.cache]
+        for k in keys:
+            batched.pop(k, None)
+        if gone:
+            _note_dropped_pools(gone)
+            _drop_pool_if_unused()
+            self._release()
+        return len(gone)
+
     def _drop_batched(self, reason: Optional[str] = None) -> None:
         batched = getattr(self, "_batched", {})
         gone = [

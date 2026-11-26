@@ -454,6 +454,7 @@ def test_the_race_catches_a_neighbour_leak_and_persists_a_loss(monkeypatch):
     )
     verdict = report["sizes"]["2"]
     assert verdict["promoted"] is False and verdict["neighbour_exact"] is False
+    assert verdict["batched_graphs_dropped"] == 0
     assert stored[2]["promoted"] is False, "losers are persisted too"
     assert race.seeded_join_ok(verdict) is False
 
@@ -658,3 +659,25 @@ def test_without_the_trace_env_no_hook_is_installed(monkeypatch):
         pipe(4)
     assert seen == []
     assert trace.snapshot()["pipe_rows"] == {"4": 1}
+
+
+def test_a_losing_size_drops_its_batched_graphs(monkeypatch):
+    monkeypatch.setattr(race, "record", lambda *a: True)
+    dropped = []
+    handle = types.SimpleNamespace(
+        drop_batched = lambda size: dropped.append(size) or 1, bypass = lambda on: None
+    )
+    generate, clock, _ = _fake_generate(lambda rows: float(rows))
+    report = race.run_race(
+        generate,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 3,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    assert report["sizes"]["2"]["promoted"] is False
+    assert dropped == [2] and report["sizes"]["2"]["batched_graphs_dropped"] == 1

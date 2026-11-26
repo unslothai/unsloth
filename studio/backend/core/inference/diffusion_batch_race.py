@@ -472,6 +472,17 @@ def run_race(
             report["aborted"] = True
             break
         report["sizes"][str(size)] = verdict
+        if not verdict.get("promoted"):
+            # A losing size never runs batched here: its graphs would only pin pool memory.
+            dropped = 0
+            for handle in handles:
+                drop = getattr(handle, "drop_batched", None)
+                if callable(drop):
+                    try:
+                        dropped += int(drop(size) or 0)
+                    except Exception:  # noqa: BLE001
+                        pass
+            verdict["batched_graphs_dropped"] = dropped
         if persist:
             verdict["persisted"] = record(state, width, height, guidance, size, verdict)
     return report
