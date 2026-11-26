@@ -1304,3 +1304,21 @@ def test_a_folded_symlink_alias_still_resolves_by_its_own_name(
     index = resolver._build_index()
     assert {str(folder / alias).lower(), Path(alias).name} <= set(index)
     assert resolver.local_gguf_pinned_variant(f"{folder / alias}:Q4_K_M") == "Q4_K_M"
+
+
+def test_a_folded_copy_in_a_second_lm_studio_root_resolves_by_its_path(monkeypatch, tmp_path):
+    """Two LM Studio roots holding pub/model list once; the second copy's path and quant pin still resolve."""
+    from core.inference import local_model_resolver as resolver
+
+    first, second = tmp_path / "lms-a", tmp_path / "lms-b"
+    _touch(first / "pub" / "model" / "model-Q4_K_M.gguf")
+    _touch(second / "pub" / "model" / "model-Q8_0.gguf")
+    sources = _empty_sources(tmp_path)._replace(lm_dirs = (first, second))
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+
+    assert len(models_route.collect_local_models(Path("models").resolve())) == 1
+    assert str(second / "pub" / "model").lower() in resolver._build_index()
+    assert resolver.local_gguf_pinned_variant(f"{second / 'pub' / 'model'}:Q8_0") == "Q8_0"

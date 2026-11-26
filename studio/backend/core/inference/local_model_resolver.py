@@ -820,6 +820,9 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+_STORE_SOURCES = ("hf_cache", "lmstudio", "omlx")
+
+
 def _is_symlink_alias(info) -> bool:
     """A link at or above the row inside its scan folder (alias-a/, publisher-alias/model), as the inventory's
     dedupe judges it; a scan folder reached through a link makes nothing an alias."""
@@ -850,13 +853,14 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: local model scan failed: %s", exc)
         return index
-    # Rows the listing folds into a listed one still answer to their own names after the listed rows: another HF
-    # cache's copy by its snapshot path, a custom folder's symlink alias (alias-a/) by its path and name.
+    # Rows the listing folds into a listed one still answer to their own names after the listed rows: a copy in
+    # another HF cache or LM Studio / oMLX root by its path, a scan folder's symlink alias also by its name. A
+    # scan folder's sub-build stays grouped with its parent.
     copies = {
         id(info): info
         for info in folded
         if _is_abs_path_id(info.id)
-        and (info.source == "hf_cache" or (info.source == "custom" and _is_symlink_alias(info)))
+        and (info.source in _STORE_SOURCES or (info.source == "custom" and _is_symlink_alias(info)))
     }
     for info in (*found, *copies.values()):
         raw_id = getattr(info, "id", None)
@@ -884,9 +888,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             (getattr(info, "display_name", None), entry),
             (public_model_id(raw_id), path_alias_entry),
         )
-        # The repo id and display name stay with the listed HF copy.
-        hf_copy = id(info) in copies and info.source == "hf_cache"
-        for key, alias_entry in aliases[:2] if hf_copy else aliases:
+        # The repo id and display name stay with the listed copy.
+        store_copy = id(info) in copies and info.source in _STORE_SOURCES
+        for key, alias_entry in aliases[:2] if store_copy else aliases:
             if key and alias_entry is not None:
                 index.setdefault(key.strip().lower(), alias_entry)
         # Sibling revisions keep their own weights, so a pin survives a newer Hugging Face snapshot.
