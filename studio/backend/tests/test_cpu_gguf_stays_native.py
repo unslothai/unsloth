@@ -368,6 +368,29 @@ def test_a_cpu_dense_pick_of_a_family_with_a_gguf_route_is_refused(monkeypatch, 
             call(fam, model_kind = kind)
 
 
+def test_a_cpu_dense_pick_without_a_listed_gguf_names_no_missing_rows(monkeypatch):
+    """Krea 2 has no GGUF row: the refusal must not tell the user to pick one, the FLUX.3 refusal still does."""
+    _device(monkeypatch, "cpu")
+    _binaries(monkeypatch, "/opt/sd-cli")
+    with pytest.raises(ValueError) as krea:
+        r.refuse_cpu_dense_image_pick(detect_family("krea/Krea-2-Turbo"), "pipeline")
+    assert "runs only as a GGUF on the native engine" in str(krea.value)
+    assert "Pick one of its GGUF files" not in str(krea.value)
+    assert "has no Krea 2 GGUF yet" in str(krea.value)
+    with pytest.raises(ValueError, match = "Pick one of its GGUF files"):
+        r.refuse_cpu_dense_image_pick(detect_family(FLUX3), "pipeline")
+
+
+def test_no_curated_gguf_set_matches_the_catalog():
+    missing = set()
+    for canonical, arts, native in _catalog_groups("image"):
+        if native and not any(kind == "gguf" for kind, _repo in arts):
+            fam = detect_family(canonical)
+            assert fam is not None, canonical
+            missing.add(fam.name)
+    assert missing == set(r.CPU_NO_CURATED_GGUF_IMAGE_FAMILIES)
+
+
 @pytest.mark.parametrize(
     "backend, fam_name, env",
     [

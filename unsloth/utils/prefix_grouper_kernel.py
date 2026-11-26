@@ -70,6 +70,12 @@ if TORCH_SUPPORTS_PREFIX_GROUPER:
 _flex_attention_dynamic = torch.compile(flex_attention, dynamic = True)
 
 
+def _is_rocm_torch():
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__
+    # (import_fixes._is_rocm_torch; this module also loads standalone, so it keeps its own copy).
+    return bool(getattr(torch.version, "hip", None)) or "rocm" in str(torch.__version__).lower()
+
+
 def _rocm_static_flex_entry(query, key, value, **kwargs):
     # Its own code object, so static graphs keep their own recompile budget.
     return flex_attention(query, key, value, **kwargs)
@@ -77,9 +83,7 @@ def _rocm_static_flex_entry(query, key, value, **kwargs):
 
 # ROCm: flex compiled with a symbolic sequence length returned inf / NaN gradients on gfx1151 (torch 2.11), so
 # calls whose backward runs compile per padded length there. UNSLOTH_ROCM_FLEX_STATIC=0 keeps the dynamic kernel.
-_ROCM_FLEX_STATIC = bool(getattr(torch.version, "hip", None)) and (
-    os.environ.get("UNSLOTH_ROCM_FLEX_STATIC", "1") != "0"
-)
+_ROCM_FLEX_STATIC = _is_rocm_torch() and (os.environ.get("UNSLOTH_ROCM_FLEX_STATIC", "1") != "0")
 _flex_attention_static = (
     torch.compile(_rocm_static_flex_entry, dynamic = False) if _ROCM_FLEX_STATIC else None
 )
@@ -581,7 +585,7 @@ def _record_compile_failure(key, reason):
 def _small_smem_skip_reason(q) -> Optional[str]:
     """NVIDIA small-smem GPU, 16-bit, head_dim >= 128, no opt-in: the default tiles cannot fit, so
     skip the failing compile (about 3 minutes on T4) and keep the packed path."""
-    if _SMALL_SMEM_OPT_IN or torch.version.hip is not None:
+    if _SMALL_SMEM_OPT_IN or _is_rocm_torch():
         return None
     # User tile overrides (PG_FLEX_BF16_BLOCK_M / _N) go through the real compile check instead.
     if (_BF16_BLOCK_M, _BF16_BLOCK_N) != (128, 64):

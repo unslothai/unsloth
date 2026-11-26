@@ -7,7 +7,7 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { groupSeparationClips, orderStems, stemLabel } = await import(
+const { groupSeparationClips, orderStems, separationGroupSummary, stemLabel } = await import(
   "../src/features/audio/separation-stems.ts"
 );
 const {
@@ -18,7 +18,11 @@ const {
   roformerOverlapLogic,
   separateBlocker,
   separateCpuWarning,
+  separateEmptyTitle,
   separatePresentation,
+  separateAnnouncement,
+  separateRunOptions,
+  separateVerb,
 } = await import("../src/features/audio/separate-policy.ts");
 const { buildAudioRunBody } = await import(
   "../src/features/audio/audio-run-request.ts"
@@ -29,9 +33,11 @@ const { audioRowMatchesWorkflow } = await import(
 const {
   AUDIO_CPP_MODELS,
   AUDIO_CPP_SEP_AUDIO_TYPE,
+  audioCppModelFor,
   audioCppModelSpeaks,
   audioCppWorkflowsFor,
 } = await import("../src/features/audio/audio-cpp-catalog.ts");
+const { pageModels } = await import("../src/features/audio/page-models.ts");
 const { isTtsAudioType } = await import(
   "../src/features/audio/audio-page-policy.ts"
 );
@@ -157,12 +163,12 @@ test("Generate says what the track needs, in order", () => {
     [
       { source: null, sourceExpired: true },
       "source",
-      "Add a track to separate.",
+      "Add a recording.",
     ],
     [
       { sourceExpired: true, source: long },
       "source-expired",
-      "This track expired. Add it again.",
+      "This recording expired. Add it again.",
     ],
     [{ source: long }, "too-long", /up to 10 minutes.*10:01/],
   ];
@@ -196,6 +202,10 @@ test("the estimate follows the model, the length and the overlap", () => {
   }
   assert.match(separateCpuWarning("bs_roformer", "cpu") ?? "", /very slow/);
   assert.equal(separateCpuWarning("bs_roformer", "auto"), null);
+  // The per-second rate was measured on HTDemucs only; other models get no promise.
+  assert.match(separateCpuWarning("htdemucs", "cpu") ?? "", /a second per second/);
+  assert.doesNotMatch(separateCpuWarning("audiosr", "cpu") ?? "", /second per second/);
+  assert.match(separateCpuWarning("audiosr", "cpu") ?? "", /slower on the CPU/);
 });
 
 test("Overlap off asks for one pass; on sends nothing; a change is a reload", () => {
@@ -260,11 +270,56 @@ test("separation rows list only on Separate; sep catalog models only separate", 
   );
   assert.equal(on({}).includes("separate"), false);
   const seps = AUDIO_CPP_MODELS.filter((model) => model.task === "sep");
-  assert.equal(seps.length, 4);
   for (const model of seps) {
     assert.deepEqual(audioCppWorkflowsFor(model), ["separate"]);
     assert.equal(audioCppModelSpeaks(model.id), false);
   }
+});
+
+test("a filter (voice, restore) names what it does and saves one file", () => {
+  assert.equal(separateVerb("voice"), "Isolating the voice");
+  assert.equal(separateVerb("restore"), "Restoring");
+  assert.equal(separateVerb("stems"), "Separating");
+  assert.equal(separateVerb(null), "Separating");
+  const shown = { title: "t", subtitle: "s", status: "x" } as never;
+  assert.equal(separatePresentation(shown, "finishing", false, "restore")?.status, "Saving…");
+  assert.equal(separatePresentation(shown, "finishing", false, "stems")?.status, "Saving stems…");
+  assert.equal(separateAnnouncement(1), "Saved the result.");
+  assert.equal(separateAnnouncement(4), "Separated into 4 stems.");
+});
+
+test("a run merges the spec options over the tool panels', and sends none when empty", () => {
+  assert.equal(separateRunOptions(undefined, {}), undefined);
+  assert.deepEqual(separateRunOptions({ num_overlap: 1 }, {}), { num_overlap: 1 });
+  assert.deepEqual(separateRunOptions(undefined, { audio_chunk_duration_sec: 5 }), {
+    audio_chunk_duration_sec: 5,
+  });
+});
+
+test("a history row names a lone output instead of counting stems", () => {
+  const group = (roles: string[], complete = true, expectedStems = roles.length) => ({
+    stems: roles.map((role, i) => clip(String(i), role)),
+    complete,
+    expectedStems,
+  });
+  assert.equal(separationGroupSummary(group(["voice"])), "Voice");
+  assert.equal(separationGroupSummary(group(["restored"])), "Restored");
+  assert.equal(separationGroupSummary(group(["vocals", "drums"])), "2 stems");
+  assert.equal(separationGroupSummary(group(["vocals"], false, 4)), "1 of 4 stems");
+});
+
+test("Separate lists its models grouped by goal: stems, voice, restore, speakers", () => {
+  const rows = AUDIO_CPP_MODELS.filter((model) => model.task === "sep")
+    .reverse()
+    .map((model) => ({ id: model.id }));
+  const goals = pageModels("separate", rows, { isMac: false }).map(
+    (row) => audioCppModelFor(row.id)?.goal ?? "stems",
+  );
+  const order = ["stems", "voice", "restore", "speakers"];
+  assert.deepEqual(
+    goals,
+    [...goals].sort((a, b) => order.indexOf(a) - order.indexOf(b)),
+  );
 });
 
 test("a loaded separation model is a main-slot audio model", () => {
@@ -314,4 +369,12 @@ test("a stem sent to Clone is adopted, so the old reference's transcript goes wi
     send,
     /if \(!transitionWorkflow\("clone"\)\) return;[\s\S]{0,160}?useAudioCloneStore\.getState\(\)\.adoptReference\(\{/,
   );
+});
+
+test("the empty results card names what the loaded model makes", () => {
+  assert.equal(separateEmptyTitle("voice"), "The clean voice will appear here");
+  assert.equal(separateEmptyTitle("restore"), "The restored audio will appear here");
+  assert.equal(separateEmptyTitle("speakers"), "Each speaker will appear here");
+  assert.equal(separateEmptyTitle("stems"), "Stems will appear here");
+  assert.equal(separateEmptyTitle(null), "Stems will appear here");
 });

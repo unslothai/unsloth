@@ -142,4 +142,19 @@ def test_the_size_controls_follow_the_backend_presets_not_a_hardcoded_list():
     assert "presets && presets.length > 0" in memo
     assert "{resolutionPresets.map(([w, h]) => (" in src
     assert "videoSizeLimits(status?.defaults, resolutionPresets)" in src
-    assert "...requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource)," in src
+    # The request size is one memo over everything it reads (#19622): handleGenerate spreads it and depends on it,
+    # so Generate never sends a matchedResolution from before the latest frame swap.
+    memo = src[src.index("const generateCanvas = useMemo(") :]
+    memo = memo[: memo.index(");\n")]
+    assert "requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource)" in memo
+    deps = memo[memo.rindex("[") + 1 : memo.rindex("]")]
+    assert {d.strip() for d in deps.split(",") if d.strip()} >= {
+        "autoMatchSource",
+        "matchedResolution",
+        "sourceSized",
+        "videoSize",
+    }, deps
+    generate = src[src.index("const handleGenerate = useCallback(") :]
+    generate = generate[: generate.index("\n  ]);")]
+    assert "...generateCanvas," in generate
+    assert "\n    generateCanvas,\n" in generate[generate.rindex("}, [") :]

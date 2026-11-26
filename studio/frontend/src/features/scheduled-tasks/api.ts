@@ -58,6 +58,7 @@ export interface ScheduledTask {
   archiveSuccessful: boolean;
   projectId: string | null;
   webSearch?: boolean;
+  mcpServerIds?: string[];
   threadId?: string | null;
   status: "active" | "paused" | "completed";
   nextRunAt: number | null;
@@ -79,6 +80,7 @@ export interface ScheduledTaskInput {
   archiveSuccessful?: boolean;
   projectId?: string | null;
   webSearch?: boolean;
+  mcpServerIds?: string[];
   threadId?: string | null;
 }
 

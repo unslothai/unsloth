@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 video: Auto keeps INT8 attention off on sm89 (L4: the audio moved past the bf16 noise floor); explicit
-On, the env switch and every other arch (sm86 included, unmeasured) are as before. ``h3_int8_load_gate`` is the load's
-decision, driven here directly; one AST check pins that the H3 video load uses it."""
+"""MiniMax-H3 video: Auto races INT8 attention on every arch (sm89 again), with an exact start wherever it engages (the
+first denoise steps on 16-bit attention, test_h3_int8_exact_start.py); explicit On and the env switch are as before. ``h3_int8_load_gate`` is the load's decision, driven here directly; one AST check pins that the H3 video
+load uses it."""
 
 from __future__ import annotations
 
@@ -51,22 +51,24 @@ def _mode(
     return I8.resolve_policy(request).mode
 
 
-def test_sm89_auto_stays_off_and_says_why():
+def test_sm89_auto_races_with_an_exact_start():
     gate = _gate(capability = (8, 9))
-    assert (gate.forced, gate.auto) == (False, False)
-    assert gate.reason == A.h3_int8_auto_off_reason((8, 9))
-    assert "sm89" in gate.reason and "audio" in gate.reason and "int8_attention='on'" in gate.reason
+    assert (gate.forced, gate.auto, gate.reason) == (False, True, None)
+    assert gate.exact_steps == A.H3_INT8_EXACT_START_STEPS > 0
+    assert A.h3_int8_auto_off_reason((8, 9)) is None
 
 
 @pytest.mark.parametrize("capability", [(8, 0), (8, 6), (9, 0), (10, 0), (12, 0), (7, 5), None])
-def test_auto_races_as_on_main_elsewhere(capability):
-    # sm86 is unmeasured: it keeps main's Auto; None is ROCm / an unknown card
-    assert _gate(capability = capability) == A.H3Int8Gate(forced = False, auto = True, reason = None)
+def test_auto_races_on_every_arch(capability):
+    # None is ROCm / an unknown card; the exact start comes with Auto on every one
+    gate = _gate(capability = capability)
+    assert (gate.forced, gate.auto, gate.reason) == (False, True, None)
+    assert gate.exact_steps == A.H3_INT8_EXACT_START_STEPS
     assert A.h3_int8_auto_off_reason(capability) is None
 
 
-def test_off_arches_are_the_measured_ones():
-    assert A.H3_INT8_AUTO_OFF_ARCHS == frozenset({(8, 9)})
+def test_no_arch_keeps_auto_off():
+    assert A.H3_INT8_AUTO_OFF_ARCHS == frozenset()
 
 
 @pytest.mark.parametrize(
@@ -138,4 +140,4 @@ def test_h3_video_load_uses_the_gate():
         for n in ast.walk(load)
         if isinstance(n, ast.Attribute) and getattr(n.value, "id", None) == "h3_int8_gate"
     }
-    assert used == {"forced", "auto", "reason"}
+    assert used == {"forced", "auto", "reason", "exact_steps"}

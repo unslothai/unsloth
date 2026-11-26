@@ -933,6 +933,7 @@ export interface RestorableRecipe {
   seed: number | null;
   batch_seed: number | null;
   batch_size: number;
+  batch_index: number;
   model: string | null;
   workflow?: string;
   loras: string[];
@@ -982,6 +983,7 @@ export const APPLIED_RECIPE_KEYS = [
   "seed",
   "batch_seed",
   "batch_size",
+  "batch_index",
   "loras",
   "workflow",
   "strength",
@@ -1033,7 +1035,6 @@ export const INFO_RECIPE_KEYS = [
   "baked_loras",
   "controlnet",
   "controlnet_guidance",
-  "batch_index",
   "created_at",
   "generation_seconds",
   "generation_count",
@@ -1269,6 +1270,7 @@ export function recipeSettings(
   const cell = xyGridCellSize(r as Parameters<typeof xyGridCellSize>[0]);
   const width = cell?.width ?? int(r.width);
   const height = cell?.height ?? int(r.height);
+  const batchSize = bounded(r, "batch_size") ?? 1;
   return {
     prompt: str(r.prompt) ?? "",
     negative_prompt: str(r.negative_prompt) ?? null,
@@ -1279,7 +1281,8 @@ export function recipeSettings(
     guidance: bounded(r, "guidance") ?? d.guidance,
     seed: seedOf(r.seed),
     batch_seed: seedOf(r.batch_seed),
-    batch_size: bounded(r, "batch_size") ?? 1,
+    batch_size: batchSize,
+    batch_index: clamp(int(r.batch_index), 0, batchSize - 1) ?? 0,
     model: str(r.model) ?? null,
     workflow: str(r.workflow),
     loras: Array.isArray(r.loras)

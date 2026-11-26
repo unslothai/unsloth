@@ -882,6 +882,7 @@ CONDITIONING_STATS: dict[str, int] = {
     "upload_bytes": 0,
     "connector_runs": 0,
     "connector_reuses": 0,
+    "released_rows_bytes": 0,
 }
 
 
@@ -1916,6 +1917,75 @@ def render(
                     pass
 
 
+# ``0``: keep both device copies of the prompt hidden states (encode output and ``encode_once``'s memo, 368 MiB each
+# at 1024 tokens) alive through both stages and the decode.
+RELEASE_PROMPT_ROWS_ENV = "UNSLOTH_LTX25_RELEASE_PROMPT_ROWS"
+
+
+def release_prompt_rows_enabled() -> bool:
+    return (os.environ.get(RELEASE_PROMPT_ROWS_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+_RELEASE_SUPPORTED: list = []
+
+
+def prompt_rows_release_supported() -> bool:
+    """Whether this torch can tell a tensor is alone on its storage (the binding ``_release_rows`` needs), probed once;
+    without it nothing is released."""
+    if not _RELEASE_SUPPORTED:
+        try:
+            import torch
+
+            probe = torch.zeros(4)
+            alone = torch._C._storage_Use_Count(probe.untyped_storage()._cdata)
+            alias = probe.detach()
+            shared = torch._C._storage_Use_Count(probe.untyped_storage()._cdata)
+            del alias
+            _RELEASE_SUPPORTED.append(alone == 2 and shared == 3)
+        except Exception:  # noqa: BLE001 -- absent (torch 2.4 / 2.6) or changed: no release
+            _RELEASE_SUPPORTED.append(False)
+    return bool(_RELEASE_SUPPORTED[0])
+
+
+# Set on the connectors when a release freed less than both prompt copies: the measured denoise price stops applying.
+RELEASE_SHORT_ATTR = "_unsloth_prompt_rows_release_short"
+
+
+def _release_rows(t: Any, like: Any) -> int:
+    """Free ``t``'s storage (its metadata stays: dtype, shape) when it is a whole prompt tensor shaped like ``like``
+    and the only tensor on its storage (no view, ``detach()`` alias or other tensor shares it); the bytes freed,
+    else 0."""
+    try:
+        if (
+            t.device.type == "meta"
+            or t.shape != like.shape
+            or t.dtype != like.dtype
+            or t._base is not None
+            or t.storage_offset() != 0
+        ):
+            return 0
+        if not prompt_rows_release_supported():
+            return 0
+        storage = t.untyped_storage()
+        nbytes = int(storage.nbytes())
+        if nbytes == 0 or nbytes != int(t.numel()) * int(t.element_size()):
+            return 0
+        import torch
+
+        # ``t`` plus the one Python storage object held here; any other tensor on it raises the count
+        if torch._C._storage_Use_Count(storage._cdata) != 2:
+            return 0
+        storage.resize_(0)
+        return nbytes
+    except Exception:  # noqa: BLE001 -- memory lever only: a tensor that cannot be released stays
+        return 0
+
+
 @contextlib.contextmanager
 def reuse_connector_outputs(runner: Any):
     """Inside ``encode_once``: connectors called on exactly the tensors an ``encode_prompt`` of this span returned
@@ -1934,8 +2004,11 @@ def reuse_connector_outputs(runner: Any):
 
     import torch
 
+    from .diffusion_multistage import ENCODE_ONCE_MEMO_ATTR
+
     returned: list[tuple[str, Any, Any]] = []
     results: dict[tuple[str, str], tuple] = {}
+    released: set[str] = set()
     had_encode = "encode_prompt" in getattr(runner, "__dict__", {})
     wrapped: dict[str, Any] = {}
 
@@ -1971,11 +2044,32 @@ def reuse_connector_outputs(runner: Any):
         if key is not None and key in results:
             CONDITIONING_STATS["connector_reuses"] += 1
             return results[key]
+        if source is not None and source in released:
+            raise RuntimeError(
+                "LTX-2.5: the prompt hidden states were released after their connector run, and a later call "
+                f"asked for the connectors with other arguments; set {RELEASE_PROMPT_ROWS_ENV}=0."
+            )
         out = wrapped["inner"](*args, **kwargs)
         CONDITIONING_STATS["connector_runs"] += 1
         if key is not None and isinstance(out, tuple):
             # A copy: stage one's denoise owns its tensors.
             results[key] = tuple(t.clone() if isinstance(t, torch.Tensor) else t for t in out)
+            if release_prompt_rows_enabled():
+                # Past the connectors the pipelines read only the hidden states' dtype; stage two's encode returns
+                # the memo copy, whose connector outputs are now cached, so neither copy's rows are read again.
+                memo = getattr(runner, "__dict__", {}).get(ENCODE_ONCE_MEMO_ATTR) or {}
+                kept = memo.get(source)
+                rows = [args[0]]
+                if isinstance(kept, tuple) and kept and isinstance(kept[0], torch.Tensor):
+                    rows.append(kept[0])
+                expected = sum(_tensor_bytes(t) for t in {id(t): t for t in rows}.values())
+                freed = sum(_release_rows(t, args[0]) for t in rows)
+                if freed:
+                    released.add(source)
+                    CONDITIONING_STATS["released_rows_bytes"] += freed
+                if freed < expected:
+                    # kept rows (shared storage, no binding): later requests on this load pay the base overhead
+                    connectors.__dict__[RELEASE_SHORT_ATTR] = True
         return out
 
     runner.encode_prompt = encode_prompt
@@ -2157,7 +2251,10 @@ def _render(
             if moved:
                 upsampler.to(video_latents.device)
             try:
-                upsampled = upsampler(video_latents.to(param.dtype))
+                # ``dtype`` reads a per-layer cast's compute dtype (fp16-card low-RAM route), else the weights'
+                upsampled = upsampler(
+                    video_latents.to(getattr(upsampler, "dtype", None) or param.dtype)
+                )
             finally:
                 if moved:
                     upsampler.to(home)

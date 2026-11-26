@@ -518,7 +518,8 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents = True, exist_ok = True)
 
     def _free(out: Path) -> bool:
-        if out.stem.lower() in _MODEL_SENTINEL_STEMS:
+        # A "<x>.index" stem would write a weight index sidecar (model.safetensors.index.json).
+        if out.stem.lower() in _MODEL_SENTINEL_STEMS or out.stem.lower().endswith(".index"):
             return False
         if out.exists() and os.path.samefile(src, out):
             return True
@@ -1004,10 +1005,11 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "stable-diffusion",
 )
 # Adapters bake on the dense transformer BEFORE torchao quantize_ + compile: peft's
-# TorchaoLoraLinear needs quantizer metadata a manual quantize_ lacks.
-_DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
+# TorchaoLoraLinear needs quantizer metadata a manual quantize_ lacks. nvfp4 bakes the same way (FLUX.2 klein 4B, G4:
+# strength 0 renders the NVFP4 base bit for bit), except on a base with a per-layer NVFP4 policy (see below).
+_DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8", "nvfp4")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
-_DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
+_DIFFUSERS_LORA_BLOCKED_QUANT = ("mxfp8",)
 # Pipelines with no LoRA loader mixin; an adapter would otherwise fail mid-generate with an AttributeError.
 _DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ("hunyuanimage-2.1",)
 
@@ -1032,6 +1034,19 @@ def _whole_pipeline_label(family: str) -> Optional[str]:
     return fam.label or fam.name
 
 
+def _nvfp4_policy_blocks_lora(family: str, base_repo: Optional[str]) -> bool:
+    """A per-layer NVFP4 policy assigns precisions by Linear name, and PEFT's wrapping renames every adapted Linear
+    (``to_q`` -> ``to_q.base_layer``), so a policy load with adapters cannot quantize. Without a base, any policy of
+    the family counts; an unanswerable check counts as a policy."""
+    try:
+        from .diffusion_nvfp4_policy import NVFP4_POLICIES, resolve_policy
+    except Exception:  # noqa: BLE001
+        return True
+    if base_repo:
+        return resolve_policy(family, base_repo) is not None
+    return any(policy.family == family for policy in NVFP4_POLICIES)
+
+
 def lora_unavailable_reason(
     *,
     engine: Optional[str],
@@ -1039,6 +1054,7 @@ def lora_unavailable_reason(
     model_kind: Optional[str],
     transformer_quant: Optional[str],
     compiled: bool = False,
+    base_repo: Optional[str] = None,
 ) -> Optional[str]:
     """Why ``engine`` cannot apply LoRAs to this build, shown on the Images page; None when it can."""
     fam = (family or "").lower()
@@ -1061,6 +1077,11 @@ def lora_unavailable_reason(
     if not diffusers_lora_family_supported(fam):
         return f"LoRAs are not supported for {name} yet: its pipeline has no LoRA loader."
     quant = (transformer_quant or "").lower()
+    if quant == "nvfp4" and _nvfp4_policy_blocks_lora(fam, base_repo):
+        return (
+            f"LoRAs cannot be applied to {name} at NVFP4: its per-layer NVFP4 precision plan has no LoRA path. "
+            "Load it at FP8 or INT8 to use LoRAs."
+        )
     if quant in _DIFFUSERS_LORA_BAKED_QUANT:
         return None  # load-time bake; adapters ride inside the compiled quantized build
     if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
@@ -1084,6 +1105,7 @@ def supports_lora(
     model_kind: Optional[str],
     transformer_quant: Optional[str],
     compiled: bool = False,
+    base_repo: Optional[str] = None,
 ) -> bool:
     return (
         lora_unavailable_reason(
@@ -1092,6 +1114,7 @@ def supports_lora(
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             compiled = compiled,
+            base_repo = base_repo,
         )
         is None
     )

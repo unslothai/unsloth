@@ -196,6 +196,12 @@ def _split_lse(output, lse_kwargs):
     return out, (aux.lse if "return_aux" in lse_kwargs else aux)
 
 
+def _is_rocm_torch():
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__
+    # (import_fixes._is_rocm_torch; this module also loads standalone, so it keeps its own copy).
+    return bool(getattr(torch.version, "hip", None)) or "rocm" in str(torch.__version__).lower()
+
+
 def _flex_function(device):
     """torch.compile'd flex_attention on CUDA (the uncompiled HOP materializes the scores). CPU keeps the HOP: only
     the tests run it, through flex's reference math."""
@@ -206,7 +212,7 @@ def _flex_function(device):
     if _COMPILED_FLEX is None:
         # ROCm: a dynamic-shape flex recompiled at a second length gave inf / NaN LoRA gradients on gfx1151 and
         # dynamic = False was clean (unsloth-zoo#2663), so a forced ROCm run compiles one kernel per length.
-        dynamic = False if getattr(torch.version, "hip", None) else None
+        dynamic = False if _is_rocm_torch() else None
         _COMPILED_FLEX = torch.compile(flex_attention, dynamic = dynamic)
     return _COMPILED_FLEX
 
@@ -327,7 +333,7 @@ def _auto_min_length(device):
     # ROCm reports gfx numbers as capability (gfx1151 = (11, 5)), so the sm80 rule would take every AMD card. This
     # path compiles flex with dynamic shapes, which gave inf / NaN LoRA gradients on gfx1151 after a recompile
     # (unsloth-zoo#2663); AMD stays eager unless forced.
-    if getattr(torch.version, "hip", None):
+    if _is_rocm_torch():
         return None
     capability = _capability(device)
     if capability is None:

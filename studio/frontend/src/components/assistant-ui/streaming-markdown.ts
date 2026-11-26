@@ -7,6 +7,7 @@ import { mathFromMarkdown } from "mdast-util-math";
 import { gfm } from "micromark-extension-gfm";
 import { math } from "micromark-extension-math";
 import remend from "remend";
+import { mathSafeRemendOptions } from "../../lib/math-safe-remend.ts";
 import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
 
 // Cheap gate: bullet marker then only thematic-break punctuation (not asterisk specific).
@@ -97,7 +98,7 @@ export function stabilizeStreamingMarkdown(
   }
 
   // Run what Streamdown runs, reading only the trailing block so cost does not grow with length.
-  const block = parseMarkdownIntoBlocks(remend(text)).at(-1);
+  const block = parseMarkdownIntoBlocks(remend(text, mathSafeRemendOptions())).at(-1);
   const markerIndex =
     block === undefined || FENCE_BLOCK_RE.test(block)
       ? -1

@@ -556,6 +556,7 @@ def convert_to_vlm_format(
     image_column = "image",
     dataset_name = None,
     progress_callback = None,
+    dataset_revision = None,
 ):
     """Returns a list, not a Dataset, so PIL Images are preserved; URL datasets are probed first."""
     from PIL import Image
@@ -599,6 +600,7 @@ def convert_to_vlm_format(
             dataset_name,
             _image_lookup[name],
             repo_type = "dataset",
+            revision = dataset_revision,
             cache_dir = active_hf_hub_cache(),
         )
         return Image.open(local_path).convert("RGB")
@@ -679,7 +681,9 @@ def convert_to_vlm_format(
             logger.info(
                 f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
             )
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
+            repo_files = HfApi().list_repo_files(
+                dataset_name, repo_type = "dataset", revision = dataset_revision
+            )
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -1229,6 +1233,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     messages_column = "conversations",
     dataset_name = None,
     progress_callback = None,
+    dataset_revision = None,
 ):
     """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Image lists match placeholders in conversation order. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
     from PIL import Image
@@ -1275,7 +1280,9 @@ def convert_sharegpt_with_images_to_vlm_format(
             logger.info(
                 f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
             )
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
+            repo_files = HfApi().list_repo_files(
+                dataset_name, repo_type = "dataset", revision = dataset_revision
+            )
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -1312,6 +1319,7 @@ def convert_sharegpt_with_images_to_vlm_format(
                     dataset_name,
                     _image_lookup[image_data],
                     repo_type = "dataset",
+                    revision = dataset_revision,
                     cache_dir = active_hf_hub_cache(),
                 )
                 return Image.open(local_path).convert("RGB")

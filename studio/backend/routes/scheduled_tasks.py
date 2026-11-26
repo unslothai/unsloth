@@ -38,6 +38,8 @@ ReasoningEffort = Literal[
     "off", "lowest", "highest", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
 ProjectId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
+McpServerId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
+McpServerIds = Annotated[list[McpServerId], Field(max_length = 64)]
 ThreadId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
 # Fields an update may set back to null, unlike the rest, where null means unchanged.
 _CLEARABLE = ("model", "reasoningEffort", "projectId", "threadId")
@@ -59,6 +61,7 @@ class ScheduledTaskCreate(BaseModel):
     archiveSuccessful: bool = False
     projectId: Optional[ProjectId] = None
     webSearch: bool = False
+    mcpServerIds: McpServerIds = Field(default_factory = list)
     threadId: Optional[ThreadId] = None
 
 
@@ -78,6 +81,7 @@ class ScheduledTaskUpdate(BaseModel):
     archiveSuccessful: Optional[bool] = None
     projectId: Optional[ProjectId] = None
     webSearch: Optional[bool] = None
+    mcpServerIds: Optional[McpServerIds] = None
     threadId: Optional[ThreadId] = None
 
 
@@ -124,6 +128,7 @@ class ScheduledTask(BaseModel):
     archiveSuccessful: bool = False
     projectId: Optional[str] = None
     webSearch: bool = False
+    mcpServerIds: McpServerIds = Field(default_factory = list)
     threadId: Optional[str] = None
     status: Literal["active", "paused", "completed"]
     nextRunAt: Optional[int] = None
@@ -227,6 +232,7 @@ def create_scheduled_task(
         "archiveSuccessful": payload.archiveSuccessful,
         "projectId": _existing_project(payload.projectId),
         "webSearch": payload.webSearch,
+        "mcpServerIds": list(dict.fromkeys(payload.mcpServerIds)),
         "threadId": _existing_chat(payload.threadId),
         "createdAt": now,
         "updatedAt": now,
@@ -274,6 +280,8 @@ def update_scheduled_task(
     changes.update(
         {key: getattr(payload, key) for key in _CLEARABLE if key in payload.model_fields_set}
     )
+    if "mcpServerIds" in changes:
+        changes["mcpServerIds"] = list(dict.fromkeys(changes["mcpServerIds"]))
     if changes.get("projectId") is not None:
         _existing_project(changes["projectId"])
     if changes.get("threadId") is not None:

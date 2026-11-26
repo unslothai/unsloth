@@ -116,6 +116,13 @@ export interface PickerRow {
   rank?: number;
   /** In the listing's own units. */
   updatedAt?: number;
+  /** Runs on that page: a pick opens it there instead of loading into Chat. */
+  media?: "audio" | "images" | "video";
+}
+
+export interface LoadedCopy {
+  quant: string;
+  id: string;
 }
 
 export type DeviceSort = "recent" | "size" | "name";
@@ -138,19 +145,34 @@ export const DEVICE_SORT_DESC: Record<DeviceSort, boolean> = {
   size: true,
   name: false,
 };
-export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
+export type FormatFilter =
+  | "all"
+  | "gguf"
+  | "mlx"
+  | "safetensors"
+  | "npu"
+  | "media";
 export const FORMAT_FILTER_LABEL: Record<FormatFilter, string> = {
   all: "All",
   gguf: "GGUF",
   mlx: "MLX",
   safetensors: "Safetensors",
   npu: "NPU",
+  media: "Image/video gen",
 };
 
+export function isGenerationMedia(media: PickerRow["media"]): boolean {
+  return media === "images" || media === "video";
+}
+
 export function matchesFormat(
-  row: Pick<PickerRow, "format" | "kind">,
+  row: Pick<PickerRow, "format" | "kind" | "media">,
   filter: FormatFilter,
 ): boolean {
+  // Only their own filter lists them: they open on their own pages.
+  if (filter === "media" || isGenerationMedia(row.media)) {
+    return filter === "media" && isGenerationMedia(row.media);
+  }
   switch (filter) {
     case "all":
       return true;
@@ -309,6 +331,8 @@ export function expandQuantFavorites<
   T extends PickerRow & {
     favoriteQuant?: string;
     loadedQuant?: string | null;
+    loadedId?: string;
+    loadedCopies?: LoadedCopy[];
     inventoryKey?: string;
   },
 >(rows: readonly T[], pinned: readonly string[]): T[] {
@@ -330,16 +354,27 @@ export function expandQuantFavorites<
     if (quants.length === 0) {
       return [row];
     }
-    const perQuant = quants.map((quant) => ({
-      ...row,
-      key: `${row.key}::${quant}`,
-      // Disk state is keyed by the repo's row.
-      inventoryKey: row.key,
-      favoriteQuant: quant,
-      loaded:
-        row.loaded === true &&
-        (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
-    }));
+    const perQuant = quants.map((quant) => {
+      const copy = row.loadedCopies?.find((c) => norm(c.quant) === norm(quant));
+      return {
+        ...row,
+        key: `${row.key}::${quant}`,
+        inventoryKey: row.key,
+        favoriteQuant: quant,
+        ...(row.loadedCopies
+          ? {
+              loaded: copy !== undefined,
+              loadedQuant: copy?.quant ?? null,
+              loadedId: copy?.id,
+              loadedCopies: copy ? [copy] : [],
+            }
+          : {
+              loaded:
+                row.loaded === true &&
+                (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
+            }),
+      };
+    });
     return whole ? [row, ...perQuant] : perQuant;
   });
 }
@@ -615,8 +650,14 @@ export async function readBounded<T, R>(
 
 /** The chosen model goes to the host's guarded unload (no id), as the header picker's Eject did. */
 export function ejectTargetId(
-  row: { id: string; loadedId?: string },
+  row: { id: string; loadedId?: string; loadedCopies?: LoadedCopy[] },
   chosenId: string | undefined,
+  checkpoint?: string | null,
 ): string | undefined {
-  return row.id === chosenId ? undefined : (row.loadedId ?? row.id);
+  if (row.id !== chosenId) {
+    return row.loadedId ?? row.id;
+  }
+  return row.loadedCopies?.every((c) => norm(c.id) !== norm(checkpoint))
+    ? row.loadedId
+    : undefined;
 }

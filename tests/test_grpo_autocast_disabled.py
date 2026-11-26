@@ -221,6 +221,9 @@ def test_forced_float32_still_autocasts_in_the_injected_header():
             "UNSLOTH_FORCE_FLOAT32": "1",
         }
     )
+    # The decision reads the trained model's stamp, which a forced float32 load sets.
+    namespace["self"].model = type("Model", (), {})()
+    namespace["self"].model._unsloth_forced_float32 = True
     with _pretend_cuda(has_bf16 = False):
         exec(
             _prepare_inputs_snippet()

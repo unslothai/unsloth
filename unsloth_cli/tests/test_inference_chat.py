@@ -8,6 +8,8 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import os
+import re
 import subprocess
 import sys
 import types
@@ -1491,6 +1493,220 @@ def test_chat_drops_a_turn_with_an_incomplete_studio_stream(monkeypatch):
     ]
 
 
+_QWEN = "unsloth/Qwen3-0.6B-GGUF"
+
+
+@pytest.mark.parametrize(
+    "loaded, requested, picked, replacement",
+    [
+        ([], _QWEN, "Q4_K_M", (_QWEN, "Q8_0")),
+        ([], f"{_QWEN}:Q8_0", "Q8_0", ("unsloth/gemma-3-270m-it-GGUF", "Q8_0")),
+        # A low-disk load serves a smaller quant than the one asked for.
+        ([], f"{_QWEN}:Q8_0", "Q4_K_M", (_QWEN, "Q8_0")),
+        # The asked quant is already kept beside another quant of its repo.
+        ([(_QWEN, "Q6_K"), (_QWEN, "IQ2_M")], f"{_QWEN}:IQ2_M", "IQ2_M", (_QWEN, "Q6_K")),
+    ],
+)
+def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere(
+    loaded, requested, picked, replacement
+):
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    studio = {"slots": list(loaded)}
+
+    def slot_for(name):
+        repo, _, quant = (name or "").partition(":")
+        named = [s for s in studio["slots"] if s == (repo, quant)]
+        return (named or studio["slots"] or [(None, None)])[0]
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def _send(
+            self,
+            status,
+            body,
+            content_type = "application/json",
+        ):
+            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            asked = parse_qs(urlparse(self.path).query).get("model", [None])[0]
+            repo, quant = slot_for(asked)
+            status = {"active_model": repo, "model_identifier": f"/models/{repo}/snapshot"}
+            self._send(200, {**status, "is_gguf": bool(repo), "gguf_variant": quant})
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/inference/load":
+                repo = payload["model_path"].partition(":")[0]
+                if slot_for(payload["model_path"]) not in studio["slots"][1:]:
+                    studio["slots"][:1] = [(repo, picked)]
+                self._send(200, {"status": "loaded", "model": repo, "is_gguf": True})
+                return
+            repo, _, quant = payload["model"].partition(":")
+            if not any(r == repo and quant in ("", q) for r, q in studio["slots"]):
+                message = f"The model '{payload['model']}' is downloaded but not loaded."
+                self._send(404, {"error": {"message": message, "code": "model_not_found"}})
+                return
+            served = ":".join(slot_for(payload["model"]))
+            chunk = {"choices": [{"delta": {"content": served}, "finish_reason": "stop"}]}
+            sse = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
+            self._send(200, sse, "text/event-stream")
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        backend = HttpChatBackend(f"http://127.0.0.1:{server.server_address[1]}", "token")
+        backend.ensure_loaded(requested, hf_token = None, max_seq_length = None, load_in_4bit = None)
+        turn = [{"role": "user", "content": "hi"}]
+        pinned = f"{_QWEN}:{picked}"
+        assert list(backend.stream(turn, **_STREAM_KWARGS))[-1] == pinned
+
+        studio["slots"] = [replacement]
+        with pytest.raises(RuntimeError, match = re.escape(f"'{pinned}' is downloaded but not")):
+            list(backend.stream(turn, **_STREAM_KWARGS))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+_LOCAL_MODEL = str(Path("/models/qwen3").absolute())
+
+
+@pytest.mark.parametrize(
+    "local, confirmed, replacement, refused",
+    [
+        (_LOCAL_MODEL, True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        (_LOCAL_MODEL, True, (_LOCAL_MODEL, "Q8_0"), True),
+        (_LOCAL_MODEL, True, (_LOCAL_MODEL + os.sep, "q4_k_m"), False),
+        # Unsloth does not collapse "..", which can cross a symlink to another checkpoint.
+        (_LOCAL_MODEL, True, (os.path.join(_LOCAL_MODEL, "..", "qwen3"), "Q4_K_M"), True),
+        # A native (dragged-in) load names itself only by label.
+        (_LOCAL_MODEL, True, ("label:Qwen3-0.6B-Q8_0", "Q8_0"), True),
+        ("./qwen3", True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        # A bare relative name is a path once it exists, as the server reads it.
+        ("qwen3.gguf", True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        # A hub id is left to the server's own refusal and switch-back.
+        (_QWEN, True, ("unsloth/gemma-3-270m-it-GGUF", None), False),
+        # Unconfirmed at load, so a mismatch proves nothing and the turn is sent as before.
+        (_LOCAL_MODEL, False, ("unsloth/gemma-3-270m-it-GGUF", None), False),
+        (_LOCAL_MODEL, True, (None, None), False),
+    ],
+)
+def test_a_path_chat_refuses_a_turn_once_another_model_replaced_it(
+    monkeypatch, tmp_path, local, confirmed, replacement, refused
+):
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "qwen3.gguf").touch()
+    resident = (local if confirmed else "qwen3", "Q4_K_M")
+    studio = {"resident": resident, "queries": [], "requests": []}
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def _send(
+            self,
+            body,
+            content_type = "application/json",
+        ):
+            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            studio["queries"] += parse_qs(urlparse(self.path).query).get("model", [])
+            checkpoint, quant = studio["resident"]
+            if str(checkpoint).startswith("label:"):
+                status = {"active_model": checkpoint[len("label:") :], "model_identifier": None}
+            else:
+                status = {"active_model": checkpoint, "model_identifier": checkpoint}
+            self._send({**status, "gguf_variant": quant})
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/inference/load":
+                self._send({"status": "loaded", "model": payload["model_path"]})
+                return
+            studio["requests"].append(payload["model"])
+            # Like Unsloth, an unloaded path is answered by the resident model.
+            delta = {"delta": {"content": str(studio["resident"])}, "finish_reason": "stop"}
+            sse = f"data: {json.dumps({'choices': [delta]})}\n\ndata: [DONE]\n\n"
+            self._send(sse.encode(), "text/event-stream")
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        backend = HttpChatBackend(f"http://127.0.0.1:{server.server_address[1]}", "token")
+        backend.ensure_loaded(local, hf_token = None, max_seq_length = None, load_in_4bit = None)
+        turn = [{"role": "user", "content": "hi"}]
+        assert list(backend.stream(turn, **_STREAM_KWARGS))[-1] == str(resident)
+
+        studio["resident"] = replacement
+        if refused:
+            with pytest.raises(RuntimeError, match = r"no longer loaded: .*, not '.*' \(Q4_K_M\)"):
+                list(backend.stream(turn, **_STREAM_KWARGS))
+        else:
+            list(backend.stream(turn, **_STREAM_KWARGS))
+        assert studio["requests"] == [local] * (1 if refused else 2)
+        assert set(studio["queries"]) == (set() if local == _QWEN else {local})
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    "echoed, served, expected",
+    [
+        ("Qwen3-0.6B-GGUF", _QWEN, f"{_QWEN}:Q8_0"),
+        ("unsloth/qwen3-0.6b-gguf", _QWEN, f"{_QWEN}:Q8_0"),
+        (_QWEN, "unsloth/gemma-3-270m-it-GGUF", _QWEN),
+        ("/models/Qwen3-0.6B-GGUF", "/models/Qwen3-0.6B-GGUF", "/models/Qwen3-0.6B-GGUF"),
+    ],
+)
+def test_the_pin_takes_the_quant_from_the_served_models_status(
+    monkeypatch, echoed, served, expected
+):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    status = {"active_model": served, "is_gguf": True, "gguf_variant": "Q8_0"}
+    monkeypatch.setattr(backend, "_inference_status", lambda _model: status)
+    assert backend._pinned_model_id(echoed, {"is_gguf": True}, {"model_path": echoed}) == expected
+
+
+def test_inference_reports_a_turn_the_server_refused(monkeypatch):
+    from typer.testing import CliRunner
+    from unsloth_cli import app
+    from unsloth_cli.commands import inference as inference_mod
+
+    class Refusing:
+        def stream(self, *_args, **_kwargs):
+            raise RuntimeError("The model 'm:Q8_0' is downloaded but not loaded.")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(inference_mod, "connect_studio_server", lambda *_a, **_k: Refusing())
+    result = CliRunner().invoke(app, ["inference", "unsloth/Qwen3-0.6B-GGUF", "hi"])
+    assert result.exit_code == 1
+    assert "Error: The model 'm:Q8_0' is downloaded but not loaded." in result.output
+
+
 def _http_stream_body(monkeypatch, max_new_tokens):
     backend = HttpChatBackend("http://localhost:8888", "token")
     bodies = []
@@ -1762,7 +1978,7 @@ def test_http_backend_load_keeps_the_resident_quant(monkeypatch, model, status, 
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             if status is None:
                 raise OSError("status unavailable")
             return _FakeStatusResponse(status)
@@ -1792,7 +2008,7 @@ def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spelling
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             return _FakeStatusResponse(resident)
         loads.append(payload)
         return _FakeLoadResponse()
@@ -1821,7 +2037,7 @@ def _untyped_load_payload(
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             if status is None:
                 raise OSError("status unavailable")
             return _FakeStatusResponse(status)
@@ -2552,7 +2768,7 @@ def test_server_chat_banner_names_the_kept_quant(
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             return _FakeStatusResponse(resident)
         return _FakeLoadResponse()
 

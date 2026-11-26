@@ -50,44 +50,11 @@ class LogSource:
 
 
 def candidate_roots() -> list[Path]:
-    """Every studio home a log file might be under, most specific first. studio_root() infers a root from the installer venv while the runners resolve their own base (llama_cpp.py:_swa_cache_path) without that inference, so on a venv install with no env var set the two disagree and scanning only one loses the runtime logs a failed model load is chased through."""
-    roots: list[Path] = []
-
-    def _add(path: Optional[Path]) -> None:
-        if path is None:
-            return
-        try:
-            resolved = Path(os.path.realpath(path))
-        except (OSError, ValueError):
-            return
-        # Folded, so a case-only difference is not scanned twice on a case-insensitive volume.
-        if not any(_identity(resolved) == _identity(known) for known in roots):
-            roots.append(resolved)
-
     try:
         from utils.paths import studio_root
-        _add(studio_root())
+        return [Path(os.path.realpath(studio_root()))]
     except Exception:
-        pass
-
-    # Mirror _swa_cache_path exactly: env override if set, else the legacy home. Both would pull a DIFFERENT installation's logs into this one.
-    env_home = (
-        os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
-    ).strip()
-    if env_home:
-        # Both spellings, because writer and reader disagree about the tilde: _swa_cache_path builds Path(home) raw, so an unexpanded value (systemd EnvironmentFile, dotenv) makes the runners write to a directory NAMED "~" while expanduser looks in the real home. Safe unlike the env-versus-legacy case above: one value, two spellings.
-        for spelling in (Path(env_home).expanduser(), Path(env_home)):
-            try:
-                _add(spelling)
-            except (OSError, ValueError):
-                pass
-    else:
-        try:
-            _add(Path.home() / ".unsloth" / "studio")
-        except (OSError, RuntimeError):
-            pass
-
-    return roots
+        return []
 
 
 def _identity(path) -> str:

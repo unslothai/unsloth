@@ -862,21 +862,41 @@ def _chain_archive(path, hops):
 
 
 def test_safe_extractall_installs_a_chain_the_loader_can_still_walk(tmp_path):
-    # The kernel allows 40 traversals, so 40 is readable and must not be refused.
+    # The kernel follows _MAX_LINK_DEPTH links (40 on Linux, 32 on macOS): that chain is readable.
+    depth = sdmod._MAX_LINK_DEPTH
     target = _shared_setup_2(tmp_path)
-    archive = tmp_path / "chain40.zip"
-    _chain_archive(archive, 40)
+    archive = tmp_path / f"chain{depth}.zip"
+    _chain_archive(archive, depth)
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
-    assert (target / "l.so.40").read_bytes() == b"ELFpayload"
+    assert (target / f"l.so.{depth}").read_bytes() == b"ELFpayload"
+
+
+def test_link_depth_limit_is_this_kernels(tmp_path):
+    """_MAX_LINK_DEPTH must be exactly where this OS starts refusing (ELOOP), or the installer
+    either refuses a readable chain or installs a library the loader cannot open."""
+    import errno
+
+    if sys.platform == "win32":
+        pytest.skip("Windows reparse points have their own limit; the loader check is POSIX")
+    root = Path(os.path.realpath(_shared_setup_2(tmp_path)))
+    depth = sdmod._MAX_LINK_DEPTH
+    (root / "l.so.0").write_bytes(b"ELFpayload")
+    for i in range(1, depth + 2):
+        (root / f"l.so.{i}").symlink_to(f"l.so.{i - 1}")
+    assert (root / f"l.so.{depth}").read_bytes() == b"ELFpayload"
+    with pytest.raises(OSError) as raised:
+        (root / f"l.so.{depth + 1}").read_bytes()
+    assert raised.value.errno == errno.ELOOP
 
 
 def test_safe_extractall_rejects_a_chain_deeper_than_the_loader_allows(tmp_path):
-    # At 41 the loader ELOOPs, so the library would be unreadable.
+    # One more and the loader ELOOPs, so the library would be unreadable.
+    depth = sdmod._MAX_LINK_DEPTH + 1
     target = tmp_path / "install"
     target.mkdir()
-    archive = tmp_path / "chain41.zip"
-    _chain_archive(archive, 41)
+    archive = tmp_path / f"chain{depth}.zip"
+    _chain_archive(archive, depth)
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "too deep"):
             _safe_extractall(zf, target)
@@ -2647,18 +2667,26 @@ def test_a_failure_after_the_sweep_is_an_incomplete_replacement(tmp_path, monkey
     assert "part way through a replacement" in str(exc.value)
 
 
-def test_a_failure_finalising_the_new_tree_is_an_incomplete_replacement(tmp_path, monkeypatch):
+@pytest.mark.parametrize("step", ["_locate_sd_cli", "_make_executable"])
+def test_a_failure_finalising_the_new_tree_is_an_incomplete_replacement(
+    tmp_path, monkeypatch, step
+):
     """A chmod or locate failure after the sweep leaves a mixed tree; as an ordinary error it
     memoises the accelerator and returns a path the sweep may have removed."""
+    if step == "_make_executable" and sys.platform == "win32":
+        pytest.skip("install never chmods on Windows")
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    calls = []
 
-    def _chmod_fails(_path):
+    def _fails(_path):
+        calls.append(_path)
         raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(sdmod, "_make_executable", _chmod_fails)
+    monkeypatch.setattr(sdmod, step, _fails)
     with pytest.raises(sdmod.SupersededBinaryError) as exc:
         install(install_dir = tmp_path)
+    assert calls, f"install never reached {step}, so nothing failed"
     assert "part way through a replacement" in str(exc.value)
 
 
@@ -3163,6 +3191,8 @@ def test_a_rate_limit_stops_the_fallback_ladder(
 
     monkeypatch.delenv("GH_TOKEN", raising = False)
     monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    # A tag with no shipped asset list: the shipped pin installs without the API (test_sd_cpp_install_ratelimit).
+    monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "master-1-deadbee-u1234567")
     monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
     if not throttled:
         assert sdmod._resolve_with_fallback("auto", None)[2] is None

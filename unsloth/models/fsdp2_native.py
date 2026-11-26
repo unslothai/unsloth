@@ -12,11 +12,14 @@ import dataclasses
 import functools
 import math
 import os
+import re
 import sys
 import types
 from typing import Callable, Optional, Union
 
 import torch
+
+from ._cache_kwarg import get_cache_kwarg
 import torch.nn as nn
 
 
@@ -933,6 +936,71 @@ def _supports_ignored_params(fully_shard):
 # A minority dtype group up to this fraction of a unit's trainable elements stays replicated.
 _REPLICATE_MINORITY_FRACTION = 0.10
 
+# Computed in float32 by the modeling code (GDN / Mamba decay), beside `_keep_in_fp32_modules[_strict]`.
+_ALWAYS_FLOAT32_PARAMS = ("A_log", "dt_bias")
+
+
+def _float32_local_views(module, install):
+    for name in module.__dict__.get("_unsloth_fsdp2_float32_views", ()):
+        module.__dict__.pop(name, None)
+        if install:
+            # An instance attribute shadows the Parameter; the gradient flows back into the DTensor.
+            module.__dict__[name] = module._parameters[name].to_local()
+
+
+def _float32_views_pre_hook(module, args):
+    _float32_local_views(module, True)
+
+
+def _float32_views_post_hook(module, args, output):
+    _float32_local_views(module, False)
+
+
+def _replicate_float32_kept(model, mesh, replicated):
+    """The float32 params kept out of the 16-bit gather become Replicate DTensors on the FSDP mesh, so a
+    user-built foreach optimizer sees only DTensors; each forward of their module reads the local tensor.
+    Gradients stay per rank until reduce_unsharded_trainable_grads averages them."""
+    try:
+        from torch.distributed.tensor import DTensor, Replicate
+    except ImportError:
+        from torch.distributed._tensor import DTensor, Replicate
+    done = {}
+    for module in model.modules():
+        names = []
+        for name, p in list(module._parameters.items()):
+            if p is None or not getattr(p, "_unsloth_fsdp2_float32_replicate", False):
+                continue
+            new = done.get(id(p))
+            if new is None:
+                local = DTensor.from_local(
+                    p.detach(), mesh, [Replicate()] * mesh.ndim, run_check = False
+                )
+                new = nn.Parameter(local, requires_grad = p.requires_grad)
+                new._unsloth_fsdp2_float32_replicate = True
+                done[id(p)] = new
+                if p in replicated:
+                    replicated.discard(p)
+                    replicated.add(new)
+            module._parameters[name] = new
+            names.append(name)
+        if names:
+            module.__dict__["_unsloth_fsdp2_float32_views"] = tuple(names)
+            module.register_forward_pre_hook(_float32_views_pre_hook)
+            module.register_forward_hook(_float32_views_post_hook)
+    return len(done)
+
+
+def _float32_kept_param_ids(model):
+    """ids of params one GPU keeps in float32, matched on whole dotted path components."""
+    names = set(_ALWAYS_FLOAT32_PARAMS)
+    for module in model.modules():
+        for attr in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+            value = getattr(module, attr, None)
+            if isinstance(value, (list, tuple, set, frozenset)):
+                names.update(v for v in value if isinstance(v, str) and v)
+    keep = re.compile("|".join(rf"(^|\.){re.escape(name)}($|\.)" for name in sorted(names)))
+    return {id(p) for name, p in model.named_parameters() if keep.search(name)}
+
 
 def _unify_dtypes(
     model,
@@ -952,6 +1020,12 @@ def _unify_dtypes(
     groups.append([p for p in model.parameters() if id(p) not in inside])
     ignored = set()
     frozen_kept = []
+    float32_kept = []
+    float32_ids = (
+        _float32_kept_param_ids(model)
+        if can_ignore and param_dtype in (torch.bfloat16, torch.float16)
+        else set()
+    )
     n = 0
     seen = set()
     for params in groups:
@@ -971,6 +1045,29 @@ def _unify_dtypes(
                     if p.dtype != torch.float32 and type(p) is nn.Parameter:
                         p.data = p.data.to(torch.float32)
                         n += 1
+        if float32_ids:
+            # The 16-bit gather would round float32-computed masters; one GPU never does. Replicate small ones.
+            floats = [p for p in params if _floating(p)]
+            budget = _REPLICATE_MINORITY_FRACTION * sum(p.numel() for p in floats)
+            picked = []
+            for p in sorted(
+                (
+                    p
+                    for p in trainable
+                    if id(p) in float32_ids
+                    and p.dtype == torch.float32
+                    and p not in ignored
+                    and getattr(p, "device_mesh", None) is None  # not a tensor parallel DTensor
+                ),
+                key = lambda p: p.numel(),
+            ):
+                if p.numel() > budget or len(picked) + 1 >= len(floats):
+                    break
+                budget -= p.numel()
+                picked.append(p)
+                p._unsloth_fsdp2_float32_replicate = True
+            ignored.update(picked)
+            float32_kept.extend(picked)
         if can_ignore and param_dtype in (torch.bfloat16, torch.float16):
             # Frozen float32 weights next to 16-bit ones (GDN A_log / dt_bias, fp32 norms, routers): the
             # gather would cast them to 16-bit, which one GPU never does. Keep small ones replicated.
@@ -1003,7 +1100,15 @@ def _unify_dtypes(
             f"({sum(p.numel() for p in frozen_kept)} elements) replicated, so they are not cast to "
             f"{str(param_dtype).replace('torch.', '')} as one GPU never does."
         )
-    trainable_kept = [p for p in ignored if p.requires_grad]
+    if float32_kept:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(float32_kept)} trainable float32 parameters the model "
+            f"computes in float32 (A_log / dt_bias, _keep_in_fp32_modules; "
+            f"{sum(p.numel() for p in float32_kept)} elements) replicated, so the gather does not "
+            f"round them to {str(param_dtype).replace('torch.', '')}."
+        )
+    float32_kept_ids = {id(p) for p in float32_kept}
+    trainable_kept = [p for p in ignored if p.requires_grad and id(p) not in float32_kept_ids]
     if trainable_kept:
         ignored_trainable = trainable_kept
         _print_rank0(
@@ -2136,6 +2241,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             ),
         )
         finish_shard(model, pending)
+        _replicate_float32_kept(model, mesh, replicated)
         for m in cpu_tables:
             m.to("cpu")  # fully_shard(root) moved its buffers (Gemma's embed_scale)
         if (
@@ -2690,7 +2796,7 @@ def _generate_request_bytes(model, args, kwargs):
         if (
             isinstance(embeds, torch.Tensor)
             and embeds.dim() >= 2
-            and kwargs.get("past_key_values") is None
+            and get_cache_kwarg(kwargs) is None
         ):
             prompt = max(prompt, int(embeds.shape[1]))
         # Media prompts run a vision / audio tower in prefill whose activations depend on the media
@@ -2717,7 +2823,7 @@ def _generate_request_bytes(model, args, kwargs):
         # A supplied cache holds history the suffix-only ids do not show; the decode allocator sizes its
         # new paged cache from the whole length, so count it (or decline when it cannot be read).
         cached = 0
-        past = kwargs.get("past_key_values")
+        past = get_cache_kwarg(kwargs)
         if past is not None:
             if hasattr(past, "get_seq_length"):
                 cached = int(past.get_seq_length())
@@ -3474,15 +3580,22 @@ def native_save_optimizer(
     if path is None:
         return state
     writer = bool(should_save)
+    failure = None
     try:
         if writer:
-            torch.save(state, path)
+            # Through a temp file: a failed write (full disk) leaves the previous optimizer.pt whole.
+            from .tp_native import _atomic_torch_save
+            _atomic_torch_save(state, path)
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
         if dist is not None:
             # The other ranks wait for the write, so no later collective overtakes it. A store key,
             # not a barrier: a large full-finetuning state can take longer to write than the
-            # collective timeout. Every rank passes the same path (the Trainer does).
-            _wait_for_writer(dist, writer, writer_rank)
+            # collective timeout. Every rank passes the same path (the Trainer does). A failed
+            # write raises on every rank.
+            _wait_for_writer(dist, writer, writer_rank, failed = failure)
     return state
 
 
@@ -3492,16 +3605,22 @@ def native_load_optimizer(model, optimizer, path_or_state):
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_optimizer_state_dict
 
     state = path_or_state
-    if isinstance(state, (str, os.PathLike)) and _is_dcp_dir(state):
-        return native_load_optimizer_sharded(model, optimizer, state)
+    if isinstance(state, (str, os.PathLike)):
+        # A sharded directory, or the complete copy a save that stopped mid-swap left beside it.
+        resolved = _resolve_dcp_dir(state) if not os.path.isfile(state) else None
+        if resolved is not None:
+            return native_load_optimizer_sharded(model, optimizer, resolved)
     if not isinstance(state, dict):
         state = _load_full_optimizer_state(state)
     from .fsdp2_bnb_optim import rename_optimizer_state_for
+    from .portable_resume import as_named_state
 
-    # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
-    rename_optimizer_state_for(_inner_optimizer(optimizer), state)
     root = _native_root(model)
     inner = _inner_optimizer(optimizer)
+    # One GPU's optimizer.pt (keyed by position, bitsandbytes 8-bit codes) keyed by FQN, float32 Adam moments.
+    state = as_named_state(root, inner, state)
+    # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
+    rename_optimizer_state_for(inner, state)
     unstepped = _unstepped_optimizer_params(root, inner, state)
     # torch refuses a trainable parameter without saved state, and strict = False would keep the
     # fresh init state for it. Hiding these (requires_grad off) leaves them stateless, as saved.
@@ -3616,11 +3735,111 @@ def _all_ranks_agree(flags, group):
     return out[0] if single else out
 
 
-def native_save_optimizer_sharded(model, optimizer, directory):
+def _dcp_siblings(directory):
+    """(previous copy, temp copies) next to a sharded optimizer directory: what a save that stopped
+    between its renames leaves behind."""
+    import glob
+
+    directory = os.fspath(directory).rstrip("/\\") or os.fspath(directory)
+    temps = glob.glob(glob.escape(directory) + ".tmp-*")
+    return directory + ".old", sorted(t for t in temps if os.path.isdir(t))
+
+
+def _resolve_dcp_dir(directory):
+    """The complete sharded optimizer directory to read for `directory`, or None. A save writes a
+    sibling `<dir>.tmp-<step>` and swaps it in through `<dir>.old`; one that stopped between the two
+    renames leaves no `<dir>`. The temp copy is then the newer, complete save (the swap only starts
+    once every rank wrote it), else the previous copy."""
+    if _is_dcp_dir(directory):
+        return os.fspath(directory)
+    old, temps = _dcp_siblings(directory)
+    if os.path.lexists(os.fspath(directory)):
+        return None  # something else (an incomplete directory) is in the way: never guess past it
+    complete = [t for t in temps if _is_dcp_dir(t)]
+    if complete:
+        return max(complete, key = _dcp_temp_step)
+    return old if _is_dcp_dir(old) else None
+
+
+def _dcp_temp_step(path):
+    try:
+        return int(path.rsplit(".tmp-", 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
+def _remove_tree(path):
+    import shutil
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        os.remove(path)
+
+
+def _fsync_parent(path):
+    try:  # directories cannot be opened on Windows
+        fd = os.open(os.path.dirname(os.path.abspath(path)) or ".", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _commit_dcp_dir(temp, directory):
+    """Swaps a fully written `temp` into `directory`: `directory` -> `.old`, `temp` -> `directory`,
+    then `.old` and other temp leftovers go. At every point one complete copy exists, which
+    _resolve_dcp_dir finds. Without `temp` a writer sharing this filesystem already swapped it."""
+    if not os.path.isdir(temp):
+        return
+    old, _ = _dcp_siblings(directory)
+    if os.path.lexists(directory):
+        if os.path.lexists(old):
+            _remove_tree(old)
+        os.rename(directory, old)
+    os.rename(temp, directory)
+    _fsync_parent(directory)
+    _, temps = _dcp_siblings(directory)
+    for leftover in [old] + temps:
+        _remove_tree(leftover)
+
+
+def _clear_dcp_temp(temp, directory):
+    if not os.path.lexists(temp):
+        return
+    if _resolve_dcp_dir(directory) == temp:
+        _commit_dcp_dir(temp, directory)
+    else:
+        _remove_tree(temp)
+
+
+def _node_id():
+    """Ranks reporting the same id share a filesystem; the lowest rank of each id renames."""
+    import socket
+    return socket.gethostname()
+
+
+_DCP_SAVE_COUNTER = {}
+
+
+def native_save_optimizer_sharded(
+    model,
+    optimizer,
+    directory,
+    step = None,
+):
     """Collective: every rank writes only its own optimizer shards to `directory` with
     torch.distributed.checkpoint (get_optimizer_state_dict(full_state_dict = False) + dcp.save), so no
     rank holds the full optimizer state. Read back with native_load_optimizer(model, opt, directory);
-    DCP reshards to another world size."""
+    DCP reshards to another world size.
+
+    The shards go to a sibling `<directory>.tmp-<step>` first; only once every rank wrote its part
+    does the lowest rank of each node (node-local checkpoint directories are supported) swap it in.
+    A failed save leaves the previous `directory` untouched."""
+    import torch.distributed as dist
     import torch.distributed.checkpoint as dcp
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
 
@@ -3635,7 +3854,64 @@ def native_save_optimizer_sharded(model, optimizer, directory):
         _inner_optimizer(optimizer),
         options = StateDictOptions(full_state_dict = False),
     )
-    dcp.save(state, checkpoint_id = os.fspath(directory), process_group = group)
+    directory = os.fspath(directory).rstrip("/\\") or os.fspath(directory)
+    distributed = dist.is_available() and dist.is_initialized()
+    if step is None:
+        # Same count on every rank: the save is collective.
+        _DCP_SAVE_COUNTER[directory] = _DCP_SAVE_COUNTER.get(directory, 0) + 1
+        step = _DCP_SAVE_COUNTER[directory]
+    temp = f"{directory}.tmp-{int(step)}"
+    if not distributed:
+        _clear_dcp_temp(temp, directory)
+        dcp.save(state, checkpoint_id = temp, process_group = group)
+        _commit_dcp_dir(temp, directory)
+        return state
+    from .fsdp2_save import WriterFailed, _writers_in_turn
+    from .tp_native import _flag_device
+
+    ranks = (
+        dist.get_process_group_ranks(group) if group is not None else range(dist.get_world_size())
+    )
+    nodes = [None] * len(ranks)
+    dist.all_gather_object(nodes, _node_id(), group = group)
+    leaders = sorted({node: rank for rank, node in reversed(list(zip(ranks, nodes)))}.values())
+    leader = dist.get_rank() in leaders
+    # A temp copy at this step left by an earlier save goes first (in turn, also the barrier before
+    # any rank writes into it); one that is the only complete copy is swapped in instead.
+    _writers_in_turn(
+        dist,
+        leaders,
+        lambda: _clear_dcp_temp(temp, directory),
+        group = group,
+        name = "unsloth_fsdp2_dcp_clear",
+    )
+    failure = None
+    try:
+        dcp.save(state, checkpoint_id = temp, process_group = group)
+    except BaseException as exc:  # CheckpointException is a BaseException
+        failure = exc
+    # dcp.save ends in a collective, so every rank is here: one flag says whether all wrote.
+    flag = torch.tensor([int(failure is not None)], dtype = torch.int32, device = _flag_device(group))
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = group)
+    if flag.item():
+        if leader:
+            import shutil
+            shutil.rmtree(temp, ignore_errors = True)
+        if failure is not None:
+            raise failure
+        raise WriterFailed(
+            f"Unsloth: the sharded optimizer save to {directory} failed on another rank (rank "
+            f"{dist.get_rank()} wrote its shards); the previous checkpoint is kept, see that rank's error."
+        )
+    # Every rank wrote its shards: swap the copy in, one node after another (a shared filesystem
+    # sees the swap once; the later writers find no temp copy).
+    _writers_in_turn(
+        dist,
+        leaders,
+        lambda: _commit_dcp_dir(temp, directory),
+        group = group,
+        name = "unsloth_fsdp2_dcp_commit",
+    )
     return state
 
 
@@ -4165,23 +4441,11 @@ def _check_checkpoint_tables(root, checkpoint):
         raise ValueError(error)
 
 
-def native_load_model_checkpoint(model, checkpoint):
-    """Collective: load a Trainer checkpoint's weights (PEFT adapter or full model, as save_model wrote
-    them) into a natively sharded model with `set_model_state_dict(full_state_dict)`. PEFT's saved keys
-    drop the adapter name; it is put back for each trainable parameter. Raises if a trainable parameter
-    has no saved tensor (the resume would silently keep the fresh value)."""
-    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
-
-    root = _native_root(model)
-    _check_checkpoint_tables(
-        root, checkpoint
-    )  # before any read: a refused checkpoint changes nothing
-    n_loaded = _native_load_hf_sharded(root, checkpoint)
-    if n_loaded is not None:
-        _print_rank0(
-            f"Unsloth: native FSDP2 resumed {n_loaded} tensors from {checkpoint} (sharded read)."
-        )
-        return n_loaded
+def checkpoint_state_by_name(root, checkpoint):
+    """(mapped, legacy_lora_b, is_adapter): a Trainer checkpoint's weights (PEFT adapter or full model, as
+    save_model wrote them) keyed by `root`'s parameter / persistent buffer names, full (1-GPU) tensors on the
+    CPU. PEFT's saved keys drop the adapter name; it is put back for each trainable parameter. Raises if a
+    trainable parameter has no saved tensor (the resume would silently keep the fresh value)."""
     adapters = []
     active = getattr(root, "active_adapters", None)
     if isinstance(active, (list, tuple)):
@@ -4256,6 +4520,27 @@ def native_load_model_checkpoint(model, checkpoint):
             f"Unsloth: native FSDP2 resume found no saved tensor for {len(missing)} parameters "
             f"(e.g. {missing[0]}) in {checkpoint}."
         )
+    return mapped, legacy_lora_b, is_adapter
+
+
+def native_load_model_checkpoint(model, checkpoint):
+    """Collective: load a Trainer checkpoint's weights (PEFT adapter or full model, as save_model wrote
+    them) into a natively sharded model with `set_model_state_dict(full_state_dict)`. PEFT's saved keys
+    drop the adapter name; it is put back for each trainable parameter. Raises if a trainable parameter
+    has no saved tensor (the resume would silently keep the fresh value)."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+
+    root = _native_root(model)
+    _check_checkpoint_tables(
+        root, checkpoint
+    )  # before any read: a refused checkpoint changes nothing
+    n_loaded = _native_load_hf_sharded(root, checkpoint)
+    if n_loaded is not None:
+        _print_rank0(
+            f"Unsloth: native FSDP2 resumed {n_loaded} tensors from {checkpoint} (sharded read)."
+        )
+        return n_loaded
+    mapped, legacy_lora_b, is_adapter = checkpoint_state_by_name(root, checkpoint)
     n_loaded = len(mapped)  # set_model_state_dict may add entries to the dict it is given
     set_model_state_dict(
         root,
@@ -4353,17 +4638,21 @@ def _install_trainer_hooks():
 
             state_dict = native_full_state_dict(root)
             writer, writer_rank = _trainer_save_writer(self, root)
+            failure = None
             try:
                 if writer:
                     with writes_off_rank0(root, writer_rank):
                         _save_unwrapped(self, root, output_dir, state_dict = state_dict)
+            except BaseException as exc:
+                failure = exc
+                raise
             finally:
                 # As in fsdp2_gathered: the other ranks wait for the (possibly multi-GB) write
                 # through the store, so they cannot run ahead into the optimizer save's or the next
                 # step's collectives and hit their timeout while rank 0 is still writing.
                 dist = _dist()
                 if dist is not None:
-                    _wait_for_writer(dist, writer, writer_rank)
+                    _wait_for_writer(dist, writer, writer_rank, failed = failure)
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
@@ -4433,23 +4722,18 @@ def _install_trainer_hooks():
             return original_save_optimizer(self, output_dir)
         # Collective full optimizer state (the original saves rank 0's shards only), then the scheduler.
         # UNSLOTH_FSDP2_DCP_OPTIM=1: each rank writes its own shards instead. A stale file of the
-        # other format in a reused directory is removed, so a resume cannot read it.
+        # other format in a reused directory is removed once the new one is written (a failed save
+        # keeps it), so a resume cannot read it.
         # The flag is read per rank: every rank writes the format they all asked for (a mixed
         # choice would pair dcp.save's collectives with the full gather's), before any cleanup.
-        should_save = _trainer_save_writer(self, _native_root(model))[0]
+        should_save, writer_rank = _trainer_save_writer(self, _native_root(model))
         group, usable = _dcp_group(_native_root(model))
         sharded = usable and _all_ranks_agree(_env_on("UNSLOTH_FSDP2_DCP_OPTIM", False), group)
-        stale = os.path.join(output_dir, _OPTIMIZER_NAME if sharded else _OPTIMIZER_DCP_DIR)
-        if should_save and os.path.lexists(stale):
-            if os.path.isdir(stale) and not os.path.islink(stale):
-                import shutil
-                shutil.rmtree(stale)
-            else:
-                os.remove(stale)
+        dcp_dir = os.path.join(output_dir, _OPTIMIZER_DCP_DIR)
+        stale = [os.path.join(output_dir, _OPTIMIZER_NAME)] if sharded else [dcp_dir]
         if sharded:
-            native_save_optimizer_sharded(
-                model, self.optimizer, os.path.join(output_dir, _OPTIMIZER_DCP_DIR)
-            )
+            step = getattr(getattr(self, "state", None), "global_step", None)
+            native_save_optimizer_sharded(model, self.optimizer, dcp_dir, step = step)
         else:
             native_save_optimizer(
                 model,
@@ -4458,8 +4742,30 @@ def _install_trainer_hooks():
                 should_save = should_save,
             )
         scheduler = getattr(self, "lr_scheduler", None)
-        if should_save and scheduler is not None:
-            torch.save(scheduler.state_dict(), os.path.join(output_dir, _SCHEDULER_NAME))
+        from .fsdp2_save import _dist, _wait_for_writer
+        from .tp_native import _atomic_torch_save
+
+        dist = _dist()
+        failure = None
+        try:
+            if should_save:
+                if scheduler is not None:
+                    _atomic_torch_save(
+                        scheduler.state_dict(), os.path.join(output_dir, _SCHEDULER_NAME)
+                    )
+                if not sharded:
+                    # Also what a sharded save that stopped mid-swap left, which a resume would read.
+                    old, temps = _dcp_siblings(dcp_dir)
+                    stale += [old] + temps
+                for path in stale:
+                    _remove_tree(path)
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            if dist is not None:
+                # A failed scheduler write raises on every rank, as a failed optimizer write does.
+                _wait_for_writer(dist, should_save, writer_rank, failed = failure)
 
     original_load_optimizer = Trainer._load_optimizer_and_scheduler
 
@@ -4473,7 +4779,7 @@ def _install_trainer_hooks():
         ):
             return original_load_optimizer(self, checkpoint, *args, **kwargs)
         local = [
-            _is_dcp_dir(os.path.join(checkpoint, _OPTIMIZER_DCP_DIR)),
+            _resolve_dcp_dir(os.path.join(checkpoint, _OPTIMIZER_DCP_DIR)) is not None,
             os.path.isfile(os.path.join(checkpoint, _OPTIMIZER_NAME)),
             os.path.isfile(os.path.join(checkpoint, _SCHEDULER_NAME)),
         ]
@@ -5194,6 +5500,22 @@ def _expert_parallel_requested(model):
     return False
 
 
+def _is_unsloth_expert_parallel(model):
+    """apply_expert_parallel keeps its ep mesh under `_unsloth_ep` on every wrapper level. The same walk as
+    _utils._is_unsloth_expert_parallel, kept here because this module also runs without `unsloth` imported
+    (the gloo tests load it by path), and importing _utils pulls unsloth_zoo's accelerator check in."""
+    m, depth = model, 0
+    while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
+        if m.__dict__.get("_unsloth_ep") is not None:
+            return True
+        modules = m.__dict__.get("_modules") or {}
+        m, depth = (
+            modules.get("base_model") or modules.get("model") or modules.get("module"),
+            depth + 1,
+        )
+    return False
+
+
 def _refuse_tensor_parallel_model(
     model,
     mesh = None,
@@ -5206,6 +5528,13 @@ def _refuse_tensor_parallel_model(
     mesh = that dp mesh): returns True then."""
     if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
         return False
+    if _is_unsloth_expert_parallel(model):
+        # Each rank holds its own expert slices: FSDP2 would sync rank 0's values into them before sharding.
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth expert parallelism (apply_expert_parallel / "
+            'UNSLOTH_PARALLEL="ep=N"): every rank holds different expert slices. Unset UNSLOTH_FSDP2 for '
+            "expert parallel, or drop ep for FSDP2."
+        )
     tp_size = getattr(model, "tp_size", None)
     try:
         tp_size = int(tp_size) if tp_size is not None else None
