@@ -5319,7 +5319,34 @@ def _ep_finish_remote(model, ep, rank):
             block.__dict__["_unsloth_tp_load_guard"] = block.register_forward_pre_hook(
                 _refuse_unapplied_forward
             )
+    _drop_remote_device_map(model, ep, rank)
     return replaced
+
+
+def _drop_remote_device_map(model, ep, rank):
+    """A device map that lists other ranks' experts (on meta) is not a multi-device split: accelerate's Trainer
+    check would refuse it as device_map="auto". Their entries go; one device left collapses to {"": device}."""
+    names = {id(m): n for n, m in model.named_modules()}
+    remote = set()
+    for block in moe_blocks_with_experts(model):
+        try:
+            others = _lists_module().load_remote_experts(block, ep, rank)
+        except Exception:
+            others = None
+        remote.update(names[id(e)] for e in others or () if id(e) in names)
+    for m in model.modules():
+        device_map = m.__dict__.get("hf_device_map")
+        if not isinstance(device_map, dict) or len(device_map) < 2:
+            continue
+        prefix = names.get(id(m), "")
+        prefix = prefix + "." if prefix else ""
+        kept = {
+            k: v
+            for k, v in device_map.items()
+            if str(v) != "meta" and not any((prefix + k + ".").startswith(r + ".") for r in remote)
+        }
+        devices = {str(v) for v in kept.values()}
+        m.hf_device_map = {"": next(iter(kept.values()))} if len(devices) == 1 else kept
 
 
 def _ep_lists_load_4x(original, cls, name, args, kwargs, mesh, state):

@@ -256,3 +256,18 @@ def test_ep_list_load_reads_only_local_experts_and_matches_full_load(family, par
             torch.testing.assert_close(
                 got[k], w, rtol = 1e-5, atol = 1e-6, msg = lambda m, k = k: f"{k}: {m}"
             )
+
+
+def test_ep_list_load_device_map_listing_remote_experts_collapses_to_one_device():
+    """accelerate's Trainer refuses a model whose hf_device_map has more than one entry (device_map="auto"); a map
+    that only adds other ranks' experts on meta is one device."""
+    from unsloth.models import tp_native
+
+    model = torch.nn.Module()
+    model.hf_device_map = {"": 0, "layers.0.mlp.experts.3": "meta"}
+    tp_native._drop_remote_device_map(model, 2, 0)
+    assert model.hf_device_map == {"": 0}
+    split = torch.nn.Module()
+    split.hf_device_map = {"layers.0": 0, "layers.1": 1}
+    tp_native._drop_remote_device_map(split, 2, 0)
+    assert split.hf_device_map == {"layers.0": 0, "layers.1": 1}

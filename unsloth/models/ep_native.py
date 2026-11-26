@@ -564,6 +564,7 @@ def apply_expert_parallel(model, mesh = None):
             # DDP averages the other gradients over the world; an expert's is the sum over its ep group's losses
             # (then over the replicas, ep_sync_expert_grads): / world is DDP's average.
             p.register_hook(lambda g, world = world: g / world)
+    tpn._drop_remote_device_map(model, ep, rank)
     for level in _levels(model):
         level.__dict__[_EP] = ep_mesh
         level.__dict__[_EP_REP] = rep_mesh
