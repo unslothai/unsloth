@@ -5483,6 +5483,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const target = nextState as Record<string, unknown>;
       const applied: Record<string, unknown> = {};
       const paramsPatch: Record<string, unknown> = {};
+      // When leaving a chat, recover the selected model's own sampling beneath its pins.
+      // Keep the installation defaults available for any other model or thread setting.
+      const modelMemory = state.paramsByModel[state.params.checkpoint];
+      const modelDefaults =
+        threadId === null && paramsUnderChatValues?.checkpoint === state.params.checkpoint
+          ? paramsUnderChatValues
+          : null;
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
         if (heldFields.has(key)) {
           if (isClampedPillKey(key) && heldPills[key] !== undefined) {
@@ -5522,11 +5529,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           continue;
         }
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
-        const value = firstSetThreadScopedValue(
-          stored?.[key],
-          npuPillDefault(state.params.checkpoint, key),
-          globalThreadScopedDefaults?.[key],
-        );
+        const value =
+          modelDefaults &&
+          (isRecommendedSamplingKey(key) || key === "minPMode" || key === "repetitionPenalty") &&
+          modelMemory?.[key] !== undefined
+            ? modelDefaults[key]
+            : firstSetThreadScopedValue(
+                stored?.[key],
+                npuPillDefault(state.params.checkpoint, key),
+                globalThreadScopedDefaults?.[key],
+              );
         if (value === undefined) continue;
         applied[key] = value;
         if (isClampedPillKey(key)) {
