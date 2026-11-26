@@ -40,9 +40,11 @@ test("under WebKitGTK's TextureMapper compositor the pinned sidebar blurs for it
 test("under it the strip leaves the sidebar column to the sidebar, so the column keeps one layer of fill", () => {
   const shared = decls(`html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] ${STRIP.replace("::before", "")}`).get("--studio-glass-strip-mask");
   assert.equal(decls(`html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] ${STRIP}`).get("mask"), "var(--studio-glass-strip-mask)");
-  const legacy = decls(`${GATE}[data-chat-wallpaper-workspace-ready] ${STRIP}`).get("mask");
+  // On the frame, so its ::before and its lens (index.css, [data-windows-glass-frame] > .glass-lens) both take the caption shape.
+  const legacy = decls(`${GATE}[data-chat-wallpaper-workspace-ready] ${STRIP.replace("::before", "")}`).get("--studio-glass-strip-mask");
+  assert.equal(decls(`${GATE}[data-chat-wallpaper-workspace-ready] ${STRIP}`).get("mask"), undefined, "the ::before reads the var");
   assert.match(shared ?? "", /left top \/ var\(--sidebar-width\) 100%/);
-  assert.ok(legacy, "the legacy strip sets its own mask");
+  assert.ok(legacy, "the legacy frame sets its own strip mask");
   assert.doesNotMatch(legacy, /var\(--sidebar-width\) 100%/, "no sidebar column under the self-blurred sidebar");
   assert.match(legacy, /var\(--sidebar-width\) top \/ 100% var\(--studio-custom-titlebar-height\)/);
   // Docked Run settings keeps its own glass below the caption, in the strip's fill, sheen and no edge line.

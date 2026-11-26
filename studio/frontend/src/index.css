@@ -7411,8 +7411,8 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
 /* TextureMapper (WebKitGTK < 2.54) blurs layers painted over a backdrop-filter into it, so the strip haloed the
    sidebar logo. A surface's own backdrop leaves its children out: the sidebar takes its column's glass and the
    strip keeps only the caption, so the column is still one layer of fill. */
-html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame]::before {
-  mask:
+html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame] {
+  --studio-glass-strip-mask:
     linear-gradient(black 0 0) var(--sidebar-width) top / 100% var(--studio-custom-titlebar-height) no-repeat,
     radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
       var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat,

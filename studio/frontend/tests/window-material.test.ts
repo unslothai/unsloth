@@ -764,10 +764,10 @@ test("a lens stays on the visible box of a host that scrolls itself", () => {
 	assert.match(lens, /host\.removeEventListener\("scroll", place\);/);
 });
 
-test("legacy WebKitGTK's sidebar glass takes the lens instead of the masked frame, never both", () => {
+test("legacy WebKitGTK keeps the frame's lens on the caption beside the sidebar's own; elsewhere the frame's lens is the only one", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /const FRAME_SIDEBAR = '\[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\]';/);
-	assert.match(lens, /const drop = new Set<Element \| null>\(legacy \? inner\.map\(\(h\) => h\.parentElement\) : inner\);/);
+	assert.match(lens, /const drop = new Set<Element \| null>\(legacy \? \[\] : inner\);/);
 	// Elsewhere the frame's lens covers the whole strip, docked Run settings included, so the panel takes none of its own.
 	assert.match(lens, /const stripLens = !legacy && found\.some\(\(h\) => h\.matches\(FRAME\)\);/);
 	assert.match(lens, /!\(stripLens && h\.matches\(STRIP_PANEL\)\)/);
@@ -820,4 +820,20 @@ test("docked Run settings pulls the chat header's actions into its corner, as fa
 	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
 	assert.match(sheet, /const docked = open && !isCompact;\n\s*useEffect\(\(\) => \{\n\s*const el = document\.documentElement;\n\s*el\.toggleAttribute\("data-chat-settings-docked", docked\);\n\s*return \(\) => el\.removeAttribute\("data-chat-settings-docked"\);/);
 	assert.doesNotMatch(css, /:has\([^)]*chat-settings-panel[^)]*\)[^{]*\[data-chat-header-actions\]/);
+});
+
+test("on legacy WebKitGTK the caption, sidebar and docked Run settings lenses scale about the strip's one origin", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /const LEGACY_STRIP_HOSTS = `\$\{FRAME\}, \$\{FRAME_SIDEBAR\}, html\[data-sidebar-glass-frame\] aside\[data-slot="chat-settings-panel"\]`;/);
+	// Gated on the compositor class, so every other engine keeps each host's own centre (the frame's is the strip's already).
+	assert.match(lens, /if \(!legacyCompositor\(\) \|\| !host\.matches\(LEGACY_STRIP_HOSTS\)\) return null;/);
+	assert.match(lens, /return \{ left: r\.left, top: r\.top, width: window\.innerWidth, height: r\.height \};/);
+	assert.match(lens, /const o = legacyStripBox\(host\) \?\? h;/);
+	assert.match(lens, /copy\.style\.transformOrigin = `\$\{o\.left - w\.left \+ o\.width \/ 2\}px \$\{o\.top - w\.top \+ o\.height \/ 2\}px`;/);
+	assert.doesNotMatch(lens, /transformOrigin = `\$\{h\./, "no copy scales about its own host any more where a strip box applies");
+	// The origin is part of the placement key, so a moved frame re-places the sidebar's and Run settings' copies.
+	assert.match(lens, /h\.height,\n\s+o\.left,\n\s+o\.top,\n\s+o\.width,\n\s+o\.height,/);
+	// The frame's lens box the origin copies: inset 0 auto 0 0, 100vw wide.
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\[data-windows-glass-frame\] > \.glass-lens \{\n  z-index: 1;\n  inset: 0 auto 0 0;\n  width: 100vw;/);
 });
