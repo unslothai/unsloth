@@ -5,7 +5,9 @@ import { create } from "zustand";
 // Clears with the session. Relative and extensioned because the test runs under
 // `node --experimental-strip-types`, which cannot resolve `@/`.
 import { AUTH_SESSION_CLEARED_EVENT } from "../../auth/session-events.ts";
+import { normalizeRunParallel } from "../lib/parallel-plan.ts";
 import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
+import type { RunParallelInfo } from "../types/parallel";
 import type {
   TrainingMetricsResponse,
   TrainingPhase,
@@ -49,6 +51,18 @@ export function isTrainingStartPending(
   );
 }
 
+/** Absent key = unchanged (older backend, partial status); the same layout keeps its object. */
+function nextRunParallel(
+  current: RunParallelInfo | null,
+  payload: TrainingStatusResponse,
+): RunParallelInfo | null {
+  if (!("parallel" in payload)) return current;
+  const next = normalizeRunParallel(payload.parallel);
+  return current && next && JSON.stringify(current) === JSON.stringify(next)
+    ? current
+    : next;
+}
+
 const initialState: TrainingRuntimeState = {
   jobId: null,
   phase: "idle",
@@ -57,6 +71,7 @@ const initialState: TrainingRuntimeState = {
   message: "Ready to train",
   error: null,
   warnings: [],
+  parallel: null,
   isHydrating: false,
   hasHydrated: false,
   isStarting: false,
@@ -309,6 +324,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           message,
           error: null,
           warnings: [],
+          parallel: null,
           startError: null,
           phase: "configuring",
           modelDownloadRepoId: null,
@@ -385,6 +401,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               ...state,
               jobId: payload.job_id,
               warnings: [],
+              parallel: null,
               isStarting: state.isStarting,
               startModelName: localStartStatus ? state.startModelName : null,
               startDatasetName: localStartStatus
@@ -444,6 +461,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           message: payload.message,
           error: payload.error,
           warnings: nextWarnings,
+          parallel: nextRunParallel(runtimeState.parallel, payload),
           currentStep:
             detailStep !== null
               ? Math.max(detailStep, runtimeState.currentStep, 0)

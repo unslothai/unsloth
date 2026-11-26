@@ -60,3 +60,13 @@ export function videoAvailable(
 export function stepIndex(target: number, total: number): number {
   return Math.min(Math.max(target, 0), Math.max(total - 1, 0));
 }
+
+export const OUTSIDE_DISMISS_WINDOW_MS = 3000;
+
+export function outsideClickCloses(
+  armedAt: number | null,
+  now: number,
+  windowMs = OUTSIDE_DISMISS_WINDOW_MS,
+): boolean {
+  return armedAt !== null && now - armedAt <= windowMs;
+}

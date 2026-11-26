@@ -37,10 +37,12 @@ def _load(planner):
         "torch": types.SimpleNamespace(cuda = _FakeCuda()),
         "DEVICE_TYPE_TORCH": "cuda",
         "is_distributed": lambda: False,
+        "unsloth_logging_enabled": lambda: False,
     }
     for node in ast.parse(_SRC).body:
         if isinstance(node, ast.FunctionDef) and node.name in (
             "resolve_unsloth_device_map",
+            "_placement_report",
             "_as_bytes",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)

@@ -378,6 +378,7 @@ async function* mergedModelIterator(
   signal?: AbortSignal,
   parameterFilter = "",
   filterPriority?: ModelListingTransform,
+  keepUnslothRow?: (raw: unknown) => boolean,
 ): AsyncGenerator<unknown> {
   const tasks = normalizeTaskFilter(task);
   const common = {
@@ -388,14 +389,21 @@ async function* mergedModelIterator(
   const limit =
     query.trim() && POPULARITY_SORTS.has(sortBy) ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
   // Unfiltered phase 1 reads at most `limit` rows; avoids the Hub's default 500 (megabytes).
-  const unslothRows = filterPriority || parameterFilter ? {} : { limit };
+  // Slots go to rows the list shows: the org's top hits are often GGUFs a training search hides.
+  const unslothRows = filterPriority || parameterFilter || keepUnslothRow ? {} : { limit };
   const unslothIter = mergeTaskIterators(
     tasks,
     (task, taskSignal) =>
       listModels({
         hubUrl: getHfEndpoint(),
         search: { query, owner: "unsloth", ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+        fetch: makeSortFetch(
+          sortBy,
+          direction,
+          taskSignal,
+          parameterFilter,
+          keepUnslothRow ? UNSLOTH_FILTER_REJECT_LIMIT : undefined,
+        ),
         ...unslothRows,
         ...common,
       }) as AsyncGenerator<unknown>,
@@ -434,6 +442,10 @@ async function* mergedModelIterator(
       : unslothIter) {
       if (model === null) {
         yield null;
+        if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
+        continue;
+      }
+      if (keepUnslothRow && !keepUnslothRow(model)) {
         if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
         continue;
       }
@@ -1061,6 +1073,37 @@ export function useHubModelSearch(
   );
   const hasFilters = !!filters && hasModelSearchFilters(filters);
   const filterRange = filters ? parameterRange(filters) : "";
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const mapModel = useMemo(
+    () =>
+      makeMapModel(
+        excludeGguf,
+        keepUnsupportedTags,
+        channelIdSuffix,
+        deviceType,
+        hideEmptyUploads,
+      ),
+    [
+      excludeGguf,
+      keepUnsupportedTags,
+      channelIdSuffix,
+      deviceType,
+      hideEmptyUploads,
+    ],
+  );
+  const keepUnslothRow = useMemo(
+    () =>
+      excludeGguf
+        ? (raw: unknown) => {
+            try {
+              return mapModel(raw) !== null;
+            } catch {
+              return false;
+            }
+          }
+        : undefined,
+    [excludeGguf, mapModel],
+  );
   const createListing = useCallback(
     (signal: AbortSignal, filterPriority?: ModelListingTransform) => {
       // An explicit owner lists that owner, within a tag-only channel too. Unsloth-only scope keeps
@@ -1165,6 +1208,7 @@ export function useHubModelSearch(
             signal,
             filterRange,
             filterPriority,
+            keepUnslothRow,
           );
         }
         return mergeTaskIterators(
@@ -1232,6 +1276,7 @@ export function useHubModelSearch(
         signal,
         filterRange,
         filterPriority,
+        keepUnslothRow,
       ) as AsyncGenerator<unknown>;
       return queryProvider
         ? providerUnslothFirstIterator(queryProvider, merged, {
@@ -1259,27 +1304,10 @@ export function useHubModelSearch(
       unslothOnly,
       hasFilters,
       filterRange,
+      keepUnslothRow,
     ],
   );
 
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const mapModel = useMemo(
-    () =>
-      makeMapModel(
-        excludeGguf,
-        keepUnsupportedTags,
-        channelIdSuffix,
-        deviceType,
-        hideEmptyUploads,
-      ),
-    [
-      excludeGguf,
-      keepUnsupportedTags,
-      channelIdSuffix,
-      deviceType,
-      hideEmptyUploads,
-    ],
-  );
   const needsMetadata = !!filters && needsModelMetadata(filters);
   // Only a row the list can show is worth a per-row Hub request.
   const keepRow = useMemo(

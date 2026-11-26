@@ -224,18 +224,20 @@ def test_accelerator_memory_counts_what_the_hip_figure_misses(monkeypatch):
 
     import torch
 
-    from core.inference import diffusion_device, diffusion_memory
+    from core.inference import diffusion_device
     from utils.hardware import hardware
 
+    mib = 1024 * 1024
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
         diffusion_device, "diffusion_device_scope", lambda o: contextlib.nullcontext()
     )
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (11_802 * mib, 12_272 * mib))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(
-        diffusion_memory,
-        "snapshot_device_memory",
-        lambda target: types.SimpleNamespace(free_mib = 11_802, total_mib = 12_272),
+        torch.cuda, "get_device_properties", lambda i: types.SimpleNamespace(integrated = False)
     )
+    monkeypatch.setattr(hardware, "rocm_windows_free_is_untrusted", lambda: False)
     monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: 5_454)
     free, total, device = pup._accelerator_memory_mib()
     assert (free, total, device) == (5_454, 12_272, "cuda")

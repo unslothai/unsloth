@@ -8,7 +8,8 @@ import { AUDIO_WORKFLOWS, clipWorkflow } from "../workflows";
 
 const INVALID_CHARS = new Set('<>:"/\\|?*');
 const MAX_TITLE_CHARS = 120;
-// prompts can span paragraphs; 60 characters keeps CJK and emoji names under 255 bytes.
+// ext4, APFS and NTFS cap one path component at 255 bytes; a longer name fails to save or extract.
+const MAX_NAME_BYTES = 255;
 const MAX_CLIP_TITLE_CHARS = 60;
 const FALLBACK_TITLE = "Separated track";
 
@@ -25,19 +26,42 @@ export function sanitizeFileNamePart(part: string, fallback: string): string {
   return cleaned || fallback;
 }
 
-function shortTitle(title: string, max: number, fallback: string): string {
-  const bare = title.replace(/\.(wav|mp3|flac|ogg|m4a|aac|opus|webm)$/i, "");
-  const safe = [...sanitizeFileNamePart(bare, fallback)]
-    .slice(0, max)
-    .join("")
-    .trim();
-  return safe || fallback;
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
 }
 
-/** the title is capped so the stem label always survives. */
+function titledFileName(
+  title: string,
+  maxChars: number,
+  fallback: string,
+  label: string,
+): string {
+  const suffix = ` - ${label}.wav`;
+  const budget = MAX_NAME_BYTES - utf8Bytes(suffix);
+  const bare = title.replace(/\.(wav|mp3|flac|ogg|m4a|aac|opus|webm)$/i, "");
+  const chars = [...sanitizeFileNamePart(bare, fallback)].slice(0, maxChars);
+  let safe = "";
+  let bytes = 0;
+  for (const char of chars) {
+    bytes += utf8Bytes(char);
+    if (bytes > budget) break;
+    safe += char;
+  }
+  return `${safe.trim() || fallback}${suffix}`;
+}
+
 export function stemFileName(title: string, label: string): string {
-  const safeLabel = sanitizeFileNamePart(label, "Stem");
-  return `${shortTitle(title, MAX_TITLE_CHARS, FALLBACK_TITLE)} - ${safeLabel}.wav`;
+  return titledFileName(
+    title,
+    MAX_TITLE_CHARS,
+    FALLBACK_TITLE,
+    sanitizeFileNamePart(label, "Stem"),
+  );
 }
 
 /** gallery clips are always WAV. */
@@ -50,7 +74,7 @@ export function clipFileName(clip: {
   const label =
     AUDIO_WORKFLOWS.find((item) => item.id === workflow)?.label ?? "Audio";
   const prompt = (clip.prompt ?? "").replace(/\s+/g, " ");
-  return `${shortTitle(prompt, MAX_CLIP_TITLE_CHARS, "Audio")} - ${label}.wav`;
+  return titledFileName(prompt, MAX_CLIP_TITLE_CHARS, "Audio", label);
 }
 
 export function stemZipName(title: string): string {

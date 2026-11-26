@@ -328,6 +328,7 @@ def arm_request(
         work = int(width) * int(height) * int(frames)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
         module._unsloth_video_failed_captures = _failed_captures()
+        module._unsloth_video_vocoder_fallbacks = _vocoder_fallbacks()
         return True
     except Exception:  # noqa: BLE001 -- an unarmed request keeps the estimate
         return False
@@ -406,6 +407,14 @@ def discard_request(pipe: Any) -> None:
             close_window(window[0], window[1])
     except Exception:  # noqa: BLE001
         pass
+
+
+def _vocoder_fallbacks() -> int:
+    try:
+        from .video_ltx2 import vocoder_fallback_count
+        return vocoder_fallback_count()
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _failed_captures() -> int:
@@ -646,6 +655,10 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         if (
             key is not None
             and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0)
+            # a vocoder that fell back to its stored dtype (out of memory, or short of room) ran a pass this key
+            # does not describe: its peak is not the float32 decode's
+            and getattr(module, "_unsloth_video_vocoder_fallbacks", None)
+            in (None, _vocoder_fallbacks())
             and _keyed_graphs_live(pipe, key)
         ):
             graphs, generation = _live_graphs(dev), _capture_generation(dev)
@@ -789,6 +802,7 @@ def fit_for_request(
         torch.cuda.reset_peak_memory_stats(dev)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
         module._unsloth_video_failed_captures = _failed_captures()
+        module._unsloth_video_vocoder_fallbacks = _vocoder_fallbacks()
         try:
             # release_resident_groups' restore reads it back; keep it at this request's room
             module._unsloth_resident_room = room if room > 0 else None

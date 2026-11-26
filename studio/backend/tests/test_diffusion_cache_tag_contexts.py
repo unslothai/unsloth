@@ -17,6 +17,10 @@ from core.inference import diffusion_nvfp4_act_quant as nvfp4  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _clean():
+    # The SDPA-align wrapper appends its own suffix to the same tag; start from torch's tag without it.
+    from core.training import diffusion_sdpa_align
+
+    diffusion_sdpa_align.uninstall_sdpa_align_without_guard()
     saved = cc.cache_key_tag
     fp8.uninstall()
     compile_config._reset_for_tests()

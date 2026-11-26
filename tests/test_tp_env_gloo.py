@@ -279,11 +279,13 @@ def _case_env(
         trainer_b.train(resume_from_checkpoint = ckpt2)
         res["b"] = summary(trainer_b)
         if layout is not None:
-            # A checkpoint written on another layout is refused before anything is loaded.
+            # A checkpoint written on another layout without the 1-GPU optimizer.pt (an older Unsloth) is refused
+            # before anything is loaded; with it, it resumes resharded (test_layout_portable_resume_gloo).
             bad = os.path.join(tmp, "bad")
             if rank == 0:
                 import shutil
                 shutil.copytree(ckpt2, bad)
+                os.remove(os.path.join(bad, "optimizer.pt"))
             dist.barrier()
             path = os.path.join(bad, "unsloth_tp", f"rank{rank:05d}.pt")
             payload = torch.load(path, weights_only = True)
@@ -389,6 +391,48 @@ def _case_dp_average_dtypes(rank, world, tmp):
         out[str(dtype)]["got"] = [p.grad.clone() for p in pair]
         out[str(dtype)]["dtype"] = [p.grad.dtype for p in pair]
     return out
+
+
+def _case_dp_average_buckets(rank, world, tmp):
+    """64-byte cap: every grad (any dtype, over the cap, non-contiguous) equals its own all-reduce mean."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import ep_native, tp_native
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",))
+    torch.manual_seed(rank)
+    params, reference = [], []
+    for dtype in (torch.float16, torch.bfloat16, torch.float32):
+        for shape in ((3,), (5, 4), (40,), (7,), (2, 3)):
+            p = torch.nn.Parameter(torch.zeros(shape, dtype = dtype))
+            g = (torch.randn(shape[::-1]) * 2e4).to(dtype)
+            p.grad = g.t() if g.dim() == 2 else g  # 2-D: a non-contiguous gradient
+            params.append(p)
+            want = p.grad.float() if dtype == torch.float16 else p.grad.clone()
+            dist.all_reduce(want)
+            reference.append(want.div_(world).to(dtype))
+    calls = []
+    all_reduce = dist.all_reduce
+
+    def counting(tensor, *args, **kwargs):
+        calls.append(tensor.numel())
+        return all_reduce(tensor, *args, **kwargs)
+
+    ep_native._REPLICA_BUCKET_BYTES, dist.all_reduce = 64, counting
+    try:
+        tp_native._dp_average(params, mesh["dp"])
+    finally:
+        dist.all_reduce = all_reduce
+    return {
+        "equal": [torch.equal(p.grad, want) for p, want in zip(params, reference)],
+        "dtypes": [p.grad.dtype == want.dtype for p, want in zip(params, reference)],
+        "reduces": len(calls) - 1,  # the first one is the has-gradient vote
+    }
 
 
 def _case_accelerate_fsdp(rank, world, tmp, ckpt):
@@ -514,6 +558,7 @@ CASES = {
     "env": _case_env,
     "dp_average": _case_dp_average,
     "dp_average_dtypes": _case_dp_average_dtypes,
+    "dp_average_buckets": _case_dp_average_buckets,
     "accelerate_fsdp": _case_accelerate_fsdp,
     "model_init": _case_model_init,
 }
@@ -751,6 +796,13 @@ def test_dp_average_matches_ddp_for_gradients_on_some_replicas():
     for res in _spawn("dp_average", 2):
         assert res["one"] == [2.0] * 3 and res["both"] == [1.5] * 3, res
         assert res["none"] is None and res["frozen"] is None, res
+
+
+def test_dp_average_caps_buckets_and_matches_per_tensor_mean():
+    for res in _spawn("dp_average_buckets", 2):
+        assert all(res["equal"]) and all(res["dtypes"]), res
+        # An uncapped flatten makes one buffer per dtype (3 all-reduces); a 64-byte cap must split them.
+        assert res["reduces"] > 3, res
 
 
 def test_dp_average_keeps_fp16_finite_and_bf16_fp32_unchanged():

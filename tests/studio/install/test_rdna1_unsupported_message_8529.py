@@ -718,7 +718,8 @@ def test_the_unsupported_arch_variable_is_declared_outside_the_amd_block():
     """$ROCmUnsupportedGfxArch must be declared outside the AMD block, or StrictMode fails NVIDIA hosts."""
     src = _normalised(_INSTALL_PS1)
     m = re.search(
-        r"^    \$ROCmGfxArch = \$null\n(?P<between>(?:.*\n)*?)    if \(-not \$HasNvidiaSmi\) \{",
+        # The gate is "-not $HasNvidiaSmi", optionally widened (a mixed host is probed too).
+        r"^    \$ROCmGfxArch = \$null\n(?P<between>(?:.*\n)*?)    if \(-not \$HasNvidiaSmi\b[^\n]*\) \{",
         src,
         re.MULTILINE,
     )

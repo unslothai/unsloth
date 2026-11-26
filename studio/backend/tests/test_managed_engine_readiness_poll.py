@@ -3,6 +3,7 @@
 
 """The vLLM / SGLang readiness poll scans port ownership only once something accepts on the port."""
 
+import os
 import socket
 import sys
 from contextlib import nullcontext
@@ -29,6 +30,8 @@ def _engine(
 ):
     """Engine whose child never binds. ``owned``: None = real ownership check, else successive answers."""
     events, errors, holder = [], [], []
+    # vLLM / SGLang write a per-attempt log under the Studio home; keep it out of the real one.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setattr(managed_engine, "engine_lease", lambda _: nullcontext())
     monkeypatch.setattr(
         managed_engine, "installed", lambda _: {"host": "wsl", "path": str(tmp_path)}
@@ -42,8 +45,10 @@ def _engine(
             server.bind(("127.0.0.1", args[-1]))
             server.listen()
             holder.append(server)
-        # Ends when stop() closes its stdin, like the WSL guest runner.
-        return [sys.executable, "-c", "import sys; sys.stdin.read()"], None
+        # Ends when stop() closes its stdin, like the WSL guest runner. The real
+        # _wsl_command always hands back the wsl.exe environment as a dict, which
+        # _start_once extends in place (WSL_UTF8 when it captures engine logs).
+        return [sys.executable, "-c", "import sys; sys.stdin.read()"], dict(os.environ)
 
     monkeypatch.setattr(engine, "_wsl_command", launch)
 

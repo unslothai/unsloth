@@ -1347,8 +1347,10 @@ def _self_check(
             and ((a.float() - b).abs().max() <= 0.05 * b.abs().max() + 0.02).item()
             for a, b in zip((out, *grads), (ref, *ref_grads))
         )
+    except torch.cuda.OutOfMemoryError:
+        # Transient: SDPA serves this call; caching it would keep SDPA for the whole run.
+        return False
     except Exception as exc:
-        # Includes OOM: the load worked before this check existed, so SDPA keeps it working.
         _warn_once(
             f"Unsloth: head_dim 512 attention kernel failed its self check ({exc}); using SDPA."
         )
@@ -1487,6 +1489,10 @@ def _make_router(original):
                 except torch.cuda.OutOfMemoryError:
                     LARGE_HEAD_ENGAGED["fallback"] += 1
                 except Exception as exc:
+                    # Non-reentrant checkpointing ends a recompute by raising through the forward, and a
+                    # CheckpointError is a forward / recompute mismatch: neither is a kernel failure.
+                    if type(exc).__name__ in ("_StopRecomputationError", "CheckpointError"):
+                        raise
                     LARGE_HEAD_ENGAGED["fallback"] += 1
                     _SELF_CHECK[(str(query.device), query.dtype)] = False
                     _warn_once(
