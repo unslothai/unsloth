@@ -138,6 +138,8 @@ def test_solved_prompts_dropped_next_epoch(monkeypatch):
     epoch2 = list(s)
     seen = set(epoch2)
     assert seen.isdisjoint({1, 3, 4}) and seen
+    # Refilled from the unsolved prompts: the epoch keeps its length, so max_steps is still reached.
+    assert len(epoch2) == len(epoch1) == len(s)
     # Layout: each prompt repeated G times consecutively; chunks of per_chunk prompts repeated `repeat` times.
     assert len(epoch2) % (G * per_chunk * repeat) == 0
     for i in range(0, len(epoch2), G):
@@ -147,6 +149,17 @@ def test_solved_prompts_dropped_next_epoch(monkeypatch):
         assert epoch2[c : c + block] == epoch2[c + block : c + 2 * block]
     # Epoch 1 had every prompt (15 // 3 full chunks).
     assert set(epoch1) == set(range(15))
+
+
+def test_every_prompt_solved_falls_back_to_all(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING", "1")
+    data, s = _repeat_sampler(6, 2, 2, 1, seed = 3)
+    t = _trainer(2)
+    s = R._unsloth_grpo_npr_sampler(t, s)
+    t._unsloth_npr_solved = {R._unsloth_grpo_npr_key(x["prompt"]) for x in data}
+    with pytest.warns(UserWarning, match = "every prompt solved"):
+        epoch = list(s)
+    assert set(epoch) == set(range(6)) and len(epoch) == len(s)
 
 
 def test_pass_rate_accumulates_across_batches(monkeypatch):

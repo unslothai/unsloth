@@ -6435,8 +6435,9 @@ def _unsloth_grpo_npr_record(trainer, mode, inputs, rewards_per_func):
 
 
 def _unsloth_grpo_npr_sampler(trainer, sampler):
-    """Wrap TRL's RepeatSampler so each epoch's permutation skips solved prompts (No-Positive-Resampling).
-    Same random stream and the same chunk / repeat layout as TRL, so groups and ranks stay aligned."""
+    """Wrap TRL's RepeatSampler so each epoch's permutation skips solved prompts (No-Positive-Resampling),
+    refilled from the unsolved ones to the same length. Same random stream and chunk / repeat layout as
+    TRL, so groups and ranks stay aligned; with nothing solved the stream is TRL's exactly."""
     if _unsloth_grpo_npr_settings() is None:
         return sampler
     needed = (
@@ -6464,10 +6465,13 @@ def _unsloth_grpo_npr_sampler(trainer, sampler):
             else:
                 indexes = list(range(self.num_samples))
             solved = trainer.__dict__.get("_unsloth_npr_solved", None)
-            if solved:
-                keys = self.__dict__.setdefault("_unsloth_npr_keys", {})
+            if not solved:
+                return indexes
+            keys = self.__dict__.setdefault("_unsloth_npr_keys", {})
+
+            def unsolved(order):
                 kept = []
-                for index in indexes:
+                for index in order:
                     key = keys.get(index, None)
                     if key is None:
                         row = self.data_source[index]
@@ -6477,10 +6481,29 @@ def _unsloth_grpo_npr_sampler(trainer, sampler):
                         keys[index] = key
                     if key not in solved:
                         kept.append(index)
-                dropped = len(indexes) - len(kept)
-                trainer.__dict__["_unsloth_npr_dropped"] = dropped
-                indexes = kept
-            return indexes
+                return kept
+
+            kept = unsolved(indexes)
+            trainer.__dict__["_unsloth_npr_dropped"] = len(indexes) - len(kept)
+            if not kept:
+                if not trainer.__dict__.get("_unsloth_npr_all_solved_warned", False):
+                    import warnings
+                    warnings.warn(
+                        "Unsloth: No-Positive-Resampling marked every prompt solved; sampling all of them again.",
+                        stacklevel = 2,
+                    )
+                    trainer._unsloth_npr_all_solved_warned = True
+                return indexes
+            # Refill to the epoch's length with more passes over the unsolved prompts: the trainer fixed its
+            # epoch count from this length, so a shorter epoch would end training before max_steps.
+            target = len(indexes)
+            while len(kept) < target:
+                if self.shuffle:
+                    order = torch.randperm(self.num_samples, generator = self.generator).tolist()
+                else:
+                    order = list(range(self.num_samples))
+                kept.extend(unsolved(order))
+            return kept[:target]
 
         def __iter__(self):
             indexes = self._unsloth_npr_indexes()
