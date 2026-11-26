@@ -1705,6 +1705,10 @@ class _ResidentBatch:
         handles = [(request_id, row if rows else None) for row in range(len(requests))]
         self._owed[request_id] = None
         prefixes = []
+        watch = getattr(self.session, "watch_progress", None)
+        if watched and callable(watch):
+            # Before admission: a row may prefill while it is admitted.
+            watch(handles[0], _progress_sender(self.resp_queue, request_id))
         try:
             for request, handle in zip(requests, handles):
                 prefixes.append((handle, self.session.admit(request, handle)))
@@ -1722,9 +1726,6 @@ class _ResidentBatch:
             else:
                 self._fail_all(exc)
             raise
-        watch = getattr(self.session, "watch_progress", None)
-        if watched and callable(watch):
-            watch(handles[0], _progress_sender(self.resp_queue, request_id))
         logger.info(
             "Admitted request_id=%s (%d replies) to a batch of %d",
             request_id,

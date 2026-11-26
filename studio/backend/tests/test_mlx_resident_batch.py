@@ -69,6 +69,7 @@ class _Session:
         return self.settled.pop(handle, None)
 
     def watch_progress(self, handle, sink):
+        assert handle not in self.rows  # a row may prefill while it is admitted
         self.watched[handle] = sink
 
     def admit(self, request, handle):

@@ -3680,7 +3680,17 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     )
     generate = types.ModuleType("mlx_lm.generate")
     generate.BatchGenerator = lambda *_a, **_k: generator
-    prefill = lambda *_a, **step: steps.append(step) or [1, 5, 5, 2]
+
+    def prefill(
+        *_a,
+        progress = None,
+        **step,
+    ):
+        steps.append(step)
+        if progress is not None:
+            progress(3, 4, 0)
+        return [1, 5, 5, 2]
+
     _zoo_image_prefill(monkeypatch, prefill_image_prompt = prefill)
     backend = mlx_inference.MLXInferenceBackend()
     backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
@@ -3713,6 +3723,10 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     generator.next = lambda: ([SimpleNamespace(uid = 2, progress = (1, 1))], [])
     list(session.step())
     assert samples == []
+    # Watched before it is admitted, as the worker does, the row reports the prefill it runs at admission.
+    session.watch_progress(2, samples.append)
+    session.admit({"messages": messages, "image": image}, 2)
+    assert [sample["prompt_progress"]["processed"] for sample in samples] == [3]
     session.close()
 
 
@@ -9243,7 +9257,7 @@ def _open_vision_session(rows):
     session._rows = {row.handle: row for row in rows}
     session._by_row, session._settled = {row.row: row for row in rows}, {}
     session._speculative, session._decodes_ids = None, False
-    session._retires_rows, session._leaving = False, set()
+    session._retires_rows, session._leaving, session._watching = False, set(), {}
     return session
 
 
@@ -9578,9 +9592,21 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: len(added))
 
     session._retires_rows = True
+    samples = []
+    session.watch_progress(
+        "text", samples.append
+    )  # before admission: a speculative row prefills in add()
     session.admit({"generation_progress": True}, "text")
     assert added[0].prompt_cache_state._store is store and len(store) == 2
-    assert callable(added[0].prompt_progress) and session._rows["text"].admitted_at == 1
+    assert session._rows["text"].admitted_at == 1
+    added[0].prompt_progress(2, 5, 3)
+    assert samples[0]["prompt_progress"] | {"time_ms": 0} == {
+        "processed": 5,
+        "total": 8,
+        "cache": 3,
+        "time_ms": 0,
+    }
+    session._rows["text"].live = None
     alone = added[0].prompt_cache_state._alone
     assert alone()
     backend._model = SimpleNamespace(config = SimpleNamespace(image_token_id = 9))
@@ -9626,9 +9652,17 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
         session.admit({}, "unquantized")
     session._resumes_rows, session._speculative = True, "draft"
     backend._vlm_prompt_cache_store = lambda: None
-    session.admit({"images": [object()], "generation_progress": True}, "quantized")
-    assert added[5].prompt_cache_state._store is None
-    assert not hasattr(added[5], "prompt_progress")
+    # A speculative row reports only where unsloth-zoo can report its prefill.
+    for gap in ("old zoo", None):
+        monkeypatch.setattr(
+            engine,
+            "speculative_prompt_progress_unavailable_reason",
+            lambda gap = gap: gap,
+            raising = False,
+        )
+        session.admit({"images": [object()], "generation_progress": True}, gap)
+        assert added[-1].prompt_cache_state._store is None
+        assert hasattr(added[-1], "prompt_progress") == (gap is None)
 
 
 def _batch_engine(monkeypatch):
@@ -11784,7 +11818,7 @@ def test_a_drafted_batch_row_decodes_its_own_clip_and_resumes_no_cache(monkeypat
     session.stream = SimpleNamespace(add = lambda request: added.append(request) or 0)
     session._adapter_state, session._decodes_ids, session._resumes_rows = None, False, True
     session._retires_rows, session._speculative, session._held = False, object(), ExitStack()
-    session._rows, session._by_row = {}, {}
+    session._rows, session._by_row, session._watching = {}, {}, {}
     session.admit({}, 0)
     assert added[0]["videos"] == ["clip.mp4"] and added[0]["fps"] == 2.0
     assert "prompt_cache_state" not in added[0] and released == [True]

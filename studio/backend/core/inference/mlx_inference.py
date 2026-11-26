@@ -5535,6 +5535,7 @@ class _TextBatchSession:
         self._rows = {}
         self._by_uid = {}
         self._settled = {}
+        self._watching = {}
         self._held = ExitStack()
         try:
             if owns_model:
@@ -5574,14 +5575,17 @@ class _TextBatchSession:
         return self._settled.pop(handle, None)
 
     def watch_progress(self, handle, sink):
-        """Send an admitted reply's live progress to ``sink``, as ``generation_progress_sink``."""
+        """Send a reply's live progress to ``sink``, as ``generation_progress_sink``; from its admission if not yet admitted."""
         row = self._rows.get(handle)
-        if row is not None:
+        if row is None:
+            self._watching[handle] = sink
+        else:
             row.live = _LiveProgress(sink, row.cached)
 
     def admit(self, request, handle):
         """Take one reply in, answering with the text preceding its first token."""
         backend = self.backend
+        sink = self._watching.pop(handle, None)
         image = request.get("image") if backend._reads_vision_input() else None
         messages = request.get("messages") or []
         row_kwargs = _row_kwargs(request)
@@ -5606,6 +5610,11 @@ class _TextBatchSession:
 
             # mlx-lm batches token ids only: the image prefills here, and stays out of the token-keyed cache.
             cache = backend._make_row_cache()
+            live = None if sink is None else _LiveProgress(sink)
+            reports = (
+                live is not None
+                and "progress" in inspect.signature(prefill_image_prompt).parameters
+            )
             all_tokens = prefill_image_prompt(
                 backend._model,
                 backend._tokenizer,
@@ -5613,6 +5622,15 @@ class _TextBatchSession:
                 [image],
                 cache,
                 **backend._prefill_step_kwargs(prefill_image_prompt),
+                **(
+                    {
+                        "progress": lambda done, total, cached: live.prefill(
+                            done, total, began, cached
+                        )
+                    }
+                    if reports
+                    else {}
+                ),
             )
             prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
             if row_kwargs["max_new_tokens"] is None:
@@ -5630,7 +5648,9 @@ class _TextBatchSession:
             prefills_in_batch = image is None,
         )
         if image is not None:
-            row.processing_at = began
+            row.processing_at, row.live = began, live
+        elif sink is not None:
+            row.live = _LiveProgress(sink, row.cached)
         uids = self.generator.insert(
             [remainder],
             max_tokens = [plan.max_tokens],
@@ -5877,6 +5897,14 @@ def _row_retire_gap():
     return row_retire_unavailable_reason()
 
 
+def _speculative_progress_gap():
+    try:
+        from unsloth_zoo.mlx.generate import speculative_prompt_progress_unavailable_reason
+    except ImportError:
+        return "the installed unsloth-zoo reports no prefill for a speculative row"
+    return speculative_prompt_progress_unavailable_reason()
+
+
 def _speculative_quantized_row_gap():
     try:
         from unsloth_zoo.mlx.generate import speculative_quantized_rows_unavailable_reason
@@ -5912,6 +5940,7 @@ class _VisionBatchSession:
         self._leaving = set()
         self._by_row = {}
         self._settled = {}
+        self._watching = {}
         self._held = ExitStack()
         try:
             if owns_model:
@@ -5962,8 +5991,11 @@ class _VisionBatchSession:
         )
 
         backend = self.backend
+        sink = self._watching.pop(handle, None)
         plan = backend._plan_vlm_request(request, decodes_ids = self._decodes_ids)
         row = _VisionBatchRow(handle = handle, plan = plan)
+        if sink is not None:
+            row.live = _LiveProgress(sink)
         alone = self._alone(handle) if self._retires_rows else None
         # A clip's row resumes nothing: token ids do not vary with the clip.
         state = (
@@ -5982,10 +6014,10 @@ class _VisionBatchSession:
         # Only a reply that asked: a reporting row waits for each of its chunks to run.
         if (
             request.get("generation_progress")
-            and self._speculative is None
+            and (self._speculative is None or _speculative_progress_gap() is None)
             and "prompt_progress" in getattr(GenerationRequest, "__dataclass_fields__", ())
         ):
-            options["prompt_progress"] = functools.partial(self._prefilled, handle)
+            options["prompt_progress"] = functools.partial(self._prefilled, row)
         clips = _batch_clips(self._held, [plan], backend._processor)[0] if plan.videos else {}
         admitted_at = time.perf_counter()
         try:
@@ -6022,14 +6054,17 @@ class _VisionBatchSession:
         return lambda: all(other == handle for other in (*rows, *leaving))
 
     def watch_progress(self, handle, sink):
-        """Send an admitted reply's live progress to ``sink``, as ``generation_progress_sink``."""
+        """Send a reply's live progress to ``sink``, as ``generation_progress_sink``; from its admission if not yet admitted."""
         row = self._rows.get(handle)
-        if row is not None:
+        if row is None:
+            self._watching[handle] = sink
+        else:
             row.live = _LiveProgress(sink)
 
-    def _prefilled(self, handle, processed, total, cached):
-        row = self._rows.get(handle)
-        if row is not None and row.live is not None:
+    @staticmethod
+    def _prefilled(row, processed, total, cached):
+        # A speculative row prefills inside stream.add(), before it is registered.
+        if row.live is not None:
             row.live.prefill(processed, total, cached = cached)
 
     def step(self, waiting = None):
