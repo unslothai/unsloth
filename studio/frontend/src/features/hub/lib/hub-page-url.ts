@@ -5,16 +5,22 @@ import { useEffect } from "react";
 import { loadHubSettings } from "@/features/settings/api/hub-settings";
 import { setHubPageBase, useHubWebUrl, useMissingHubPageBase } from "@/lib/hf-endpoint";
 
-const asked = new Set<string>();
+// Per endpoint: the store holds one base, so switching back to a mirror reapplies its answer.
+const answers = new Map<string, string | null>();
 
 /** `/api/health` hides an endpoint saved in Settings; the owner route names it where this browser
  * can reach it. Others keep the relay. */
 async function loadSavedPageBase(endpoint: string): Promise<void> {
-  if (asked.has(endpoint)) return;
-  asked.add(endpoint);
+  if (answers.has(endpoint)) {
+    const known = answers.get(endpoint);
+    if (known) setHubPageBase(endpoint, known);
+    return;
+  }
+  answers.set(endpoint, null);
   try {
-    const settings = await loadHubSettings();
-    if (settings.pageBase) setHubPageBase(endpoint, settings.pageBase);
+    const { pageBase } = await loadHubSettings();
+    answers.set(endpoint, pageBase);
+    if (pageBase) setHubPageBase(endpoint, pageBase);
   } catch {
     // Not the owner, or offline: the relay URL still redirects for a local browser.
   }
