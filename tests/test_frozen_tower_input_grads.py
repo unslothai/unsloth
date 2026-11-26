@@ -180,7 +180,6 @@ def test_compiled_hook_keeps_the_flag_for_a_tower_unfrozen_later():
 
 
 def test_keep_frozen_towers_env_is_read_per_call(monkeypatch):
-    # Set after `import unsloth`: still applies, since enable_input_require_grads reads it per call.
     monkeypatch.setenv("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "1")
     model, _ = _model()
     tower = [

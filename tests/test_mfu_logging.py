@@ -468,7 +468,6 @@ def test_runs_unsloth_head_window_follows_the_pre_patch_gate():
     gated = type("Gated", (cls,), {})
     gated.forward = _gated_method(gated, "forward", fast, cls.forward)
     model.__class__ = gated
-    # The gate carries fast's __module__ but runs the original forward on unmarked modules.
     assert not mfu._runs_unsloth_head_window(model)
     model._unsloth_fast_path = True
     assert mfu._runs_unsloth_head_window(model)

@@ -302,7 +302,7 @@ def _runs_unsloth_head_window(model):
     get_base_model = getattr(model, "get_base_model", None)
     base = get_base_model() if callable(get_base_model) else model
     # pre_patch's gate keeps the fast forward's __module__ but runs it only on marked modules.
-    llama = sys.modules.get("unsloth.models.llama")  # the gate exists only once it is imported
+    llama = sys.modules.get("unsloth.models.llama")
     running_forward = getattr(llama, "running_forward", None)
     if running_forward is not None:
         forward = running_forward(base)
