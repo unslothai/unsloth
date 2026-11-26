@@ -26,6 +26,7 @@ from core.training.diffusion_train_common import (
     write_resume_checkpoint,
 )
 from routes.training import router as training_router
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 
 def _identity(**overrides) -> dc.CheckpointIdentity:
@@ -524,7 +525,7 @@ def test_torch_rng_state_is_restored(run_dir):
     assert torch.equal(torch.randn(8), expected)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes AdamW8bit needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "bitsandbytes AdamW8bit needs CUDA or XPU")
 def test_bitsandbytes_adamw8bit_state_round_trips(run_dir):
     # Default optimizer is bnb AdamW8bit: its quantized uint8 moments must round-trip exactly.
     bnb = pytest.importorskip("bitsandbytes")
@@ -534,7 +535,7 @@ def test_bitsandbytes_adamw8bit_state_round_trips(run_dir):
 
     torch.manual_seed(0)
     # Above bnb min_8bit_size (4096), else moments are plain fp32 and nothing quantized is saved.
-    param = torch.nn.Parameter(torch.randn(128, 64, device = "cuda"))
+    param = torch.nn.Parameter(torch.randn(128, 64, device = accelerator_device_type()))
     optimizer = bnb.optim.AdamW8bit([param], lr = 1e-3)
     for i in range(4):
         param.grad = torch.full_like(param, 0.01 * (i + 1))

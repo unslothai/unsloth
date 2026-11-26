@@ -14,8 +14,14 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)
 from unsloth.models import llama as llama_module
+
+DEVICE = accelerator_device_type()
 
 # gemma.py, qwen2.py and the vision/MoE loaders reuse LlamaAttention_fast_forward, so the
 # llama row covers them.
@@ -195,17 +201,17 @@ def _plain_model_dtype() -> "torch.dtype":
     if forced == "bfloat16":
         return torch.bfloat16
     try:
-        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        return torch.bfloat16 if accelerator_module().is_bf16_supported() else torch.float16
     except Exception:
         return torch.float16
 
 
-# has_real_cuda(), not torch.cuda.is_available(): the zoo CUDA spoof patches the latter True
+# has_real_cuda_or_xpu(), not torch.cuda.is_available(): the zoo CUDA spoof patches the latter True
 # process-wide. Enforced by tests/python/test_accelerator_skip_guards.py.
 @pytest.mark.gpu
 @pytest.mark.skipif(
-    not has_real_cuda(),
-    reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
+    not has_real_cuda_or_xpu(),
+    reason = "loads a real checkpoint through FastLanguageModel; needs a CUDA or XPU accelerator",
 )
 def test_apply_qkv_fallback_end_to_end():
     """unsloth#1713 as reported: load with unsloth, then build a plain transformers model of
@@ -238,13 +244,13 @@ def test_apply_qkv_fallback_end_to_end():
     except TypeError:
         # transformers 4.x spelling, before `dtype` became the keyword name.
         plain = AutoModelForCausalLM.from_config(config, torch_dtype = dtype)
-    plain = plain.to("cuda").eval()
+    plain = plain.to(DEVICE).eval()
     assert next(plain.parameters()).dtype is dtype
     for layer in plain.model.layers:
         assert not hasattr(layer.self_attn, "apply_qkv")
 
     with torch.no_grad():
-        out = plain(input_ids = torch.randint(0, 128, (1, 8), device = "cuda"))
+        out = plain(input_ids = torch.randint(0, 128, (1, 8), device = DEVICE))
     assert out.logits.shape == (1, 8, config.vocab_size)
 
     from unsloth.kernels import apply_lora_o, apply_lora_qkv

@@ -8,7 +8,7 @@ import sys
 import types
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 
 def test_compiled_classes_are_swapped_back_for_the_fast_patcher(monkeypatch):
@@ -71,7 +71,9 @@ def test_pre_patch_changes_are_recorded_once_and_undone_for_the_compiler(monkeyp
     assert modeling.FakeRotary is rotary
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "FastModel / FastLanguageModel loads need CUDA")
+@pytest.mark.skipif(
+    not has_real_cuda_or_xpu(), reason = "FastModel / FastLanguageModel loads need CUDA or XPU"
+)
 @pytest.mark.parametrize("order", ["FastModel,FastLanguageModel", "FastLanguageModel,FastModel"])
 def test_both_loaders_on_the_same_family_in_one_process(tmp_path, order):
     """Subprocess: both loaders patch the Llama classes process-wide."""
@@ -91,7 +93,7 @@ config = LlamaConfig(vocab_size = len(vocab), hidden_size = 64, intermediate_siz
 path = {str(tmp_path / "tiny")!r}
 LlamaForCausalLM(config).save_pretrained(path)
 tok.save_pretrained(path)
-x = {{"input_ids": torch.tensor([[1, 5, 6, 7]], device = "cuda")}}
+x = {{"input_ids": torch.tensor([[1, 5, 6, 7]], device = {accelerator_device_type()!r})}}
 kwargs = {{"FastModel": dict(load_in_16bit = True), "FastLanguageModel": dict()}}
 loaders = {{"FastModel": FastModel, "FastLanguageModel": FastLanguageModel}}
 for name in {order!r}.split(","):

@@ -9,12 +9,14 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a real CUDA or XPU device"),
 ]
+
+DEVICE = accelerator_device_type()
 
 H, I = 64, 128
 
@@ -48,7 +50,7 @@ def _peft_block(adapters, lora_bias = False):
     if adapters > 1:
         model.add_adapter("b", cfg(3))
         model.base_model.set_adapter(["a", "b"])
-    model = model.to("cuda", torch.bfloat16)
+    model = model.to(DEVICE, torch.bfloat16)
     for name, p in model.named_parameters():
         p.requires_grad_("lora_" in name)
     if lora_bias:
@@ -67,7 +69,7 @@ def _lora_b_grads(model):
 
 
 def _check(fast, ref, model):
-    X = torch.randn(2, 5, H, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(2, 5, H, device = DEVICE, dtype = torch.bfloat16)
     out = fast(X.clone())  # the fused kernels may write into X
     sum(o.float().sum() for o in (out if isinstance(out, tuple) else (out,))).backward()
     fast_grads = _lora_b_grads(model)
@@ -137,7 +139,7 @@ def test_qkv_o_mlp_match_peft_with_active_dora_adapter():
     )
     model.add_adapter("b", cfg)
     model.base_model.set_adapter("b")
-    model = model.to("cuda", torch.bfloat16)
+    model = model.to(DEVICE, torch.bfloat16)
     for name, p in model.named_parameters():
         p.requires_grad_("lora_" in name)
     with torch.no_grad():
@@ -162,9 +164,9 @@ def test_fast_linear_forward_decode_matches_peft(adapters):
     from unsloth.kernels import fast_linear_forward
 
     _, block = _peft_block(adapters)
-    X = torch.randn(1, 1, H, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(1, 1, H, device = DEVICE, dtype = torch.bfloat16)
     with torch.no_grad():
-        out = torch.empty(1, 1, H, device = "cuda", dtype = torch.bfloat16)
+        out = torch.empty(1, 1, H, device = DEVICE, dtype = torch.bfloat16)
         got = fast_linear_forward(block.q_proj, X, out = out)
         torch.testing.assert_close(got, block.q_proj(X), rtol = 2e-2, atol = 2e-2)
         assert got.data_ptr() == out.data_ptr()
@@ -179,8 +181,8 @@ def test_fast_linear_forward_applies_dora_magnitude(q_len):
     cfg = LoraConfig(
         r = 4, lora_alpha = 8, target_modules = ["q_proj"], init_lora_weights = False, use_dora = True
     )
-    block = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16).base_model.model
-    X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
+    block = get_peft_model(_Block(), cfg).to(DEVICE, torch.bfloat16).base_model.model
+    X = torch.randn(1, q_len, H, device = DEVICE, dtype = torch.bfloat16)
     with torch.no_grad():
         # a trained magnitude differs from the initial DoRA row norms
         block.q_proj.lora_magnitude_vector["default"].weight.mul_(1.5)
@@ -198,8 +200,8 @@ def test_fast_linear_forward_adds_lora_bias(q_len):
     cfg = LoraConfig(
         r = 4, lora_alpha = 8, target_modules = ["q_proj"], init_lora_weights = False, lora_bias = True
     )
-    block = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16).base_model.model
-    X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
+    block = get_peft_model(_Block(), cfg).to(DEVICE, torch.bfloat16).base_model.model
+    X = torch.randn(1, q_len, H, device = DEVICE, dtype = torch.bfloat16)
     with torch.no_grad():
         # a trained lora_B bias differs from its zero initialization
         block.q_proj.lora_B["default"].bias.normal_()

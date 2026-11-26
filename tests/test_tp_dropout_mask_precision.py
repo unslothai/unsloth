@@ -17,11 +17,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from real_accelerator import has_real_cuda  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 from test_tp_native_oracle import tpn  # noqa: E402  (tp_native without the GPU-only unsloth import)
 
 TP = 2
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+DEVICE = accelerator_device_type()
 
 
 def _bits(t):
@@ -101,10 +102,10 @@ def test_tp_dropout_slices_round_as_one_process(device, dtype, p, path):
         _assert_bitwise(dx, dx_ref[..., cols], f"{path} rank {rank} input grad")
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA native_dropout rounding")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA / XPU native_dropout rounding")
 def test_bf16_p025_example_rounds_in_accumulator_precision():
     # 1.015625 / 0.75 in fp32 rounds to 1.3515625 in bf16; with 1 / 0.75 first rounded to bf16 it is 1.359375.
-    x = torch.full((1, 64), 1.015625, dtype = torch.bfloat16, device = "cuda")
-    mask = torch.ones(1, 64, dtype = torch.bool, device = "cuda")
+    x = torch.full((1, 64), 1.015625, dtype = torch.bfloat16, device = DEVICE)
+    mask = torch.ones(1, 64, dtype = torch.bool, device = DEVICE)
     y = tpn._apply_mask(x, mask, 0.25)
     assert y.unique().tolist() == [1.3515625]

@@ -24,6 +24,7 @@ from core.inference.diffusion_memory import (
     torchao_offload_plan,
     torchao_survives_plan,
 )
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 T017, T018, T016 = (0, 17), (0, 18), (0, 16)
 
@@ -577,8 +578,8 @@ def test_older_torchao_streamed_seeds(planner, monkeypatch, version, expected):
 
 def _gpu_stack():
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("needs CUDA")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU")
     pytest.importorskip("torchao")
     hooks = pytest.importorskip("diffusers.hooks")
     return torch, hooks
@@ -601,7 +602,9 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
         quantize_,
     )
 
-    if scheme == "fp8" and torch.cuda.get_device_capability() < (8, 9):
+    dev = accelerator_device_type()
+    # sm_89 is a CUDA bound; torchao's fp8 hardware check accepts XPU directly.
+    if scheme == "fp8" and dev == "cuda" and torch.cuda.get_device_capability() < (8, 9):
         pytest.skip("fp8 needs sm_89+")
     torch.manual_seed(0)
     blocks = torch.nn.Sequential(
@@ -620,12 +623,12 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
     offloaded = copy.deepcopy(blocks)
     quantize_(offloaded, config())
     # Same CPU-quantised weights: fp8 quantised on CPU can be an ulp off CUDA (torch 2.12).
-    resident = copy.deepcopy(offloaded).cuda()
+    resident = copy.deepcopy(offloaded).to(dev)
     for param in offloaded.parameters():
         param.requires_grad_(requires_grad)
     params = inspect.signature(hooks.apply_group_offloading).parameters
     kwargs = {
-        "onload_device": torch.device("cuda"),
+        "onload_device": torch.device(dev),
         "offload_device": torch.device("cpu"),
         "offload_type": "block_level",
         "num_blocks_per_group": 1,
@@ -639,7 +642,7 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
         if name in params:
             kwargs[name] = value
     hooks.apply_group_offloading(offloaded, **mem._torchao_group_offload_kwargs(offloaded, kwargs))
-    x = torch.randn(2, 16, 256, dtype = torch.bfloat16, device = "cuda")
+    x = torch.randn(2, 16, 256, dtype = torch.bfloat16, device = dev)
     with torch.no_grad():
         want = resident(x)
         for _ in range(3):

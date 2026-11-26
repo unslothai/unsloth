@@ -7,16 +7,21 @@ import types
 import pytest
 import torch
 
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu
 
-if not has_real_cuda():
-    pytest.skip("needs a CUDA device", allow_module_level = True)
+if not has_real_cuda_or_xpu():
+    pytest.skip("needs a CUDA or XPU device", allow_module_level = True)
 
 import unsloth  # noqa: F401
 import unsloth.models._utils as U
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
+DEVICE = accelerator_device_type()
+
 B, H, KV, T, D = 2, 8, 2, 256, 64
+
+# CPU-only bodies (no device work) keep the original CUDA gate rather than running on XPU.
+needs_cuda = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 
 
 class Causal(torch.nn.Module):
@@ -28,12 +33,13 @@ class Causal(torch.nn.Module):
 @pytest.fixture
 def qkv():
     torch.manual_seed(0)
-    q = torch.randn(B, H, T, D, device = "cuda", dtype = torch.bfloat16)
-    k = torch.randn(B, KV, T, D, device = "cuda", dtype = torch.bfloat16)
-    v = torch.randn(B, KV, T, D, device = "cuda", dtype = torch.bfloat16)
+    q = torch.randn(B, H, T, D, device = DEVICE, dtype = torch.bfloat16)
+    k = torch.randn(B, KV, T, D, device = DEVICE, dtype = torch.bfloat16)
+    v = torch.randn(B, KV, T, D, device = DEVICE, dtype = torch.bfloat16)
     return q, k, v
 
 
+@needs_cuda
 def test_the_wrapper_advertises_the_reroute():
     U.patch_flex_attention_kernel_options()
     function = ALL_ATTENTION_FUNCTIONS["flex_attention"]
@@ -86,9 +92,9 @@ def test_a_dropped_mask_that_stays_on_flex_is_still_causal(case):
     # Never hand flex a None mask for a causal call: it would attend to future tokens.
     torch.manual_seed(0)
     head_dim = 512 if case == "head_dim_512" else D
-    q = torch.randn(1, H, 128, head_dim, device = "cuda", dtype = torch.bfloat16)
-    k = torch.randn(1, KV, 128, head_dim, device = "cuda", dtype = torch.bfloat16)
-    v = torch.randn(1, KV, 128, head_dim, device = "cuda", dtype = torch.bfloat16)
+    q = torch.randn(1, H, 128, head_dim, device = DEVICE, dtype = torch.bfloat16)
+    k = torch.randn(1, KV, 128, head_dim, device = DEVICE, dtype = torch.bfloat16)
+    v = torch.randn(1, KV, 128, head_dim, device = DEVICE, dtype = torch.bfloat16)
     kwargs = {"softcap": 1e4} if case == "softcap" else {}  # a softcap this large is a no-op
     before = dict(U.FLEX_MASKLESS_SDPA_STATS)
     out, _ = _flex()(Causal(), q, k, v, None, scaling = head_dim**-0.5, **kwargs)
@@ -124,11 +130,11 @@ def test_everything_else_stays_on_flex(qkv, case):
     q, k, v = qkv
     module, args, kwargs = Causal(), (None,), {}
     if case == "mask":
-        args = (torch.ones(B, 1, T, T, device = "cuda", dtype = torch.bool),)
+        args = (torch.ones(B, 1, T, T, device = DEVICE, dtype = torch.bool),)
     if case == "softcap":
         kwargs = {"softcap": 30.0}
     if case == "s_aux":
-        kwargs = {"s_aux": torch.zeros(H, device = "cuda")}
+        kwargs = {"s_aux": torch.zeros(H, device = DEVICE)}
     if case == "not_causal":
         module.is_causal = False
     if case == "no_is_causal":
@@ -136,7 +142,7 @@ def test_everything_else_stays_on_flex(qkv, case):
     if case == "is_causal_false":
         kwargs = {"is_causal": False}  # per-call bidirectional override
     if case == "head_dim_512":
-        q, k, v = (torch.randn(*t.shape[:3], 512, device = "cuda", dtype = t.dtype) for t in (q, k, v))
+        q, k, v = (torch.randn(*t.shape[:3], 512, device = DEVICE, dtype = t.dtype) for t in (q, k, v))
     if case == "decode":
         q = q[:, :, :1]
     if case == "cache":
@@ -147,7 +153,7 @@ def test_everything_else_stays_on_flex(qkv, case):
 
 
 def _softcap_call(T, requires_grad = False):
-    q, k, v = (torch.randn(1, n, T, D, device = "cuda", dtype = torch.bfloat16) for n in (H, KV, KV))
+    q, k, v = (torch.randn(1, n, T, D, device = DEVICE, dtype = torch.bfloat16) for n in (H, KV, KV))
     q.requires_grad_(requires_grad)
     return _flex()(Causal(), q, k, v, None, scaling = D**-0.5, softcap = 1e4), q
 
@@ -168,6 +174,7 @@ def test_the_fallback_mask_cache_is_bounded():
     assert 0 < len(U._CAUSAL_BLOCK_MASKS) <= 8
 
 
+@needs_cuda
 def test_the_wrapper_vetoes_configs_whose_layers_cannot_take_sdpa():
     from transformers import Gemma2Config, Gemma3TextConfig, LlamaConfig, Qwen3Config
 
@@ -178,6 +185,7 @@ def test_the_wrapper_vetoes_configs_whose_layers_cannot_take_sdpa():
     assert not accepts(Gemma2Config())  # softcap
 
 
+@needs_cuda
 def test_a_class_level_sdpa_opt_out_keeps_the_mask():
     from transformers import LlamaConfig, LlamaForCausalLM
 

@@ -18,6 +18,7 @@ torch = pytest.importorskip("torch")
 safetensors_torch = pytest.importorskip("safetensors.torch")
 
 from core.inference import video_minimax_h3_pdd as pdd  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 
 HEADS = 32
 VIDEO_DIM = 96
@@ -623,19 +624,27 @@ def _cuda():
         pytest.skip("needs CUDA")
 
 
+DEVICE = accelerator_device_type()
+
+
+def _gpu():
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU")
+
+
 def test_the_bank_compiles_with_inductor_on_cuda_and_tracks_every_step():
     _cuda()
     import torch._dynamo as dynamo
 
     dynamo.reset()
     dynamo.utils.counters.clear()
-    bank = _bank().cuda()
-    h = torch.randn(5, 24, device = "cuda")
+    bank = _bank().to(DEVICE)
+    h = torch.randn(5, 24, device = DEVICE)
     sigmas = h3_sigmas(8)
     compiled = torch.compile(bank, fullgraph = True)
     with torch.no_grad():
         for i in range(8):
-            bank.set_state(_state(sigmas[i], sigmas[i + 1], device = "cuda")[:2])
+            bank.set_state(_state(sigmas[i], sigmas[i + 1], device = DEVICE)[:2])
             ref = comfy_pdd_head(
                 bank.weight.cpu(),
                 bank.bias.cpu(),
@@ -684,13 +693,13 @@ def test_a_cuda_graph_of_the_denoiser_replays_with_changing_sigmas(monkeypatch):
 
 
 def test_the_denoiser_under_group_offload_matches_resident():
-    _cuda()
-    resident = _tiny(device = "cuda")
+    _gpu()
+    resident = _tiny(device = DEVICE)
     sigmas = _bound(resident)
     ref = []
     with torch.no_grad():
         for i in range(8):
-            ref.append(resident(**_inputs("cuda", 1.0 - float(sigmas[i]))))
+            ref.append(resident(**_inputs(DEVICE, 1.0 - float(sigmas[i]))))
     for kind in ("leaf_level", "block_level"):
         model = _tiny()
         _bound(model)
@@ -701,7 +710,7 @@ def test_the_denoiser_under_group_offload_matches_resident():
             else {}
         )
         model.enable_group_offload(
-            torch.device("cuda"),
+            torch.device(DEVICE),
             offload_device = torch.device("cpu"),
             offload_type = kind,
             use_stream = True,
@@ -709,7 +718,7 @@ def test_the_denoiser_under_group_offload_matches_resident():
         )
         with torch.no_grad():
             for i in range(8):
-                out = model(**_inputs("cuda", 1.0 - float(sigmas[i])))
+                out = model(**_inputs(DEVICE, 1.0 - float(sigmas[i])))
                 assert (out[0] - ref[i][0]).abs().max() < 1e-5, (kind, i)
                 assert (out[1] - ref[i][1]).abs().max() < 1e-5, (kind, i)
 
@@ -765,16 +774,16 @@ def test_studio_regional_fullgraph_compile_keeps_the_pdd_hook_eager():
 
 
 def test_the_denoiser_under_model_cpu_offload_matches_resident():
-    _cuda()
+    _gpu()
     accelerate = pytest.importorskip("accelerate")
-    resident = _tiny(device = "cuda")
+    resident = _tiny(device = DEVICE)
     sigmas = _bound(resident)
     model = _tiny()
     _bound(model)
-    model, hook = accelerate.cpu_offload_with_hook(model, execution_device = torch.device("cuda"))
+    model, hook = accelerate.cpu_offload_with_hook(model, execution_device = torch.device(DEVICE))
     with torch.no_grad():
         for i in range(8):
-            kw = _inputs("cuda", 1.0 - float(sigmas[i]))
+            kw = _inputs(DEVICE, 1.0 - float(sigmas[i]))
             out, ref = model(**kw), resident(**kw)
             assert (out[0] - ref[0]).abs().max() < 1e-5 and (out[1] - ref[1]).abs().max() < 1e-5, i
             hook.offload()
@@ -871,7 +880,7 @@ def test_an_unreadable_xpu_counts_as_without_fp64(monkeypatch):
 
 def test_the_denoiser_never_puts_float64_on_a_device_without_it(monkeypatch):
     """CUDA spoofed as an fp64-less XPU (float64 on it raises like Arc A-series): the blend still matches every step."""
-    _cuda()
+    _gpu()
     from torch.utils._python_dispatch import TorchDispatchMode
     from torch.utils._pytree import tree_flatten
 
@@ -885,24 +894,25 @@ def test_the_denoiser_never_puts_float64_on_a_device_without_it(monkeypatch):
         ):
             out = func(*args, **(kwargs or {}))
             for t in tree_flatten((args, kwargs, out))[0]:
-                if isinstance(t, torch.Tensor) and t.dtype == torch.float64 and t.is_cuda:
+                on_device = isinstance(t, torch.Tensor) and t.device.type == DEVICE
+                if on_device and t.dtype == torch.float64:
                     raise RuntimeError(
                         f"Required aspect fp64 is not supported on the device ({func})"
                     )
             return out
 
     monkeypatch.setattr(
-        pdd, "device_has_fp64", lambda d: getattr(d, "type", d) != "cuda", raising = False
+        pdd, "device_has_fp64", lambda d: getattr(d, "type", d) != DEVICE, raising = False
     )
-    model = _tiny(device = "cuda")
+    model = _tiny(device = DEVICE)
     sigmas = _bound(model)
     for i in range(8):
-        kw = _inputs("cuda", 1.0 - float(sigmas[i]), seed = i)
+        kw = _inputs(DEVICE, 1.0 - float(sigmas[i]), seed = i)
         with _NoDeviceFp64():
             _out, seen = _run_and_capture(model, kw)
         state = model.proj_out.pdd_state
         assert state.device.type == "cpu" and state.dtype == torch.float64
         assert abs(float(state[0]) - float(sigmas[i])) < 1e-6
         assert float(state[1]) == float(sigmas[i + 1])
-        assert seen["video"][1].is_cuda
+        assert seen["video"][1].device.type == DEVICE
         _check_step(model, seen, sigmas, i)

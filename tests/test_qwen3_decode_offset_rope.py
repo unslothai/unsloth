@@ -14,9 +14,13 @@ import sys
 import textwrap
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+pytestmark = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 
 MODEL = "trl-internal-testing/tiny-Qwen3ForCausalLM"  # max_position_embeddings 40960
 
@@ -28,11 +32,12 @@ SCRIPT = textwrap.dedent(
     import torch
 
     pos = int(sys.argv[2])
+    device = sys.argv[3]
     model, _ = FastLanguageModel.from_pretrained(
         sys.argv[1], max_seq_length = 2048, load_in_4bit = False, dtype = torch.float16
     )
     FastLanguageModel.for_inference(model)
-    ids = torch.tensor([[1, 2, 3, 4]], device = "cuda")
+    ids = torch.tensor([[1, 2, 3, 4]], device = device)
 
     def logits(out):
         return out.logits if hasattr(out, "logits") else out[0]
@@ -43,14 +48,14 @@ SCRIPT = textwrap.dedent(
             out = model(
                 input_ids = ids[:, :1],
                 past_key_values = out.past_key_values,
-                position_ids = torch.tensor([[pos]], device = "cuda"),
+                position_ids = torch.tensor([[pos]], device = device),
                 use_cache = True,
             )
-        torch.cuda.synchronize()
+        getattr(torch, device).synchronize()
         return logits(out).float()
 
     lazy = decode(None)
-    full = decode(torch.arange(4, device = "cuda")[None])
+    full = decode(torch.arange(4, device = device)[None])
     assert torch.isfinite(lazy).all()
     torch.testing.assert_close(lazy, full, rtol = 0, atol = 0)
     print("OK")
@@ -66,7 +71,7 @@ def test_qwen3_decode_reads_rows_past_the_lazy_prefill_cache(tmp_path):
     env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
     env.setdefault("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "unsloth_compiled_cache"))
     result = subprocess.run(
-        [sys.executable, str(script), MODEL, "35000"],
+        [sys.executable, str(script), MODEL, "35000", accelerator_device_type()],
         capture_output = True,
         text = True,
         env = env,

@@ -20,11 +20,17 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 from unsloth.kernels import fast_lora
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fused_lora_dropout_bias import H, PATHS, TARGETS, _Block, _peft_block, _Spy  # noqa: E402
+
+DEVICE = accelerator_device_type()
 
 CONFIGS = [(0.0, False), (0.3, False), (0.0, True), (0.3, True)]
 
@@ -165,7 +171,7 @@ def test_trainable_base_weight_gets_its_gradient(
     assert any("base_layer.weight" in name for name in ref[2])
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA autocast")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU autocast")
 @pytest.mark.parametrize("path", _paths("cuda"))
 @pytest.mark.parametrize("dropout,lora_bias", CONFIGS)
 @pytest.mark.parametrize(
@@ -179,8 +185,8 @@ def test_trainable_base_weight_gets_its_gradient(
 def test_autocast_dtype_other_than_input_runs_peft(
     monkeypatch, path, dropout, lora_bias, x_dtype, autocast_dtype
 ):
-    model, block = _peft_block("cuda", torch.bfloat16, dropout, lora_bias)
-    X0 = torch.randn(2, 5, H, device = "cuda", dtype = x_dtype)
+    model, block = _peft_block(DEVICE, torch.bfloat16, dropout, lora_bias)
+    X0 = torch.randn(2, 5, H, device = DEVICE, dtype = x_dtype)
     _assert_falls_back_to_peft(monkeypatch, model, block, path, X0, autocast_dtype)
 
 
@@ -261,7 +267,7 @@ def _dequantize_then_linear(self, x):
     return torch.nn.functional.linear(x, W.to(x.dtype))
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "bitsandbytes 4-bit needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "bitsandbytes 4-bit needs CUDA or XPU")
 @pytest.mark.parametrize("path", _paths("cuda"))
 def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, path):
     bnb = pytest.importorskip("bitsandbytes")
@@ -289,7 +295,7 @@ def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, pat
             self.act_fn = torch.nn.SiLU()
 
     torch.manual_seed(3407)
-    base = _Block4bit().to("cuda")
+    base = _Block4bit().to(DEVICE)
     cfg = LoraConfig(
         r = 4, lora_alpha = 8, lora_dropout = 0.1, target_modules = TARGETS, init_lora_weights = False
     )
@@ -301,7 +307,7 @@ def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, pat
     assert getattr(block.o_proj.base_layer.weight, "quant_state", None) is not None
     model.train()
     model.base_model.disable_adapter_layers()
-    X = torch.randn(2, 7, H, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(2, 7, H, device = DEVICE, dtype = torch.bfloat16)
     spy = _Spy(monkeypatch)
     with torch.no_grad():
         fused = PATHS[path][0](block)(X)

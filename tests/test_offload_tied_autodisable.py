@@ -14,11 +14,13 @@ import ast, os, types
 from contextlib import contextmanager
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 # importorskip so a host without torch skips this module instead of aborting collection.
 torch = pytest.importorskip("torch")
 nn = pytest.importorskip("torch.nn")
+
+DEVICE = accelerator_device_type()
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
@@ -403,20 +405,20 @@ def _spare_ns():
     return ns, moved
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a card to offload from")
 def test_tied_model_still_offloads_its_per_layer_table():
     ns, moved = _spare_ns()
-    model = _PerLayerModel("cuda")
+    model = _PerLayerModel(DEVICE)
     model.requires_grad_(False)
     with _as_platform("posix"):
         assert ns["offload_spare_embeddings"](model) == 1
     assert moved == [model.per_layer]
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a card to offload from")
 def test_trainable_or_cpu_model_tables_stay():
     ns, moved = _spare_ns()
-    model = _PerLayerModel("cuda")
+    model = _PerLayerModel(DEVICE)
     with _as_platform("posix"):
         assert ns["offload_spare_embeddings"](model, require_frozen = True) == 0
     model = _PerLayerModel("cpu").requires_grad_(False)
@@ -432,10 +434,10 @@ class _HeadlessPerLayerModel(_PerLayerModel):
         return None
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a card to offload from")
 def test_headless_model_hooks_a_table_the_block_swap_load_left_on_cpu():
     ns, moved = _spare_ns()
-    model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
+    model = _HeadlessPerLayerModel(DEVICE).requires_grad_(False)
     model.per_layer.to("cpu")
     with _as_platform("posix"):
         assert ns["offload_spare_embeddings"](model) == 1
@@ -447,7 +449,7 @@ def test_headless_model_hooks_a_table_the_block_swap_load_left_on_cpu():
     assert moved == []
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a card to offload from")
 def test_headless_streamed_table_returns_rows_to_the_decoder_card():
     ns = _load(
         "_embeddings_are_tied",
@@ -461,7 +463,7 @@ def test_headless_streamed_table_returns_rows_to_the_decoder_card():
     ns["_pin_device_to_decoder"] = ns["clean_gpu_cache"] = lambda *a: None
     ns["_patch_trainer_move_keeps_host_embeddings"] = lambda: None
     ns["gc"] = types.SimpleNamespace(collect = lambda: None)
-    model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
+    model = _HeadlessPerLayerModel(DEVICE).requires_grad_(False)
     model.per_layer.to("cpu")
     ns["offload_input_embedding"](model, [model.per_layer])
-    assert [(e is model.per_layer, d.type) for e, d in hooked] == [(True, "cuda")]
+    assert [(e is model.per_layer, d.type) for e, d in hooked] == [(True, DEVICE)]

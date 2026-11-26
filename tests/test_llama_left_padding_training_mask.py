@@ -9,7 +9,7 @@ import ast
 from pathlib import Path
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 torch = pytest.importorskip("torch")
 
@@ -43,9 +43,10 @@ def test_has_padding_before_tokens(dtype):
 
 
 TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"
+DEVICE = accelerator_device_type()
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth fast forward needs a GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Unsloth fast forward needs CUDA or XPU")
 def test_left_padded_label_less_training_forward_matches_unpadded():
     from unsloth import FastLanguageModel
 
@@ -65,11 +66,11 @@ def test_left_padded_label_less_training_forward_matches_unpadded():
     model.train()
     torch.manual_seed(0)
     vocab = model.config.vocab_size
-    long_row = torch.randint(3, vocab, (1, 12), device = "cuda")
-    short_row = torch.randint(3, vocab, (1, 7), device = "cuda")
+    long_row = torch.randint(3, vocab, (1, 12), device = DEVICE)
+    short_row = torch.randint(3, vocab, (1, 7), device = DEVICE)
     pad = 5
     input_ids = torch.cat(
-        [long_row, torch.cat([torch.full((1, pad), 0, device = "cuda"), short_row], 1)]
+        [long_row, torch.cat([torch.full((1, pad), 0, device = DEVICE), short_row], 1)]
     )
     attention_mask = torch.ones_like(input_ids)
     attention_mask[1, :pad] = 0
@@ -121,7 +122,7 @@ def _lora_model(dtype):
     return model
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth fast forward needs a GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Unsloth fast forward needs CUDA or XPU")
 @pytest.mark.parametrize("padding", ["left", "interior"])
 # 13: the compiled masked SDPA backward faulted on torch < 2.15 without the aligned call.
 @pytest.mark.parametrize("length", [13, 16])
@@ -131,7 +132,7 @@ def test_padded_labelled_lora_training_matches_unpadded_rows(padding, length):
     torch.manual_seed(0)
     vocab = model.config.vocab_size
     short = length - 7
-    input_ids = torch.randint(3, vocab, (2, length), device = "cuda")
+    input_ids = torch.randint(3, vocab, (2, length), device = DEVICE)
     attention_mask = torch.ones_like(input_ids)
     if padding == "left":
         attention_mask[1, : length - short] = 0
@@ -195,14 +196,14 @@ def test_pad_queries_attend_only_themselves(additive):
     assert not (allowed & ~torch.ones(5, 5, dtype = torch.bool).tril()).any()
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth fast forward needs a GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Unsloth fast forward needs CUDA or XPU")
 def test_left_padded_pad_query_prediction_does_not_see_later_tokens():
     # DataCollatorForSeq2Seq with left padding keeps the first real label, so the last pad query predicts it:
     # that query must stay causal (it was unmasked to every key, so the target was visible).
     model = _lora_model(torch.float32)
     torch.manual_seed(0)
     vocab = model.config.vocab_size
-    input_ids = torch.randint(3, vocab, (2, 10), device = "cuda")
+    input_ids = torch.randint(3, vocab, (2, 10), device = DEVICE)
     attention_mask = torch.ones_like(input_ids)
     attention_mask[1, :4] = 0
     input_ids = input_ids.masked_fill(attention_mask == 0, 0)

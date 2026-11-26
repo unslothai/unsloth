@@ -12,7 +12,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)
 
 
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
@@ -49,6 +54,19 @@ def _cuda_kernels_run(count):
     try:
         for index in range(count):
             (torch.ones(2, device = f"cuda:{index}") * 2).sum().item()
+        return True
+    except Exception:
+        return False
+
+
+def _gpu_kernels_run(count):
+    """Torch can launch a kernel on the CUDA or XPU card (not just see it)."""
+    if not has_real_cuda_or_xpu() or accelerator_module().device_count() < count:
+        return False
+    device = accelerator_device_type()
+    try:
+        for index in range(count):
+            (torch.ones(2, device = f"{device}:{index}") * 2).sum().item()
         return True
     except Exception:
         return False
@@ -390,7 +408,7 @@ def test_split_model_evaluate_train_evaluate_on_two_gpus(tmp_path):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not _cuda_kernels_run(1), reason = "runs the generated SFTTrainer on a GPU")
+@pytest.mark.skipif(not _gpu_kernels_run(1), reason = "runs the generated SFTTrainer on a GPU")
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32"])
 def test_generated_sft_trainer_evaluate_then_train(tmp_path, dtype):
     """On main fp16 raised "Attempting to unscale FP16 gradients"; a float32 base stays float32 (frozen too)."""
@@ -399,7 +417,7 @@ def test_generated_sft_trainer_evaluate_then_train(tmp_path, dtype):
     from trl import SFTConfig, SFTTrainer
 
     dtype = getattr(torch, dtype)
-    if dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
+    if dtype is torch.bfloat16 and not accelerator_module().is_bf16_supported():
         pytest.skip("no bf16 on this card")
     model_name = os.environ.get(
         "UNSLOTH_TEST_TINY_QWEN3", "trl-internal-testing/tiny-Qwen3ForCausalLM"

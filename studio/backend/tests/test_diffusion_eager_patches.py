@@ -13,6 +13,7 @@ pytest.importorskip("diffusers")
 import torch.nn as nn  # noqa: E402
 
 from core.inference import diffusion_eager_patches as ep  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 from diffusers.models.normalization import (  # noqa: E402
     AdaLayerNormContinuous,
     AdaLayerNormZero,
@@ -158,7 +159,9 @@ def test_signature_guard_skips_changed_class(monkeypatch):
     assert WeirdRMS.forward is orig
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "compile graph-break check needs CUDA")
+@pytest.mark.skipif(
+    not has_real_cuda_or_xpu(), reason = "compile graph-break check needs CUDA or XPU"
+)
 def test_no_graph_break_under_fullgraph():
     ep.install_compile_safe_patches()
 
@@ -173,9 +176,10 @@ def test_no_graph_break_under_fullgraph():
         def forward(self, x, cond):
             return self.ada(self.rms(x), cond)
 
-    m = Block().to("cuda", torch.bfloat16).eval()
-    x = torch.randn(B, S, D, device = "cuda", dtype = torch.bfloat16)
-    cond = torch.randn(B, COND, device = "cuda", dtype = torch.bfloat16)
+    dev = accelerator_device_type()
+    m = Block().to(dev, torch.bfloat16).eval()
+    x = torch.randn(B, S, D, device = dev, dtype = torch.bfloat16)
+    cond = torch.randn(B, COND, device = dev, dtype = torch.bfloat16)
     compiled = torch.compile(m, fullgraph = True)  # raises if a graph break occurs
     with torch.inference_mode():
         out = compiled(x, cond)

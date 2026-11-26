@@ -4,12 +4,14 @@
 import pytest
 import torch
 import torch.nn.functional as F
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 pytestmark = pytest.mark.gpu
 
+DEVICE = accelerator_device_type()
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 @pytest.mark.parametrize("kernel", ["qkv", "swiglu", "geglu", "geglu_approx"])
 @pytest.mark.parametrize("layout", ["contiguous", "transposed", "columns"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -18,6 +20,7 @@ def test_lora_backward_gradient_layout(kernel, layout, dtype, inplace):
     # Triton rejects bf16 kernels below sm_80 (`.bf16 requires .target sm_80`), e.g. T4.
     if (
         dtype is torch.bfloat16
+        and DEVICE == "cuda"
         and not torch.version.hip
         and torch.cuda.get_device_capability()[0] < 8
     ):
@@ -32,17 +35,17 @@ def test_lora_backward_gradient_layout(kernel, layout, dtype, inplace):
     from unsloth.kernels.swiglu import swiglu_DWf_DW_dfg_kernel, swiglu_fg_kernel
 
     torch.manual_seed(42)
-    inputs = torch.randn(2, 4, 64, device = "cuda", dtype = dtype)
+    inputs = torch.randn(2, 4, 64, device = DEVICE, dtype = dtype)
     widths = [(64, 64)] * 3 if kernel == "qkv" else [(64, 96), (64, 96), (96, 64)]
     weights = []
     adapters = []
     scales = [0.25, 0.5, 0.75]
     for in_features, out_features in widths:
-        weights.append(torch.randn(out_features, in_features, device = "cuda", dtype = dtype) * 0.05)
+        weights.append(torch.randn(out_features, in_features, device = DEVICE, dtype = dtype) * 0.05)
         adapters.extend(
             [
-                (torch.randn(8, in_features, device = "cuda", dtype = dtype) * 0.05).requires_grad_(),
-                (torch.randn(out_features, 8, device = "cuda", dtype = dtype) * 0.05).requires_grad_(),
+                (torch.randn(8, in_features, device = DEVICE, dtype = dtype) * 0.05).requires_grad_(),
+                (torch.randn(out_features, 8, device = DEVICE, dtype = dtype) * 0.05).requires_grad_(),
             ]
         )
     reference_adapters = [value.detach().clone().requires_grad_() for value in adapters]
@@ -70,11 +73,11 @@ def test_lora_backward_gradient_layout(kernel, layout, dtype, inplace):
     gradients = []
     for output in expected:
         if layout == "transposed":
-            gradient = torch.randn(4, 2, output.shape[-1], device = "cuda", dtype = dtype).transpose(
+            gradient = torch.randn(4, 2, output.shape[-1], device = DEVICE, dtype = dtype).transpose(
                 0, 1
             )
         elif layout == "columns":
-            gradient = torch.randn(2, 4, output.shape[-1] * 2, device = "cuda", dtype = dtype)[..., ::2]
+            gradient = torch.randn(2, 4, output.shape[-1] * 2, device = DEVICE, dtype = dtype)[..., ::2]
         else:
             gradient = torch.randn_like(output)
         gradients.append(gradient)

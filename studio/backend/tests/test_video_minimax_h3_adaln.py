@@ -13,6 +13,7 @@ from core.inference.video_minimax_h3_adaln import (
     apply_h3_adaln_curve,
     is_curve_checkpoint,
 )
+from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda_or_xpu
 
 HIDDEN = 4
 CURVE_DIM = 3
@@ -317,7 +318,8 @@ def test_modulation_values_match_the_single_view_form_bit_for_bit():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "the mis-indexing is in Inductor's CUDA lowering"
+    not has_real_cuda_or_xpu(),
+    reason = "the mis-indexing is in Inductor's CUDA lowering (also checked on XPU)",
 )
 def test_compiled_modulation_with_unbacked_rows_matches_eager_on_cuda():
     import torch.compiler.config as compiler_config
@@ -326,9 +328,10 @@ def test_compiled_modulation_with_unbacked_rows_matches_eager_on_cuda():
         pytest.skip("this torch has no torch.compiler.config.unbacked_sources")
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
-    model = model.cuda()
+    dev = accelerator_device_type()
+    model = model.to(dev)
     proj = model.transformer_blocks[0].adaln_proj
-    norm = nn.RMSNorm(HIDDEN, eps = 1e-5).cuda()
+    norm = nn.RMSNorm(HIDDEN, eps = 1e-5).to(dev)
 
     def modulate(temb, adaln_indices, hidden_states):
         shift, scale, _, _, _, _ = proj(temb)
@@ -342,15 +345,15 @@ def test_compiled_modulation_with_unbacked_rows_matches_eager_on_cuda():
     torch._dynamo.reset()
     try:
         compiled = torch.compile(modulate, dynamic = True)
-        generator = torch.Generator(device = "cuda").manual_seed(0)
-        hidden = torch.randn(1, 64, HIDDEN, device = "cuda", generator = generator)
+        generator = torch.Generator(device = dev).manual_seed(0)
+        hidden = torch.randn(1, 64, HIDDEN, device = dev, generator = generator)
         for rows in (1, 2, 4):
-            temb = torch.randn(rows, CURVE_DIM, device = "cuda", generator = generator)
-            indices = torch.randint(0, rows * MODALITIES, (64,), device = "cuda", generator = generator)
+            temb = torch.randn(rows, CURVE_DIM, device = dev, generator = generator)
+            indices = torch.randint(0, rows * MODALITIES, (64,), device = dev, generator = generator)
             with torch.no_grad():
                 expected = modulate(temb, indices, hidden)
                 got = compiled(temb, indices, hidden)
-            torch.cuda.synchronize()
+            accelerator_module().synchronize()
             assert torch.allclose(got.float(), expected.float(), atol = 2e-2, rtol = 2e-2), rows
     finally:
         compiler_config.unbacked_sources = saved

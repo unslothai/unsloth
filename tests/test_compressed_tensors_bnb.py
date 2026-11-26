@@ -22,7 +22,10 @@ from types import SimpleNamespace
 
 import pytest
 from llama_patch_isolation import restore_llama_patches  # noqa: F401
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 import unsloth  # noqa: F401
@@ -51,6 +54,8 @@ except Exception:
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
 
 HAS_CONVERTERS = _transformers_supports_weight_converters()
+
+DEVICE = accelerator_device_type()
 
 
 def _update_conversions(quantizer, conversions, model):
@@ -725,7 +730,7 @@ def _tokenizer_free_load(path, root):
             shutil.copy(os.path.join(tok_dir, f), os.path.join(path, f))
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
@@ -755,7 +760,7 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
     n = _same_linear4bit(model_a, model_b)
     assert n == 2 * 7, n  # q k v o gate up down per layer
     assert not any(k.endswith("weight_packed") for k, _ in model_a.named_parameters())
-    ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
+    ids = torch.randint(0, 256, (1, 16), device = f"{DEVICE}:0")
     with torch.no_grad():
         assert torch.equal(model_a(input_ids = ids).logits, model_b(input_ids = ids).logits)
     assert not hasattr(model_a.config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
@@ -763,7 +768,7 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
     assert "compressed" not in str(model_a.config.quantization_config).lower()
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
@@ -783,7 +788,7 @@ def test_packed_checkpoint_trains_with_lora(tmp_path, monkeypatch, route):
         model, r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj", "down_proj"]
     )
     model.train()
-    ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
+    ids = torch.randint(0, 256, (1, 16), device = f"{DEVICE}:0")
     loss = model(input_ids = ids, labels = ids).loss
     loss.backward()
     grads = [p.grad for n, p in model.named_parameters() if "lora_B" in n]

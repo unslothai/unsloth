@@ -5,18 +5,27 @@
 
 import pytest
 import torch
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
-if not torch.cuda.is_available():
+if not has_real_cuda_or_xpu():
     pytest.skip(
-        reason = "real bnb 4-bit / CUDA decode path: needs a CUDA GPU", allow_module_level = True
+        reason = "real bnb 4-bit / CUDA or XPU decode path: needs a CUDA or XPU GPU",
+        allow_module_level = True,
     )
+DEVICE = accelerator_device_type()
 peft = pytest.importorskip("peft")
 bnb = pytest.importorskip("bitsandbytes")
 
 import unsloth  # noqa: F401  (must precede transformers / peft users)
 from unsloth.kernels.utils import fast_linear_forward
 
-DTYPE = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+if DEVICE == "cuda":
+    DTYPE = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+else:
+    DTYPE = torch.bfloat16 if torch.xpu.is_bf16_supported() else torch.float16
 N, K = 512, 256
 
 
@@ -32,7 +41,7 @@ class _Tiny(torch.nn.Module):
 
 
 def _proj(load_in_4bit):
-    model = _Tiny(load_in_4bit).cuda()
+    model = _Tiny(load_in_4bit).to(DEVICE)
     model = peft.get_peft_model(
         model, peft.LoraConfig(r = 8, lora_alpha = 16, target_modules = ["q"], lora_dropout = 0.0)
     )
@@ -49,8 +58,8 @@ def _proj(load_in_4bit):
 @pytest.mark.parametrize("bsz", [1, 2, 8, 33])
 def test_lora_decode_returns_out_with_its_strides(load_in_4bit, bsz):
     proj = _proj(load_in_4bit)
-    X = torch.randn(bsz, 1, K, device = "cuda", dtype = DTYPE)
-    buffer = torch.empty(bsz, 1, N + 64, device = "cuda", dtype = DTYPE)
+    X = torch.randn(bsz, 1, K, device = DEVICE, dtype = DTYPE)
+    buffer = torch.empty(bsz, 1, N + 64, device = DEVICE, dtype = DTYPE)
     out = buffer[:, :, :N]
     with torch.inference_mode():
         y = fast_linear_forward(proj, X, out = out)

@@ -4,7 +4,9 @@
 import os
 
 import pytest
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (  # tests/_shared, on sys.path via tests/conftest.py
+    has_real_cuda_or_xpu,
+)
 import torch
 import torch.nn as nn
 from transformers import PretrainedConfig, PreTrainedModel
@@ -336,7 +338,7 @@ def test_core_without_loader_state_gets_none_invented():
     assert getattr(core, "hf_device_map", None) is None
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "bitsandbytes 4-bit needs a GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "bitsandbytes 4-bit needs a GPU")
 def test_peft_dispatches_the_4bit_lora_layer_on_the_core():
     """Without the flags PEFT wraps a Linear4bit in the plain lora.Linear."""
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig

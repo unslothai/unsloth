@@ -23,11 +23,19 @@ import sys
 import textwrap
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 pytest.importorskip("bitsandbytes")
 torch = pytest.importorskip("torch")
-if not torch.cuda.is_available():
-    pytest.skip(reason = "paged bitsandbytes optimizers need a CUDA device", allow_module_level = True)
+if not has_real_cuda_or_xpu():
+    pytest.skip(
+        reason = "paged bitsandbytes optimizers need a CUDA or XPU device", allow_module_level = True
+    )
+
+DEVICE = accelerator_device_type()
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -35,7 +43,8 @@ _RUNNER = textwrap.dedent(
     """
     import importlib.util, io, json, sys
     import torch, bitsandbytes as bnb
-    mode, optim_name = sys.argv[1], sys.argv[2]
+    mode, optim_name, device = sys.argv[1], sys.argv[2], sys.argv[4]
+    accel = getattr(torch, device)
     if mode == "fixed":
         spec = importlib.util.spec_from_file_location("unsloth_import_fixes_under_test", sys.argv[3])
         fixes = importlib.util.module_from_spec(spec)
@@ -45,8 +54,8 @@ _RUNNER = textwrap.dedent(
     Optim = getattr(bnb.optim, optim_name)
     torch.manual_seed(0)
     shapes = [(2048, 1024), (64, 2)]  # one paged (>= 1e5 elements), one too small to page
-    params = [torch.nn.Parameter(torch.randn(s, device = "cuda")) for s in shapes]
-    grads = [[torch.randn(s, device = "cuda") for s in shapes] for _ in range(4)]
+    params = [torch.nn.Parameter(torch.randn(s, device = device)) for s in shapes]
+    grads = [[torch.randn(s, device = device) for s in shapes] for _ in range(4)]
 
     def step(opt, ps, g):
         for p, x in zip(ps, g):
@@ -71,9 +80,9 @@ _RUNNER = textwrap.dedent(
     def placed(o, p):  # every tensor is managed or on the parameter's device, as in a fresh run
         return all(is_managed(v) or v.device == p.device for v in o.state[p].values() if torch.is_tensor(v))
 
-    torch.cuda.synchronize(); before_load = torch.cuda.memory_allocated()
+    accel.synchronize(); before_load = accel.memory_allocated()
     resumed.load_state_dict(saved)
-    torch.cuda.synchronize(); load_cuda_bytes = torch.cuda.memory_allocated() - before_load
+    accel.synchronize(); load_cuda_bytes = accel.memory_allocated() - before_load
     after_load = paged(resumed, resumed_params[0])
     placed_after_load = all(placed(resumed, p) for p in resumed_params)
     for g in grads[2:]:
@@ -103,6 +112,7 @@ def _run(mode, optim_name):
             mode,
             optim_name,
             os.path.join(_ROOT, "unsloth", "import_fixes.py"),
+            DEVICE,
         ],
         capture_output = True,
         text = True,

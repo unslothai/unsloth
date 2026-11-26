@@ -8,6 +8,10 @@ import subprocess
 import sys
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from packaging.version import Version
 import transformers
@@ -23,7 +27,8 @@ def _has_real_gpu():
 
 pytestmark = [
     pytest.mark.skipif(
-        not _has_real_gpu(), reason = "Unsloth's rotary classes build CUDA caches in __init__"
+        not has_real_cuda_or_xpu(),
+        reason = "Unsloth's rotary classes build CUDA / XPU caches in __init__",
     ),
     pytest.mark.skipif(
         Version(transformers.__version__) < Version("5.0.0"),
@@ -57,7 +62,7 @@ rotary = model.model.rotary_emb
 assert isinstance(rotary, LlamaRotaryEmbedding), type(rotary)
 expected = rotary._unsloth_recompute_inv_freq().float()
 torch.testing.assert_close(rotary.inv_freq.detach().cpu().float(), expected)
-cos = rotary.get_cached(device_index = torch.cuda.current_device())[0].float().cpu()
+cos = rotary.get_cached(device_index = getattr(torch, sys.argv[3]).current_device())[0].float().cpu()
 freqs = torch.outer(torch.arange(cos.shape[0], dtype = torch.float32), expected)
 torch.testing.assert_close(cos, torch.cat((freqs, freqs), -1).cos(), atol = 1e-3, rtol = 0)
 """
@@ -66,7 +71,14 @@ torch.testing.assert_close(cos, torch.cat((freqs, freqs), -1).cos(), atol = 1e-3
 @pytest.mark.parametrize("output_loading_info", ["0", "1"])
 def test_plain_from_pretrained_after_pre_patch_gets_valid_rope(tmp_path, output_loading_info):
     result = subprocess.run(
-        [sys.executable, "-c", _CHECK, str(tmp_path / "tiny_rm"), output_loading_info],
+        [
+            sys.executable,
+            "-c",
+            _CHECK,
+            str(tmp_path / "tiny_rm"),
+            output_loading_info,
+            accelerator_device_type(),
+        ],
         capture_output = True,
         text = True,
         timeout = 600,
@@ -74,6 +86,10 @@ def test_plain_from_pretrained_after_pre_patch_gets_valid_rope(tmp_path, output_
     assert result.returncode == 0, result.stderr[-4000:]
 
 
+# CPU-only body (no device work), so it keeps the original CUDA gate rather than running on XPU.
+@pytest.mark.skipif(
+    not _has_real_gpu(), reason = "Unsloth's rotary classes build CUDA caches in __init__"
+)
 def test_wrap_is_idempotent_and_keeps_transformers_source():
     from transformers import PreTrainedModel
 

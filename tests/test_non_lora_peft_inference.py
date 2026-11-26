@@ -7,12 +7,14 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a real CUDA or XPU device"),
 ]
+
+DEVICE = accelerator_device_type()
 
 H = 64
 
@@ -49,7 +51,7 @@ def _q_proj(method):
     from peft import get_peft_model
 
     torch.manual_seed(3407)
-    model = get_peft_model(_Block(), _config(method)).to("cuda", torch.bfloat16)
+    model = get_peft_model(_Block(), _config(method)).to(DEVICE, torch.bfloat16)
     proj = model.base_model.model.q_proj
     if method == "adalora":
         with torch.no_grad():
@@ -64,12 +66,12 @@ def test_fast_linear_forward_runs_non_lora_adapter(method, q_len):
     from unsloth.kernels import fast_linear_forward
 
     proj = _q_proj(method)
-    X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(1, q_len, H, device = DEVICE, dtype = torch.bfloat16)
     with torch.no_grad():
         expected = proj(X)
         # a no-op adapter would make this test vacuous
         assert not torch.allclose(expected, proj.base_layer(X), rtol = 2e-2, atol = 2e-2)
-        out = torch.empty(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
+        out = torch.empty(1, q_len, H, device = DEVICE, dtype = torch.bfloat16)
         got = fast_linear_forward(proj, X, out = out)
         torch.testing.assert_close(got, expected, rtol = 2e-2, atol = 2e-2)
         assert got.data_ptr() == out.data_ptr()

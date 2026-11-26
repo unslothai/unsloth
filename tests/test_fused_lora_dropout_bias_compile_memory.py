@@ -16,7 +16,7 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 from unsloth.kernels import fast_lora
 from unsloth.kernels import utils as kernel_utils
 
@@ -121,24 +121,25 @@ def test_no_new_graph_breaks_before_torch_2_11(monkeypatch, dropout, lora_bias):
 def test_dropout_and_bias_paths_keep_no_global_dequant_scratch(
     monkeypatch, dropout, lora_bias, path
 ):
-    if not has_real_cuda():
-        pytest.skip("needs a CUDA GPU for bitsandbytes 4-bit weights")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs a CUDA or XPU GPU for bitsandbytes 4-bit weights")
+    device = accelerator_device_type()
     bnb = pytest.importorskip("bitsandbytes")
     linear = lambda i, o: bnb.nn.Linear4bit(
         i, o, bias = False, compute_dtype = torch.float16, quant_type = "nf4"
     )
-    model, block = _peft_block(dropout, lora_bias, linear, "cuda", torch.float16)
+    model, block = _peft_block(dropout, lora_bias, linear, device, torch.float16)
     calls = []
     real = fast_lora._apply
     monkeypatch.setattr(fast_lora, "_apply", lambda f, *a: calls.append(f) or real(f, *a))
     monkeypatch.setattr(kernel_utils, "_SCRATCH", {})
-    X = torch.randn(2, 3, H, device = "cuda", dtype = torch.float16, requires_grad = True)
+    X = torch.randn(2, 3, H, device = device, dtype = torch.float16, requires_grad = True)
     fn = {
         "o": lambda X: fast_lora.apply_lora_o(block, X),
         "qkv": lambda X: sum(fast_lora.apply_lora_qkv(block, X, inplace = False)),
         "mlp": lambda X: fast_lora.apply_lora_mlp_swiglu(block, X, inplace = False),
     }[path]
-    with torch.autocast("cuda", dtype = torch.float16):
+    with torch.autocast(device, dtype = torch.float16):
         out = fn(X * 1)
     out.float().sum().backward()
     assert len(calls) == 1, "the fused kernel did not run"

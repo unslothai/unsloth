@@ -13,6 +13,7 @@ import torch
 
 from core.inference import diffusion_cfg_batch as cb
 from core.inference import diffusion_multigpu as mg
+from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda_or_xpu
 
 
 def _cases():
@@ -65,13 +66,13 @@ def test_matches_verdicts_unchanged():
     assert not cb._matches(snap, ((x,), {"timestep": t}))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 def test_one_host_read_per_step_on_cuda(monkeypatch):
-    dev = torch.device("cuda")
+    dev = torch.device(accelerator_device_type())
     tensors = [torch.randn(4, 64, device = dev) for _ in range(6)]
     call = (tuple(tensors[:2]), {f"k{i}": t for i, t in enumerate(tensors[2:])})
     snap = cb._snapshot(call)
-    torch.cuda.synchronize()
+    accelerator_module().synchronize()
     reads, equals = [0], [0]
     orig_item, orig_equal = torch.Tensor.item, torch.equal
 

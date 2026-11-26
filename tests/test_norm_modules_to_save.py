@@ -5,11 +5,14 @@
 
 import pytest
 from real_accelerator import (
-    has_real_cuda,
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
 )
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
+
+DEVICE = accelerator_device_type()
 
 
 def _tiny_llama():
@@ -47,7 +50,7 @@ def test_norm_modules_to_save_matches_peft_suffix_rule(name, allowed):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 def test_fast_path_trains_norm_in_modules_to_save(tmp_path):
     from unsloth import FastLanguageModel
 
@@ -85,7 +88,7 @@ def test_fast_path_trains_norm_in_modules_to_save(tmp_path):
     copies = {n: p for n, p in model.named_parameters() if "input_layernorm.modules_to_save" in n}
     assert copies and all(p.requires_grad for p in copies.values())
     before = {n: p.detach().clone() for n, p in copies.items()}
-    ids = torch.randint(10, 100, (2, 16), device = "cuda")
+    ids = torch.randint(10, 100, (2, 16), device = DEVICE)
     model.train()
     model(input_ids = ids, labels = ids).loss.backward()
     for n, p in copies.items():

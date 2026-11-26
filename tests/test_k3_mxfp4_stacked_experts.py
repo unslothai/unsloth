@@ -23,7 +23,11 @@ from types import SimpleNamespace
 import re
 
 import pytest
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from torch import nn
 
@@ -45,6 +49,8 @@ from unsloth.models.remote_moe_shims import (
 
 zoo_stacked = pytest.importorskip("unsloth_zoo.mxfp4_stacked_experts")
 Mxfp4StackedExperts = zoo_stacked.Mxfp4StackedExperts
+
+DEVICE = accelerator_device_type()
 
 try:
     from compressed_tensors.config import CompressionFormat
@@ -510,7 +516,7 @@ def _load(path):
     )
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS),
     reason = "needs compressed-tensors and the transformers 5.8+ loader",
@@ -543,7 +549,7 @@ def test_remote_code_checkpoint_loads_packed_bytes_verbatim(tmp_path, monkeypatc
         for conv in model._weight_conversions
         for op in getattr(conv, "operations", [])
     )
-    ids = torch.randint(0, 128, (2, 8), device = "cuda:0")
+    ids = torch.randint(0, 128, (2, 8), device = f"{DEVICE}:0")
     model.eval()
     with torch.no_grad():
         port = model(input_ids = ids).logits
@@ -558,7 +564,7 @@ def test_remote_code_checkpoint_loads_packed_bytes_verbatim(tmp_path, monkeypatc
     assert model.layers[0].mlp.gate.weight.grad is not None
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS),
     reason = "needs compressed-tensors and the transformers 5.8+ loader",
@@ -659,7 +665,7 @@ def test_compressed_tensors_route_stacks_the_adopted_experts_verbatim():
             torch.testing.assert_close(experts[e](x), want[index][e], atol = 1e-2, rtol = 1e-2)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
@@ -686,7 +692,7 @@ def test_remote_code_checkpoint_16bit_load_keeps_packed_stacks(tmp_path, monkeyp
                 experts.down_proj.mxfp4_scales[e].cpu(), tensors[f"{prefix}.{e}.w2.weight_scale"]
             )
     assert not any("weight_packed" in n for n, _ in model.named_parameters())
-    ids = torch.randint(0, 128, (2, 8), device = "cuda:0")
+    ids = torch.randint(0, 128, (2, 8), device = f"{DEVICE}:0")
     model.eval()
     with torch.no_grad():
         port = model(input_ids = ids).logits
@@ -949,22 +955,22 @@ def test_a_packed_linear_without_its_scale_is_not_kept_packed():
     assert plan_mxfp4_keep_packed(model, _keys(extra = extra[:1])) is None
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 def test_compressed_tensors_route_stacking_stages_gate_up_then_down():
     from unsloth.models.mxfp4_compressed_linear import stack_packed_expert_linears
 
     mod, _ = _tiny_model("transformers_modules.k3s_ct_peak.modeling_tinymoe")
     model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 1)).to(torch.bfloat16)
     _packed_expert_linears(model)
-    model.cuda()
+    model.to(DEVICE)
     experts = model.layers[0].mlp.experts
     size = lambda *ts: sum(t.numel() * t.element_size() for t in ts)  # noqa: E731
     gate_up = size(*[getattr(e, w).weight_packed for e in experts for w in ("w1", "w3")])
     gate_up += size(*[getattr(e, w).weight_scale for e in experts for w in ("w1", "w3")])
-    torch.cuda.synchronize()
-    torch.cuda.reset_peak_memory_stats()
-    start = torch.cuda.memory_allocated()
+    accelerator_module().synchronize()
+    accelerator_module().reset_peak_memory_stats()
+    start = accelerator_module().memory_allocated()
     assert stack_packed_expert_linears(model, ["layers.0.mlp"]) == ["layers.0.mlp"]
-    torch.cuda.synchronize()
-    assert torch.cuda.max_memory_allocated() - start <= gate_up + 1024
-    assert torch.cuda.memory_allocated() <= start + 1024
+    accelerator_module().synchronize()
+    assert accelerator_module().max_memory_allocated() - start <= gate_up + 1024
+    assert accelerator_module().memory_allocated() <= start + 1024

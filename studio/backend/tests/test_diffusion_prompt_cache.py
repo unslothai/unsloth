@@ -14,6 +14,7 @@ torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_cond_cache as cond_cache
 from core.inference import diffusion_prompt_cache as prompt_cache
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 from .test_diffusion_backend import fake_runtime  # noqa: E402,F401
 
@@ -399,8 +400,10 @@ def test_h3_vision_fingerprint_covers_bfloat16_bytes():
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_cuda_hit_lands_on_the_source_device():
+    dev = accelerator_device_type()
+
     class _CudaPipe(_EncodePipe):
         def encode_prompt(
             self,
@@ -409,13 +412,13 @@ def test_cuda_hit_lands_on_the_source_device():
             **kw,
         ):
             out = super().encode_prompt(prompt, **kw)
-            return tuple(o.cuda() if torch.is_tensor(o) else o for o in out)
+            return tuple(o.to(dev) if torch.is_tensor(o) else o for o in out)
 
     pipe = _CudaPipe()
     prompt_cache.install(pipe)
     first = pipe.encode_prompt("a cat")
     second = pipe.encode_prompt("a cat")
-    assert second[0].is_cuda and torch.equal(first[0], second[0]) and pipe.calls == 1
+    assert second[0].device.type == dev and torch.equal(first[0], second[0]) and pipe.calls == 1
 
 
 def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp_path, monkeypatch):

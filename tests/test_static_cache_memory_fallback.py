@@ -12,6 +12,11 @@ import types
 
 import pytest
 import torch
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.models import vision
 from unsloth.models.vision import _static_cache_bytes, _static_cache_does_not_fit
@@ -309,18 +314,20 @@ def test_probe_failure_keeps_static(fake_cuda, monkeypatch):
 def _tiny_generate(monkeypatch, free_bytes):
     """Real generate through unsloth_base_fast_generate on a random tiny Llama, with the
     device reporting `free_bytes` free. Returns the cache class generate ended with."""
-    if not torch.cuda.is_available():
-        pytest.skip(reason = "the guard only measures CUDA devices")
+    if not has_real_cuda_or_xpu():
+        pytest.skip(reason = "the guard only measures CUDA or XPU devices")
+    device = accelerator_device_type()
+    backend = accelerator_module()
     from transformers import GenerationConfig, LlamaForCausalLM
 
     torch.manual_seed(0)
-    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    model = LlamaForCausalLM(_llama_config()).to("cuda", dtype).eval()
+    dtype = torch.bfloat16 if backend.is_bf16_supported() else torch.float16
+    model = LlamaForCausalLM(_llama_config()).to(device, dtype).eval()
     model.generation_config = GenerationConfig(max_length = 4096, pad_token_id = 0)
     model._old_generate = model.generate
     model.generate = types.MethodType(vision.unsloth_base_fast_generate, model)
-    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (free_bytes, 80 * GB))
-    real_properties = torch.cuda.get_device_properties
+    monkeypatch.setattr(backend, "mem_get_info", lambda device = None: (free_bytes, 80 * GB))
+    real_properties = backend.get_device_properties
 
     class SmallCard:
         def __init__(self, props):
@@ -332,14 +339,14 @@ def _tiny_generate(monkeypatch, free_bytes):
             return getattr(self.props, name)
 
     monkeypatch.setattr(
-        torch.cuda,
+        backend,
         "get_device_properties",
         lambda device = None: SmallCard(real_properties(device)),
     )
-    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 0)
-    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(backend, "memory_reserved", lambda device = None: 0)
+    monkeypatch.setattr(backend, "memory_allocated", lambda device = None: 0)
     monkeypatch.setattr(vision.logger, "warning_once", lambda *a, **k: None)
-    ids = torch.ones(1, 5, dtype = torch.long, device = "cuda")
+    ids = torch.ones(1, 5, dtype = torch.long, device = device)
     out = model.generate(
         input_ids = ids,
         attention_mask = torch.ones_like(ids),

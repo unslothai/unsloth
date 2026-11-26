@@ -18,6 +18,7 @@ import core.inference.diffusion_comfy_block as cb  # noqa: E402
 import core.inference.diffusion_comfy_quant as cq  # noqa: E402
 import core.inference.diffusion_packed_block as pb  # noqa: E402
 from .test_diffusion_comfy_block import DIM, _Tiny, _load, block_file  # noqa: E402,F401
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 
 LINEARS = [f"blocks.{b}.{n}" for b in range(2) for n in ("to_q", "to_k", "to_v", "to_out")]
 
@@ -305,10 +306,11 @@ def test_devices_without_fp8_casts_widen_nvfp4_by_table_and_keep_mxfp8_dense(mon
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "needs a CUDA / ROCm GPU to run the Triton widen"
+    not has_real_cuda_or_xpu(), reason = "needs a CUDA / ROCm / XPU GPU to run the Triton widen"
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
 def test_the_triton_widen_on_the_gpu_matches_the_load_time_widen(dtype):
+    dev = accelerator_device_type()
     codes, scale = _exhaustive_nvfp4()
     rows = codes.shape[0]
     for rs, pq in (
@@ -325,10 +327,10 @@ def test_the_triton_widen_on_the_gpu_matches_the_load_time_widen(dtype):
             dtype = dtype,
         )
         got = pb._triton_widen(
-            codes.cuda(),
-            scale.cuda(),
-            None if rs is None else rs.cuda().view(torch.int32),
-            None if pq is None else pq.cuda().view(torch.int32),
+            codes.to(dev),
+            scale.to(dev),
+            None if rs is None else rs.to(dev).view(torch.int32),
+            None if pq is None else pq.to(dev).view(torch.int32),
             dtype,
         )
         assert got is not None, pb._TRITON.get("error")

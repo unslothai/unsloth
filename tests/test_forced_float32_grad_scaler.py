@@ -27,7 +27,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
+
+DEVICE = accelerator_device_type()
 
 TINY = os.environ.get(
     "UNSLOTH_TEST_TINY_GEMMA4", "trl-internal-testing/tiny-Gemma4ForConditionalGeneration"
@@ -91,7 +97,7 @@ def _finite(x):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_forced_float32_float16_training_has_a_grad_scaler(tmp_path):
     on = _run(tmp_path, "float16")
     assert on["forced"], "a float16 Gemma-4 load must take the forced float32 path"
@@ -116,7 +122,7 @@ def test_forced_float32_float16_training_has_a_grad_scaler(tmp_path):
 
 @pytest.mark.gpu
 @pytest.mark.skipif(
-    not (has_real_cuda() and torch.cuda.is_bf16_supported()),
+    not (has_real_cuda_or_xpu() and accelerator_module().is_bf16_supported()),
     reason = "needs a bfloat16 GPU",
 )
 def test_bfloat16_training_has_no_extra_grad_scaler(tmp_path):
@@ -157,7 +163,7 @@ _OPT_SCRIPT = textwrap.dedent(
 
     def run(arm, regime):
         os.environ["UNSLOTH_FORCED_FLOAT32_GRAD_SCALER"] = "1"
-        model = Tiny(half = arm == "on", loss_mult = 2.0**-14 if regime == "tiny" else 1.0).cuda()
+        model = Tiny(half = arm == "on", loss_mult = 2.0**-14 if regime == "tiny" else 1.0).to(sys.argv[1])
         if arm == "on":
             model._unsloth_forced_float32 = True
         torch.manual_seed(1)
@@ -189,12 +195,12 @@ _OPT_SCRIPT = textwrap.dedent(
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_forced_float32_grad_scaler_update_matches_float32_reference(tmp_path):
     script = tmp_path / "opt.py"
     script.write_text(_OPT_SCRIPT)
     proc = subprocess.run(
-        [sys.executable, str(script)],
+        [sys.executable, str(script), DEVICE],
         env = dict(os.environ, UNSLOTH_COMPILE_LOCATION = str(tmp_path / "cache")),
         capture_output = True,
         text = True,

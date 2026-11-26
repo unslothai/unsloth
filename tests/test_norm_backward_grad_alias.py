@@ -4,8 +4,14 @@
 # incoming grads may be shared by nodes or passed through grad_outputs; do not overwrite them
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
+
+DEVICE = accelerator_device_type()
 
 
 def _rms_fp64(x, W, gemma):
@@ -44,9 +50,9 @@ _TOLERANCE = {torch.float32: 1e-4, torch.float16: 1e-2, torch.bfloat16: 1e-1}
 def _check(norm, reference, dtype):
     torch.manual_seed(0)
     shape = (3, 5, 256)
-    for name, graph in _graphs(norm, shape, "cuda", dtype).items():
-        x = torch.randn(shape, device = "cuda", dtype = dtype).requires_grad_()
-        go = torch.randn(shape, device = "cuda", dtype = dtype)
+    for name, graph in _graphs(norm, shape, DEVICE, dtype).items():
+        x = torch.randn(shape, device = DEVICE, dtype = dtype).requires_grad_()
+        go = torch.randn(shape, device = DEVICE, dtype = dtype)
         go_before = go.clone()
         dX, dX64 = graph(x, go, reference)
         assert torch.equal(go, go_before), f"{name}: incoming grad was overwritten"
@@ -55,7 +61,7 @@ def _check(norm, reference, dtype):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("save_output", [False, True])
 @pytest.mark.parametrize("train_weight", [False, True])
@@ -68,9 +74,9 @@ def test_rms_layernorm_backward_leaves_shared_grad_alone(
 
     # save_output only engages under UNSLOTH_RMSNORM_SAVE_OUTPUT, read once at import.
     monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", save_output)
-    W = (1.0 + 0.1 * torch.randn(256, device = "cuda")).to(dtype).requires_grad_(train_weight)
+    W = (1.0 + 0.1 * torch.randn(256, device = DEVICE)).to(dtype).requires_grad_(train_weight)
     norm = lambda x: Fast_RMS_Layernorm.apply(x, W, 1e-6, gemma, save_output)
-    probe = norm(torch.randn(3, 5, 256, device = "cuda", dtype = dtype).requires_grad_())
+    probe = norm(torch.randn(3, 5, 256, device = DEVICE, dtype = dtype).requires_grad_())
     # The backward from Y only runs for a frozen W.
     from_y = save_output and not train_weight
     assert getattr(probe, "_unsloth_rmsnorm_saved", False) is from_y
@@ -78,20 +84,20 @@ def test_rms_layernorm_backward_leaves_shared_grad_alone(
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 @pytest.mark.parametrize("train_weight", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_layernorm_backward_leaves_shared_grad_alone(train_weight, dtype):
     from unsloth.kernels.layernorm import Fast_Layernorm
 
-    W = (1.0 + 0.1 * torch.randn(256, device = "cuda")).to(dtype).requires_grad_(train_weight)
-    b = (0.1 * torch.randn(256, device = "cuda")).to(dtype).requires_grad_(train_weight)
+    W = (1.0 + 0.1 * torch.randn(256, device = DEVICE)).to(dtype).requires_grad_(train_weight)
+    b = (0.1 * torch.randn(256, device = DEVICE)).to(dtype).requires_grad_(train_weight)
     norm = lambda x: Fast_Layernorm.apply(x, W, b, 1e-6)
     _check(norm, lambda x: _ln_fp64(x, W, b), dtype)
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("save_output", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -106,9 +112,9 @@ def test_rms_layernorm_reuse_grad_matches_and_saves_a_buffer(
     monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", save_output)
     torch.manual_seed(0)
     shape = (2, 512, 1024)
-    W = (1.0 + 0.1 * torch.randn(shape[-1], device = "cuda")).to(dtype)
-    proj = torch.randn(shape[-1], 64, device = "cuda", dtype = dtype) / 32
-    x0 = torch.randn(shape, device = "cuda", dtype = dtype)
+    W = (1.0 + 0.1 * torch.randn(shape[-1], device = DEVICE)).to(dtype)
+    proj = torch.randn(shape[-1], 64, device = DEVICE, dtype = dtype) / 32
+    x0 = torch.randn(shape, device = DEVICE, dtype = dtype)
 
     def step(reuse_grad):
         x = x0.clone().requires_grad_()
@@ -119,12 +125,12 @@ def test_rms_layernorm_reuse_grad_matches_and_saves_a_buffer(
     results = {}
     for reuse_grad in (False, True):
         step(reuse_grad)
-        torch.cuda.synchronize()
-        base = torch.cuda.memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
+        accelerator_module().synchronize()
+        base = accelerator_module().memory_allocated()
+        accelerator_module().reset_peak_memory_stats()
         grad = step(reuse_grad)
-        torch.cuda.synchronize()
-        results[reuse_grad] = (grad, torch.cuda.max_memory_allocated() - base)
+        accelerator_module().synchronize()
+        results[reuse_grad] = (grad, accelerator_module().max_memory_allocated() - base)
     assert torch.equal(results[False][0], results[True][0])
     saved = results[False][1] - results[True][1]
     activation = x0.numel() * x0.element_size()
@@ -136,7 +142,7 @@ def test_rms_layernorm_reuse_grad_matches_and_saves_a_buffer(
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 def test_final_norm_reuses_grad_only_under_the_causal_lm_head(monkeypatch):
     # A base model hands the final norm's output to the caller, so the caller's grad_outputs must
     # survive; only the CausalLM head, which consumes it itself, lets the norm write over its grad.
@@ -152,7 +158,7 @@ def test_final_norm_reuses_grad_only_under_the_causal_lm_head(monkeypatch):
     model.train()
     backbone = model.model
     torch.manual_seed(0)
-    ids = torch.randint(0, model.config.vocab_size, (2, 32), device = "cuda")
+    ids = torch.randint(0, model.config.vocab_size, (2, 32), device = DEVICE)
 
     embeds = backbone.embed_tokens(ids).detach().requires_grad_()
     hidden = backbone(inputs_embeds = embeds, use_cache = False).last_hidden_state
@@ -194,7 +200,7 @@ def test_final_norm_reuses_grad_only_under_the_causal_lm_head(monkeypatch):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 def test_returned_hidden_states_leave_caller_and_shared_grads_alone(monkeypatch):
     # Under UNSLOTH_RETURN_HIDDEN_STATES the final norm's output reaches the caller as .logits; a
     # caller grad_outputs or a second branch reading the same grad (h + x) must stay intact.
@@ -208,7 +214,7 @@ def test_returned_hidden_states_leave_caller_and_shared_grads_alone(monkeypatch)
     )
     model.train()
     torch.manual_seed(19)
-    ids = torch.randint(10, model.config.vocab_size, (2, 16), device = "cuda")
+    ids = torch.randint(10, model.config.vocab_size, (2, 16), device = DEVICE)
     x0 = model.model.embed_tokens(ids).detach()
     incoming = torch.randn_like(x0)
     monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "1")

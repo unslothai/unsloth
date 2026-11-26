@@ -19,6 +19,7 @@ from core.inference.diffusion_memory import (
     torchao_scheme_streams,
     torchao_survives_plan,
 )
+from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda_or_xpu
 
 ENV = "UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17"
 AO17, AO18, AO16 = (0, 17), (0, 18), (0, 16)
@@ -161,8 +162,8 @@ def test_int8_tensor_module_keeps_the_stream(monkeypatch, _apply_env):
 
 def _v1_int8_stack():
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("needs CUDA (pinned host memory)")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU (pinned host memory)")
     try:
         from torchao.quantization.linear_activation_quantized_tensor import (  # noqa: F401
             LinearActivationQuantizedTensor,
@@ -195,11 +196,11 @@ def test_v1_int8_streams_bit_identically_with_the_shim():
     quantize_(offloaded, Int8DynamicActivationInt8WeightConfig(set_inductor_config = False))
     offloaded.requires_grad_(False)
     assert type(next(offloaded.parameters())).__name__ == "LinearActivationQuantizedTensor"
-    resident = copy.deepcopy(offloaded).cuda()
+    resident = copy.deepcopy(offloaded).to(accelerator_device_type())
     kwargs = mem._torchao_group_offload_kwargs(
         offloaded,
         {
-            "onload_device": torch.device("cuda"),
+            "onload_device": torch.device(accelerator_device_type()),
             "offload_device": torch.device("cpu"),
             "offload_type": "block_level",
             "num_blocks_per_group": 1,
@@ -209,7 +210,7 @@ def test_v1_int8_streams_bit_identically_with_the_shim():
     )
     assert kwargs["use_stream"] is True
     apply_group_offloading(offloaded, **kwargs)
-    x = torch.randn(2, 16, 256, dtype = torch.bfloat16, device = "cuda")
+    x = torch.randn(2, 16, 256, dtype = torch.bfloat16, device = accelerator_device_type())
     with torch.no_grad():
         want = resident(x)
         for _ in range(3):
@@ -238,7 +239,7 @@ def test_v1_int8_payload_returns_to_the_host_after_each_forward():
     kwargs = mem._torchao_group_offload_kwargs(
         blocks,
         {
-            "onload_device": torch.device("cuda"),
+            "onload_device": torch.device(accelerator_device_type()),
             "offload_device": torch.device("cpu"),
             "offload_type": "block_level",
             "num_blocks_per_group": 1,
@@ -248,11 +249,11 @@ def test_v1_int8_payload_returns_to_the_host_after_each_forward():
     )
     assert kwargs["use_stream"] is True
     apply_group_offloading(blocks, **kwargs)
-    x = torch.randn(2, 16, 1024, dtype = torch.bfloat16, device = "cuda")
+    x = torch.randn(2, 16, 1024, dtype = torch.bfloat16, device = accelerator_device_type())
     with torch.no_grad():
         for _ in range(2):
             blocks(x)
-    torch.cuda.synchronize()
+    accelerator_module().synchronize()
     for block in blocks:
         for linear in (block[0], block[2]):
             impl = linear.weight.original_weight_tensor.tensor_impl

@@ -25,7 +25,11 @@ if str(BACKEND) not in sys.path:
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "tests" / "_shared"))
 
-from real_accelerator import has_real_cuda  # noqa: E402
+from real_accelerator import (  # noqa: E402
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)
 
 from core.inference import diffusion_native_cache as NC  # noqa: E402
 from core.inference import diffusion_prequant_cache as C  # noqa: E402
@@ -258,21 +262,22 @@ def test_an_onload_right_after_the_sync_does_not_reach_the_written_bytes(
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU GPU")
 def test_cuda_storage_is_reclaimed_while_the_write_is_in_flight(monkeypatch, base_dir):
-    baseline = torch.cuda.memory_allocated()
-    model = _native(base_dir).to("cuda")
+    acc = accelerator_module()
+    baseline = acc.memory_allocated()
+    model = _native(base_dir).to(accelerator_device_type())
     expected = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-    torch.cuda.synchronize()
+    acc.synchronize()
     seen: dict = {}
 
     def offload(_tensors):
-        before = torch.cuda.memory_allocated()
+        before = acc.memory_allocated()
         for t in _live_tensors(model):
             t.data = t.data.cpu()
         _tensors = None  # noqa: F841 - only the writer's own reference may remain
-        torch.cuda.synchronize()
-        seen["before"], seen["after"] = before, torch.cuda.memory_allocated()
+        acc.synchronize()
+        seen["before"], seen["after"] = before, acc.memory_allocated()
 
     path = _paused_save(monkeypatch, model, base_dir, offload)
     assert seen["before"] > baseline

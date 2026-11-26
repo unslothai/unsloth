@@ -7,6 +7,10 @@ Checked against the copy-based path it replaces."""
 import types
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 import unsloth  # noqa: F401  (must precede transformers)
 import torch
@@ -15,7 +19,9 @@ from unsloth.models import llama
 
 N_HEADS, N_KV, HEAD_DIM, HIDDEN = 8, 2, 64, 256
 
-cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
+DEVICE = accelerator_device_type()
+
+cuda_or_xpu = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU only")
 
 
 def _attention(dtype, device):
@@ -61,7 +67,7 @@ def _rotate(x, cos, sin, position):
     return x * cos[position] + rh * sin[position]
 
 
-@cuda
+@cuda_or_xpu
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("bsz", [1, 3])
 @pytest.mark.parametrize("ignore_out", [False, True])
@@ -74,19 +80,19 @@ def test_kv_slot_holds_rotated_k_and_raw_v(dtype, bsz, ignore_out, monkeypatch):
             "fast_linear_forward",
             lambda proj, X, temp_lora = None, out = None: real(proj, X).clone(),
         )
-    attn, cos, sin = _attention(dtype, "cuda")
+    attn, cos, sin = _attention(dtype, DEVICE)
     cached = 5
-    K1 = torch.randn(bsz, N_KV, cached, HEAD_DIM, dtype = dtype, device = "cuda")
-    V1 = torch.randn(bsz, N_KV, cached, HEAD_DIM, dtype = dtype, device = "cuda")
+    K1 = torch.randn(bsz, N_KV, cached, HEAD_DIM, dtype = dtype, device = DEVICE)
+    V1 = torch.randn(bsz, N_KV, cached, HEAD_DIM, dtype = dtype, device = DEVICE)
     past = (K1, V1)
     for step in range(4):
         seq_len = cached + step
-        X = torch.randn(bsz, 1, HIDDEN, dtype = dtype, device = "cuda")
+        X = torch.randn(bsz, 1, HIDDEN, dtype = dtype, device = DEVICE)
         out, past = llama.LlamaAttention_fast_forward_inference(
             attn,
             X,
             past,
-            torch.full((bsz, 1), seq_len, device = "cuda"),
+            torch.full((bsz, 1), seq_len, device = DEVICE),
             attention_mask = None,
             do_prefill = step == 0,
         )

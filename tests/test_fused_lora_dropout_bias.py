@@ -15,13 +15,19 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 from unsloth.kernels import fast_lora
 
 H, I = 64, 96
 TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-DEVICES = ["cpu"] + (["cuda"] if has_real_cuda() else [])
+DEVICE = accelerator_device_type()
+DEVICES = ["cpu"] + ([DEVICE] if has_real_cuda_or_xpu() else [])
 
 
 class _Block(torch.nn.Module):
@@ -87,7 +93,7 @@ def _skip_triton_on_cpu(device, path):
 
 
 def _rng_state(device):
-    return torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
+    return accelerator_module().get_rng_state() if device == DEVICE != "cpu" else torch.get_rng_state()
 
 
 def _run(fn, model, X0, seed, device):

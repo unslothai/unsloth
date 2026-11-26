@@ -5,13 +5,20 @@ elsewhere) must match the torch loop bit for bit."""
 
 import numpy as np
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 from unsloth.kernels import fp8
 
-CUDA = torch.cuda.is_available()
+CUDA = has_real_cuda()
+GPU = has_real_cuda_or_xpu()
+DEVICE = accelerator_device_type()
 HIP = torch.version.hip is not None
-needs_cuda = pytest.mark.skipif(not CUDA, reason = "needs a GPU")
+needs_gpu = pytest.mark.skipif(not GPU, reason = "needs a GPU")
 BLOCK = 16
 
 
@@ -61,7 +68,7 @@ def _rounding_inputs():
     return bits.to(torch.int32).view(torch.float32)
 
 
-@needs_cuda
+@needs_gpu
 def test_f32_to_f16_rne_matches_torch_cast():
     import triton
     import triton.language as tl
@@ -72,20 +79,27 @@ def test_f32_to_f16_rne_matches_torch_cast():
         mask = offs < n
         tl.store(y_ptr + offs, fp8._f32_to_f16_rne(tl.load(x_ptr + offs, mask = mask)), mask = mask)
 
-    x = _rounding_inputs().cuda()
+    x = _rounding_inputs().to(DEVICE)
     y = torch.empty_like(x, dtype = torch.float16)
     _round[(triton.cdiv(x.numel(), 1024),)](x, y, x.numel(), BLOCK = 1024, enable_fp_fusion = True)
     _same_bits(y, x.half())
 
 
-@needs_cuda
+@needs_gpu
 @pytest.mark.parametrize("exact", ["1", "0"])
-@pytest.mark.parametrize("kernel", ["bytes", "fp8e4nv"])
+@pytest.mark.parametrize(
+    "kernel",
+    [
+        "bytes",
+        # XPU's fp8e4nv decode does not reproduce the torch loop's NaNs, so this one stays CUDA-only.
+        pytest.param("fp8e4nv", marks = pytest.mark.skipif(not CUDA, reason = "needs a GPU")),
+    ],
+)
 def test_dequant_kernels_match_torch_loop_fp16(monkeypatch, kernel, exact):
     if exact == "0" and HIP:
         pytest.skip("the plain fp16 cast is the one ROCm Triton fuses into v_fma_mixlo_f16")
     monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", exact)
-    w, s = _data("cuda")
+    w, s = _data(DEVICE)
     ref = fp8._torch_blockwise_dequant(w, s, [BLOCK, BLOCK], torch.float16)
     if kernel == "bytes":
         out = fp8._e4m3fn_bytes_dequant(w, s, BLOCK, BLOCK, torch.float16)
@@ -97,12 +111,12 @@ def test_dequant_kernels_match_torch_loop_fp16(monkeypatch, kernel, exact):
     _same_bits(out, ref)
 
 
-@needs_cuda
+@needs_gpu
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 def test_other_dtypes_untouched(monkeypatch, dtype):
     monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
     assert fp8._fp8_exact_f16_round(dtype) is False
-    w, s = _data("cuda")
+    w, s = _data(DEVICE)
     _same_bits(
         fp8._e4m3fn_bytes_dequant(w, s, BLOCK, BLOCK, dtype),
         fp8._torch_blockwise_dequant(w, s, [BLOCK, BLOCK], dtype),

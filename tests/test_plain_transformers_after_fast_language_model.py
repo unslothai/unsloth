@@ -10,7 +10,9 @@ import sys
 import types
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
+
+DEVICE = accelerator_device_type()
 
 
 def _fake_family(monkeypatch):
@@ -100,9 +102,9 @@ tok.save_pretrained(path)
 _PLAIN = """
 import json, torch
 from transformers import AutoModelForCausalLM
-plain = AutoModelForCausalLM.from_pretrained({path!r}, dtype = torch.bfloat16).cuda().eval()
-x = dict(input_ids = torch.tensor([[1, 5, 6, 7, 8, 9]], device = "cuda"),
-         attention_mask = torch.ones(1, 6, dtype = torch.long, device = "cuda"))
+plain = AutoModelForCausalLM.from_pretrained({path!r}, dtype = torch.bfloat16).to({device!r}).eval()
+x = dict(input_ids = torch.tensor([[1, 5, 6, 7, 8, 9]], device = {device!r}),
+         attention_mask = torch.ones(1, 6, dtype = torch.long, device = {device!r}))
 with torch.no_grad():
     logits = plain(**x).logits.float()
 gen = plain.generate(**x, max_new_tokens = 8, do_sample = False, min_new_tokens = 8)
@@ -117,12 +119,12 @@ def _run(code):
     return {line.split(" ", 1)[0]: json.loads(line.split(" ", 1)[1]) for line in lines}
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "FastLanguageModel loads need CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "FastLanguageModel loads need CUDA or XPU")
 def test_plain_transformers_after_fast_language_model_matches_a_fresh_process(tmp_path):
     import torch
 
     path = str(tmp_path / "tiny")
-    fresh = _run(_TINY.format(path = path) + _PLAIN.format(path = path))["PLAIN"]
+    fresh = _run(_TINY.format(path = path) + _PLAIN.format(path = path, device = DEVICE))["PLAIN"]
     after = _run(
         f"""
 import os
@@ -131,7 +133,7 @@ from unsloth import FastLanguageModel
 import json, torch
 model, _ = FastLanguageModel.from_pretrained({path!r}, load_in_4bit = False, max_seq_length = 64)
 """
-        + _PLAIN.format(path = path)
+        + _PLAIN.format(path = path, device = DEVICE)
         + f"""
 again, _ = FastLanguageModel.from_pretrained({path!r}, load_in_4bit = False, max_seq_length = 64)
 with torch.no_grad():

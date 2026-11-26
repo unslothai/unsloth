@@ -16,6 +16,13 @@ import torch._inductor.config  # noqa: E402
 from core.inference import diffusion_compile_cache as cache  # noqa: E402
 from core.inference import diffusion_compile_config as cc  # noqa: E402
 from core.inference import diffusion_speed as ds  # noqa: E402
+from real_accelerator import (  # noqa: E402
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)
+
+DEVICE = accelerator_device_type()
 
 _INDUCTOR = torch._inductor.config
 _KILL_SWITCH = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
@@ -122,11 +129,11 @@ def _flux_like_block():
             return self.q(h), self.k(h), self.v(h), self.mlp(h)
 
     torch.manual_seed(0)
-    block = Block().cuda().to(torch.bfloat16)
+    block = Block().to(DEVICE).to(torch.bfloat16)
     quantize_(block, Int8DynamicActivationInt8WeightConfig(set_inductor_config = False))
-    x = torch.randn(4096, 3072, device = "cuda", dtype = torch.bfloat16)
-    shift = torch.randn(3072, device = "cuda", dtype = torch.bfloat16)
-    scale = torch.randn(3072, device = "cuda", dtype = torch.bfloat16)
+    x = torch.randn(4096, 3072, device = DEVICE, dtype = torch.bfloat16)
+    shift = torch.randn(3072, device = DEVICE, dtype = torch.bfloat16)
+    scale = torch.randn(3072, device = DEVICE, dtype = torch.bfloat16)
     return block, (x, shift, scale)
 
 
@@ -166,7 +173,7 @@ def _run_counting_reduction_autotunes(
     block, inputs = _flux_like_block()
     with torch.no_grad():
         out = torch.compile(block, fullgraph = True, dynamic = False)(*inputs)
-    torch.cuda.synchronize()
+    accelerator_module().synchronize()
     digest = hashlib.sha256()
     for t in out:
         digest.update(t.float().cpu().numpy().tobytes())
@@ -361,10 +368,10 @@ def _wan_like_block_head():
             return self.proj(h)
 
     torch.manual_seed(0)
-    head = Head().cuda()
+    head = Head().to(DEVICE)
     head.proj.to(torch.bfloat16)
-    x = (torch.randn(1, 6160, 3072, device = "cuda") * 4 + 0.3).to(torch.bfloat16)
-    temb = (torch.randn(1, 6160, 6, 3072, device = "cuda") * 0.5).to(torch.bfloat16)
+    x = (torch.randn(1, 6160, 3072, device = DEVICE) * 4 + 0.3).to(torch.bfloat16)
+    temb = (torch.randn(1, 6160, 6, 3072, device = DEVICE) * 0.5).to(torch.bfloat16)
     return head, (x, temb)
 
 
@@ -390,9 +397,9 @@ def _ltx_like_block_norm():
             return self.proj(normed * (1 + scale) + shift)
 
     torch.manual_seed(0)
-    head = Head().cuda().to(torch.bfloat16)
-    x = (torch.randn(1, 6144, 4096, device = "cuda") * 3 + 0.2).to(torch.bfloat16)
-    temb = (torch.randn(1, 6144, 6 * 4096, device = "cuda") * 0.5).to(torch.bfloat16)
+    head = Head().to(DEVICE).to(torch.bfloat16)
+    x = (torch.randn(1, 6144, 4096, device = DEVICE) * 3 + 0.2).to(torch.bfloat16)
+    temb = (torch.randn(1, 6144, 6 * 4096, device = DEVICE) * 0.5).to(torch.bfloat16)
     return head, (x, temb)
 
 
@@ -409,9 +416,9 @@ def _qwen_like_text_norm():
             return torch.addcmul(shift.unsqueeze(1), self.norm(x.float()), 1 + scale.unsqueeze(1))
 
     torch.manual_seed(0)
-    head = Head().cuda()
-    x = (torch.randn(1, 64, 3072, device = "cuda") * 3 + 0.2).to(torch.bfloat16)
-    mod = (torch.randn(1, 6144, device = "cuda") * 0.5).to(torch.bfloat16)
+    head = Head().to(DEVICE)
+    x = (torch.randn(1, 64, 3072, device = DEVICE) * 3 + 0.2).to(torch.bfloat16)
+    mod = (torch.randn(1, 6144, device = DEVICE) * 0.5).to(torch.bfloat16)
     return head, (x, mod)
 
 
@@ -453,7 +460,7 @@ def _run_norm(
         out = torch.compile(head, **(compile_kwargs or {"fullgraph": True, "dynamic": False}))(
             *inputs
         )
-    torch.cuda.synchronize()
+    accelerator_module().synchronize()
     torch._dynamo.reset()
     return seen, hashlib.sha256(out.float().cpu().numpy().tobytes()).hexdigest()
 
@@ -466,8 +473,10 @@ def _run_norm(
     ids = ["wan_layernorm", "ltx23_rmsnorm", "qwen_image_text_layernorm"],
 )
 def test_filter_option_gives_the_norm_one_config(monkeypatch, tmp_path, build):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 8:
-        pytest.skip("needs an sm80+ CUDA GPU")
+    if not has_real_cuda_or_xpu() or (
+        DEVICE == "cuda" and torch.cuda.get_device_capability()[0] < 8
+    ):
+        pytest.skip("needs an sm80+ CUDA GPU or an XPU")
     pytest.importorskip("triton")
     _INDUCTOR.emulate_precision_casts = True
     _INDUCTOR.dynamic_scale_rblock = False

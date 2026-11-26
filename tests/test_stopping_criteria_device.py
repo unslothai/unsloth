@@ -6,11 +6,14 @@ import types
 
 import pytest
 from real_accelerator import (
-    has_real_cuda,
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
 )
 import torch
 
 from unsloth.chat_templates import create_stopping_criteria
+
+DEVICE = accelerator_device_type()
 
 
 class _FakeTokenizer:
@@ -47,16 +50,16 @@ def test_multi_token_criteria_builds_and_runs_on_cpu():
     assert criteria[0](torch.tensor([100, 101, 7]), None) is False
 
 
-# Not cuda.is_available() (spoofed True) nor has_real_accelerator() (true on XPU-only hosts).
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
+# Not cuda.is_available() (spoofed True) nor has_real_accelerator() (true on MPS / NPU hosts).
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a real CUDA or XPU device")
 def test_stop_token_follows_the_input_device():
     criteria = create_stopping_criteria(_FakeTokenizer(eos_token_id = 2))
 
-    assert criteria[0](torch.tensor([9, 9, 2], device = "cuda"), None) is True
-    assert criteria[0].stop_token.device.type == "cuda"
+    assert criteria[0](torch.tensor([9, 9, 2], device = DEVICE), None) is True
+    assert criteria[0].stop_token.device.type == DEVICE
     pointer = criteria[0].stop_token.data_ptr()
 
-    assert criteria[0](torch.tensor([9, 9, 2], device = "cuda"), None) is True
+    assert criteria[0](torch.tensor([9, 9, 2], device = DEVICE), None) is True
     assert criteria[0].stop_token.data_ptr() == pointer
 
     assert criteria[0](torch.tensor([9, 9, 2]), None) is True

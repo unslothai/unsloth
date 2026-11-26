@@ -24,10 +24,11 @@ import types
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda, has_real_cuda_or_xpu
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(_ROOT, "unsloth", "optimizers", "state_offload.py")
+DEVICE = accelerator_device_type()
 
 
 def _module():
@@ -99,13 +100,13 @@ def _train(
     torch.manual_seed(seed)
     model = torch.nn.Sequential(
         torch.nn.Linear(64, 8192), torch.nn.GELU(), torch.nn.Linear(8192, 64)
-    ).cuda()
+    ).to(DEVICE)
     optimizer = optimizer_factory(model.parameters())
     # Bound before offloading, as accelerate keeps it and swaps it back in on every fp16 step.
     step_fn = optimizer.step
     if offload:
         assert module.offload_optimizer_state(optimizer, chunk_bytes = chunk_bytes) is not None
-    x = torch.randn(32, 64, device = "cuda", generator = None)
+    x = torch.randn(32, 64, device = DEVICE, generator = None)
     losses = []
     for step in range(steps):
         loss = (model(x + step) ** 2).mean()
@@ -148,7 +149,7 @@ def test_offload_matches_on_device_steps_and_resumes(name, chunk_bytes):
     assert head_losses == base_losses
     for a, b in zip(base_model.parameters(), head_model.parameters()):
         assert torch.equal(a, b)
-    assert _state_devices(base_opt) == {"cuda"}
+    assert _state_devices(base_opt) == {DEVICE}
     assert _state_devices(head_opt) == {"cpu"}
     assert head_opt._unsloth_state_offloader.steps == 6
 
@@ -162,7 +163,7 @@ def test_offload_matches_on_device_steps_and_resumes(name, chunk_bytes):
     resumed_opt.load_state_dict(saved)
     assert _state_devices(resumed_opt) == {"cpu"}
 
-    x = torch.randn(32, 64, device = "cuda")
+    x = torch.randn(32, 64, device = DEVICE)
     for model, optimizer in ((base_model, base_opt), (resumed_model, resumed_opt)):
         (model(x) ** 2).mean().backward()
         optimizer.step()
@@ -172,10 +173,10 @@ def test_offload_matches_on_device_steps_and_resumes(name, chunk_bytes):
     assert _state_devices(resumed_opt) == {"cpu"}
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_chunked_step_bounds_device_state_and_keeps_grads():
     module = _module()
-    params = [torch.nn.Parameter(torch.randn(1 << 20, device = "cuda")) for _ in range(4)]
+    params = [torch.nn.Parameter(torch.randn(1 << 20, device = DEVICE)) for _ in range(4)]
     optimizer = torch.optim.AdamW(params, lr = 1e-3)
     offloader = module.offload_optimizer_state(optimizer, chunk_bytes = 9 << 20)
     for p in params:
@@ -184,11 +185,11 @@ def test_chunked_step_bounds_device_state_and_keeps_grads():
     for p in params:
         p.grad = torch.ones_like(p)
     grads = [p.grad for p in params]
-    torch.cuda.synchronize()
-    base = torch.cuda.memory_allocated()
-    torch.cuda.reset_peak_memory_stats()
+    accelerator_module().synchronize()
+    base = accelerator_module().memory_allocated()
+    accelerator_module().reset_peak_memory_stats()
     optimizer.step()
-    peak = torch.cuda.max_memory_allocated() - base
+    peak = accelerator_module().max_memory_allocated() - base
     assert all(p.grad is g for p, g in zip(params, grads))
     # One parameter's state (2 x 4 MiB) on device at a time, not all four (32 MiB).
     assert peak < 16 << 20
@@ -259,34 +260,34 @@ def test_nested_state_tensors_are_sized():
     assert len(offloader._chunks([param, other])) == 2
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_nested_state_object_round_trip():
     module = _module()
-    param = torch.nn.Parameter(torch.randn(64, device = "cuda"))
+    param = torch.nn.Parameter(torch.randn(64, device = DEVICE))
     optimizer = torch.optim.AdamW([param], lr = 1e-3)
     param.grad = torch.ones_like(param)
     optimizer.step()
-    ortho = torch.randn(64, 8, device = "cuda")
+    ortho = torch.randn(64, 8, device = DEVICE)
     projector = _Projector(ortho.clone())
     optimizer.state[param]["projector"] = projector
     offloader = module.offload_optimizer_state(optimizer)
     assert projector.ortho_matrix.device.type == "cpu"
     assert offloader.offloaded_bytes >= ortho.numel() * 4
     offloader.restore()
-    assert projector.ortho_matrix.device.type == "cuda"
+    assert projector.ortho_matrix.device.type == DEVICE
     assert torch.equal(projector.ortho_matrix, ortho)
     param.grad = torch.ones_like(param)
     optimizer.step()
     assert projector.ortho_matrix.device.type == "cpu"
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_layerwise_optimizer_dict_is_offloaded():
     module = _module()
     LayerWiseDummyOptimizer = pytest.importorskip(
         "transformers.trainer_pt_utils"
     ).LayerWiseDummyOptimizer
-    params = [torch.nn.Parameter(torch.randn(256, device = "cuda")) for _ in range(2)]
+    params = [torch.nn.Parameter(torch.randn(256, device = DEVICE)) for _ in range(2)]
     optimizer_dict = {p: torch.optim.AdamW([p], lr = 1e-3) for p in params}
     dummy = LayerWiseDummyOptimizer(optimizer_dict = optimizer_dict, lr = 1e-3)
     offloaders = module.offload_optimizer_state(dummy)
@@ -370,14 +371,14 @@ def test_list_state_tensors_are_sized():
     assert len(module._StateOffloader(optimizer, chunk_bytes = 100)._chunks(params)) == 2
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_lbfgs_history_is_offloaded():
     module = _module()
     torch.manual_seed(0)
-    target = torch.randn(64, device = "cuda")
+    target = torch.randn(64, device = DEVICE)
 
     def run(offload):
-        p = torch.nn.Parameter(torch.zeros(64, device = "cuda"))
+        p = torch.nn.Parameter(torch.zeros(64, device = DEVICE))
         optimizer = torch.optim.LBFGS([p], lr = 0.5, history_size = 4, max_iter = 3)
         if offload:
             module.offload_optimizer_state(optimizer)
@@ -449,10 +450,10 @@ def test_positional_none_closure_still_chunks():
 
 
 def _big_params(n = 4, numel = 1 << 20):
-    return [torch.nn.Parameter(torch.randn(numel, device = "cuda")) for _ in range(n)]
+    return [torch.nn.Parameter(torch.randn(numel, device = DEVICE)) for _ in range(n)]
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 @pytest.mark.parametrize("fused", [False, True])
 def test_load_state_dict_keeps_state_on_host(fused):
     module = _module()
@@ -471,17 +472,17 @@ def test_load_state_dict_keeps_state_on_host(fused):
     clones = [torch.nn.Parameter(p.detach().clone()) for p in params]
     optimizer = torch.optim.AdamW(clones, lr = 1e-3, fused = fused)
     offloader = module.offload_optimizer_state(optimizer, chunk_bytes = 9 << 20)
-    torch.cuda.synchronize()
-    base = torch.cuda.memory_allocated()
-    torch.cuda.reset_peak_memory_stats()
+    accelerator_module().synchronize()
+    base = accelerator_module().memory_allocated()
+    accelerator_module().reset_peak_memory_stats()
     optimizer.load_state_dict(saved)
-    torch.cuda.synchronize()
+    accelerator_module().synchronize()
     # All four parameters' moments would be 32 MiB on device.
-    assert torch.cuda.max_memory_allocated() - base < 1 << 20
+    assert accelerator_module().max_memory_allocated() - base < 1 << 20
     assert _state_devices(optimizer) == {"cpu"}
     # Fused steps keep "step" on the parameter's device, the others on the host.
     step_device = offloader.offloaded.get((clones[0], "step"))
-    assert (step_device.type if step_device is not None else "cpu") == ("cuda" if fused else "cpu")
+    assert (step_device.type if step_device is not None else "cpu") == (DEVICE if fused else "cpu")
     for p, q in zip(params, clones):
         p.grad = torch.ones_like(p)
         q.grad = torch.ones_like(q)
@@ -492,7 +493,7 @@ def test_load_state_dict_keeps_state_on_host(fused):
     assert _state_devices(optimizer) == {"cpu"}
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_resumed_bitsandbytes_first_step_stays_chunked():
     bnb = pytest.importorskip("bitsandbytes")
     module = _module()
@@ -512,11 +513,11 @@ def test_resumed_bitsandbytes_first_step_stays_chunked():
     for p, q in zip(params, clones):
         p.grad = torch.ones_like(p)
         q.grad = torch.ones_like(q)
-    torch.cuda.synchronize()
-    base = torch.cuda.memory_allocated()
-    torch.cuda.reset_peak_memory_stats()
+    accelerator_module().synchronize()
+    base = accelerator_module().memory_allocated()
+    accelerator_module().reset_peak_memory_stats()
     optimizer.step()
-    peak = torch.cuda.max_memory_allocated() - base
+    peak = accelerator_module().max_memory_allocated() - base
     source.step()
     # One parameter's 8-bit moments (about 2 MiB) at a time, not all four (about 8 MiB).
     assert peak < 5 << 20
@@ -561,7 +562,7 @@ def _q_galore(monkeypatch):
         package.__path__ = path
         monkeypatch.setitem(sys.modules, name, package)
     device_type = types.ModuleType("unsloth_zoo.device_type")
-    device_type.device_synchronize = torch.cuda.synchronize
+    device_type.device_synchronize = torch.xpu.synchronize if DEVICE == "xpu" else torch.cuda.synchronize
     monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.device_type", device_type)
     for name in ("q_galore_projector", "q_galore_adamw"):
@@ -637,12 +638,12 @@ def test_weight_quant_q_galore_restores_state_a_later_pre_hook_activates(monkeyp
     assert restored == [[active, idle]]
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_q_galore_weight_quant_inactive_state_stays_on_host(monkeypatch):
     module = _module()
     q_galore = _q_galore(monkeypatch)
     torch.manual_seed(17)
-    params = [torch.nn.Parameter(torch.randn(256, 256, device = "cuda")) for _ in range(3)]
+    params = [torch.nn.Parameter(torch.randn(256, 256, device = DEVICE)) for _ in range(3)]
     groups = [{"params": params, "rank": 16, "weight_quant": True, "stochastic_round": False}]
     optimizer = q_galore.QGaLoreAdamW8bit(groups, lr = 1e-3)
     q_galore.QGaLoreAdamW8bit.init_weight_quantization(torch.nn.ParameterList(params), groups)
@@ -668,7 +669,7 @@ def test_q_galore_weight_quant_inactive_state_stays_on_host(monkeypatch):
         p.grad = None
     optimizer.step()
     assert seen and all(devices[1:] == [{"cpu"}, {"cpu"}] for devices in seen)
-    assert seen[0][0] == {"cuda"}
+    assert seen[0][0] == {DEVICE}
     assert _state_devices(optimizer) == {"cpu"}
 
 
@@ -692,7 +693,7 @@ def test_q_galore_multi_chunk_offload(monkeypatch, weight_quant):
 
     def run(offload):
         torch.manual_seed(17)
-        params = [torch.nn.Parameter(torch.randn(256, 256, device = "cuda")) for _ in range(2)]
+        params = [torch.nn.Parameter(torch.randn(256, 256, device = DEVICE)) for _ in range(2)]
         groups = [
             {
                 "params": params,
@@ -736,7 +737,7 @@ def test_q_galore_weight_quant_later_pre_hook_gradient(monkeypatch):
 
     def run(offload):
         torch.manual_seed(17)
-        params = [torch.nn.Parameter(torch.randn(256, 256, device = "cuda")) for _ in range(2)]
+        params = [torch.nn.Parameter(torch.randn(256, 256, device = DEVICE)) for _ in range(2)]
         groups = [{"params": params, "rank": 16, "weight_quant": True, "stochastic_round": False}]
         optimizer = q_galore.QGaLoreAdamW8bit(groups, lr = 1e-3)
         q_galore.QGaLoreAdamW8bit.init_weight_quantization(torch.nn.ParameterList(params), groups)
@@ -767,7 +768,7 @@ def test_q_galore_weight_quant_later_pre_hook_gradient(monkeypatch):
     assert _state_devices(optimizer) == {"cpu"}
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_load_state_dict_tracks_dtensor_state_on_host():
     import copy
 
@@ -780,15 +781,15 @@ def test_load_state_dict_tracks_dtensor_state_on_host():
         pytest.skip("a process group is already initialized")
     dist.init_process_group(backend = "fake", rank = 0, world_size = 2, store = FakeStore())
     try:
-        mesh = DeviceMesh("cuda", [0, 1])
+        mesh = DeviceMesh(DEVICE, [0, 1])
 
         def make(local):
             param = torch.nn.Parameter(DTensor.from_local(local, mesh, [Shard(0)]))
             return param, torch.optim.AdamW([param], lr = 1e-2)
 
-        param, optimizer = make(torch.randn(4, 8, device = "cuda"))
+        param, optimizer = make(torch.randn(4, 8, device = DEVICE))
         module.offload_optimizer_state(optimizer)
-        param.grad = DTensor.from_local(torch.ones(4, 8, device = "cuda"), mesh, [Shard(0)])
+        param.grad = DTensor.from_local(torch.ones(4, 8, device = DEVICE), mesh, [Shard(0)])
         optimizer.step()
         assert optimizer.state[param]["exp_avg"]._local_tensor.device.type == "cpu"
 
@@ -800,8 +801,8 @@ def test_load_state_dict_tracks_dtensor_state_on_host():
         assert state["exp_avg"]._local_tensor.device.type == "cpu"
         assert (resumed, "exp_avg") in offloader.offloaded
         assert (resumed, "exp_avg_sq") in offloader.offloaded
-        resumed.grad = DTensor.from_local(torch.ones(4, 8, device = "cuda"), mesh, [Shard(0)])
-        param.grad = DTensor.from_local(torch.ones(4, 8, device = "cuda"), mesh, [Shard(0)])
+        resumed.grad = DTensor.from_local(torch.ones(4, 8, device = DEVICE), mesh, [Shard(0)])
+        param.grad = DTensor.from_local(torch.ones(4, 8, device = DEVICE), mesh, [Shard(0)])
         optimizer2.step()
         optimizer.step()
         assert torch.equal(resumed._local_tensor, param._local_tensor)

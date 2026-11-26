@@ -19,12 +19,12 @@ import sys
 
 import pytest
 
-from real_accelerator import has_real_cuda
+from real_accelerator import has_real_cuda_or_xpu
 
 # `gpu`: deselected by the default addopts, CI runs it in the `-m 'gpu or slow'` leg.
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU GPU"),
 ]
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

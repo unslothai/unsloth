@@ -8,8 +8,11 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_cond_blocks as cb  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu  # noqa: E402
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA or ROCm device")
+pytestmark = pytest.mark.skipif(
+    not has_real_cuda_or_xpu(), reason = "needs a CUDA, ROCm or XPU device"
+)
 
 
 def _cls():
@@ -72,7 +75,7 @@ def test_prepared_forward_tracks_the_float64_oracle(flow_map, refs):
     ref = _tiny(cls, flow_map).double()
     with torch.no_grad():
         want = ref(**_inputs(refs, flow_map, "cpu", torch.float64))[0]
-    dev = torch.device("cuda")
+    dev = torch.device(accelerator_device_type())
     stock = _tiny(cls, flow_map).to(dev, torch.bfloat16)
     prepared = _tiny(cls, flow_map).to(dev, torch.bfloat16)
     kw = _inputs(refs, flow_map, dev, torch.bfloat16)
@@ -90,11 +93,12 @@ def test_prepared_forward_tracks_the_float64_oracle(flow_map, refs):
     assert err_got <= 1.5 * err_stock + 1e-3, (err_got, err_stock)
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA or ROCm device")
 def test_group_offloaded_base_edit_matches_stock():
     cls = _cls()
     from diffusers.hooks import apply_group_offloading
 
-    dev = torch.device("cuda")
+    dev = torch.device(accelerator_device_type())
     stock = _tiny(cls, False).to(dev, torch.bfloat16)
     model = _tiny(cls, False).to(torch.bfloat16)
     apply_group_offloading(

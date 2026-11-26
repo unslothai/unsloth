@@ -10,11 +10,15 @@ import sys
 import textwrap
 
 import pytest
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEVICE = accelerator_device_type()
 
 
 def _load_fix():
@@ -74,21 +78,19 @@ _CHILD = textwrap.dedent("""
 
     compiled = torch.compile(fn, dynamic = True, fullgraph = True)
     for n in (64, 128, 256):
-        x = torch.randn(n, 8, device = "cuda")
+        x = torch.randn(n, 8, device = sys.argv[2])
         torch.testing.assert_close(compiled(x), fn(x), rtol = 0, atol = 0)
     print("RESULT", import_fixes.STATS_TRITON_EAGER_VALS["fallbacks"])
 """)
 
 
-@pytest.mark.skipif(
-    not has_real_cuda() or not torch.cuda.is_available(), reason = "needs a GPU with Triton"
-)
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a GPU with Triton")
 def test_dynamic_size1_strided_triton_mutation_compiles(tmp_path):
     env = dict(os.environ, UNSLOTH_DISABLE_AUTO_UPDATES = "1")
     child = tmp_path / "child.py"  # triton.jit reads the kernel's source file
     child.write_text(_CHILD, encoding = "utf-8")
     out = subprocess.run(
-        [sys.executable, str(child), ROOT],
+        [sys.executable, str(child), ROOT, DEVICE],
         env = env,
         capture_output = True,
         text = True,

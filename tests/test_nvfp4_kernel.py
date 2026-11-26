@@ -2,13 +2,19 @@
 import os
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 ct_helpers = pytest.importorskip("compressed_tensors.compressors.nvfp4.helpers")
 ct_forward = pytest.importorskip("compressed_tensors.quantization.lifecycle.forward")
 
 CUDA = torch.cuda.is_available()
-needs_cuda = pytest.mark.skipif(not CUDA, reason = "needs CUDA")
+DEVICE = accelerator_device_type()
+needs_gpu = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 
 
 @pytest.fixture(scope = "module")
@@ -62,13 +68,13 @@ def test_every_code_and_sign(N, device):
     assert torch.signbit(out.cpu()[0, 16])  # code 8 is -0.0, as in compressed-tensors
 
 
-@needs_cuda
+@needs_gpu
 def test_every_e4m3_group_scale(N):
     # Before sm_89 Triton lacks fp8e4nv, so the kernel decodes scale bytes itself.
-    codes = torch.arange(256, dtype = torch.uint8, device = "cuda").reshape(16, 16)
+    codes = torch.arange(256, dtype = torch.uint8, device = DEVICE).reshape(16, 16)
     scale = codes.view(torch.float8_e4m3fn)
-    packed = torch.full((16, 128), 0x22, dtype = torch.uint8, device = "cuda")  # every value 1.0
-    out = N.nvfp4_dequantize(packed, scale, torch.ones(1, device = "cuda"), torch.float32)
+    packed = torch.full((16, 128), 0x22, dtype = torch.uint8, device = DEVICE)  # every value 1.0
+    out = N.nvfp4_dequantize(packed, scale, torch.ones(1, device = DEVICE), torch.float32)
     expect = scale.float().repeat_interleave(16, dim = 1)
     assert torch.equal(out.isnan(), expect.isnan())
     assert torch.equal(out.nan_to_num(), expect.nan_to_num())
@@ -86,9 +92,9 @@ def test_matches_compressed_tensors_bit_exact(N, device, dtype, shape):
     assert torch.equal(out, _reference(packed, scale, gs, dtype))
 
 
-@needs_cuda
+@needs_gpu
 def test_triton_equals_torch_reference(N):
-    packed, scale, gs = _random_nvfp4(320, 1024, "cuda")
+    packed, scale, gs = _random_nvfp4(320, 1024, DEVICE)
     tri = N.nvfp4_dequantize(packed, scale, gs)
     ref = N._nvfp4_dequantize_torch(packed, scale, gs, torch.bfloat16)
     assert torch.equal(tri, ref)
@@ -160,15 +166,19 @@ def test_backward_saves_only_the_packed_weight(N):
     assert dense == [], saved
 
 
-@needs_cuda
+@needs_gpu
 def test_fullgraph_compile_has_no_breaks_and_matches_eager(N):
     import torch._dynamo
 
-    packed, scale, gs = _random_nvfp4(384, 256, "cuda")
+    packed, scale, gs = _random_nvfp4(384, 256, DEVICE)
     step = lambda X: N.nvfp4_linear(X, packed, scale, gs).float().square().mean()
     # T4 (sm_75) trains in fp16: Inductor has no native bf16 there.
-    dtype = torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
-    X = torch.randn(64, 256, device = "cuda", dtype = dtype, requires_grad = True)
+    dtype = (
+        torch.bfloat16
+        if DEVICE != "cuda" or torch.cuda.get_device_capability() >= (8, 0)
+        else torch.float16
+    )
+    X = torch.randn(64, 256, device = DEVICE, dtype = dtype, requires_grad = True)
     step(X).backward()
     eager = X.grad.clone()
     X.grad = None
@@ -177,22 +187,22 @@ def test_fullgraph_compile_has_no_breaks_and_matches_eager(N):
     torch._dynamo.reset()
     compiled = torch.compile(step, fullgraph = True)
     for rows in (16, 48, 64):  # dynamic-shape recompiles must stay correct
-        Xr = torch.randn(rows, 256, device = "cuda", dtype = dtype, requires_grad = True)
+        Xr = torch.randn(rows, 256, device = DEVICE, dtype = dtype, requires_grad = True)
         compiled(Xr).backward()
     compiled(X).backward()
     assert X.grad.abs().sum() > 0
     torch.testing.assert_close(X.grad, eager)
 
 
-@needs_cuda
+@needs_gpu
 def test_outputs_past_2_31_elements_use_64_bit_offsets(N):
     # 131080 x 16384 outputs: int32 offsets of the last rows wrap negative.
     rows, cols = 2**17 + 8, 16384
-    if torch.cuda.mem_get_info()[0] < 8 * 2**30:
+    if accelerator_module().mem_get_info()[0] < 8 * 2**30:
         pytest.skip("needs 8 GB free")
-    packed = torch.randint(0, 256, (rows, cols // 2), dtype = torch.uint8, device = "cuda")
-    scale = (torch.rand(rows, cols // 16, device = "cuda") + 0.5).to(torch.float8_e4m3fn)
-    gs = torch.tensor([2.0], device = "cuda")
+    packed = torch.randint(0, 256, (rows, cols // 2), dtype = torch.uint8, device = DEVICE)
+    scale = (torch.rand(rows, cols // 16, device = DEVICE) + 0.5).to(torch.float8_e4m3fn)
+    gs = torch.tensor([2.0], device = DEVICE)
     W = N.nvfp4_dequantize(packed, scale, gs, torch.bfloat16)
     tail = slice(rows - 16, rows)
     want = N._nvfp4_dequantize_torch(packed[tail], scale[tail], gs, torch.bfloat16)

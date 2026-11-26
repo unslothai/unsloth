@@ -7,10 +7,11 @@ import os
 import re
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
+DEVICE = accelerator_device_type()
 if not hasattr(transformers, "Mistral4ForCausalLM"):
     pytest.skip("this transformers has no mistral4", allow_module_level = True)
 
@@ -482,7 +483,7 @@ def _fp8_blocks(weight):
     return q.reshape(rows, cols).contiguous(), scale.contiguous(), dequant
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "FP8 loading needs a GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "FP8 loading needs a GPU")
 def test_fp8_checkpoint_dequantizes_exactly_and_loads_natively(tmp_path, hub_cache):
     from transformers import FineGrainedFP8Config
 
@@ -527,7 +528,7 @@ def test_fp8_checkpoint_dequantizes_exactly_and_loads_natively(tmp_path, hub_cac
                 sd[f"{hf}.mlp.experts.down_proj"][e].copy_(dequant[f"{ml}.experts.{e}.w2.weight"])
         for p in reference.parameters():
             p.data = p.data.to(torch.bfloat16)
-    reference = reference.cuda()
+    reference = reference.to(DEVICE)
 
     view = mf.prepare_mistral_format_checkpoint(str(tmp_path / "fp8"))
     with open(os.path.join(view, "config.json")) as f:
@@ -544,7 +545,7 @@ def test_fp8_checkpoint_dequantizes_exactly_and_loads_natively(tmp_path, hub_cac
     assert all(torch.equal(ref_sd[k], sd[k]) for k in ref_sd)
     ids = torch.randint(
         0, params["vocab_size"], (2, 40), generator = torch.Generator().manual_seed(1)
-    ).cuda()
+    ).to(DEVICE)
     with torch.no_grad():
         assert torch.equal(dequantized(input_ids = ids).logits, reference(input_ids = ids).logits)
     del dequantized

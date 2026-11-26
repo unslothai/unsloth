@@ -25,7 +25,7 @@ import types
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FIXES = os.path.join(_ROOT, "unsloth", "import_fixes.py")
@@ -192,8 +192,9 @@ _GPU_RUNNER = textwrap.dedent(
         return y, (y - mean) * torch.rsqrt(var + 1e-6) * w + bias
 
     n = 4096
-    inputs = [torch.randn(64, n, device = "cuda"), torch.randn(64, n, device = "cuda"),
-              torch.randn(n, device = "cuda"), torch.randn(n, device = "cuda")]
+    dev = sys.argv[3]  # "cuda" or "xpu"
+    inputs = [torch.randn(64, n, device = dev), torch.randn(64, n, device = dev),
+              torch.randn(n, device = dev), torch.randn(n, device = dev)]
     compiled = torch.compile(fn, backend = "inductor")
     code = run_and_get_triton_code(compiled, *inputs)
     for got, want in zip(compiled(*inputs), fn(*inputs)):
@@ -203,7 +204,7 @@ _GPU_RUNNER = textwrap.dedent(
 )
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "Inductor Triton codegen needs a GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Inductor Triton codegen needs a GPU")
 def test_generated_reduction_syncs_before_the_reload(tmp_path):
     env = dict(
         os.environ,
@@ -211,7 +212,7 @@ def test_generated_reduction_syncs_before_the_reload(tmp_path):
         TORCHINDUCTOR_FX_GRAPH_CACHE = "0",
     )
     run = lambda arm: subprocess.run(
-        [sys.executable, "-c", _GPU_RUNNER, arm, _FIXES],
+        [sys.executable, "-c", _GPU_RUNNER, arm, _FIXES, accelerator_device_type()],
         env = env,
         capture_output = True,
         text = True,

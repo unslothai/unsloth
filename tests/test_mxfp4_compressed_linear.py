@@ -20,7 +20,11 @@ import shutil
 
 import pytest
 from llama_patch_isolation import restore_llama_patches  # noqa: F401
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from torch import nn
 
@@ -80,10 +84,14 @@ needs_zoo_packed_save = pytest.mark.skipif(
 )
 
 DEVICES = ["cpu"] + (["cuda"] if has_real_cuda() else [])
+DEVICE = accelerator_device_type()
+DEVICE_0 = f"{DEVICE}:0"
 
 
 def _cuda_amp_dtype():
-    # CUDA autocast refuses bf16 below sm_80 (T4), where Unsloth trains in fp16.
+    # CUDA autocast refuses bf16 below sm_80 (T4), where Unsloth trains in fp16; XPU has bf16.
+    if DEVICE != "cuda":
+        return torch.bfloat16
     return torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
 
 
@@ -176,10 +184,10 @@ def test_torch_fp16_decode_rounds_once_for_every_finite_scale(device):
     assert torch.equal(got.view(torch.int16), want.view(torch.int16))
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 def test_zoo_kernel_and_torch_path_agree():
     packed, scale = _random_packed(256, 512, low = 1, high = 254)
-    packed, scale = packed.cuda(), scale.cuda()
+    packed, scale = packed.to(DEVICE), scale.to(DEVICE)
     blocks = packed.view(256, 16, 16)
     for dtype in (torch.bfloat16, torch.float16):
         a = dequantize_mxfp4_packed(packed, scale, dtype)
@@ -223,20 +231,20 @@ def test_forward_and_input_gradient_are_exact_and_save_only_packed_bytes(device,
     assert module.weight_packed.grad is None and not module.weight_packed.requires_grad
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 def test_autocast_runs_the_matmul_in_the_autocast_dtype():
     amp = _cuda_amp_dtype()
     packed, scale = _random_packed(64, 64)
-    module = make_mxfp4_packed_linear(64, 64, device = "cuda")
+    module = make_mxfp4_packed_linear(64, 64, device = DEVICE)
     module.weight_packed.data.copy_(packed)
     module.weight_scale.data.copy_(scale)
     if amp == torch.float16:
         module.weight_scale.data.clamp_(118, 126)  # fp16's range: the decode stays finite and exact
-    ref = nn.Linear(64, 64, bias = False, device = "cuda", dtype = torch.float32)
+    ref = nn.Linear(64, 64, bias = False, device = DEVICE, dtype = torch.float32)
     ref.weight.data.copy_(module.dequantize_weight(torch.float32))
-    x = torch.randn(4, 64, device = "cuda", requires_grad = True)
+    x = torch.randn(4, 64, device = DEVICE, requires_grad = True)
     x2 = x.detach().clone().requires_grad_()
-    with torch.autocast("cuda", dtype = amp):
+    with torch.autocast(DEVICE, dtype = amp):
         ya, yb = module(x), ref(x2)
     assert ya.dtype == yb.dtype == amp
     assert torch.equal(ya, yb)
@@ -559,11 +567,11 @@ def test_dtype_casts_keep_the_packed_bytes_and_set_the_decode_dtype():
     assert torch.equal(module.weight.float(), module.dequantize_weight(torch.bfloat16).float())
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 def test_device_move_carries_bytes_and_scales():
-    module = _filled(32, 64).cuda()
-    assert module.weight_packed.is_cuda and module.weight_scale.is_cuda
-    assert module.weight.is_cuda
+    module = _filled(32, 64).to(DEVICE)
+    assert module.weight_packed.device.type == DEVICE and module.weight_scale.device.type == DEVICE
+    assert module.weight.device.type == DEVICE
 
 
 def test_fast_lora_paths_get_the_packed_bytes_and_a_decoder_not_a_16bit_weight():
@@ -625,7 +633,7 @@ def _mlp_lora_pair(
             peft.LoraConfig(
                 r = 8, lora_alpha = 16, target_modules = ["gate_proj", "up_proj", "down_proj"]
             ),
-        ).cuda()
+        ).to(DEVICE)
         g = torch.Generator().manual_seed(5)
         with torch.no_grad():
             for name, param in sorted(model.named_parameters()):
@@ -635,8 +643,17 @@ def _mlp_lora_pair(
     return models
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
-@pytest.mark.parametrize("rows", [8, 256])
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
+@pytest.mark.parametrize(
+    "rows",
+    [
+        8,
+        # Bit-exact decode + matmul vs the dense base holds on cuBLAS only; XPU differs by bf16 ulps.
+        pytest.param(
+            256, marks = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+        ),
+    ],
+)
 def test_fused_lora_mlp_on_a_packed_base_matches_the_dense_base(rows):
     """8 rows run the fused MXFP4 GEMM (bf16-rounding-level), 256 decode for cuBLAS (bit-exact)."""
     from unsloth.kernels.fast_lora import apply_lora_mlp_swiglu, apply_lora_o
@@ -644,12 +661,12 @@ def test_fused_lora_mlp_on_a_packed_base_matches_the_dense_base(rows):
     amp = _cuda_amp_dtype()
     packed, dense = _mlp_lora_pair(64, 128, amp)
     x = torch.randn(
-        1, rows, 64, device = "cuda", generator = torch.Generator("cuda").manual_seed(0)
+        1, rows, 64, device = DEVICE, generator = torch.Generator(DEVICE).manual_seed(0)
     ).to(amp)
     results = []
     for mlp in (packed, dense):
         xa = x.clone().requires_grad_()
-        with torch.autocast("cuda", dtype = amp):
+        with torch.autocast(DEVICE, dtype = amp):
             y = apply_lora_mlp_swiglu(mlp, xa, inplace = False)
             y = y + apply_lora_o(
                 type("O", (), {"o_proj": mlp.down_proj})(), y.new_ones(1, rows, 128) * 0.01
@@ -670,14 +687,14 @@ def test_fused_lora_mlp_on_a_packed_base_matches_the_dense_base(rows):
         assert all(rel(a, b) < 3e-2 for a, b in zip(la, lb))
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 @pytest.mark.parametrize("rows", [1, 3, 64, 65, 300])
 @pytest.mark.parametrize("bias", [False, True])
 def test_packed_linear_forward_backward_close_to_the_dense_decode_on_cuda(rows, bias):
-    module = _filled(96, 160, bias = bias).cuda()
+    module = _filled(96, 160, bias = bias).to(DEVICE)
     module.weight_scale.data.clamp_(118, 126)
     dense = module.dequantize_weight()
-    x = torch.randn(rows, 160, device = "cuda", generator = torch.Generator("cuda").manual_seed(1)).to(
+    x = torch.randn(rows, 160, device = DEVICE, generator = torch.Generator(DEVICE).manual_seed(1)).to(
         torch.bfloat16
     )
     xa, xb = x.clone().requires_grad_(), x.clone().requires_grad_()
@@ -882,7 +899,7 @@ def _lora_losses(model, steps = 3):
     model.train()
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-2)
     torch.manual_seed(1)
-    ids = torch.randint(0, 256, (2, 24), device = "cuda:0")
+    ids = torch.randint(0, 256, (2, 24), device = DEVICE_0)
     losses = []
     for _ in range(steps):
         loss = model(input_ids = ids, labels = ids).loss
@@ -893,17 +910,23 @@ def _lora_losses(model, steps = 3):
     return losses
 
 
+_needs_ct_and_transformers_5 = pytest.mark.skipif(
+    not HAS_CT
+    or not hasattr(__import__("transformers"), "__version__")
+    or int(__import__("transformers").__version__.split(".")[0]) < 5,
+    reason = "needs compressed-tensors and transformers 5",
+)
+# CUDA only: the bit-exact LoRA loss match (XPU differs in the last bits) and a CPU-only load.
 needs_gpu_loader_any = [
     pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device"),
-    pytest.mark.skipif(
-        not HAS_CT
-        or not hasattr(__import__("transformers"), "__version__")
-        or int(__import__("transformers").__version__.split(".")[0]) < 5,
-        reason = "needs compressed-tensors and transformers 5",
-    ),
+    _needs_ct_and_transformers_5,
+]
+needs_accelerator_loader_any = [
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device"),
+    _needs_ct_and_transformers_5,
 ]
 needs_gpu_loader = [
-    pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device"),
     pytest.mark.skipif(
         not (HAS_CT and HAS_CONVERTERS),
         reason = "needs compressed-tensors and the transformers 5 loader",
@@ -940,7 +963,7 @@ def test_mxfp4_checkpoint_stays_packed_and_matches_its_bf16_decode(
         p.dtype == torch.uint8 for n, p in model_a.named_parameters() if "weight_packed" in n
     )
     model_b, _ = FastLanguageModel.from_pretrained(bf16_dir, load_in_4bit = False, **kw)
-    ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
+    ids = torch.randint(0, 256, (1, 16), device = DEVICE_0)
     import unsloth.models.mxfp4_compressed_linear as mcl
 
     with torch.no_grad():
@@ -983,7 +1006,7 @@ def _plain_logits(path, ids):
 
 
 @needs_zoo_packed_save
-@_apply(needs_gpu_loader_any)
+@_apply(needs_accelerator_loader_any)
 def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatch):
     from safetensors import safe_open
     from unsloth import FastLanguageModel
@@ -993,7 +1016,7 @@ def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatc
     model, tokenizer = FastLanguageModel.from_pretrained(
         packed_dir, max_seq_length = 64, dtype = torch.bfloat16, load_in_4bit = False
     )
-    ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
+    ids = torch.randint(0, 256, (1, 16), device = DEVICE_0)
     with torch.no_grad():
         base_logits = model(input_ids = ids).logits
     full = str(tmp_path / "full")
@@ -1206,7 +1229,7 @@ def test_initialisers_that_rewrite_the_base_weight_refuse_a_packed_base(init):
     peft.get_peft_model(dense, peft.LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = init))
 
 
-@_apply(needs_gpu_loader_any)
+@_apply(needs_accelerator_loader_any)
 def test_the_sixteen_bit_route_declines_without_the_zoo_full_save_support(tmp_path, monkeypatch):
     from transformers import AutoModelForCausalLM
     from unsloth_zoo.temporary_patches import mxfp4 as zoo_mxfp4
@@ -1238,7 +1261,7 @@ def test_a_partly_merged_bitsandbytes_route_model_saves_and_reloads(tmp_path):
             if "lora_B" in name:
                 param.normal_(0, 0.05)
     unloaded = model.merge_and_unload()
-    ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
+    ids = torch.randint(0, 256, (1, 16), device = DEVICE_0)
     with torch.no_grad():
         want = unloaded(input_ids = ids).logits
     out = str(tmp_path / "unloaded")
@@ -1271,7 +1294,7 @@ def test_merge_and_unmerge_under_an_accelerate_hook():
 
 
 @needs_zoo_packed_save
-@_apply(needs_gpu_loader_any)
+@_apply(needs_accelerator_loader_any)
 def test_the_sixteen_bit_route_plans_only_mxfp4_checkpoints(tmp_path, monkeypatch):
     import importlib.util
     import unsloth.models.compressed_tensors_bnb as ctb

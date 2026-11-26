@@ -9,9 +9,11 @@ import pytest
 
 import unsloth  # noqa: F401  (must precede transformers)
 import unsloth.models.gemma2 as g2
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 torch = pytest.importorskip("torch")
+
+DEVICE = accelerator_device_type()
 
 
 class _Captured(Exception):
@@ -93,7 +95,8 @@ def test_single_row_decode_passes_no_mask(monkeypatch, flash):
 
 
 @pytest.mark.skipif(
-    not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
+    not has_real_cuda_or_xpu(),
+    reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA or XPU",
 )
 def test_prefill_global_layers_see_past_the_window():
     from unsloth import FastLanguageModel
@@ -113,7 +116,7 @@ def test_prefill_global_layers_see_past_the_window():
             lambda mod, args, kwargs, idx = idx: masks.__setitem__(idx, kwargs["causal_mask"]),
             with_kwargs = True,
         )
-    ids = torch.arange(10, 10 + n, device = "cuda")[None]
+    ids = torch.arange(10, 10 + n, device = DEVICE)[None]
     attention_mask = torch.ones_like(ids)
     attention_mask[:, 0] = 0
     with torch.no_grad():
@@ -134,7 +137,8 @@ def test_decode_masks_follow_each_layer_device(monkeypatch):
 
 
 @pytest.mark.skipif(
-    not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
+    not has_real_cuda_or_xpu(),
+    reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA or XPU",
 )
 def test_prefill_masks_short_batches_and_4d(monkeypatch):
     import unsloth.models.llama as llama_module
@@ -153,13 +157,13 @@ def test_prefill_masks_short_batches_and_4d(monkeypatch):
     torch.manual_seed(0)
     with torch.no_grad():
         # More rows than tokens: a 4D mask sliced as mask[:q_len, :q_len] cut the batch axis.
-        ids = torch.randint(5, 100, (8, 2), device = "cuda")
+        ids = torch.randint(5, 100, (8, 2), device = DEVICE)
         batched = model(input_ids = ids, attention_mask = torch.ones_like(ids)).logits
         single = model(input_ids = ids[3:4], attention_mask = torch.ones_like(ids[3:4])).logits
         torch.testing.assert_close(batched[3:4], single, rtol = 1e-4, atol = 1e-4)
-        ids = torch.randint(5, 100, (2, 5), device = "cuda")
-        keep = torch.ones(5, 5, dtype = torch.bool, device = "cuda").tril()
-        mask4d = torch.zeros(2, 1, 5, 5, device = "cuda").masked_fill(
+        ids = torch.randint(5, 100, (2, 5), device = DEVICE)
+        keep = torch.ones(5, 5, dtype = torch.bool, device = DEVICE).tril()
+        mask4d = torch.zeros(2, 1, 5, 5, device = DEVICE).masked_fill(
             ~keep, torch.finfo(torch.float32).min
         )
         from_4d = model(input_ids = ids, attention_mask = mask4d).logits
@@ -168,7 +172,8 @@ def test_prefill_masks_short_batches_and_4d(monkeypatch):
 
 
 @pytest.mark.skipif(
-    not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
+    not has_real_cuda_or_xpu(),
+    reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA or XPU",
 )
 def test_unpadded_prefill_uses_static_masks(monkeypatch):
     import unsloth.models.llama as llama_module
@@ -191,7 +196,7 @@ def test_unpadded_prefill_uses_static_masks(monkeypatch):
             lambda mod, args, kwargs, idx = idx: masks.__setitem__(idx, kwargs["causal_mask"]),
             with_kwargs = True,
         )
-    ids = torch.arange(10, 10 + n, device = "cuda").repeat(8, 1)
+    ids = torch.arange(10, 10 + n, device = DEVICE).repeat(8, 1)
     with torch.no_grad():
         model(input_ids = ids, attention_mask = torch.ones_like(ids))
     assert all(m.dim() == 2 for m in masks.values())

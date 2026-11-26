@@ -17,7 +17,7 @@ pytest.importorskip("transformers.models.longcat_flash")
 safetensors_torch = pytest.importorskip("safetensors.torch")
 
 import torch.nn.functional as F  # noqa: E402
-from real_accelerator import has_real_cuda  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 from transformers import AutoConfig, AutoModelForCausalLM  # noqa: E402
 
 from unsloth.import_fixes import fix_transformers_longcat_lsa_config  # noqa: E402
@@ -26,6 +26,8 @@ from unsloth.models.longcat_lsa import (  # noqa: E402
     is_longcat_lsa_config_dict,
     register_longcat_lsa,
 )
+
+DEVICE = accelerator_device_type()
 
 # The published config.json, verbatim apart from the dimensions shrunk below.
 REAL_CONFIG = {
@@ -414,19 +416,19 @@ def test_ngram_ids_follow_the_sglang_kernel(tiny):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 def test_split_model_keeps_the_token_table_where_accelerate_put_it(tiny):
     # Accelerate hooks move every `.to`-able arg: never pass the embed_tokens module itself.
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
     path, cfg, sd = tiny
-    model = _load(path).eval().to("cuda")
-    ids = _tokens(cfg, 2, 15).to("cuda")
+    model = _load(path).eval().to(DEVICE)
+    ids = _tokens(cfg, 2, 15).to(DEVICE)
     with torch.no_grad():
         expected = model(input_ids = ids).logits.cpu()
     model.model.embed_tokens.to("cpu")
     add_hook_to_module(model.model.embed_tokens, AlignDevicesHook(execution_device = "cpu"))
-    add_hook_to_module(model.model.ngram_embeddings, AlignDevicesHook(execution_device = "cuda"))
+    add_hook_to_module(model.model.ngram_embeddings, AlignDevicesHook(execution_device = DEVICE))
     with torch.no_grad():
         got = model(input_ids = ids).logits.cpu()
     assert model.model.embed_tokens.weight.device.type == "cpu"

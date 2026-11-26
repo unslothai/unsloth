@@ -3,17 +3,23 @@
 """fp16 LoRA on block-FP8: dequant follows the activation dtype (was bf16 -> `Half != BFloat16`)."""
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+pytestmark = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
+
+DEVICE = accelerator_device_type()
 
 BLOCK = 128
 HIDDEN, INTER, RANK, TOKENS = 256, 384, 8, 16
 
 
 def _fp8_weight(out_f, in_f, seed):
-    g = torch.Generator(device = "cuda").manual_seed(seed)
-    W = torch.randn(out_f, in_f, generator = g, device = "cuda") * 0.05
+    g = torch.Generator(device = DEVICE).manual_seed(seed)
+    W = torch.randn(out_f, in_f, generator = g, device = DEVICE) * 0.05
     Wb = W.view(out_f // BLOCK, BLOCK, in_f // BLOCK, BLOCK)
     s = Wb.abs().amax(dim = (1, 3)) / 448.0
     q = (Wb / s[:, None, :, None]).view(out_f, in_f).to(torch.float8_e4m3fn)
@@ -27,9 +33,9 @@ def _exact(W, s):
 
 
 def _lora(out_f, in_f, seed, dtype):
-    g = torch.Generator(device = "cuda").manual_seed(seed)
-    A = (torch.randn(RANK, in_f, generator = g, device = "cuda") * 0.05).to(dtype)
-    B = (torch.randn(out_f, RANK, generator = g, device = "cuda") * 0.05).to(dtype)
+    g = torch.Generator(device = DEVICE).manual_seed(seed)
+    A = (torch.randn(RANK, in_f, generator = g, device = DEVICE) * 0.05).to(dtype)
+    B = (torch.randn(out_f, RANK, generator = g, device = DEVICE) * 0.05).to(dtype)
     return A.requires_grad_(), B.requires_grad_()
 
 
@@ -55,9 +61,9 @@ def test_fast_dequantize_fp8_default_stays_bf16():
 
 
 def _x(dtype):
-    g = torch.Generator(device = "cuda").manual_seed(99)
+    g = torch.Generator(device = DEVICE).manual_seed(99)
     return (
-        (torch.randn(1, TOKENS, HIDDEN, generator = g, device = "cuda") * 0.5)
+        (torch.randn(1, TOKENS, HIDDEN, generator = g, device = DEVICE) * 0.5)
         .to(dtype)
         .requires_grad_()
     )

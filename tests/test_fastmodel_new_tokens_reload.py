@@ -2,6 +2,10 @@
 """FastModel trains and saves the rows add_new_tokens adds, so a reload keeps them (#1343)."""
 
 import pytest
+from real_accelerator import (
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 # Padded vocab (151936 rows, 151669 tokens): new tokens fit without a resize, so PEFT saves no embedding by itself.
 TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"
@@ -10,8 +14,8 @@ NEW_TOKENS = ["<|tok_a|>", "<|tok_b|>", "<|tok_c|>"]
 
 def test_fastmodel_keeps_added_token_rows_across_reload(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("needs CUDA")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU")
     from unsloth import FastModel, add_new_tokens
 
     model, tokenizer = FastModel.from_pretrained(TINY, max_seq_length = 128, load_in_4bit = False)
@@ -32,7 +36,7 @@ def test_fastmodel_keeps_added_token_rows_across_reload(tmp_path):
     model.save_pretrained(tmp_path)
     tokenizer.save_pretrained(tmp_path)
     del model
-    torch.cuda.empty_cache()
+    accelerator_module().empty_cache()
 
     model2, _ = FastModel.from_pretrained(str(tmp_path), max_seq_length = 128, load_in_4bit = False)
     torch.testing.assert_close(
@@ -45,8 +49,8 @@ def test_fastmodel_keeps_added_token_rows_across_reload(tmp_path):
 
 def test_fastmodel_leaves_trainable_token_indices_alone():
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("needs CUDA")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU")
     from unsloth import FastModel, add_new_tokens
 
     model, tokenizer = FastModel.from_pretrained(TINY, max_seq_length = 128, load_in_4bit = False)

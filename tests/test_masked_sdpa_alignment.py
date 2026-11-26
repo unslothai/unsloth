@@ -8,9 +8,15 @@ import pytest
 import torch
 import torch.nn.functional as F
 from packaging.version import Version
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.utils import attention_dispatch as ad
+
+DEVICE = accelerator_device_type()
 
 
 def _left_padded_mask(
@@ -92,7 +98,7 @@ def test_padded_masked_call_is_exact(monkeypatch, q_len, additive, gqa):
         torch.testing.assert_close(a, b, atol = 1e-5, rtol = 1e-5)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 @pytest.mark.parametrize("gqa", [False, True])
 def test_compiled_masked_training_sdpa_backward_at_unaligned_lengths(gqa):
     """Compiled bf16 backward at lengths 9..17: no fault, matches eager, one dynamic graph."""
@@ -108,12 +114,12 @@ def test_compiled_masked_training_sdpa_backward_at_unaligned_lengths(gqa):
 
     compiled = torch.compile(f, dynamic = True, fullgraph = True)
     for q_len in range(9, 18):
-        q, k, v = _qkv(2, 4, 2 if gqa else 4, q_len, 128, "cuda", torch.bfloat16, seed = q_len)
-        mask = _left_padded_mask(2, q_len, "cuda")
-        grad = torch.randn(2, 4, q_len, 128, device = "cuda", dtype = torch.bfloat16)
+        q, k, v = _qkv(2, 4, 2 if gqa else 4, q_len, 128, DEVICE, torch.bfloat16, seed = q_len)
+        mask = _left_padded_mask(2, q_len, DEVICE)
+        grad = torch.randn(2, 4, q_len, 128, device = DEVICE, dtype = torch.bfloat16)
         got, got_g = _out_and_grads(compiled, q, k, v, grad, m = mask)
         ref, ref_g = _out_and_grads(f, q, k, v, grad, m = mask)
-        torch.cuda.synchronize()
+        accelerator_module().synchronize()
         for a, b in [(got, ref)] + list(zip(got_g, ref_g)):
             torch.testing.assert_close(a.float(), b.float(), atol = 2e-2, rtol = 2e-2)
     assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])

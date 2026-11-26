@@ -13,12 +13,14 @@ from unittest import mock
 
 import pytest
 from real_accelerator import (
-    has_real_cuda,
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPAT_PATH = _REPO_ROOT / "unsloth" / "models" / "_attn_mask_compat.py"
+DEVICE = accelerator_device_type()
 
 
 def _load_compat_module():
@@ -134,7 +136,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
         assert torch.equal(actual, expected)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 @pytest.mark.parametrize(
     "attention_mask,past_length",
     [
@@ -145,7 +147,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
     ],
 )
 def test_sdpa_mask_matches_transformers_on_cuda(attention_mask, past_length):
-    """CUDA counterpart of the test above.
+    """CUDA / XPU counterpart of the test above.
 
     `_unmask_unattended` is gated on ``device.type in ("cuda", "xpu")``, so a
     CPU-only comparison never reaches it. Asserts stride and storage too: an
@@ -164,12 +166,12 @@ def test_sdpa_mask_matches_transformers_on_cuda(attention_mask, past_length):
         query_length,
         16,
         dtype = torch.float32,
-        device = "cuda",
+        device = DEVICE,
     )
     if attention_mask == "ones":
-        mask = torch.ones(batch_size, key_value_length, dtype = torch.int64, device = "cuda")
+        mask = torch.ones(batch_size, key_value_length, dtype = torch.int64, device = DEVICE)
     elif attention_mask == "left_pad":
-        mask = torch.ones(batch_size, key_value_length, dtype = torch.int64, device = "cuda")
+        mask = torch.ones(batch_size, key_value_length, dtype = torch.int64, device = DEVICE)
         mask[:, :2] = 0
     else:
         mask = None

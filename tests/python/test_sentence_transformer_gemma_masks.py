@@ -6,13 +6,15 @@ import inspect
 import pytest
 import torch
 
-from real_accelerator import has_real_accelerator
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
+
+DEVICE = accelerator_device_type()
 
 
 @pytest.mark.parametrize("loader_backend", ["sdpa", "flash_attention_2"])
 def test_patched_gemma_loader_preserves_sequence_isolation(tmp_path, loader_backend):
-    if not has_real_accelerator() or not torch.cuda.is_available():
-        pytest.skip("real Gemma loader requires CUDA")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("real Gemma loader requires CUDA or XPU")
     pytest.importorskip("sentence_transformers")
     from transformers.utils import is_flash_attn_2_available
 
@@ -96,14 +98,14 @@ def test_patched_gemma_loader_preserves_sequence_isolation(tmp_path, loader_back
         with_kwargs = True,
     )
     features = {
-        "input_ids": torch.tensor([[5, 6, 7, 0, 0, 0], [8, 9, 10, 11, 12, 13]], device = "cuda"),
-        "attention_mask": torch.tensor([[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 1]], device = "cuda"),
+        "input_ids": torch.tensor([[5, 6, 7, 0, 0, 0], [8, 9, 10, 11, 12, 13]], device = DEVICE),
+        "attention_mask": torch.tensor([[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 1]], device = DEVICE),
     }
     for training in (False, True):
         model.train(training)
         altered = {key: value.clone() for key, value in features.items()}
         altered["input_ids"][1] = 14
-        with torch.autocast("cuda", dtype = torch.bfloat16):
+        with torch.autocast(DEVICE, dtype = torch.bfloat16):
             expected = model({key: value.clone() for key, value in features.items()})[
                 "sentence_embedding"
             ]

@@ -3,11 +3,14 @@
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu
 
 import unsloth  # noqa: F401
 from unsloth.utils import attention_dispatch as ad
 from unsloth.utils import packing
+
+# On a host with neither CUDA nor XPU keep "cuda", so those cases still skip below.
+GPU_DEVICE = accelerator_device_type() if has_real_cuda_or_xpu() else "cuda"
 
 
 def _seq_info(lengths):
@@ -65,7 +68,8 @@ CASES = [
 
 
 @pytest.mark.parametrize(
-    "device, dtype", [("cpu", torch.float32), ("cuda", torch.bfloat16), ("cuda", torch.float16)]
+    "device, dtype",
+    [("cpu", torch.float32), (GPU_DEVICE, torch.bfloat16), (GPU_DEVICE, torch.float16)],
 )
 @pytest.mark.parametrize("lengths, total, n_heads, n_kv, is_causal, window", CASES)
 def test_segments_match_dense_mask(

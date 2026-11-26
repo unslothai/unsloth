@@ -15,9 +15,15 @@ import sys
 import textwrap
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
-needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+needs_accelerator = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
+
+DEVICE = accelerator_device_type()
 
 TOKENIZER = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 MODELS = {
@@ -35,7 +41,7 @@ SCRIPT = textwrap.dedent(
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-    arch, repo, out_dir, tok_repo, pos = sys.argv[1:6]
+    arch, repo, out_dir, tok_repo, pos, device = sys.argv[1:7]
     pos = int(pos)
     torch.manual_seed(0)
     if repo == "None":
@@ -84,7 +90,7 @@ SCRIPT = textwrap.dedent(
         # touch RoPE, so a zero branch keeps the check on the attention rows.
         for layer in model.model.layers:
             layer.mamba.forward = lambda hidden_states, **kwargs: torch.zeros_like(hidden_states)
-    ids = torch.tensor([[1, 2, 3, 4]], device = "cuda")
+    ids = torch.tensor([[1, 2, 3, 4]], device = device)
 
     def logits(out):
         return out.logits if hasattr(out, "logits") else out[0]
@@ -98,14 +104,14 @@ SCRIPT = textwrap.dedent(
             out = model(
                 input_ids = ids[:, :1],
                 past_key_values = out.past_key_values,
-                position_ids = torch.tensor([[pos]], device = "cuda"),
+                position_ids = torch.tensor([[pos]], device = device),
                 use_cache = True,
             )
-        torch.cuda.synchronize()
+        getattr(torch, device).synchronize()
         return logits(out).float()
 
     lazy = decode(None)
-    full = decode(torch.arange(4, device = "cuda")[None])
+    full = decode(torch.arange(4, device = device)[None])
     assert torch.isfinite(lazy).all()
     torch.testing.assert_close(lazy, full, rtol = 0, atol = 0)
     print("OK")
@@ -113,7 +119,7 @@ SCRIPT = textwrap.dedent(
 )
 
 
-@needs_cuda
+@needs_accelerator
 @pytest.mark.parametrize("arch", list(MODELS))
 def test_decode_reads_rows_past_the_lazy_prefill_cache(arch, tmp_path):
     script = tmp_path / "decode_offset.py"
@@ -131,6 +137,7 @@ def test_decode_reads_rows_past_the_lazy_prefill_cache(arch, tmp_path):
             str(tmp_path / arch),
             TOKENIZER,
             "35000",
+            DEVICE,
         ],
         capture_output = True,
         text = True,

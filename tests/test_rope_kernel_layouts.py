@@ -5,11 +5,18 @@ packed position ids, dtypes and gradient strides, plus the in-place contract cal
 
 import pytest
 import torch
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason = "Triton RoPE kernel needs CUDA"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Triton RoPE kernel needs CUDA or XPU"),
 ]
+
+DEVICE = accelerator_device_type()
 
 BF16 = torch.bfloat16
 # (batch, seq, heads, kv heads, head_dim): pow2 and not (80, 96), 1 to 40 heads, GQA, decode.
@@ -27,8 +34,8 @@ SHAPES = [
 
 
 def _cos_sin(rows, head_dim, dtype):
-    inv = 1.0 / (10000 ** (torch.arange(0, head_dim, 2, device = "cuda").float() / head_dim))
-    freqs = torch.outer(torch.arange(rows, device = "cuda").float(), inv)
+    inv = 1.0 / (10000 ** (torch.arange(0, head_dim, 2, device = DEVICE).float() / head_dim))
+    freqs = torch.outer(torch.arange(rows, device = DEVICE).float(), inv)
     emb = torch.cat((freqs, freqs), -1)
     return emb.cos().to(dtype), emb.sin().to(dtype)
 
@@ -39,7 +46,7 @@ def _packed_ids(batch, seq):
     if seq - sum(lens) > 0:
         lens.append(seq - sum(lens))
     row = torch.cat([torch.arange(n, dtype = torch.int32) for n in lens])[:seq]
-    return torch.stack([row + b for b in range(batch)]).cuda()
+    return torch.stack([row + b for b in range(batch)]).to(DEVICE)
 
 
 def _oracle(
@@ -80,16 +87,16 @@ def _inputs(shape, dtype, layout, g):
     b, s, h, kv, d = shape
     if layout == "projection":
         # As the attention modules build them: [b, h, s, d] views of [b, s, h * d] projections.
-        q_lin = torch.randn(b, s, h * d, device = "cuda", generator = g).to(dtype)
-        k_lin = torch.randn(b, s, kv * d, device = "cuda", generator = g).to(dtype)
+        q_lin = torch.randn(b, s, h * d, device = DEVICE, generator = g).to(dtype)
+        k_lin = torch.randn(b, s, kv * d, device = DEVICE, generator = g).to(dtype)
         q_lin.requires_grad_(True)
         k_lin.requires_grad_(True)
         Q = (q_lin * 1).view(b, s, h, d).transpose(1, 2)
         K = (k_lin * 1).view(b, s, kv, d).transpose(1, 2)
         to_bhsd = lambda t, n: t.view(b, s, n, d).transpose(1, 2)
     else:
-        q_lin = torch.randn(b, h, s, d, device = "cuda", generator = g).to(dtype).requires_grad_(True)
-        k_lin = torch.randn(b, kv, s, d, device = "cuda", generator = g).to(dtype).requires_grad_(True)
+        q_lin = torch.randn(b, h, s, d, device = DEVICE, generator = g).to(dtype).requires_grad_(True)
+        k_lin = torch.randn(b, kv, s, d, device = DEVICE, generator = g).to(dtype).requires_grad_(True)
         Q, K = q_lin * 1, k_lin * 1
         to_bhsd = lambda t, n: t
     return q_lin, k_lin, Q, K, to_bhsd
@@ -104,7 +111,7 @@ def test_rope_matches_fp64_oracle(shape, dtype, with_ids, layout, grad_kind):
     from unsloth.kernels.rope_embedding import fast_rope_embedding
 
     b, s, h, kv, d = shape
-    g = torch.Generator(device = "cuda").manual_seed(sum(shape))
+    g = torch.Generator(device = DEVICE).manual_seed(sum(shape))
     cos, sin = _cos_sin(s + 11, d, dtype)
     ids = _packed_ids(b, s) if with_ids else None
     q_lin, k_lin, Q, K, to_bhsd = _inputs(shape, dtype, layout, g)
@@ -117,14 +124,14 @@ def test_rope_matches_fp64_oracle(shape, dtype, with_ids, layout, grad_kind):
         _assert_rounding_close(got, ref, scale, dtype)
 
     if grad_kind == "dense":
-        dq = torch.randn(q.shape, device = "cuda", generator = g).to(dtype)
-        dk = torch.randn(k.shape, device = "cuda", generator = g).to(dtype)
+        dq = torch.randn(q.shape, device = DEVICE, generator = g).to(dtype)
+        dk = torch.randn(k.shape, device = DEVICE, generator = g).to(dtype)
     elif grad_kind == "transposed":
-        dq = torch.randn(b, s, h, d, device = "cuda", generator = g).to(dtype).transpose(1, 2)
-        dk = torch.randn(b, s, kv, d, device = "cuda", generator = g).to(dtype).transpose(1, 2)
+        dq = torch.randn(b, s, h, d, device = DEVICE, generator = g).to(dtype).transpose(1, 2)
+        dk = torch.randn(b, s, kv, d, device = DEVICE, generator = g).to(dtype).transpose(1, 2)
     else:
-        dq = torch.randn(1, 1, 1, d, device = "cuda", generator = g).to(dtype).expand(q.shape)
-        dk = torch.randn(1, 1, 1, d, device = "cuda", generator = g).to(dtype).expand(k.shape)
+        dq = torch.randn(1, 1, 1, d, device = DEVICE, generator = g).to(dtype).expand(q.shape)
+        dk = torch.randn(1, 1, 1, d, device = DEVICE, generator = g).to(dtype).expand(k.shape)
     dq_before, dk_before = dq.clone(), dk.clone()
     torch.autograd.backward((q, k), (dq, dk))
     assert torch.equal(dq, dq_before) and torch.equal(dk, dk_before), "upstream grad was mutated"
@@ -138,7 +145,7 @@ def test_rope_float32_tables_with_half_inputs():
     from unsloth.kernels.rope_embedding import fast_rope_embedding
 
     shape = (2, 19, 8, 2, 128)
-    g = torch.Generator(device = "cuda").manual_seed(3)
+    g = torch.Generator(device = DEVICE).manual_seed(3)
     cos, sin = _cos_sin(32, 128, torch.float32)
     for ids in (None, _packed_ids(2, 19)):
         _, _, Q, K, _ = _inputs(shape, BF16, "projection", g)
@@ -157,7 +164,7 @@ def test_rope_output_layout_and_aliasing(with_ids):
     from unsloth.kernels.rope_embedding import fast_rope_embedding
 
     b, s, h, kv, d = 2, 24, 8, 2, 64
-    g = torch.Generator(device = "cuda").manual_seed(5)
+    g = torch.Generator(device = DEVICE).manual_seed(5)
     cos, sin = _cos_sin(32, d, torch.float16)
     ids = _packed_ids(b, s) if with_ids else None
     q_lin, k_lin, Q, K, _ = _inputs((b, s, h, kv, d), torch.float16, "projection", g)
@@ -180,14 +187,21 @@ def test_rope_contiguous_qk_input_rotates_in_place(with_ids):
 
     b, s, h, kv, d = 1, 8, 4, 2, 64
     cos, sin = _cos_sin(16, d, torch.float32)
-    Q = torch.randn(b, h, s, d, device = "cuda")
-    K = torch.randn(b, kv, s, d, device = "cuda")
+    Q = torch.randn(b, h, s, d, device = DEVICE)
+    K = torch.randn(b, kv, s, d, device = DEVICE)
     ids = _packed_ids(b, s)
     with torch.no_grad():
         q, k = Fast_RoPE_Embedding_QK.apply(Q, K, cos, sin, ids)
     assert q.data_ptr() == Q.data_ptr() and k.data_ptr() == K.data_ptr()
 
 
+# Host-side tiling arithmetic that never touches the device: kept on the original CUDA gate.
+_NEEDS_CUDA = pytest.mark.skipif(
+    not has_real_cuda(), reason = "Triton RoPE kernel needs CUDA"
+)
+
+
+@_NEEDS_CUDA
 def test_rope_heads_per_program_bounds():
     from unsloth.kernels.rope_embedding import ROPE_TILE_ELEMENTS, _heads_per_program
     for n_heads in (1, 2, 3, 7, 8, 32, 40, 64, 128):
@@ -212,12 +226,12 @@ def test_rope_positions_pair_matches_two_single_calls(layout):
     cos, sin = _cos_sin(32, 64, BF16)
 
     def run(fn):
-        g = torch.Generator(device = "cuda").manual_seed(11)
+        g = torch.Generator(device = DEVICE).manual_seed(11)
         q_lin, k_lin, Q, K, _ = _inputs(shape, BF16, layout, g)
         q, k = fn(Q, K)
         aliased = (q.data_ptr() == Q.data_ptr(), k.data_ptr() == K.data_ptr())
-        dq = torch.randn(q.shape, device = "cuda", generator = g).to(BF16)
-        dk = torch.randn(k.shape, device = "cuda", generator = g).to(BF16)
+        dq = torch.randn(q.shape, device = DEVICE, generator = g).to(BF16)
+        dk = torch.randn(k.shape, device = DEVICE, generator = g).to(BF16)
         torch.autograd.backward((q, k), (dq, dk))
         return q, k, q_lin.grad, k_lin.grad, aliased
 
@@ -234,7 +248,20 @@ def test_rope_positions_pair_matches_two_single_calls(layout):
         assert torch.equal(r.view(torch.int16), x.view(torch.int16))
 
 
-@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize(
+    "compiled",
+    [
+        False,
+        # Compiled RoPE traces its Triton ops only on CUDA; elsewhere fullgraph hits
+        # torch.compiler.disable.
+        pytest.param(
+            True,
+            marks = pytest.mark.skipif(
+                not has_real_cuda(), reason = "Triton RoPE kernel needs CUDA"
+            ),
+        ),
+    ],
+)
 def test_rope_broadcasts_one_row_position_ids(compiled):
     # [1, seq] int32 ids at the front of a buffer of ones: an unbroadcast read past them
     # rotates batch rows >= 1 by position 1.
@@ -243,13 +270,13 @@ def test_rope_broadcasts_one_row_position_ids(compiled):
     if compiled and not hasattr(torch.library, "triton_op"):
         pytest.skip("needs torch.library.triton_op")
     bsz, seq, hd = 3, 21, 64
-    buf = torch.ones(bsz * seq + 64, dtype = torch.int32, device = "cuda")
-    buf[:seq] = torch.arange(seq, dtype = torch.int32, device = "cuda") + 3
+    buf = torch.ones(bsz * seq + 64, dtype = torch.int32, device = DEVICE)
+    buf[:seq] = torch.arange(seq, dtype = torch.int32, device = DEVICE) + 3
     one_row = buf[:seq].view(1, seq)
     cos, sin = _cos_sin(seq + 16, hd, torch.float32)
-    g = torch.Generator(device = "cuda").manual_seed(0)
-    Q = torch.randn(bsz, 4, seq, hd, device = "cuda", generator = g)
-    K = torch.randn(bsz, 2, seq, hd, device = "cuda", generator = g)
+    g = torch.Generator(device = DEVICE).manual_seed(0)
+    Q = torch.randn(bsz, 4, seq, hd, device = DEVICE, generator = g)
+    K = torch.randn(bsz, 2, seq, hd, device = DEVICE, generator = g)
     fn = torch.compile(fast_rope_embedding, fullgraph = True) if compiled else fast_rope_embedding
     got = fn(Q.clone(), K.clone(), cos, sin, one_row)
     want = fast_rope_embedding(

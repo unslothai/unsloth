@@ -10,9 +10,16 @@ import warnings
 from pathlib import Path
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
+
+DEVICE = accelerator_device_type()
 
 import unsloth
 
@@ -810,19 +817,21 @@ def test_trainer_uses_one_gpu_and_the_set_batch_on_a_multi_gpu_machine(checkpoin
     assert trainer._wrap_model(model) is model
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "measures GPU memory")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "measures GPU memory")
 def test_lora_save_does_not_copy_the_encoder_on_the_gpu(checkpoint, tmp_path):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
     )
     model = FastDecisionModel.get_peft_model(model, r = 8, lora_alpha = 16)
-    torch.cuda.synchronize()
-    before = torch.cuda.memory_allocated()
-    torch.cuda.reset_peak_memory_stats()
+    accelerator = accelerator_module()
+    accelerator.synchronize()
+    before = accelerator.memory_allocated()
+    accelerator.reset_peak_memory_stats()
     model.save_pretrained_merged(tmp_path / "out", tokenizer)
-    torch.cuda.synchronize()
-    assert torch.cuda.max_memory_allocated() <= before
-    assert next(model.encoder.parameters()).is_cuda and hasattr(model.encoder, "peft_config")
+    accelerator.synchronize()
+    assert accelerator.max_memory_allocated() <= before
+    assert next(model.encoder.parameters()).device.type == DEVICE
+    assert hasattr(model.encoder, "peft_config")
 
 
 def test_save_refuses_weights_float16_cannot_hold(checkpoint, tmp_path):
@@ -1572,10 +1581,12 @@ def test_kl_regularization_needs_a_lora_clef(clef_checkpoint, tmp_path):
         DecisionTrainer(model = model, args = _args(tmp_path), train_dataset = [], kl_weight = 0.1)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
-    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported(including_emulation = False):
+    if dtype == torch.bfloat16 and not accelerator_module().is_bf16_supported(
+        including_emulation = False
+    ):
         pytest.skip("this GPU has no bfloat16")
     model, processor = FastDecisionModel.from_pretrained(
         str(clef_checkpoint), max_seq_length = 512, dtype = dtype

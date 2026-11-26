@@ -11,8 +11,10 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 from unsloth.models.llama import _base_weight_dtype, _fused_lora_skip_reason
+
+DEVICE = accelerator_device_type()
 
 
 def _proj(weight):
@@ -39,20 +41,20 @@ def test_float32_base_is_not_a_skip_reason():
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a real CUDA or XPU device")
 def test_fp32_nf4_dequant_matches_bitsandbytes():
     import bitsandbytes as bnb
     from unsloth.kernels.utils import fast_dequantize
 
     W = torch.randn(256, 128) * 0.02
-    p = bnb.nn.Params4bit(W, requires_grad = False, quant_type = "nf4").cuda()
+    p = bnb.nn.Params4bit(W, requires_grad = False, quant_type = "nf4").to(DEVICE)
     assert p.quant_state.dtype == torch.float32
     ref = bnb.functional.dequantize_4bit(p.data, p.quant_state)
     torch.testing.assert_close(fast_dequantize(p, p.quant_state), ref, rtol = 0, atol = 0)
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a real CUDA or XPU device")
 def test_fp32_nf4_single_token_decode():
     import bitsandbytes as bnb
     from unsloth.kernels.utils import fast_linear_forward
@@ -61,7 +63,7 @@ def test_fp32_nf4_single_token_decode():
     layer.weight = bnb.nn.Params4bit(
         torch.randn(256, 128) * 0.02, requires_grad = False, quant_type = "nf4"
     )
-    layer = layer.cuda()
-    X = torch.randn(1, 1, 128, device = "cuda")
+    layer = layer.to(DEVICE)
+    X = torch.randn(1, 1, 128, device = DEVICE)
     ref = X @ bnb.functional.dequantize_4bit(layer.weight.data, layer.weight.quant_state).t()
     torch.testing.assert_close(fast_linear_forward(layer, X), ref, rtol = 1e-4, atol = 1e-4)

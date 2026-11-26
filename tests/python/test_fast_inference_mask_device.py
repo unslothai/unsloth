@@ -7,13 +7,15 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu
 import torch
 
 pytestmark = [
     pytest.mark.slow,
-    pytest.mark.skipif(not has_real_cuda(), reason = "fast inference needs a CUDA device"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "fast inference needs a CUDA or XPU device"),
 ]
+
+DEVICE = accelerator_device_type()
 
 PROMPTS = [
     "Hello",
@@ -36,7 +38,7 @@ def _load(model_id, device_map):
 
 
 def _generate(model, tok):
-    batch = tok(PROMPTS, return_tensors = "pt", padding = True).to("cuda:0")
+    batch = tok(PROMPTS, return_tensors = "pt", padding = True).to(f"{DEVICE}:0")
     with torch.no_grad():
         out = model.generate(
             **batch, max_new_tokens = 8, do_sample = False, pad_token_id = tok.pad_token_id

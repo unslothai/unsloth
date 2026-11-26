@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bfloat16 stochastic rounding for full finetuning. CPU; bitsandbytes on CUDA only."""
+"""bfloat16 stochastic rounding for full finetuning. CPU; bitsandbytes on CUDA or XPU only."""
 
 import importlib.util
 from pathlib import Path
@@ -9,9 +9,14 @@ from pathlib import Path
 import pytest
 import torch
 
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 STEPS = 30
+
+DEVICE = accelerator_device_type()
 
 
 @pytest.fixture
@@ -149,7 +154,7 @@ def test_trainer_hook_enables_full_finetuning_only(sr):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "requires CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "requires CUDA or XPU")
 @pytest.mark.parametrize("name", ["AdamW8bit", "PagedAdamW8bit"])
 def test_bitsandbytes_keeps_the_float32_update(sr, name):
     bnb = pytest.importorskip("bitsandbytes")
@@ -157,14 +162,14 @@ def test_bitsandbytes_keeps_the_float32_update(sr, name):
 
     def train(mode):
         dtype = torch.float32 if mode == "fp32" else torch.bfloat16
-        params = [torch.nn.Parameter(w.cuda().to(torch.bfloat16).to(dtype)) for w in _weights()]
+        params = [torch.nn.Parameter(w.to(DEVICE).to(torch.bfloat16).to(dtype)) for w in _weights()]
         start = [p.detach().float().clone() for p in params]
         opt = cls(params, lr = 1e-5, weight_decay = 0.0, min_8bit_size = 256)
         if mode == "sr":
             assert sr.enable_bf16_stochastic_rounding(opt, verbose = False) == 2
         for step in range(STEPS):
             for p, g in zip(params, _grads(step)):
-                p.grad = g.cuda().to(dtype)
+                p.grad = g.to(DEVICE).to(dtype)
             opt.step()
             opt.zero_grad(set_to_none = True)
         assert all(p.dtype == dtype for p in params)

@@ -14,12 +14,14 @@ import numpy as np
 import pytest
 
 from core.inference import diffusion_postprocess as dp
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 torch = pytest.importorskip("torch")
 ip_mod = pytest.importorskip("diffusers.image_processor")
 VaeImageProcessor = ip_mod.VaeImageProcessor
 
-needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+needs_cuda = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
+DEVICE = accelerator_device_type()
 
 
 class _Pipe:
@@ -171,7 +173,7 @@ def test_device_postprocess_is_bit_identical_to_stock(dtype, channels_last, chan
         batch = 2,
         size = 128,
         channels_last = channels_last,
-        device = "cuda",
+        device = DEVICE,
         channels = channels,
     )
     stock = _stock(proc, image)
@@ -193,8 +195,8 @@ def test_device_path_actually_runs(monkeypatch, channels):
         dp, "uint8_hwc", lambda image: calls.append(image.device.type) or real(image)
     )
     dp.install(_Pipe(proc))
-    proc.postprocess(_decoded(torch.bfloat16, device = "cuda", channels = channels), output_type = "pil")
-    assert calls == ["cuda"]
+    proc.postprocess(_decoded(torch.bfloat16, device = DEVICE, channels = channels), output_type = "pil")
+    assert calls == [DEVICE]
 
 
 @pytest.mark.parametrize(
@@ -217,7 +219,7 @@ def test_uncovered_inputs_return_none_for_the_stock_path(case):
 
 @needs_cuda
 def test_nan_input_returns_none_for_the_stock_path():
-    image = torch.full((1, 3, 8, 8), float("nan"), device = "cuda")
+    image = torch.full((1, 3, 8, 8), float("nan"), device = DEVICE)
     assert dp.to_pil_on_device(VaeImageProcessor(), image) is None
 
 

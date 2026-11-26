@@ -14,13 +14,17 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 from unsloth.kernels import fast_lora
 from unsloth.kernels import utils as kernel_utils
 
 H, I = 64, 96
 TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-DEVICES = ["cpu"] + (["cuda"] if has_real_cuda() else [])
+DEVICE = accelerator_device_type()
+DEVICES = ["cpu"] + ([DEVICE] if has_real_cuda_or_xpu() else [])
 
 
 class _Block(torch.nn.Module):
@@ -323,25 +327,25 @@ def test_fp32_base_under_autocast_keeps_the_base_then_lora_order(device, monkeyp
     assert g_on.keys() == g_off.keys() and all(torch.equal(g_on[k], g_off[k]) for k in g_on)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs bitsandbytes 4-bit on a real GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs bitsandbytes 4-bit on a real GPU")
 def test_fp16_nf4_state_under_bf16_autocast_keeps_the_base_then_lora_order(monkeypatch):
     # fast_dequantize returns the state's fp16, so the in-place base accumulate would mix dtypes.
     bnb = pytest.importorskip("bitsandbytes")
-    _skip_without_native_bf16("cuda")
+    _skip_without_native_bf16(DEVICE)
     lin = bnb.nn.Linear4bit(H, I, bias = False, compute_dtype = torch.float16, quant_type = "nf4")
     lin.weight = bnb.nn.Params4bit(
         torch.randn(I, H, dtype = torch.float16), requires_grad = False, quant_type = "nf4"
     )
-    lin = lin.cuda()
+    lin = lin.to(DEVICE)
     W, Wq = lin.weight, lin.weight.quant_state
     assert Wq.dtype == torch.float16
     g = torch.Generator(device = "cpu").manual_seed(0)
-    X = torch.randn(7, H, generator = g).cuda().bfloat16()
-    A, B = torch.randn(4, H, generator = g).cuda(), torch.randn(I, 4, generator = g).cuda()
+    X = torch.randn(7, H, generator = g).to(DEVICE).bfloat16()
+    A, B = torch.randn(4, H, generator = g).to(DEVICE), torch.randn(I, 4, generator = g).to(DEVICE)
     outs = {}
     for on in (True, False):
         _set(monkeypatch, on)
-        with torch.autocast("cuda", dtype = torch.bfloat16):
+        with torch.autocast(DEVICE, dtype = torch.bfloat16):
             outs[on] = kernel_utils.matmul_lora(X, W, Wq, A, B, 2.0)
     assert torch.equal(outs[True], outs[False])
 

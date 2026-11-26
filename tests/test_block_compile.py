@@ -16,9 +16,11 @@ import sys
 import types
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu
 
 torch = pytest.importorskip("torch")
+
+DEVICE = accelerator_device_type()
 
 _DIR = os.path.join(os.path.dirname(__file__), "..", "unsloth", "models")
 
@@ -1620,7 +1622,7 @@ def _check_block(layers, run, x, cls):
             torch.testing.assert_close(gg[k], gw[k], rtol = 1e-3, atol = 1e-5)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "compiled block needs CUDA or XPU")
 def test_qwen3_block_matches_stock():
     pytest.importorskip("unsloth")
     from transformers.models.qwen3 import modeling_qwen3 as modeling
@@ -1637,15 +1639,15 @@ def test_qwen3_block_matches_stock():
     )
     cfg._attn_implementation = "sdpa"
     torch.manual_seed(0)
-    layers = [modeling.Qwen3DecoderLayer(cfg, layer_idx = i).cuda() for i in range(2)]
-    rotary = modeling.Qwen3RotaryEmbedding(cfg).cuda()
+    layers = [modeling.Qwen3DecoderLayer(cfg, layer_idx = i).to(DEVICE) for i in range(2)]
+    rotary = modeling.Qwen3RotaryEmbedding(cfg).to(DEVICE)
 
     def run(layer, h):
         pos = torch.arange(h.shape[1], device = h.device)[None].expand(h.shape[0], -1)
         out = layer(h, position_embeddings = rotary(h, pos), position_ids = pos)
         return out[0] if isinstance(out, tuple) else out
 
-    x = [torch.randn(2, L, 64, device = "cuda", requires_grad = True) for L in (24, 40)]
+    x = [torch.randn(2, L, 64, device = DEVICE, requires_grad = True) for L in (24, 40)]
     _check_block(layers, run, x, modeling.Qwen3DecoderLayer)
 
 
@@ -1673,7 +1675,7 @@ def test_block_flex_forces_the_main_kernel(monkeypatch):
     ]
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "compiled block needs CUDA or XPU")
 @pytest.mark.parametrize("guard", ["0", "1"], ids = ["no_align_guard", "torch_guard"])
 def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
     """torch 2.14 SDPA lowering guards `Mod(s, 8)` on strides: a block recompiled per alignment class."""
@@ -1725,12 +1727,12 @@ def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
     cfg._attn_implementation = "sdpa"
     torch.manual_seed(0)
     cls = modeling.Qwen3DecoderLayer
-    model = modeling.Qwen3Model(cfg).cuda().to(torch.bfloat16).train()
+    model = modeling.Qwen3Model(cfg).to(DEVICE).to(torch.bfloat16).train()
     layer = model.layers[0]
 
     def run(L):
         # Causal flash SDPA: backward reads a (B, H, L) logsumexp, strides (H*L, L, 1).
-        ids = torch.randint(0, 64, (2, L), device = "cuda")
+        ids = torch.randint(0, 64, (2, L), device = DEVICE)
         model(input_ids = ids, use_cache = False).last_hidden_state.float().sum().backward()
 
     original = cls.forward
@@ -1747,16 +1749,16 @@ def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
     assert bool(mod_8) is (guard == "1"), reasons
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "flex_attention kernels need CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "flex_attention kernels need CUDA or XPU")
 def test_block_flex_options_lower_short_gqa_training_queries():
     """Qwen3.5 GRPO shapes: with the block options, compiled flex fwd + bwd lower and match eager."""
     from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
     M = _load()
-    gen = torch.Generator(device = "cuda").manual_seed(0)
-    mk = lambda *s: torch.randn(*s, device = "cuda", dtype = torch.bfloat16, generator = gen)
+    gen = torch.Generator(device = DEVICE).manual_seed(0)
+    mk = lambda *s: torch.randn(*s, device = DEVICE, dtype = torch.bfloat16, generator = gen)
     q, k, v = mk(4, 8, 84, 256), mk(4, 2, 84, 256), mk(4, 2, 84, 256)
-    bm = create_block_mask(lambda b, h, qi, ki: qi >= ki, 4, None, 84, 84, device = "cuda")
+    bm = create_block_mask(lambda b, h, qi, ki: qi >= ki, 4, None, 84, 84, device = DEVICE)
     ins = [t.clone().requires_grad_() for t in (q, k, v)]
     torch._dynamo.reset()
     try:
@@ -1779,7 +1781,7 @@ def test_block_flex_options_lower_short_gqa_training_queries():
         torch.testing.assert_close(a.grad.float(), b.grad, atol = 5e-2, rtol = 5e-2)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "compiled block needs CUDA or XPU")
 def test_short_gqa_flex_block_stays_compiled():
     """Short GQA head_dim 256 batches used to fail flex decoding lowering and demote every block."""
     pytest.importorskip("unsloth")
@@ -1800,9 +1802,9 @@ def test_short_gqa_flex_block_stays_compiled():
     cfg._attn_implementation = "flex_attention"
     torch.manual_seed(0)
     layers = [
-        modeling.Qwen3DecoderLayer(cfg, layer_idx = i).cuda().to(torch.bfloat16) for i in range(2)
+        modeling.Qwen3DecoderLayer(cfg, layer_idx = i).to(DEVICE).to(torch.bfloat16) for i in range(2)
     ]
-    rotary = modeling.Qwen3RotaryEmbedding(cfg).cuda()
+    rotary = modeling.Qwen3RotaryEmbedding(cfg).to(DEVICE)
     M._flex_split_hook()
     from torch.nn.attention.flex_attention import create_block_mask
 
@@ -1815,7 +1817,7 @@ def test_short_gqa_flex_block_stays_compiled():
 
     from torch._dynamo.utils import counters
 
-    x = [torch.randn(4, L, 256, device = "cuda", dtype = torch.bfloat16) for L in (84, 100)]
+    x = [torch.randn(4, L, 256, device = DEVICE, dtype = torch.bfloat16) for L in (84, 100)]
     cls = modeling.Qwen3DecoderLayer
     original = cls.forward
     want = [_grads_after_step(layers, run, xi.clone().requires_grad_()) for xi in x]

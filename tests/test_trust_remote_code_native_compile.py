@@ -96,16 +96,18 @@ def test_dict_shaped_configs_are_handled():
     assert f({"text_config": {"auto_map": {"AutoModel": "modeling_x.XModel"}}}) is True
 
 
-def _cuda_is_available():
+def _cuda_or_xpu_is_available():
     # Importing torch in the decorator makes this a collection error on torch-less runners.
     try:
-        import torch
+        import torch  # noqa: F401
     except ImportError:
         return False
-    return torch.cuda.is_available()
+    from real_accelerator import has_real_cuda_or_xpu  # tests/_shared, via tests/conftest.py
+
+    return has_real_cuda_or_xpu()
 
 
-@pytest.mark.skipif(not _cuda_is_available(), reason = "needs a GPU to load a 4-bit model")
+@pytest.mark.skipif(not _cuda_or_xpu_is_available(), reason = "needs a GPU to load a 4-bit model")
 def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypatch):
     """The arm that fails without the fix keeps PEFT's Linear4bit forward in place; it skips only
     when the checkpoint cannot be built here (old transformers, no torchvision, offline)."""

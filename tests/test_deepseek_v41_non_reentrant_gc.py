@@ -8,12 +8,18 @@ import subprocess
 import sys
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "importing unsloth needs a GPU"
+    not has_real_cuda_or_xpu(), reason = "importing unsloth needs a GPU"
 )
+
+DEVICE = accelerator_device_type()
 
 _CHILD = r"""
 import json, sys
@@ -29,7 +35,7 @@ for model_type in sys.argv[1:]:
         vocab_size = 128, hidden_size = 64, intermediate_size = 128, num_hidden_layers = 2,
         num_attention_heads = 4, num_key_value_heads = 2, max_position_embeddings = 64,
     )
-    model = LlamaForCausalLM(config).cuda()
+    model = LlamaForCausalLM(config).to(DEVICE)
     # Stand-in for DeepseekV41ForCausalLM: post_patch_model keys the GC mode on config.model_type.
     model.config.model_type = model_type
     model = FastBaseModel.post_patch_model(
@@ -51,7 +57,7 @@ for model_type in sys.argv[1:]:
     model.train()
     q_proj = model.model.layers[0].self_attn.q_proj.weight
     q_proj.requires_grad_(True)
-    ids = torch.randint(0, 128, (2, 16), device = "cuda")
+    ids = torch.randint(0, 128, (2, 16), device = DEVICE)
     model(input_ids = ids, labels = ids).loss.backward()
     out["layer0_grad"] = q_proj.grad is not None and bool(q_proj.grad.abs().sum() > 0)
     results.append(out)
@@ -78,7 +84,7 @@ config = LlamaConfig(
     vocab_size = 128, hidden_size = 64, intermediate_size = 128, num_hidden_layers = 2,
     num_attention_heads = 4, num_key_value_heads = 2, max_position_embeddings = 64,
 )
-model = LlamaForCausalLM(config).cuda()
+model = LlamaForCausalLM(config).to(DEVICE)
 model.config.model_type = "deepseek_v41"
 for mode in (False, "unsloth"):
     model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing = mode, trust_remote_code = True)
@@ -111,7 +117,7 @@ def _run(
     )
     env.setdefault("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "unsloth_compiled_cache"))
     result = subprocess.run(
-        [sys.executable, "-c", child, *model_types],
+        [sys.executable, "-c", f"DEVICE = {DEVICE!r}\n" + child, *model_types],
         cwd = str(tmp_path),
         env = env,
         capture_output = True,
