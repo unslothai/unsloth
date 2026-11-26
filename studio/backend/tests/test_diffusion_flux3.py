@@ -2235,6 +2235,10 @@ def test_the_pipeline_estimate_probes_the_flux3_index_for_a_cached_upstream(monk
 def test_inference_scheduler_samples_at_the_bfl_reference_shift():
     # Must match BFL's timesteps(steps, 16) as the block graph sets it.
     import numpy as np
+
+    diffusers = pytest.importorskip("diffusers")
+    if not hasattr(diffusers, "Flux3DistilledAutoBlocks"):
+        pytest.skip("diffusers without FLUX.3 modular blocks")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.diffusion_flux3 import (
