@@ -16,7 +16,6 @@ import {
 } from "../src/features/chat/utils/pasted-text.ts";
 import { snapshotQueuedTextAttachments } from "../src/features/chat/utils/queued-text-attachments.ts";
 
-// What TextAttachmentAdapter.add and .send call.
 function adapterRead(file: File): Promise<string> {
   return readTextAttachmentOnce(file, pastedTextOf(file));
 }
@@ -69,7 +68,6 @@ for (const [label, text] of [
 ] as const) {
   test(`a ${label} paste reads exactly as its UTF-8 bytes decode`, async () => {
     const file = createPastedTextFile(text);
-    // Decoding the bytes is what every paste went through before.
     const fromBytes = await readTextAttachment(file);
     assert.equal(await adapterRead(file), fromBytes);
   });
