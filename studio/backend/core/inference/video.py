@@ -40,7 +40,7 @@ import re
 import tempfile
 import threading
 import weakref
-from utils.account_context import account_thread, current_account_id
+from utils.account_context import account_thread, current_account, current_account_id, run_as
 import time
 import types
 from dataclasses import dataclass, field
@@ -15490,10 +15490,12 @@ class VideoBackend:
                     )
                     if before_commit is not None:
                         before_commit()
+                    rider_account = current_account()
                     forming.riders.append(
                         video_batch.Rider(
                             video_id = video_id,
-                            account_id = current_account_id(),
+                            account_id = rider_account.account_id,
+                            account = rider_account,
                             prompt = prompt,
                             negative_prompt = negative_prompt,
                             seed = seed,
@@ -15839,12 +15841,32 @@ class VideoBackend:
         gen_kwargs: dict,
         created_at: str,
     ) -> None:
-        """Save one rider's clip under its own id and recipe, and settle it; a stopped rider is only settled."""
+        """Save one rider's clip under its own id and recipe, and settle it; a stopped rider is only settled.
+        Runs as the rider's account, not the job's: the gallery and job store are per account."""
+        _as_rider(
+            rider,
+            self._save_rider_clip_as_rider,
+            rider,
+            rider_result,
+            result,
+            gen_kwargs,
+            created_at,
+        )
+
+    def _save_rider_clip_as_rider(
+        self,
+        rider: Any,
+        rider_result: Optional[dict],
+        result: dict,
+        gen_kwargs: dict,
+        created_at: str,
+    ) -> None:
         from . import video_gallery
 
         def _record(error: Optional[str] = None) -> None:
             if rider.video_id is None or not rider.record_outcome:
                 return
+            rider.recorded = True
             try:
                 video_gallery.record_job_outcome(
                     rider.video_id, completed_at = int(time.time()), error = error
@@ -15987,8 +16009,36 @@ class VideoBackend:
                 self._gen_outcomes.move_to_end(self._gen_video_id)
                 while len(self._gen_outcomes) > 64:
                     self._gen_outcomes.popitem(last = False)
+        # Riders settled without a save (a failed or stopped batch) persist their outcome too, each as its own account.
+        self._record_rider_outcomes(forming)
         # Outside the lock: the queue starts the next video as soon as this one ends.
         _wake_video_queue()
+
+    def _record_rider_outcomes(self, forming: Any) -> None:
+        from . import video_gallery
+        with self._lock:
+            pending = [
+                rider
+                for rider in list(getattr(forming, "riders", ()) or ())
+                if rider.outcome is not None
+                and not rider.recorded
+                and rider.record_outcome
+                and rider.video_id is not None
+            ]
+            for rider in pending:
+                rider.recorded = True
+        for rider in pending:
+            error = rider.outcome.get("error") if rider.outcome.get("phase") == "failed" else None
+            try:
+                _as_rider(
+                    rider,
+                    video_gallery.record_job_outcome,
+                    rider.video_id,
+                    completed_at = int(time.time()),
+                    error = error,
+                )
+            except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the backend busy
+                logger.warning("video.persist_job_outcome_failed: %s", exc)
 
     def generate_outcome(self, video_id: str, expected_account: Optional[str]) -> Optional[dict]:
         """The terminal progress record of the clip ``video_id``, for the account that ran it."""
@@ -16281,6 +16331,7 @@ class VideoBackend:
         cancel = cancel_event if cancel_event is not None else threading.Event()
         # Riders sealed into this clip's denoise; empty renders exactly the single-clip path.
         riders: list = []
+        row_seeds: list = []
         with self._generate_lock:
             # Never render beside a background compile; wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
@@ -16891,9 +16942,8 @@ class VideoBackend:
 
                     # Row i is drawn from its own clip's generator at the one-clip shape: its solo noise.
                     kwargs["prompt"] = [prompt] + [rider.prompt for rider in riders]
-                    kwargs["generator"] = row_generators(
-                        [int(seed)] + [int(rider.seed) for rider in riders], generator_device
-                    )
+                    row_seeds = [int(seed)] + [int(rider.seed) for rider in riders]
+                    kwargs["generator"] = row_generators(row_seeds, generator_device)
                     negatives = [negative_prompt] + [rider.negative_prompt for rider in riders]
                     if not fam.supports_cfg:
                         for rider in riders:
@@ -17300,6 +17350,10 @@ class VideoBackend:
                     seeded = kwargs.get("generator")
                     if isinstance(seeded, torch.Generator):
                         seeded.manual_seed(int(seed))
+                    elif isinstance(seeded, list):
+                        # A batch: each row's generator back to its own clip's seed, so the retry draws its solo noise.
+                        for row_generator, row_seed in zip(seeded, row_seeds):
+                            row_generator.manual_seed(int(row_seed))
                     return render_call()
 
                 try:
@@ -18811,6 +18865,14 @@ def _family_shape_defaults(fam) -> dict:
         "frame_offset": fam.frame_offset,
         "resolution_presets": [list(p) for p in fam.resolution_presets],
     }
+
+
+def _as_rider(rider: Any, target: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Call ``target`` as the account that queued ``rider``; a rider with no captured account runs as the caller."""
+    account = getattr(rider, "account", None)
+    if account is None:
+        return target(*args, **kwargs)
+    return run_as(account, target, *args, **kwargs)
 
 
 def _note_clip_started(fam, width, height, num_frames, steps) -> None:

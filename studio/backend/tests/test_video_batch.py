@@ -334,6 +334,108 @@ def test_an_out_of_memory_batch_renders_its_clips_one_at_a_time(monkeypatch, sav
     assert isinstance(saved["b-dog"][1]["seed"], int)
 
 
+def test_an_oom_retry_after_streaming_redraws_every_clips_own_noise(monkeypatch, saved):
+    """A batch whose first attempt drew its noise and then ran out of memory is retried streamed: every row's
+    generator is reseeded to its own clip's seed, so the retry still renders each clip's solo noise."""
+    import torch
+    from core.inference import video_stream_residency
+
+    backend = _backend(monkeypatch)
+    _solo(backend, "a cat", 1, "solo-cat")
+    _solo(backend, "a dog", 2, "solo-dog")
+    monkeypatch.setattr(video_stream_residency, "may_stream_after_oom", lambda pipe: True)
+    streamed: list = []
+    monkeypatch.setattr(
+        video_stream_residency,
+        "stream_after_oom",
+        lambda pipe, logger = None: streamed.append(1) or True,
+    )
+    pipe_cls = type(backend._state.pipe)
+    real_call = pipe_cls.__call__
+    calls: list = []
+
+    def _call(self, *args, **kwargs):
+        calls.append(kwargs.get("prompt"))
+        generator = kwargs.get("generator")
+        if len(calls) == 1 and isinstance(generator, list):
+            # The failed attempt consumed noise from every row's generator before running out of memory.
+            for row_generator in generator:
+                torch.randn(64, generator = row_generator)
+            raise RuntimeError("CUDA out of memory. Tried to allocate 9.00 GiB")
+        return real_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_cls, "__call__", _call)
+    _batch(backend, [("a cat", 1, "b-cat"), ("a dog", 2, "b-dog")])
+    # Retried once as the same batch, not split into solo renders.
+    assert calls == [["a cat", "a dog"], ["a cat", "a dog"]] and streamed == [1]
+    assert (_frames(saved, "b-cat") == _frames(saved, "solo-cat")).all()
+    assert (_frames(saved, "b-dog") == _frames(saved, "solo-dog")).all()
+    assert saved["b-dog"][1]["seed"] == 2
+
+
+@pytest.mark.parametrize("path", ["batch", "serial", "failed"])
+def test_a_rider_from_another_account_is_persisted_as_that_account(monkeypatch, saved, path):
+    """The job's worker thread acts for the job's account; a rider queued by another account has its clip,
+    recipe and job outcome written to its own account's storage on every path: the shared batch, the
+    one at a time rerun after an out of memory batch, and a batch that failed."""
+    from utils.account_context import AccountContext, bind_account, reset_account
+
+    saved_as: dict = {}
+    outcomes_as: dict = {}
+    real_save = video_gallery.save
+
+    def _save(
+        mp4,
+        meta,
+        video_id = None,
+    ):
+        saved_as[video_id] = video_module.current_account_id()
+        return real_save(mp4, meta, video_id = video_id)
+
+    def _record(
+        video_id,
+        *,
+        completed_at,
+        error = None,
+    ):
+        outcomes_as[video_id] = (video_module.current_account_id(), error)
+
+    monkeypatch.setattr(video_gallery, "save", _save)
+    monkeypatch.setattr(video_gallery, "record_job_outcome", _record)
+    backend = _backend(monkeypatch)
+    if path != "batch":
+        pipe_cls = type(backend._state.pipe)
+        real_call = pipe_cls.__call__
+
+        def _call(self, *args, **kwargs):
+            prompt = kwargs.get("prompt")
+            if isinstance(prompt, list) and len(prompt) > 1:
+                if path == "serial":
+                    raise RuntimeError("CUDA out of memory. Tried to allocate 9.00 GiB")
+                raise RuntimeError("the denoiser broke")
+            return real_call(self, *args, **kwargs)
+
+        monkeypatch.setattr(pipe_cls, "__call__", _call)
+    leader = video_module.current_account_id()
+    backend.begin_generate(prompt = "a cat", seed = 1, video_id = "lead", batch_open = True, **_SHAPE)
+    token = bind_account(AccountContext("acct-bob", "bob"))
+    try:
+        backend.begin_generate(prompt = "a dog", seed = 2, video_id = "ride", join = True, **_SHAPE)
+    finally:
+        reset_account(token)
+    assert backend.seal_batch() == 2
+    _wait_idle(backend)
+    assert leader != "acct-bob"
+    if path == "failed":
+        assert set(saved_as) == set()
+        assert outcomes_as["ride"][0] == "acct-bob" and outcomes_as["ride"][1]
+        assert outcomes_as["lead"][0] == leader
+        return
+    assert saved_as == {"lead": leader, "ride": "acct-bob"}
+    assert outcomes_as == {"lead": (leader, None), "ride": ("acct-bob", None)}
+    assert backend.generate_outcome("ride", "acct-bob")["phase"] == "completed"
+
+
 def test_a_compiled_and_graphed_denoiser_batches_eager_without_compiling_or_capturing(
     monkeypatch, saved
 ):

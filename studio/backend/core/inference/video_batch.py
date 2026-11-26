@@ -279,6 +279,10 @@ class Rider:
     outcome: Optional[dict] = None
     # Set once its clip is being saved: a Stop after that point is too late to discard it.
     closed: bool = False
+    # The AccountContext that queued it: its clip and job outcome are persisted as this account, not the job's.
+    account: Any = None
+    # Its outcome is in its job store; a batch that ends records each rider not yet recorded.
+    recorded: bool = False
 
 
 @dataclass
