@@ -65,6 +65,7 @@ import {
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
 import { VideoRestylePanel } from "./restyle-panel";
+import { checkMediaCodecsOnce, desktopMissingMediaCodecPackages } from "./media-codec-notice";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
 import { useFullInstallBringsVideo } from "@/hooks/use-full-install-upgrade";
@@ -216,6 +217,7 @@ import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-a
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
@@ -1267,6 +1269,20 @@ export function VideoPage({
   const offerFullInstall =
     fullInstall !== null &&
     hardware.videoUnsupportedReason === "pytorch_not_installed";
+
+  useEffect(() => {
+    if (!active || !isTauri) return;
+    void checkMediaCodecsOnce(desktopMissingMediaCodecPackages, (command) => {
+      toast.warning(translate("desktopShell.mediaCodecs.title"), {
+        description: translate("desktopShell.mediaCodecs.description", { command }),
+        duration: Infinity,
+        action: {
+          label: translate("desktopShell.mediaCodecs.copy"),
+          onClick: () => void copyToClipboard(command),
+        },
+      });
+    });
+  }, [active]);
 
   useEffect(() => {
     if (active && hardware.loaded && hardware.videoSupported === false) {
