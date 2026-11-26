@@ -771,17 +771,17 @@ def test_a_race_decided_on_short_timings_is_not_paired(monkeypatch):
     assert r["tile"] == 0 and r["sustained"] is False and not seen["paired"]
 
 
-def test_a_4096_row_race_on_a_moving_clock_is_paired(monkeypatch):
-    """RTX 6000 Ada, MiniMax-H3-Image 2048^2 (about 4100 rows) lost 5% with CUTLASS (R8 without it: 5.13 s; R6 / R7 /
-    R9 with it: 5.37 to 5.43 s): where the clock moves the 4096-row race is decided sustained, and paired."""
+def test_a_4096_row_race_on_a_moving_clock_keeps_its_sustained_winner(monkeypatch):
+    """Image row counts are not paired: on L4 (clock moving, so the 4096-row race is sustained) the pair check vetoed
+    FLUX.2 klein 4B and Qwen-Image-2.1 winners and the arm with the most vetoes ran slowest."""
     w, ws, seen, today = _paired_race_env(
         monkeypatch,
         sustained = {0: 80.0, 1: 85.0, "today": 88.0},
         pairs = {0: 190.0, 1: 186.0, "today": 176.0},
     )
     r = cut.race(0, w, ws, None, torch.bfloat16, today, max(cut._RACE_M))
-    assert r["sustained"] is True and seen["paired"] == [["0", "1", "today"]]
-    assert r["tile"] is None and r["paired_veto"] == 0
+    assert r["sustained"] is True and r["tile"] == 0 and not seen["paired"]
+    assert not cut.paired_for(4608) and cut.paired_for(cut._RACE_M_HUGE)
 
 
 def test_paired_kill_switch_keeps_the_sustained_winner(monkeypatch):

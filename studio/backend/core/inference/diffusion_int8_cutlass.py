@@ -672,9 +672,11 @@ def paired_enabled() -> bool:
 
 
 def paired_for(m: int) -> bool:
-    """Whether an ``m``-row race decided on sustained timings re-times its winners with each call followed by one of
-    today's (``paired_cost_us``). ``UNSLOTH_DIFFUSION_INT8_CUTLASS_PAIRED=0`` keeps the sustained winners as they are."""
-    return paired_enabled() and sustained_for(m)
+    """Whether an ``m``-row race re-times its sustained winners with each call followed by one of today's
+    (``paired_cost_us``): the 16384-row race only, whose verdict video row counts take (``slot``). At image row counts
+    (4096 to 4608 rows) on L4 it vetoed FLUX.2 klein / Qwen-Image-2.1 winners and cost up to 3% a render, so those
+    races keep their winners. ``UNSLOTH_DIFFUSION_INT8_CUTLASS_PAIRED=0`` keeps every sustained winner."""
+    return paired_enabled() and sustained_for(m) and m >= _HUGE_M
 
 
 def paired_cost_us(fns: dict, base_name: str) -> dict:
@@ -788,8 +790,8 @@ def race(
     rows = {t: int(dims[t][0]) for t in top if 0 <= t < len(dims)}
     best, fastest = pick(timing, top, base_name, m, rows)
     if best is not None and info.get("sustained") and paired_for(m):
-        # sustained winners must also win where the clock is shared with today's path (``paired_cost_us``); a race
-        # the short timings decide (a steady clock) keeps its winners: on A100 the pair check there dropped real wins
+        # sustained winners of the video-row race must also win where the clock is shared with today's path
+        # (``paired_cost_us``)
         wins = [t for t in top if timing[t] < timing[base_name] * (1.0 - _MARGIN)]
         with torch.cuda.device(dev):
             paired = paired_cost_us(
