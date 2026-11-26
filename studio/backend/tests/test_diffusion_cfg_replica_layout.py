@@ -356,3 +356,27 @@ def test_a_family_whose_guidance_split_is_off_refuses_the_replica(monkeypatch, c
     assert mg.replica_layout_refusal(denoiser) is None
     monkeypatch.setenv(env, value)
     assert env in (mg.replica_layout_refusal(denoiser) or "")
+
+
+@pytest.mark.parametrize("beside, built", [(True, True), (False, False)])
+def test_a_replica_beside_the_companions_is_not_refused_for_their_own_encode(
+    monkeypatch, beside, built
+):
+    # automatic placement lent the encoder card beside a companion split: the encoder forward that just ran there
+    # and the encoder weights it holds are this load's own, not another job
+    _pipe, model = _family(_WAN_T4, monkeypatch)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.automatic_idle_only = True
+    if beside:
+        router.beside_held_mib, router.beside_keep_mib = 11000, 1024
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (32607 - 11000 - 500, 32607))
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda o: 40.0)
+
+    def past_the_memory_gate(module):
+        raise RuntimeError("past the memory gate")
+
+    monkeypatch.setattr(mg, "weights_fingerprint", past_the_memory_gate)
+    router._build_replica(_wan_latent(49))
+    assert ("past the memory gate" in router.disabled_reason) is built, router.disabled_reason
+    if not built:
+        assert "no longer idle" in router.disabled_reason

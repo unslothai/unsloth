@@ -4313,6 +4313,9 @@ class CfgParallelRouter:
                 # beside a companion split: what this process holds there (the companions, their cached activations)
                 with contextlib.suppress(Exception):
                     held = max(held, int(_torch().cuda.memory_reserved(self.secondary)) >> 20)
+                # and its own encoder forward ran there just before this step: the load checked the card idle, and a
+                # utilisation sample now would read that forward as another job
+                util = None
             if automatic:
                 # the companions this load placed there are not another process's memory
                 if not _idle_card(
