@@ -321,6 +321,8 @@ def _resume_arms(rank, tmp, trainer_cls, peft, data, trainer_args, ep_native, tp
     bad = os.path.join(tmp, "bad")
     if rank == 0:
         shutil.copytree(ckpt, bad)
+        # Without the 1-GPU optimizer.pt (an older Unsloth): another layout cannot be resharded from it.
+        os.remove(os.path.join(bad, "optimizer.pt"))
     dist.barrier()
     path = os.path.join(bad, ep_native._CKPT_DIR, f"rank{rank:05d}.pt")
     payload = torch.load(path, weights_only = False)
@@ -699,7 +701,7 @@ def test_parallel_flag_accepts_ep_over_every_rank():
     for raw, world, match in (
         ("ep=2,tp=2", "4", "cannot be combined with tp=2"),
         ("ep=2,fsdp=1", "2", "cannot be combined with fsdp=1"),
-        ("ep=3", "4", "must divide the data parallel size"),
+        ("ep=3", "4", "must divide the number of ranks"),
         ("ep=2,dp=2", "4", "needs dp x pp x cp x tp"),
     ):
         with pytest.raises(ValueError, match = match):

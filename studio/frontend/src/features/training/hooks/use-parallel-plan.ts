@@ -26,6 +26,7 @@ const PLAN_FIELDS = [
   "gradient_checkpointing",
   "optim",
   "offload_layers",
+  "packing",
   "is_dataset_image",
   "is_dataset_audio",
 ] as const;
@@ -61,6 +62,7 @@ export function useParallelPlan(systemGpuCount: number): void {
           s.gradientCheckpointing,
           s.optimizerType,
           s.offloadLayers,
+          s.packing,
           s.isDatasetImage,
           s.isDatasetAudio,
           s.modelType,

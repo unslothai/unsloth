@@ -1,5 +1,5 @@
 {
- "lock_sha256": "53fa7cc8d8c2272229ed2a41358ad04e7ebf431db6be0452b61d33893a75fa5f",
+ "lock_sha256": "5a65c280fff1892a8ce70516c467b4e1bfff0c4ce4e113b145d7279023c56c77",
  "requires": {
   "agent-detector": [
    ">=1.1.0"
@@ -42,6 +42,9 @@
   "attrs": [
    ">=17.3.0",
    ">=22.2.0"
+  ],
+  "bitsandbytes": [
+   ">=0.48.1"
   ],
   "certifi": [
    ">=2023.5.7"
@@ -825,6 +828,7 @@
   "uvicorn": 87427,
   "uvloop": 4480449,
   "vllm": 314883777,
+  "vllm-bnb-plugin": 24315,
   "watchfiles": 458353,
   "websockets": 224611,
   "xgrammar": 1311293,

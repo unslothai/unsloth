@@ -130,6 +130,25 @@ def flux3_blocks(blocks_class_name: str) -> Any:
     return blocks
 
 
+# BFL's reference shift (``alpha`` in src/flux3/pipeline.py), raised 6.93 -> 16 in flux-3-image-klein 62e90b9278;
+# diffusers 0.42.1's block graph still uses 6.93. LPIPS vs BFL fell 0.095 -> 0.007 (distilled), 0.079 -> 0.026 (base).
+FLUX3_REFERENCE_SHIFT = 16.0
+
+
+def flux3_reference_scheduler(scheduler: Any) -> Any:
+    """``scheduler`` at BFL's reference shift; unchanged if already there or it has no static ``shift``."""
+    config = getattr(scheduler, "config", None)
+    try:
+        current = config.get("shift") if config is not None else None
+        if current is None or float(current) == FLUX3_REFERENCE_SHIFT:
+            return scheduler
+        if config.get("use_dynamic_shifting", False):
+            return scheduler
+    except (AttributeError, TypeError, ValueError):
+        return scheduler
+    return type(scheduler).from_config(config, shift = FLUX3_REFERENCE_SHIFT)
+
+
 def is_flux3_family(fam: Any) -> bool:
     return getattr(fam, "name", None) in FLUX3_FAMILY_NAMES
 
@@ -1052,8 +1071,8 @@ def load_flux3_pipeline(
     # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
     if transformer is not None:
         cond_blocks.prepare(transformer)
-    # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
-    scheduler = flux3_blocks(blocks).init_pipeline().scheduler
+    # The repos ship no scheduler; use the block graph's at BFL's reference shift.
+    scheduler = flux3_reference_scheduler(flux3_blocks(blocks).init_pipeline().scheduler)
     return flux3_pipeline_class()(
         transformer = transformer,
         vae = vae,

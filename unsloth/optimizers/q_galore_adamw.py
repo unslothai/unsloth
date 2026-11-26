@@ -206,8 +206,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                         grad = state["projector"].project(full_rank_grad, state["step"])
 
-                        # Zero p.data so the 8-bit update writes the pure delta.
-                        p._saved_data = p.data.clone()
+                        # Zero p.data so the 8-bit update writes the pure delta; rebinding keeps the weight, so no clone.
+                        p._saved_data = p.data
                         p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
                         p.grad = grad
 

@@ -514,14 +514,13 @@ def _pipeline_parallel_env_requested() -> bool:
         return False
 
 
-def _cp_x_tp_env_requested() -> bool:
-    """UNSLOTH_CP_SIZE and UNSLOTH_TP_SIZE above 1 (UNSLOTH_PARALLEL writes both): packed rows are refused there."""
+def _tp_env_requested() -> bool:
+    """UNSLOTH_TP_SIZE above 1 (UNSLOTH_PARALLEL writes it): packed / padding-free rows are refused there."""
     try:
-        cp = int(os.environ.get("UNSLOTH_CP_SIZE", "1").strip() or 1)
         tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1").strip() or 1)
     except ValueError:
         return False
-    return cp > 1 and tp > 1
+    return tp > 1
 
 
 def _should_auto_padding_free(config) -> bool:
@@ -2259,6 +2258,13 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 add_mfu_callback(self)
             except Exception as exc:
                 logger.warning(f"Unsloth: could not enable MFU logging ({exc}).")
+        if os.environ.get("UNSLOTH_LOG_MOE_LOAD", "0") not in ("", "0"):
+            try:
+                from .utils.moe_load import add_moe_load_callback, moe_load_interval
+                if moe_load_interval() > 0:
+                    add_moe_load_callback(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable MoE routing load logging ({exc}).")
         if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
             try:
                 from .utils.run_report import install_memory_report
@@ -2425,10 +2431,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         # UNSLOTH_PP_SIZE: packed rows are not carried between pipeline stages yet (models/pp_env.py).
         is_pipeline_parallel_env = _pipeline_parallel_env_requested()
-        # cp x tp refuses packed rows: never turn them on automatically there. An explicit packing /
-        # padding_free = True stays, so the capability check refuses it with the alternative.
-        auto_off_cp_tp = (
-            _cp_x_tp_env_requested()
+        # tp refuses packed rows: never turn them on here. An explicit packing / padding_free = True
+        # stays, so the capability check refuses it with the alternative.
+        auto_off_tp = (
+            _tp_env_requested()
             and not getattr(config_arg, "packing", False)
             and getattr(config_arg, "padding_free", None) is not True
         )
@@ -2437,7 +2443,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_ring_context_parallel
             or ulysses_packing_blocker is not None
             or is_pipeline_parallel_env
-            or auto_off_cp_tp
+            or auto_off_tp
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset

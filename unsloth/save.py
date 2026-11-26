@@ -9032,6 +9032,22 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
         )
 
 
+def _report_lora_quant_survival(model, scheme, ignore_patterns):
+    """Log how much of a LoRA update the quantized export keeps; a diagnostic that never fails the export.
+    `ignore_patterns` are the modules the export leaves 16-bit."""
+    try:
+        from .utils.lora_quant_survival import report_lora_quant_survival
+        report_lora_quant_survival(
+            model,
+            scheme,
+            log = print,
+            warn = logger.warning,
+            skip = lambda name, module: _matches_ignore_pattern(name, module, ignore_patterns),
+        )
+    except Exception:
+        pass
+
+
 @_model_parallel_refuses_save("save_pretrained_merged")
 def _unsloth_save_compressed_tensors(
     model,
@@ -9125,6 +9141,7 @@ def _unsloth_save_compressed_tensors(
 
         # Merge to 16bit at local_dir via unsloth_generic_save, so adapters are merged and full-finetuned models written in 16bit alike. The subprocess reloads this staging checkpoint with default weight filenames, so never write variant-named shards here; the user's variant goes on the final compressed checkpoint.
         variant = merge_kwargs.pop("variant", None)
+        _report_lora_quant_survival(model, scheme, _compressed_ignore_patterns(model))
         print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(
@@ -9386,6 +9403,9 @@ def _unsloth_save_torchao(
 
         # Merge to 16bit at a staging dir, LoRA and base alike. The reload reads default weight filenames, so never write variant-named shards here.
         merge_kwargs.pop("variant", None)
+        if kind == "fp8":
+            # torchao quantizes Linear weights only and keeps lm_head 16-bit.
+            _report_lora_quant_survival(model, "torchao_fp8", ["lm_head"])
         print(f"Unsloth: Merging to 16bit before torchao {kind} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(
