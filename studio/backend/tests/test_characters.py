@@ -836,17 +836,25 @@ def test_deleting_the_only_unmuted_member_keeps_a_group_speaker(client):
 
 
 def test_a_cast_left_with_one_muted_member_unmutes_it(client):
-    ids = [client.post("/api/characters", json = {"name": n}).json()["id"] for n in ("Ann", "Bo", "Cy")]
-    thread_id = client.post("/api/characters/chats", json = {"characterIds": ids[:2]}).json()["threadId"]
+    ids = [
+        client.post("/api/characters", json = {"name": n}).json()["id"] for n in ("Ann", "Bo", "Cy")
+    ]
+    thread_id = client.post("/api/characters/chats", json = {"characterIds": ids[:2]}).json()[
+        "threadId"
+    ]
     url = f"/api/characters/chats/{thread_id}"
     client.put(url, json = {"mute": {ids[0]: True}})
     scene = client.put(url, json = {"remove": [ids[1]]}).json()
     assert [(m["characterId"], m["muted"]) for m in scene["cast"]] == [(ids[0], False)]
     # The same when a deleted character leaves the muted one alone.
-    other = client.post("/api/characters/chats", json = {"characterIds": [ids[0], ids[2]]}).json()["threadId"]
+    other = client.post("/api/characters/chats", json = {"characterIds": [ids[0], ids[2]]}).json()[
+        "threadId"
+    ]
     client.put(f"/api/characters/chats/{other}", json = {"mute": {ids[0]: True}})
     assert client.delete(f"/api/characters/{ids[2]}").status_code == 204
-    assert [m["muted"] for m in client.get(f"/api/characters/chats/{other}").json()["cast"]] == [False]
+    assert [m["muted"] for m in client.get(f"/api/characters/chats/{other}").json()["cast"]] == [
+        False
+    ]
 
 
 def test_a_card_with_malformed_extensions_still_exports(client):
