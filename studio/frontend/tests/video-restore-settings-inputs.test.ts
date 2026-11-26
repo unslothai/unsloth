@@ -117,8 +117,9 @@ test("restoring a clip restores the text encoder precision it ran with, beside t
     ["int8", "int8"],
     ["nvfp4", "nvfp4"],
     ["off", "none"],
-    // no encoder quant recorded: the family default, not a pinned dense encoder
-    [null, "auto"],
+    // the sidecar records the ENGAGED encoder: null beside model_kind is a dense run (a quantized family default
+    // records its scheme), so restoring pins dense rather than re-running Auto (LTX-2's Auto picks fp8)
+    [null, "none"],
   ] as const) {
     const { restore, state } = restoreSettings(helpers);
     restore({ ...recipe, model_kind: "pipeline", transformer_quant: "int8", text_encoder_quant: recorded });

@@ -24,16 +24,17 @@ const TE_SCHEMES = ["fp8", "fp8_dynamic", "int8", "nvfp4"] as const;
 
 /**
  * The Text encoder precision select value that reproduces a saved clip: its engaged encoder scheme, "none" when the
- * clip recorded an explicit dense ("off" / "none") encoder, "auto" when it recorded no encoder quant (the family
- * default, which may itself be a hosted quantized encoder, so a null is not pinned to dense), and null when the clip
- * carries no precision record at all (keep the current pick).
+ * clip recorded a dense encoder, and null when the clip carries no precision record (keep the current pick).
+ *
+ * The sidecar writes the ENGAGED encoder scheme from the loaded state, so a family default that loaded a quantized
+ * encoder is recorded as that scheme, and null next to `model_kind` is a dense run (as for the transformer above).
  */
 export function clipTextEncoderPrecisionSelection(
   textEncoderQuant: string | null | undefined,
   modelKind?: string | null,
-): (typeof TE_SCHEMES)[number] | "none" | "auto" | null {
+): (typeof TE_SCHEMES)[number] | "none" | null {
   const value = (textEncoderQuant ?? "").trim().toLowerCase();
   if (value === "off" || value === "none") return "none";
-  if (value === "") return modelKind ? "auto" : null;
+  if (value === "") return modelKind ? "none" : null;
   return TE_SCHEMES.find((s) => s === value) ?? null;
 }
