@@ -11796,8 +11796,11 @@ from .._gc_kwargs import _skip_aware_flag
 
 
 def _gc_keep_layers_env():
+    """UNSLOTH_GC_KEEP_LAYERS: K, max, auto or 0 (off); None when unset (the default applies)."""
     value = os.environ.get("UNSLOTH_GC_KEEP_LAYERS", "").strip().lower()
-    if value in ("", "0"):
+    if value == "":
+        return None
+    if value in ("0", "off", "false", "no", "none"):
         return 0
     if value in ("auto", "max"):
         return value
@@ -11816,17 +11819,60 @@ def _local_numel(t):
     return (local if isinstance(local, torch.Tensor) else t).numel()
 
 
+def _default_checkpoint_skip_allowed():
+    """checkpoint_skip_layers left unset plans "auto" by default only for one process on one CUDA GPU with no
+    vLLM engine sharing the card (its standby mode hands memory back and takes it again)."""
+    import sys
+
+    if not torch.cuda.is_available():
+        return False
+    if "vllm" in sys.modules or os.environ.get("UNSLOTH_VLLM_STANDBY", "0") == "1":
+        return False
+    for key in ("WORLD_SIZE", "LOCAL_WORLD_SIZE"):
+        try:
+            if int(os.environ.get(key, "1")) > 1:
+                return False
+        except ValueError:
+            return False
+    dist = getattr(torch, "distributed", None)
+    try:
+        if (
+            dist is not None
+            and dist.is_available()
+            and dist.is_initialized()
+            and dist.get_world_size() > 1
+        ):
+            return False
+    except Exception:
+        return False
+    return True
+
+
 class _AutoCheckpointSkip:
-    """Plan checkpoint skips once from measured memory, using the smallest count across ranks.
+    """Plan checkpoint skips from measured memory, using the smallest count across ranks.
+    One process: after the plan, each training forward re-sizes the count for its own batch shape (never below
+    the measured length), so short batches keep more layers and long ones fewer, inside the same budget.
+    quiet (the unset default): refusals print nothing and the plan stands down if vLLM or a process group appears.
     Multimodal inputs must stay within max_seq_length; tensor/pipeline parallel models are excluded.
     """
 
     MARGIN = 1 << 30
     FRACTION = 0.75
     _warned_no_cuda = False
+    LIVE = None  # weakref.WeakSet of installed planners, read by the NF4 dequant cache (checkpoint_skip_pending)
 
-    def __init__(self, model, layers, probe):
+    def __init__(
+        self,
+        model,
+        layers,
+        probe,
+        quiet = False,
+    ):
         self.model = model
+        self.quiet = quiet
+        self.sizing = None
+        self.applied = None
+        self.forwards = 0
         self.layers = layers
         self.probe = probe
         self.handles = []
@@ -11848,8 +11894,8 @@ class _AutoCheckpointSkip:
         self.fsdp_params = {}
 
     @classmethod
-    def _no_cuda(cls):
-        if not cls._warned_no_cuda:
+    def _no_cuda(cls, quiet = False):
+        if not cls._warned_no_cuda and not quiet:
             cls._warned_no_cuda = True
             print(
                 'Unsloth: checkpoint_skip_layers = "auto" needs a CUDA GPU; every layer stays checkpointed.'
@@ -11857,9 +11903,13 @@ class _AutoCheckpointSkip:
         return None
 
     @classmethod
-    def install(cls, model):
+    def install(
+        cls,
+        model,
+        quiet = False,
+    ):
         if not torch.cuda.is_available():
-            return cls._no_cuda()
+            return cls._no_cuda(quiet)
         previous = getattr(model, "_unsloth_auto_skip", None)
         if previous is not None:
             previous.remove()
@@ -11876,15 +11926,20 @@ class _AutoCheckpointSkip:
         devices = {p.device for layer in layers for p in layer.parameters() if p.is_cuda}
         if not devices:
             # Model on CPU / XPU on a CUDA host: the hooks would never run (and keep the model alive).
-            return cls._no_cuda()
+            return cls._no_cuda(quiet)
         if len(devices) > 1:
+            if quiet:
+                return None
             print(
                 'Unsloth: checkpoint_skip_layers = "auto" sizes one GPU; the layers span several, so every layer stays checkpointed.'
             )
             return None
         import functools, weakref
 
-        self = cls(model, layers, layers[eligible[-1]])
+        self = cls(model, layers, layers[eligible[-1]], quiet = quiet)
+        if cls.LIVE is None:
+            cls.LIVE = weakref.WeakSet()
+        cls.LIVE.add(self)
         self.device = next(iter(devices))
         self.handles.append(model.register_forward_pre_hook(self._model_pre_hook))
         for i in eligible:
@@ -12004,9 +12059,10 @@ class _AutoCheckpointSkip:
             self.no_grad_forward = True
             return
         if not self.no_grad_forward:
-            print(
-                'Unsloth: checkpoint_skip_layers = "auto" needs reentrant gradient checkpointing; unchanged.'
-            )
+            if not self.quiet:
+                print(
+                    'Unsloth: checkpoint_skip_layers = "auto" needs reentrant gradient checkpointing; unchanged.'
+                )
             self.remove()
             return
         hidden = args[0] if args and torch.is_tensor(args[0]) else None
@@ -12124,6 +12180,10 @@ class _AutoCheckpointSkip:
 
     def plan(self, device):
         self.remove()
+        if self.quiet and not _default_checkpoint_skip_allowed():
+            # The unset default: vLLM or a process group appeared after install, keep every layer checkpointed.
+            self.kept = []
+            return self.kept
         allocated_start = self.started
         peak = (
             self.step_peak
@@ -12158,46 +12218,182 @@ class _AutoCheckpointSkip:
         optimizer += sum(_local_numel(p) * 4 for p in trainable if p.device == device)
         self.optimizers = []
         self.fsdp_params.clear()
-        headroom = usable_cuda_bytes(device) - activation_peak - optimizer
+        usable = usable_cuda_bytes(device)
+        headroom = usable - activation_peak - optimizer
         budget = headroom * self.FRACTION - self.MARGIN
         per_layer = self.layer_bytes * scale
         count = int(budget // per_layer) if per_layer > 0 and budget > 0 else 0
-        count = self._agree_across_ranks(count, device)
-        self.kept = skip_checkpointing(self.model, count) if count > 0 else []
+        single = self._single_process()
+        count = count if single else self._agree_across_ranks(count, device)
+        self.kept = _mark_checkpoint_skips(self.model, count) if count > 0 else []
         if self.kept:
-            # Smart offloading learnt the checkpointed-call count in the first step; recount it.
-            try:
-                import unsloth_zoo.gradient_checkpointing as zoo_gc
-                if zoo_gc.CURRENT_GC_INDEX == 0:
-                    zoo_gc.FIRST_PASS = True
-                    zoo_gc.LAST_GC_INDEX = 0
-            except Exception:
-                pass
-        print(
-            f'Unsloth: checkpoint_skip_layers = "auto" keeps {len(self.kept)} of {len(self.layers)} '
-            f"decoder layers un-checkpointed ({per_layer / 2**30:.2f} GB each, "
-            f"{max(0, headroom) / 2**30:.1f} GB headroom)."
-        )
+            self._recount_offload()
+        self.applied = count
+        if single:
+            # Each training forward re-sizes for its own batch: the planned count covers the longest batch the
+            # trainer can send, most batches are shorter. Same budget and margins, from this usable memory.
+            self.sizing = dict(
+                usable = usable,
+                step = step_bytes - grad_bytes,
+                persistent = max(0, grad_bytes - resident),
+                optimizer = optimizer,
+                rows = rows,
+                batch = self.layer_batch,
+                exponent = self._seq_exponent(),
+                eligible = len(self._eligible()),
+            )
+            self.handles.append(
+                self.model.register_forward_pre_hook(self._resize_pre_hook, with_kwargs = True)
+            )
+            self.model._unsloth_auto_skip = self
+        if not self.quiet:
+            print(
+                f'Unsloth: checkpoint_skip_layers = "auto" keeps {len(self.kept)} of {len(self.layers)} '
+                f"decoder layers un-checkpointed ({per_layer / 2**30:.2f} GB each, "
+                f"{max(0, headroom) / 2**30:.1f} GB headroom)"
+                + ("; shorter batches keep more." if single else ".")
+            )
+        elif self.kept or (single and self.count_for(self.layer_batch, rows) > 0):
+            print(
+                "Unsloth: gradient checkpointing skips the recompute of decoder layers whose activations fit in "
+                "free VRAM (UNSLOTH_GC_KEEP_LAYERS = 0 turns this off)."
+            )
         return self.kept
+
+    def _eligible(self):
+        swapper = getattr(self.model, "_unsloth_block_swap", None)
+        swapped = set(getattr(swapper, "indices", None) or ())
+        return [
+            i
+            for i, layer in enumerate(self.layers)
+            if i not in swapped and hasattr(layer, "gradient_checkpointing")
+        ]
+
+    @staticmethod
+    def _single_process():
+        try:
+            from .loader_utils import is_distributed
+            if is_distributed():
+                return False
+        except Exception:
+            pass
+        dist = getattr(torch, "distributed", None)
+        try:
+            return not (
+                dist is not None
+                and dist.is_available()
+                and dist.is_initialized()
+                and dist.get_world_size() > 1
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _recount_offload():
+        # Smart offloading learnt the checkpointed-call count in the first step; recount it.
+        try:
+            import unsloth_zoo.gradient_checkpointing as zoo_gc
+            if zoo_gc.CURRENT_GC_INDEX == 0:
+                zoo_gc.FIRST_PASS = True
+                zoo_gc.LAST_GC_INDEX = 0
+        except Exception:
+            pass
+
+    def count_for(self, batch, seq):
+        """Layers that fit for a training forward of batch x seq tokens (never sized below the measured shape)."""
+        s = self.sizing
+        rows, measured_batch = s["rows"], s["batch"]
+        seq = max(rows, int(seq))
+        batch = max(measured_batch, int(batch))
+        scale = batch * seq / (measured_batch * rows) * max(1.0, seq / rows) ** (s["exponent"] - 1)
+        activation_peak = s["step"] * scale + s["persistent"]
+        budget = (s["usable"] - activation_peak - s["optimizer"]) * self.FRACTION - self.MARGIN
+        per_layer = self.layer_bytes * scale
+        count = int(budget // per_layer) if per_layer > 0 and budget > 0 else 0
+        return min(count, s["eligible"])
+
+    @property
+    def pending(self):
+        """True until the plan has been in place for a training forward after the planning one: memory measured
+        before that does not include the kept activations yet."""
+        if self.sizing is not None:
+            return self.forwards == 0 and bool(self.handles)
+        return self.started is not None and self.kept is None and bool(self.handles)
+
+    def unmark(self):
+        for i in self.kept or ():
+            if 0 <= i < len(self.layers):
+                self.layers[i].__dict__.pop("_unsloth_skip_checkpoint", None)
+        self.kept = []
+
+    def _resize_pre_hook(self, module, args, kwargs):
+        if torch.compiler.is_compiling() or self.sizing is None:
+            return
+        if not module.training or not torch.is_grad_enabled():
+            return
+        self.forwards += 1
+        shape = None
+        for key in ("input_ids", "inputs_embeds"):
+            value = kwargs.get(key)
+            if torch.is_tensor(value) and value.dim() >= 2:
+                shape = value.shape
+                break
+        if shape is None and args and torch.is_tensor(args[0]) and args[0].dim() >= 2:
+            shape = args[0].shape
+        if shape is None:
+            return
+        count = self.count_for(shape[0], shape[1])
+        if count == self.applied:
+            return
+        self.unmark()
+        self.kept = _mark_checkpoint_skips(self.model, count) if count > 0 else []
+        self.applied = count
+        self._recount_offload()
+
+
+def checkpoint_skip_pending():
+    """An installed checkpoint_skip_layers = "auto" plan has not yet run a training forward with its kept
+    layers: memory-budgeted caches wait for a safe point measured with the plan in place."""
+    live = _AutoCheckpointSkip.LIVE
+    try:
+        return live is not None and any(planner.pending for planner in list(live))
+    except Exception:
+        return False
 
 
 def skip_checkpointing(model, layers = 0):
     """get_peft_model(checkpoint_skip_layers = K | "max"): K decoder layers (evenly spaced; "max" =
     all) keep their activations instead of recomputing them in backward. Faster, at the cost of
     each layer's activations on the card. Block-swapped layers keep checkpointing. "auto" (or
-    UNSLOTH_GC_KEEP_LAYERS when 0): _AutoCheckpointSkip."""
+    UNSLOTH_GC_KEEP_LAYERS when 0): _AutoCheckpointSkip. Left at 0 with UNSLOTH_GC_KEEP_LAYERS unset, "auto"
+    is the default on one process / one CUDA GPU without vLLM or block swap; UNSLOTH_GC_KEEP_LAYERS = 0 opts out."""
+    quiet = False
     if not layers:
         layers = _gc_keep_layers_env()
+        if layers is None:
+            # Unset: keep the layers whose activations fit ("auto") on one process / one GPU, quietly.
+            quiet = (
+                _default_checkpoint_skip_allowed()
+                and getattr(model, "_unsloth_block_swap", None) is None
+            )
+            layers = "auto" if quiet else 0
     if layers != "auto":
         # An explicit value replaces an earlier "auto" planner on the same model.
         planner = getattr(model, "_unsloth_auto_skip", None)
         if planner is not None:
             planner.remove()
+            if planner.sizing is not None:
+                planner.unmark()
     if not layers:
         return []
     if layers == "auto":
-        _AutoCheckpointSkip.install(model)
+        _AutoCheckpointSkip.install(model, quiet = quiet)
         return []
+    return _mark_checkpoint_skips(model, layers)
+
+
+def _mark_checkpoint_skips(model, layers):
+    """Mark K evenly spaced eligible decoder layers ("max" = all) to keep their activations."""
     layer_list = find_decoder_layers(model)
     swapper = getattr(model, "_unsloth_block_swap", None)
     swapped = set(getattr(swapper, "indices", None) or ())

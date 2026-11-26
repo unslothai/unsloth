@@ -360,6 +360,18 @@ def _evict(
         _note_shrink(index, kind)
 
 
+_GC_SKIP_WAIT_MAX = 4
+
+
+def _checkpoint_skip_pending():
+    utils = sys.modules.get("unsloth.models._utils")
+    pending = getattr(utils, "checkpoint_skip_pending", None)
+    try:
+        return bool(pending()) if pending is not None else False
+    except Exception:
+        return False
+
+
 def _on_optimizer_step(optimizer, args, kwargs):
     """Safe point: the step's activations are freed; size every device's budget from what is free now."""
     if _MODE is None or _DISABLED or not _SEEN:
@@ -367,6 +379,17 @@ def _on_optimizer_step(optimizer, args, kwargs):
     if (_MODE == "auto" and not _auto_allowed()) or not _ACTIVE:
         if _CACHE:
             clear_dequant_cache(release = True)
+        return
+    if _checkpoint_skip_pending() and STATS["gc_skip_wait"] < _GC_SKIP_WAIT_MAX:
+        # checkpoint_skip_layers = "auto" keeps activations from its plan on: the transient measured so far
+        # does not include them yet, so budget nothing until a safe point measured with the plan in place
+        # (at most a few safe points, so a plan that never settles cannot keep the cache off).
+        with _lock:
+            for index in list(_SEEN):
+                if _cached_bytes(index):
+                    _evict(index, 0, kind = "budget")
+                _BUDGET[index] = 0
+        STATS["gc_skip_wait"] += 1
         return
     with _lock:
         for key in [k for k, e in _CACHE.items() if e[0].expired()]:

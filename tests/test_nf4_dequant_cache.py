@@ -595,3 +595,22 @@ def test_evaluation_rows_do_not_mark_growth(monkeypatch):
     dc._on_optimizer_step(None, (), {})
     assert dc._BUDGET[None] == 7 * GiB and dc.STATS["stale_peak_kept"] == 1
     assert dc._ROWS_SEEN.get(None, 0) < 4096
+
+
+def test_waits_for_a_safe_point_with_the_checkpoint_skip_plan_in_place(monkeypatch):
+    # checkpoint_skip_layers = "auto" (the default on one GPU) keeps activations once planned: a safe point measured
+    # before its plan ran a step budgets nothing, at most a few times; then the normal budget applies.
+    _memory(monkeypatch, usable = 10 * GiB)
+    dc._SEEN.add(None)
+    pending = [True]
+    monkeypatch.setattr(dc, "_checkpoint_skip_pending", lambda: pending[0])
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 0 and dc.STATS["gc_skip_wait"] == 1
+    pending[0] = False
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 10 * GiB - 2 * GiB - GiB
+    pending[0] = True
+    for _ in range(dc._GC_SKIP_WAIT_MAX + 2):
+        dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 10 * GiB - 2 * GiB - GiB
+    assert dc.STATS["gc_skip_wait"] == dc._GC_SKIP_WAIT_MAX
