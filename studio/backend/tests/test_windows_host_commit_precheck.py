@@ -181,8 +181,24 @@ class TestPreLaunch:
         _backend(seen = seen)._windows_host_commit_refusal(
             [*base, "-c", "8192", "-ctk", "f16", "-np", "2"], _CARD, env, **kwargs
         )
-        # f16 K is heavier than the q8_0 V left in the environment.
-        assert seen[-1] == (8192, "f16", 2)
+        # K from argv (f16), V from the environment (q8_0): each priced at its own type.
+        assert seen[-2:] == [(8192, "f16", 2), (8192, "q8_0", 2)]
+
+    def test_k_and_v_are_priced_at_their_own_types(self, windows):
+        # A 32 GB f16 cache with q4_0 K costs about 20.5 GB: not refused with 24 GB usable.
+        backend = _backend()
+        backend._kv_lora_rank = None
+        per_axis = {"f16": 32 * _GB, "q4_0": 9 * _GB}
+        backend._estimate_kv_cache_bytes = lambda n_ctx, cache_type = None, **k: per_axis[cache_type]
+        cmd = ["llama-server", "-m", "model.gguf", "--no-kv-offload", "-c", "8192", "-ctk", "q4_0"]
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 26 * _MIB)
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
+        # Both axes in f16 (32 GB) is refused at the same headroom.
+        cmd_f16 = ["llama-server", "-m", "model.gguf", "--no-kv-offload", "-c", "8192"]
+        assert backend._windows_host_commit_refusal(cmd_f16, _CARD, {}, **kwargs)
+        # MLA caches K only, so V's type does not enter.
+        backend._kv_lora_rank = 512
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
 
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (

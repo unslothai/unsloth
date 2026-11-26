@@ -17037,13 +17037,18 @@ class LlamaCppBackend:
                 # A layer split keeps the KV of the layers left on the CPU in host RAM.
                 kv_on_host = spill / resident
             if kv_on_host and n_ctx > 0:
-                # The heavier axis, as the VRAM budget prices it.
-                cache_type = max(_effective_main_cache_types(argv, _env), key = _kv_bytes_per_elem)
+                k_type, v_type = _effective_main_cache_types(argv, _env)
                 parallel_raw = _extra_args_device(argv, frozenset({"-np", "--parallel"}))
                 if parallel_raw is None:
                     parallel_raw = str(_env.get("LLAMA_ARG_N_PARALLEL") or "")
-                n_parallel = int(parallel_raw) if parallel_raw.strip().isdigit() else 1
-                kv = self._estimate_kv_cache_bytes(n_ctx, cache_type, n_parallel = max(1, n_parallel))
+                n_parallel = max(1, int(parallel_raw) if parallel_raw.strip().isdigit() else 1)
+                kv = self._estimate_kv_cache_bytes(n_ctx, k_type, n_parallel = n_parallel)
+                # A refusal must not over-price: K and V each take half of an equal-width cache at
+                # their own type; MLA caches K only.
+                if v_type != k_type and getattr(self, "_kv_lora_rank", None) is None:
+                    kv = (
+                        kv + self._estimate_kv_cache_bytes(n_ctx, v_type, n_parallel = n_parallel)
+                    ) // 2
                 private += int(kv * kv_on_host)
             if private <= 0:
                 return None
