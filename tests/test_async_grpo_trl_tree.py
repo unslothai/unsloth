@@ -347,6 +347,15 @@ def _tree_samples():
     return samples
 
 
+def _rollout(sample):
+    # RolloutSample carries numpy arrays (TRL builds them with np.asarray); TRL 1.19's TreeRow walks them with
+    # numpy ops (argmin, concatenate), so a torch tensor fails there. The references below stay in torch.
+    return {
+        key: value.numpy() if isinstance(value, torch.Tensor) else value
+        for key, value in sample.items()
+    }
+
+
 def _tree_kwargs(module, inputs):
     # The tree_* forward kwargs AsyncGRPOTrainer.compute_loss sends: TRL >= 1.17 `unpad_tree`, TRL 1.16 inline.
     if hasattr(module, "unpad_tree"):
@@ -374,7 +383,7 @@ def test_tree_packed_row_matches_unpacked(patched):
     samples = _tree_samples()
     row = module.TreeRow()
     for sample in samples:
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     assert int((_parents(ns, packed) >= 0).sum()) > 0, "nothing shared"
     assert packed["input_ids"].numel() < sum(len(s["input_ids"]) for s in samples)
@@ -423,7 +432,7 @@ def test_tree_row_gradients_match_unpacked(patched):
     samples = _tree_samples()
     row = module.TreeRow()
     for sample in samples:
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     inputs = {k: v[None] for k, v in packed.items()}
     weight = model.model.layers[0].self_attn.q_proj.weight
@@ -449,7 +458,7 @@ def _tree_inputs(module):
     row = module.TreeRow()
     samples = _tree_samples()
     for sample in samples:
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     inputs = {k: v[None] for k, v in packed.items()}
     kwargs = dict(
@@ -522,7 +531,7 @@ def test_tree_attention_skips_rows_without_forks(patched, monkeypatch):
         sample["input_ids"] = sample["input_ids"].clone()
         sample["input_ids"][0] = 100 + i  # nothing shared, not even the system prompt
         sample["group_id"] = i
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     assert bool((_parents(ns, packed) < 0).all())
     inputs = {k: v[None] for k, v in packed.items()}
@@ -575,7 +584,7 @@ def test_segment_parents_follow_the_kv_paths(patched):
         pytest.skip("this TRL packs rows without a prefix trie")
     row = module.TreeRow()
     for sample in _tree_samples():
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     derive = ns["_async_grpo_tree_segment_parents"]
     tree = {key: value for key, value in packed.items() if key != "tree_segment_parents"}
