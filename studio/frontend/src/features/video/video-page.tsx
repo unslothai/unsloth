@@ -202,6 +202,7 @@ import {
   deniedSelectionFallback,
   gpuSelectionKey,
   type PlannedPrecision,
+  precisionResidentKey,
   withPrecisionDenials,
 } from "@/lib/precision-denials";
 import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
@@ -2090,6 +2091,11 @@ function VideoGenerator({
   const handledFailedLoadReseed = useRef(0);
   // The last picked model's per-scheme refusals from its download plan, for the Precision select before it loads.
   const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PlannedPrecision>(null);
+  // A plan's denials die with the resident it was made beside: a load landing, an eject or an eviction drops them.
+  const residentPrecisionKey = precisionResidentKey(status);
+  useEffect(() => {
+    setPlannedPrecisionOptions(null);
+  }, [residentPrecisionKey]);
   // Schemes the loaded (else last planned) family or card refuses (Wan NVFP4's failed accuracy gate): disabled in
   // Precision with the reason, and a held one falls back to Auto rather than being refused at load.
   const precisionDenials = activePrecisionDenials(

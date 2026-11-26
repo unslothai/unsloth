@@ -34,6 +34,21 @@ export function deniedSelectionFallback<T extends string>(value: T, denials: Pre
 /** A download plan's denials, with the GPU selection ("auto" or a card index) the plan was made for. */
 export type PlannedPrecision = { gpu: string; options: PrecisionOptions } | null;
 
+/**
+ * Identity of the resident build, "none" when nothing is loaded. A plan's denials belong to the pick that planned
+ * it: once the resident changes (that pick loaded, or the model was ejected or evicted) the page drops them, so an
+ * ejected model's family limits never apply to the next pick.
+ */
+export function precisionResidentKey(
+  status:
+    | { loaded?: boolean | null; repo_id?: string | null; transformer_quant?: string | null; family?: string | null }
+    | null
+    | undefined,
+): string {
+  if (!status?.loaded) return "none";
+  return JSON.stringify([status.repo_id ?? null, status.family ?? null, status.transformer_quant ?? null]);
+}
+
 /** The GPU selection a request carries: its first explicit card, else "auto". */
 export function gpuSelectionKey(gpuIds: readonly number[] | null | undefined): string {
   return gpuIds && gpuIds.length > 0 ? String(gpuIds[0]) : "auto";

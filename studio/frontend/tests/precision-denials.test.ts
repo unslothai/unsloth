@@ -12,6 +12,7 @@ import {
   activePrecisionDenials,
   deniedSelectionFallback,
   gpuSelectionKey,
+  precisionResidentKey,
   withPrecisionDenials,
 } from "../src/lib/precision-denials.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -90,3 +91,27 @@ for (const path of ["features/images/images-page.tsx", "features/video/video-pag
     );
   });
 }
+
+// NVIDIA feedback follow-up: after loading Qwen-Image and ejecting it, its plan kept MXFP8 disabled for the next pick.
+test("a plan's denials are dropped whenever the resident build changes", () => {
+  assert.equal(precisionResidentKey(null), "none");
+  assert.equal(precisionResidentKey({ loaded: false, repo_id: "Qwen/Qwen-Image" }), "none");
+  const qwen = precisionResidentKey({ loaded: true, repo_id: "Qwen/Qwen-Image", family: "qwen-image" });
+  assert.notEqual(qwen, "none");
+  // Eject changes the key, as does a different model or a reload at another precision.
+  assert.notEqual(precisionResidentKey({ loaded: true, repo_id: "black-forest-labs/FLUX.1-dev" }), qwen);
+  assert.notEqual(
+    precisionResidentKey({ loaded: true, repo_id: "Qwen/Qwen-Image", family: "qwen-image", transformer_quant: "int8" }),
+    qwen,
+  );
+  for (const path of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
+    const src = readSrc(path);
+    assert.match(
+      src,
+      /const residentPrecisionKey = precisionResidentKey\(status\);\s*useEffect\(\(\) => \{\s*setPlannedPrecisionOptions\(null\);\s*\}, \[residentPrecisionKey\]\);/,
+      path,
+    );
+    // Declared after status, which it reads during render.
+    assert.ok(src.indexOf("precisionResidentKey(status)") > src.indexOf("const [status, setStatus]"), path);
+  }
+});
