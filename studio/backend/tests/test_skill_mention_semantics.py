@@ -5,6 +5,7 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
+from weakref import ref
 
 import pytest
 
@@ -264,6 +265,44 @@ def test_refused_manifests_are_never_pinned_and_repeats_reuse_one_read(mention_c
     ]
     messages, events = _load(messages = history)
     assert events[-1]["already_in_context"] is True and "edited" not in messages[0]["content"]
+
+
+def test_budget_refusal_releases_manifest_but_is_reused_on_repeat(monkeypatch):
+    class Manifest(str):
+        pass
+
+    names = ["first", "second"]
+    monkeypatch.setattr(
+        mentions,
+        "list_skills",
+        lambda: [
+            {"name": name, "valid": True, "shadowed": False, "enabled": True} for name in names
+        ],
+    )
+    reads = {}
+
+    def read(name):
+        assert name not in reads
+        assert all(manifest() is None for manifest in reads.values())
+        manifest = Manifest(f"Complete instructions for {name}")
+        reads[name] = ref(manifest)
+        return manifest
+
+    monkeypatch.setattr(mentions, "read_skill_instructions", read)
+    messages, events = _load(
+        messages = [
+            {"role": "user", "content": "@first"},
+            {"role": "assistant", "content": "Okay."},
+            {"role": "user", "content": "@second @first"},
+        ],
+        context_length = 8,
+    )
+    assert list(reads) == names and all(manifest() is None for manifest in reads.values())
+    assert [event["name"] for event in events if event["status"] == "unavailable"] == [
+        "second",
+        "first",
+    ]
+    assert messages[0]["content"].count("Skill @first not loaded") == 1
 
 
 def test_deduplicated_native_result_is_protected_through_context_fitting(mention_client):

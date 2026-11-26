@@ -189,9 +189,8 @@ def load_mentioned_skills(
         min(_MAX_LOAD_BYTES, max(0, int(context_length) * 2)) if context_length else _MAX_LOAD_BYTES
     )
     loaded_bytes = 0
-    # One read per skill per request, so a repeat cannot see a different file than its earlier mention.
-    reads: dict[str, str | Exception] = {}
-    charged: set[str] = set()
+    # Cache each read outcome. Only manifests charged to the prompt budget keep their text.
+    reads: dict[str, str | SkillError] = {}
     for index, names in mention_turns:
         is_latest = index == latest_index
         # Only a result the caller keeps through fitting; otherwise the manifest goes in the system prompt.
@@ -236,53 +235,52 @@ def load_mentioned_skills(
                     continue
             if is_latest:
                 yield {**event, "status": "loading"}
-            try:
-                if name not in reads:
-                    # Re-validates enabled/account-scoped discovery; never paged or kept across requests.
-                    try:
-                        reads[name] = read_skill_instructions(name)
-                    except (SkillError, OSError) as exc:
-                        reads[name] = exc
-                if isinstance(reads[name], Exception):
-                    raise reads[name]
-                content = reads[name]
-                size = len(content.encode("utf-8"))
-                existing = next(
-                    (
-                        message
-                        for message in messages
-                        if message.get("role") == "system"
-                        or (reuse_tool_result and message.get("role") == "tool")
-                        if content in _text(message)
-                    ),
-                    None,
-                )
-                present = existing is not None
-                # Charged even when deduplicated, so the next turn's rebuild reaches the same outcomes.
-                if name not in charged:
+            result = reads.get(name)
+            if result is None:
+                # Re-validates enabled/account-scoped discovery on each request.
+                try:
+                    result = read_skill_instructions(name)
+                except (SkillError, OSError) as exc:
+                    result = SkillError(str(exc))
+                else:
+                    size = len(result.encode("utf-8"))
                     if loaded_bytes + size > budget:
-                        raise SkillError(
+                        result = SkillError(
                             "Complete SKILL.md exceeds this thread's skill context budget; shorten the skill or increase context."
                         )
-                    loaded_bytes += size
-                    charged.add(name)
-                if present and reuse_tool_result:
-                    # The native rolling fit must not evict a result we relied on.
-                    protected_message_ids.add(id(existing))
-                if not present:
-                    block = (
-                        f"\n\n[Unsloth loaded Agent Skill @{name} · SKILL.md]\n"
-                        f"{gate}\n"
-                        f"{content}\n[End Agent Skill @{name}]"
-                    )
-                    _append_system(messages, block)
-                if is_latest:
-                    yield _loaded_event(event, content, present = present)
-            except (SkillError, OSError) as exc:
-                detail = f"Skill @{name} not loaded: {exc}"
+                    else:
+                        # Charge deduplicated manifests too, so rebuilds reach the same outcomes.
+                        loaded_bytes += size
+                reads[name] = result
+            if isinstance(result, SkillError):
+                detail = f"Skill @{name} not loaded: {result}"
                 _append_system(messages, detail)
                 if is_latest:
                     yield {**event, "status": "unavailable", "detail": detail}
+                continue
+            existing = next(
+                (
+                    message
+                    for message in messages
+                    if message.get("role") == "system"
+                    or (reuse_tool_result and message.get("role") == "tool")
+                    if result in _text(message)
+                ),
+                None,
+            )
+            present = existing is not None
+            if present and reuse_tool_result:
+                # The native rolling fit must not evict a result we relied on.
+                protected_message_ids.add(id(existing))
+            if not present:
+                block = (
+                    f"\n\n[Unsloth loaded Agent Skill @{name} · SKILL.md]\n"
+                    f"{gate}\n"
+                    f"{result}\n[End Agent Skill @{name}]"
+                )
+                _append_system(messages, block)
+            if is_latest:
+                yield _loaded_event(event, result, present = present)
 
 
 def _loaded_event(event: dict, content: str, *, present: bool) -> dict:
