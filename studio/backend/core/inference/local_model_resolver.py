@@ -824,8 +824,7 @@ _STORE_SOURCES = ("hf_cache", "lmstudio", "omlx")
 
 
 def _is_symlink_alias(info) -> bool:
-    """A link at or above the row inside its scan folder (alias-a/, publisher-alias/model), as the inventory's
-    dedupe judges it; a scan folder reached through a link makes nothing an alias."""
+    """A link at or above the row inside its scan folder; a scan folder reached through a link is no alias."""
     from pathlib import Path
 
     from hub.services.models.local_inventory import _is_link_component
@@ -853,9 +852,8 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: local model scan failed: %s", exc)
         return index
-    # Rows the listing folds into a listed one still answer to their own names, after the listed rows so none takes
-    # a listed row's key: a copy in another HF cache, LM Studio or oMLX root, or a scan folder's symlink alias. A
-    # scan folder's sub-build stays grouped with its parent.
+    # Folded copies (other HF caches, LM Studio / oMLX roots, scan-folder symlink aliases) keep their own names,
+    # indexed after the listed rows so none takes a listed key; a scan folder's sub-build stays grouped.
     copies = {
         id(info): info
         for info in folded
