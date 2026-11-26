@@ -13815,7 +13815,7 @@ async def load_model_for_preview(
                 prior_marker = _get_preview_resident()
                 loaded_ok = False
                 try:
-                    await _load_model_impl(
+                    response = await _load_model_impl(
                         request,
                         fastapi_request,
                         current_subject,
@@ -13830,6 +13830,9 @@ async def load_model_for_preview(
                         allow_gpu_owner_eviction = False,
                     )
                     loaded_ok = True
+                    if isinstance(response, LoadResponse):
+                        from core.inference.chat_media_swap import remember_transformers_load
+                        remember_transformers_load(request, response, False)
                 except (GpuOwnerBusyError, MultiModelAlwaysRefusal) as exc:
                     untrack_current_request(scope)
                     raise HTTPException(
