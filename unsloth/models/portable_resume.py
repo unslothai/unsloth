@@ -31,7 +31,6 @@ __all__ = [
 ]
 
 PORTABLE_OPTIMIZER = "optimizer.pt"  # transformers' OPTIMIZER_NAME
-_SCHEDULER = "scheduler.pt"
 _TORCH_ADAM_KEYS = {"state1": "exp_avg", "state2": "exp_avg_sq"}
 # bitsandbytes per-parameter keys rebuilt by the target optimizer (quantization maps / scales, clipping history).
 _BNB_AUX = (
@@ -673,32 +672,6 @@ class _swap_load_state_dict:
         else:
             self.inner.load_state_dict = self.prior
         return False
-
-
-def ep_load_scheduler_only(load_optim, optimizer, checkpoint):
-    """Run the Trainer's own optimizer + scheduler load, restoring only the scheduler (the expert parallel rank
-    state restores the optimizer)."""
-    with _swap_load_state_dict(optimizer, lambda *args, **kwargs: None):
-        return load_optim(checkpoint)
-
-
-def ep_load_portable(load_optim, model, optimizer, checkpoint):
-    """The Trainer's own optimizer + scheduler load, the optimizer state resharded from optimizer.pt."""
-    if not os.path.isfile(os.path.join(checkpoint, _SCHEDULER)):
-        raise RuntimeError(
-            f"Unsloth: {checkpoint} has no {_SCHEDULER}; cannot resume it on another layout."
-        )
-    called = []
-
-    def load(state_dict, *args, **kwargs):
-        called.append(True)
-        return portable_load_optimizer(model, optimizer, state_dict)
-
-    with _swap_load_state_dict(optimizer, load):
-        out = load_optim(checkpoint)
-    if not called:
-        raise RuntimeError(f"Unsloth: the Trainer did not load {checkpoint}'s optimizer state.")
-    return out
 
 
 # --------------------------------------------------------------------------------------------------------------

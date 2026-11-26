@@ -2125,6 +2125,17 @@ def expert_shard_problem(block, tp = None):
         return f"its experts forward takes {names}, not {_EXPERT_CALL}"
     if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
         return "swapped expert LoRA factors"
+    lists = sorted(
+        name
+        for name, child in leaf.named_children()
+        if isinstance(child, nn.ModuleList) and len(child) == E and _has_params(child)
+    )
+    if lists:
+        # unsloth_zoo's GptOssExpertsBnb4bit (every load_in_4bit gpt-oss): one Linear4bit per expert, no stack
+        return (
+            f"per-expert Linear lists ({' / '.join(lists)}): one Linear per expert, not a fused expert stack "
+            "(unsloth_zoo's GptOssExpertsBnb4bit, the load_in_4bit gpt-oss layout)"
+        )
     if any(_has_params(child) for child in leaf.children()) or any(
         b is not None for b in leaf._buffers.values()
     ):

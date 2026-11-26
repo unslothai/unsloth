@@ -3569,6 +3569,33 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "version and is ignored.",
         )
 
+    # Colocated vLLM IS: request pre-min_p/top_k/top_p logprobs. Must be first in the body so the flag
+    # describes this call's rollouts (zoo decides per trainer).
+    _untruncated_header = re.search(
+        r"\n?([ \t]*)def _generate_and_score_completions\([^)]*\)[^:\n]*:[ \t]*\n", function
+    )
+    if _untruncated_header is not None and "set_vllm_untruncated_logprobs" not in function:
+        _body = re.match(r"([ \t]+)", function[_untruncated_header.end() :])
+        _indent = _body.group(1) if _body else _untruncated_header.group(1) + "    "
+        _setter = (
+            "try:\n"
+            "    from unsloth_zoo.vllm_utils import set_vllm_untruncated_logprobs as _unsloth_untruncated\n"
+            "    _unsloth_llm = getattr(self, 'llm', None) or getattr(getattr(self, 'vllm_generation', None), 'llm', None)\n"
+            "    self._unsloth_vllm_untruncated_logprobs = bool(_unsloth_untruncated(\n"
+            "        bool(getattr(self, 'use_vllm', False))\n"
+            "        and bool(getattr(self, 'vllm_importance_sampling_correction', False))\n"
+            "        and _unsloth_llm is not None,\n"
+            "        _unsloth_llm,\n"
+            "    ))\n"
+            "except Exception:\n"
+            "    self._unsloth_vllm_untruncated_logprobs = False\n"
+        )
+        function = (
+            function[: _untruncated_header.end()]
+            + textwrap.indent(_setter, _indent)
+            + function[_untruncated_header.end() :]
+        )
+
     return function
 
 

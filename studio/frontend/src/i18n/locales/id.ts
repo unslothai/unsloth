@@ -4424,8 +4424,8 @@ export const id = {
       summary: {
         single: "Melatih di satu GPU",
         layerSplit: "Model dibagi per lapisan ke {count} GPU",
-        ddp: "Model muat di satu GPU: paralel data di {count} GPU",
-        fsdp2: "Model terlalu besar untuk satu GPU: di-shard ke {count} GPU",
+        ddp: "Setiap GPU melatih salinan penuh: paralel data di {count} GPU",
+        fsdp2: "Bobot dan status optimizer di-shard ke {count} GPU",
         tp: "Setiap lapisan dibagi ke {count} GPU",
         pp: "Lapisan berjalan sebagai {count} tahap pipeline, satu per GPU",
         cp: "Setiap urutan dibagi ke {count} GPU",
@@ -4436,7 +4436,7 @@ export const id = {
         noGpu: "Pilih setidaknya satu GPU.",
         singleNeedsOne: "Satu GPU memakai tepat satu GPU. Hapus centang yang lain.",
         needsTwo: "Mode ini memerlukan setidaknya dua GPU.",
-        customSpec: "Masukkan tata letak, misalnya dp=2,tp=2.",
+        customSpec: "Masukkan tata letak, misalnya {example}.",
       },
     },
     preview: {
@@ -6440,6 +6440,12 @@ export const id = {
     maximize: "Maksimalkan jendela",
     restore: "Pulihkan jendela",
     close: "Tutup jendela",
+    mediaCodecs: {
+      title: "Video yang dibuat mungkin tidak dapat diputar",
+      // {command}: an apt command line, never translated.
+      description: "Sistem ini tidak memiliki dekoder video GStreamer. Instal dengan: {command}",
+      copy: "Salin perintah",
+    },
   },
   runtimeUpdate: {
     installAudio: "Instal runtime audio",

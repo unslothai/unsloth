@@ -3580,15 +3580,22 @@ def native_save_optimizer(
     if path is None:
         return state
     writer = bool(should_save)
+    failure = None
     try:
         if writer:
-            torch.save(state, path)
+            # Through a temp file: a failed write (full disk) leaves the previous optimizer.pt whole.
+            from .tp_native import _atomic_torch_save
+            _atomic_torch_save(state, path)
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
         if dist is not None:
             # The other ranks wait for the write, so no later collective overtakes it. A store key,
             # not a barrier: a large full-finetuning state can take longer to write than the
-            # collective timeout. Every rank passes the same path (the Trainer does).
-            _wait_for_writer(dist, writer, writer_rank)
+            # collective timeout. Every rank passes the same path (the Trainer does). A failed
+            # write raises on every rank.
+            _wait_for_writer(dist, writer, writer_rank, failed = failure)
     return state
 
 
@@ -4471,17 +4478,21 @@ def _install_trainer_hooks():
 
             state_dict = native_full_state_dict(root)
             writer, writer_rank = _trainer_save_writer(self, root)
+            failure = None
             try:
                 if writer:
                     with writes_off_rank0(root, writer_rank):
                         _save_unwrapped(self, root, output_dir, state_dict = state_dict)
+            except BaseException as exc:
+                failure = exc
+                raise
             finally:
                 # As in fsdp2_gathered: the other ranks wait for the (possibly multi-GB) write
                 # through the store, so they cannot run ahead into the optimizer save's or the next
                 # step's collectives and hit their timeout while rank 0 is still writing.
                 dist = _dist()
                 if dist is not None:
-                    _wait_for_writer(dist, writer, writer_rank)
+                    _wait_for_writer(dist, writer, writer_rank, failed = failure)
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
@@ -4551,19 +4562,14 @@ def _install_trainer_hooks():
             return original_save_optimizer(self, output_dir)
         # Collective full optimizer state (the original saves rank 0's shards only), then the scheduler.
         # UNSLOTH_FSDP2_DCP_OPTIM=1: each rank writes its own shards instead. A stale file of the
-        # other format in a reused directory is removed, so a resume cannot read it.
+        # other format in a reused directory is removed once the new one is written (a failed save
+        # keeps it), so a resume cannot read it.
         # The flag is read per rank: every rank writes the format they all asked for (a mixed
         # choice would pair dcp.save's collectives with the full gather's), before any cleanup.
-        should_save = _trainer_save_writer(self, _native_root(model))[0]
+        should_save, writer_rank = _trainer_save_writer(self, _native_root(model))
         group, usable = _dcp_group(_native_root(model))
         sharded = usable and _all_ranks_agree(_env_on("UNSLOTH_FSDP2_DCP_OPTIM", False), group)
         stale = os.path.join(output_dir, _OPTIMIZER_NAME if sharded else _OPTIMIZER_DCP_DIR)
-        if should_save and os.path.lexists(stale):
-            if os.path.isdir(stale) and not os.path.islink(stale):
-                import shutil
-                shutil.rmtree(stale)
-            else:
-                os.remove(stale)
         if sharded:
             native_save_optimizer_sharded(
                 model, self.optimizer, os.path.join(output_dir, _OPTIMIZER_DCP_DIR)
@@ -4576,8 +4582,30 @@ def _install_trainer_hooks():
                 should_save = should_save,
             )
         scheduler = getattr(self, "lr_scheduler", None)
-        if should_save and scheduler is not None:
-            torch.save(scheduler.state_dict(), os.path.join(output_dir, _SCHEDULER_NAME))
+        from .fsdp2_save import _dist, _wait_for_writer
+        from .tp_native import _atomic_torch_save
+
+        dist = _dist()
+        failure = None
+        try:
+            if should_save:
+                if scheduler is not None:
+                    _atomic_torch_save(
+                        scheduler.state_dict(), os.path.join(output_dir, _SCHEDULER_NAME)
+                    )
+                if os.path.lexists(stale):
+                    if os.path.isdir(stale) and not os.path.islink(stale):
+                        import shutil
+                        shutil.rmtree(stale)
+                    else:
+                        os.remove(stale)
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            if dist is not None:
+                # A failed scheduler write raises on every rank, as a failed optimizer write does.
+                _wait_for_writer(dist, should_save, writer_rank, failed = failure)
 
     original_load_optimizer = Trainer._load_optimizer_and_scheduler
 

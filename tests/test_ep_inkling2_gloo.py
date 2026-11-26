@@ -701,7 +701,7 @@ def test_parallel_flag_accepts_ep_over_every_rank():
     for raw, world, match in (
         ("ep=2,tp=2", "4", "cannot be combined with tp=2"),
         ("ep=2,fsdp=1", "2", "cannot be combined with fsdp=1"),
-        ("ep=3", "4", "must divide the data parallel size"),
+        ("ep=3", "4", "must divide the number of ranks"),
         ("ep=2,dp=2", "4", "needs dp x pp x cp x tp"),
     ):
         with pytest.raises(ValueError, match = match):
