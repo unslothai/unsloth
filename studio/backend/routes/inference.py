@@ -52021,6 +52021,20 @@ async def diffusion_download_plan(
             # Keeps the probe: a capability read, never an allocation; without it a GGUF pick reports 21 GB short
             memory_verdict = not training,
         )
+        if fam is not None and planner is backend:
+            from core.inference.diffusion_transformer_quant import plan_precision_options
+
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            plan = {
+                **plan,
+                "precision_options": plan_precision_options(
+                    getattr(fam, "name", None),
+                    model_kind = kind,
+                    repo_id = request.model_path,
+                    base_repo = request.base_repo,
+                    gpu_ordinal = gpu_ordinal,
+                ),
+            }
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))

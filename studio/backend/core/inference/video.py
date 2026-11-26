@@ -228,6 +228,7 @@ from .diffusion_transformer_quant import (
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
     explain_unusable_scheme,
+    precision_options,
     native_int8_act,
     native_offload_host,
     rdna_video_explicit_w8a8_reason,
@@ -17597,6 +17598,7 @@ class VideoBackend:
                 "h3_task": None,
                 "defaults": None,
                 "resolved": None,
+                "precision_options": None,
             }
         from hub.utils.gguf import extract_quant_token
 
@@ -17657,6 +17659,8 @@ class VideoBackend:
                 else None
             ),
             "transformer_quant": state.transformer_quant,
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            "precision_options": precision_options(fam.name, state.base_repo, state.device),
             "baked_loras": video_lora.baked_lora_names(getattr(state, "pipe", None)),
             "baked_lora_specs": video_lora.baked_lora_specs(getattr(state, "pipe", None)),
             # Structural refusal only (kind, two experts); the transformer_quant refusal depends on the next load.

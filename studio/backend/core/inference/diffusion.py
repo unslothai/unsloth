@@ -598,6 +598,7 @@ from .diffusion_transformer_quant import (
     dense_transformer_unsupported_reason,
     denoiser_modules,
     explain_unusable_scheme,
+    precision_options,
     family_denies_scheme,
     fp16_card_int8_host,
     fp16_card_native_host,
@@ -18105,6 +18106,7 @@ class DiffusionBackend:
                 "supports_controlnet": False,
                 "resolved": None,
                 "generation_defaults": None,
+                "precision_options": None,
             }
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
@@ -18184,6 +18186,10 @@ class DiffusionBackend:
             "baked_lora_specs": _baked_lora_specs(state.pipe),
             "load_lora_specs": _load_lora_specs(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            "precision_options": precision_options(
+                state.family.name, state.base_repo, state.device
+            ),
             "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(
                 tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
