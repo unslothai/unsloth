@@ -485,6 +485,7 @@ import {
   withEnhanceChoice,
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
+import { recipeTimeLabel } from "./lib/recipe-time";
 import {
   ENGINE_HINT,
   ENGINE_HINT_CPU_ONLY,
@@ -1508,8 +1509,12 @@ function RecipePopover({
           {image.generation_seconds != null ? (
             <RecipeRow
               label="Time"
-              value={`${image.generation_seconds.toFixed(image.generation_seconds < 1 ? 2 : 1)} s${(image.generation_count ?? 1) > 1 ? ` (batch of ${image.generation_count})` : ""}`}
-              title="Elapsed time until images are ready to save; may include waiting and processing"
+              value={recipeTimeLabel(image)}
+              title={
+                image.warmup_render
+                  ? "First render after the model loaded: this time includes one-time warm-up (torch.compile, kernel tuning and CUDA graph capture when enabled). Later renders show the steady-state time."
+                  : "Elapsed time until images are ready to save; may include waiting and processing"
+              }
             />
           ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
