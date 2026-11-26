@@ -4472,6 +4472,8 @@ export function ImagesPage({
       pickToast.dismiss(pendingStagedLoad.current?.toastId);
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
+      // The canceled pick planned the Precision denials; the resident build's status describes the next load again.
+      setPlannedPrecisionOptions(null);
       // Staging starts no load, so the optimistic label must be reverted here, for this job's pick only.
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);

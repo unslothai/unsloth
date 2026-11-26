@@ -3322,6 +3322,8 @@ function VideoGenerator({
       pickToast.dismiss(pendingStagedLoad.current?.toastId);
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
+      // The canceled pick planned the Precision denials; the resident build's status describes the next load again.
+      setPlannedPrecisionOptions(null);
       // No load started, so no poll will roll back the optimistic quant label; only for this job's pick.
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);

@@ -144,3 +144,17 @@ test("a plan for a different model wins over the resident family's refusals on t
   // A plan for another selection does not describe this target.
   assert.equal(activePrecisionDenials(wan, { ...flux, gpu: "1" }, "auto"), WAN);
 });
+
+// Codex: canceling a staged Qwen-Image download with FLUX resident left Qwen's plan (MXFP8 disabled) over FLUX.
+test("canceling a staged download drops the plan its pick made, on both pages", () => {
+  for (const path of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
+    const src = readSrc(path);
+    const start = src.indexOf("onCancelled: () => {");
+    assert.ok(start > 0, path);
+    const handler = src.slice(start, src.indexOf("usePickToastProgress(pickToast, stagedProgress);", start));
+    assert.match(handler, /pendingStagedLoad\.current = null;[\s\S]*setPlannedPrecisionOptions\(null\);/, path);
+  }
+  // With the plan gone the resident's own status applies again.
+  const flux = { loaded: true, repo_id: "black-forest-labs/FLUX.1-dev", precision_options: { mxfp8: null } };
+  assert.equal(activePrecisionDenials(flux, null, "auto"), flux.precision_options);
+});
