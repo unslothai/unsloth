@@ -7,8 +7,7 @@ import { test } from "node:test";
 
 import { en } from "../src/i18n/locales/en.ts";
 
-// The GPU pickers list only this machine's cards. Each existing GPU hint says that two machines (for example two
-// DGX Sparks) working on one job is not part of this release, so nobody reads the picker as a cluster setting.
+// Each GPU hint must say multi-machine (e.g. two DGX Sparks) is unsupported in this release.
 const NOT_RELEASED = /not part of this release/;
 const TWO_MACHINES = /two DGX Sparks/;
 
