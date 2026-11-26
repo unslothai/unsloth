@@ -8457,6 +8457,27 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
+def _serving_reasoning_flags(tools = None) -> Optional[dict]:
+    """The serving model's reasoning flags, read as /status reads them; None when nothing is loaded."""
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        return {
+            name: getattr(llama_backend, name)
+            for name in (
+                "supports_reasoning",
+                "reasoning_style",
+                "reasoning_always_on",
+                "reasoning_effort_levels",
+            )
+        }
+    backend = _peek_inference_backend()
+    if backend is None or not backend.active_model_name:
+        return None
+    models = getattr(backend, "models", {}) or {}
+    model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    return _sf_rendered_features(backend, model_info, tools)[0]
+
+
 def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
     """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
     clean = public_model_id(model) or model or "model"
@@ -34092,6 +34113,16 @@ async def produce_openai_chat_completions(
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")
         _preprepared_audio = _audio_preflight.get("prepared")
+    if payload._scheduled_reasoning_effort is not None:
+        from core.scheduled_tasks.scheduler import _reasoning_fields
+
+        # A tool run's turns can render the shipped template instead of an override; classify that one.
+        _tool_run = payload.enable_tools and payload.tool_choice != "none"
+        _flags = _serving_reasoning_flags(payload.tools or (({},) if _tool_run else None))
+        for _field, _value in _reasoning_fields(
+            payload._scheduled_reasoning_effort, False, _flags
+        ).items():
+            setattr(payload, _field, _value)
 
     from core.inference.npu_backend import peek_npu_backend
 
@@ -41359,6 +41390,11 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
             return model
+        # A client may echo a tag issued before tags carried the server; it names the current one.
+        if rag_config.is_connection_model(model):
+            legacy = rag_config.embedding_identity("connection", model)
+            if wanted in (legacy, _public_embedding_identity(legacy, model, label)):
+                return model
         return None
     for name in (model, repo, label, _public_embedding_name(repo)):
         if not name:
@@ -52021,6 +52057,35 @@ async def diffusion_download_plan(
             # Keeps the probe: a capability read, never an allocation; without it a GGUF pick reports 21 GB short
             memory_verdict = not training,
         )
+        if fam is not None and planner is backend:
+            from core.inference.diffusion import _memory_request_forces_offload
+            from core.inference.diffusion_transformer_quant import plan_precision_options
+
+            # Probe verdicts need the planned card's target; while training holds the GPU only the family table answers.
+            plan_target = None
+            if not training and gpu_ordinal is not None:
+                try:
+                    plan_target = await asyncio.to_thread(
+                        backend._target_for_ordinal, fam, gpu_ordinal
+                    )
+                except Exception:  # noqa: BLE001 -- no target, no probe verdicts
+                    plan_target = None
+
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            plan = {
+                **plan,
+                "precision_options": plan_precision_options(
+                    getattr(fam, "name", None),
+                    model_kind = kind,
+                    repo_id = request.model_path,
+                    base_repo = request.base_repo,
+                    gpu_ordinal = gpu_ordinal,
+                    target = plan_target,
+                    offload = _memory_request_forces_offload(
+                        request.memory_mode, bool(request.cpu_offload)
+                    ),
+                ),
+            }
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))

@@ -1254,11 +1254,48 @@ def test_local_path_aliases_match_case_exactly(studio_embedder, tmp_path):
 
 
 def test_a_connection_embedder_answers_to_its_configured_name(studio_embedder):
+    from storage import providers_db
+
     ref = "connection:Scheduler/bge-m3"
+    server = {"id": "p-1", "provider_type": "custom", "display_name": "Scheduler"}
+    point_at = lambda url: studio_embedder.setattr(
+        providers_db, "list_providers", lambda: [{**server, "base_url": url}]
+    )
     studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: ref)
+    point_at("http://a.local:9000/v1")
     assert inference_route._names_studio_embedder(ref) == ref
+    on_a = rag_embeddings.embedding_identity(ref)
+    assert inference_route._names_studio_embedder(on_a)
+    # A tag issued before tags carried the server still names this embedder.
     assert inference_route._names_studio_embedder(rag_config.embedding_identity("connection", ref))
+    point_at("http://b.local:9000/v1")
+    assert inference_route._names_studio_embedder(on_a) is None
     assert inference_route._names_studio_embedder("connection:Other/bge-m3") is None
+
+
+def test_a_redacted_connection_tag_from_before_the_upgrade_still_answers(studio_embedder):
+    from storage import providers_db
+
+    ref = "connection:Scheduler/BAAI/bge-m3"
+    studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: ref)
+    studio_embedder.setattr(
+        providers_db,
+        "list_providers",
+        lambda: [
+            {
+                "id": "p-1",
+                "provider_type": "custom",
+                "display_name": "Scheduler",
+                "base_url": "http://a.local:9000/v1",
+            }
+        ],
+    )
+    legacy = rag_config.embedding_identity("connection", ref)
+    public = inference_route._public_embedding_identity(
+        legacy, ref, inference_route._public_embedding_name(ref)
+    )
+    assert public != legacy
+    assert inference_route._names_studio_embedder(public) == ref
 
 
 def test_a_connection_embedder_needs_a_session_that_may_use_saved_keys(studio_embedder):

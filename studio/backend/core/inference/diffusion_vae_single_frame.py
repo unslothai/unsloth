@@ -58,6 +58,10 @@ def _conv_forward(
             dilation = self.dilation[1:],
         )
         return out.unsqueeze(2)
+    # Keep a previously bound forward (MPS zero-buffer pad) for other calls.
+    inner = self.__dict__.get("_unsloth_sf_inner")
+    if inner is not None:
+        return inner(x, cache_x)
     return type(self).forward(self, x, cache_x)
 
 
@@ -128,6 +132,7 @@ def install(vae: Any, logger: Any = None) -> bool:
         gate = _Gate()
         for m in convs:
             m._unsloth_sf_gate = gate
+            m._unsloth_sf_inner = m.__dict__.get("forward")
             m.forward = types.MethodType(_conv_forward, m)
         vae._unsloth_sf_gate = gate
         vae._unsloth_stock_decode = vae._decode

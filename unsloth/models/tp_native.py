@@ -2125,6 +2125,17 @@ def expert_shard_problem(block, tp = None):
         return f"its experts forward takes {names}, not {_EXPERT_CALL}"
     if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
         return "swapped expert LoRA factors"
+    lists = sorted(
+        name
+        for name, child in leaf.named_children()
+        if isinstance(child, nn.ModuleList) and len(child) == E and _has_params(child)
+    )
+    if lists:
+        # unsloth_zoo's GptOssExpertsBnb4bit (every load_in_4bit gpt-oss): one Linear4bit per expert, no stack
+        return (
+            f"per-expert Linear lists ({' / '.join(lists)}): one Linear per expert, not a fused expert stack "
+            "(unsloth_zoo's GptOssExpertsBnb4bit, the load_in_4bit gpt-oss layout)"
+        )
     if any(_has_params(child) for child in leaf.children()) or any(
         b is not None for b in leaf._buffers.values()
     ):
@@ -3672,6 +3683,22 @@ def vocab_parallel_active(head) -> bool:
     return bool(getattr(head, "_unsloth_vocab_parallel", False)) and _is_dtensor(_weight(head)[0])
 
 
+def _torch_checkpoint():
+    """torch's own checkpoint, also once unsloth_zoo's smart gradient checkpointing has replaced
+    torch.utils.checkpoint.checkpoint with its forced-reentrant, CPU-offloading version: chunk loops nested
+    in a checkpointed layer need non-reentrant recompute (one replay per backward, closed-over grads)."""
+    import torch.utils.checkpoint as module
+
+    for func in (
+        getattr(module, "_unsloth_pristine_checkpoint", None),
+        module.checkpoint,
+        getattr(module, "_old_checkpoint", None),
+    ):
+        if getattr(func, "__module__", None) == module.__name__:
+            return func
+    return module.checkpoint
+
+
 def vocab_parallel_cross_entropy(
     head,
     hidden_states,
@@ -3687,7 +3714,7 @@ def vocab_parallel_cross_entropy(
     recomputed in backward (one 1/tp chunk per rank); returns sum over valid tokens / n_items
     (mean if None), same on all tp ranks; hidden_states [..., hidden], labels [...]; shift=True
     shifts labels here."""
-    from torch.utils.checkpoint import checkpoint
+    checkpoint = _torch_checkpoint()
 
     group = head.__dict__["_unsloth_tp_group"]
     lo, width, _ = head.__dict__["_unsloth_vocab_rows"]
@@ -5938,6 +5965,8 @@ def _dp_average(params, mesh):
     import torch.distributed as dist
     from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
+    from .ep_native import _REPLICA_BUCKET_BYTES, _replica_buckets
+
     params = [p for p in params if p.requires_grad]
     if not params:
         return
@@ -5949,17 +5978,25 @@ def _dp_average(params, mesh):
     )
     has = torch.tensor([p.grad is not None for p in params], dtype = torch.int32, device = device)
     dist.all_reduce(has, op = dist.ReduceOp.MAX, group = group)
-    buckets = {}
+    grads = []
     for p, any_grad in zip(params, has.tolist()):
         if not any_grad:
             continue
         if p.grad is None:
             p.grad = torch.zeros_like(p)
         g = p.grad
-        local = g._local_tensor if _is_dtensor(g) else g
-        buckets.setdefault((local.device, local.dtype), []).append(local)
+        grads.append(g._local_tensor if _is_dtensor(g) else g)
     with torch.no_grad():
-        for tensors in buckets.values():
+        # Capped buckets (as EP's replica sync): one flat copy of every gradient would double their memory.
+        for tensors in _replica_buckets(grads, _REPLICA_BUCKET_BYTES):
+            if (
+                len(tensors) == 1
+                and tensors[0].is_contiguous()
+                and tensors[0].dtype != torch.float16
+            ):
+                dist.all_reduce(tensors[0], group = group)
+                tensors[0].div_(n)
+                continue
             flat = _flatten_dense_tensors(tensors)
             if flat.dtype == torch.float16:
                 # fp16 sum can overflow past 65504 though the mean is finite.
@@ -5968,6 +6005,8 @@ def _dp_average(params, mesh):
             flat.div_(n)
             for t, value in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
                 t.copy_(value)
+            # A view of flat in value would keep it alive beside the next bucket's buffer.
+            del flat, value
 
 
 def _dp_sync_before_step(sync, optimizer, args, kwargs):
@@ -5980,7 +6019,9 @@ def _dp_sync_before_step(sync, optimizer, args, kwargs):
 
 # Trainer checkpoints under tensor parallelism: every rank writes its own local shards of the trainable
 # weights and of the optimizer state (DTensor entries as local tensors), the scheduler / scaler / RNG / trainer
-# state stay as the Trainer writes them, and save_model writes the 1-GPU adapter. A resume needs the same layout.
+# state stay as the Trainer writes them, and save_model writes the 1-GPU adapter. Rank 0 also writes the optimizer
+# state in its 1-GPU form (optimizer.pt): a resume on the same layout reads the per-rank files, on another layout
+# (or one GPU) the adapter and optimizer.pt, resharded (portable_resume.py).
 _CKPT_DIR = "unsloth_tp"
 
 
@@ -6174,10 +6215,19 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
         else None,
     }
     scheduler = getattr(self, "lr_scheduler", None)
+    # The same optimizer state in the 1-GPU form (collective, rank 0 holds it): resumes on another layout.
+    from .portable_resume import portable_optimizer_state, write_portable_optimizer
+
+    portable, why = (
+        portable_optimizer_state(self.model, self.optimizer)
+        if getattr(self, "optimizer", None) is not None
+        else (None, None)
+    )
 
     def write():
         os.makedirs(os.path.dirname(path), exist_ok = True)
         _atomic_torch_save(payload, path)
+        write_portable_optimizer(output_dir, portable, why)
         if self.args.should_save and scheduler is not None:
             from transformers.trainer import SCHEDULER_NAME
             _atomic_torch_save(scheduler.state_dict(), os.path.join(output_dir, SCHEDULER_NAME))
@@ -6185,7 +6235,12 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
     _agree_write(write)
 
 
+_PORTABLE = object()  # _tp_resume_payload: resume from the 1-GPU adapter + optimizer.pt
+
+
 def _tp_resume_payload(self, checkpoint):
+    """This rank's checkpoint state on the saved layout, or _PORTABLE when any rank's layout differs (or has no
+    rank file) and the checkpoint has the 1-GPU adapter + optimizer.pt (collective: every rank decides alike)."""
     import os
 
     import torch.distributed as dist
@@ -6195,25 +6250,44 @@ def _tp_resume_payload(self, checkpoint):
         return cached[1]
     rank = dist.get_rank() if dist.is_initialized() else 0
     path = _ckpt_path(checkpoint, rank)
+    payload, error = None, None
     if not os.path.isfile(path):
-        raise RuntimeError(
+        error = RuntimeError(
             f"Unsloth: tensor parallel resume needs the per-rank state {path}, which this checkpoint does not "
             "have (it was not written by a tensor parallel Trainer, or with save_only_model = True, which saves "
             "no optimizer state to resume from)." + _env_hint()
         )
-    payload = _resume_torch_load(path, map_location = "cpu")
-    want, got = _tp_layout(self), payload["layout"]
-    if want != got:
-        diff = {
-            k: (got.get(k), want.get(k))
-            for k in ("world", "pp", "cp", "tp", "dp", "dp_kind")
-            if got.get(k) != want.get(k)
-        }
-        raise RuntimeError(
-            f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
-            f"({diff or 'trainable parameter names / shard shapes differ'}); resume with the same world size, "
-            "UNSLOTH_TP_SIZE / UNSLOTH_CP_SIZE and data parallel mode."
-        )
+    else:
+        payload = _resume_torch_load(path, map_location = "cpu")
+        want, got = _tp_layout(self), payload["layout"]
+        if want != got:
+            diff = {
+                k: (got.get(k), want.get(k))
+                for k in ("world", "pp", "cp", "tp", "dp", "dp_kind")
+                if got.get(k) != want.get(k)
+            }
+            error = RuntimeError(
+                f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
+                f"({diff or 'trainable parameter names / shard shapes differ'}) and has no 1-GPU optimizer.pt "
+                "(an older Unsloth, or an optimizer whose state cannot be converted); resume with the same world "
+                "size, UNSLOTH_TP_SIZE / UNSLOTH_CP_SIZE and data parallel mode."
+            )
+    from .portable_resume import _agree, portable_available
+
+    if not _agree(error is None):
+        if portable_available(checkpoint, self.model):
+            _print_rank0(
+                f"Unsloth: {checkpoint} was written on another parallel layout; resuming from its 1-GPU adapter "
+                "and optimizer state, resharded."
+            )
+            self.__dict__["_unsloth_tp_resume"] = (checkpoint, _PORTABLE)
+            return _PORTABLE
+        if error is None:
+            error = RuntimeError(
+                f"Unsloth: tensor parallel resume from {checkpoint}: another rank's checkpoint state was written "
+                "on another layout (see that rank's error)."
+            )
+        raise error
     # Outside "layout" so an older Unsloth still resumes this checkpoint; absent in older checkpoints.
     saved_b, this_b = payload.get("expert_lora_b"), _expert_lora_b_layout(self.model)
     if saved_b and this_b and saved_b != this_b:
@@ -6234,6 +6308,15 @@ def _tp_load_from_checkpoint(
 ):
     payload = _tp_resume_payload(self, resume_from_checkpoint)
     target = model if model is not None else self.model
+    if payload is _PORTABLE:
+        from .portable_resume import portable_load_weights
+
+        n = portable_load_weights(target, resume_from_checkpoint)
+        _print_rank0(
+            f"Unsloth: parallel resume: every rank took its slices of {n} trainable tensors from "
+            f"{resume_from_checkpoint}'s 1-GPU adapter."
+        )
+        return
     with torch.no_grad():
         for name, p in target.named_parameters():
             if p.requires_grad:
@@ -6250,13 +6333,20 @@ def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
     if checkpoint is None:
         return None
     payload = _tp_resume_payload(self, checkpoint)
-    if payload.get("optimizer") is not None:
+    if payload is _PORTABLE:
+        from .portable_resume import PORTABLE_OPTIMIZER, portable_load_optimizer
+        state = _resume_torch_load(os.path.join(checkpoint, PORTABLE_OPTIMIZER), map_location = "cpu")
+        portable_load_optimizer(self.model, self.optimizer, state)
+    elif payload.get("optimizer") is not None:
         _load_optimizer_local_state(self.optimizer, payload["optimizer"])
     from transformers.trainer import SCHEDULER_NAME
 
     path = os.path.join(checkpoint, SCHEDULER_NAME)
     if getattr(self, "lr_scheduler", None) is not None and os.path.isfile(path):
-        self.lr_scheduler.load_state_dict(_resume_torch_load(path))
+        from .portable_resume import remap_scheduler_state
+        self.lr_scheduler.load_state_dict(
+            remap_scheduler_state(self.optimizer, _resume_torch_load(path))
+        )
     self.__dict__.pop("_unsloth_tp_resume", None)
     return None
 
