@@ -225,6 +225,32 @@ class TestTheSplitKeepsTheSelectionItInherited:
             assert jobs[0][field] == jobs[1][field], f"the two jobs differ in {field!r}"
 
 
+class TestTheDistributedShardsForkTheirRanks:
+    """distributed-cpu-ci.yml turns on tests/_shared/rank_zygote.py for its own job only: at job level, so the
+    shared pytest step stays byte-identical, and never for Backend CI's shards."""
+
+    def _env(self, path, job):
+        return _workflow(path)["jobs"][job].get("env") or {}
+
+    def test_the_distributed_job_turns_the_zygote_on(self):
+        env = self._env(*_SHARD_JOBS[1])
+        assert env.get("UNSLOTH_TEST_RANK_ZYGOTE") == "1"
+        assert env.get("UNSLOTH_TEST_RANK_ZYGOTE_STATS"), "the summary step reads this directory"
+        steps = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["steps"]
+        summary = [s for s in steps if "rank_zygote.py --summary" in (s.get("run") or "")]
+        assert summary and summary[0].get("if") == "always()"
+        assert env["UNSLOTH_TEST_RANK_ZYGOTE_STATS"] in summary[0]["run"]
+
+    def test_backend_ci_does_not(self):
+        assert "UNSLOTH_TEST_RANK_ZYGOTE" not in self._env(*_SHARD_JOBS[0])
+        assert "UNSLOTH_TEST_RANK_ZYGOTE" not in str(_shard_pytest_step().get("env"))
+
+    def test_the_conftest_installs_it_only_under_the_flag(self):
+        text = (_TESTS_DIR / "conftest.py").read_text(encoding = "utf-8")
+        assert 'if os.environ.get("UNSLOTH_TEST_RANK_ZYGOTE") == "1":' in text
+        assert "rank_zygote.install()" in text
+
+
 class TestTheDistributedWorkflowSeesWhatItsTestsRead:
     """distributed-cpu-ci.yml runs only when its paths change, so its paths must cover every
     tests/ file its shards import, directly or through a sibling test module or helper."""

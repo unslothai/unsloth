@@ -263,3 +263,10 @@ def _kernel_lock_dir(tmp_path_factory):
 def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
     # Tests never take (or create) the environment's real kernel install locks.
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)
+
+
+# Distributed CPU CI sets UNSLOTH_TEST_RANK_ZYGOTE=1: spawned gloo ranks fork from a process that already ran this
+# file and `import unsloth`, instead of importing both again (tests/_shared/rank_zygote.py says when they may).
+if os.environ.get("UNSLOTH_TEST_RANK_ZYGOTE") == "1":
+    import rank_zygote
+    rank_zygote.install()

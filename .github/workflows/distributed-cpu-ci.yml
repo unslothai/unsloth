@@ -86,6 +86,16 @@ jobs:
     name: Repo tests (CPU, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # Each gloo test spawns 2 to 8 ranks, and a spawned rank spent about 9 of its 11 CPU seconds
+      # importing torch and unsloth again. With this set, tests/conftest.py forks the ranks from a
+      # per-worker zygote that already ran the conftest and `import unsloth`, and a rank whose
+      # environment or imports differ from the zygote's starts again as a plain spawn
+      # (tests/_shared/rank_zygote.py; tests/test_rank_zygote_gloo.py compares the two). Job-level,
+      # so the pytest step stays the one studio-backend-ci.yml runs.
+      UNSLOTH_TEST_RANK_ZYGOTE: '1'
+      UNSLOTH_TEST_RANK_ZYGOTE_STATS: /tmp/unsloth_rank_zygote_stats
+      PYTEST_ADDOPTS: --durations=40
     strategy:
       # The multi-rank shards of Backend CI's Repo tests (CPU), moved here unchanged. Together with
       # studio-backend-ci.yml's repo-cpu-tests matrix every tests/ file lands in exactly one shard
@@ -269,6 +279,10 @@ jobs:
           timeout --signal=INT --kill-after=60 2100 \
           python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 --timeout-method=thread \
             -m 'not server and not e2e'
+
+      - name: How the ranks started (forked from the zygote, or spawned again and why)
+        if: always()
+        run: python tests/_shared/rank_zygote.py --summary /tmp/unsloth_rank_zygote_stats
 
       - name: Why a failure here might already be fixed on the base branch
         # Only on failure; the action reports when the base branch moved since the merge ref.
