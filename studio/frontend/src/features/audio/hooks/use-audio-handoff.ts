@@ -42,9 +42,7 @@ export function useAudioHandoff({
     "refreshGallery" | "loadMore" | "loadingMoreRef" | "selectClip"
   >) {
   const navigateSelf = useNavigate();
-  // This route's own match, never `strict: false`: that resolves the ROOT match, which still holds
-  // the page being left (the Hub names its selection ?model=) while /audio's async guard runs, and
-  // this page stays mounted with `active` already true.
+  // Own match: `strict: false` resolves the root match, still the Hub's ?model= while /audio's guard runs.
   const audioSearch = useSearch({ from: "/audio", shouldThrow: false });
   const routeResolved = audioSearch !== undefined;
   const routeSearch: AudioRouteSearch = audioSearch ?? NO_AUDIO_SEARCH;

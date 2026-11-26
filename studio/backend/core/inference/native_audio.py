@@ -716,9 +716,7 @@ _GGUF_BPW = re.compile(r"-\d+(?:\.\d+)?bpw")
 
 
 def _gguf_quants(siblings: list[Any]) -> dict[str, set[str]]:
-    """Quant labels per GGUF model, read the way the Hub reads variants: split parts count once,
-    projectors not at all, and a companion model (a codec, a VAE) is its own model rather than
-    another quant."""
+    """Quant labels per GGUF model, parsed like the Hub: split parts count once, mmproj never, a codec/VAE is its own model."""
     from hub.utils.gguf import _gguf_stem, quant_token_with_bpw
 
     models: dict[str, set[str]] = {}
@@ -796,8 +794,7 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
         )
         if not siblings:
             raise ValueError(f"{repo_id} does not publish files required by its audio loader.")
-        # No audio loader names this repo, so its plan is every file; for a GGUF-only repo with
-        # several quants that is all of them (terabytes for a large chat model). A GGUF pick names one.
+        # No audio loader names this repo, so its plan is every file: for a multi-quant GGUF repo, every quant.
         if audio_type is None and any(
             len(quants) > 1 for quants in _gguf_quants(siblings).values()
         ):
@@ -805,7 +802,6 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
                 raise ValueError(
                     f"{repo_id} is a GGUF repository: pick one of its GGUF files instead of downloading all of them."
                 )
-            # The native loader reads the checkpoint, never the quants published beside it.
             siblings = [
                 s
                 for s in siblings

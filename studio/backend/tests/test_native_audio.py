@@ -279,7 +279,6 @@ def _hub_repo(monkeypatch, siblings):
 
 
 def test_download_plan_refuses_every_quant_of_an_unknown_gguf_repo(monkeypatch):
-    # A Hub selection carried onto the Audio page planned all 78 quants of a 4 TB chat GGUF.
     _hub_repo(
         monkeypatch,
         [
@@ -364,7 +363,6 @@ def test_download_plan_skips_a_projector_folder_when_counting_quants(monkeypatch
 
 
 def test_download_plan_still_lists_a_gguf_repo_with_one_quant(monkeypatch):
-    # One quant (here split in two parts, plus its projector) is the whole model, not every quant.
     _hub_repo(
         monkeypatch,
         [

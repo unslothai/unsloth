@@ -393,8 +393,6 @@ test("the first URL commits its page, so the loaded model's page cannot replace 
   );
 });
 
-// A mounted Audio page saw `active` from the pathname while `strict: false` still resolved the
-// Hub's search, so the Hub's ?model= loaded (and downloaded every quant of) that model.
 test("the handoff reads /audio's own search, never the page being left", () => {
   const hook = readSrc("features/audio/hooks/use-audio-handoff.ts");
   assert.match(hook, /useSearch\(\{ from: "\/audio", shouldThrow: false \}\)/);
