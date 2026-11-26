@@ -93,8 +93,11 @@ class _Backend:
         batch_size = 1,
         prompts = None,
         seeds = None,
+        sd_controls = None,
+        live_preview = None,
         **kwargs,
     ):
+        kwargs.update(sd_controls = sd_controls, live_preview = live_preview)
         from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
         from core.inference.generation_ticket import bind_generation_cancel
 
@@ -160,7 +163,14 @@ def studio(monkeypatch):
     saved: list[dict] = []
 
     def _save(image, meta):
-        record = {**meta, "id": f"img{len(saved)}", "image": image, "account": current_account_id()}
+        image_id = f"img{len(saved)}"
+        record = {
+            **meta,
+            "id": image_id,
+            "url": f"/api/inference/images/gallery/{image_id}/file",
+            "image": image,
+            "account": current_account_id(),
+        }
         saved.append(record)
         return record
 
@@ -372,3 +382,103 @@ def test_a_stop_from_another_account_does_not_reach_a_render_it_does_not_ride_in
         assert engine.cancel_generate(expected_account = "alice") is True
         assert alice_render.is_set() and not carol_ride.is_set()
     assert engine._generate_riders == {}
+
+
+def _png_b64() -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(buffer, format = "PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def _create(prompt: str, **extra) -> dict:
+    return {"prompt": prompt, "width": 256, "height": 256, "steps": 4, "guidance": 0.0, **extra}
+
+
+def test_images_generate_plain_txt2img_from_two_accounts_shares_one_call(studio):
+    app, backend, saved = studio
+    posts = [
+        ("/api/inference/images/generate", "alice", _create("a fox", batch_size = 2)),
+        ("/api/inference/images/generate", "bob", _create("a secret cat")),
+    ]
+    responses = _post_while_rendering(app, backend, posts, waiting = 2)
+    assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
+    [call] = backend.calls
+    assert sorted(call["prompts"]) == ["a fox", "a fox", "a secret cat"]
+    assert call["kwargs"]["init_image"] is None
+    alice, bob = (r.json()["images"] for r in responses)
+    assert [image["prompt"] for image in alice] == ["a fox", "a fox"]
+    assert [image["prompt"] for image in bob] == ["a secret cat"]
+    by_account = {}
+    for record in saved:
+        by_account.setdefault(record["account"], []).append(record["image"])
+    assert all(image.startswith("a fox#") for image in by_account["alice"])
+    assert [image.split("#")[0] for image in by_account["bob"]] == ["a secret cat"]
+    # The batch seeds derive like a lone request's: base, base + 1.
+    assert alice[1]["seed"] == alice[0]["seed"] + 1 and alice[1]["batch_seed"] == alice[0]["seed"]
+
+
+def test_images_generate_with_an_init_image_never_joins_a_batch(studio):
+    app, backend, _saved = studio
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            backend.rendering = True
+            first = asyncio.ensure_future(
+                client.post(
+                    "/api/inference/images/generate",
+                    json = _create("a fox"),
+                    headers = {"x-test-account": "alice"},
+                )
+            )
+            await _until(lambda: _waiting() == 1)
+            edits = [
+                asyncio.ensure_future(
+                    client.post(
+                        "/api/inference/images/generate",
+                        json = _create("a cat", **extra),
+                        headers = {"x-test-account": "bob"},
+                    )
+                )
+                for extra in (
+                    {"init_image": _png_b64(), "strength": 0.5},
+                    {"variation_seed": 7, "variation_strength": 0.3},
+                    {"seeds": [1, 2]},
+                )
+            ]
+            await asyncio.sleep(0.3)
+            assert _waiting() == 1
+            backend.rendering = False
+            return await asyncio.gather(first, *edits)
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses), [
+        (r.status_code, r.text[:300]) for r in responses if r.status_code != 200
+    ]
+    # Four calls, none batched: the plain Create rendered alone too, as nothing could join it.
+    assert len(backend.calls) == 4
+    assert _batched_calls(backend) == []
+    assert sorted(call["prompt"] for call in backend.calls) == ["a cat", "a cat", "a cat", "a fox"]
+
+
+def test_a_lone_images_generate_request_renders_at_once_without_a_batch(studio):
+    app, backend, _saved = studio
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            return await client.post(
+                "/api/inference/images/generate",
+                json = _create("a fox"),
+                headers = {"x-test-account": "alice"},
+            )
+
+    response = asyncio.run(run())
+    assert response.status_code == 200, response.text
+    [call] = backend.calls
+    assert call["prompts"] is None and call["prompt"] == "a fox"

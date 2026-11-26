@@ -58,6 +58,11 @@ def batch_max() -> int:
         return BATCH_MAX_DEFAULT
 
 
+def collecting() -> bool:
+    """Whether any batch is open for a request to join."""
+    return bool(_OPEN)
+
+
 def request_seeds(seed: Optional[int], n: int) -> list[int]:
     base = seed if seed is not None else secrets.randbelow(SEED_MASK + 1)
     return [(base + i) & SEED_MASK for i in range(n)]

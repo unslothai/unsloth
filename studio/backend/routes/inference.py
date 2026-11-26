@@ -53304,7 +53304,7 @@ async def generate_diffusion_image(
         if request.xy is not None:
             response = await _generate_xy_grid(request)
         else:
-            response = await _generate_diffusion_image_core(request)
+            response = await _generate_diffusion_image_core(request, coalesce = True)
         finished = True
         return response
     finally:
@@ -53421,7 +53421,10 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
 
 
 async def _generate_diffusion_image_core(
-    request: DiffusionGenerateRequest, pinned_load = None
+    request: DiffusionGenerateRequest,
+    pinned_load = None,
+    *,
+    coalesce: bool = False,
 ) -> DiffusionGenerateResponse:
     """The local-engine image run, shared by the route and the chat generate_image tool."""
     from core.inference.diffusion_segment import render_fence
@@ -53429,13 +53432,38 @@ async def _generate_diffusion_image_core(
     # From before the run releases the mask segmenter until it ends: a Find cannot reload SAM 3 in the gap before the
     # render takes the engine's generation slot.
     with render_fence():
-        return await _generate_diffusion_image_run(request, pinned_load = pinned_load)
+        return await _generate_diffusion_image_run(
+            request, pinned_load = pinned_load, coalesce = coalesce
+        )
+
+
+def _plain_txt2img(request: DiffusionGenerateRequest, enhancement: Any, detailer: Any) -> bool:
+    """A Create run with no input image, mask, ControlNet, Detailer, hires, variation or prompt / seed lists: the
+    only /images/generate shape that may share a batched call."""
+    return (
+        request.prompts is None
+        and request.seeds is None
+        and request.init_image is None
+        and request.mask_image is None
+        and not request.reference_images
+        and request.workflow is None
+        and request.localized_edit is None
+        and request.controlnet is None
+        and request.upscale is None
+        and request.upscale_model is None
+        and request.hires is None
+        and request.variation_seed is None
+        and request.xy is None
+        and detailer is None
+        and not getattr(enhancement, "captions", None)
+    )
 
 
 async def _generate_diffusion_image_run(
     request: DiffusionGenerateRequest,
     captured: Optional[list] = None,
     pinned_load = None,
+    coalesce: bool = False,
 ) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -53587,8 +53615,7 @@ async def _generate_diffusion_image_run(
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
-                result = await _image_generate_in_thread(
-                    backend.generate,
+                generate_kwargs = dict(
                     expected_load = expected_load,
                     **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     prompt = enhancement.encoded(request.prompt),
@@ -53637,6 +53664,23 @@ async def _generate_diffusion_image_run(
                     **_inpaint_mask_kwargs(backend.generate, request),
                     **_hires_kwargs(backend.generate, request),
                 )
+                result = None
+                # Joins a batch only while a render runs, so a lone request starts exactly as before.
+                if coalesce and captured is None and _plain_txt2img(request, enhancement, detailer):
+                    result = await _coalesced_image_generate(
+                        backend,
+                        status,
+                        prompt = generate_kwargs["prompt"],
+                        n = request.batch_size,
+                        seed = request.seed,
+                        generate_kwargs = {
+                            name: value
+                            for name, value in generate_kwargs.items()
+                            if name not in ("prompt", "seed", "batch_size", "prompts", "seeds")
+                        },
+                    )
+                if result is None:
+                    result = await _image_generate_in_thread(backend.generate, **generate_kwargs)
             break
         except ImageActivationShortfallError as exc:
             # Tagged so the Images page can offer "Generate anyway".
@@ -55878,8 +55922,18 @@ def _frozen_kwarg(value: Any) -> Hashable:
     return value
 
 
+# Not part of the batch key: the shared call shows the leader's preview, and the leader's own image is first.
+_COALESCE_KEY_IGNORED = frozenset({"live_preview"})
+
+
 async def _coalesced_image_generate(
-    backend: Any, status: dict, *, prompt: str, n: int, seed: Optional[int], generate_kwargs: dict
+    backend: Any,
+    status: Optional[dict],
+    *,
+    prompt: str,
+    n: int,
+    seed: Optional[int],
+    generate_kwargs: dict,
 ) -> Optional[dict]:
     """Joins this request to a batch while a render runs, any account included; None = render alone.
 
@@ -55888,6 +55942,8 @@ async def _coalesced_image_generate(
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_anima import ANIMA_FAMILY_NAME
+    from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
     from core.inference.generation_ticket import (
         GenerationTicket,
@@ -55896,11 +55952,22 @@ async def _coalesced_image_generate(
     )
 
     holder = getattr(backend, "generation_holder", None)
-    if (
-        holder is None
-        or active_engine_name() != ENGINE_DIFFUSERS
-        or status.get("family") in FLUX3_FAMILY_NAMES
-    ):
+    if holder is None or active_engine_name() != ENGINE_DIFFUSERS:
+        return None
+    # An idle engine with no batch collecting renders this request at once, with no extra status read.
+    if not image_request_batching.collecting():
+        try:
+            if holder() is None:
+                return None
+        except Exception:  # noqa: BLE001 -- no busy signal; render individually
+            return None
+    if status is None:
+        status = await asyncio.to_thread(backend.status)
+    family = status.get("family")
+    # FLUX.3 and Anima render one image per call, and a layered model returns several pictures per image.
+    if family in FLUX3_FAMILY_NAMES or family == ANIMA_FAMILY_NAME:
+        return None
+    if family and getattr(detect_family("", family), "layer_count", 0):
         return None
 
     ticket = GenerationTicket()
@@ -55944,7 +56011,13 @@ async def _coalesced_image_generate(
                 raise
 
     # No account: requests from different accounts with the same settings share one call.
-    key = tuple(sorted((name, _frozen_kwarg(value)) for name, value in generate_kwargs.items()))
+    key = tuple(
+        sorted(
+            (name, _frozen_kwarg(value))
+            for name, value in generate_kwargs.items()
+            if name not in _COALESCE_KEY_IGNORED
+        )
+    )
 
     def cancelled(exc: BaseException) -> bool:
         return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
