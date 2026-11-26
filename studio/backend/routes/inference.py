@@ -30663,6 +30663,7 @@ def _fit_external_context(
     before a summary replaced its oldest turns, so those are archived and recalled too."""
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
+        evicted_messages,
         prompt_budget,
         retrieval_budget,
     )
@@ -30748,6 +30749,17 @@ def _fit_external_context(
         # The catalogue is chosen before this fit, so the turn that first evicts has no
         # search_conversation: recall inline, as the local plain path does, or a question about
         # an evicted attachment on that turn gets "I have no record of it".
+        archived_first = 0
+        if unsummarised and thread_id and evicted_messages(unsummarised, messages):
+            # The archive is capped oldest first: a summarised backlog would defer what this fit cut.
+            archived_first = _archive_and_recall(
+                fitted,
+                messages,
+                branch_messages = unsummarised,
+                thread_id = str(thread_id),
+                style = "inline",
+                recall_done = True,
+            )["counts"].get("archived_messages", 0)
         recall = _archive_and_recall(
             fitted,
             unsummarised or messages,
@@ -30768,6 +30780,10 @@ def _fit_external_context(
         )
         fitted = recall["conversation"]
         truncation = {**truncation, **recall["counts"]}
+        if archived_first:
+            truncation["archived_messages"] = (
+                truncation.get("archived_messages", 0) + archived_first
+            )
     return fitted, truncation, max_tokens
 
 

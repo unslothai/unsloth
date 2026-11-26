@@ -1152,6 +1152,27 @@ def test_a_saved_summary_trimmed_after_a_failed_one_recalls_the_summarised_wordi
     assert "055 794 3321" in str(sent["messages"][-1]["content"])
 
 
+def test_turns_trimmed_after_a_summary_are_archived_before_the_summarised_backlog(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
+    from test_external_conversation_archive import _chat, _persist
+
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "1")
+    thread = "thread-summary-trim-capped"
+    chat = _chat()
+    chat[0] = {"role": "system", "content": "Answer briefly. " + "rule " * 4_000}
+    chat[21] = {"role": "user", "content": "My locker code is 4417. " + chat[21]["content"]}
+    chat[-1] = {"role": "user", "content": "What was my locker code?"}
+    _persist(thread, chat)
+    chunks, [_], [sent] = _bodies(
+        _SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER
+    )
+    [truncation] = _truncations(chunks)
+    assert truncation["dropped_messages"] > 0 and "summarized" not in truncation
+    assert all("4417" not in str(m["content"]) for m in sent["messages"][:-1])
+    assert "4417" in str(sent["messages"][-1]["content"])
+
+
 # Every chat connection without server-side compaction: native Anthropic and OpenAI have their own
 # tests, the ChatGPT subscription needs a saved login, Lemonade is a managed engine.
 _SUMMARISED_PROVIDERS = sorted(
