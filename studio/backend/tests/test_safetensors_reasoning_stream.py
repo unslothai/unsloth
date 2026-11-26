@@ -848,6 +848,56 @@ def test_route_carries_the_effort_field_into_the_gate(monkeypatch):
     assert not message["reasoning_content"]
 
 
+# Inkling 2's effort dial and thinking channel, trimmed to what detection reads.
+_INKLING2_TPL = (
+    '{%- set effort_map = {"none": 0.0, "low": 0.2, "high": 0.9} -%}'
+    '{{- "<|message_system|><|content_text|>Thinking effort level: " -}}'
+    '{{- effort_map[reasoning_effort or "high"] ~ "<|end_message|>" -}}'
+    "{%- for message in messages -%}"
+    '{%- if message.role == "assistant" and message.reasoning_content -%}'
+    '{{- "<|message_model|><|content_thinking|>" ~ message.reasoning_content ~ "<|end_message|>" -}}'
+    "{%- endif -%}"
+    '{{- "<|message_user|><|content_text|>" ~ message.content ~ "<|end_message|>" -}}'
+    "{%- endfor -%}"
+    '{%- if add_generation_prompt -%}{{- "<|message_model|>" -}}{%- endif -%}'
+)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids = ["json", "sse"])
+@pytest.mark.parametrize(
+    "reply, content, reasoning",
+    [
+        ("<think>Paris.</think>Paris it is.", "Paris it is.", "Paris."),
+        # The normalizer marks the first thought even after visible text.
+        ("Hi. <think>t</think>Bye.", "Hi. Bye.", "t"),
+    ],
+    ids = ["thought", "text_then_thought"],
+)
+def test_route_splits_the_inkling_thought_at_effort_none(
+    monkeypatch, stream, reply, content, reasoning
+):
+    from types import SimpleNamespace
+
+    from routes.inference import _detect_safetensors_features
+
+    features = _detect_safetensors_features(
+        SimpleNamespace(active_model_name = "m", models = {"m": {}}), _INKLING2_TPL
+    )
+    assert features["reasoning_style"] == "reasoning_effort"
+    assert not features["reasoning_always_on"]
+    message = _sf_route_message(
+        monkeypatch,
+        _INKLING2_TPL,
+        [reply],
+        is_mlx = True,
+        features = features,
+        reasoning_effort = "none",
+        stream = stream,
+    )
+    assert message["content"] == content
+    assert (message["reasoning_content"] or "") == reasoning
+
+
 def test_parse_think_markers_gates_on_capability_and_request():
     assert _sf_parse_think_markers(_ETHINK) is True
     assert _sf_parse_think_markers(_ETHINK, True) is True

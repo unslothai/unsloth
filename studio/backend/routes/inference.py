@@ -4700,12 +4700,16 @@ def _sf_parse_think_markers(
     features: dict,
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
+    inkling_channel: bool = False,
 ) -> bool:
     """A hybrid template reads enable_thinking before reasoning_effort when both are sent (Kimi-K3)."""
     if features.get("reasoning_always_on"):
         return True
     if not features.get("supports_reasoning"):
         return False
+    # Inkling still reasons at effort none, so its thought is split as at any other effort.
+    if inkling_channel:
+        return True
     style = features.get("reasoning_style")
     resolved: dict = {}
     if style == "reasoning_effort":
@@ -37209,10 +37213,14 @@ async def produce_openai_chat_completions(
                 body = _selected[0]
         except Exception:
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
+        from core.inference.chat_template_helpers import replays_reasoning_content
+
         parse_think = _sf_parse_think_markers(
             features,
             payload.enable_thinking,
             payload.reasoning_effort,
+            inkling_channel = body is not None
+            and replays_reasoning_content(None, template = body, tools = tools),
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
