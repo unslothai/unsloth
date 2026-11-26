@@ -810,6 +810,15 @@ Function .onInstSuccess
     ${GetOptions} $CMDLINE "/R" $R0
     ${IfNot} ${Errors}
       ${GetOptions} $CMDLINE "/ARGS" $R0
+      ${If} $UpdateMode = 1
+        ; The previous session may have started with --hidden at login.
+        ; Consecutive updates can already carry this flag as their first argument.
+        StrLen $R1 "--show-after-update "
+        StrCpy $R1 "$R0 " $R1
+        ${If} $R1 != "--show-after-update "
+          StrCpy $R0 "--show-after-update $R0"
+        ${EndIf}
+      ${EndIf}
       nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" "$R0"
     ${EndIf}
   ${EndIf}

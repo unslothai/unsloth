@@ -317,12 +317,21 @@ def test_nograd_path_requests_hidden_states_only_for_an_unhooked_head():
     assert [ast.unparse(node.value) for node in checks] == [
         "_unsloth_grpo_head_hooked(unwrapped_model)"
     ]
-    requests = [
+    # A write-back of the value read on entry restores the caller's setting (#19699); it is not a request.
+    snapshots = {
+        ast.unparse(node.targets[0])
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and ast.unparse(node.value) == "os.environ.get('UNSLOTH_RETURN_HIDDEN_STATES')"
+    }
+    writes = [
         ast.unparse(node.value)
         for node in ast.walk(function)
         if isinstance(node, ast.Assign)
         and [ast.unparse(t) for t in node.targets] == ["os.environ['UNSLOTH_RETURN_HIDDEN_STATES']"]
     ]
+    requests = [value for value in writes if value not in snapshots]
     assert requests, "the no-grad path no longer sets UNSLOTH_RETURN_HIDDEN_STATES"
     for value in requests:
         assert value in ("'0'", "'0' if _unsloth_head_hooked else '1'"), value

@@ -2265,9 +2265,12 @@ def _head_dim(attn: Any) -> Optional[int]:
 
 def int8_processors(transformer: Any) -> list:
     """The attention modules whose processor can route to the kernel (the strided processors)."""
+    from .diffusion_tp2 import shard_modules
+
+    # a tensor-parallel denoiser keeps its blocks outside the module tree (diffusion_tp2)
     return [
         m
-        for m in transformer.modules()
+        for m in (*transformer.modules(), *shard_modules(transformer))
         if hasattr(type(getattr(m, "processor", None)), "_unsloth_int8") and hasattr(m, "heads")
     ]
 
