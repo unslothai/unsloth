@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""musubi-tuner Wan LoRAs (``lora_unet_blocks_N_self_attn_q.lora_down.weight``, its default save format) bake into
-a diffusers WanTransformer3DModel exactly like the same adapter written with Wan's dotted names, including the
-Wan2.1 I2V ``cross_attn_k_img`` / ``cross_attn_v_img`` projections. CPU only, tiny random transformer, no network."""
+"""musubi-tuner Wan LoRAs bake into diffusers Wan exactly like Wan's dotted names, incl. I2V k_img / v_img."""
 
 from __future__ import annotations
 
@@ -14,7 +12,6 @@ from safetensors.torch import save_file
 from core.inference import video_lora
 
 RANK = 4
-# musubi stem -> Wan dotted name -> diffusers module
 _T2V = {
     "self_attn_q": ("self_attn.q", "attn1.to_q"),
     "self_attn_k": ("self_attn.k", "attn1.to_k"),
@@ -58,7 +55,6 @@ def _tiny_wan(i2v: bool) -> torch.nn.Module:
 
 
 def _musubi_state(module, modules, alpha):
-    """musubi-tuner's layout: lora_unet_blocks_N_<stem>.lora_down / lora_up.weight + a per-module ``.alpha``."""
     gen = torch.Generator().manual_seed(1)
     params = dict(module.named_parameters())
     state = {}
@@ -78,7 +74,6 @@ def _musubi_state(module, modules, alpha):
 
 
 def _dotted_state(musubi, modules):
-    """The same tensors under Wan's dotted names (``diffusion_model.blocks.N.self_attn.q``)."""
     out = {}
     for key, tensor in musubi.items():
         stem, suffix = key.split(".", 1)
@@ -124,7 +119,6 @@ def test_musubi_wan_bakes_every_module_into_a_diffusers_wan(tmp_path, i2v):
     musubi = _musubi_state(module, modules, alpha = RANK // 2)
     m_path = _save(tmp_path, "musubi", musubi)
     merged = video_lora.bake_into_module_(module, [(m_path, 1.0)], label = "Wan transformer")
-    # every musubi module landed on a layer (zero unmatched keys: a miss raises instead of merging)
     assert merged == _NUM_LAYERS * len(modules) > 0
     baked = module.state_dict()
 
@@ -160,8 +154,7 @@ def test_musubi_wan_delta_matches_the_diffusers_musubi_conversion(tmp_path):
 
 
 def test_a_musubi_key_for_a_layer_wan_lacks_is_still_refused(tmp_path):
-    """Only the Wan block projections are renamed: a T2V transformer refuses an I2V adapter's k_img keys, and an
-    unknown flattened module stays unmapped, so nothing is silently skipped."""
+    """T2V refuses I2V k_img keys and unknown flattened modules stay unmapped: nothing is silently skipped."""
     t2v = _tiny_wan(False)
     i2v_state = _musubi_state(_tiny_wan(True), _I2V, alpha = None)
     with pytest.raises(ValueError, match = "different model"):

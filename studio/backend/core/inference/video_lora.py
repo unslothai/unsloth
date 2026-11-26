@@ -27,7 +27,7 @@ _DENOISER_COMPONENTS = frozenset({"transformer", "transformer_2", "transformer_r
 _WAN_NATIVE_MODULE = re.compile(
     r"^(blocks\.\d+\.)(self_attn|cross_attn|ffn)\.(q|k|v|o|k_img|v_img|0|2)$"
 )
-# musubi-tuner's default Wan save format flattens that path: lora_unet_blocks_N_self_attn_q, ..._cross_attn_k_img.
+# musubi-tuner's default Wan format: lora_unet_blocks_N_self_attn_q.
 _WAN_MUSUBI_MODULE = re.compile(
     r"^lora_unet_blocks_(\d+)_(self_attn|cross_attn|ffn)_(q|k|v|o|k_img|v_img|0|2)$"
 )
@@ -40,7 +40,6 @@ _WAN_NATIVE_LEAF = {
     ("cross_attn", "k"): "attn2.to_k",
     ("cross_attn", "v"): "attn2.to_v",
     ("cross_attn", "o"): "attn2.to_out.0",
-    # Wan2.1 I2V / FLF2V image-conditioning projections.
     ("cross_attn", "k_img"): "attn2.add_k_proj",
     ("cross_attn", "v_img"): "attn2.add_v_proj",
     ("ffn", "0"): "ffn.net.0.proj",
@@ -49,8 +48,7 @@ _WAN_NATIVE_LEAF = {
 
 
 def _diffusers_module_name(module: str) -> str:
-    """``module`` in diffusers naming: a Wan original (dotted or musubi-flattened) block projection is renamed,
-    anything else is unchanged."""
+    """Rename a Wan original (dotted or musubi-flattened) block projection to diffusers; else unchanged."""
     hit = _WAN_NATIVE_MODULE.match(module)
     if hit is None:
         musubi = _WAN_MUSUBI_MODULE.match(module)
