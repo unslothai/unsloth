@@ -11926,8 +11926,7 @@ class _AutoCheckpointSkip:
         previous = getattr(model, "_unsloth_auto_skip", None)
         if previous is not None:
             previous.remove()
-            if previous.sizing is not None:
-                previous.unmark()
+            previous.unmark()
         try:
             layers = find_decoder_layers(model) if find_decoder_layers is not None else []
         except Exception:
@@ -12408,7 +12407,9 @@ class _AutoCheckpointSkip:
         return self.started is not None and self.kept is None and bool(self.handles)
 
     def unmark(self):
-        for i in self.kept or ():
+        if self.kept is None:
+            return
+        for i in self.kept:
             if 0 <= i < len(self.layers):
                 self.layers[i].__dict__.pop("_unsloth_skip_checkpoint", None)
         self.kept = []
@@ -12471,8 +12472,7 @@ def skip_checkpointing(model, layers = 0):
         planner = getattr(model, "_unsloth_auto_skip", None)
         if planner is not None:
             planner.remove()
-            if planner.sizing is not None:
-                planner.unmark()
+            planner.unmark()
     if not layers:
         return []
     if layers == "auto":

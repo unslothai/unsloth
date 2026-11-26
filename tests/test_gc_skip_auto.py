@@ -888,3 +888,32 @@ def test_a_step_without_an_eager_resize_falls_back_to_the_plan(monkeypatch):
     optimizer.step()  # no training forward reached the hook
     assert len(planner.kept) == 2 and planner.sizing is None
     monkeypatch.undo()
+
+
+@pytest.mark.parametrize("then", ["zero", "count", "auto"])
+def test_a_stopped_plan_is_cleared_by_a_later_setting(monkeypatch, then):
+    # After a fallback stopped the re-sizing, the planner still owns its marks: a later explicit value or a new
+    # "auto" planner must clear them rather than add to them.
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    planner.target_batch = 4
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    model(torch.zeros(1, 16, 4))  # no backward in between: falls back to the planned 2
+    assert planner.sizing is None and len(planner.kept) == 2
+    flags = lambda: [bool(layer.gradient_checkpointing) for layer in model.model.layers]
+    if then == "zero":
+        monkeypatch.setenv("UNSLOTH_GC_KEEP_LAYERS", "0")
+        ns["skip_checkpointing"](model, 0)
+        assert flags() == [True] * 8
+    elif then == "count":
+        assert ns["skip_checkpointing"](model, 1) == [7]
+        assert flags().count(False) == 1
+    else:
+        ns["skip_checkpointing"](model, "auto")
+        assert flags() == [True] * 8
+    monkeypatch.undo()
