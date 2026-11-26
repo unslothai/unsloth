@@ -152,9 +152,10 @@ def install() -> bool:
         import tempfile
 
         _original_popen = popen_spawn_posix.Popen
-        _OBSERVED = os.path.join(
-            tempfile.gettempdir(), f"unsloth_rank_zygote_{os.getpid()}_observed.jsonl"
-        )
+        # One directory for the whole pytest run, so every xdist worker learns from any worker's ranks.
+        run = os.environ.get("PYTEST_XDIST_TESTRUNUID") or str(os.getpid())
+        _OBSERVED = os.path.join(tempfile.gettempdir(), f"unsloth_rank_zygote_observed_{run}")
+        os.makedirs(_OBSERVED, exist_ok = True)
 
         class _ObservingPopen(_original_popen):
             """The stdlib spawn, with the process object wrapped so the child notes its imports for us."""
@@ -204,8 +205,10 @@ def _observed_rebuild(ranks_file, key, data):
 #   base before the conftest; the zygote then stops before the conftest and serves only those imports.
 _plans = {}
 _closures = {}  # rank function -> its test module's imports, from any observed case of it
+_cases = {}  # rank function -> {case key: (ran the conftest, unsloth first, imports before the conftest)}
 _offsets = {}  # ranks.jsonl path -> bytes read
 _GIVE_UP = 6  # starts again with no fork kept: the function's ranks are spawned as before
+_WORTH = 300  # modules a zygote that stops before the conftest must import ahead to be worth its own import
 _OBSERVED = os.path.join(_HERE, ".")  # placeholder, replaced by install()
 
 
@@ -215,14 +218,20 @@ def _plan(key):
 
 def _learn():
     paths = [os.path.join(z.dir, "ranks.jsonl") for z in list(_servers.values()) + list(_retired)]
-    for path in [_OBSERVED, *paths]:
+    try:
+        paths += [os.path.join(_OBSERVED, n) for n in sorted(os.listdir(_OBSERVED))]
+    except OSError:
+        pass
+    for path in paths:
         try:
             with open(path, encoding = "utf-8") as f:
                 f.seek(_offsets.get(path, 0))
                 lines = f.readlines()
-                _offsets[path] = f.tell()
         except OSError:
             continue
+        if lines and not lines[-1].endswith("\n"):
+            lines.pop()  # still being written: read it next time
+        _offsets[path] = _offsets.get(path, 0) + sum(len(line.encode("utf-8")) for line in lines)
         for line in lines:
             try:
                 event = json.loads(line)
@@ -238,6 +247,11 @@ def _learn():
                     target = None
                 # The test module's imports are the same for every case of its function.
                 _closures[target] = list(event.get("first") or ())
+                _cases.setdefault(target, {})[event.get("target")] = (
+                    bool(event.get("conftest")),
+                    bool(event.get("unsloth_first")),
+                    list(event.get("before_conftest") or ()),
+                )
                 plan.update(
                     observed = True,
                     first = list(event.get("first") or ()),
@@ -249,16 +263,16 @@ def _learn():
                 plan["restarts"] += 1
 
 
-def _mode(plan) -> dict:
-    """The zygote a plan asks for: its imports ahead, and whether it runs the conftest itself."""
+def _pure(target) -> bool:
+    """Whether a function's zygote stops before the conftest: unless every case of it seen so far ran the
+    conftest before importing anything of its own (the zygote's base aside) or loading unsloth itself."""
     # Known from a running zygote; before the first one, what every zygote imports ahead whatever else.
     base = _base_tops() or {"torch", "numpy", "pytest", "_pytest", "pluggy", "bitsandbytes"}
-    pure = (
-        not plan["conftest"]
-        or plan["unsloth_first"]
-        or any(n.split(".", 1)[0] not in base for n in plan["before_conftest"])
+    cases = _cases.get(target) or {}
+    return not cases or any(
+        not conftest or unsloth_first or any(n.split(".", 1)[0] not in base for n in before)
+        for conftest, unsloth_first, before in cases.values()
     )
-    return {"first": plan["first"], "pure": pure}
 
 
 def _base_tops():
@@ -299,10 +313,13 @@ def _popen_locked(process_obj):
     if plan["restarts"] >= _GIVE_UP and plan["hits"] == 0:
         _record("spawn", target = key, why = "its forks kept starting again")
         return _original_popen(process_obj)
-    # A case seen running the conftest first may reuse a zygote's conftest run; any other case of a known
-    # function forks from a zygote that stops before the conftest, which serves only its test module's
-    # imports and so cannot have guessed wrong about what the case does next.
-    mode = {"first": closure, "pure": _mode(plan)["pure"] if plan["observed"] else True}
+    # A function whose cases all ran the conftest first reuses a zygote's conftest run (a case that does
+    # otherwise starts again at the conftest, before its own code goes further); any other function forks
+    # from a zygote that stops before the conftest and serves only its test module's imports.
+    mode = {"first": closure, "pure": _pure(_target_name(process_obj))}
+    if mode["pure"] and len(closure) < _WORTH:
+        _record("spawn", target = key, why = "too little to import ahead")
+        return _original_popen(process_obj)
     zygote = _zygote_for(process_obj, mode)
     if zygote is None or zygote.status().get("broken"):
         why = "no zygote for this kind yet" if zygote is None else "zygote broken"
@@ -426,7 +443,7 @@ def _zygote_for(process_obj, mode):
             # A zygote costs one import of its own: only for a kind of rank that a second test asks for.
             # Counted in tests, so the ranks of one test all start the same way and meet at the same time.
             return None
-        limit = max(1, int(os.environ.get(MAX_ZYGOTES_ENV, "6") or "6"))
+        limit = _limit()
         # Least used first, among those with no live rank (a rank's exit code comes back through its zygote).
         for old_key in sorted(_servers, key = lambda k: _turns.get(json.dumps(json.loads(k)[:2]), 0)):
             if len(_servers) < limit:
@@ -444,6 +461,14 @@ def _zygote_for(process_obj, mode):
             _servers[twin] = _Zygote(env, mode, guess)
     _servers[key] = zygote
     return zygote
+
+
+def _limit() -> int:
+    """Zygotes per pytest process: each holds a whole import (0.5 to 0.8 GB), so 8 over the xdist workers."""
+    if os.environ.get(MAX_ZYGOTES_ENV):
+        return max(1, int(os.environ[MAX_ZYGOTES_ENV]))
+    workers = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1") or "1")
+    return max(2, 8 // max(1, workers))
 
 
 class _Zygote:
@@ -471,7 +496,12 @@ class _Zygote:
             "no_gpu_host": _no_gpu_host(),
             # Another zygote's throwaway import already listed them: the same process, the same list.
             "stdlib": next(
-                (z.status()["stdlib"] for z in _servers.values() if "stdlib" in z.status()), None
+                (
+                    z.status()["stdlib"]
+                    for z in _servers.values()
+                    if "stdlib" in z.status() and not z.status().get("pure")
+                ),
+                None,
             ),
             "first": mode["first"],
             "pure": mode["pure"],
@@ -802,7 +832,8 @@ def _preload(spec_path: str) -> None:
             base_recorder.stop()
         stdlib = spec.get("stdlib")
         if stdlib is None:
-            stdlib = _stdlib_imported_by_the_conftest()
+            # Only a zygote that runs the conftest imports these ahead.
+            stdlib = [] if spec.get("pure") else _stdlib_imported_by_the_conftest()
         # The test module's own imports, under the environment a rank has when it unpickles its function.
         closure_recorder = _EnvRecorder()
         closure_recorder.start()
@@ -1324,8 +1355,11 @@ class _Observer:
             "conftest": self.conftest,
             "unsloth_first": self.unsloth_first,
         }
+        path = self.ranks_file
+        if os.path.isdir(path):
+            path = os.path.join(path, f"{os.getpid()}.jsonl")  # one writer per file: no torn lines
         try:
-            with open(self.ranks_file, "a", encoding = "utf-8") as f:
+            with open(path, "a", encoding = "utf-8") as f:
                 f.write(json.dumps(event) + "\n")
         except OSError:
             pass

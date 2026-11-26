@@ -226,12 +226,18 @@ def test_the_env_layout_reaches_the_import(runs):
 
 def test_the_zygote_path_is_taken(runs):
     _, _, summary = runs
-    counts = summary["counts"]
-    # tp_layout + plain_again: 4 ranks reuse the zygote's conftest run; imports_first_again: 2 ranks forked
-    # from a zygote that stopped before it. plain and imports_first were the observed plain spawns.
+    counts, reasons = summary["counts"], summary["reasons"]
+    # plain: observed plain spawns. tp_layout + plain_again: 4 ranks reuse the zygote's conftest run.
+    # imports_first: a new case of the same function imports transformers before the conftest, so its 2
+    # ranks start again from scratch (and are observed). imports_first_again: forked from a zygote that
+    # stops before the conftest.
     assert counts["hit"] >= 4, summary
-    assert counts["start"] >= 6, summary
-    assert counts["respawn"] == 0, summary
+    assert counts["start"] >= 8, summary
+    assert counts["respawn"] <= 2, summary
+    assert set(reasons) <= {
+        "spawned: observed",
+        "imported transformers before the conftest",
+    }, summary
 
 
 def test_exit_codes_exceptions_and_queues_come_back(runs):
