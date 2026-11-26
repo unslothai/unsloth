@@ -274,6 +274,25 @@ def test_a_fused_qkv_dora_scale_is_refused_not_loaded_as_plain_lora(tmp_path):
         lf.load_adapter(_Pipe(), str(path), "a", "krea-2")
 
 
+def test_a_fused_qkv_lokr_with_the_wrong_rows_is_refused(tmp_path):
+    # 192 rows against this model's 96 (64 + 16 + 16): each slice alone would pass the per-target width check.
+    attn, width, q, kv = ATTNS[0]
+    lyco = "lycoris_transformer_blocks_0_attn_"
+    state = {
+        lyco + "to_qkv.lokr_w1": _ints(6, 4, seed = 3),
+        lyco + "to_qkv.lokr_w2": _ints(192 // 6, width // 4, seed = 4),
+        lyco + "to_qkv.alpha": torch.tensor(1.0),
+    }
+    path = tmp_path / "lokr_rows.safetensors"
+    save_file(state, str(path))
+    pipe = _Pipe()
+    with pytest.raises(
+        ValueError, match = "has 192 rows, but the fused projection it splits into here has 96"
+    ):
+        lf.load_adapter(pipe, str(path), "k", "krea-2")
+    assert not lf.kron_names(pipe)
+
+
 def test_a_fused_qkv_with_the_wrong_rows_is_refused(tmp_path):
     attn, width, q, kv = ATTNS[0]
     path = tmp_path / "bad.safetensors"

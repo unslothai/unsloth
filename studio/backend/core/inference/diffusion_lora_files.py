@@ -736,7 +736,15 @@ def _attach_lokr(pipe: Any, name: str, lokr: dict, family: Optional[str]) -> int
     try:
         for stem, parts in lokr.items():
             w1, w2, scale = _kron_factors(parts)
-            for root, module, rows in _lokr_targets(pipe, stem, family):
+            targets = _lokr_targets(pipe, stem, family)
+            spans = [rows for _, _, rows in targets if rows is not None]
+            if spans and int(w1.shape[0] * w2.shape[0]) != max(end for _, end in spans):
+                # The per-target check below only sees each slice: a fused adapter of another height would pass it.
+                raise ValueError(
+                    f"LoKR module {_strip(stem)} has {int(w1.shape[0] * w2.shape[0])} rows, but the fused "
+                    f"projection it splits into here has {max(end for _, end in spans)}"
+                )
+            for root, module, rows in targets:
                 base = _base_layer(module)
                 if isinstance(base, nn.Embedding):  # 2-D like a Linear, but its input is token ids
                     raise ValueError(
