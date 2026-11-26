@@ -24,7 +24,6 @@ export function RunParallelChip({
       className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium text-foreground/80"
       data-testid="run-parallel-chip"
     >
-      {/* A one-GPU run is just its mode, never "1 GPUs". */}
       {count === 1
         ? mode
         : t("studio.gpus.runChip", {

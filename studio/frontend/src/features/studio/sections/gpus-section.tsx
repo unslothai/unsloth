@@ -189,7 +189,6 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
           )}
         </p>
       )}
-      {/* Mixed GPUs are a normal setup: the note reads like the reason line. */}
       {plan.notes.map((note) => (
         <p
           key={note}

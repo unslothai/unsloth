@@ -218,7 +218,7 @@ def detect_host(max_age_s: float = 5.0) -> dict:
         "multi_process_reason": reason,
         "gpus": gpus,
         "core": core_axes(),
-        # A UUID / MIG mask cannot be narrowed by index: /start refuses a plan that pins a subset of it.
+        # False on a UUID / MIG mask: /start refuses a plan that pins a subset of it.
         "pins_gpu_ids": _mask_takes_gpu_ids(),
         "transformers": _transformers_version(),
         "torch": _torch_version(),
@@ -385,8 +385,7 @@ def _spec_for(mode: str, world: int, custom: Optional[str]) -> str:
 
 
 def _spec_example(world: int) -> str:
-    """A layout every run accepts, for the hints: data parallel over every GPU (dp=2,tp=2 needs four GPUs, and a
-    tp axis is refused for some models and settings)."""
+    """dp over every GPU: a hint every run accepts (a tp axis is refused for some models)."""
     return f"dp={max(world, 1)}"
 
 
@@ -499,7 +498,7 @@ def _core_check(
         alternative = alternative.rsplit(" (layout", 1)[0].strip().rstrip(".") or None
         if _REASON_BELOW in message:
             # Core names the model's own reason only in its layout tail ("...; models/tp_native.py: <why>)").
-            tail = layout[:-1] if layout.endswith(")") else layout  # the "(layout" paren only
+            tail = layout[:-1] if layout.endswith(")") else layout
             detail = tail.rsplit("; ", 1)[-1].partition(": ")[2].strip()
             message = message.split(": models/", 1)[0] + (f": {detail}." if detail else ".")
         raise ParallelPlanError(
@@ -511,7 +510,7 @@ def _core_check(
 
 
 _REASON_BELOW = "(its reason follows the layout below)"
-# Core names the rule it applied ("Unsloth: pp x packing: ..."); the Train page shows only the reason.
+# Core's rule prefix ("Unsloth: pp x packing: ..."), dropped from the Train page message.
 _CORE_RULE_PREFIX = re.compile(r"^(?:Unsloth:\s*)?(?:[a-z0-9_]+(?: x [a-z0-9_]+)+:\s*)?")
 
 
@@ -645,7 +644,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
     gpus = _usable_gpus(host, gpu_ids)
     model = model or {}
     warnings: list = []
-    notes: list = []  # facts about the host, not risks of this run: shown muted, unlike warnings
+    notes: list = []  # host facts, shown muted; warnings are risks of this run
     feature = _single_process_feature(request)
     multi_reason = host.get("multi_process_reason") or (
         f"{feature} train in one process." if feature else None
@@ -672,8 +671,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             except ParallelPlanError:
                 sizes = None
         if sizes and sizes.get("fsdp") and need is not None and chosen and not _fits(need, chosen):
-            # Core keeps FSDP2 blocks gathered when the weights alone fit a card, which does not count the
-            # gradients and optimizer state: a run that does not fit every GPU whole must reshard after forward.
+            # Core keeps FSDP2 blocks gathered when the weights alone fit a card, ignoring optimizer state.
             env["UNSLOTH_FSDP2_LAYOUT"] = "sharded"
         return {
             "requested_mode": requested or AUTO,
@@ -715,10 +713,8 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         core = host.get("core") or {}
         if need is None:
             return _legacy("The model size could not be estimated, so Studio keeps one process.")
-        # Expert parallel is never picked here, only on request: when a full copy fits every GPU, DDP has no
-        # all-to-all per layer (OLMoE-1B-7B LoRA on 2 GPUs: DDP 240 s, ep 570 s for 60 steps); when it does not,
-        # Core alone knows what an ep rank holds (padded expert shards, load peaks, 4-bit splits), and FSDP2
-        # shards any model.
+        # Never auto-pick expert parallel: DDP has no per-layer all-to-all (OLMoE-1B-7B, 2 GPUs: DDP 240 s,
+        # ep 570 s), and only Core knows what an ep rank holds, while FSDP2 shards any model.
         if _fits(need, gpus) and core.get(DDP):
             try:
                 _core_check(
@@ -732,9 +728,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 )
             except ParallelPlanError:
                 pass
-        # Mixed GPUs: the run fits the largest card but not every card. Every multi-process layout gives each
-        # rank an equal share, so the smallest card caps it; training alone on the large card is the safe pick.
-        # It pins that card, which a UUID / MIG mask cannot take.
+        # Multi-process layouts give equal shares, so the smallest card caps them: train on the largest alone.
         largest = max(gpus, key = lambda g: (g["free_gb"], -g["index"]))
         if host.get("pins_gpu_ids", True) and _fits(need, [largest]):
             return _result(

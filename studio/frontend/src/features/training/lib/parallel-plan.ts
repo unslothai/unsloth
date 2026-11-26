@@ -232,8 +232,7 @@ export function overrideIssue(
   return null;
 }
 
-/** A layout every run accepts, for the Custom layout hint: data parallel over every GPU (dp=2,tp=2 needs
- * four GPUs, and a tp axis is refused for some models and settings). Mirrors parallel_plan._spec_example. */
+/** Mirrors parallel_plan._spec_example. */
 export function layoutExample(gpuCount: number): string {
   return `dp=${Math.max(gpuCount, 1)}`;
 }

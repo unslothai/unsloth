@@ -106,12 +106,10 @@ test("plan parses the resolved mode, the per-GPU estimate of that mode, and the 
   assert.deepEqual(plan.gpuIds, [0, 1]);
   assert.equal(plan.perGpuGb, 6.1);
   assert.equal(plan.error, null);
-  // Mixed GPUs are a note (muted); a run that may not fit is a warning (amber).
   assert.deepEqual(plan.notes, [
     "These GPUs differ; data parallel runs at the pace of the slowest.",
   ]);
   assert.equal(plan.warnings.length, 1);
-  // An older backend sends no notes.
   const { notes: _omit, ...older } = planBody;
   assert.deepEqual(normalizeParallelPlan(older)?.notes, []);
   const refused = normalizeParallelPlan({

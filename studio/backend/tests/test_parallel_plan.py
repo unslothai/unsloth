@@ -119,8 +119,7 @@ def test_does_not_fit_sharded_is_legacy_layer_split():
 def test_auto_never_picks_expert_parallel():
     without = pp.plan({"parallel_mode": "auto"}, _host(2, ep = False), _model(need = 6.0, moe = True))
     assert without["mode"] == "ddp"
-    # Automatic never picks expert parallel: DDP when a copy fits every GPU (faster: no all-to-all per
-    # layer), FSDP2 when it does not. Expert parallel stays an explicit choice that Core checks at load.
+    # Automatic never picks expert parallel; it stays an explicit choice that Core checks at load.
     with_ep = pp.plan({"parallel_mode": "auto"}, _host(2, ep = True), _model(need = 6.0, moe = True))
     assert with_ep["mode"] == "ddp" and with_ep["spec"] == "dp=2", with_ep
     big = pp.plan(
@@ -150,7 +149,6 @@ def test_auto_falls_back_when_ep_cannot_shard_the_family():
         pp.plan({"parallel_mode": "ep"}, ep_host, _model(moe = True, family = "jetmoe"))
     payload = err.value.payload
     assert payload["code"] == "parallel_unsupported", payload
-    # The Train page shows the reason, not Core's rule name.
     assert (
         not payload["message"].startswith("Unsloth:") and " x model:" not in payload["message"]
     ), payload
@@ -160,7 +158,6 @@ def test_auto_falls_back_when_ep_cannot_shard_the_family():
 def test_busy_gpu_counts_its_free_memory():
     host = _host(gpus = [_t4(0, free = 14.5), _t4(1, free = 4.0)])
     plan = pp.plan({"parallel_mode": "auto"}, host, _model(need = 6.0, shard = 3.4))
-    # The busy card cannot hold a copy; the free one holds the whole run.
     assert plan["mode"] == "single" and plan["gpu_ids"] == [0], plan
     both_busy = _host(gpus = [_t4(0, free = 4.0), _t4(1, free = 4.0)])
     assert (
@@ -295,12 +292,10 @@ def test_mixed_gpus_warn():
         gpus = [_t4(0), {"index": 1, "name": "NVIDIA L4", "total_gb": 22.5, "free_gb": 22.0}]
     )
     plan = pp.plan({"parallel_mode": "ddp"}, host, _model())
-    # A fact about the host, not a risk of this run: a note, shown muted, never a warning.
     assert any("data parallel runs at the pace" in n for n in plan["notes"]), plan
     assert not plan["warnings"], plan
     tp = pp.plan({"parallel_mode": "tp"}, host, _model())
     assert tp["notes"] and not any("data parallel" in n for n in tp["notes"]), tp["notes"]
-    # A run that may not fit stays a warning.
     big = pp.plan({"parallel_mode": "ddp"}, host, _model(need = 20.0))
     assert any("may not fit" in w for w in big["warnings"]), big
 
@@ -441,7 +436,6 @@ def test_mixed_gpus_train_alone_on_the_card_that_holds_the_run():
     assert (
         "GPU 0" in plan["reason"] and "not every GPU has room for a full copy" in plan["reason"]
     ), plan
-    # Two large cards and a small one: the reason names the chosen card, not "only" that one.
     gpus = _mixed_host()["gpus"] + [
         {"index": 2, "name": "NVIDIA RTX 6000 Ada Generation", "total_gb": 47.99, "free_gb": 44.0}
     ]
@@ -455,7 +449,6 @@ def test_one_card_is_not_pinned_on_a_mask_that_cannot_be_narrowed():
         {"parallel_mode": "auto"}, _mixed_host(pins_gpu_ids = False), _model(need = 31.7, shard = 16.8)
     )
     assert not (plan["mode"] == "single" and plan["gpu_ids"]), plan
-    # The 48 GB card holds the run: the reason says why it is sharded, not that no card holds it.
     assert plan["mode"] == "fsdp2" and "cannot keep a run to one card" in plan["reason"], plan
     assert "any one GPU" not in plan["reason"], plan
 
@@ -489,7 +482,6 @@ def test_core_rule_prefix_is_dropped():
 def test_custom_hint_is_a_layout_this_run_accepts():
     with pytest.raises(pp.ParallelPlanError) as err:
         pp.plan({"parallel_mode": "custom", "parallel_spec": ""}, _host(2), _model())
-    # Data parallel over every GPU: a layout every run accepts (a tp axis is refused for some models).
     assert '"dp=2"' in err.value.payload["message"], err.value.payload
     assert pp._spec_example(4) == "dp=4" and pp._spec_example(3) == "dp=3"
     assert (

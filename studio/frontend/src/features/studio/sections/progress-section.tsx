@@ -464,7 +464,7 @@ function LiveGpuPanel({
   parallel: RunParallelInfo | null;
 }): ReactElement {
   const t = useT();
-  // null until the user picks one: then the monitor follows the run's first GPU, not device 0.
+  // null: follow the run's first GPU until the user picks one.
   const [selectedGpu, setSelectedGpu] = useState<number | null>(null);
   const gpuData = useGpuUtilization(isTrainingRunning);
   const gpus: GpuUtilization[] =

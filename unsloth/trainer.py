@@ -2424,9 +2424,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         # UNSLOTH_PP_SIZE: packed rows are not carried between pipeline stages yet (models/pp_env.py).
         is_pipeline_parallel_env = _pipeline_parallel_env_requested()
-        # Tensor parallel (alone or with cp) refuses packed rows: never turn them on automatically there.
-        # An explicit packing / padding_free = True stays, so the capability check refuses it with the
-        # alternative.
+        # tp refuses packed rows: never turn them on here. An explicit packing / padding_free = True
+        # stays, so the capability check refuses it with the alternative.
         auto_off_tp = (
             _tp_env_requested()
             and not getattr(config_arg, "packing", False)

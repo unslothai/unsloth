@@ -53,7 +53,6 @@ _LAYOUT_ENV = (
     "UNSLOTH_PP_MICROBATCHES",
     "UNSLOTH_PARALLEL_AUTO_RESOLVED",
 )
-# Env the planner may set for a run (parallel_plan's result "env").
 _PLAN_ENV = ("UNSLOTH_FSDP2_LAYOUT",)
 _HOST = "127.0.0.1"
 _MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")

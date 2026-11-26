@@ -391,7 +391,7 @@ export function RunPreviewCard({
       : null,
   );
   const hostGpus = useTrainingParallelStore((s) => s.capabilities?.gpus);
-  // The GPUs this run uses, when the plan names them, so unticked cards do not count.
+  // Only the plan's GPUs, so unticked cards do not count.
   const runGpus =
     parallelPlan && hostGpus
       ? hostGpus.filter((g) => parallelPlan.gpuIds.includes(g.index))
