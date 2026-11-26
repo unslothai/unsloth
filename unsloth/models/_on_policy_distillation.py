@@ -302,24 +302,34 @@ def _refuse_subclass_objective(trainer, option):
         )
 
 
-def _refuse_unreconstructable_sampler(trainer):
-    # Without vLLM's logprobs the sampler is rescored over the full vocabulary at the trainer's temperature;
-    # generation filters and penalties would make that a different distribution from the one that sampled.
+def _refuse_unreconstructable_sampler(trainer, rescoring = False):
+    # Rescoring the sampled tokens over the full vocabulary at the trainer's temperature is not the sampler under
+    # generation filters or penalties. vLLM's sampling logprobs avoid the rescoring, so setup skips vLLM; the first
+    # rollout that comes without them (an older TRL with the IS correction off) checks again with rescoring = True.
     args = getattr(trainer, "args", None)
-    if getattr(trainer, "use_vllm", getattr(args, "use_vllm", False)):
+    if not rescoring and getattr(trainer, "use_vllm", getattr(args, "use_vllm", False)):
         return
-    filters = {
-        "top_k": getattr(args, "top_k", None) not in (None, 0, -1),
-        "top_p": getattr(args, "top_p", None) not in (None, 1, 1.0),
-        "min_p": getattr(args, "min_p", None) not in (None, 0, 0.0),
-        "repetition_penalty": getattr(args, "repetition_penalty", None) not in (None, 1, 1.0),
+    sources = [args, getattr(args, "vllm_sampling_params", None)]
+    defaults = {
+        "top_k": (None, 0, -1),
+        "top_p": (None, 1, 1.0),
+        "min_p": (None, 0, 0.0),
+        "repetition_penalty": (None, 1, 1.0),
     }
-    used = [k for k, on in filters.items() if on]
+    used = sorted(
+        {
+            k
+            for src in sources
+            if src is not None
+            for k, ok in defaults.items()
+            if getattr(src, k, None) not in ok
+        }
+    )
     if used:
         raise ValueError(
-            f"Unsloth: unsloth_distillation_coef without vLLM rescores the sampled tokens over the full vocabulary, "
-            f"which does not reproduce the sampler under {', '.join(used)}. Use vLLM (its sampling logprobs are the "
-            "sampler's) or leave those at their defaults."
+            f"Unsloth: unsloth_distillation_coef rescores the sampled tokens over the full vocabulary when the rollout "
+            f"has no sampling logprobs, which does not reproduce the sampler under {', '.join(used)}. Use vLLM with its "
+            "sampling logprobs (vllm_importance_sampling_correction = True) or leave those at their defaults."
         )
 
 
@@ -422,7 +432,8 @@ def grpo_add_distillation_advantages(trainer, output):
     if student_logps is not None:
         _refuse_untruncated_filtered_logps(trainer)
     if student_logps is None or student_logps.shape != completion_ids.shape:
-        # No vLLM logprobs: the policy sampled the tokens itself, at the trainer's temperature.
+        # No sampling logprobs: the policy sampled the tokens itself, at the trainer's temperature.
+        _refuse_unreconstructable_sampler(trainer, rescoring = True)
         student = _unwrap(trainer.accelerator.unwrap_model(trainer.model))
         student_logps = score_completion_logps(
             student,

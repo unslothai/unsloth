@@ -385,6 +385,24 @@ def test_grpo_setup_refuses_filters_it_cannot_reproduce(monkeypatch):
         repetition_penalty = 1.0,
     )
     assert opd.grpo_setup_distillation(defaults) == 1.0
+    # vLLM with filters but no sampling logprobs in the rollout (older TRL, IS correction off): refused there.
+    trainer = _grpo_trainer(
+        unsloth_distillation_coef = 1.0,
+        use_vllm = True,
+        temperature = 1.0,
+        vllm_sampling_params = types.SimpleNamespace(min_p = 0.1),
+    )
+    assert opd.grpo_setup_distillation(trainer) == 1.0
+    batch = _left_padded_batch()
+    output = dict(
+        prompt_ids = batch[0],
+        prompt_mask = batch[1],
+        completion_ids = batch[2],
+        completion_mask = batch[3],
+        advantages = torch.zeros(3),
+    )
+    with pytest.raises(ValueError, match = "min_p"):
+        opd.grpo_add_distillation_advantages(trainer, output)
 
 
 def test_distillation_refuses_untruncated_filtered_vllm_logps(monkeypatch):
