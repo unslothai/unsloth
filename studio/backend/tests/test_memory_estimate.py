@@ -703,6 +703,129 @@ def _request_with_slots(slots: int):
     )
 
 
+_MOE_BLOCKS = 4
+_EMBD_BYTES = 64 * 64 * 4
+_ATTN_BYTES = 64 * 64 * 4
+_EXPS_BYTES = 8 * 128 * 64 * 4 + 8 * 64 * 64 * 4
+
+
+def _write_moe_gguf_with_tensors(tmp_path: Path) -> str:
+    """A small MoE GGUF whose tensor table is the whole file, so the estimate places each tensor."""
+    import numpy as np
+    from gguf import GGUFWriter
+
+    arch = "qwen3moe"
+    path = tmp_path / "moe.gguf"
+    writer = GGUFWriter(str(path), arch)
+    fields = {**_GQA_FIELDS, "block_count": _MOE_BLOCKS, "expert_count": 8, "expert_used_count": 2}
+    for key, value in fields.items():
+        writer.add_uint32(f"{arch}.{key}", int(value))
+    writer.add_tensor("token_embd.weight", np.zeros((64, 64), dtype = np.float32))
+    writer.add_tensor("output.weight", np.zeros((64, 64), dtype = np.float32))
+    for b in range(_MOE_BLOCKS):
+        writer.add_tensor(f"blk.{b}.attn_q.weight", np.zeros((64, 64), dtype = np.float32))
+        writer.add_tensor(
+            f"blk.{b}.ffn_gate_up_exps.weight", np.zeros((8, 128, 64), dtype = np.float32)
+        )
+        writer.add_tensor(f"blk.{b}.ffn_down_exps.weight", np.zeros((8, 64, 64), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return str(path)
+
+
+class TestExpertOffloadIsPlaced:
+    """#19795: -ot / --n-cpu-moe experts on the CPU leave the GPU figure, priced per tensor."""
+
+    @pytest.fixture
+    def estimate(self, monkeypatch, tmp_path):
+        moe = _write_moe_gguf_with_tensors(tmp_path)
+        config = SimpleNamespace(identifier = "local/moe", gguf_file = moe, is_gguf = True)
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        monkeypatch.setattr(
+            ri, "_gguf_resident_file_gb", lambda cfg, **kw: os.path.getsize(moe) / _GIB
+        )
+        monkeypatch.setattr(ri, "_estimate_host_has_no_gpu", lambda: False)
+        for name in (
+            "LLAMA_ARG_OVERRIDE_TENSOR",
+            "LLAMA_ARG_N_CPU_FFN",
+            "GGML_OP_OFFLOAD_MIN_BATCH",
+        ):
+            monkeypatch.delenv(name, raising = False)
+
+        def run(**kw):
+            request = {
+                "model_path": moe,
+                "n_ctx": 4096,
+                "gpu_memory_mode": "manual",
+                "gpu_layers": 99,
+                **kw,
+            }
+            return _estimate(**request)
+
+        return run
+
+    @staticmethod
+    def _gpu_weights(resp):
+        assert resp.kv_on_gpu
+        return resp.gpu_bytes - (resp.kv_bytes - resp.kv_checkpoint_bytes) - resp.compute_bytes
+
+    def test_full_offload_keeps_only_token_embd_on_the_host(self, estimate):
+        resp = estimate()
+        table = 2 * _EMBD_BYTES + _MOE_BLOCKS * (_ATTN_BYTES + _EXPS_BYTES)
+        assert self._gpu_weights(resp) == table - _EMBD_BYTES
+        assert resp.moe_offload_unmodelled is False
+
+    @pytest.mark.parametrize(
+        "placement",
+        [
+            {"llama_extra_args": ["-ot", r"blk\.[0-1]\.ffn_.*_exps\.weight=CPU"]},
+            {"llama_extra_args": ["--override-tensor=blk\\.[01]\\.ffn_=CPU"]},
+            {"n_cpu_moe": 2},
+        ],
+        ids = ["ot", "ot_inline", "n_cpu_moe_field"],
+    )
+    def test_cpu_experts_leave_the_gpu_and_one_layer_is_staged(self, estimate, placement):
+        base = estimate()
+        resp = estimate(**placement)
+        assert resp.moe_offload_unmodelled is False
+        # Two blocks of experts leave the card; op offload copies one block's back per micro-batch.
+        assert self._gpu_weights(resp) == self._gpu_weights(base) - 2 * _EXPS_BYTES
+        assert resp.compute_bytes == base.compute_bytes + _EXPS_BYTES
+        assert resp.gpu_bytes == base.gpu_bytes - _EXPS_BYTES
+        # The weights move, they do not disappear.
+        assert resp.total_bytes == base.total_bytes + _EXPS_BYTES
+
+    @pytest.mark.parametrize(
+        "no_staging",
+        [{"n_batch": 16, "n_ubatch": 16}, {"extra": ["--no-op-offload"]}],
+        ids = ["micro_batch_below_32", "no_op_offload"],
+    )
+    def test_nothing_is_staged_when_ops_stay_on_the_cpu(self, estimate, no_staging):
+        extra = no_staging.pop("extra", [])
+        base = estimate(llama_extra_args = extra, **no_staging)
+        resp = estimate(
+            llama_extra_args = ["-ot", r"blk\.[0-1]\.ffn_.*_exps=CPU", *extra], **no_staging
+        )
+        assert resp.compute_bytes == base.compute_bytes
+        assert resp.gpu_bytes == base.gpu_bytes - 2 * _EXPS_BYTES
+
+    def test_partial_offload_prices_the_layers_from_the_back(self, estimate):
+        resp = estimate(gpu_layers = 2)
+        # Two of five layers: the output layer and block 3. Blocks 0-2 run their ops on the GPU
+        # from host weights, one block's worth at a time.
+        kv_share = int((resp.kv_bytes - resp.kv_checkpoint_bytes) * 2 / (_MOE_BLOCKS + 1))
+        weights = resp.gpu_bytes - kv_share - resp.compute_bytes
+        assert weights == _EMBD_BYTES + _ATTN_BYTES + _EXPS_BYTES
+
+    def test_a_pattern_python_cannot_read_keeps_the_soft_note(self, estimate):
+        base = estimate()
+        resp = estimate(llama_extra_args = ["-ot", "blk[[:digit:]]+=CPU"])
+        assert resp.moe_offload_unmodelled is True
+        assert resp.gpu_bytes == base.gpu_bytes
+
+
 class TestEstimateMemoryRoute:
     """The three "cannot size this" answers, and what they must not do first."""
 
@@ -1553,21 +1676,28 @@ class TestEstimateMemoryRoute:
         assert param.default is True
         assert param.kind is inspect.Parameter.KEYWORD_ONLY
 
-    def test_expert_offload_from_the_extras_is_declared_unmodelled(self, monkeypatch, gqa_gguf):
-        config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
+    def test_an_override_without_a_tensor_table_is_declared_unmodelled(self, monkeypatch, tmp_path):
+        # Metadata only: nothing to place the override against, so the GPU share reads high.
+        moe = _write_gguf(tmp_path, "qwen3moe", {**_GQA_FIELDS, "expert_count": 8})
+        config = SimpleNamespace(identifier = "local/model", gguf_file = moe, is_gguf = True)
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 2.0)
 
         def flagged(**kw):
-            return _estimate(model_path = gqa_gguf, n_ctx = 8192, **kw).moe_offload_unmodelled
+            return _estimate(model_path = moe, n_ctx = 8192, **kw).moe_offload_unmodelled
 
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["--n-cpu-moe", "8"]) is True
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-cmoe"]) is True
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-ot", "exps=CPU"]) is True
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-ncmoe", "0"]) is False
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["--top-k", "40"]) is False
+        # Manual /load strips -ncmoe and -cmoe from the extras; -ot and -ncffn reach llama-server.
         assert flagged(gpu_memory_mode = "manual", llama_extra_args = ["-ncmoe", "8"]) is False
-        assert flagged(gpu_memory_mode = "manual", n_cpu_moe = 8) is True
+        assert flagged(gpu_memory_mode = "manual", llama_extra_args = ["-ot", "exps=CPU"]) is True
+        assert flagged(gpu_memory_mode = "manual", llama_extra_args = ["-ncffn", "4"]) is True
+        assert flagged(gpu_memory_mode = "manual", gpu_layers = 13, n_cpu_moe = 8) is True
+        # The field reaches the launch only with a fixed layer count; Auto layers send none.
+        assert flagged(gpu_memory_mode = "manual", gpu_layers = None, n_cpu_moe = 8) is False
 
     def test_the_device_count_uses_the_effective_split_mode(self, monkeypatch, gqa_gguf):
         config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
@@ -1630,7 +1760,8 @@ class TestEstimateMemoryRoute:
         assert resp.cache_type_kv == "q8_0"
         assert resp.layer_count == _GQA_FIELDS["block_count"]
         assert resp.gpu_layers == 6
-        assert resp.moe_offload_unmodelled is True
+        # A dense model gets no --n-cpu-moe, so there is nothing left unpriced.
+        assert resp.moe_offload_unmodelled is False
 
     def test_cached_repo_is_priced_from_disk_not_from_a_listing(self, monkeypatch, gqa_gguf):
         # Both remote-arm helpers raise, so reaching either fails the test.

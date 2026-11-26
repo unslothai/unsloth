@@ -408,3 +408,120 @@ def spill_pattern_for(layout: ModelLayout, indices: Optional[list[int]] = None) 
 
 
 LM_HEAD_PATTERN = r"^output\.weight$"
+
+
+# llama.cpp keeps its input layer on the host (llama_model::load_tensors: dev_input is the CPU).
+_INPUT_LAYER_TENSORS = frozenset(
+    {
+        "token_embd",
+        "position_embd",
+        "token_types",
+        "value_embd",
+        "per_layer_token_embd",
+        "masked_embd_centroids",
+        "masked_embd_ordering",
+        "mask_embd",
+    }
+)
+# common.h LLM_FFN_EXPS_REGEX / LLM_FFN_DENSE_REGEX: what -cmoe, -ncmoe and -ncffn push.
+FFN_EXPS_OVERRIDE = r"\.ffn_(up|down|gate|gate_up)_(ch|)exps"
+FFN_DENSE_OVERRIDE = r"\.ffn_(up|down|gate)\."
+
+
+def block_ffn_overrides(count: int, body: str) -> list[str]:
+    """The patterns ``--n-cpu-moe count`` (or ``--n-cpu-ffn``) pushes: blocks 0..count-1."""
+    return [rf"blk\.{i}{body}" for i in range(max(0, int(count)))]
+
+
+@dataclass(frozen = True)
+class WeightPlacement:
+    """Where llama.cpp puts the main model's weights, per tensor."""
+
+    device_bytes: int
+    host_bytes: int
+    # Largest group of host weights one layer's ops read; CUDA/Vulkan/Metal copy them to the device
+    # to run a micro-batch of >= 32 tokens, into the compute buffer.
+    host_staging_bytes: int
+    # False when an override pattern is one Python cannot read like std::regex; it is skipped.
+    resolved: bool
+
+
+def place_weights(
+    tensor_bytes: dict[str, int],
+    gpu_layers: Optional[int],
+    overrides: Sequence[tuple[str, bool]] = (),
+) -> Optional[WeightPlacement]:
+    """llama.cpp's placement of every main-model tensor: the first matching ``(pattern, on_host)``
+    override wins, else the layer it belongs to decides. ``gpu_layers`` None offloads every layer.
+
+    Layers are offloaded from the back: with N weight-owning blocks, block rank r is on the GPU when
+    r >= N + 1 - gpu_layers, and the output layer (rank N) whenever gpu_layers >= 1. A looped GGUF
+    names only its owning blocks, so ranks follow the block indices present. Per-layer embedding
+    tables are left out: the lookup-table pricing owns them. None when no block tensor is listed."""
+    blocks: dict[str, int] = {}
+    for name in tensor_bytes:
+        match = _BLOCK_RE.match(name)
+        if match:
+            blocks[name] = int(match.group(1))
+    if not blocks:
+        return None
+    rank = {index: r for r, index in enumerate(sorted(set(blocks.values())))}
+    n_owners = len(rank)
+    first_gpu = 0 if gpu_layers is None else max(n_owners + 1 - max(0, int(gpu_layers)), 0)
+
+    resolved = True
+    compiled: list[tuple[Optional[re.Pattern], bool]] = []
+    for pattern, on_host in overrides:
+        try:
+            # A POSIX class is std::regex syntax that Python reads as a plain set.
+            compiled.append((None if "[:" in pattern else re.compile(pattern), on_host))
+        except re.error:
+            compiled.append((None, on_host))
+        if compiled[-1][0] is None:
+            resolved = False
+
+    def on_host_by_override(name: str) -> Optional[bool]:
+        for regex, on_host in compiled:
+            if regex is not None and regex.search(name):
+                return on_host
+        return None
+
+    device = host = 0
+    staged: dict[object, int] = {}
+    tied_output = "output.weight" not in tensor_bytes
+    for name, size in tensor_bytes.items():
+        size = int(size)
+        if is_per_layer_embedding(name):
+            continue
+        stem = name.split(".", 1)[0]
+        override = on_host_by_override(name)
+        if stem in _INPUT_LAYER_TENSORS:
+            # Read by GET_ROWS, which no backend offloads, so never staged.
+            if override is False:
+                device += size
+            else:
+                host += size
+            if name == "token_embd.weight" and tied_output:
+                # A tied head loads token_embd again, on the output layer's device.
+                if override is False or (override is None and first_gpu <= n_owners):
+                    device += size
+                else:
+                    staged["output"] = staged.get("output", 0) + size
+            continue
+        if name in blocks:
+            layer_on_gpu = rank[blocks[name]] >= first_gpu
+            group: object = blocks[name]
+        else:
+            layer_on_gpu = first_gpu <= n_owners
+            group = "output"
+        if override is False or (override is None and layer_on_gpu):
+            device += size
+        else:
+            host += size
+            staged[group] = staged.get(group, 0) + size
+    return WeightPlacement(
+        device_bytes = device,
+        host_bytes = host,
+        host_staging_bytes = max(staged.values(), default = 0),
+        resolved = resolved,
+    )
