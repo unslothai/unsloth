@@ -1355,7 +1355,7 @@ def _window_rows(stage, window):
         # groups. Planned from the dp-shared lengths: every replica's i-th longest row is at most the shared
         # i-th, so its rows fit the same bins.
         best = _pack_plan(plan_lengths, per_mb, p, floor, cap)
-        if best is not None and best[0] < _fold_cost(plan, plan_lengths, p):
+        if best is not None and best[0] < _fold_cost(plan, plan_lengths, per_mb, p):
             packed = (best[1], best[2], best[3][: len(rows)], floor)
     return rows, per_mb, plan, packed
 
@@ -1532,8 +1532,9 @@ def _pack_plan(lengths, per_mb, num_stages, floor, cap):
     return best
 
 
-def _fold_cost(plan, lengths, num_stages):
-    return sum((m + num_stages - 1) * lengths[start] for start, _, m in plan)
+def _fold_cost(plan, lengths, per_mb, num_stages):
+    """_fold_plan's cost in tokens of work: its micro-batches hold per_mb rows each (packed ones one)."""
+    return per_mb * sum((m + num_stages - 1) * lengths[start] for start, _, m in plan)
 
 
 def _stack_packed(rows, m, width, where, floor):

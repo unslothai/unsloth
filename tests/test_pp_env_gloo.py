@@ -1194,11 +1194,15 @@ def test_pp_pack_plan(checkout_unsloth):
     assert pp_env._pack_plan([100] * 8, 1, 2, 1, None)[:3] == (900, 8, 100)
     lengths = [510, 300, 250, 200, 180, 150, 100, 60]
     cost, m, width, where = pp_env._pack_plan(lengths, 1, 2, 1, None)
-    groups = pp_env._fold_cost(pp_env._fold_plan(lengths, 1, 2, 1, None), lengths, 2)
+    groups = pp_env._fold_cost(pp_env._fold_plan(lengths, 1, 2, 1, None), lengths, 1, 2)
     # Whole documents in rows no longer than the longest one (what the unfolded step held).
     assert (cost, m, width) == (2550, 4, 510) and cost < groups == 3020
     load = [sum(x for x, b in zip(lengths, where) if b == i) for i in range(m)]
     assert max(load) <= width and sorted(set(where)) == list(range(m)), load
+    # Micro-batches of 2 rows: the length groups' cost counts both rows (token work), as the packed rows do.
+    twice = sorted(lengths * 2, reverse = True)
+    groups2 = pp_env._fold_cost(pp_env._fold_plan(twice, 2, 2, 1, None), twice, 2, 2)
+    assert groups2 == 6040 and pp_env._pack_plan(twice, 2, 2, 1, None)[0] < groups2
     # GPipe's in-flight cap bounds the micro-batch count: 41 tokens do not fit 2 rows of at most 9.
     assert pp_env._pack_plan([9, 8, 8, 5, 4, 3, 2, 2], 1, 2, 1, 2) is None
     assert pp_env._pack_plan([9, 8, 8, 5, 4, 3, 2, 2], 3, 2, 1, 2)[1:3] == (2, 27)
