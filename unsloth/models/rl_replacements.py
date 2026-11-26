@@ -1994,6 +1994,91 @@ def _unsloth_seq_packing_shape_noise(model, result, ref, cmask):
     return True
 
 
+def _unsloth_seq_packing_verify_rows(
+    lengths,
+    completion_counts,
+    trusted,
+    limit = 3,
+):
+    """Rows the packing self-verify scores alone as ground truth (host ints, no sync). Until packing is trusted, and
+    under UNSLOTH_GRPO_SEQ_PACKING_VERIFY=1, every row. A re-verify of trusted packing at a larger shape scores at
+    most `limit` rows: the last scored row (it follows every other document in the packed stream, so any
+    cross-document leak reaches it), the longest row (the new position range) and the row with the most
+    completion tokens."""
+    import os
+
+    rows = [i for i, (n, c) in enumerate(zip(lengths, completion_counts)) if n >= 2 and c > 0]
+    if (
+        (not trusted)
+        or limit is None
+        or limit <= 0
+        or len(rows) <= limit
+        or os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
+    ):
+        return [i for i, n in enumerate(lengths) if n >= 2]
+    pick = [rows[-1]]
+    for i in (
+        max(rows, key = lambda r: lengths[r]),
+        max(rows, key = lambda r: completion_counts[r]),
+    ):
+        if i not in pick:
+            pick.append(i)
+    for i in sorted(rows, key = lambda r: -completion_counts[r]):
+        if len(pick) >= limit:
+            break
+        if i not in pick:
+            pick.append(i)
+    return sorted(pick)
+
+
+def _unsloth_seq_packing_trusted_bound(model, value):
+    """Trusted packing bound after a verify passed at `value` tokens: 2x by default, so record lengths that grow a little do
+    not re-run the verify every time. RoPE that switches with length (LongRoPE short / long factors, dynamic NTK)
+    never widens across `original_max_position_embeddings`, and past it stays at `value`."""
+    import os
+
+    value = int(value)
+    # UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH=1 trusts only the exact verified shape (the old rule).
+    try:
+        growth = float(os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "2"))
+    except ValueError:
+        growth = 2.0
+    if not growth > 1:
+        return value
+    config = getattr(model, "config", None)
+    if hasattr(config, "get_text_config"):
+        try:
+            config = config.get_text_config()
+        except Exception:
+            pass
+    scalings = []
+    for scaling in (
+        getattr(config, "rope_scaling", None),
+        getattr(config, "rope_parameters", None),
+    ):
+        if isinstance(scaling, dict):
+            # transformers 5 can key rope_parameters by layer type
+            scalings.append(scaling)
+            scalings.extend(v for v in scaling.values() if isinstance(v, dict))
+    switch = None
+    for scaling in scalings:
+        if str(scaling.get("rope_type", scaling.get("type", ""))).lower() in (
+            "longrope",
+            "su",
+            "dynamic",
+        ):
+            switch = (
+                scaling.get("original_max_position_embeddings", None)
+                or getattr(config, "original_max_position_embeddings", None)
+                or getattr(config, "max_position_embeddings", None)
+            )
+            break
+    if switch is None:
+        return int(growth * value)
+    switch = int(switch)
+    return min(int(growth * value), switch) if value <= switch else value
+
+
 def _unsloth_grpo_packing_leaks(self, unwrapped):
     """True when a packed document's output depends on an earlier document in its row (e.g. OPT's plain causal mask).
 
@@ -5406,7 +5491,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_pad,
                                 **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
                             )
-                        _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                        # Completion tokens per row, one read: active rows and the re-verify row pick.
+                        _pk_ccount_cpu = _pk_cmask.sum(dim = 1).tolist()
+                        _pk_active = sum(1 for _pk_c in _pk_ccount_cpu if _pk_c > 0)
                     if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
@@ -5482,7 +5569,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
                             _pk_use = True  # already verified for this shape
                         else:
-                            # verify against the per-row forward (ground truth)
+                            # verify against the per-row forward (ground truth); a re-verify of trusted packing scores at most 3 rows
+                            _pk_vrows = _unsloth_seq_packing_verify_rows(
+                                _pk_len_cpu, _pk_ccount_cpu, _pk_ok is True and _pk_vT > 0
+                            )
                             _pk_ref = torch.zeros_like(_pk_result)
                             with torch.no_grad():
                                 with torch.amp.autocast(
@@ -5490,7 +5580,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
-                                    for _pk_i in range(total_rows):
+                                    for _pk_i in _pk_vrows:
                                         _pk_ni = _pk_len_cpu[_pk_i]
                                         if _pk_ni < 2:
                                             continue
@@ -5537,10 +5627,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             device_synchronize()
                             # Compare over the loss-mask region only.
                             _pk_cm = _pk_cmask.float()
+                            if len(_pk_vrows) < total_rows:
+                                # Rows not scored alone have no reference: leave them out of the compare.
+                                _pk_vsel = torch.zeros(
+                                    total_rows, 1, dtype = _pk_cm.dtype, device = _pk_cm.device
+                                )
+                                _pk_vsel[_pk_vrows] = 1
+                                _pk_cm = _pk_cm * _pk_vsel
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
                             if UNSLOTH_ENABLE_LOGGING:
                                 print(
-                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
+                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} rows={len(_pk_vrows)}/{total_rows} packed-vs-perrow max|d|={_pk_diff:.4f}",
                                     flush = True,
                                 )
                             # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
@@ -5557,12 +5654,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
                                 # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
+                                # 2x past this shape, so a slowly growing record length does not re-verify every time.
                                 if _pk_active >= 2:
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
-                                        _pk_vT, _pk_T
+                                        _pk_vT,
+                                        _unsloth_seq_packing_trusted_bound(unwrapped_model, _pk_T),
                                     )
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
-                                        _pk_vS, _pk_maxseg
+                                        _pk_vS,
+                                        _unsloth_seq_packing_trusted_bound(
+                                            unwrapped_model, _pk_maxseg
+                                        ),
                                     )
                                 _pk_ok = True
                                 _pk_use = True
@@ -7147,6 +7249,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_moe_noise))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_shape_noise))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_rows))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_trusted_bound))
 RL_PRE_ITEMS["grpo_trainer"].append(
     _patch_grpo_accumulated_loss_moe_noise(
         _patch_grpo_accumulated_loss_seq_packing_kill(
