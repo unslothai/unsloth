@@ -299,6 +299,7 @@ def _case_env(
     noisy = False,
     varlen = False,
     mixed_keys = False,
+    neftune = None,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -383,6 +384,7 @@ def _case_env(
         adam_epsilon = _ADAM_EPS,
         gradient_accumulation_steps = ga,
         per_device_eval_batch_size = eval_bs or bs,
+        **({} if neftune is None else {"neftune_noise_alpha": neftune}),
     )
     trainer = SequentialTrainer(model = model, args = args, train_dataset = data, data_collator = collate)
     stage_ids = []
@@ -1300,4 +1302,53 @@ def test_pp_fold_does_not_pack_length_dependent_rope():
     for rank, res in enumerate(
         _spawn("env", 2, {"UNSLOTH_PP_SIZE": "2"}, arch = "llama_dynamic_rope", **kw)
     ):
+        assert res["fold"] == {}, res["fold"]
+
+
+def test_pp_fold_filler_row_is_attended(checkout_unsloth):
+    # Failing before: a dp replica that ran out of rows got a filler copied from its first row's first
+    # column, which is masked out when the rows are left padded. A fully masked row gives NaN attention.
+    from unsloth.models import pp_env
+
+    ids = torch.tensor([[0, 0, 7, 8]])
+    rows = [
+        (
+            4,
+            ids,
+            ids.clone(),
+            {"attention_mask": torch.tensor([[0, 0, 1, 1]]), "position_ids": ids * 0},
+        )
+    ]
+    input_ids, labels, extra = pp_env._stack_group(rows, 1, 1, 2, 1)
+    assert extra["attention_mask"].tolist() == [[1], [1]], extra
+    assert labels.tolist() == [[-100], [-100]] and input_ids.shape == (2, 1)
+
+
+def test_pp_fold_shares_the_token_budget_exactness_guards(checkout_unsloth):
+    # Failing before: folding regrouped and re-padded rows under NEFTune (noise scaled by each forward's
+    # length) and LOMO / layerwise optimizers (weights updated on every backward). Both now keep one
+    # schedule step per batch, through the token budget's own guard; RoPE kinds are case-folded.
+    import types
+
+    from unsloth.models import pp_env
+    from unsloth.utils.token_budget import _exactness_blocker
+
+    def trainer(**args):
+        base = dict(optim = "adamw_torch", neftune_noise_alpha = None)
+        return types.SimpleNamespace(args = types.SimpleNamespace(**{**base, **args}), model = None)
+
+    assert _exactness_blocker(trainer(), step_loss = False) is None
+    assert "NEFTune" in _exactness_blocker(trainer(neftune_noise_alpha = 5.0), step_loss = False)
+    assert "backward" in _exactness_blocker(trainer(optim = "lomo"), step_loss = False)
+    assert "backward" in _exactness_blocker(
+        trainer(optim = "galore_adamw_layerwise"), step_loss = False
+    )
+    assert pp_env._rope_types({"rope_scaling": {"rope_type": "Dynamic"}}) == {"dynamic"}
+
+
+@needs_pipelining
+def test_pp_fold_skips_neftune():
+    # Failing before: NEFTune training folded the window (its noise follows each forward's padded length).
+    kw = dict(bs = 2, ga = 4, steps = 2, evaluate = False, post = False, varlen = True, neftune = 5.0)
+    for res in _spawn("env", 2, {"UNSLOTH_PP_SIZE": "2"}, **kw):
         assert res["fold"] == {}, res["fold"]

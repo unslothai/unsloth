@@ -1213,7 +1213,7 @@ def _rope_types(config, depth = 0):
         for entry in (value, *value.values()):
             kind = entry.get("rope_type", entry.get("type")) if isinstance(entry, dict) else None
             if isinstance(kind, str):
-                found.add(kind)
+                found.add(kind.lower())
     for sub in ("text_config", "language_config", "llm_config"):
         found |= _rope_types(get(sub), depth + 1)
     return found
@@ -1245,6 +1245,12 @@ def _foldable(trainer, stage, input_ids, extra, n):
         return False
     if _length_dependent_rope(stage):
         return False  # regrouped rows change max(position_ids), so the rotary frequencies
+    from ..utils.token_budget import _exactness_blocker
+
+    # The token budget's exactness guards (NEFTune, LOMO / layerwise optimizers, router aux, RoPE); the
+    # loss always divides by the window's num_items_in_batch here (n above), so that check is skipped.
+    if _exactness_blocker(trainer, step_loss = False) is not None:
+        return False
     rows, seq = input_ids.shape
     for value in extra.values():
         if not torch.is_tensor(value) or value.dim() != 2 or value.shape[1] != seq:
@@ -1428,7 +1434,7 @@ def _attention_keeps_documents(stage):
     if config is None or any(getattr(config, k, None) is not None for k in _MEDIA_CONFIG_KEYS):
         return False
     for rope in _rope_dicts(config):
-        kind = rope.get("rope_type", rope.get("type", "default"))
+        kind = str(rope.get("rope_type", rope.get("type", "default"))).lower()
         if kind not in _POSITION_ONLY_ROPE or "mrope_section" in rope:
             return False
     try:
@@ -1600,11 +1606,15 @@ def _stack_group(rows, start, end, m, per_mb):
             for k in group[0][3]
         }
     else:
-        # This replica ran out of rows (a shorter last batch than another dp replica's): one filler row.
+        # This replica ran out of rows (a shorter last batch than another dp replica's): one filler row,
+        # no labels and always attended (a left padded first column would leave it fully masked: NaN).
         input_ids, labels, extra = (
             rows[0][1][:, :1],
             torch.full_like(rows[0][2][:, :1], -100),
-            {k: v[:, :1] for k, v in rows[0][3].items()},
+            {
+                k: torch.ones_like(v[:, :1]) if k == "attention_mask" else v[:, :1]
+                for k, v in rows[0][3].items()
+            },
         )
     pad = m * per_mb - input_ids.shape[0]
     return _pad_rows(input_ids, labels, extra, pad) if pad > 0 else (input_ids, labels, extra)
