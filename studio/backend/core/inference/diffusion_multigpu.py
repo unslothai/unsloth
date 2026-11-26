@@ -1012,6 +1012,8 @@ class DefaultRequest:
     steps: Optional[int] = None
     tokens: Optional[int] = None
     why: str = ""
+    # joint-sequence denoisers (FLUX.2): the prompt's tokens beside ``tokens`` image tokens
+    text_tokens: Optional[int] = None
 
 
 _DEFAULT_REQUESTS: "weakref.WeakKeyDictionary[Any, DefaultRequest]" = weakref.WeakKeyDictionary()
@@ -1024,6 +1026,7 @@ def note_default_request(
     steps: Optional[int] = None,
     tokens: Optional[int] = None,
     why: str = "",
+    text_tokens: Optional[int] = None,
 ) -> None:
     if pipe is None:
         return
@@ -1033,6 +1036,7 @@ def note_default_request(
             steps = int(steps) if steps else None,
             tokens = int(tokens) if tokens else None,
             why = str(why or ""),
+            text_tokens = int(text_tokens) if text_tokens else None,
         )
 
 
@@ -1364,31 +1368,30 @@ _ALTERNATIVE_LABELS = {
 
 
 def _sequence_split_layout_refusal(denoiser: Any, request: Any, selection: Any) -> Optional[str]:
-    """Why a replica would not split the unguided default request by tokens (diffusion_sequence_parallel), or None."""
+    """Why a replica would not split the unguided default request by tokens (diffusion_sequence_parallel), or None.
+    Only joint-sequence classes (FLUX.2) take a replica for it, and only when the default request's own size (image
+    plus text tokens, recorded at load) clears the threshold: an unknown size keeps the other layouts."""
     from . import diffusion_sequence_parallel as sp
 
+    name = type(denoiser).__name__
     if sp.mode() == "off":
         return f"{sp.SP_ENV}=0"
     if sp.read_plan(type(denoiser)) is None:
-        return f"{type(denoiser).__name__} has no checked sequence-parallel plan"
+        return f"{name} has no checked sequence-parallel plan"
+    if name not in sp.SP_JOINT_PREFIX:
+        return f"{name} takes a replica for guided steps only"
     # Speed optims run before placement: a compiled denoiser is already visible here, and every call refuses the split.
     from .diffusion_cfg_batch import compiled_denoiser
 
     compiled = compiled_denoiser(denoiser)
     if compiled is not None:
         return f"compiled submodules ({compiled}) never split by tokens"
-    from .diffusion_memory import _COST_CANVAS_PX, _DIT_PIXELS_PER_TOKEN
-
-    tokens = int(request.tokens or (_COST_CANVAS_PX // _DIT_PIXELS_PER_TOKEN) ** 2)
-    if type(denoiser).__name__ in sp.SP_JOINT_PREFIX:
-        tokens += SEQUENCE_SPLIT_TEXT_TOKENS
+    if not request.tokens or not request.text_tokens:
+        return "the default request's token count is unknown"
+    tokens = int(request.tokens) + int(request.text_tokens)
     if sp.mode() != "force" and tokens < sp.MIN_TOKENS:
-        return f"{tokens} tokens, under {sp.MIN_TOKENS}"
+        return f"the default request has {tokens} tokens, under {sp.MIN_TOKENS}"
     return None
-
-
-# Text tokens a joint-sequence default request adds to its image tokens (FLUX.2 pads prompts to 512).
-SEQUENCE_SPLIT_TEXT_TOKENS = 512
 
 
 def replica_layout(
@@ -1446,6 +1449,24 @@ def replica_layout(
         return None, f"replica card unknown ({type(exc).__name__})"
     if partner is None:
         return None, f"no card for a replica ({why})"
+    if not request.guided:
+        # the router refuses the same pairs at every call
+        from . import diffusion_sequence_parallel as sp
+
+        probes = probe_devices((int(selection.primary), int(partner)))
+
+        def probed(device: Any) -> Optional[tuple]:
+            probe = probes.get(device.index)
+            return (probe.name,) if probe is not None and probe.name else None
+
+        unpaired = sp.pair_refusal(
+            f"cuda:{int(selection.primary)}",
+            f"cuda:{int(partner)}",
+            type(denoiser).__name__,
+            identify = probed,
+        )
+        if unpaired is not None:
+            return None, f"no token split on this pair ({unpaired})"
     label = _ALTERNATIVE_LABELS.get(alternative, alternative)
     if alternative == "one_card" or mode == "force":
         runs = (
@@ -3837,7 +3858,7 @@ class CfgParallelRouter:
         if why is None:
             why = sp.call_refusal(module, kwargs)
         if why is None:
-            why = sp.pair_refusal(self.primary, self.secondary)
+            why = sp.pair_refusal(self.primary, self.secondary, type(module).__name__)
         if why is None:
             if self._split_scaled is None:
                 from .diffusion_cfg_batch import per_call_scaled
@@ -3882,8 +3903,23 @@ class CfgParallelRouter:
                 devices = (self.primary, self.secondary),
             )
         except Exception as exc:  # noqa: BLE001 - the step reruns whole on the source; no later step splits
-            self.sequence_split_off = f"a split call failed ({type(exc).__name__}: {exc})"[:300]
+            from .diffusion_batched import is_oom_error
+
+            cause = exc.__cause__ if isinstance(exc, sp.SequenceParallelError) else None
+            shown = cause if cause is not None else exc
+            self.sequence_split_off = f"a split call failed ({type(shown).__name__}: {shown})"[:300]
             self.stats["sequence_split_skip"] = self.sequence_split_off
+            if is_oom_error(exc):
+                # out of memory on either card: free the replica's copy too, so the rerun (and anything after it) runs
+                # with the memory main would have; an OOM in the rerun reaches the caller as on main
+                self.stats["replica_failures"] += 1
+                self.drop_replica()
+                with contextlib.suppress(Exception):
+                    from .diffusion_cuda_graph import outside_capture
+                    for card in (self.secondary, self.primary):
+                        if card.type == "cuda":
+                            with outside_capture(), _device_context(card):
+                                _torch().cuda.empty_cache()
             if self.logger is not None:
                 self.logger.warning(
                     "diffusion.multigpu: sequence-parallel step failed (%s); this load runs its single calls on %s",

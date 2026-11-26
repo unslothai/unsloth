@@ -277,25 +277,33 @@ def test_the_default_threshold_takes_a_1024px_image_but_not_512px(monkeypatch):
         assert sp.refusal(model, 1024 + 512) == f"{1024 + 512} tokens, under {sp.MIN_TOKENS}"
 
 
+F2 = "Flux2Transformer2DModel"
+
+
 def test_two_different_cards_are_not_paired(monkeypatch):
     monkeypatch.delenv(sp.SP_ENV)
     names = {0: ("NVIDIA GeForce RTX 5090", (12, 0)), 1: ("NVIDIA GeForce RTX 5080", (12, 0))}
     monkeypatch.setattr(sp, "_card_identity", lambda dev: names[torch.device(dev).index])
-    why = sp.pair_refusal(torch.device("cuda:0"), torch.device("cuda:1"))
+    why = sp.pair_refusal(torch.device("cuda:0"), torch.device("cuda:1"), F2)
     assert why is not None and "different cards" in why and "RTX 5080" in why
+    # Wan keeps its device-type rule: two models still pair
+    assert (
+        sp.pair_refusal(torch.device("cuda:0"), torch.device("cuda:1"), "WanTransformer3DModel")
+        is None
+    )
     names[1] = names[0]
-    assert sp.pair_refusal(torch.device("cuda:0"), torch.device("cuda:1")) is None
+    assert sp.pair_refusal(torch.device("cuda:0"), torch.device("cuda:1"), F2) is None
     names[1] = ("NVIDIA GeForce RTX 5080", (12, 0))
     monkeypatch.setenv(sp.SP_ENV, "force")
-    assert sp.pair_refusal(torch.device("cuda:0"), torch.device("cuda:1")) is None
+    assert sp.pair_refusal(torch.device("cuda:0"), torch.device("cuda:1"), F2) is None
     assert (
-        sp.pair_refusal(torch.device("cpu"), torch.device("cuda:1"))
+        sp.pair_refusal(torch.device("cpu"), torch.device("cuda:1"), F2)
         == "the replica is on another device type"
     )
 
 
 def test_a_mismatched_pair_keeps_the_call_on_the_source(monkeypatch):
-    monkeypatch.setattr(sp, "pair_refusal", lambda a, b: "different cards")
+    monkeypatch.setattr(sp, "pair_refusal", lambda *a, **k: "different cards")
     ref = _loop(_model())
     model = _model()
     router, built = _router(model)
@@ -391,3 +399,90 @@ def test_the_deferred_speed_profile_releases_the_token_split_replica_once_compil
         and getattr(n.func, "id", None) == "release_sequence_split_replica"
     ]
     assert len(calls) == 1
+
+
+def test_a_replica_out_of_memory_frees_the_replica_and_keeps_the_oom_type():
+    ref = _loop(_model())
+    model = _model()
+
+    def factory():
+        replica = mg.build_replica(model, torch.device("cpu"))
+
+        def oom(*a, **k):
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+        replica.single_transformer_blocks[1].forward = oom
+        return replica
+
+    router, built = _router(model, factory)
+    out = _loop(model)
+    # the step reruns whole on the source, as before
+    assert torch.equal(out, ref)
+    assert router.stats["sequence_splits"] == 0
+    # the OOM is named (not hidden behind the swap error), and the replica's copy is freed for the rest of the load
+    assert "OutOfMemoryError" in (router.sequence_split_off or ""), router.sequence_split_off
+    assert router.replica is None and router.stats["replica_failures"] == 1
+    assert len(built) == 1
+
+
+def test_the_split_error_carries_the_replica_oom_as_its_cause():
+    model = _model()
+    replica = mg.build_replica(model, torch.device("cpu"))
+
+    def oom(*a, **k):
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    replica.transformer_blocks[0].forward = oom
+    import concurrent.futures
+
+    pool = concurrent.futures.ThreadPoolExecutor(1)
+    g = torch.Generator().manual_seed(1)
+    img_ids, txt_ids = _ids()
+    kw = dict(
+        hidden_states = torch.randn(1, IMG, CH, generator = g),
+        encoder_hidden_states = torch.randn(1, TXT, JOINT, generator = g),
+        img_ids = img_ids,
+        txt_ids = txt_ids,
+        timestep = torch.full((1,), 0.5),
+        return_dict = False,
+    )
+    from core.inference.diffusion_batched import is_oom_error
+
+    with torch.no_grad(), pytest.raises(BaseException) as info:
+        sp.run(
+            model,
+            replica,
+            pool.submit,
+            lambda job: job.result(),
+            primary_forward = model.forward,
+            args = (),
+            kwargs = kw,
+            replica_args = (),
+            replica_kwargs = dict(kw),
+            devices = (torch.device("cpu"), torch.device("cpu")),
+        )
+    pool.shutdown()
+    exc = info.value
+    assert isinstance(exc, torch.OutOfMemoryError) or isinstance(
+        exc.__cause__, torch.OutOfMemoryError
+    ), repr(exc)
+    assert is_oom_error(exc)
+
+
+def test_the_default_request_size_counts_image_and_prompt_tokens():
+    class Klein:
+        vae_scale_factor = 8
+
+        def __init__(self, transformer):
+            self.transformer = transformer
+
+        def __call__(
+            self,
+            prompt = None,
+            max_sequence_length: int = 512,
+        ):
+            pass
+
+    assert sp.default_request_tokens(Klein(_model()), 1024, 1024) == (4096, 512)
+    assert sp.default_request_tokens(Klein(_model()), 768, 768) == (2304, 512)
+    assert sp.default_request_tokens(Klein(torch.nn.Linear(2, 2)), 1024, 1024) is None

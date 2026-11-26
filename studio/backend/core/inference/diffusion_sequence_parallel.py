@@ -251,6 +251,22 @@ def call_refusal(module: Any, kwargs: dict) -> Optional[str]:
     return None
 
 
+def default_request_tokens(pipe: Any, width: int, height: int) -> Optional[tuple]:
+    """(image tokens, text tokens) of a ``width`` x ``height`` default render of ``pipe``, for joint-sequence denoisers
+    only (FLUX.2: 2 x 2 latent patches; the prompt padded to the pipeline's ``max_sequence_length``). None when
+    unreadable."""
+    try:
+        if type(getattr(pipe, "transformer", None)).__name__ not in SP_JOINT_PREFIX:
+            return None
+        side = int(pipe.vae_scale_factor) * 2
+        text = inspect.signature(type(pipe).__call__).parameters["max_sequence_length"].default
+        if side <= 0 or not isinstance(text, int):
+            return None
+        return (int(height) // side) * (int(width) // side), int(text)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _card_identity(device: Any) -> Optional[tuple]:
     torch = _torch()
     if getattr(device, "type", None) != "cuda":
@@ -261,17 +277,29 @@ def _card_identity(device: Any) -> Optional[tuple]:
     return (str(props.name), (int(props.major), int(props.minor)))
 
 
-def pair_refusal(primary: Any, secondary: Any) -> Optional[str]:
-    """Why two cards do not split a call between them, or None. Each runs half the tokens, so a slower card sets the
-    pace of both (``force`` splits anyway)."""
+# Classes whose split also needs two cards of one model (name and compute capability); others keep only the device
+# type rule they shipped with (Wan).
+SP_SAME_CARD = frozenset({"Flux2Transformer2DModel"})
+
+
+def pair_refusal(
+    primary: Any,
+    secondary: Any,
+    cls_name: Optional[str] = None,
+    identify: Optional[Callable[[Any], Any]] = None,
+) -> Optional[str]:
+    """Why two cards do not split a call of ``cls_name`` between them, or None. For :data:`SP_SAME_CARD` classes each
+    card runs half the tokens, so a slower card sets the pace of both (``force`` splits anyway). ``identify``
+    (device -> (name, ...)) replaces the CUDA properties query (placement passes its probed names)."""
     torch = _torch()
     primary, secondary = torch.device(primary), torch.device(secondary)
     if primary.type != secondary.type:
         return "the replica is on another device type"
-    if mode() == "force":
+    if mode() == "force" or cls_name not in SP_SAME_CARD:
         return None
     try:
-        a, b = _card_identity(primary), _card_identity(secondary)
+        identify = identify or _card_identity
+        a, b = identify(primary), identify(secondary)
     except Exception as exc:  # noqa: BLE001 - unreadable card: no split
         return f"card properties unreadable ({type(exc).__name__})"
     if a != b:
@@ -683,12 +711,14 @@ def run(
         handles += _install_hooks(module, plan, 0, store, engaged[0])
         handles += _install_hooks(replica, plan, 1, store, engaged[1])
         with _patched((module, replica)):
+            replica_error: list = []
 
             def second() -> Any:
                 try:
                     with _as_rank(_Rank(store, 1, prefix)):
                         return replica(*a1, **k1)
                 except BaseException as exc:
+                    replica_error.append(exc)
                     store.fail(f"{type(exc).__name__}: {exc}")
                     raise
 
@@ -700,6 +730,11 @@ def run(
                 store.fail(f"{type(exc).__name__}: {exc}")
                 with contextlib.suppress(BaseException):
                     wait(job)
+                if replica_error and isinstance(exc, SequenceParallelError):
+                    # the primary only saw the replica's failure: keep its type (an OOM stays an OOM) as the cause
+                    raise SequenceParallelError(
+                        f"the replica card failed ({type(replica_error[0]).__name__})"
+                    ) from replica_error[0]
                 raise
             wait(job)
     except BaseException as exc:

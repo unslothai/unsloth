@@ -822,7 +822,22 @@ def _note_multigpu_default_request(
             why = "guidance-distilled or embedded guidance, no negative branch"
     except Exception:  # noqa: BLE001 - unknown: the placement keeps its split-first order
         guided, steps, why = None, None, ""
-    note_default_request(pipe, guided = guided, steps = steps, why = why)
+    # a joint-sequence denoiser (FLUX.2) prices a token split on the default render's own size
+    from .diffusion_sequence_parallel import default_request_tokens
+
+    sized = default_request_tokens(pipe, _DEFAULT_RENDER_PX, _DEFAULT_RENDER_PX)
+    note_default_request(
+        pipe,
+        guided = guided,
+        steps = steps,
+        why = why,
+        tokens = sized[0] if sized else None,
+        text_tokens = sized[1] if sized else None,
+    )
+
+
+# The Images page's and generate()'s default width and height.
+_DEFAULT_RENDER_PX = 1024
 
 
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
