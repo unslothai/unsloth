@@ -8,7 +8,7 @@ import warnings
 
 __all__ = ["LOW_RANK_ALPHA_MAX_R", "warn_low_rank_lora_alpha"]
 
-# Ranks at or below this get the warning. GRPO evidence: r=1 and r=8 with alpha=r under-train at an LR tuned for alpha=32.
+# GRPO: r=1 and r=8 with alpha=r under-trained at an LR tuned for alpha=32; r=64 did not.
 LOW_RANK_ALPHA_MAX_R = 8
 
 _warned = False
@@ -37,7 +37,7 @@ def warn_low_rank_lora_alpha(
         "which is small at low rank. Consider lora_alpha = 16 to 32, or use_rslora = True. "
         "If you keep lora_alpha = r, use a larger learning rate.",
         UserWarning,
-        # Attribute to unsloth's get_peft_model: user modules may sit under an ignore filter (trl, transformers).
+        # Attribute to unsloth, not the caller: trl / transformers modules are under ignore filters.
         stacklevel = 2,
     )
     return True
