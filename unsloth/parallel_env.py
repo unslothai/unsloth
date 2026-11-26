@@ -253,13 +253,13 @@ def translate(spec, environ = None):
         )
     ep = spec.get("ep", 1)
     if ep > 1:
-        # Expert parallel v1: the experts sharded over every rank, which are all data parallel.
-        others = [f"{k}={v}" for k, v in sizes.items() if v > 1] + (
+        # Experts shard over every rank; experts are token-local, so cp shards dispatch like dp rows.
+        others = [f"{k}={v}" for k, v in sizes.items() if v > 1 and k != "cp"] + (
             ["fsdp=1"] if spec.get("fsdp") else []
         )
         # The inherited legacy variables too: only the spec was checked, so an exported UNSLOTH_FSDP2=1 would
         # shard (and sync rank 0's values into) every rank's own expert slices.
-        for key in ("tp", "pp", "cp", "fsdp"):
+        for key in ("tp", "pp", "fsdp"):
             if key in spec:
                 continue  # the spec value is checked above; a disagreeing variable is refused below
             current = _legacy_value(key, environ)
@@ -270,14 +270,17 @@ def translate(spec, environ = None):
             raise ValueError(
                 f'Unsloth: {FLAG}="{given}": expert parallel (ep) cannot be combined with {", ".join(others)} yet.'
             )
-        # Every rank is data parallel; ep ranks share one copy of the experts (replica groups when ep < world).
-        dp = spec.get("dp", world)
-        if (world is not None and (world % ep or (dp is not None and dp != world))) or (
-            dp is not None and dp % ep
+        # ep ranks share one copy of the experts (replica groups when ep < world).
+        cp = sizes["cp"]  # an exported UNSLOTH_CP_SIZE that disagrees is refused below
+        dp = spec.get("dp", None if world is None else world // cp)
+        ranks = None if dp is None else dp * cp
+        if (world is not None and (world % ep or (ranks is not None and ranks != world))) or (
+            ranks is not None and ranks % ep
         ):
             raise ValueError(
-                f'Unsloth: {FLAG}="{given}": ep={ep} must divide the data parallel size, which is every rank '
-                f"(got dp={dp}, WORLD_SIZE={world}); launch with torchrun --nproc-per-node a multiple of {ep}."
+                f'Unsloth: {FLAG}="{given}": ep={ep} must divide the number of ranks (dp x cp = '
+                f"{ranks if ranks is not None else '?'}, WORLD_SIZE={world}); launch with torchrun "
+                f"--nproc-per-node a multiple of {ep}."
             )
     out = {}
     wanted = {
@@ -326,14 +329,15 @@ def apply_parallel_env(environ = None):
 
 
 def refuse_ep_composition(environ = None, source = None):
-    """ValueError when UNSLOTH_EP_SIZE (set alone, or inherited beside UNSLOTH_PARALLEL) meets tp / pp / cp /
-    UNSLOTH_FSDP2, as translate refuses ep in the spec: before any model loads."""
+    """ValueError when UNSLOTH_EP_SIZE (set alone, or inherited beside UNSLOTH_PARALLEL) meets tp / pp /
+    UNSLOTH_FSDP2, as translate refuses ep in the spec: before any model loads. cp composes (the capability
+    registry's ep x cp cells decide the backend and model)."""
     environ = os.environ if environ is None else environ
     ep = _legacy_value("ep", environ)
     if not isinstance(ep, int) or ep <= 1:
         return  # ep_native.ep_env_size refuses a non-integer value
     others = []
-    for key in ("tp", "pp", "cp", "fsdp"):
+    for key in ("tp", "pp", "fsdp"):
         value = _legacy_value(key, environ)
         if value is None or value is False or (key in _SIZE_KEYS and value == 1):
             continue
@@ -344,7 +348,8 @@ def refuse_ep_composition(environ = None, source = None):
         )
         raise ValueError(
             f"Unsloth: {given}: expert parallel (ep) cannot be combined with {', '.join(others)} yet; "
-            "expert parallel v1 shards the experts over data parallel ranks that each hold the rest of the model. "
+            "expert parallel shards the experts over data / context parallel ranks that each hold the rest of the "
+            "model. "
             "Unset UNSLOTH_EP_SIZE, or the other variables."
         )
 
