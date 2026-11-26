@@ -199,6 +199,47 @@ export function insertIdAt(
   return next.every((id, index) => id === ids[index]) ? ids : next;
 }
 
+export function discardUndoneSidebarPlacements(
+  base: string[],
+  edited: string[],
+  placements: SidebarOrderPlacement[],
+): SidebarOrderPlacement[] {
+  const baseline = new Set(base);
+  const ranked = new Map(edited.filter((id) => baseline.has(id)).map((id, index) => [id, index]));
+  const unchanged = new Set<string>();
+  let expected = 0;
+  let furthest = -1;
+  for (const id of base) {
+    const rank = ranked.get(id);
+    if (rank === undefined) continue;
+    if (rank === expected && furthest < expected) unchanged.add(id);
+    furthest = Math.max(furthest, rank);
+    expected++;
+  }
+
+  let order = applyManualOrder(edited, base, (id) => id);
+  const kept: SidebarOrderPlacement[] = [];
+  for (let start = 0; start < placements.length;) {
+    const row = placements[start].id;
+    const previous = order;
+    let end = start;
+    while (end < placements.length && placements[end].id === row) {
+      const { id, targetId, edge } = placements[end++];
+      order = insertIdAt(order, id, targetId, edge);
+    }
+    const run = placements.slice(start, end);
+    const mustKeep = (move: SidebarOrderPlacement) => move.afterUnpin || !ranked.has(move.targetId);
+    if (run.length === 1 || !ranked.has(row) || run.some(mustKeep) ||
+      previous.indexOf(row) !== order.indexOf(row)) {
+      for (const move of run) {
+        if (!unchanged.has(row) || mustKeep(move)) kept.push(move);
+      }
+    }
+    start = end;
+  }
+  return kept;
+}
+
 export function placeIdAt(
   ids: string[],
   id: string,

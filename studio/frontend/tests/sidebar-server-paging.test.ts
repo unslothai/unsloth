@@ -13,7 +13,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import type * as ProgressiveRowsModule from "../src/components/progressive-rows.tsx";
 import type * as RowPagesModule from "../src/features/chat/hooks/use-sidebar-row-pages.ts";
 import type { SidebarDropPlace } from "../src/features/chat/lib/sidebar-drag.ts";
-import { applyManualOrder, insertIdAt } from "../src/features/chat/stores/sidebar-organization-store.ts";
+import { applyManualOrder, discardUndoneSidebarPlacements, insertIdAt } from "../src/features/chat/stores/sidebar-organization-store.ts";
 import {
   type RowPageResult,
   RowPager,
@@ -609,8 +609,8 @@ test("a drag in a partly loaded list shows its order at once and saves it once e
   assert.match(src, /applyManualOrder\(items, displayManualOrder\[scope\]/);
 });
 
-for (const fullyLoaded of [false, true]) {
-  test(`superseding paged drags preserve the other browser's order (fully loaded: ${fullyLoaded})`, async () => {
+for (const [fullyLoaded, undo] of [[false, false], [true, false], [false, true]]) {
+  test(`superseding paged drags preserve the other browser's order (fully loaded: ${fullyLoaded}, undo: ${undo})`, async () => {
     const src = readSrc("components/app-sidebar.tsx");
     const declaration = src.slice(
       src.indexOf("const writeManualOrder = useCallback("),
@@ -635,8 +635,11 @@ for (const fullyLoaded of [false, true]) {
       chatRowLists,
       mergeManualOrderTail: rowQuery.mergeManualOrderTail,
       settledManualOrder: rowQuery.settledManualOrder,
-      useSidebarOrganizationStore: { getState: () => ({ manualOrder: { [scope]: current } }) },
+      useSidebarOrganizationStore: { getState: () => ({
+        manualOrder: { [scope]: current }, customSections: [{ id: "research", sort: "manual" }],
+      }) },
       applyManualOrder,
+      discardUndoneSidebarPlacements,
       insertIdAt,
       readAllSidebarRowIds: () => new Promise<string[]>((resolve) => reads.push(resolve)),
       setPendingManualOrder: () => {},
@@ -648,16 +651,19 @@ for (const fullyLoaded of [false, true]) {
         ...Object.values(deps),
       );
     const first = { id: "b", targetId: "a", edge: "top" } as const;
-    const second = { id: "d", targetId: "c", edge: "top" } as const;
+    const second = undo
+      ? { id: "b", targetId: "a", edge: "bottom" } as const
+      : { id: "d", targetId: "c", edge: "top" } as const;
     write(scope, ["b", "a", "c", "d", "e", "f"], first);
-    current = ["a", "b", "g", "c", "d", "f", "e"];
+    current = undo ? ["a", "c", "b", "d", "e", "f", "g"] : ["a", "b", "g", "c", "d", "f", "e"];
     chatRowLists[scope].hasMore = !fullyLoaded;
-    write(scope, ["b", "a", "d", "c", "e", "f", ...(fullyLoaded ? ["g"] : [])], second);
+    const latest = undo ? ["a", "b", "c", "d", "e", "f"] : ["b", "a", "d", "c", "e", "f"];
+    write(scope, [...latest, ...(fullyLoaded ? ["g"] : [])], second);
     if (!fullyLoaded) reads[1](all);
     await setImmediate();
     reads[0](all);
     await setImmediate();
-    assert.deepEqual(saved, [{
+    assert.deepEqual(saved, undo ? [] : [{
       ids: ["b", "a", "g", "d", "c", "f", "e"],
       placements: [first, second],
     }]);

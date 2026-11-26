@@ -222,6 +222,7 @@ import { usePromptQueueUI } from "@/features/chat/stores/prompt-queue-ui-store";
 import {
   useSidebarOrganizationStore,
   applyManualOrder,
+  discardUndoneSidebarPlacements,
   showsInRecents,
   insertIdAt,
   moveIdBy,
@@ -2759,6 +2760,7 @@ export function AppSidebar() {
   const manualOrderWritesRef = useRef(new Map<string, {
     placements: SidebarDropPlace[];
     baseOrder: string[];
+    wasManual: boolean;
   }>());
   const writeManualOrder = useCallback(
     (scope: string, ids: string[], place?: SidebarDropPlace) => {
@@ -2766,22 +2768,28 @@ export function AppSidebar() {
       const previous = writes.get(scope);
       const placements = [...(previous?.placements ?? [])];
       if (place) placements.push(place);
+      const state = useSidebarOrganizationStore.getState();
+      const section = customSectionIdOf(scope);
       const write = {
         placements,
-        baseOrder: previous?.baseOrder ?? useSidebarOrganizationStore.getState().manualOrder[scope] ?? [],
+        baseOrder: previous?.baseOrder ?? state.manualOrder[scope] ?? [],
+        wasManual: previous?.wasManual ?? state.customSections.some(({ id, sort }) => id === section && sort === "manual"),
       };
       writes.set(scope, write);
       const settle = (order: string[], current: string[]) => {
         if (writes.get(scope) !== write) return;
+        const effective = write.wasManual && place && placements.length > 1
+          ? discardUndoneSidebarPlacements(write.baseOrder, ids, placements)
+          : placements;
         const changed = current.length !== write.baseOrder.length ||
           current.some((id, index) => id !== write.baseOrder[index]);
-        if (changed && placements.length && customSectionIdOf(scope) !== null) {
+        if (changed && effective.length && section !== null) {
           order = applyManualOrder(order, current, (id) => id);
-          for (const { id, targetId, edge } of placements) {
+          for (const { id, targetId, edge } of effective) {
             order = insertIdAt(order, id, targetId, edge);
           }
         }
-        setManualOrder(scope, order, placements);
+        if (effective.length > 0 || placements.length === 0) setManualOrder(scope, order, effective);
         writes.delete(scope);
         setPendingManualOrder(({ [scope]: _settled, ...rest }) => rest);
       };
