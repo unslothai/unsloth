@@ -6161,6 +6161,12 @@ export const en = {
     maximize: "Maximize window",
     restore: "Restore window",
     close: "Close window",
+    mediaCodecs: {
+      title: "Generated videos may not play",
+      // {command}: an apt command line, never translated.
+      description: "This system is missing the GStreamer video decoders. Install them with: {command}",
+      copy: "Copy command",
+    },
   },
   runtimeUpdate: {
     // {component}: llama.cpp, whisper.cpp or audio.cpp; {components}: a list of them.
