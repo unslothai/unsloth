@@ -753,29 +753,23 @@ def test_members_a_batch_left_out_coalesce_again_behind_it():
 
 def test_fbcache_decides_skips_from_the_whole_batch():
     """Why FBCache loads never coalesce: a row that alone would skip its blocks is computed because its neighbour
-    changed (and the other way round), so one request decides another's image."""
+    changed, so one request decides another's image. (Studio's length guard and counter may wrap the method; both
+    pass equal-shape calls through.)"""
     torch = pytest.importorskip("torch")
     fbc = pytest.importorskip("diffusers.hooks.first_block_cache")
-    prev = torch.ones(2, 4, 8)
 
-    def decide(residual):
+    def decide(residual, previous):
+        state = types.SimpleNamespace(head_block_residual = previous, tail_block_residuals = None)
         hook = types.SimpleNamespace(
-            threshold = 0.1,
-            state_manager = types.SimpleNamespace(
-                get_state = lambda: types.SimpleNamespace(head_block_residual = prev)
-            ),
+            threshold = 0.1, state_manager = types.SimpleNamespace(get_state = lambda: state)
         )
-        return (
-            fbc.FBCHeadBlockHook._should_compute_remaining_blocks.__wrapped__(hook, residual)
-            if hasattr(fbc.FBCHeadBlockHook._should_compute_remaining_blocks, "__wrapped__")
-            else fbc.FBCHeadBlockHook._should_compute_remaining_blocks(hook, residual)
-        )
+        return bool(fbc.FBCHeadBlockHook._should_compute_remaining_blocks(hook, residual))
 
-    still = prev.clone()
+    prev = torch.ones(2, 4, 8)
     moved = prev.clone()
     moved[1] *= 3.0
-    assert decide(still[:1]) is False  # row 0 alone: skip
-    assert decide(moved) is True  # the same row 0 beside a changed neighbour: computed
+    assert decide(prev[:1].clone(), prev[:1]) is False  # row 0 alone: skip
+    assert decide(moved, prev) is True  # the same row 0 beside a changed neighbour: computed
 
 
 @pytest.mark.parametrize("cache", ["fbcache", "static", None])
