@@ -106,9 +106,15 @@ jobs:
               tests/test_fsdp2_[!n]*.py
               tests/test_fsdp2_n[!a]*.py
               tests/test_fsdp2_native_[abc]*.py
+          # fsdp2-native then ran up to 1752 s of the cap (2026-11-26), so it is split by file name again:
+          # d to r is 46% of its measured test time (881 of 1896 s on 4 workers), s onwards 54%. The
+          # letters are spelled out so the split does not depend on the runner's collation.
           - shard: fsdp2-native
             selection: >-
-              tests/test_fsdp2_native_[!abc]*.py
+              tests/test_fsdp2_native_[defghijklmnopqr]*.py
+          - shard: fsdp2-native-sz
+            selection: >-
+              tests/test_fsdp2_native_[!abcdefghijklmnopqr]*.py
           # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
           # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
           # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
