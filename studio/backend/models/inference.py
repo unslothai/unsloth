@@ -5184,9 +5184,14 @@ class DiffusionLoadRequest(BaseModel):
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
-        "Neither engine shards a diffusion checkpoint, so a selection of several cards resolves "
-        "to the one with the most free VRAM. Refused with a 400 when an index does not exist "
-        "here; ignored on XPU / MPS / CPU, which have no applicator for a physical index.",
+        "Several cards: the one with the most free VRAM is primary and the others may take "
+        "the text encoders, part of a denoiser too big for one card, or a denoiser copy (CFG "
+        "replica); null may use the other visible cards the same way, a replica only on one idle "
+        "card of the same model. CFG-branch parallel "
+        "matches one card bit for bit; the batch split of an even batch may differ in the last "
+        "bits (UNSLOTH_DIFFUSION_BATCH_SPLIT=0 keeps it on one card). Refused with a 400 when an "
+        "index does not exist here; ignored on XPU / MPS / CPU, which have no applicator for a "
+        "physical index.",
     )
 
     @field_validator("int8_attention", mode = "before")
@@ -7855,10 +7860,14 @@ class VideoLoadRequest(BaseModel):
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
-        "Neither engine shards a video checkpoint, so a selection of several cards resolves to "
-        "the one with the most free VRAM. Refused with a 400 when an index does not exist here; "
-        "ignored on XPU / MPS / CPU, which have no applicator for a physical index. Mirrors the "
-        "image backend's field.",
+        "Several cards: the one with the most free VRAM is primary and the others may take "
+        "the text encoders, part of a denoiser too big for one card, or a denoiser copy (CFG "
+        "replica); null may use the other visible cards the same way, a replica only on one idle "
+        "card of the same model. CFG-branch parallel "
+        "matches one card bit for bit; the batch split of an even batch may differ in the last "
+        "bits (UNSLOTH_DIFFUSION_BATCH_SPLIT=0 keeps it on one card). Refused with a 400 when an "
+        "index does not exist here; ignored on XPU / MPS / CPU, which have no applicator for a "
+        "physical index. Mirrors the image backend's field.",
     )
 
     @field_validator("loras")
