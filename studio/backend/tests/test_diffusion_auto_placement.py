@@ -942,3 +942,150 @@ def test_guided_model_whose_text_encoder_would_move_runs_the_replica_instead(mon
     mg.note_default_request(pipe2, guided = False, steps = 50)
     d2 = decide(monkeypatch, host, _sizes(dit = 2700, te = 10834, vae = 485), headroom = 3500, pipe = pipe2)
     assert d2.plan.secondary_ordinal == 1 and _placement(d2)["chosen"] == "companion_split"
+
+
+# A companion split planned before the load (the one-card plan offloads; the denoiser alone fits the primary) used to
+# end the refinement there, so a guided model ran both branches on one card while the second card held the encoders.
+class Flux2Transformer2DModel(WanTransformer3DModel):
+    pass
+
+
+PRO_32 = 32607  # MiB a 32 GB workstation card reports
+PRO_24 = 24564  # MiB a 24 GB workstation card reports
+# (total, dit, te, headroom): the split is planned before the load in both; only the first leaves room beside it
+ROOM = dict(total = PRO_32, dit = 9600, te = 11000, headroom = 8000)
+NO_ROOM = dict(total = PRO_24, dit = 8000, te = 9000, headroom = 6000)
+
+
+def _preplanned(
+    monkeypatch,
+    *,
+    total,
+    dit,
+    te,
+    need,
+    guided = True,
+    cls = WanTransformer3DModel,
+    headroom = 2500,
+    h2d = 11.0,
+    place = False,
+):
+    _priced(monkeypatch, need_mib = need, compute_s = 1.5, tokens = 4096, h2d = h2d)
+    host = Host([Card(0, total, 300, name = "RTX PRO"), Card(1, total, 300, name = "RTX PRO")])
+    pipe = _DitPipe(cls())
+    mg.note_default_request(
+        pipe, guided = guided, steps = 20, tokens = 4096, why = "distilled" if not guided else ""
+    )
+    d = decide(monkeypatch, host, _sizes(dit = dit, te = te), headroom = headroom, pipe = pipe, place = place)
+    assert (
+        d.one_card.secondary_ordinal == 1
+    ), "the scenario must plan the companion split before the load"
+    return d
+
+
+def test_preplanned_split_with_room_on_the_encoder_card_adds_a_replica_beside_it(monkeypatch):
+    d = _preplanned(monkeypatch, **ROOM, need = 9600)
+    assert d.plan is d.one_card and d.plan.secondary_ordinal == 1  # the split itself is unchanged
+    recorded = _recorded(d)
+    assert recorded.chosen == "cfg_replica", recorded
+    assert "companion split plus a CFG replica on cuda:1" in recorded.summary
+    assert "planned before the load" in recorded.summary
+    beside = mg.replica_beside(d.pipe)
+    assert beside is not None and beside[0] == 1 and beside[1] >= mg.TEXT_ENCODER_HEADROOM_MIB
+
+
+def test_preplanned_split_without_room_beside_prices_one_card_plus_a_replica(monkeypatch):
+    d = _preplanned(monkeypatch, **NO_ROOM, need = 8000)
+    assert d.plan is d.one_card.fallback_plan and d.plan.secondary_ordinal is None
+    recorded = _recorded(d)
+    assert recorded.chosen == "cfg_replica", recorded
+    reasons = {c.kind: c.reason for c in recorded.rejected}
+    assert "predicted faster" in reasons["companion_split"]
+    assert "a replica beside the companions needs" in reasons["cfg_replica"]
+    assert d.status["mode_estimate"]["chosen"] == "cfg_replica"
+    assert mg.replica_beside(d.pipe) is None
+
+
+def test_preplanned_split_kill_switch_keeps_the_split(monkeypatch):
+    monkeypatch.setenv(mg.CFG_REPLICA_PLACEMENT_ENV, "0")
+    d = _preplanned(monkeypatch, **ROOM, need = 9600)
+    assert d.plan is d.one_card and _recorded(d).chosen == "companion_split"
+    assert mg.replica_beside(d.pipe) is None
+
+
+def test_preplanned_unguided_batch_splitter_gets_the_replica_only_beside_the_split(monkeypatch):
+    d = _preplanned(
+        monkeypatch,
+        **ROOM,
+        need = 9600,
+        guided = False,
+        cls = Flux2Transformer2DModel,
+    )
+    recorded = _recorded(d)
+    assert d.plan is d.one_card and recorded.chosen == "cfg_replica", recorded
+    assert "an even batch splits across both cards" in recorded.summary
+    # no room beside: an unguided model never trades the split for one card (a single image would only lose)
+    d = _preplanned(monkeypatch, **NO_ROOM, need = 8000, guided = False, cls = Flux2Transformer2DModel)
+    assert d.plan is d.one_card and _recorded(d).chosen == "companion_split"
+    # a denoiser the router cannot cut in two keeps the split even with room
+    d = _preplanned(monkeypatch, **ROOM, need = 9600, guided = False)
+    assert _recorded(d).chosen == "companion_split"
+    assert (
+        "one denoiser branch per step"
+        in {c.kind: c.reason for c in _recorded(d).rejected}["cfg_replica"]
+    )
+
+
+def test_unmeasured_host_link_still_prices_a_plan_that_streams_no_denoiser_bytes(monkeypatch):
+    d = _preplanned(monkeypatch, **NO_ROOM, need = 8000)
+    assert (
+        d.status["mode_estimate"]["primary_streamed_mib"] == 0
+    )  # the one-card plan streams only the encoders
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: None)
+    host = Host([Card(0, PRO_24, 300, name = "RTX PRO"), Card(1, PRO_24, 300, name = "RTX PRO")])
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 20, tokens = 4096)
+    d = decide(monkeypatch, host, _sizes(dit = 8000, te = 9000), headroom = 6000, pipe = pipe, place = False)
+    assert _recorded(d).chosen == "cfg_replica", _recorded(d)
+    est = d.status["mode_estimate"]
+    assert est["h2d_assumed"] is True and est["h2d_gib_s"] == mg.UNMEASURED_H2D_GIB_S
+    assert "assumed" in _recorded(d).summary
+
+
+def test_replica_beside_the_split_reports_the_split_when_it_does_not_arm(monkeypatch):
+    d = _preplanned(monkeypatch, **ROOM, need = 9600, place = True)
+    p = _placement(d)
+    # the fake denoiser is not on a CUDA card, so the replica declines: the companion split still runs
+    assert p["chosen"] == "companion_split", p
+    assert p["rejected"][0]["kind"] == "cfg_replica"
+    assert "fell back to one card" in p["rejected"][0]["reason"]
+    assert "text_encoder on cuda:1" in p["summary"]
+
+
+def test_install_lends_the_encoder_card_to_a_replica_beside_the_split(monkeypatch):
+    d = _preplanned(monkeypatch, **ROOM, need = 9600, place = True)
+    pipe, denoiser = d.pipe, d.pipe.transformer
+    # the companions now sit on cuda:1: that card is no longer "idle" by its own memory, and it holds the split
+    host = Host(
+        [Card(0, PRO_32, 300 + 9600, name = "RTX PRO"), Card(1, PRO_32, 300 + 11000, name = "RTX PRO")]
+    )
+    host.install(monkeypatch)
+    monkeypatch.setattr(mg, "_execution_device", lambda *a, **k: torch.device("cuda:0"))
+    monkeypatch.setattr(mg, "_held_on", lambda p, o: 11000 if o == 1 else 0)
+    with mg.selection_scope(d.selection):
+        assert mg.install_cfg_parallel(pipe, offload_policy = "none") is None
+    router = denoiser.forward
+    assert isinstance(router, mg.CfgParallelRouter) and str(router.secondary) == "cuda:1"
+    assert router.beside_held_mib == 11000 and router.beside_keep_mib == mg.replica_beside(pipe)[1]
+    mg.uninstall_cfg_parallel(pipe)
+    # too little left for the companions' own working room: declined, with the room named
+    host = Host(
+        [
+            Card(0, PRO_32, 300 + 9600, name = "RTX PRO"),
+            Card(1, PRO_32, 300 + 11000 + 9000, name = "RTX PRO"),
+        ]
+    )
+    host.install(monkeypatch)
+    with mg.selection_scope(d.selection):
+        why = mg.install_cfg_parallel(pipe, offload_policy = "none")
+    assert why is not None and "kept for the companions there" in why, why
