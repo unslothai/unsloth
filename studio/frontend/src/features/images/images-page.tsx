@@ -2112,6 +2112,16 @@ export function ImagesPage({
   const [engineSeed, setEngineSeed] = useState("");
   // Bumped by a refused or failed load: the resident record did not change, so the Precision selects reseed from it.
   const [precisionReseed, setPrecisionReseed] = useState(0);
+  // A restore's Load model intent: the repo whose load carries the restored LoRAs, the recipe to re-apply once that
+  // model is resident, and whether the pick running now is that one. Retired by any other pick, a failed or
+  // refused load, a cancel, and the model landing.
+  const restoreLoraTarget = useRef<string | null>(null);
+  const pendingRecipeAfterLoad = useRef<{ image: GalleryImage; exactCaption: boolean; model: string } | null>(null);
+  const restorePicking = useRef(false);
+  const retireRestoreIntent = () => {
+    restoreLoraTarget.current = null;
+    pendingRecipeAfterLoad.current = null;
+  };
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -2468,6 +2478,7 @@ export function ImagesPage({
     pickToast.dismissAll();
     // Clearing the timer stops the next tick, not requests already awaiting a response.
     cancelSeq.current += 1;
+    retireRestoreIntent();
     // Otherwise a discarded adapter would be mixed into an unrelated model.
     pendingDeploy.current = null;
     if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -3153,8 +3164,6 @@ export function ImagesPage({
   const pendingRestorePick = useRef<(() => void) | null>(null);
   // The repo a restore's Load model targets: its load carries the restored LoRAs, which a pick of another model
   // would otherwise drop (an int8 / fp8 build takes adapters only at load time).
-  const restoreLoraTarget = useRef<string | null>(null);
-  const pendingRecipeAfterLoad = useRef<{ image: GalleryImage; exactCaption: boolean; model: string } | null>(null);
   useEffect(() => {
     if (modelSelectionAction !== "load" || !pendingRestorePick.current) return;
     const run = pendingRestorePick.current;
@@ -3296,6 +3305,7 @@ export function ImagesPage({
                 onClick: () => {
                   const run = () => {
                     restoreLoraTarget.current = reloadModel;
+                    restorePicking.current = true;
                     handleModelSelectRef.current?.(reloadModel, {
                       source: "hub",
                       isLora: false,
@@ -3308,6 +3318,7 @@ export function ImagesPage({
                           }
                         : {}),
                     });
+                    restorePicking.current = false;
                     // The pick seeds its model's recommended steps / size; the image's recipe outranks them, now and
                     // when the load lands ("vary" re-applies the form silently).
                     claimImageRecipe().commit();
@@ -3334,7 +3345,7 @@ export function ImagesPage({
     const pending = pendingRecipeAfterLoad.current;
     if (!pending || !status?.loaded) return;
     if (recipeModelToReload(pending.image, status, ggufQuantLabel) !== null) return;
-    pendingRecipeAfterLoad.current = null;
+    retireRestoreIntent();
     restoreSettingsRef.current?.(pending.image, pending.exactCaption, "vary");
   }, [status]);
 
@@ -3827,6 +3838,7 @@ export function ImagesPage({
         // seed would not move and the next Reapply would replay the failed pick.
         setEngineSeed("");
         setPrecisionReseed((n) => n + 1);
+        retireRestoreIntent();
         // A failed load may have freed a previously-loaded model, so resync to the real backend state.
         void refreshStatus();
         return;
@@ -4331,6 +4343,7 @@ export function ImagesPage({
         lastLoadRevert.current = null;
         // A refused load keeps the resident model and its provenance, so the seed would not move: reseed the
         // Engine select from the resident build rather than replay the refused pick on the next Reapply.
+        retireRestoreIntent();
         setEngineSeed("");
         setPrecisionReseed((n) => n + 1);
         dismissLoadToast();
@@ -5138,6 +5151,7 @@ export function ImagesPage({
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
+      if (!restorePicking.current) retireRestoreIntent();
       // A Download only selection does not take over the page, or a staged load never loads.
       const downloadOnlyPick = modelSelectionAction === "download";
       // The backend 409s a second load; download-only picks submit none, so allow them.

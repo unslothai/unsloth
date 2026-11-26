@@ -126,7 +126,18 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
   test(`${page}: a recipe loaded from its toast is re-applied once its model is resident`, () => {
     const src = readSrc(page);
     assert.match(src, /pendingRecipeAfterLoad\.current = \{ (image, exactCaption|video), model: reloadModel \};/);
-    assert.match(src, /if \(recipeModelToReload\(pending\.(image|video), status, ggufQuantLabel\) !== null\) return;\s*pendingRecipeAfterLoad\.current = null;/);
+    assert.match(
+      src,
+      /if \(recipeModelToReload\(pending\.(image|video), status, ggufQuantLabel\) !== null\) return;\s*(pendingRecipeAfterLoad\.current = null|retireRestoreIntent\(\));/,
+    );
+    // Any other pick, a failed or refused load, and a cancel retire it, so a later ordinary load never replays it.
+    assert.match(src, /if \(!restorePicking\.current\) (pendingRecipeAfterLoad\.current = null|retireRestoreIntent\(\));/);
+    const retire = /pendingRecipeAfterLoad\.current = null;|retireRestoreIntent\(\);/;
+    // Both failure paths (each bumps the Precision reseed) retire it too.
+    const failures = [...src.matchAll(/setPrecisionReseed\(\(n\) => n \+ 1\);/g)].map((m) => m.index ?? 0);
+    assert.equal(failures.length, 2);
+    for (const at of failures) assert.match(src.slice(at - 120, at + 120), retire);
+    assert.match(src, /cancelSeq\.current \+= 1;\s*(pendingRecipeAfterLoad\.current = null|retireRestoreIntent\(\));/);
     assert.match(src, /recipeModelToReload\((image|video), (status|current), ggufQuantLabel\)/);
   });
 }
@@ -180,7 +191,9 @@ test("Images Restore puts back the precision and offers a different model as a r
   assert.match(action, /if \(modelSelectionActionRef\.current === "download"\) \{\s*pendingRestorePick\.current = run;\s*setModelSelectionAction\("load"\);/);
   assert.match(src, /if \(modelSelectionAction !== "load" \|\| !pendingRestorePick\.current\) return;/);
   // Its load carries the restored LoRAs: a pick of another model would otherwise send none.
-  assert.match(body, /restoreLoraTarget\.current = reloadModel;\s*handleModelSelectRef\.current\?\.\(reloadModel/);
+  assert.match(body, /restoreLoraTarget\.current = reloadModel;\s*restorePicking\.current = true;\s*handleModelSelectRef\.current\?\.\(reloadModel/);
+  // The exemption retires with the intent: another pick, a failed load, a cancel, or the model landing.
+  assert.match(src, /const retireRestoreIntent = \(\) => \{\s*restoreLoraTarget\.current = null;\s*pendingRecipeAfterLoad\.current = null;/);
   assert.match(src, /\|\| repoId === restoreLoraTarget\.current;/);
 });
 
@@ -232,6 +245,7 @@ function videoRestoreClipBuild(status: unknown) {
     },
     claimVideoRecipe: () => ({ commit: () => events.push("claim") }),
     pendingRecipeAfterLoad: { current: null },
+    restorePicking: { current: false },
     // The page's ggufQuantLabel (model-identity.ts imports through the @ alias), for a plain -QUANT.gguf name.
     ggufQuantLabel: (filename: string) => filename.replace(/\.gguf$/i, "").split("-").pop(),
     recipeTransformerQuant,

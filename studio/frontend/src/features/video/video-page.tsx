@@ -1483,6 +1483,10 @@ function VideoGenerator({
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
   // Bumped by a refused or failed load: the resident record did not change, so Precision reseeds from it.
   const [precisionReseed, setPrecisionReseed] = useState(0);
+  // A restore's Load model intent: the recipe to re-apply once that model is resident, and whether the pick running
+  // now is that one. Retired by any other pick, a failed or refused load, a cancel, and the model landing.
+  const pendingRecipeAfterLoad = useRef<{ video: GalleryVideo; model: string } | null>(null);
+  const restorePicking = useRef(false);
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   const [canReapply, setCanReapply] = useState(false);
   // Pending LoRA picks; the resident build's baked set is status.baked_lora_specs.
@@ -1616,6 +1620,7 @@ function VideoGenerator({
     pickToast.dismissAll();
     // Clearing the timer stops the next tick, not a request awaiting its response.
     cancelSeq.current += 1;
+    pendingRecipeAfterLoad.current = null;
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     dismissLoadToast();
@@ -2658,7 +2663,6 @@ function VideoGenerator({
   restoreStatusRef.current = status;
   const handleModelSelectRef = useRef<((id: string, meta: ModelSelectorChangeMeta) => void) | null>(null);
   const restoreSettingsRef = useRef<((video: GalleryVideo, silent?: boolean) => void) | null>(null);
-  const pendingRecipeAfterLoad = useRef<{ video: GalleryVideo; model: string } | null>(null);
   // The build a clip ran with: Precision applies to the next load, and a different model is offered as a reload,
   // never loaded behind the user's back.
   const restoreClipBuild = useCallback((video: GalleryVideo, offerReload = true) => {
@@ -2676,6 +2680,7 @@ function VideoGenerator({
             action: {
               label: "Load model",
               onClick: () => {
+                restorePicking.current = true;
                 handleModelSelectRef.current?.(reloadModel, {
                   source: "hub",
                   isLora: false,
@@ -2688,6 +2693,7 @@ function VideoGenerator({
                       }
                     : {}),
                 });
+                restorePicking.current = false;
                 // The pick seeds its model's recommended settings; the clip's recipe outranks them, now and when
                 // the load lands.
                 claimVideoRecipe().commit();
@@ -2921,6 +2927,7 @@ function VideoGenerator({
         if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         setPrecisionReseed((n) => n + 1);
+        pendingRecipeAfterLoad.current = null;
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
@@ -3246,6 +3253,7 @@ function VideoGenerator({
         setBusy(null);
         // A refused load keeps the resident model and its record, so Precision would not reseed on its own.
         setPrecisionReseed((n) => n + 1);
+        pendingRecipeAfterLoad.current = null;
         void refreshStatus();
         return settle(false);
       } finally {
@@ -3710,6 +3718,7 @@ function VideoGenerator({
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
       if (busy !== null) return;
+      if (!restorePicking.current) pendingRecipeAfterLoad.current = null;
       beginPick();
       // Before any branch, since staging never sets `busy`.
       const token = pickGuard.claim();
