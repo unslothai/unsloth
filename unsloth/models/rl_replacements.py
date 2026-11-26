@@ -4585,6 +4585,15 @@ def online_dpo_trainer__move_model_to_vllm(function_name, function):
 RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
 
 
+def rloo_trainer__move_model_to_vllm(function_name, function):
+    # TRL 0.22 to 0.27 RLOO has GRPO's _move_model_to_vllm: return early only for the fast_inference
+    # engine, so TRL's own vLLM (colocate) gets the trained weights. TRL 0.28+ syncs via VLLMGeneration.
+    return grpo_trainer__move_model_to_vllm(function_name, function)
+
+
+RL_FUNCTIONS["rloo_trainer"].append(rloo_trainer__move_model_to_vllm)
+
+
 def _unsloth_vllm_load_state_dict(trainer, model):
     deepspeed_plugin = getattr(trainer.accelerator.state, "deepspeed_plugin", None)
     if getattr(trainer, "is_fsdp_enabled", False) or (
