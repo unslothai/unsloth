@@ -90,7 +90,9 @@ def test_semicolon_csv_keeps_long_fields_and_pads_short_rows(isolate_upload_dir)
     import csv
 
     long_field = b"word" * 50_000 + b';, ""quote""\r\nnext line'
-    source = b'\xef\xbb\xbfsep=;\r\ninstruction;output\r\n"' + long_field + b'";yes\r\n   \r\nshort\r\n'
+    source = (
+        b'\xef\xbb\xbfsep=;\r\ninstruction;output\r\n"' + long_field + b'";yes\r\n   \r\nshort\r\n'
+    )
     response = asyncio.run(
         datasets_route.upload_dataset(
             UploadFile(BytesIO(source), filename = "excel.csv"),

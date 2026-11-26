@@ -624,7 +624,9 @@ def _finish_upload(
                     except OverflowError:
                         # Python versions that store this as C long cap it at 2 GiB on Windows.
                         csv.field_size_limit(2**31 - 1)
-                _convert_semicolon_csv(partial_path, converted_path, max_bytes, max_label, csv_delimiter)
+                _convert_semicolon_csv(
+                    partial_path, converted_path, max_bytes, max_label, csv_delimiter
+                )
             finally:
                 csv.field_size_limit(field_limit)
         return _publish_upload(converted_path, stored_path)
