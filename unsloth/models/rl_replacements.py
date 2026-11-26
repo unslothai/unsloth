@@ -9476,8 +9476,7 @@ def _unsloth_dpo_loss_head(
 
 
 def _unsloth_top1_half_kwargs(fn, _cache = {}):
-    """``is_top1_half_logits = True`` when zoo's ``fused_linear_logprobs`` takes it: TRL <= 1.14 scores token accuracy
-    as the argmax of the model's half logits, ties to the first column. An older zoo keeps its fp32 argmax."""
+    """TRL <= 1.14 token accuracy is the half-logit argmax; older zoo lacks the kwarg and keeps fp32."""
     if fn not in _cache:
         try:
             import inspect

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TRL <= 1.14's DPO ``_compute_loss`` logs token accuracy as the argmax of the model's half logits; the chunked
-rewrite must ask zoo's ``fused_linear_logprobs`` for that (``is_top1_half_logits``), and only when zoo accepts it.
-TRL 1.15's ChunkedLogProbFunction takes the argmax of fp32 logits, so the rl.py replacement must not ask."""
+"""TRL <= 1.14 DPO token accuracy uses the half-logit argmax (ask zoo only if it accepts it); TRL 1.15 uses fp32."""
 
 from __future__ import annotations
 
@@ -75,7 +73,6 @@ def test_compute_loss_path_requests_half_logit_top1():
     _call(ns, ref = False)
     _call(ns, ref = True)
     assert calls[0].get("is_top1_half_logits") is True and calls[0]["return_is_top1"] is True
-    # The reference pass wants no top1.
     assert "is_top1_half_logits" not in calls[1] or calls[1]["is_top1_half_logits"] is False
 
 
@@ -98,7 +95,6 @@ def test_trl115_chunked_route_keeps_fp32_top1():
     assert calls, "rl.py no longer calls fused_linear_logprobs(return_is_top1 = ...)"
     for call in calls:
         assert all(k.arg != "is_top1_half_logits" for k in call.keywords)
-        # nor through a **mapping
         assert all(
             "is_top1_half_logits" not in ast.unparse(k.value)
             for k in call.keywords
