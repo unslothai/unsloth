@@ -56,8 +56,6 @@ def _config():
 
 
 class RepositoryNotFoundError(Exception):
-    """Matched by type name, as the helpers do."""
-
     def __init__(self):
         super().__init__("404 Client Error: Repository Not Found")
         self.response = types.SimpleNamespace(status_code = 404, headers = {})
@@ -123,7 +121,6 @@ def test_one_request_shares_the_model_info_between_probes(client, hub):
     assert body["error"] is None and body["estimate"]["required_gb"]
     # One read for the resolver probes, one for the safetensors parameter count.
     assert hub["calls"][REPO] <= 2
-    # Same plan as the unscoped planner, so sharing changed nothing but the read count.
     assert body == _unscoped_plan()
 
 
