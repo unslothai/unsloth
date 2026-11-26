@@ -714,14 +714,24 @@ def _native_audio_repo_files(
 _GGUF_SPLIT_PART = re.compile(r"-\d{5}-of-\d{5}(?=\.gguf$)", re.IGNORECASE)
 
 
-def _gguf_quants(siblings: list[Any]) -> set[str]:
-    """The distinct GGUF models a repo publishes: split parts count once, projectors not at all."""
-    quants = set()
+_GGUF_QUANT_LABEL = re.compile(
+    r"[-_.]((?:ud-)?(?:i?q\d(?:_[a-z0-9]+)*|bf16|f16|f32|mxfp4(?:_moe)?|tq\d_\d))$"
+)
+
+
+def _gguf_quants(siblings: list[Any]) -> dict[str, set[str]]:
+    """Quant labels per GGUF model: split parts count once, projectors not at all, and a
+    companion model (a codec, a VAE) is its own model rather than another quant."""
+    models: dict[str, set[str]] = {}
     for sibling in siblings:
-        name = str(getattr(sibling, "rfilename", "")).strip().lower()
-        if name.endswith(".gguf") and "mmproj" not in name.rsplit("/", 1)[-1]:
-            quants.add(_GGUF_SPLIT_PART.sub("", name))
-    return quants
+        name = str(getattr(sibling, "rfilename", "")).strip().lower().rsplit("/", 1)[-1]
+        if not name.endswith(".gguf") or "mmproj" in name:
+            continue
+        stem = _GGUF_SPLIT_PART.sub("", name)[: -len(".gguf")]
+        label = _GGUF_QUANT_LABEL.search(stem)
+        model = stem[: label.start()] if label else stem
+        models.setdefault(model, set()).add(label.group(1) if label else "")
+    return models
 
 
 _NATIVE_WEIGHTS = re.compile(
@@ -784,7 +794,9 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
             raise ValueError(f"{repo_id} does not publish files required by its audio loader.")
         # No audio loader names this repo, so its plan is every file; for a GGUF-only repo with
         # several quants that is all of them (terabytes for a large chat model). A GGUF pick names one.
-        if audio_type is None and len(_gguf_quants(siblings)) > 1:
+        if audio_type is None and any(
+            len(quants) > 1 for quants in _gguf_quants(siblings).values()
+        ):
             if not _has_native_weights(siblings):
                 raise ValueError(
                     f"{repo_id} is a GGUF repository: pick one of its GGUF files instead of downloading all of them."

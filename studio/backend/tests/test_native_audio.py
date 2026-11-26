@@ -320,6 +320,19 @@ def test_download_plan_refuses_quants_beside_only_a_peft_adapter(monkeypatch):
         native_audio_download_plan("someone/lora-and-quants-GGUF")
 
 
+def test_download_plan_still_lists_one_quant_beside_a_companion_gguf(monkeypatch):
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "yue2-3b-q4_k_m.gguf", size = 20),
+            SimpleNamespace(rfilename = "yue2-vae-f16.gguf", size = 5),
+        ],
+    )
+    plan = native_audio_download_plan("someone/yue2-GGUF")
+    assert sorted(plan["entries"][0]["files"]) == ["yue2-3b-q4_k_m.gguf", "yue2-vae-f16.gguf"]
+    assert plan["required_bytes"] == 25
+
+
 def test_download_plan_still_lists_a_gguf_repo_with_one_quant(monkeypatch):
     # One quant (here split in two parts, plus its projector) is the whole model, not every quant.
     _hub_repo(
