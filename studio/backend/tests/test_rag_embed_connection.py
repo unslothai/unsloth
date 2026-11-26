@@ -339,9 +339,24 @@ def test_vectors_carry_the_server_that_embedded_them(monkeypatch):
         _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
         return _vectors(request, n)
 
+    before = embeddings.embedding_identity(name)
     _, embeddings._get_backend(name)._http = _server(_edited_after_answering)
     _, identity = embeddings.encode_with_identity(["a"], model_name = name)
-    assert not config.embedding_identity_matches(identity, embeddings.embedding_identity(name))
+    assert identity == before != embeddings.embedding_identity(name)
+
+
+def test_an_encode_split_across_two_servers_is_refused(monkeypatch):
+    name = "connection:Scheduler/bge-m3"
+    monkeypatch.setattr(config, "EMBED_BATCH", 1)
+
+    def _moved_after_the_first_batch(request, n):
+        if n == 1:
+            _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
+        return _vectors(request, n)
+
+    _, embeddings._get_backend(name)._http = _server(_moved_after_the_first_batch)
+    with pytest.raises(embed_connection.ConnectionEmbedderError, match = "changed while embedding"):
+        embeddings.encode_with_identity(["a", "b"], model_name = name)
 
 
 def test_documents_indexed_before_the_upgrade_stay_current_until_the_server_changes(

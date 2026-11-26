@@ -1459,7 +1459,7 @@ def _identity(
     is_llama: bool,
     name: str,
     served = None,
-    served_identity: tuple[str | None, str | None] | None = None,
+    served_identity: tuple[str | None, str | None] | str | None = None,
 ) -> str:
     if config.is_connection_model(name):
         from .embed_connection import connection_identity
