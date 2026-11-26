@@ -25,7 +25,16 @@ const ROLE_LABEL: Record<string, TranslationKey> = {
   assistant: "characters.panel.roleAssistant",
 };
 
-type Inspected = { status: "loading" } | { status: "ready"; run: CharacterRun } | { status: "error"; message: string };
+type Inspected =
+  | { status: "loading" }
+  | { status: "ready"; run: CharacterRun; project: string }
+  | { status: "error"; message: string };
+
+// Loaded when the dialog opens: the chat adapter imports this feature, so a static import would be a cycle.
+async function projectBlock(threadId: string): Promise<string> {
+  const { projectInstructionsFor } = await import("@/features/chat/api/chat-adapter");
+  return projectInstructionsFor(threadId);
+}
 
 /** Shows what the next reply's model call carries: the system block by section, the tail of the chat, and active lore. */
 export function PromptInspectorDialog({ open, threadId, onClose }: { open: boolean; threadId: string; onClose: () => void }) {
@@ -39,10 +48,12 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
     setInspected({ status: "loading" });
     const bridge = useAskBridge.getState();
     const messages = bridge.threadId === threadId && bridge.messages ? bridge.messages() : [];
-    prepareCharacterRun({ threadId, messages }).then(
-      (next) => {
+    Promise.all([prepareCharacterRun({ threadId, messages }), projectBlock(threadId)]).then(
+      ([next, project]) => {
         if (!live) return;
-        setInspected(next ? { status: "ready", run: next } : { status: "error", message: t("characters.panel.promptUnavailable") });
+        setInspected(
+          next ? { status: "ready", run: next, project } : { status: "error", message: t("characters.panel.promptUnavailable") },
+        );
       },
       (error: unknown) => {
         if (live) setInspected({ status: "error", message: errorMessage(error) });
@@ -54,6 +65,9 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
   }, [open, threadId, t]);
 
   const run = inspected.status === "ready" ? inspected.run : null;
+  // The send puts the project's instructions and AGENTS.md ahead of the character prompt.
+  const project = inspected.status === "ready" ? inspected.project : "";
+  const sections = run ? [...(project ? [{ label: "Project", text: project }] : []), ...run.built.sections] : [];
 
   // The last few messages, reaching back far enough to show every note placed at a depth.
   const firstNoted = run ? run.messages.findIndex((message) => run.notedIds.has(message.id)) : -1;
@@ -70,7 +84,7 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
         </DialogHeader>
         {run ? (
           <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-1" data-testid="prompt-inspector">
-            {run.built.sections.map((section) => (
+            {sections.map((section) => (
               <section key={section.label} className="flex flex-col gap-1.5">
                 <h3 className="flex items-baseline justify-between text-ui-13 font-semibold text-foreground">
                   {section.label}
@@ -132,7 +146,7 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
               variant="outline"
               size="sm"
               onClick={() => {
-                void copy(run.system).then((ok) => {
+                void copy([project, run.system.trim()].filter(Boolean).join("\n\n")).then((ok) => {
                   if (!ok) toast.error(t("characters.panel.copyFailed"));
                 });
               }}

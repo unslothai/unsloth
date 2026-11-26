@@ -2557,6 +2557,11 @@ export async function resolveChatInstructions(
   return withProjectInstructions(threadId, safeSystemPrompt, readThreadRecord, opts);
 }
 
+/** The project block a send puts ahead of a character chat's prompt, for View prompt; "" outside a project. */
+export function projectInstructionsFor(threadId: string): Promise<string> {
+  return withProjectInstructions(threadId, "", undefined, { agentsMd: true });
+}
+
 /** The thread's project instructions (and AGENTS.md when asked) ahead of a system prompt already resolved. */
 async function withProjectInstructions(
   threadId: string | undefined,

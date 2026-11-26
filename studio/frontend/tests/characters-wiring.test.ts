@@ -115,3 +115,12 @@ test("a chat with no cast left goes through the ordinary fallback, and audio rep
   assert.match(runtime, /: alternatingTurns\(messages\)/);
   assert.equal((adapter.match(/\.\.\.audioMetadata,/g) ?? []).length, 2);
 });
+
+test("View prompt shows and copies the project block a send puts ahead of the character prompt", () => {
+  const inspector = read("features/characters/chat/prompt-inspector.tsx");
+  assert.match(inspector, /await import\("@\/features\/chat\/api\/chat-adapter"\)/);
+  assert.match(inspector, /project \? \[\{ label: "Project", text: project \}\] : \[\]/);
+  assert.match(inspector, /copy\(\[project, run\.system\.trim\(\)\]\.filter\(Boolean\)\.join\("\\n\\n"\)\)/);
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /export function projectInstructionsFor\(threadId: string\): Promise<string> \{\s*return withProjectInstructions\(threadId, "", undefined, \{ agentsMd: true \}\);/);
+});
