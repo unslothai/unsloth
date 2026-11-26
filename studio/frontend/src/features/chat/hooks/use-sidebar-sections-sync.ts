@@ -96,7 +96,30 @@ export function useSidebarSectionsSync(): void {
         }, { beforeRetry: () => {
           if (!current()) throw new Error("Sidebar session changed");
         } });
-        if (!response.ok) throw new Error(String(response.status));
+        if (!response.ok) {
+          if (response.status === 422 && edit && current()) {
+            if (cached !== localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY)) {
+              store.persist.rehydrate();
+            }
+            const now = store.getState();
+            if (now.pendingLayoutEdit?.id === edit.id) {
+              // Validation rejected the write before applying it. Keep the visible edits retryable.
+              const latest = sidebarLayout(now);
+              const orderMoves = [...(edit.orderMoves ?? []), ...(now.orderMoves ?? [])].filter(
+                ({ id, targetId, sectionId }) => {
+                  const order = sectionId === null ? latest.sectionOrder : latest.rowOrder[sectionId];
+                  return order?.includes(id) && order.includes(targetId);
+                },
+              );
+              store.setState({
+                pendingLayoutEdit: undefined,
+                orderMoves,
+              });
+              if (JSON.stringify(latest) !== sent) schedule();
+            }
+          }
+          throw new Error(String(response.status));
+        }
         const remote: SidebarLayout = await response.json();
         if (!current()) return;
 

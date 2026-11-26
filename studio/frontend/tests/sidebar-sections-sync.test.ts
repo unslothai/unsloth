@@ -60,7 +60,7 @@ function mount(
       },
       "@/lib/account-transition": accounts,
       "@/lib/desktop-update-activity": { isBackendDownForDesktopUpdate: () => false },
-      "@/lib/navigation-nonce": { createNavigationNonce: () => "next-edit" },
+      "@/lib/navigation-nonce": { createNavigationNonce: randomUUID },
       "../sidebar-layout": layouts,
       "../stores/sidebar-organization-store": stores,
     },
@@ -133,6 +133,45 @@ test("sidebar sync survives its account marker upgrade and rejects a different a
   window.dispatchEvent(new Event("focus"));
   await setImmediate();
   assert.deepEqual(methods, ["GET", "POST", "GET"]);
+});
+
+test("a validation-rejected sidebar edit does not block the corrected layout", async (t) => {
+  const posts: Edit[] = [];
+  const initial = layouts.sidebarLayout(store.getInitialState());
+  let rejectFirst: ((response: Response) => void) | undefined;
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return Response.json(initial);
+    const edit: Edit = JSON.parse(String(init.body));
+    posts.push(edit);
+    return posts.length === 1
+      ? new Promise<Response>((resolve) => { rejectFirst = resolve; })
+      : Response.json(edit.layout);
+  });
+  await setImmediate();
+  const rejected = store.getState().createCustomSection("Imported chats")!;
+  const importedChat = "chat-" + "0".repeat(1026);
+  store.getState().setChatsSection([importedChat, "existing"], rejected);
+  store.getState().setManualOrder(stores.customSectionScope(rejected), [importedChat, "existing"], [
+    { id: importedChat, targetId: "existing", edge: "top" },
+  ]);
+  store.getState().moveSection("projects", "pinned", "top");
+  await setImmediate();
+  assert.equal(posts.length, 1);
+
+  store.getState().deleteCustomSection(rejected);
+  const corrected = store.getState().createCustomSection("Research")!;
+  await setImmediate();
+  rejectFirst!(new Response(null, { status: 422 }));
+  await setImmediate();
+
+  assert.equal(posts.length, 2);
+  assert.notEqual(posts[1].operationId, posts[0].operationId);
+  assert.deepEqual(posts[1].base, JSON.parse(JSON.stringify(initial)));
+  assert.deepEqual(Object.keys(posts[1].layout.sections), [corrected]);
+  assert.deepEqual(posts[1].orderMoves, [
+    { id: "projects", targetId: "pinned", edge: "top", sectionId: null },
+  ]);
+  assert.equal(store.getState().pendingLayoutEdit, undefined);
 });
 
 test("a peer can upload a later edit after retrying the closed tab's pending operation", async (t) => {
