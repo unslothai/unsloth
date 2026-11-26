@@ -221,6 +221,19 @@ def resolve_policy(family: Any, base_repo: Any = None) -> Optional[NVFP4Policy]:
     return None
 
 
+_ADAPTER_BASE_SEGMENT = "base_layer"
+
+
+def _is_adapter_linear(fqn: str) -> bool:
+    """A Linear inside an adapter (PEFT ``lora_A`` / ``lora_B`` ...), not one of the model's own."""
+    return any(part.startswith("lora_") for part in fqn.split("."))
+
+
+def _logical_fqn(fqn: str) -> str:
+    """``fqn`` without the ``base_layer`` hops a PEFT / LoKR wrapper adds."""
+    return ".".join(part for part in fqn.split(".") if part != _ADAPTER_BASE_SEGMENT)
+
+
 def assign_precisions(
     transformer: Any,
     policy: NVFP4Policy,
@@ -248,15 +261,18 @@ def assign_precisions(
         require_bf16 = True,
         require_divisible = require_divisible,
     )
+    # Adapters baked at load (PEFT LoRA, LoKR) stay bf16 outside the policy; their base Linears are policed by
+    # the name they have without the adapter, so the rules and counts see the plain model.
     linears = [
         (fqn, module)
         for fqn, module in transformer.named_modules()
-        if isinstance(module, torch.nn.Linear)
+        if isinstance(module, torch.nn.Linear) and not _is_adapter_linear(fqn)
     ]
     modules = dict(linears)
+    logical = {fqn: _logical_fqn(fqn) for fqn, _ in linears}
     admitted = {fqn for fqn, module in linears if base_filter(module, fqn)}
     for admit in policy.admit:
-        hits = sorted(fqn for fqn, _ in linears if admit.matches(fqn))
+        hits = sorted(fqn for fqn, _ in linears if admit.matches(logical[fqn]))
         if len(hits) != admit.expect:
             raise PolicyMismatch(
                 f"policy {policy.policy_id!r} admits {admit.suffix!r} expecting "
@@ -273,7 +289,9 @@ def assign_precisions(
         admitted.update(hits)
     assignment: dict = {}
     for rule in policy.rules:
-        hits = sorted(fqn for fqn in admitted if fqn not in assignment and rule.matches(fqn))
+        hits = sorted(
+            fqn for fqn in admitted if fqn not in assignment and rule.matches(logical[fqn])
+        )
         if len(hits) != rule.expect:
             raise PolicyMismatch(
                 f"policy {policy.policy_id!r} rule {rule.prefix}{rule.suffix!r} -> "

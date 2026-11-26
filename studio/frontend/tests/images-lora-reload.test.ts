@@ -4,6 +4,7 @@
 // An unbaked LoRA selection on an INT8 / FP8 build makes Generate reload first; a backend refusal offers the same.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -41,6 +42,27 @@ test("the baked set, a subset of it, new weights or no LoRA run without a reload
   assert.equal(loraReloadReason(baked, [{ id: "tarot", weight: 0 }, { id: "  ", weight: 1 }]), null);
   assert.notEqual(loraReloadReason(baked, [{ id: "tarot", weight: 1 }, { id: "other", weight: 1 }]), null);
   assert.notEqual(loraReloadReason(int8([{ id: "tarot", weight: 1 }]), [{ id: "tarot", weight: 1 }, { id: "tarot", weight: 1 }]), null);
+});
+
+test("an NVFP4 build bakes LoRAs at load like INT8 / FP8", () => {
+  const nvfp4 = { ...int8(), transformer_quant: "nvfp4" };
+  assert.equal(bakesLorasAtLoad(nvfp4), true);
+  assert.match(loraReloadReason(nvfp4, [{ id: "tarot", weight: 1 }]) ?? "", /NVFP4 build takes LoRAs only when it loads/);
+  const baked = { ...nvfp4, baked_lora_specs: [{ id: "tarot", weight: 1 }] };
+  assert.equal(loraReloadReason(baked, [{ id: "tarot", weight: 0.4 }]), null);
+  // MXFP8 still has no LoRA path: the backend reports supports_lora false and its reason, never a reload offer.
+  assert.equal(loraReloadReason({ ...int8(), transformer_quant: "mxfp8", supports_lora: false }, [{ id: "a", weight: 1 }]), null);
+});
+
+test("every scheme the backend bakes LoRAs into reloads here", () => {
+  const backend = readFileSync(new URL("../../backend/core/inference/diffusion_lora.py", import.meta.url), "utf8");
+  const tuple = /_DIFFUSERS_LORA_BAKED_QUANT = \(([^)]*)\)/.exec(backend);
+  assert.ok(tuple, "_DIFFUSERS_LORA_BAKED_QUANT not found");
+  const schemes = [...tuple[1].matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]);
+  assert.ok(schemes.includes("nvfp4"), schemes.join(","));
+  for (const quant of schemes) {
+    assert.equal(bakesLorasAtLoad({ ...int8(), transformer_quant: quant }), true, quant);
+  }
 });
 
 test("dense and GGUF builds apply LoRAs per request", () => {
