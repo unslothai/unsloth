@@ -30,8 +30,10 @@ from typing import Any, Optional
 ENABLE_ENV = "UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D"
 LEGACY_ENABLE_ENV = "UNSLOTH_DIFFUSION_ROCM_AITER_CONV3D"
 SELFCHECK_ENV = "UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D_SELFCHECK"
-# Archs routed with the env unset. Empty until the gfx1151 end-to-end and Windows checks pass.
-DEFAULT_ON_ARCHES: tuple = ()
+# Archs routed with the env unset (AMD CI gfx1151, Linux and Windows: Wan 2.2 5B render VAE 1.56x, wall -13%).
+DEFAULT_ON_ARCHES: tuple = ("gfx1151",)
+# VAE classes routed with the env unset (measured end to end); any other VAE needs the env var set to 1.
+DEFAULT_ON_VAES: tuple = ("AutoencoderKLWan",)
 # Archs whose kernel tables were tuned (ROCm/aiter PR #6973); other gfx11 archs borrow them (explicit opt-in only).
 TUNED_ARCHES = ("gfx1151",)
 # Free memory kept back beyond the estimated workspace: the larger of these.
@@ -313,6 +315,8 @@ def install(vae: Any, logger: Any = None) -> int:
     """Wrap every eligible ``nn.Conv3d`` of ``vae`` (per instance). Returns the number wrapped; 0 when off, not ROCm
     gfx11, or Triton is missing. The device is checked again at call time (speed optims run before placement)."""
     if vae is None or not requested() or not callable(getattr(vae, "modules", None)):
+        return 0
+    if _env_mode() is None and type(vae).__name__ not in DEFAULT_ON_VAES:
         return 0
     try:
         import torch

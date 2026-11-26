@@ -97,18 +97,21 @@ def _x(shape = (1, 8, 3, 6, 6)):
     return torch.randn(shape).to(torch.bfloat16)
 
 
-def test_off_by_default_until_the_default_arch_list_names_gfx1151(gpu):
-    assert R.DEFAULT_ON_ARCHES == ()
-    assert R.install(_vae()) == 0
-    assert not R.arch_enabled("gfx1151")
-
-
-def test_default_arch_list_turns_it_on_without_env(gpu, monkeypatch):
-    monkeypatch.setattr(R, "DEFAULT_ON_ARCHES", ("gfx1151",))
+def test_default_on_for_gfx1151_and_measured_vaes_only(gpu, monkeypatch):
+    assert R.DEFAULT_ON_ARCHES == ("gfx1151",)
+    assert R.arch_enabled("gfx1151") and R.arch_enabled("gfx1151:xnack-")
+    assert not R.arch_enabled("gfx1100") and not R.arch_enabled("gfx942")
+    assert R.install(_vae()) == 0  # env unset: an unmeasured VAE class stays on MIOpen
+    monkeypatch.setattr(R, "DEFAULT_ON_VAES", ("Module",))
     assert R.install(_vae()) == 2
     monkeypatch.setenv(R.ENABLE_ENV, "0")
     R._DEVICE_OK.clear()
     assert R.install(_vae()) == 0
+
+
+def test_env_on_routes_any_vae_class(gpu, monkeypatch):
+    monkeypatch.setenv(R.ENABLE_ENV, "1")
+    assert R.install(_vae()) == 2
 
 
 @pytest.mark.parametrize("env", [R.ENABLE_ENV, R.LEGACY_ENABLE_ENV])
