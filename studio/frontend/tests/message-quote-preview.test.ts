@@ -9,6 +9,7 @@ import test from "node:test";
 
 import {
   type QuotePreviewNode,
+  parseQuotePreviewBlocks,
   tableQuotePreview,
 } from "../src/components/assistant-ui/message-quote-preview.ts";
 
@@ -158,4 +159,53 @@ test("mismatched canonical text returns no preview", () => {
   );
 
   assert.equal(tableQuotePreview(fragment(table), "Name\nOther"), null);
+});
+
+test("mixed prose and table preview text becomes ordered blocks", () => {
+  assert.deepEqual(
+    parseQuotePreviewBlocks(
+      "Intro\nName | Value\nAlpha | 1\nOutro",
+      true,
+    ),
+    [
+      { kind: "text", text: "Intro" },
+      {
+        kind: "table",
+        rows: [
+          ["Name", "Value"],
+          ["Alpha", "1"],
+        ],
+      },
+      { kind: "text", text: "Outro" },
+    ],
+  );
+});
+
+test("table blocks pad empty edge cells to the widest row", () => {
+  assert.deepEqual(
+    parseQuotePreviewBlocks("A |  | C\nD |\n| F", true),
+    [
+      {
+        kind: "table",
+        rows: [
+          ["A", "", "C"],
+          ["D", "", ""],
+          ["", "F", ""],
+        ],
+      },
+    ],
+  );
+});
+
+test("disabling tables preserves prose containing a pipe separator", () => {
+  const prose = "Left | right\nstill prose";
+  assert.deepEqual(parseQuotePreviewBlocks(prose, false), [
+    { kind: "text", text: prose },
+  ]);
+});
+
+test("prose without table rows remains one text block", () => {
+  assert.deepEqual(parseQuotePreviewBlocks("One\nTwo", true), [
+    { kind: "text", text: "One\nTwo" },
+  ]);
 });

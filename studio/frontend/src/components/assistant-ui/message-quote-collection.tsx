@@ -50,6 +50,7 @@ import {
   cancelQuoteNavigation,
   navigateToQuote,
 } from "./message-quote-navigation";
+import { parseQuotePreviewBlocks } from "./message-quote-preview";
 import {
   type QuotePillPosition,
   type QuotePillSize,
@@ -313,13 +314,47 @@ const QUOTE_PREVIEW_STYLE = {
   maxWidth: "min(20rem, calc(100vw - 1.5rem))",
   maxHeight: "min(24rem, calc(100vh - 1.5rem))",
 } as const;
+const QUOTE_PREVIEW_TABLE_STYLE = {
+  maxWidth: "min(30rem, calc(100vw - 1.5rem))",
+  maxHeight: "min(24rem, calc(100vh - 1.5rem))",
+} as const;
 
 const QuotePreviewContent: FC<{
   readonly text: string;
   readonly source: string;
-}> = ({ text, source }) => (
+  readonly hasTable: boolean;
+}> = ({ text, source, hasTable }) => (
   <>
-    <span className="block">{text}</span>
+    {parseQuotePreviewBlocks(text, hasTable).map((block, blockIndex) =>
+      block.kind === "table" ? (
+        <table
+          key={`table-${blockIndex}`}
+          className="whitespace-normal w-full border-collapse text-left text-ui-11"
+        >
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={`table-${blockIndex}-row-${rowIndex}`}>
+                {row.map((cell, cellIndex) => (
+                  <td
+                    key={`table-${blockIndex}-row-${rowIndex}-cell-${cellIndex}`}
+                    className={cn(
+                      "border border-border/50 px-2 py-1 align-top break-words",
+                      rowIndex === 0 && "bg-muted/40 font-medium",
+                    )}
+                  >
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <span key={`text-${blockIndex}`} className="block">
+          {block.text}
+        </span>
+      ),
+    )}
     {source.length > 0 && (
       <span className="mt-1 block text-ui-10 text-muted-foreground">
         {source}
@@ -379,9 +414,14 @@ const QuotePillRow: FC<{
           sideOffset={6}
           collisionPadding={12}
           className={QUOTE_PREVIEW_CLASS}
-          style={QUOTE_PREVIEW_STYLE}
+          style={
+            quote.anchor.previewText !== undefined
+              ? QUOTE_PREVIEW_TABLE_STYLE
+              : QUOTE_PREVIEW_STYLE
+          }
         >
           <QuotePreviewContent
+            hasTable={quote.anchor.previewText !== undefined}
             text={quote.anchor.previewText ?? quote.anchor.text}
             source={source}
           />
@@ -1004,9 +1044,14 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
                   sideOffset={6}
                   collisionPadding={12}
                   className={QUOTE_PREVIEW_CLASS}
-                  style={QUOTE_PREVIEW_STYLE}
+                  style={
+                    singleQuote.anchor.previewText !== undefined
+                      ? QUOTE_PREVIEW_TABLE_STYLE
+                      : QUOTE_PREVIEW_STYLE
+                  }
                 >
                   <QuotePreviewContent
+                    hasTable={singleQuote.anchor.previewText !== undefined}
                     text={
                       singleQuote.anchor.previewText ?? singleQuote.anchor.text
                     }

@@ -273,9 +273,23 @@ test("row previews show the full quote and source in a scrollable surface", () =
   );
   assert.match(
     preview,
+    /maxWidth: "min\(30rem, calc\(100vw - 1\.5rem\)\)"/,
+  );
+  assert.match(
+    preview,
     /maxHeight: "min\(24rem, calc\(100vh - 1\.5rem\)\)"/,
   );
-  assert.match(preview, /<span className="block">\{text\}<\/span>/);
+  assert.match(preview, /className="block">\s*\{block\.text\}/);
+  assert.match(
+    preview,
+    /className="whitespace-normal w-full border-collapse text-left text-ui-11"/,
+  );
+  assert.match(preview, /<tbody>/);
+  assert.match(preview, /rowIndex === 0 && "bg-muted\/40 font-medium"/);
+  assert.match(
+    preview,
+    /border border-border\/50 px-2 py-1 align-top break-words/,
+  );
   assert.match(
     preview,
     /<span className="mt-1 block text-ui-10 text-muted-foreground">\s*\{source\}/,
@@ -289,9 +303,18 @@ test("row previews show the full quote and source in a scrollable surface", () =
 
   assert.match(row, /QUOTE_PREVIEW_CLASS/);
   assert.match(row, /QUOTE_PREVIEW_STYLE/);
+  assert.match(row, /QUOTE_PREVIEW_TABLE_STYLE/);
   assert.match(
     row,
-    /<QuotePreviewContent\s+text=\{quote\.anchor\.previewText \?\? quote\.anchor\.text\}\s+source=\{source\}\s*\/>/,
+    /hasTable=\{quote\.anchor\.previewText !== undefined\}/,
+  );
+  assert.match(
+    row,
+    /quote\.anchor\.previewText !== undefined\s*\?\s*QUOTE_PREVIEW_TABLE_STYLE\s*:\s*QUOTE_PREVIEW_STYLE/,
+  );
+  assert.match(
+    row,
+    /<QuotePreviewContent\s+hasTable=\{quote\.anchor\.previewText !== undefined\}\s+text=\{quote\.anchor\.previewText \?\? quote\.anchor\.text\}\s+source=\{source\}\s*\/>/,
   );
   assert.match(row, /quoteSourceLabel\(quote\.anchor\.turn/);
   assert.doesNotMatch(row, /line-clamp/);
@@ -319,10 +342,18 @@ test("single quotes preview on the pill without a duplicate dropdown row", () =>
   assert.match(COLLECTION, /side="top"/);
   assert.match(
     COLLECTION,
-    /<QuotePreviewContent\s+text=\{\s*singleQuote\.anchor\.previewText \?\? singleQuote\.anchor\.text\s*\}\s+source=\{singleSource\}/,
+    /hasTable=\{singleQuote\.anchor\.previewText !== undefined\}/,
+  );
+  assert.match(
+    COLLECTION,
+    /singleQuote\.anchor\.previewText !== undefined\s*\?\s*QUOTE_PREVIEW_TABLE_STYLE\s*:\s*QUOTE_PREVIEW_STYLE/,
+  );
+  assert.match(
+    COLLECTION,
+    /<QuotePreviewContent\s+hasTable=\{singleQuote\.anchor\.previewText !== undefined\}\s+text=\{\s*singleQuote\.anchor\.previewText \?\? singleQuote\.anchor\.text\s*\}\s+source=\{singleSource\}/,
   );
   assert.match(COLLECTION, /quoteSourceLabel\(singleQuote\.anchor\.turn/);
-  assert.match(COLLECTION, /style=\{QUOTE_PREVIEW_STYLE\}/);
+  assert.match(COLLECTION, /QUOTE_PREVIEW_STYLE/);
 
   const singlePill = COLLECTION.slice(
     COLLECTION.indexOf('mode === "single" && singleQuote !== null ? ('),

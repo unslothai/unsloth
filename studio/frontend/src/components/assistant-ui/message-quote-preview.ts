@@ -14,6 +14,13 @@ export type QuotePreviewNode = {
   readonly childNodes: ArrayLike<QuotePreviewNode>;
 };
 
+export type QuotePreviewBlock =
+  | { readonly kind: "text"; readonly text: string }
+  | {
+      readonly kind: "table";
+      readonly rows: readonly (readonly string[])[];
+    };
+
 const CELL_TAGS: ReadonlySet<string> = new Set(["TD", "TH"]);
 const CELL_SEPARATOR = " | ";
 const TRAILING_SPACE = /[ \t]+$/;
@@ -240,4 +247,95 @@ export function tableQuotePreview(
     return null;
   }
   return compact;
+}
+
+/**
+ * Row detection is heuristic: previewText is a flat string, so every prose
+ * `" | "` is indistinguishable from a table-cell separator.
+ */
+function isPreviewTableLine(line: string): boolean {
+  const value = line.trim();
+  return (
+    value.includes(CELL_SEPARATOR) ||
+    value.endsWith(" |") ||
+    value.startsWith("| ") ||
+    value === "|"
+  );
+}
+
+function splitPreviewTableCells(line: string): string[] {
+  const trimmed = line.trim();
+  const startsWithPipe = trimmed.startsWith("|");
+  const endsWithPipe = trimmed.endsWith("|");
+  let body = trimmed;
+  if (startsWithPipe) {
+    body = body.slice(1).trimStart();
+  }
+  if (endsWithPipe) {
+    body = body.slice(0, -1).trimEnd();
+  }
+  const cells =
+    body.length === 0
+      ? []
+      : body.split(CELL_SEPARATOR).map((cell) => cell.trim());
+  if (startsWithPipe) {
+    cells.unshift("");
+  }
+  if (endsWithPipe) {
+    cells.push("");
+  }
+  return cells;
+}
+
+/**
+ * Splits compact table preview text into display blocks. The parser is
+ * deliberately display-only: capture, navigation, and transport continue to
+ * use the untouched anchor fields.
+ */
+export function parseQuotePreviewBlocks(
+  text: string,
+  enableTables: boolean,
+): QuotePreviewBlock[] {
+  if (!enableTables) {
+    return [{ kind: "text", text }];
+  }
+
+  const lines = text.split("\n");
+  const blocks: QuotePreviewBlock[] = [];
+  const textLines: string[] = [];
+  const flushText = (): void => {
+    if (textLines.length === 0) {
+      return;
+    }
+    blocks.push({ kind: "text", text: textLines.join("\n") });
+    textLines.length = 0;
+  };
+
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!isPreviewTableLine(line)) {
+      textLines.push(line);
+      index += 1;
+      continue;
+    }
+
+    flushText();
+    const rows: string[][] = [];
+    while (index < lines.length && isPreviewTableLine(lines[index])) {
+      rows.push(splitPreviewTableCells(lines[index]));
+      index += 1;
+    }
+    const width = rows.reduce((widest, row) => Math.max(widest, row.length), 0);
+    blocks.push({
+      kind: "table",
+      rows: rows.map((row) => [
+        ...row,
+        ...Array.from({ length: width - row.length }, () => ""),
+      ]),
+    });
+  }
+
+  flushText();
+  return blocks;
 }
