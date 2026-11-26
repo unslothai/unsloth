@@ -6594,6 +6594,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "The baked adapters as the load requested them, [{id, weight}]; empty when none. The "
         "Images page compares a LoRA selection against it to tell whether Generate needs a reload first",
     )
+    lora_fuse: Optional[str] = Field(
+        None,
+        description = "Whether the attached LoRA set is folded into the denoiser weights: fused | pending | "
+        "disabled | bit_exact (speed mode off) | offload | quantized | unsupported; null without LoRAs",
+    )
     transformer_cache_stats: Optional[dict] = Field(
         None,
         description = "Static step skip only: mode, schedule and the last generation's "
