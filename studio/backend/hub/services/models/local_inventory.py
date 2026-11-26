@@ -333,17 +333,26 @@ def _resolve_hf_cache_dir() -> Path:
     return get_hf_cache_paths().hub_cache
 
 
+def _optional_dirs(label: str, discover) -> tuple[Path, ...]:
+    """One app's roots, or none when finding them fails (an untraversable OMLX_BASE_PATH), so the rest still scan."""
+    try:
+        return tuple(discover())
+    except Exception as e:
+        logger.warning("Skipping %s model folders: %s", label, scrub_paths(e))
+        return ()
+
+
 def _local_inventory_sources() -> _LocalInventorySources:
     from utils.hf_cache_settings import known_hf_hub_caches
     return _LocalInventorySources(
         _resolve_hf_cache_dir(),
         legacy_hf_cache_dir(),
         hf_default_cache_dir(),
-        tuple(lmstudio_model_dirs()),
-        tuple(ollama_model_dirs()),
-        tuple(hermes_model_dirs()),
-        tuple(known_hf_hub_caches()),
-        tuple(omlx_model_dirs()),
+        _optional_dirs("LM Studio", lmstudio_model_dirs),
+        _optional_dirs("Ollama", ollama_model_dirs),
+        _optional_dirs("Hermes", hermes_model_dirs),
+        _optional_dirs("known HF cache", known_hf_hub_caches),
+        _optional_dirs("oMLX", omlx_model_dirs),
     )
 
 

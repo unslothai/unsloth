@@ -1322,3 +1322,27 @@ def test_a_folded_copy_in_a_second_lm_studio_root_resolves_by_its_path(monkeypat
     assert len(models_route.collect_local_models(Path("models").resolve())) == 1
     assert str(second / "pub" / "model").lower() in resolver._build_index()
     assert resolver.local_gguf_pinned_variant(f"{second / 'pub' / 'model'}:Q8_0") == "Q8_0"
+
+
+def test_a_failing_optional_app_root_does_not_empty_the_scan(monkeypatch, tmp_path):
+    """An untraversable OMLX_BASE_PATH raises PermissionError from Path.is_file (Python < 3.14)."""
+    from core.inference import local_model_resolver as resolver
+
+    def _denied():
+        raise PermissionError(13, "Permission denied", "/omlx/settings.json")
+
+    folder = tmp_path / "custom"
+    _touch(folder / "publisher" / "model-Q4_K_M.gguf")
+    monkeypatch.setattr(local_inventory, "omlx_model_dirs", _denied)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(folder)}])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: tmp_path / "hub")
+    for name in ("legacy_hf_cache_dir", "hf_default_cache_dir"):
+        monkeypatch.setattr(local_inventory, name, lambda: tmp_path / "empty")
+    for name in ("lmstudio_model_dirs", "ollama_model_dirs", "hermes_model_dirs"):
+        monkeypatch.setattr(local_inventory, name, lambda: [])
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [])
+
+    assert local_inventory._local_inventory_sources().omlx_dirs == ()
+    assert str(folder / "publisher").lower() in resolver._build_index()
