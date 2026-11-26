@@ -392,8 +392,9 @@ def _exchange(shard, calls, like):
     tie = got_x[
         :0
     ].sum()  # keeps this rank's backward exchanges in the graph when it receives nothing
+    grouped = _grouped_locals(shard, lst, got_x, perm, counts)
     pieces, start = [], 0
-    for j, count in enumerate(counts):
+    for j, count in enumerate(counts if grouped is None else ()):
         if count == 0:
             continue  # no rank routed to it: its gradients stay None, as in one process
         expert = lst._modules[str(lo + j)]
@@ -404,7 +405,9 @@ def _exchange(shard, calls, like):
             )
         )
         start += count
-    if pieces:
+    if grouped is not None:
+        y_got = grouped
+    elif pieces:
         out_width = pieces[0][1].shape[-1]
         y_got = pieces[0][1].new_zeros((got_x.shape[0], out_width))
         for index, y in pieces:
@@ -422,6 +425,87 @@ def _exchange(shard, calls, like):
         outputs[i] = (calls[i][0], y_back[start : start + n])
         start += n
     return outputs, y_back
+
+
+# Local experts as one grouped GEMM per projection instead of a module call each: the received rows are already
+# sorted by local expert. The per-expert MLPs whose forward is down(act(gate(x)) * up(x)) (transformers 4.x).
+_GROUPED_MLPS = {
+    "Qwen3MoeMLP": ("gate_proj", "up_proj", "down_proj"),
+    "Qwen2MoeMLP": ("gate_proj", "up_proj", "down_proj"),
+    "OlmoeMLP": ("gate_proj", "up_proj", "down_proj"),
+    "MixtralBlockSparseTop2MLP": ("w1", "w3", "w2"),
+    "DeepseekV3MLP": ("gate_proj", "up_proj", "down_proj"),
+    "Glm4MoeMLP": ("gate_proj", "up_proj", "down_proj"),
+    "Qwen3NextMLP": ("gate_proj", "up_proj", "down_proj"),
+    "HunYuanMoEV1MLP": ("gate_proj", "up_proj", "down_proj"),
+}
+_GROUPED_ENV = "UNSLOTH_EP_GROUPED_EXPERTS"
+
+
+def _grouped_spec(lst, lo, hi):
+    if hi <= lo or os.environ.get(_GROUPED_ENV, "1") == "0":
+        return None
+    experts = [lst._modules[str(e)] for e in range(lo, hi)]
+    kind = type(experts[0])
+    names = _GROUPED_MLPS.get(kind.__name__)
+    if (
+        names is None
+        or kind.forward.__module__ != kind.__module__
+        or not callable(getattr(experts[0], "act_fn", None))
+    ):
+        return None
+    if any(
+        type(m) is not kind or "forward" in m.__dict__ or m._forward_hooks or m._forward_pre_hooks
+        for m in experts
+    ):
+        return None
+    return experts, names
+
+
+def _grouped_locals(shard, lst, got_x, perm, counts):
+    """This rank's experts over the received rows with unsloth_zoo's grouped GEMMs (bitsandbytes 4-bit or 16-bit
+    frozen bases, one LoRA adapter), rows in got_x order; None keeps the per-expert loop."""
+    if (
+        not got_x.is_cuda
+        or got_x.dtype not in (torch.float16, torch.bfloat16)
+        or got_x.shape[0] == 0
+    ):
+        return None
+    found = _grouped_spec(lst, shard.lo, shard.hi)
+    if found is None:
+        return None
+    experts, names = found
+    try:
+        from unsloth_zoo.temporary_patches import moe_grouped_modulelist as zoo
+        from unsloth_zoo.temporary_patches.moe_utils import _grouped_mm_supported_on
+    except Exception:
+        return None
+    if not _grouped_mm_supported_on(got_x.device):
+        return None
+    spec = (*names, None)
+    dtype = got_x.dtype
+    lora = zoo._experts_grouped_state(experts, spec, got_x.device, dtype)
+    if not isinstance(lora, dict):
+        return None
+    projs = zoo._expert_projs(experts, spec)
+    offsets = torch.tensor(counts, dtype = torch.int64).cumsum(0).to(torch.int32).to(got_x.device)
+    x = got_x.index_select(0, perm)
+    gate_up = zoo._grouped_expert_gemm(
+        x, offsets, lambda: zoo._build_gate_up_stack(experts, spec, dtype, projs), True
+    )
+    gate, up = gate_up.chunk(2, dim = -1)
+    if lora["gate"] is not None:
+        gate = gate + zoo._lora_delta(x, offsets, projs.gate, lora["gate"], dtype)
+    if lora["up"] is not None:
+        up = up + zoo._lora_delta(x, offsets, projs.up, lora["up"], dtype)
+    inter = experts[0].act_fn(gate) * up
+    down = zoo._grouped_expert_gemm(
+        inter, offsets, lambda: zoo._build_down_stack(experts, spec, dtype, projs), True
+    )
+    if lora["down"] is not None:
+        down = down + zoo._lora_delta(inter, offsets, projs.down, lora["down"], dtype)
+    shard.grouped_calls = getattr(shard, "grouped_calls", 0) + 1
+    return down.new_zeros((got_x.shape[0], down.shape[-1])).index_copy(0, perm, down)
 
 
 def _list_forward(shard, prior):
