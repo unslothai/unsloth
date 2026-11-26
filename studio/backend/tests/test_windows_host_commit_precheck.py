@@ -308,6 +308,19 @@ class TestPreLaunch:
         kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 24 * _MIB)
         assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
 
+    def test_host_kv_share_follows_the_layers_that_allocate_cache(self, windows):
+        # 35 layers, the last 15 share KV: -ngl 15 offloads only those, so the CPU holds it all.
+        backend = _backend(model_gb = 20, kv_gb = 20)
+        backend._n_layers, backend._shared_kv_layers = 35, 15
+        backend._kv_layer_weights = lambda *a, **k: []
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 16 * _MIB)
+        cmd = _cmd("-ngl", "15")
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs)
+        # Per-layer weights, when the estimator has them, decide the share.
+        backend._kv_layer_weights = lambda *a, **k: [0] * 20 + [1] * 15
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
+        assert backend._windows_host_kv_share(20 / 35, 35, 8, {}) == 0
+
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (
             _backend(model_gb = 20)._windows_host_commit_refusal(

@@ -16984,6 +16984,31 @@ class LlamaCppBackend:
         experts = int(scan[2]) if scan else 0
         return experts if everything else experts * count // n_layers
 
+    def _windows_host_kv_share(
+        self, layer_share: float, n_layers: int, n_ctx: int, shape: Mapping[str, object]
+    ) -> float:
+        """Share of the KV cache the CPU layers hold, from ``layer_share`` of the layers on the CPU.
+        llama.cpp offloads the last layers, so the CPU keeps the first ones; layers that allocate no
+        cache (shared-KV tails, SWA weights) are weighted as the estimator weights them."""
+        cpu_layers = min(n_layers, max(0, round(layer_share * n_layers)))
+        try:
+            weights = self._kv_layer_weights(
+                n_ctx,
+                swa_full = bool(shape.get("swa_full")),
+                n_parallel = int(shape.get("n_parallel") or 1),
+                kv_unified = bool(shape.get("kv_unified", True)),
+                n_ubatch = shape.get("n_ubatch"),
+                flash_attn = bool(shape.get("flash_attn", True)),
+            )
+        except Exception:  # noqa: BLE001 -- fall back to the layer count
+            weights = []
+        if len(weights) == n_layers and sum(weights) > 0:
+            return sum(weights[:cpu_layers]) / sum(weights)
+        allocating = n_layers - int(getattr(self, "_shared_kv_layers", None) or 0)
+        if 0 < allocating < n_layers:
+            return min(cpu_layers, allocating) / allocating
+        return layer_share
+
     def _windows_host_commit_refusal(
         self,
         cmd: Iterable[str],
@@ -17106,6 +17131,8 @@ class LlamaCppBackend:
                     k_frac = k_len / (k_len + v_len) if k_len and v_len else 0.5
                     kv_v = self._estimate_kv_cache_bytes(n_ctx, v_type, **shape)
                     kv = int(kv * k_frac + kv_v * (1 - k_frac))
+                if 0 < kv_on_host < 1 and n_layers:
+                    kv_on_host = self._windows_host_kv_share(kv_on_host, n_layers, n_ctx, shape)
                 private += int(kv * kv_on_host)
             if private <= 0:
                 return None
