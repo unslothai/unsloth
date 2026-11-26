@@ -128,11 +128,8 @@ def _read_header(path: str) -> Optional[dict]:
 
 
 def compatible_lora_header(path: str) -> Optional[dict]:
-    """The safetensors header with the unset ``lora_adapter_metadata`` fields this PEFT's ``LoraConfig`` lacks removed,
-    or None when there are none. diffusers calls ``LoraConfig(**metadata)`` on a path load, so a file saved by a newer
-    PEFT (Qwen-Image-2.1-Lightning: PEFT 0.20's ``lora_ga_config`` / ``use_bdlora`` / ...) raised "``LoraConfig`` class
-    could not be instantiated". Unset fields are dropped, as PEFT's ``from_pretrained`` ignores them; every other key
-    stays, so diffusers sees the rest of the header (and any component it does not load) exactly as before."""
+    """Header minus unset metadata fields this PEFT's ``LoraConfig`` lacks (else diffusers' ``LoraConfig(**metadata)``
+    fails on newer-PEFT files, e.g. Qwen-Image-2.1-Lightning); None when nothing to drop. Other keys stay untouched."""
     import json
 
     fields = _lora_config_fields()
@@ -147,7 +144,6 @@ def compatible_lora_header(path: str) -> Optional[dict]:
         return None
     if not isinstance(metadata, dict):
         return None
-    # Keys are "<component>.<field>" ("transformer.r", "unet.lora_alpha").
     dropped = [
         key
         for key, value in metadata.items()

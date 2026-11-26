@@ -100,13 +100,12 @@ def test_newer_peft_metadata_loads_every_module(tmp_path, alpha):
         name[: -len(".lora_A.lightning")] for name in modules if name.endswith(".lora_A.lightning")
     )
     expected = sorted(f"transformer_blocks.{i}.attn.{m}" for i in range(_LAYERS) for m in _MODULES)
-    assert loaded == expected  # none of the file's modules dropped
+    assert loaded == expected
     for stem in expected:
         down = state[f"transformer.{stem}.lora.down.weight"]
         up = state[f"transformer.{stem}.lora.up.weight"]
         assert torch.equal(modules[f"{stem}.lora_A.lightning"].weight, down)
         assert torch.equal(modules[f"{stem}.lora_B.lightning"].weight, up)
-        # The file's lora_alpha survives the dropped fields.
         assert modules[stem].scaling["lightning"] == alpha / _RANK
     assert path.exists() and len(list(tmp_path.iterdir())) == 1
 
