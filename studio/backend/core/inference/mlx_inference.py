@@ -5836,23 +5836,26 @@ class _VisionBatchSession:
         plan = backend._plan_vlm_request(request, decodes_ids = self._decodes_ids)
         row = _VisionBatchRow(handle = handle, plan = plan)
         alone = self._alone(handle) if self._retires_rows else None
-        # A clip's row resumes nothing: token ids do not vary with the clip.
         state = (
-            backend._vlm_batch_row_cache(self._adapter_state, plan.images, alone = alone)
-            if self._resumes_rows and not plan.videos
+            backend._vlm_batch_row_cache(
+                self._adapter_state, plan.images, alone = alone, has_video = bool(plan.videos)
+            )
+            if self._resumes_rows
             else None
         )
         if state is None and backend._kv_quant_bits() is not None:
             # mlx-vlm's own batch cache would be float.
             raise RowRefused("this row cannot carry the load's quantized KV cache")
-        if state is None and (plan.images or plan.videos):
+        if plan.videos or (state is None and plan.images):
             backend._release_vlm_snapshots()
         elif state is None:
             backend._release_held_vlm_snapshots()
         resume = {} if state is None else {"prompt_cache_state": state}
-        clips = _batch_clips(self._held, [plan], backend._processor)[0] if plan.videos else {}
-        admitted_at = time.perf_counter()
+        # add() decodes the frames, so a row's clip files go when it returns, not when the batch closes.
+        clip_files = ExitStack()
         try:
+            clips = _batch_clips(clip_files, [plan], backend._processor)[0] if plan.videos else {}
+            admitted_at = time.perf_counter()
             row_number = self.stream.add(
                 GenerationRequest(
                     **backend._vlm_batch_prompt(plan.prompt),
@@ -5866,6 +5869,8 @@ class _VisionBatchSession:
             )
         except BatchRowRefused as refusal:
             raise RowRefused(str(refusal)) from refusal
+        finally:
+            clip_files.close()
         row.row = row_number
         # A speculative batch prefills the row inside add(), so its clock starts before it.
         row.admitted_at = admitted_at if self._speculative is not None else time.perf_counter()
@@ -6345,19 +6350,23 @@ class MLXInferenceBackend:
         )
         return language_model, key, make_cache
 
+    def _vlm_row_cache_available(self):
+        if _vlm_generation_is_diffusion(self._model):
+            return False
+        return self._vlm_prompt_cache_store() is not None or self._kv_quant_bits() is not None
+
     def _vlm_batch_row_cache(
         self,
         adapter_state,
         images = None,
         alone = None,
+        has_video = False,
     ):
         """A batched row's ``prompt_cache_state``, or None while the store is off on an unquantized
         load. Otherwise every row gets one, so all rows' caches share the factory's layout."""
-        store = self._vlm_prompt_cache_store()
-        if (store is None and self._kv_quant_bits() is None) or _vlm_generation_is_diffusion(
-            self._model
-        ):
+        if not self._vlm_row_cache_available():
             return None
+        store = self._vlm_prompt_cache_store()
         media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
         try:
             _language_model, key, make_cache = self._vlm_snapshot_scope(adapter_state, images)
@@ -6366,6 +6375,9 @@ class MLXInferenceBackend:
             return None
         if store is None:
             pass
+        elif has_video:
+            # Keyed by token ids the clip does not vary, so the row prefills cold on the same layout.
+            store = None
         elif images and (not media_ids or self._vlm_bidirectional_vision(self._model)):
             # Unplaceable, or prefilled by the single path as a media block: nothing serves it.
             store.clear()
@@ -9499,10 +9511,12 @@ class MLXInferenceBackend:
     def resident_unavailable_reason(self, request):
         if self._model is None:
             return "no model is loaded"
-        reason = _request_batch_gap(request)
-        if reason is None and _carries_video(request):
-            # Whether a clip's row fits the open batch is known only once its frames are decoded.
-            reason = "a reply carries a video clip"
+        # A clip's row that does not fit the open batch is refused on admission, once its frames are decoded.
+        reason = _request_batch_gap(request) or self._video_batch_gap([request])
+        if reason is None and _carries_video(request) and getattr(self, "_kv_cache_window", None):
+            # mlx-vlm's batch cache ignores the window, which only a row's own cache keeps.
+            if _row_prompt_cache_gap() is not None or not self._vlm_row_cache_available():
+                reason = "a clip's row would not keep the load's KV window"
         if reason is not None:
             return reason
         reason = self._kv_policy_batch_reason(resident = True)
@@ -9518,9 +9532,9 @@ class MLXInferenceBackend:
         # The one-at-a-time decode refuses these clips by name.
         if not self._is_vlm or not self._reads_vision_input() or not _mlx_vlm_decodes_video():
             return "a reply carries a video clip this load does not read"
-        if self._speculative_draft is not None and self._kv_quant_bits() is not None:
-            # A clip's row resumes no cache, and only a resumed row carries the quantization.
-            return "a quantized speculative batch does not decode a video clip"
+        if self._kv_quant_bits() is not None:
+            # A clip has not been validated on a quantized row cache.
+            return "a quantized batch does not decode a video clip"
         try:
             from unsloth_zoo.mlx import generate as engine
         except ImportError:
