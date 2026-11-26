@@ -1242,3 +1242,33 @@ def test_a_scan_folder_subfolder_with_an_empty_or_numbered_checkpoint_is_not_lis
         _flux_checkpoint(checkpoint)
 
     assert _scan_hub_only(monkeypatch, tmp_path, folders = [library]) == []
+
+
+def _two_revision_gguf_repo(hub: Path, newer_files = ()) -> None:
+    import os
+    import time
+
+    repo = hub / "models--org--Model-GGUF"
+    _write(repo / "refs" / "main", "b" * 40)
+    older = repo / "snapshots" / ("a" * 40)
+    _touch(older / "Model-Q4_K_M.gguf")
+    newer = repo / "snapshots" / ("b" * 40)
+    newer.mkdir(parents = True)
+    for name in newer_files:
+        _touch(newer / name)
+    now = time.time()
+    os.utime(older, (now - 3600, now - 3600))
+    os.utime(newer, (now, now))
+
+
+def test_a_custom_cache_mtp_only_revision_keeps_the_older_quant_resolvable(monkeypatch, tmp_path):
+    """A newer revision holding only an MTP drafter must not hide the older revision's quant from the resolver."""
+    from core.inference import local_model_resolver as resolver
+
+    folder = tmp_path / "custom"
+    _two_revision_gguf_repo(folder / "hub", ("MTP/mtp-model-Q8_0.gguf",))
+
+    rows = _scan_hub_only(monkeypatch, tmp_path, folders = [folder])
+    assert len(rows) == 1
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    assert "org/model-gguf" in resolver._build_index()

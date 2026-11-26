@@ -457,6 +457,17 @@ def loose_diffusion_checkpoint_rows(
     return rows
 
 
+def _an_older_snapshot_holds_a_gguf(path: Path) -> bool:
+    """The resolver loads a repo's newest whole GGUF revision, so a newer snapshot holding only an MTP drafter or
+    mmproj does not hide it."""
+    repo_dir = path.parent.parent if path.parent.name == "snapshots" else path
+    try:
+        snapshots = [entry for entry in (repo_dir / "snapshots").iterdir() if entry.is_dir()]
+    except OSError:
+        return False
+    return any(model_common._main_gguf_files(snapshot) for snapshot in snapshots)
+
+
 _NUMBERED_SHARD = re.compile(r"-\d{5}-of-\d{5}\.safetensors$", re.IGNORECASE)
 
 
@@ -1422,6 +1433,8 @@ def _scan_custom_folder(
     def _is_supported(m: LocalModelInfo) -> bool:
         # A diffusers pipeline keeps its weights in component subdirs, so its root lands as "unknown"; judge it on its shape rather than on a format the layout cannot report.
         if m.model_format in supported_formats or _is_loose_diffusion_checkpoint_row(m):
+            return True
+        if m.source == "hf_cache" and _an_older_snapshot_holds_a_gguf(Path(m.path)):
             return True
         return _is_diffusers_pipeline_dir(Path(m.path)) or _is_single_checkpoint_dir(Path(m.path))
 
