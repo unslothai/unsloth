@@ -194,6 +194,7 @@ import {
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
+import { clipPrecisionSelection } from "@/lib/clip-precision";
 import { reseedAction } from "@/lib/failed-load-reseed";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
@@ -230,6 +231,7 @@ import {
   engagedAttentionBackend,
   formatResolvedValue,
   isPrecisionRefusal,
+  loadedTransformerPrecisionLabel,
   resolvedBadge,
   resolvedRequestSelectValue,
   resolvedSeedKey,
@@ -2643,6 +2645,9 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
+      // The precision the clip ran with, for the next load (an NVFP4 clip on a build with NVFP4 off falls back).
+      const precision = clipPrecisionSelection(video.transformer_quant);
+      if (precision) setTransformerQuant(precision);
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
@@ -4388,6 +4393,8 @@ function VideoGenerator({
               models={videoModels}
               value={selectorModelId}
               loadedModelIdOverride={selectorModelId}
+              // The resident build's precision, not the catalog row's: an FP8 load of the BF16 Wan row reads FP8.
+              loadedPrecisionOverride={busy !== "unloading" ? loadedTransformerPrecisionLabel(status) : null}
               activeGgufVariant={quant}
               onValueChange={handleModelSelect}
               resolveDownloadFootprint={resolveDownloadFootprint}
