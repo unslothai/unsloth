@@ -444,6 +444,10 @@ def _zygote_for(process_obj, mode):
             # Counted in tests, so the ranks of one test all start the same way and meet at the same time.
             return None
         limit = _limit()
+        if _mem_available_gb() < _MEM_FLOOR_GB:
+            limit = min(
+                limit, len(_servers)
+            )  # no new zygote while memory is short; idle ones may go
         # Least used first, among those with no live rank (a rank's exit code comes back through its zygote).
         for old_key in sorted(_servers, key = lambda k: _turns.get(json.dumps(json.loads(k)[:2]), 0)):
             if len(_servers) < limit:
@@ -461,6 +465,21 @@ def _zygote_for(process_obj, mode):
             _servers[twin] = _Zygote(env, mode, guess)
     _servers[key] = zygote
     return zygote
+
+
+_MEM_FLOOR_GB = float(os.environ.get("UNSLOTH_TEST_RANK_ZYGOTE_MIN_FREE_GB", "4") or "4")
+
+
+def _mem_available_gb() -> float:
+    """MemAvailable from /proc/meminfo, in GB (inf when unreadable): a zygote is a whole import."""
+    try:
+        with open("/proc/meminfo", encoding = "utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024 / 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return float("inf")
 
 
 def _limit() -> int:
@@ -718,6 +737,13 @@ def _short(filename: str) -> str:
 
 def _owners():
     """Every base module and every class reachable from one: whose attributes the import may rebind."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # isinstance on deprecated module attributes warns
+        return _owners_quiet()
+
+
+def _owners_quiet():
     owners, seen = [], set()
     for name, mod in list(sys.modules.items()):
         if mod is None or id(mod) in seen:
