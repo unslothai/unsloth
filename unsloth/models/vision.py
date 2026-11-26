@@ -5247,6 +5247,9 @@ class FastBaseModel:
                     bnb_config,
                     is_vision_model = is_vlm_config,
                 )
+                if getattr(model, "_unsloth_vllm_nvfp4_layers", 0):
+                    # NVFP4 layers hold vLLM's kept compressed-tensors tensors: run them W4A16 like a plain load.
+                    _prepare_compressed_tensors_model(model)
                 model.vllm_engine = llm
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate
