@@ -36,6 +36,7 @@ from typing import (
     Any,
     Callable,
     Collection,
+    Hashable,
     List,
     Literal,
     NamedTuple,
@@ -55860,18 +55861,30 @@ def _image_generation_defaults(status: dict) -> tuple[int, float]:
     )
 
 
-async def _batched_openai_images(
-    backend: Any,
-    status: dict,
-    body: ImageGenerationRequest,
-    width: int,
-    height: int,
-    steps: int,
-    guidance: float,
-    expected_load: Any,
-    loras: Optional[list[tuple[str, float]]] = None,
-    expected_load_loras: Optional[tuple] = None,
+def _frozen_kwarg(value: Any) -> Hashable:
+    """A hashable stand-in for one generate() argument, so the batch key holds every setting that changes output."""
+    if isinstance(value, dict):
+        return tuple(sorted((str(k), _frozen_kwarg(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen_kwarg(v) for v in value)
+    if hasattr(value, "model_dump"):
+        return (type(value).__name__, _frozen_kwarg(value.model_dump()))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return (type(value).__name__, _frozen_kwarg(dataclasses.asdict(value)))
+    try:
+        hash(value)
+    except TypeError:
+        return (type(value).__name__, repr(value))
+    return value
+
+
+async def _coalesced_image_generate(
+    backend: Any, status: dict, *, prompt: str, n: int, seed: Optional[int], generate_kwargs: dict
 ) -> Optional[dict]:
+    """Joins this request to a batch while a render runs, any account included; None = render alone.
+
+    ``generate_kwargs`` is everything but the prompt / seed / count: all of it goes into the key, so only requests
+    whose renders would match share a call, and each member gets only its own images back."""
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -55909,23 +55922,20 @@ async def _batched_openai_images(
             arrived_behind.append(current)
         return current is arrived_behind[0]
 
+    def check() -> None:
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+
     async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
         with generation_ticket(ticket):
             try:
                 return await _image_generate_in_thread(
                     backend.generate,
                     prompt = prompts[0],
-                    negative_prompt = body.negative_prompt,
-                    width = width,
-                    height = height,
-                    steps = steps,
-                    guidance = guidance,
                     prompts = prompts,
                     seeds = seeds,
                     batch_size = len(seeds),
-                    expected_load = expected_load,
-                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
-                    **({"loras": loras} if loras else {}),
+                    **generate_kwargs,
                 )
             except Exception as exc:
                 # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
@@ -55933,36 +55943,63 @@ async def _batched_openai_images(
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
                 raise
 
-    key = (
-        current_account_id(),
-        expected_load,
-        expected_load_loras,
-        width,
-        height,
-        steps,
-        guidance,
-        body.negative_prompt or None,
-        tuple(loras or ()),
-    )
+    # No account: requests from different accounts with the same settings share one call.
+    key = tuple(sorted((name, _frozen_kwarg(value)) for name, value in generate_kwargs.items()))
 
     def cancelled(exc: BaseException) -> bool:
         return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
 
     waiter = getattr(backend, "generation_waiter", None)
+    rider = getattr(backend, "generation_rider", None)
     with waiter(stopped) if waiter is not None else nullcontext():
         result = await image_request_batching.generate(
             key,
-            body.prompt,
-            body.n,
-            body.seed,
+            prompt,
+            n,
+            seed,
             busy = busy,
             run_batch = run_batch,
             shared_outcome = cancelled,
+            owner = current_account_id(),
+            check = check,
+            # A Stop from this account reaches its images while another account's call renders them.
+            ride = (lambda: rider(stopped)) if rider is not None else None,
         )
         # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
         if result is None and stopped.is_set():
             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
         return result
+
+
+async def _batched_openai_images(
+    backend: Any,
+    status: dict,
+    body: ImageGenerationRequest,
+    width: int,
+    height: int,
+    steps: int,
+    guidance: float,
+    expected_load: Any,
+    loras: Optional[list[tuple[str, float]]] = None,
+    expected_load_loras: Optional[tuple] = None,
+) -> Optional[dict]:
+    return await _coalesced_image_generate(
+        backend,
+        status,
+        prompt = body.prompt,
+        n = body.n,
+        seed = body.seed,
+        generate_kwargs = dict(
+            negative_prompt = body.negative_prompt,
+            width = width,
+            height = height,
+            steps = steps,
+            guidance = guidance,
+            expected_load = expected_load,
+            **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
+            **({"loras": loras} if loras else {}),
+        ),
+    )
 
 
 # Split out so the monitor row can wrap the whole handler without reindenting it.

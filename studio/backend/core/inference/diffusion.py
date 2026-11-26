@@ -4939,6 +4939,8 @@ class DiffusionBackend:
         self._active_generate_account: Optional[str] = None
         # Queued requests; cancel_generate() decides which Stop may signal.
         self._queued_generate_cancels: set[threading.Event] = set()
+        # Requests whose images render in another request's batch, by account: their own Stop leaves the batch.
+        self._generate_riders: dict[threading.Event, Optional[str]] = {}
         self._generation_owns_slot = False
 
         self._transition_owns_slot = False
@@ -17825,6 +17827,30 @@ class DiffusionBackend:
             with self._generation_cancel_lock:
                 self._queued_generate_cancels.discard(cancel)
 
+    @contextmanager
+    def generation_rider(self, cancel: threading.Event):
+        """A request riding another request's batched call: a Stop from its account sets ``cancel`` even while
+        another account's generation holds the slot."""
+        account = current_account_id()
+        with self._generation_cancel_lock:
+            self._generate_riders[cancel] = account
+        try:
+            yield
+        finally:
+            with self._generation_cancel_lock:
+                self._generate_riders.pop(cancel, None)
+
+    def _stop_riders_locked(self, account: Optional[str]) -> bool:
+        # getattr: tests build a bare backend with object.__new__.
+        riders = [
+            event
+            for event, owner in getattr(self, "_generate_riders", {}).items()
+            if owner == account
+        ]
+        for event in riders:
+            event.set()
+        return bool(riders)
+
     def generation_holder(self) -> Optional[object]:
         with self._generation_cancel_lock:
             if self._active_generate_cancel is not None:
@@ -17864,8 +17890,11 @@ class DiffusionBackend:
                     None,
                     expected_account,
                 ):
-                    return False
+                    # Another account's call may be rendering this account's batched images.
+                    return self._stop_riders_locked(expected_account)
                 active.set()
+                return True
+            if expected_account is not None and self._stop_riders_locked(expected_account):
                 return True
             if self._generation_owns_slot:
                 return False
