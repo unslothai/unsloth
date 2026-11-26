@@ -232,7 +232,8 @@ def test_cut_rows_count_as_truncated_and_off_is_unchanged():
 
 
 def test_cut_row_masked_when_an_earlier_finished_row_has_the_same_tokens():
-    # Row 3 (context limit, no EOS) and cut row 7 share 180 tokens; both must be truncated.
+    # Row 3 (group 0) stops at the context limit without EOS after 180 tokens; row 7 (group 1) is cut at
+    # step 180 with the same 180 tokens. Both must be truncated: the cut row has to leave the loss.
     lengths, prompts = _batch()
     engine = FakeEngine(lengths, prompts, length_stop = {3}, same_tokens = True)
     state = _wrap(engine, G = 4, k_min = 3, frac = 0.1, min_tokens = 128)

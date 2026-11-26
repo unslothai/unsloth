@@ -95,12 +95,14 @@ run_func() {
 
 echo "=== test_strixhalo_wsl_reroute ==="
 
+# 1) 26.04, Strix Halo, no librocdxg, 24.04 exists -> ROUTE into Ubuntu-24.04
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d")
 assert_contains "26.04 + existing 24.04 -> routes"      "$_out" "__ROUTED__"
 assert_absent   "26.04 route stops current distro"      "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
+# 2) Already on 24.04 -> NO route (correct distro, leave it alone)
 _d=$(make_fixture 1 strix 0 24.04 1)
 _out=$(run_func "$_d")
 assert_contains "on 24.04 -> no route"                  "$_out" "__NOROUTE__"
@@ -114,7 +116,8 @@ assert_contains "librocdxg present -> no route"         "$_out" "__NOROUTE__"
 assert_absent   "librocdxg present -> not rerouted"     "$_out" "__ROUTED__"
 rm -rf "$_d"
 
-# 26.04 without Ubuntu-24.04: no route, and the origin ROCm bootstrap is skipped too.
+# 4) 26.04 but no Ubuntu-24.04 distro -> NO route (install-only-on-prompt path).
+#    Unsupported distro with no reroute target must also skip the origin ROCm bootstrap.
 _d=$(make_fixture 1 strix 0 26.04 0)
 _out=$(run_func "$_d")
 assert_contains "26.04 + no 24.04 distro -> no route"   "$_out" "__NOROUTE__"
@@ -122,6 +125,7 @@ assert_absent   "26.04 + no 24.04 -> not rerouted"      "$_out" "__ROUTED__"
 assert_contains "26.04 + no 24.04 -> skip ROCm bootstrap" "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
+# 5) No /dev/dxg (no WSL GPU passthrough) -> NO route
 _d=$(make_fixture 0 strix 0 26.04 1)
 _out=$(run_func "$_d")
 assert_contains "no /dev/dxg -> no route"               "$_out" "__NOROUTE__"
@@ -140,11 +144,13 @@ assert_contains "REROUTED=1 loop guard -> no route"     "$_out" "__NOROUTE__"
 assert_absent   "REROUTED=1 -> not rerouted again"      "$_out" "__ROUTED__"
 rm -rf "$_d"
 
+# 8) Opt-out: UNSLOTH_SKIP_ROCM_WSL_SETUP=1 -> NO route
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UNSLOTH_SKIP_ROCM_WSL_SETUP=1)
 assert_contains "SKIP_ROCM_WSL_SETUP=1 -> no route"     "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
+# 9) Not WSL (OS=linux) -> NO route
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" OS=linux)
 assert_contains "OS=linux -> no route"                  "$_out" "__NOROUTE__"
@@ -156,6 +162,7 @@ _out=$(run_func "$_d" SKIP_TORCH=true)
 assert_contains "SKIP_TORCH=true -> no route"           "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
+# 11) The reroute exports UNSLOTH_WSL_REROUTED=1 into the child (loop guard).
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='echo flag=[$UNSLOTH_WSL_REROUTED]')
 assert_contains "reroute exports loop-guard flag"       "$_out" "flag=[1]"
@@ -177,6 +184,7 @@ assert_absent   "--local -> reroute command not run"    "$_out" "__ROUTED__"
 assert_contains "--local -> skip ROCm bootstrap"        "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
+# 14) Custom UNSLOTH_STUDIO_HOME (env mode) is forwarded as an export into the reroute.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" _STUDIO_HOME_REDIRECT=env STUDIO_HOME=/custom/studio \
         UNSLOTH_WSL_REROUTE_CMD='echo home=[$UNSLOTH_STUDIO_HOME]')
@@ -190,6 +198,7 @@ assert_contains "forwards --package to reroute"          "$_out" "--package 'uns
 assert_contains "forwards --python to reroute"           "$_out" "--python '3.13'"
 rm -rf "$_d"
 
+# 16) --tauri is forwarded onto the default reroute command.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" PACKAGE_NAME=unsloth TAURI_MODE=true UNSLOTH_WSL_REROUTE_CMD=)
 assert_contains "forwards --tauri to reroute"            "$_out" "--tauri"
@@ -202,6 +211,7 @@ assert_contains "failed reroute -> sets ROCm-bootstrap skip guard" "$_out" "SKIP
 assert_contains "failed reroute -> continues locally"             "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
+# 18) A successful reroute (no failure) does NOT set the skip guard prematurely.
 _d=$(make_fixture 1 strix 0 24.04 1)
 _out=$(run_func "$_d")
 assert_absent   "supported 24.04 -> skip guard not forced"        "$_out" "SKIP_ROCM=1"
@@ -217,6 +227,7 @@ assert_absent   "no wsl.exe -> not rerouted"                      "$_out" "__ROU
 assert_contains "no wsl.exe -> skip ROCm bootstrap"               "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
+# 20) UNSLOTH_ROCM_WSL_AUTO=1 consent is forwarded into the reroute.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UNSLOTH_ROCM_WSL_AUTO=1 \
         UNSLOTH_WSL_REROUTE_CMD='echo auto=[$UNSLOTH_ROCM_WSL_AUTO]')
@@ -232,6 +243,7 @@ assert_contains "both present -> targets 24.04"                   "$_out" "-d Ub
 assert_absent   "both present -> does not target 22.04"           "$_out" "-d Ubuntu-22.04"
 rm -rf "$_d"
 
+# 22) Only 22.04 installed -> no route, CPU-only, skip the origin ROCm bootstrap.
 _d=$(make_fixture 1 strix 0 26.04 0)
 printf 'Ubuntu\nUbuntu-22.04\n' > "$_d/distros"
 _out=$(run_func "$_d")
@@ -240,6 +252,7 @@ assert_absent   "only 22.04 -> not rerouted"                      "$_out" "__ROU
 assert_contains "only 22.04 -> skip ROCm bootstrap"               "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
+# 23) Neither 24.04 nor 22.04 present -> stay CPU-only and skip the ROCm bootstrap.
 _d=$(make_fixture 1 strix 0 26.04 0)
 printf 'Ubuntu\nUbuntu-20.04\n' > "$_d/distros"
 _out=$(run_func "$_d")
@@ -256,6 +269,7 @@ assert_absent   "substring-only distro -> not rerouted"           "$_out" "__ROU
 assert_contains "substring-only distro -> skip ROCm bootstrap"    "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
+# 25) Exact Ubuntu-24.04 alongside a custom Ubuntu-24.04-test -> route to the exact one.
 _d=$(make_fixture 1 strix 0 26.04 0)
 printf 'Ubuntu\nUbuntu-24.04-test\nUbuntu-24.04\n' > "$_d/distros"
 _out=$(run_func "$_d")
@@ -271,6 +285,7 @@ if [ "$_rc" = "2" ]; then echo "  PASS: tauri child exit 2 -> reroute propagates
 assert_absent   "tauri exit 2 -> not a CPU fallback"              "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
+# 27) The autostart opt-out reaches the target distro.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" _SKIP_AUTOSTART=true UNSLOTH_SKIP_AUTOSTART= \
         UNSLOTH_WSL_REROUTE_CMD='echo skip=[$UNSLOTH_SKIP_AUTOSTART]')
@@ -287,6 +302,7 @@ _out=$(run_func "$_d" UNSLOTH_SYSTEMD_HOST=0.0.0.0)
 assert_absent   "no systemd opt-in -> nothing forwarded"          "$_out" "SYSTEMD"
 rm -rf "$_d"
 
+# 28) Non-tauri mode: a child exit 2 is just a failure -> CPU fallback, not propagated.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _rc=0
 _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='exit 2') || _rc=$?
