@@ -286,7 +286,6 @@ async function placeWindow(
   await win.setPosition(new PhysicalPosition(position.x, position.y));
 }
 
-/** Pulls a restored window back inside its monitor's work area when part of it is off every screen. */
 async function keepWindowOnScreen(
   win: TauriWindow,
   { availableMonitors, PhysicalPosition, PhysicalSize }: WindowModule,

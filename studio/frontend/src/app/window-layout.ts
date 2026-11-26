@@ -131,8 +131,7 @@ export function constrainWindowSize(
   );
 }
 
-// Windows counts its invisible resize borders in the outer rectangle, so a snapped window pokes a
-// few pixels past the screen edge; that alone must not move it. The borders grow with the scale factor.
+// Windows' invisible resize borders (scaled by DPI) put a snapped window's outer rect off screen.
 const OFF_SCREEN_TOLERANCE_PX = 16;
 
 function overlapArea(a: PhysicalWindowRect, b: PhysicalWindowRect): number {
@@ -145,12 +144,7 @@ function overlapArea(a: PhysicalWindowRect, b: PhysicalWindowRect): number {
   return width > 0 && height > 0 ? width * height : 0;
 }
 
-/**
- * Where a restored outer window rectangle must go so that none of it is off every screen, or null
- * when it is already on screen. A layout saved at a larger resolution can open partly or fully
- * past the edge (#19590); it is shrunk to the work area and moved inside it. A window spanning
- * several monitors stays put while they cover it.
- */
+/** Outer rect shrunk and moved into the work area if part is off every screen (#19590), else null. */
 export function calculateOnScreenRect(
   window: PhysicalWindowRect,
   screens: PhysicalWindowRect[],

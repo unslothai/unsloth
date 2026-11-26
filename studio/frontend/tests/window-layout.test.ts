@@ -347,12 +347,10 @@ test("pulls a window saved at a larger resolution back on screen", () => {
     calculateOnScreenRect(rect(1500, 800, 1000, 600), [screen], workAreaRect),
     rect(920, 440, 1000, 600),
   );
-  // Saved larger than the new screen: shrunk to the work area as well as moved.
   assert.deepEqual(
     calculateOnScreenRect(rect(100, 60, 2400, 1350), [screen], workAreaRect),
     rect(0, 0, 1920, 1040),
   );
-  // Entirely past the edge.
   assert.deepEqual(
     calculateOnScreenRect(rect(2600, 1200, 900, 600), [screen], workAreaRect),
     rect(1020, 440, 900, 600),
@@ -390,7 +388,6 @@ test("leaves on-screen and multi-monitor windows where they are", () => {
     ),
     null,
   );
-  // Spans both monitors, every part of it on one of them.
   assert.equal(
     calculateOnScreenRect(
       rect(1500, 100, 1000, 600),
@@ -399,7 +396,6 @@ test("leaves on-screen and multi-monitor windows where they are", () => {
     ),
     null,
   );
-  // Hangs below the shorter secondary: moved inside the monitor it is on.
   assert.deepEqual(
     calculateOnScreenRect(
       rect(2000, 400, 1000, 600),

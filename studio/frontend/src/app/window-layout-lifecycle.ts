@@ -208,7 +208,6 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
     restored ? { minimum: measured.bounds.minimum } : measured.bounds,
   );
   if (!restored || !isCurrent()) return;
-  // Measured once shown, so a layout saved at a larger resolution is pulled back on screen.
   await keepOnScreen?.(measured);
 }
 
