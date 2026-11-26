@@ -392,6 +392,46 @@ def _grouped_form_status(pipe: Any) -> Optional[dict]:
         return None
 
 
+def _video_fp8_gemm_status(state: Any) -> Optional[dict]:
+    """Which fp8 GEMM the loaded fp8 denoiser(s) / text encoder run, as the images status reports it: torchao
+    row-wise, or the unit-scale fallback on a torch build without the row-wise kernel (Windows wheels). A ModelOpt FP8
+    denoiser also reports its own W8A8 route (``modelopt``). None for a load without fp8. Never raises."""
+    try:
+        pipe = getattr(state, "pipe", None)
+        transformer = getattr(pipe, "transformer", None)
+        modelopt = _modelopt_info(transformer)
+        # only the W8A8 runtimes run an fp8 GEMM; stored / dequant ModelOpt layers widen to bf16
+        if modelopt.get("runtime") not in ("static", "dynamic"):
+            modelopt = {}
+        component = None
+        if modelopt or str(getattr(state, "transformer_quant", None) or "").lower() == "fp8":
+            component = "transformer"
+        elif str(getattr(state, "text_encoder_quant", None) or "").lower().startswith("fp8"):
+            component = "text_encoder"
+        if component is None:
+            return None
+        from .diffusion_fp8_unit_scale import gemm_path
+
+        index = None
+        module = getattr(pipe, component, None)
+        for param in module.parameters() if module is not None else ():
+            device = getattr(param, "device", None)
+            if getattr(device, "type", None) == "cuda":
+                index = device.index
+                break
+        out = {**gemm_path(index), "component": component}
+        if modelopt:
+            from .diffusion_modelopt_fp8 import fp8_gemm_calls, gemm_route
+            out["modelopt"] = {
+                "runtime": modelopt.get("runtime"),
+                "route": gemm_route(index),
+                "calls": fp8_gemm_calls(transformer),
+            }
+        return out
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
+
+
 def _grouped_form_note(model: Any) -> str:
     try:
         from .diffusion_grouped_int8 import grouped_form_note
@@ -17999,10 +18039,12 @@ class VideoBackend:
             ),
             "baked_loras": video_lora.baked_lora_names(getattr(state, "pipe", None)),
             "baked_lora_specs": video_lora.baked_lora_specs(getattr(state, "pipe", None)),
+            "lora_fuse": video_lora.lora_fuse_status(getattr(state, "pipe", None)),
             # Structural refusal only (kind, two experts); the transformer_quant refusal depends on the next load.
             "lora_refusal": video_lora.load_refusal(fam, state.kind, None),
             **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
             "text_encoder_quant": state.text_encoder_quant,
+            "fp8_gemm": _video_fp8_gemm_status(state),
             "has_audio": fam.has_audio,
             "prompt_hint": fam.prompt_hint,
             "supports_cfg": fam.supports_cfg,

@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { DiffusionRunProgress } from "./diffusion-run-progress";
+import { stepGuidanceText } from "./step-guidance";
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
@@ -1629,6 +1630,14 @@ export function DiffusionTrainPanel({
     </div>
   );
 
+  // Only families with a measured step sweep get a per-family count, scaled to the picked set; the rest keep the
+  // generic hint.
+  const familyStepGuidance = stepGuidanceText(
+    family?.label ?? familyName,
+    reportedFamily?.step_guidance,
+    selectedItemCount,
+    effectiveBatchSize * Math.max(1, gradAccum),
+  );
   const durationField = (
     <div className={fieldClass}>
       <FieldLabel
@@ -1673,6 +1682,11 @@ export function DiffusionTrainPanel({
           </SelectContent>
         </Select>
       </div>
+      {familyStepGuidance ? (
+        <p className="text-ui-10 leading-snug text-muted-foreground" data-testid="train-step-guidance">
+          {familyStepGuidance}
+        </p>
+      ) : null}
     </div>
   );
 

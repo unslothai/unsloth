@@ -495,6 +495,7 @@ import {
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
 import { loraFuseLabel } from "./lib/lora-fuse";
+import { MULTI_GPU_BATCH_NOTE, multiGpuPlacementRow } from "@/lib/multi-gpu-placement";
 import {
   ENGINE_HINT,
   ENGINE_HINT_CPU_ONLY,
@@ -1591,6 +1592,7 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   const offload = status.offload_policy ?? "none";
   const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
   const loraFuse = loraFuseLabel(status.lora_fuse);
+  const multiGpu = multiGpuPlacementRow(status.multi_gpu);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1640,6 +1642,13 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
           label="Placement"
           value={placement.label}
           badge={<InfoHint>{placement.detail}</InfoHint>}
+        />
+      ) : null}
+      {multiGpu ? (
+        <BuildRow
+          label="Multi-GPU"
+          value={multiGpu.label}
+          badge={<InfoHint>{multiGpu.detail}</InfoHint>}
         />
       ) : null}
       {loraFuse ? (
@@ -6556,7 +6565,7 @@ export function ImagesPage({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one image is not part of this release."
+          hint={`Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one image is not part of this release. ${MULTI_GPU_BATCH_NOTE}`}
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
