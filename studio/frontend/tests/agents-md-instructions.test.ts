@@ -93,6 +93,20 @@ test("only requests sent to the model ask for AGENTS.md; copies and exports do n
     ADAPTER.indexOf("export async function buildLocalTokenCountHistory"),
     ADAPTER.indexOf("export function buildLocalTokenCountReasoning"),
   );
-  assert.match(recount, /resolveAgentsMd\(projectId\)/);
-  assert.match(recount, /composeChatInstructions\(/);
+  assert.match(recount, /withProjectInstructions\(threadId, safeSystemPrompt, undefined, \{ agentsMd: true \}\)/);
+  const helper = ADAPTER.slice(ADAPTER.indexOf("async function withProjectInstructions("));
+  assert.match(helper, /opts\?\.agentsMd \? resolveAgentsMd\(projectId\) : undefined/);
+  assert.match(helper, /composeChatInstructions\(\{ agentsMd, projectInstructions, systemPrompt \}\)/);
+});
+
+test("a character chat in a project keeps the project's instructions and AGENTS.md, on the send and the recount", () => {
+  assert.match(
+    ADAPTER,
+    /characterRun\s*\? await withProjectInstructions\(resolvedThreadId, characterRun\.system, readThreadRecord, \{\s*agentsMd: true,\s*\}\)/,
+  );
+  assert.match(
+    ADAPTER,
+    /characterRun\s*\? await withProjectInstructions\(threadId, characterRun\.system, undefined, \{ agentsMd: true \}\)/,
+  );
+  assert.doesNotMatch(ADAPTER, /characterRun\s*\? characterRun\.system/);
 });

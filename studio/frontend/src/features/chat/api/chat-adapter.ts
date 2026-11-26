@@ -2272,7 +2272,7 @@ export async function buildLocalTokenCountHistory(
       Boolean(message),
     );
   const combinedSystemPrompt = characterRun
-    ? characterRun.system
+    ? await withProjectInstructions(threadId, characterRun.system, undefined, { agentsMd: true })
     : await localCountChatInstructions(threadId, params);
   if (combinedSystemPrompt) {
     prependSystemPrompt(outboundMessages, combinedSystemPrompt);
@@ -2300,16 +2300,7 @@ async function localCountChatInstructions(
             : "",
         )
       : "";
-  const projectId = await resolveProjectId(threadId);
-  const [projectInstructions, agentsMd] = await Promise.all([
-    resolveProjectInstructions(projectId),
-    resolveAgentsMd(projectId),
-  ]);
-  return composeChatInstructions({
-    agentsMd,
-    projectInstructions,
-    systemPrompt: safeSystemPrompt,
-  });
+  return withProjectInstructions(threadId, safeSystemPrompt, undefined, { agentsMd: true });
 }
 
 /** The reasoning fields a completion would send: llama-server falls back to load-time
@@ -2563,16 +2554,22 @@ export async function resolveChatInstructions(
           typeof systemVariables === "string" ? systemVariables : "",
         )
       : "";
+  return withProjectInstructions(threadId, safeSystemPrompt, readThreadRecord, opts);
+}
+
+/** The thread's project instructions (and AGENTS.md when asked) ahead of a system prompt already resolved. */
+async function withProjectInstructions(
+  threadId: string | undefined,
+  systemPrompt: string,
+  readThreadRecord?: ThreadRecordReader,
+  opts?: { agentsMd?: boolean },
+): Promise<string> {
   const projectId = await resolveProjectId(threadId, readThreadRecord);
   const [projectInstructions, agentsMd] = await Promise.all([
     resolveProjectInstructions(projectId),
     opts?.agentsMd ? resolveAgentsMd(projectId) : undefined,
   ]);
-  return composeChatInstructions({
-    agentsMd,
-    projectInstructions,
-    systemPrompt: safeSystemPrompt,
-  });
+  return composeChatInstructions({ agentsMd, projectInstructions, systemPrompt });
 }
 
 // Answered once per thread and reused, so sandbox, RAG scope and instructions never mix two projects.
@@ -5600,8 +5597,11 @@ export function createOpenAIStreamAdapter(
         }
       }
 
+      // A character chat in a project still answers to the project's instructions and AGENTS.md.
       const combinedSystemPrompt = characterRun
-        ? characterRun.system
+        ? await withProjectInstructions(resolvedThreadId, characterRun.system, readThreadRecord, {
+            agentsMd: true,
+          })
         : await resolveChatInstructions(
             resolvedThreadId,
             params.systemPrompt,
