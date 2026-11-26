@@ -442,10 +442,19 @@ _GROUPED_MLPS = {
 _GROUPED_ENV = "UNSLOTH_EP_GROUPED_EXPERTS"
 
 
-def _grouped_spec(lst, lo, hi):
+def _grouped_spec(shard, lst):
+    """(experts as one ModuleList, projection names) for this rank's experts, cached per shard, or a reason."""
+    lo, hi = shard.lo, shard.hi
     if hi <= lo or os.environ.get(_GROUPED_ENV, "1") == "0":
-        return None
+        return "no local experts" if hi <= lo else f"{_GROUPED_ENV}=0"
     experts = [lst._modules[str(e)] for e in range(lo, hi)]
+    hit = shard.__dict__.get("_grouped")
+    if (
+        hit is not None
+        and len(hit[0]) == len(experts)
+        and all(a is b for a, b in zip(hit[0], experts))
+    ):
+        return hit
     kind = type(experts[0])
     names = _GROUPED_MLPS.get(kind.__name__)
     if (
@@ -453,39 +462,45 @@ def _grouped_spec(lst, lo, hi):
         or kind.forward.__module__ != kind.__module__
         or not callable(getattr(experts[0], "act_fn", None))
     ):
-        return None
+        return f"{kind.__name__} is not a known expert MLP"
     if any(
         type(m) is not kind or "forward" in m.__dict__ or m._forward_hooks or m._forward_pre_hooks
         for m in experts
     ):
-        return None
-    return experts, names
+        return "experts of different types, or with hooks"
+    # A ModuleList the zoo kernels can cache their stacked-dequant tables on (not attached to the model).
+    shard.__dict__["_grouped"] = hit = (nn.ModuleList(experts), names)
+    return hit
 
 
 def _grouped_locals(shard, lst, got_x, perm, counts):
     """This rank's experts over the received rows with unsloth_zoo's grouped GEMMs (bitsandbytes 4-bit or 16-bit
-    frozen bases, one LoRA adapter), rows in got_x order; None keeps the per-expert loop."""
-    if (
-        not got_x.is_cuda
+    frozen bases, one LoRA adapter), rows in got_x order; None keeps the per-expert loop (reason on the shard)."""
+    found = (
+        f"{got_x.device.type} {got_x.dtype} rows"
+        if not got_x.is_cuda
         or got_x.dtype not in (torch.float16, torch.bfloat16)
         or got_x.shape[0] == 0
-    ):
-        return None
-    found = _grouped_spec(lst, shard.lo, shard.hi)
-    if found is None:
+        else _grouped_spec(shard, lst)
+    )
+    if isinstance(found, str):
+        shard.grouped_declined = found
         return None
     experts, names = found
     try:
         from unsloth_zoo.temporary_patches import moe_grouped_modulelist as zoo
         from unsloth_zoo.temporary_patches.moe_utils import _grouped_mm_supported_on
-    except Exception:
+    except Exception as exc:
+        shard.grouped_declined = f"unsloth_zoo grouped MoE unavailable: {type(exc).__name__}"
         return None
     if not _grouped_mm_supported_on(got_x.device):
+        shard.grouped_declined = "grouped GEMM unsupported on this GPU"
         return None
     spec = (*names, None)
     dtype = got_x.dtype
     lora = zoo._experts_grouped_state(experts, spec, got_x.device, dtype)
     if not isinstance(lora, dict):
+        shard.grouped_declined = lora
         return None
     projs = zoo._expert_projs(experts, spec)
     offsets = torch.tensor(counts, dtype = torch.int64).cumsum(0).to(torch.int32).to(got_x.device)
