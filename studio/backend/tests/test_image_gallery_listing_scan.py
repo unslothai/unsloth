@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The image listing scans the folder once and stats only what it reads, with the records and
-order the per-file ``Path.glob`` + ``Path.stat`` listing gave."""
+"""Single-scan image listing matches the old per-file glob + stat listing."""
 
 from __future__ import annotations
 
@@ -152,8 +151,7 @@ def test_a_rewrite_between_listings_is_reread(monkeypatch, full_entry_stat):
     monkeypatch.setattr(images, "_ENTRY_STAT_IS_FULL", full_entry_stat)
     _png("img.png", 1, _T0)
     assert images.list_images()[0]["seed"] == 1
-    # Same size and mtime: POSIX ctime catches the rewrite; Windows st_ctime is creation time,
-    # so there (on base too) only the new mtime a real rewrite gets does.
+    # Same size and mtime: POSIX ctime catches the rewrite; Windows ctime is creation time.
     _png("img.png", 2, _T0 if os.name != "nt" else _T0 + 1_000_000)
     assert images.list_images()[0]["seed"] == 2
 

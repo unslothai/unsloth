@@ -410,9 +410,8 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-# Path.glob folds case on Windows only.
 _GLOB_FOLDS_CASE = os.name == "nt"
-# Windows DirEntry.stat() reports st_ino / st_dev as 0, so the recipe cache key needs a real os.stat there.
+# Windows DirEntry.stat() has st_ino / st_dev 0; the recipe cache key needs a real os.stat.
 _ENTRY_STAT_IS_FULL = os.name != "nt"
 
 
@@ -428,13 +427,11 @@ def _listed_pngs(directory: Path) -> list[tuple[str, os.DirEntry]]:
                 # Path.stem: a dot-led name (".png", "..png" on 3.14) can be all stem.
                 found.append((Path(name).stem if name.startswith(".") else name[:-4], entry))
         except OSError:
-            # Path.glob listed a failed read as empty.
             return []
     return found
 
 
 def _entry_stat(entry: os.DirEntry) -> Optional[os.stat_result]:
-    # Follows symlinks like Path.stat; free on Windows, one stat on POSIX as before.
     try:
         return entry.stat()
     except OSError:
@@ -475,7 +472,7 @@ def list_images(
         path = directory / entry.name
         key = info
         if info is not None and not _ENTRY_STAT_IS_FULL:
-            # Only the records read pay a real stat; it precedes the read, so a write in between misses.
+            # Stat must precede the read, so a write in between misses.
             try:
                 key = os.stat(path)
             except OSError:
