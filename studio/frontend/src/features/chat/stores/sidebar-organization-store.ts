@@ -2,9 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
+import { sidebarOrganizationStorage } from "./sidebar-organization-storage.ts";
 
 export type SidebarOrganizeBy = "project" | "list";
 export type SidebarChatSort = "updated" | "manual";
@@ -541,6 +542,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
     }),
     {
       name: SIDEBAR_ORGANIZATION_STORAGE_KEY,
+      storage: createJSONStorage(sidebarOrganizationStorage),
       merge: mergePersistedOrganization,
       partialize: (state) => {
         const saved: Partial<SidebarOrganizationState> = { ...state };

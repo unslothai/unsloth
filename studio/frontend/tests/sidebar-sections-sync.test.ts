@@ -2,15 +2,22 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const data = new Map<string, string>();
+const quota = 5 * 1024 * 1024;
 const localStorage = {
   getItem: (key: string) => data.get(key) ?? null,
-  setItem: (key: string, value: string) => void data.set(key, value),
+  setItem(key: string, value: string) {
+    if (key.length + value.length > quota) {
+      throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+    }
+    data.set(key, value);
+  },
 };
 const window = Object.assign(new EventTarget(), {
   localStorage,
@@ -69,6 +76,38 @@ function writeFromPeer(update: Record<string, unknown>) {
   localStorage.setItem(key, JSON.stringify({ ...saved, state: { ...saved.state, ...update } }));
   window.dispatchEvent(Object.assign(new Event("storage"), { key }));
 }
+
+test("a large saved sidebar keeps its pending sync operation within browser storage quota", () => {
+  const key = stores.SIDEBAR_ORGANIZATION_STORAGE_KEY;
+  const section = { id: randomUUID(), name: "Research", sort: "manual" as const };
+  const chatIds = Array.from({ length: 20_000 }, () => randomUUID());
+  const legacy = {
+    customSections: [section],
+    sectionByChatId: Object.fromEntries(chatIds.map((id) => [id, section.id])),
+    manualOrder: { [stores.customSectionScope(section.id)]: chatIds },
+  };
+  localStorage.setItem(key, JSON.stringify({ state: legacy, version: 0 }));
+  store.persist.rehydrate();
+  const syncedLayout = JSON.stringify(layouts.sidebarLayout(store.getState()));
+  store.setState({ syncedLayout });
+  store.getState().renameCustomSection(section.id, "Field notes");
+  const pendingLayoutEdit = {
+    id: "large-edit",
+    layout: JSON.stringify(layouts.sidebarLayout(store.getState())),
+  };
+  store.setState({ pendingLayoutEdit });
+  const persisted = localStorage.getItem(key)!;
+  assert.ok(persisted.length < quota);
+
+  store.setState(store.getInitialState(), true);
+  localStorage.setItem(key, persisted);
+  store.persist.rehydrate();
+  assert.ok(store.getState().syncedLayout === syncedLayout);
+  assert.equal(store.getState().pendingLayoutEdit?.id, pendingLayoutEdit.id);
+  assert.ok(store.getState().pendingLayoutEdit?.layout === pendingLayoutEdit.layout);
+  assert.equal(store.getState().customSections[0].name, "Field notes");
+  assert.equal(store.getState().sectionByChatId[chatIds.at(-1)!], section.id);
+});
 
 test("a peer can upload a later edit after retrying the closed tab's pending operation", async (t) => {
   const posts: Edit[] = [];

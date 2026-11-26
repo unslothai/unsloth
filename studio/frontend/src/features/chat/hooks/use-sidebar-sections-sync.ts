@@ -64,16 +64,16 @@ export function useSidebarSectionsSync(): void {
       if (!edit && dirty) {
         if (mirrored) return;
         edit = { id: createNavigationNonce(), layout: snapshot, orderMoves: state.orderMoves };
-        store.setState({ pendingLayoutEdit: edit, orderMoves: undefined });
-      } else if (!edit && state.orderMoves?.length) {
-        store.setState({ orderMoves: undefined });
       }
       const sent = edit?.layout ?? snapshot;
-      const cached = localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY);
       const controller = new AbortController();
       request = controller;
       const timeout = setTimeout(() => controller.abort(), 15_000);
       try {
+        if (edit !== state.pendingLayoutEdit || (!edit && state.orderMoves?.length)) {
+          store.setState({ pendingLayoutEdit: edit, orderMoves: undefined });
+        }
+        const cached = localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY);
         const response = await authFetch("/api/chat/sidebar-sections", {
           signal: controller.signal,
           ...(edit && {
