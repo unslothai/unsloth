@@ -202,13 +202,11 @@ test("a remote revocation drops Full access established in the still-open tab", 
   threadRows.reset();
   threadRows.rows.set(THREAD, { permissionMode: "auto", fullAccess: false });
   const tab = await start("retained-full");
-  tab
-    .state()
-    .grantChatFullAccess({
-      runId: "grant",
-      threadId: THREAD,
-      sessionId: "session",
-    });
+  tab.state().grantChatFullAccess({
+    runId: "grant",
+    threadId: THREAD,
+    sessionId: "session",
+  });
   await tab.mod.awaitThreadScopedSettingsWrite(THREAD);
   assert.equal(tab.state().permissionMode, "full");
   const other = await start("revoke-full");
@@ -222,6 +220,33 @@ test("a remote revocation drops Full access established in the still-open tab", 
   }))();
   await PAINT();
   assert.equal(tab.state().permissionMode, "auto");
+});
+
+test("a fresh row retires failed edits before the next unrelated write", async () => {
+  threadRows.reset();
+  threadRows.rows.set(THREAD, { systemPrompt: "before", temperature: 0.5 });
+  const tab = await start("failed-write-then-refresh");
+  threadRows.failNext = true;
+  params(tab, { systemPrompt: "failed local edit" });
+  assert.equal(await tab.mod.awaitThreadScopedSettingsWrite(THREAD), false);
+
+  threadRows.rows.set(THREAD, {
+    systemPrompt: "saved remotely",
+    temperature: 0.5,
+  });
+  remoteSync(tab, () => ({
+    thread: { settings: threadRows.rows.get(THREAD) },
+    cacheable: true,
+  }))();
+  await PAINT();
+  assert.equal(tab.state().params.systemPrompt, "saved remotely");
+
+  params(tab, { temperature: 1.1 });
+  assert.equal(await tab.mod.awaitThreadScopedSettingsWrite(THREAD), true);
+  assert.deepEqual(threadRows.writesFor(THREAD).at(-1)?.settingsPatch, {
+    temperature: 1.1,
+  });
+  assert.equal(threadRows.rows.get(THREAD)?.systemPrompt, "saved remotely");
 });
 
 function mountUnpaired(

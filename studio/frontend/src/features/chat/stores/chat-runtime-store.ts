@@ -1473,10 +1473,9 @@ function buildThreadScopedSnapshot(threadId: string): ThreadScopedSettings {
   return settings;
 }
 
-type PendingThreadField = { value: unknown };
+type PendingThreadField = { value: unknown; status?: "failed" | "settled" };
 type PendingThreadFields = Map<string, PendingThreadField>;
 const pendingThreadFields = new Map<string, PendingThreadFields>();
-const acknowledgedThreadFields = new WeakSet<PendingThreadField>();
 export const THREAD_SETTINGS_REVISION_KEY = "unsloth_chat_thread_settings_revision";
 let threadSettingsEditVersion = 0;
 
@@ -1509,8 +1508,8 @@ function threadFieldsPayload(fields: PendingThreadFields): ThreadScopedSettings 
   return Object.fromEntries(Array.from(fields, ([key, entry]) => [key, entry.value]));
 }
 
-function unacknowledgedThreadFields(fields: PendingThreadFields): PendingThreadFields {
-  return new Map([...fields].filter(([, entry]) => !acknowledgedThreadFields.has(entry)));
+function unsettledThreadFields(fields: PendingThreadFields): PendingThreadFields {
+  return new Map([...fields].filter(([, entry]) => entry.status !== "settled"));
 }
 
 function withoutPatchDefaults(
@@ -1521,18 +1520,35 @@ function withoutPatchDefaults(
   return Object.fromEntries(Object.entries(settingsDefaults).filter(([key]) => !fields.has(key)));
 }
 
-function acknowledgeThreadFields(threadId: string, written: PendingThreadFields): void {
-  for (const entry of written.values()) acknowledgedThreadFields.add(entry);
+function settleThreadFields(threadId: string, settled: PendingThreadFields): void {
+  for (const entry of settled.values()) entry.status = "settled";
   const pending = pendingThreadFields.get(threadId);
   if (pending) {
     // Keep a newer edit even if the user changed this field to the same value again.
     const remaining = new Map(pending);
-    for (const [key, entry] of written) {
+    for (const [key, entry] of settled) {
       if (remaining.get(key) === entry) remaining.delete(key);
     }
     if (remaining.size > 0) pendingThreadFields.set(threadId, remaining);
     else pendingThreadFields.delete(threadId);
   }
+}
+
+function markThreadFieldsFailed(fields: PendingThreadFields): void {
+  for (const entry of fields.values()) {
+    if (entry.status !== "settled") entry.status = "failed";
+  }
+}
+
+function retireFailedThreadFields(threadId: string): void {
+  const pending = pendingThreadFields.get(threadId);
+  if (!pending) return;
+  const failed = new Map([...pending].filter(([, entry]) => entry.status === "failed"));
+  if (failed.size) settleThreadFields(threadId, failed);
+}
+
+function acknowledgeThreadFields(threadId: string, written: PendingThreadFields): void {
+  settleThreadFields(threadId, written);
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(THREAD_SETTINGS_REVISION_KEY, crypto.randomUUID());
@@ -1706,11 +1722,11 @@ function writeThreadScopedSettings(
       }
       const controller = new AbortController();
       threadSettingsWriteAborts.set(threadId, controller);
+      const sending = unsettledThreadFields(fields);
       try {
         const { updateStoredChatThread } = await import(
           "../utils/chat-history-storage"
         );
-        const sending = unacknowledgedThreadFields(fields);
         await updateStoredChatThread(
           threadId,
           {
@@ -1725,7 +1741,10 @@ function writeThreadScopedSettings(
         forgetReplayedThreadSettings(threadId);
         return true;
       } catch {
-        if (!controller.signal.aborted) warnSettingsPersistenceFailure();
+        if (!controller.signal.aborted) {
+          markThreadFieldsFailed(sending);
+          warnSettingsPersistenceFailure();
+        }
         return controller.signal.aborted;
       } finally {
         if (threadSettingsWriteAborts.get(threadId) === controller) {
@@ -2037,12 +2056,12 @@ async function mergeThreadScopedSettingsIntoRow(
       if (ticket !== null && (threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
         return;
       }
+      const sending = unsettledThreadFields(fields);
+      if (!sending.size) return;
       try {
         const { updateStoredChatThread } = await import(
           "../utils/chat-history-storage"
         );
-        const sending = unacknowledgedThreadFields(fields);
-        if (!sending.size) return;
         await updateStoredChatThread(threadId, {
           settingsPatch: threadFieldsPayload(sending),
           settingsSeq,
@@ -2051,6 +2070,7 @@ async function mergeThreadScopedSettingsIntoRow(
         acknowledgeThreadFields(threadId, sending);
         forgetReplayedThreadSettings(threadId);
       } catch (error) {
+        markThreadFieldsFailed(sending);
         warnSettingsPersistenceFailure();
         // Rethrown: a fork awaits this and must not fork the pre-edit snapshot.
         throw error;
@@ -5488,6 +5508,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     const savedFullAccess = (settings as { fullAccess?: unknown } | null | undefined)?.fullAccess;
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
+      // A freshly read row replaces the edits whose earlier writes failed.
+      if (threadId !== null) retireFailedThreadFields(threadId);
       flushThreadScopedSettingsWrite();
       // Edits made while this chat's snapshot was in flight are kept and stored on the chat.
       const heldFields = new Set<string>();
