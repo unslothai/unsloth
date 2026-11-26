@@ -711,6 +711,27 @@ def _native_audio_repo_files(
     return required
 
 
+_GGUF_SPLIT_PART = re.compile(r"-\d{5}-of-\d{5}(?=\.gguf$)", re.IGNORECASE)
+
+
+def _gguf_quants(siblings: list[Any]) -> set[str]:
+    """The distinct GGUF models a repo publishes: split parts count once, projectors not at all."""
+    quants = set()
+    for sibling in siblings:
+        name = str(getattr(sibling, "rfilename", "")).strip().lower()
+        if name.endswith(".gguf") and "mmproj" not in name.rsplit("/", 1)[-1]:
+            quants.add(_GGUF_SPLIT_PART.sub("", name))
+    return quants
+
+
+_NATIVE_WEIGHTS = re.compile(r"(^|/)(.*\.safetensors|pytorch_model[^/]*\.bin)$", re.IGNORECASE)
+
+
+def _has_native_weights(siblings: list[Any]) -> bool:
+    """A Transformers checkpoint, whose GGUF quants are a side format; a stray .pt is not one."""
+    return any(_NATIVE_WEIGHTS.search(str(getattr(s, "rfilename", "")).strip()) for s in siblings)
+
+
 def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) -> dict[str, Any]:
     """Native models add companion codec repos, and MiniMax skips legacy weights its index never names."""
     normalized = str(model_name or "").strip()
@@ -759,6 +780,15 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
         )
         if not siblings:
             raise ValueError(f"{repo_id} does not publish files required by its audio loader.")
+        # No audio loader names this repo, so its plan is every file; for a GGUF-only repo with
+        # several quants that is all of them (terabytes for a large chat model). A GGUF pick names one.
+        if audio_type is None and len(_gguf_quants(siblings)) > 1:
+            if not _has_native_weights(siblings):
+                raise ValueError(
+                    f"{repo_id} is a GGUF repository: pick one of its GGUF files instead of downloading all of them."
+                )
+            # The native loader reads the checkpoint, never the quants published beside it.
+            siblings = [s for s in siblings if not str(getattr(s, "rfilename", "")).lower().endswith(".gguf")]
         revision = str(getattr(info, "sha", "") or "") or None
         missing_files = []
         missing_bytes = 0

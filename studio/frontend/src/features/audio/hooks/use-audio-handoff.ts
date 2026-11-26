@@ -8,6 +8,7 @@ import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-a
 import { toast } from "@/lib/toast";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
+  type AudioRouteSearch,
   audioRouteIntent,
   audioWorkflowForPick,
   audioWorkflowUrlAction,
@@ -21,6 +22,8 @@ import {
 import type { AudioHostState } from "./audio-host-state";
 import { type AudioGallery, galleryCache } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
+
+const NO_AUDIO_SEARCH: AudioRouteSearch = {};
 
 export function useAudioHandoff({
   active,
@@ -39,17 +42,12 @@ export function useAudioHandoff({
     "refreshGallery" | "loadMore" | "loadingMoreRef" | "selectClip"
   >) {
   const navigateSelf = useNavigate();
-  const routeSearch = useSearch({ strict: false }) as {
-    model?: string;
-    quant?: string;
-    ggufQuant?: string;
-    task?: string;
-    workflow?: string;
-    audioType?: string;
-    loadId?: string;
-    gguf?: boolean;
-    item?: string;
-  };
+  // This route's own match, never `strict: false`: that resolves the ROOT match, which still holds
+  // the page being left (the Hub names its selection ?model=) while /audio's async guard runs, and
+  // this page stays mounted with `active` already true.
+  const audioSearch = useSearch({ from: "/audio", shouldThrow: false });
+  const routeResolved = audioSearch !== undefined;
+  const routeSearch: AudioRouteSearch = audioSearch ?? NO_AUDIO_SEARCH;
   const committedWorkflow = useAudioWorkspaceStore((state) => state.workflow);
   const handledRouteModel = useRef<string | null>(null);
   // The workflow the URL and the page last agreed on; cleared while hidden, so back/forward
@@ -63,6 +61,7 @@ export function useAudioHandoff({
       pendingWrite.current = null;
       return;
     }
+    if (!routeResolved) return;
     const wanted = routeSearch.model;
     if (!wanted) {
       handledRouteModel.current = null;
@@ -162,6 +161,7 @@ export function useAudioHandoff({
     });
   }, [
     active,
+    routeResolved,
     busy,
     committedWorkflow,
     routeSearch.model,

@@ -264,6 +264,103 @@ def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch)
     assert plan["required_bytes"] == 110
 
 
+def _hub_repo(monkeypatch, siblings):
+    api = SimpleNamespace(
+        model_info = lambda *_args, **_kwargs: SimpleNamespace(sha = "current", siblings = siblings)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(HfApi = lambda **_kwargs: api),
+    )
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached", lambda *_args: False
+    )
+
+
+def test_download_plan_refuses_every_quant_of_an_unknown_gguf_repo(monkeypatch):
+    # A Hub selection carried onto the Audio page planned all 78 quants of a 4 TB chat GGUF.
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "README.md", size = 1),
+            SimpleNamespace(rfilename = "UD-IQ1_M/Big-UD-IQ1_M-00001-of-00005.gguf", size = 10**12),
+            SimpleNamespace(rfilename = "Q8_0/Big-Q8_0-00001-of-00009.gguf", size = 10**12),
+        ],
+    )
+    with pytest.raises(ValueError, match = "is a GGUF repository"):
+        native_audio_download_plan("unsloth/Big-Chat-GGUF")
+
+
+def test_download_plan_refuses_a_gguf_repo_whose_only_other_weights_are_stray(monkeypatch):
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "imatrix.bin", size = 1),
+            SimpleNamespace(rfilename = "legacy/model.pt", size = 1),
+            SimpleNamespace(rfilename = "Q4_K_M/Big-Q4_K_M.gguf", size = 10**12),
+            SimpleNamespace(rfilename = "Q8_0/Big-Q8_0.gguf", size = 10**12),
+        ],
+    )
+    with pytest.raises(ValueError, match = "is a GGUF repository"):
+        native_audio_download_plan("unsloth/Big-Chat-GGUF")
+
+
+def test_download_plan_still_lists_a_gguf_repo_with_one_quant(monkeypatch):
+    # One quant (here split in two parts, plus its projector) is the whole model, not every quant.
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "Voice-Q8_0-00001-of-00002.gguf", size = 10),
+            SimpleNamespace(rfilename = "Voice-Q8_0-00002-of-00002.gguf", size = 10),
+            SimpleNamespace(rfilename = "mmproj-F16.gguf", size = 5),
+        ],
+    )
+    plan = native_audio_download_plan("someone/voice-GGUF")
+    assert plan["required_bytes"] == 25
+
+
+def test_download_plan_still_lists_a_safetensors_repo_that_also_ships_gguf_quants(monkeypatch):
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "model.safetensors", size = 100),
+            SimpleNamespace(rfilename = "gguf/tts-Q4_K_M.gguf", size = 10),
+            SimpleNamespace(rfilename = "gguf/tts-Q8_0.gguf", size = 20),
+        ],
+    )
+    plan = native_audio_download_plan("someone/tts-with-quants")
+    assert plan["entries"][0]["files"] == ["model.safetensors"]
+    assert plan["required_bytes"] == 100
+
+
+def test_download_plan_never_lists_several_quants_beside_a_stray_checkpoint(monkeypatch):
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "original/model-00001-of-00002.safetensors", size = 5),
+            SimpleNamespace(rfilename = "Q4_K_M/Big-Q4_K_M.gguf", size = 10**12),
+            SimpleNamespace(rfilename = "Q8_0/Big-Q8_0.gguf", size = 10**12),
+        ],
+    )
+    plan = native_audio_download_plan("unsloth/Big-Chat-GGUF")
+    assert plan["entries"][0]["files"] == ["original/model-00001-of-00002.safetensors"]
+    assert plan["required_bytes"] == 5
+
+
+def test_download_plan_still_lists_an_unknown_safetensors_repo(monkeypatch):
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "config.json", size = 1),
+            SimpleNamespace(rfilename = "model.safetensors", size = 100),
+        ],
+    )
+    plan = native_audio_download_plan("someone/some-tts")
+    assert plan["entries"][0]["files"] == ["config.json", "model.safetensors"]
+    assert plan["required_bytes"] == 101
+
+
 def test_higgs_tts2_download_plan_includes_audio_tokenizer(monkeypatch):
     calls = []
     siblings = [SimpleNamespace(rfilename = "model.safetensors", size = 100)]
