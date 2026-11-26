@@ -5116,14 +5116,22 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     except Exception:
         loading = None
     set_param = getattr(loading, "set_param_for_module", None)
+    experts_only = bool(state.get("experts_only"))
     if not callable(set_param):
+        if experts_only:
+            return _ep_lists_load_4x(original, cls, name, args, kwargs, mesh, state)
         return original(cls, name, *args, **kwargs)
     tp, rank = mesh.size(), mesh.get_local_rank()
     ranks = mesh.mesh.tolist()
-    experts_only = bool(state.get("experts_only"))
     owner = object()
     plan = {}
-    counts = {"loaded_bytes": 0, "kept_bytes": 0, "sharded_weights": 0, "sharded_expert_stacks": 0}
+    counts = {
+        "loaded_bytes": 0,
+        "kept_bytes": 0,
+        "sharded_weights": 0,
+        "sharded_expert_stacks": 0,
+        "remote_expert_tensors": 0,
+    }
 
     def plan_for(model):
         # The meta model as transformers built it (Linear4bit already swapped in): the plan apply derives later.
@@ -5141,7 +5149,8 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
                 chain = _experts_chain(block)
                 if chain:
                     experts[id(chain[-1])] = block
-        plan.update(model = model, projs = projs, experts = experts)
+        remote = _ep_remote_modules(model, tp, rank) if experts_only and tp > 1 else {}
+        plan.update(model = model, projs = projs, experts = experts, remote = remote)
 
     def nbytes(t):
         return t.numel() * t.element_size()
@@ -5190,6 +5199,13 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         if not isinstance(p, torch.Tensor) or p.is_meta:
             return
         counts["loaded_bytes"] += nbytes(p)
+        if id(module) in plan["remote"]:
+            # Another rank's per-expert module: a meta stand-in, the loaded tensor freed now.
+            module._parameters[pname] = _lists_module().remote_stand_in(
+                p, plan["remote"][id(module)]
+            )
+            counts["remote_expert_tensors"] += 1
+            return
         counts["kept_bytes"] += nbytes(p)
         if (
             pname == "weight"
@@ -5226,6 +5242,8 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         _TP_QUANTIZE_OWNER.reset(token)
         state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
+    if plan.get("model") is model and plan["remote"]:
+        counts["remote_expert_tensors"] += _ep_finish_remote(model, tp, rank)
     for module in model.modules():
         if "_unsloth_tp_load_guard" in module.__dict__:
             continue
@@ -5237,6 +5255,118 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
             )
     model.__dict__["_unsloth_tp_load_stats"] = {
         "tp": tp,
+        "rank": rank,
+        "quantized_on_load": state.get("on_load", True),
+        **counts,
+    }
+    state["models"].append(model)
+    return loaded
+
+
+def _lists_module():
+    from . import ep_expert_lists
+    return ep_expert_lists
+
+
+def _ep_remote_modules(model, ep, rank):
+    """{id(module): (experts, ep, rank)} for every module inside another rank's per-expert expert (transformers
+    4.x ModuleList experts, zoo GptOssExpertsBnb4bit lists): what expert parallel loading leaves on meta."""
+    lists = _lists_module()
+    remote = {}
+    for block in moe_blocks_with_experts(model):
+        try:
+            others = lists.load_remote_experts(block, ep, rank)
+        except Exception:
+            others = None
+        for expert in others or ():
+            lists.keep_remote_on_meta(expert)
+            for m in expert.modules():
+                remote[id(m)] = (len(others), ep, rank)
+    return remote
+
+
+def _ep_finish_remote(model, ep, rank):
+    """After an expert parallel load: every parameter of another rank's per-expert expert is a tagged meta stand-in
+    (a tensor the setter missed is replaced now), and the blocks refuse a forward until apply_expert_parallel."""
+    lists = _lists_module()
+    replaced = 0
+    for block in moe_blocks_with_experts(model):
+        try:
+            others = lists.load_remote_experts(block, ep, rank)
+        except Exception:
+            others = None
+        if not others:
+            continue
+        tag = (len(others), ep, rank)
+        for expert in others:
+            for m in expert.modules():
+                for pname, p in list(m._parameters.items()):
+                    if p is None or lists.is_remote(p):
+                        continue
+                    if not p.is_meta:
+                        replaced += 1
+                    m._parameters[pname] = lists.remote_stand_in(p, tag)
+        if "_unsloth_tp_load_guard" not in block.__dict__:
+            block.__dict__["_unsloth_tp_load_guard"] = block.register_forward_pre_hook(
+                _refuse_unapplied_forward
+            )
+    return replaced
+
+
+def _ep_lists_load_4x(original, cls, name, args, kwargs, mesh, state):
+    """transformers 4.x under expert parallel loading: the checkpoint keys of other ranks' per-expert experts are
+    never read (they stay meta stand-ins until apply_expert_parallel drops them); everything else loads in full."""
+    from transformers import modeling_utils as mu
+
+    from .fsdp2_load import sharded_load_memory
+
+    inner = mu.__dict__.get("_load_state_dict_into_meta_model")
+    if not callable(inner):
+        return original(cls, name, *args, **kwargs)
+    ep, rank = mesh.size(), mesh.get_local_rank()
+    owner = object()
+    seen = {}
+    counts = {
+        "loaded_bytes": 0,
+        "kept_bytes": 0,
+        "remote_expert_tensors": 0,
+        "sharded_expert_stacks": 0,
+    }
+
+    def prefixes(model):
+        if id(model) not in seen:
+            names = {id(m): n for n, m in model.named_modules()}
+            remote = _ep_remote_modules(model, ep, rank) if isinstance(model, cls) else {}
+            seen[id(model)] = tuple(sorted(names[i] + "." for i in remote if names.get(i)))
+        return seen[id(model)]
+
+    def filtered(model, state_dict, *rest, **more):
+        if _TP_QUANTIZE_OWNER.get() is owner and isinstance(state_dict, dict):
+            skip = prefixes(model)
+            if skip:
+                dropped = [k for k in state_dict if k.startswith(skip)]
+                if dropped:
+                    counts["remote_expert_tensors"] += len(dropped)
+                    state_dict = {k: v for k, v in state_dict.items() if not k.startswith(skip)}
+        return inner(model, state_dict, *rest, **more)
+
+    mu._load_state_dict_into_meta_model = filtered
+    state["active"] = True
+    token = _TP_QUANTIZE_OWNER.set(owner)
+    try:
+        with sharded_load_memory(ep):
+            loaded = original(cls, name, *args, **kwargs)
+    finally:
+        mu._load_state_dict_into_meta_model = inner
+        _TP_QUANTIZE_OWNER.reset(token)
+        state["active"] = False
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
+    _ep_finish_remote(model, ep, rank)
+    for p in model.parameters():
+        if not p.is_meta:
+            counts["kept_bytes"] += p.numel() * p.element_size()
+    model.__dict__["_unsloth_tp_load_stats"] = {
+        "tp": ep,
         "rank": rank,
         "quantized_on_load": state.get("on_load", True),
         **counts,
@@ -5382,7 +5512,8 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
     if state.get("experts_only"):
-        # Other quantizations (block FP8 aside), transformers 4.x and 2-D meshes load in full.
+        # Other quantizations (block FP8 aside) and 2-D meshes load in full; transformers 4.x keeps only this rank's
+        # per-expert experts (_ep_lists_load_4x).
         mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
         fp8 = (
             other

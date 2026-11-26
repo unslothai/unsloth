@@ -521,10 +521,13 @@ def apply_expert_parallel(model, mesh = None):
             kept.append((block, problem))
     for block, problem in kept:
         chain = tpn._experts_chain(block)
-        if chain and any(
-            getattr(p, tpn._EXPERT_PRELOAD, None) is not None
-            for p in chain[-1]._parameters.values()
-        ):
+        if (
+            chain
+            and any(
+                getattr(p, tpn._EXPERT_PRELOAD, None) is not None
+                for p in chain[-1]._parameters.values()
+            )
+        ) or any(_lists().is_remote(p) for p in block.parameters()):
             raise ValueError(
                 f"Unsloth: expert_parallel_loading kept only this rank's experts of "
                 f"{type(block).__name__}, but they cannot be sharded now ({problem}); load in full."
