@@ -17856,6 +17856,22 @@ class DiffusionBackend:
             with self._generation_cancel_lock:
                 self._queued_generate_cancels.discard(cancel)
 
+    def coalesce_plan(self, prompt: str, has_loras: bool) -> Optional[tuple[tuple, bool]]:
+        """``(prompt_key, private)`` for joining a batch, or None when this request must render alone. ``private``:
+        a per-account resource (a LoRA, or an embedding this account owns) could apply, so the request batches only
+        with its own account. Runs in the requesting account's context."""
+        state = self._state
+        if state is None:
+            return None
+        private = bool(has_loras)
+        if not private and getattr(state.family, "textual_inversion", None) is not None:
+            # Embeddings come from the leader's folder and match triggers in every member's prompt.
+            try:
+                private = bool(diffusion_embeddings.list_embeddings())
+            except Exception:  # noqa: BLE001 - an unreadable folder may still hold one
+                private = True
+        return (), private
+
     @contextmanager
     def generation_rider(self, cancel: threading.Event):
         """A request riding another request's batched call: a Stop from its account sets ``cancel`` even while

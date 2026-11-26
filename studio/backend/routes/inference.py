@@ -55969,6 +55969,17 @@ async def _coalesced_image_generate(
         return None
     if family and getattr(detect_family("", family), "layer_count", 0):
         return None
+    # LoRA ids, hosted adapters (with their HF token) and textual-inversion embeddings resolve under the account
+    # that runs the call, the leader: a request that could use any of them batches with its own account only.
+    plan = getattr(backend, "coalesce_plan", None)
+    loras = generate_kwargs.get("loras")
+    if plan is not None:
+        decided = await asyncio.to_thread(plan, prompt, bool(loras))
+        if decided is None:
+            return None
+        prompt_key, private = decided
+    else:
+        prompt_key, private = (), bool(loras)
 
     ticket = GenerationTicket()
     stopped = TicketStopEvent(ticket)
@@ -56010,13 +56021,17 @@ async def _coalesced_image_generate(
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
                 raise
 
-    # No account: requests from different accounts with the same settings share one call.
-    key = tuple(
-        sorted(
-            (name, _frozen_kwarg(value))
-            for name, value in generate_kwargs.items()
-            if name not in _COALESCE_KEY_IGNORED
-        )
+    # No account unless a per-account resource could apply: then only this account's requests share the call.
+    key = (
+        current_account_id() if private else None,
+        prompt_key,
+        tuple(
+            sorted(
+                (name, _frozen_kwarg(value))
+                for name, value in generate_kwargs.items()
+                if name not in _COALESCE_KEY_IGNORED
+            )
+        ),
     )
 
     def cancelled(exc: BaseException) -> bool:
