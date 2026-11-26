@@ -101,9 +101,9 @@ def test_reason_follows_the_switch_platform_torch_and_compiler(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     assert M._cpp_wrapper_reason() == "no C++ compiler"
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
-    monkeypatch.setattr(torch, "__version__", "2.9.1+cu128")
-    assert M._cpp_wrapper_reason() == "torch < 2.10.0"
-    monkeypatch.setattr(torch, "__version__", "2.10.0+cu128")
+    monkeypatch.setattr(torch, "__version__", "2.13.1+cu130")
+    assert M._cpp_wrapper_reason() == "torch < 2.14.0"
+    monkeypatch.setattr(torch, "__version__", "2.14.0+cu128")
     assert M._cpp_wrapper_reason() is None
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert M._cpp_wrapper_reason() == "no CUDA device"
@@ -374,6 +374,11 @@ def test_cpp_wrapper_block_matches_the_python_wrapper_on_cuda(monkeypatch):
     forward and input / weight gradients from the C++ wrapper match the Python wrapper's."""
     if torch.version.hip is not None:
         pytest.skip("NVIDIA CUDA only")
+    M = _load()
+    from packaging.version import Version
+
+    if Version(torch.__version__.split("+")[0]) < Version(M._CPP_WRAPPER_MIN_TORCH):
+        pytest.skip("below the auto mode torch floor (the switch-time trial falls back there)")
     monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
     M = _load()
     monkeypatch.setattr(M, "_CPP_WRAPPER_REASON", None)

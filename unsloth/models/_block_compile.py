@@ -50,8 +50,10 @@ def _cudagraph_mode():
 # Llama-3.2-3B LoRA 0.93 -> 0.80), at a one-time C++ build of the block graphs (about a minute on a
 # cold cache, nothing on a warm one), so it starts once a run is long (_CPP_WRAPPER_AFTER).
 # UNSLOTH_BLOCK_CPP_WRAPPER: "1" on at once wherever Inductor allows it, "0" off, unset / "auto" for
-# NVIDIA CUDA on Linux from torch 2.10 with a C++ compiler. A failed C++ build keeps the Python wrapper.
-_CPP_WRAPPER_MIN_TORCH = "2.10.0"
+# NVIDIA CUDA on Linux from torch 2.14 with a C++ compiler. A failed C++ build keeps the Python wrapper.
+# torch 2.10 and 2.12 fail the switch-time trial below (a C++ backward asserts "CudaKernelParamCache
+# not populated"), so auto mode starts at 2.14, the oldest build where it passed.
+_CPP_WRAPPER_MIN_TORCH = "2.14.0"
 
 
 def _cpp_wrapper_reason():
