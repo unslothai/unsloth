@@ -130,3 +130,119 @@ def test_reader_outside_a_scope_is_the_original(monkeypatch, tmp_path):
     out = sp._with_pread_load_file(st_torch.load_file, None)(str(shard))
     assert torch.equal(out["x"], torch.ones(2))
     assert wrapped is not st_torch.load_file
+
+
+def _fadvise_spy(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        sp.os,
+        "posix_fadvise",
+        lambda fd, off, ln, advice: calls.append((off, ln, advice)),
+        raising = False,
+    )
+    monkeypatch.setattr(sp.os, "POSIX_FADV_DONTNEED", 4, raising = False)
+    return calls
+
+
+def _spans_of(path):
+    import json
+    import struct
+
+    raw = path.read_bytes()
+    (size,) = struct.unpack("<Q", raw[:8])
+    header = json.loads(raw[8 : 8 + size])
+    return {
+        k: (8 + size + v["data_offsets"][0], v["data_offsets"][1] - v["data_offsets"][0])
+        for k, v in header.items()
+        if k != "__metadata__"
+    }
+
+
+@requires_backend
+def test_diffusers_reader_drops_each_tensors_pages(monkeypatch, tmp_path):
+    _platform(monkeypatch, "linux", True, True)
+    calls = _fadvise_spy(monkeypatch)
+    shard = tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
+    shard.parent.mkdir()
+    tensors = {
+        "a": torch.randn(64, 3, dtype = torch.bfloat16),
+        "b": torch.arange(6, dtype = torch.int64),
+    }
+    save_file(tensors, str(shard), metadata = {"format": "pt"})
+    with sp.pread_safetensors(every_shard = True):
+        got = st_torch.load_file(str(shard))
+    assert all(torch.equal(got[k], tensors[k]) for k in tensors)
+    assert sorted(calls) == sorted((off, ln, 4) for off, ln in _spans_of(shard).values())
+
+
+@requires_backend
+@pytest.mark.parametrize("env", ["0", "off"])
+def test_fadvise_kill_switch_keeps_pages(monkeypatch, tmp_path, env):
+    _platform(monkeypatch, "linux", True, True)
+    monkeypatch.setenv(sp.FADVISE_ENV, env)
+    calls = _fadvise_spy(monkeypatch)
+    shard = tmp_path / "model.safetensors"
+    save_file({"x": torch.ones(8)}, str(shard))
+    with sp.pread_safetensors(every_shard = True):
+        got = st_torch.load_file(str(shard))
+    assert torch.equal(got["x"], torch.ones(8)) and calls == []
+
+
+@pytest.mark.parametrize(
+    "platform, rocm, integrated",
+    [("linux", False, False), ("linux", True, False), ("win32", True, True)],
+)
+def test_fadvise_and_te_backend_only_on_rocm_integrated(monkeypatch, platform, rocm, integrated):
+    _platform(monkeypatch, platform, rocm, integrated)
+    assert not sp.fadvise_wanted()
+    assert sp.igpu_pread_backend() is None
+
+
+def test_page_dropper_never_raises_on_a_bad_header(monkeypatch, tmp_path):
+    _platform(monkeypatch, "linux", True, True)
+    calls = _fadvise_spy(monkeypatch)
+    bad = tmp_path / "bad.safetensors"
+    bad.write_bytes(b"\x01")
+    with sp._page_dropper(str(bad)) as drop:
+        drop("x")
+    assert calls == []
+
+
+@requires_backend
+def test_precast_text_encoder_reads_through_pread_on_rocm_integrated(monkeypatch, tmp_path):
+    import json
+
+    import core.inference.prequant_safetensors as ps
+
+    _platform(monkeypatch, "linux", True, True)
+    calls = _fadvise_spy(monkeypatch)
+    assert sp.igpu_pread_backend() == "pread"
+    path = tmp_path / "te.safetensors"
+    tensors = {"w": torch.randn(4, 4), "lm_head.weight": torch.randn(2, 4)}
+    meta = {
+        ps.UNSLOTH_FORMAT_KEY: "int8",
+        ps.UNSLOTH_METADATA_KEY: "{}",
+        "tensor_names": json.dumps(sorted(tensors)),
+        **{k: json.dumps({"_type": "Tensor"}) for k in tensors},
+    }
+    save_file(tensors, str(path), metadata = meta)
+    seen = []
+    from safetensors import safe_open as real_safe_open
+
+    import functools
+
+    @functools.wraps(real_safe_open)
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("backend"))
+        return real_safe_open(*args, **kwargs)
+
+    monkeypatch.setattr("safetensors.safe_open", spy)
+    plain = ps.load_plain_prequant_safetensors(str(path), skip_names = ["lm_head.weight"])
+    routed = ps.load_plain_prequant_safetensors(
+        str(path), skip_names = ["lm_head.weight"], backend = sp.igpu_pread_backend()
+    )
+    assert seen == [None, "pread"]
+    assert set(routed["state_dict"]) == {"w"} and torch.equal(
+        routed["state_dict"]["w"], plain["state_dict"]["w"]
+    )
+    assert [c[:2] for c in calls] == [_spans_of(path)["w"]]

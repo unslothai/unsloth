@@ -4,18 +4,25 @@
 """Windows converting loads, and every load on a Linux ROCm integrated GPU (unified memory), read safetensors shards
 with pread instead of mmap: no copy-on-write commit on Windows, no mapped shard held in the shared pool until its last
 tensor moved on an APU. transformers' ``safe_open`` and diffusers' ``safetensors.torch.load_file`` are routed inside a
-scope (diffusers' only on a ROCm integrated GPU). UNSLOTH_SAFETENSORS_PREAD=0 turns it off everywhere, =1 on."""
+scope (diffusers' only on a ROCm integrated GPU). UNSLOTH_SAFETENSORS_PREAD=0 turns it off everywhere, =1 on.
+
+On a ROCm integrated GPU diffusers' reader also drops each tensor's file pages from the page cache once it is read
+(POSIX_FADV_DONTNEED; the pages are clean, the copy is already in the tensor), so a cold load does not leave the whole
+checkpoint cached in the shared pool. UNSLOTH_SAFETENSORS_FADVISE=0 keeps the pages."""
 
 from __future__ import annotations
 
 import contextlib
 import functools
+import json
 import os
+import struct
 import sys
 import threading
 from typing import Any, Iterable, Iterator, Optional
 
 PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
+FADVISE_ENV = "UNSLOTH_SAFETENSORS_FADVISE"
 
 _lock = threading.Lock()
 _depth = 0
@@ -24,6 +31,8 @@ _original_load_file: Any = None
 # per load thread, so concurrent media loads never share rules: (target dtype or None = fp32-only video rule, kept dirs,
 # every shard)
 _local = threading.local()
+# DONTNEED calls issued by this process (diagnostic; the load path never reads it)
+fadvise_calls = 0
 
 
 def _active_rules() -> tuple[tuple[Optional[str], frozenset[str]], ...]:
@@ -150,13 +159,83 @@ def _with_pread_load_file(load_file: Any, safe_open: Any) -> Any:
         if args or kwargs or not _active_rules() or _backend_for(filename) != "pread":
             return load_file(filename, device, *args, **kwargs)
         out = {}
-        with safe_open(filename, framework = "pt", device = device, backend = "pread") as fh:
+        with (
+            safe_open(filename, framework = "pt", device = device, backend = "pread") as fh,
+            _page_dropper(filename) as drop,
+        ):
             for key in fh.keys():
                 out[key] = fh.get_tensor(key)
+                drop(key)
         return out
 
     pread_load_file._unsloth_pread = True
     return pread_load_file
+
+
+def _tensor_spans(filename: Any) -> dict[str, tuple[int, int]]:
+    """Absolute (offset, length) of every tensor's bytes, from the safetensors header."""
+    with open(filename, "rb") as fh:
+        (size,) = struct.unpack("<Q", fh.read(8))
+        header = json.loads(fh.read(size))
+    base = 8 + size
+    spans = {}
+    for key, entry in header.items():
+        if key == "__metadata__" or not isinstance(entry, dict):
+            continue
+        begin, end = entry["data_offsets"]
+        spans[key] = (base + int(begin), int(end) - int(begin))
+    return spans
+
+
+def fadvise_wanted() -> bool:
+    """Drop read tensors' pages: on a Linux ROCm integrated GPU (the page cache is the GPU's pool), unless disabled."""
+    value = (os.environ.get(FADVISE_ENV) or "").strip().lower()
+    if value in ("0", "off", "false", "no") or not hasattr(os, "posix_fadvise"):
+        return False
+    return rocm_integrated()
+
+
+@contextlib.contextmanager
+def _page_dropper(filename: Any) -> Iterator[Any]:
+    """Yields ``drop(key)``: advise the kernel the tensor's file pages are not needed again. A no-op where unwanted or
+    the header / file cannot be read; never raises."""
+    fd = None
+    spans: dict[str, tuple[int, int]] = {}
+    if fadvise_wanted():
+        try:
+            spans = _tensor_spans(filename)
+            fd = os.open(filename, os.O_RDONLY)
+        except Exception:  # noqa: BLE001 - unreadable header: keep the pages, the load is unchanged
+            fd, spans = None, {}
+
+    def drop(key: str) -> None:
+        global fadvise_calls
+        span = spans.get(key)
+        if fd is None or span is None or span[1] <= 0:
+            return
+        try:
+            os.posix_fadvise(fd, span[0], span[1], os.POSIX_FADV_DONTNEED)
+            fadvise_calls += 1
+        except OSError:
+            pass
+
+    try:
+        yield drop
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def igpu_pread_backend() -> Optional[str]:
+    """``"pread"`` for a direct ``safe_open`` outside a scope (pre-cast text encoders) on a Linux ROCm integrated GPU
+    with a safetensors that has the keyword, else None (the caller's default mmap)."""
+    if not pread_wanted() or not rocm_integrated():
+        return None
+    try:
+        from safetensors import safe_open
+        return "pread" if _supports_backend(safe_open) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _install_load_file() -> None:

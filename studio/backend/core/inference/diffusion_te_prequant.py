@@ -1439,7 +1439,12 @@ def load_prequant_text_encoder(
             if trim_lm_head:
                 te_class = _safetensors_te_class(path)
             skip = (LM_HEAD_KEY,) if trim_lm_head and class_trims_lm_head(te_class) else ()
-            ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
+            from .safetensors_pread import igpu_pread_backend
+
+            # ROCm integrated GPU: pread, so the mapped file is not charged to the shared pool (None elsewhere: mmap)
+            ckpt = load_plain_prequant_safetensors(
+                path, skip_names = skip, backend = igpu_pread_backend()
+            )
         else:
             ckpt = torch.load(path, weights_only = True, map_location = "cpu")
         # By format tag: an int8 request accepts its fp8 fallback; an fp8 request never accepts an int8 file.
