@@ -1066,13 +1066,18 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
             assert caps.cell_status(pp_q)[0] == "supported", (aux, schedule)
             caps.check(pp_q)
     with pytest.raises(
-        NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp only"
+        NotImplementedError, match = r"x pp' lacks .*Qwen2-MoE and Ernie 4.5 MoE only"
     ):
         caps.check(
-            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "qwen3_next"})
         )
     with pytest.raises(NotImplementedError, match = r"x pp' lacks .*no gloo parity run"):
-        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "mixtral"}))
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "qwen3_next"}))
+    # Mixtral / OLMoE / Qwen2-MoE / Ernie 4.5 MoE: carried, aux on or off (test_pp_moe_aux_gloo.py families).
+    for family in ("mixtral", "olmoe", "qwen2_moe", "ernie4_5_moe"):
+        for aux in (True, False):
+            pp_q = _q(pp = 2, pp_schedule = "1f1b", router_aux_loss = aux, **{**moe_q, "family": family})
+            assert caps.cell_status(pp_q)[0] == "supported", (family, aux)
     # gpt-oss pp with aux loss off runs; with it on the note names the switch.
     gpt_oss_q = {**moe_q, "family": "gpt_oss", "attention": "eager", "windowed": True}
     for extra in ({}, {"memory": "gc"}, {"memory": "unsloth_offload", "mode": "qlora"}):

@@ -14,6 +14,7 @@ if multiprocessing.parent_process() is not None or getattr(
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import importlib.machinery  # noqa: E402
+import re  # noqa: E402
 import importlib.util  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
@@ -78,6 +79,8 @@ def build(
         router_aux_loss_coef = coef,
         attention_dropout = 0.0,
     )
+    if family not in ("qwen3_moe", "mixtral", "olmoe"):
+        common.update(pad_token_id = 0, bos_token_id = 1, eos_token_id = 2)
     if family == "qwen3_moe":
         config = transformers.Qwen3MoeConfig(
             head_dim = 16,
@@ -94,6 +97,45 @@ def build(
         )
     elif family == "olmoe":
         config = transformers.OlmoeConfig(num_experts = 8, num_experts_per_tok = 2, **common)
+    elif family == "qwen2_moe":
+        config = transformers.Qwen2MoeConfig(
+            moe_intermediate_size = 32,
+            shared_expert_intermediate_size = 48,
+            num_experts = 8,
+            num_experts_per_tok = 2,
+            norm_topk_prob = False,
+            **common,
+        )
+    elif family == "phimoe":
+        config = transformers.PhimoeConfig(
+            num_local_experts = 8, num_experts_per_tok = 2, input_jitter_noise = 0.0, **common
+        )
+    elif family == "flex_olmo":
+        config = transformers.FlexOlmoConfig(num_experts = 8, num_experts_per_tok = 2, **common)
+    elif family == "ernie4_5_moe":
+        config = transformers.Ernie4_5_MoeConfig(
+            moe_intermediate_size = 32,
+            moe_num_experts = 8,
+            moe_k = 2,
+            moe_num_shared_experts = 0,
+            moe_layer_start_index = 0,
+            **common,
+        )
+    elif family == "gpt_oss":
+        common.pop("num_key_value_heads")
+        config = transformers.GptOssConfig(
+            head_dim = 16,
+            num_key_value_heads = 2,
+            num_local_experts = 8,
+            num_experts_per_tok = 2,
+            sliding_window = 4,
+            layer_types = ["sliding_attention", "full_attention"] * (layers // 2),
+            **common,
+        )
+    elif family == "granitemoe":
+        config = transformers.GraniteMoeConfig(num_local_experts = 8, num_experts_per_tok = 2, **common)
+    elif family == "jamba":
+        config = transformers.JambaConfig(num_experts = 8, num_experts_per_tok = 2, **common)
     else:
         raise ValueError(family)
     config._attn_implementation = "eager"
@@ -115,7 +157,8 @@ def build(
     if not any(name.endswith("mlp.experts.gate_up_proj") for name, _ in model.named_parameters()):
         # transformers 4.x keeps the experts as a ModuleList of Linears (no fused gate_up_proj parameter).
         target_modules = (
-            r".*\.(q_proj|k_proj|v_proj|o_proj|experts\.\d+\.(gate_proj|up_proj|down_proj))$"
+            r".*\.(q_proj|k_proj|v_proj|o_proj|experts\.\d+\.(gate_proj|up_proj|down_proj|w1|w2|w3)"
+            r"|block_sparse_moe\.gate)$"
         )
         target_parameters = ["mlp.gate.weight"]
     config = LoraConfig(
@@ -184,10 +227,10 @@ def _reference(model, ids, labels, attention_mask, n_mb, steps):
 
 def _group(name):
     prefix = "lora_" if "lora_" in name else ""
-    if "mlp.gate." in name:
-        return prefix + "router"
-    if "mlp.experts" in name:
+    if ".experts" in name:
         return prefix + "experts"
+    if "mlp.gate." in name or re.search(r"(moe|mlp|ffn|feed_forward)\.(gate|router)\.", name):
+        return prefix + "router"
     if "self_attn" in name:
         return prefix + "attention"
     return prefix + "other"
@@ -261,8 +304,8 @@ def _case_refusals(rank, world, tmp):
         except (ValueError, RuntimeError) as exc:
             out[key] = str(exc)
 
-    catch("mixtral", lambda: ppn.apply_pipeline_parallel(build(family = "mixtral"), mesh))
-    catch("olmoe", lambda: ppn.apply_pipeline_parallel(build(family = "olmoe"), mesh))
+    # PhiMoE's sparsemixer routing samples in training: no exact one-process reference, so it stays refused.
+    catch("phimoe", lambda: ppn.apply_pipeline_parallel(build(family = "phimoe"), mesh))
 
     def deepseek():
         from transformers import AutoConfig, AutoModelForCausalLM
@@ -298,7 +341,28 @@ def _case_refusals(rank, world, tmp):
     return out
 
 
-CASES = {"parity": _case_parity, "refusals": _case_refusals}
+def _case_aux_on_after_split(rank, world, tmp, family):
+    """An aux-off split on interleaved1f1b (no carry) refuses once the aux loss is turned on (TRL does after it)."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
+    model = build(family = family, aux = False, coef = 1.0, lora = True)
+    pp = ppn.apply_pipeline_parallel(model, mesh, n_microbatches = 4, schedule = "interleaved1f1b")
+    out = {"guarded": pp.ctx.uncarried_moe is not None, "moe": pp.ctx.moe is not None}
+    model.base_model.model.config.output_router_logits = True
+    try:
+        ppn._refuse_uncarried_router_aux(pp.ctx, {})
+        out["refused"] = None
+    except ValueError as exc:
+        out["refused"] = str(exc)
+    return out
+
+
+CASES = {
+    "parity": _case_parity,
+    "refusals": _case_refusals,
+    "aux_on_after_split": _case_aux_on_after_split,
+}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -399,7 +463,7 @@ def test_pp2_moe_aux_matches_gradient_accumulation(cell):
 
 def test_pp2_moe_refusals_for_unproven_cases():
     out = _spawn("refusals", 2)[0]
-    for key in ("mixtral", "olmoe", "deepseek_v3", "formula"):
+    for key in ("phimoe", "deepseek_v3", "formula"):
         assert "mixture-of-experts" in (out[key] or ""), (key, out[key])
         assert "Qwen3MoeForCausalLM" in out[key], (key, out[key])
     for key in ("interleaved1f1b", "loopedbfs", "zbvzerobubble"):
@@ -442,3 +506,72 @@ def test_aux_loss_refuses_reentrant_checkpointing(aux, reentrant, refused):
             ppn._refuse_aux_with_reentrant_checkpointing(model, model.config)
     else:
         ppn._refuse_aux_with_reentrant_checkpointing(model, model.config)
+
+
+# Families admitted to _PP_MOE_AUX_FAMILIES beyond Qwen3-MoE: each one's router statistics, summed over the stages,
+# must give its own transformers loss and gradients.
+FAMILY_CELLS = {
+    "gpipe_mask_coef1": dict(coef = 1.0),
+    "1f1b_lora_coef1": dict(coef = 1.0, lora = True, schedule = "1f1b"),
+    "gpipe_lora_aux_off": dict(aux = False, coef = 1.0, lora = True),
+    # A multi-stage schedule does not carry the aux loss: with it off the split takes the no-carry route.
+    "interleaved1f1b_lora_aux_off": dict(
+        aux = False, coef = 1.0, lora = True, schedule = "interleaved1f1b", n_mb = 4
+    ),
+}
+FAMILIES = (
+    "qwen3_moe",
+    "mixtral",
+    "olmoe",
+    "qwen2_moe",
+    "flex_olmo",
+    "ernie4_5_moe",
+    "granitemoe",
+)
+
+
+@pytest.mark.parametrize("cell", sorted(FAMILY_CELLS))
+@pytest.mark.parametrize("family", FAMILIES)
+def test_pp2_moe_aux_families_match_gradient_accumulation(family, cell):
+    kwargs = dict(FAMILY_CELLS[cell], family = family)
+    aux_on = kwargs.get("aux", True)
+    model = build(family = family)
+    if ppn._router_logits_recorder(ppn._find_parts(model)) is None:
+        # transformers 4.x OLMoE / Qwen2-MoE / GraniteMoE return router logits without a recorder: aux off only.
+        with pytest.raises(ValueError, match = "is not proven"):
+            ppn._refuse_unsupported(model, ppn._find_parts(model))
+        off = build(family = family, aux = False)
+        ppn._refuse_unsupported(off, ppn._find_parts(off))
+        assert ppn._uncarried_moe_owner(off) is not None
+        if aux_on:
+            return
+    else:
+        assert ppn._uncarried_moe_owner(model) is None
+    results = _spawn("parity", 2, **kwargs)
+    ref = results[0]["ref"]
+    for res in results:
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5, abs = 1e-6), (
+            res["losses"],
+            ref,
+        )
+        if aux_on:
+            assert res["aux"] == pytest.approx(ref["aux"], rel = 1e-5, abs = 1e-6), (res["aux"], ref)
+            assert min(ref["aux"]) > 0
+        else:
+            assert res["aux"] in ([0.0, 0.0], [None, None]) and ref["aux"] == [0.0, 0.0], (
+                res["aux"],
+                ref,
+            )
+        assert not res["missing"], res["missing"]
+        for group, (diff, scale, count) in res["diffs"].items():
+            assert diff <= 1e-6 + 1e-4 * scale, (family, cell, res["stage"], group, diff, scale)
+    if "aux_effect" in results[0]:
+        assert results[0]["aux_effect"] > 1e-3, results[0]["aux_effect"]
+    print(family, cell, {r["stage"]: r["diffs"] for r in results}, results[0].get("aux_effect"))
+
+
+@pytest.mark.parametrize("family", ("qwen3_moe", "mixtral"))
+def test_pp2_aux_off_split_on_interleaved_refuses_aux_turned_on(family):
+    for r in _spawn("aux_on_after_split", 2, family = family):
+        assert r["guarded"] and not r["moe"], r
+        assert "with schedule = 'interleaved1f1b'" in (r["refused"] or ""), r
