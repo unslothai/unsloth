@@ -43,6 +43,8 @@ export interface DiffusionStatus {
   resident_mib?: number | null;
   family: string | null;
   supported_families?: string[];
+  // Per family, transformer_quant schemes refused on every GPU, with the reason; absent on older backends.
+  transformer_quant_denials?: Record<string, Record<string, string>>;
   // Of those, the families shipped as Modular Diffusers pipelines (the family override classes an opaque folder).
   modular_families?: string[];
   base_repo: string | null;

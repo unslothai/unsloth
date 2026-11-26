@@ -6695,6 +6695,16 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
     return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
 
 
+def _transformer_quant_denials(families: Any) -> dict[str, dict[str, str]]:
+    """Per supported family, the schemes its deny table refuses on every GPU, for the Precision picker. Cached
+    inside the helper, keyed on the NVFP4 switch too."""
+    try:
+        from .diffusion_transformer_quant import transformer_quant_denials
+        return transformer_quant_denials(families)
+    except Exception:  # noqa: BLE001 -- a status poll never fails over the precision hints
+        return {}
+
+
 @functools.cache
 def _video_family_capabilities(
     *, detect_device: bool = True
@@ -17566,6 +17576,7 @@ class VideoBackend:
                 "family": None,
                 "supported_families": list(supported),
                 "modular_families": list(modular),
+                "transformer_quant_denials": _transformer_quant_denials(supported),
                 "base_repo": None,
                 "device": None,
                 "dtype": None,
@@ -17631,6 +17642,7 @@ class VideoBackend:
             "family": fam.name,
             "supported_families": list(supported),
             "modular_families": list(modular),
+            "transformer_quant_denials": _transformer_quant_denials(supported),
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": state.dtype,

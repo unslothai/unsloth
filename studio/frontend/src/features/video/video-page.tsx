@@ -191,11 +191,15 @@ import {
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
   useDenseQuantSchemes,
+  useGpuDeviceCount,
   useHostClass,
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { pickFamily, precisionAdvisoryReasons, precisionDisabledReasons } from "@/lib/precision-availability";
+import { ggufQuantLabel } from "@/features/model-picker";
+import { recipeModelToReload, recipeTransformerQuant, seededTransformerQuant } from "@/lib/recipe-precision";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -231,6 +235,7 @@ import {
   engagedAttentionBackend,
   formatResolvedValue,
   isPrecisionRefusal,
+  loadedTransformerPrecisionLabel,
   resolvedBadge,
   resolvedRequestSelectValue,
   resolvedSeedKey,
@@ -861,6 +866,8 @@ function AdvancedSelect({
   value,
   onValueChange,
   options,
+  disabledReasons,
+  advisoryReasons,
 }: {
   label: string;
   hint?: ReactNode;
@@ -868,7 +875,13 @@ function AdvancedSelect({
   value: string;
   onValueChange: (v: string) => void;
   options: Array<[string, string]>;
+  /** Options that cannot load here, keyed by value; shown disabled with the reason as their tooltip. */
+  disabledReasons?: Record<string, string>;
+  /** Reasons that apply to the loaded model only (the next pick may differ): a tooltip and a note, never disabled. */
+  advisoryReasons?: Record<string, string>;
 }) {
+  const selectedReason = disabledReasons?.[value];
+  const selectedAdvice = selectedReason ? undefined : advisoryReasons?.[value];
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
@@ -883,13 +896,30 @@ function AdvancedSelect({
           </SelectTrigger>
           <SelectContent>
             {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
+              <SelectItem
+                key={v}
+                value={v}
+                disabled={disabledReasons?.[v] !== undefined && v !== value}
+                title={disabledReasons?.[v] ?? advisoryReasons?.[v]}
+                // Disabled items keep pointer events so the reason tooltip still shows on hover.
+                className="text-xs data-[disabled]:pointer-events-auto data-[disabled]:cursor-not-allowed"
+              >
                 {l}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
+      {selectedReason && (
+        <p role="status" className="text-ui-11 leading-snug text-amber-600 dark:text-amber-400">
+          Cannot load here: {selectedReason}
+        </p>
+      )}
+      {selectedAdvice && (
+        <p role="status" className="text-ui-11 leading-snug text-amber-600 dark:text-amber-400">
+          Not for the loaded model: {selectedAdvice}
+        </p>
+      )}
     </div>
   );
 }
@@ -1372,6 +1402,7 @@ function VideoGenerator({
   const { pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const gpuCount = useGpuDeviceCount();
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
@@ -1475,6 +1506,8 @@ function VideoGenerator({
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
+  // Bumped by a refused or failed load: the resident record did not change, so Precision reseeds from it.
+  const [precisionReseed, setPrecisionReseed] = useState(0);
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   const [canReapply, setCanReapply] = useState(false);
   // Pending LoRA picks; the resident build's baked set is status.baked_lora_specs.
@@ -1492,6 +1525,15 @@ function VideoGenerator({
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
+  // What Precision can load: the host's probed scheme ladder and the next load's family deny list (Wan NVFP4).
+  const precisionAvailability = {
+    denseQuantSupported: hostClass === "dense-quant",
+    denseQuantSchemes,
+    gpuCount,
+    // Disabling needs a known target: only an explicit override names the next load's family.
+    family: pickFamily(familyOverride, false, null),
+    denials: status?.transformer_quant_denials,
+  };
   // Controlled so the body-portaled selector force-closes when off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pageMode, setPageMode] = useState<"create" | "restyle" | "train">("create");
@@ -2069,12 +2111,7 @@ function VideoGenerator({
     if (!record) return;
     const family = resolvedFamilyOverrideSelection(record.family_override);
     if (family) setFamilyOverride(family);
-    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
-      // The engaged value spells "no quant" as "off"; the option is "none".
-      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
-        (o) => o === v || (o === "none" && v === "off"),
-      ) ?? null,
-    );
+    const quant = seededTransformerQuant(record.transformer_quant);
     if (quant) setTransformerQuant(quant);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
@@ -2091,6 +2128,15 @@ function VideoGenerator({
     if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
+  // A refused or failed load leaves the resident record (and so resolvedKey) as it was: put Precision back on what
+  // is loaded, or it keeps advertising the scheme that never engaged.
+  useEffect(() => {
+    if (precisionReseed === 0) return;
+    const record = status?.loaded ? status.resolved : null;
+    const quant = record ? seededTransformerQuant(record.transformer_quant) : null;
+    if (quant) setTransformerQuant(quant);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per failure, on the record as it is then
+  }, [precisionReseed]);
 
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
     const cached = galleryCache.srcById.get(video.id);
@@ -2638,6 +2684,20 @@ function VideoGenerator({
   }, []);
 
   // Load a clip's recipe back into the form inputs.
+  // The resident status as of now, for a restore's reload prompt.
+  const restoreStatusRef = useRef<VideoStatus | null>(null);
+  restoreStatusRef.current = status;
+  // The build a clip ran with: Precision applies to the next load, and a different model is named for the user to
+  // reload from the picker, never loaded behind their back.
+  const restoreClipBuild = useCallback((video: GalleryVideo) => {
+    const restoredQuant = recipeTransformerQuant(video);
+    if (restoredQuant) setTransformerQuant(restoredQuant);
+    const reloadModel = recipeModelToReload(video, restoreStatusRef.current, ggufQuantLabel);
+    if (!reloadModel) return;
+    toast.info(`This clip was made with ${reloadModel}`, {
+      description: `${video.gguf_filename && video.model_kind === "gguf" ? `${video.gguf_filename} is not loaded. ` : ""}Load it from the model picker to reproduce this clip; the restored precision applies to that load.`,
+    });
+  }, []);
   const restoreSettings = useCallback(
     (video: GalleryVideo) => {
       setPrompt(video.prompt);
@@ -2649,6 +2709,7 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
+      restoreClipBuild(video);
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
@@ -2848,6 +2909,7 @@ function VideoGenerator({
         dismissLoadToast();
         if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
+        setPrecisionReseed((n) => n + 1);
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
@@ -3171,6 +3233,8 @@ function VideoGenerator({
         dismissLoadToast();
         if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
+        // A refused load keeps the resident model and its record, so Precision would not reseed on its own.
+        setPrecisionReseed((n) => n + 1);
         void refreshStatus();
         return settle(false);
       } finally {
@@ -4180,6 +4244,15 @@ function VideoGenerator({
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
+          disabledReasons={precisionDisabledReasons(
+            [["fp8", "FP8"], ["int8", "INT8"], ["nvfp4", "NVFP4"], ["mxfp8", "MXFP8"]],
+            precisionAvailability,
+          )}
+          advisoryReasons={precisionAdvisoryReasons(
+            [["fp8", "FP8"], ["int8", "INT8"], ["nvfp4", "NVFP4"], ["mxfp8", "MXFP8"]],
+            status?.loaded ? status.family : null,
+            status?.transformer_quant_denials,
+          )}
           options={[
             ["auto", "Auto (fastest for GPU)"],
             ["none", "Off (bf16)"],
@@ -4392,6 +4465,7 @@ function VideoGenerator({
               models={videoModels}
               value={selectorModelId}
               loadedModelIdOverride={selectorModelId}
+              loadedPrecisionOverride={busy !== "unloading" ? loadedTransformerPrecisionLabel(status) : null}
               activeGgufVariant={quant}
               onValueChange={handleModelSelect}
               resolveDownloadFootprint={resolveDownloadFootprint}

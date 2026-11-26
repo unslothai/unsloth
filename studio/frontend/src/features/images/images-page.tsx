@@ -115,11 +115,21 @@ import {
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
   useDenseQuantSchemes,
+  useGpuDeviceCount,
   useHostClass,
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { ggufQuantLabel } from "@/features/model-picker";
+import { pickFamily, precisionAdvisoryReasons, precisionDisabledReasons } from "@/lib/precision-availability";
+import {
+  recipeModelToReload,
+  recipeTextEncoderQuant,
+  recipeTransformerQuant,
+  seededTextEncoderQuant,
+  seededTransformerQuant,
+} from "@/lib/recipe-precision";
 import type {
   ExternalModelOption,
   ModelOption,
@@ -1058,6 +1068,8 @@ function AdvancedSelect({
   value,
   onValueChange,
   options,
+  disabledReasons,
+  advisoryReasons,
 }: {
   label: string;
   hint?: ReactNode;
@@ -1066,7 +1078,13 @@ function AdvancedSelect({
   value: string;
   onValueChange: (v: string) => void;
   options: Array<[string, string]>;
+  /** Options that cannot load here, keyed by value; shown disabled with the reason as their tooltip. */
+  disabledReasons?: Record<string, string>;
+  /** Reasons that apply to the loaded model only (the next pick may differ): a tooltip and a note, never disabled. */
+  advisoryReasons?: Record<string, string>;
 }) {
+  const selectedReason = disabledReasons?.[value];
+  const selectedAdvice = selectedReason ? undefined : advisoryReasons?.[value];
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
@@ -1081,7 +1099,14 @@ function AdvancedSelect({
           </SelectTrigger>
           <SelectContent>
             {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
+              <SelectItem
+                key={v}
+                value={v}
+                disabled={disabledReasons?.[v] !== undefined && v !== value}
+                title={disabledReasons?.[v] ?? advisoryReasons?.[v]}
+                // Disabled items keep pointer events so the reason tooltip still shows on hover.
+                className="text-xs data-[disabled]:pointer-events-auto data-[disabled]:cursor-not-allowed"
+              >
                 {l}
               </SelectItem>
             ))}
@@ -1089,6 +1114,16 @@ function AdvancedSelect({
         </Select>
       </div>
       {desc && <p className="text-ui-11 leading-snug text-muted-foreground/70">{desc}</p>}
+      {selectedReason && (
+        <p role="status" className="text-ui-11 leading-snug text-amber-600 dark:text-amber-400">
+          Cannot load here: {selectedReason}
+        </p>
+      )}
+      {selectedAdvice && (
+        <p role="status" className="text-ui-11 leading-snug text-amber-600 dark:text-amber-400">
+          Not for the loaded model: {selectedAdvice}
+        </p>
+      )}
     </div>
   );
 }
@@ -1849,6 +1884,7 @@ export function ImagesPage({
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const gpuCount = useGpuDeviceCount();
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
@@ -2091,6 +2127,8 @@ export function ImagesPage({
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("auto");
   // The loaded build the Engine select was last seeded from; cleared by a failed load to force a reseed.
   const [engineSeed, setEngineSeed] = useState("");
+  // Bumped by a refused or failed load: the resident record did not change, so the Precision selects reseed from it.
+  const [precisionReseed, setPrecisionReseed] = useState(0);
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -2192,6 +2230,15 @@ export function ImagesPage({
     reconcileResidentComponents(status);
   }, [status, reconcileInitialComponents, reconcileResidentComponents]);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
+  // What the Precision select can load: the host's probed scheme ladder and the next load's family deny list.
+  const precisionAvailability = {
+    denseQuantSupported: hostClass === "dense-quant",
+    denseQuantSchemes,
+    gpuCount,
+    // Disabling needs a known target: only an explicit override names the next load's family.
+    family: pickFamily(familyOverride, false, null),
+    denials: status?.transformer_quant_denials,
+  };
   // A connection is not bound by the resident model's size grid or presets.
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
@@ -3159,6 +3206,13 @@ export function ImagesPage({
       if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
     }
     setLoras(restoredLoras);
+    if (via === "restore") {
+      // The build it ran with: Precision and Text encoder precision apply to the next load (Reapply or a pick).
+      const restoredQuant = recipeTransformerQuant(image);
+      if (restoredQuant) setTransformerQuant(restoredQuant);
+      const restoredEncoder = recipeTextEncoderQuant(image);
+      if (restoredEncoder) setTextEncoderQuant(restoredEncoder);
+    }
     if (typeof image.strength === "number") {
       if (image.workflow === "upscale") setUpscaleStrength(image.strength);
       else setStrength(image.strength);
@@ -3224,6 +3278,13 @@ export function ImagesPage({
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
+      });
+    }
+    // A different model is offered as a reload, never loaded behind the user's back.
+    const reloadModel = via === "restore" ? recipeModelToReload(image, status, ggufQuantLabel) : null;
+    if (reloadModel) {
+      toast.info(`This image was made with ${reloadModel}`, {
+        description: `${image.gguf_filename && image.model_kind === "gguf" ? `${image.gguf_filename} is not loaded. ` : ""}Load it from the model picker to reproduce this image; the restored precision applies to that load.`,
       });
     }
   }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
@@ -3716,6 +3777,7 @@ export function ImagesPage({
         // And for the Engine select: a worker that failed before publishing leaves the resident provenance, so the
         // seed would not move and the next Reapply would replay the failed pick.
         setEngineSeed("");
+        setPrecisionReseed((n) => n + 1);
         // A failed load may have freed a previously-loaded model, so resync to the real backend state.
         void refreshStatus();
         return;
@@ -4020,19 +4082,10 @@ export function ImagesPage({
     if (!record) return;
     const family = resolvedFamilyOverrideSelection(record.family_override);
     if (family) setFamilyOverride(family);
-    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
-      // The engaged value spells "no quant" as "off"; the option is "none".
-      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
-        (o) => o === v || (o === "none" && v === "off"),
-      ) ?? null,
-    );
+    const quant = seededTransformerQuant(record.transformer_quant);
     if (quant) setTransformerQuant(quant);
-    const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
-      // "off" maps to Dense, NOT Default, or a pinned Dense would silently take the family scheme.
-      (["auto", "none", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
-        (o) => o === v || (o === "none" && v === "off"),
-      ) ?? null,
-    );
+    // "off" maps to Dense, NOT Default, or a pinned Dense would silently take the family scheme.
+    const encoder = seededTextEncoderQuant(record.text_encoder_quant);
     if (encoder) setTextEncoderQuant(encoder);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
@@ -4048,6 +4101,18 @@ export function ImagesPage({
     if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
+  // A refused or failed load leaves the resident record (and so resolvedKey) as it was: put the Precision selects
+  // back on what is loaded, or they keep advertising the scheme that never engaged.
+  useEffect(() => {
+    if (precisionReseed === 0) return;
+    const record = status?.loaded ? status.resolved : null;
+    if (!record) return;
+    const quant = seededTransformerQuant(record.transformer_quant);
+    if (quant) setTransformerQuant(quant);
+    const encoder = seededTextEncoderQuant(record.text_encoder_quant);
+    if (encoder) setTextEncoderQuant(encoder);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per failure, on the record as it is then
+  }, [precisionReseed]);
 
   const bakedLorasFor = useCallback(
     (repoId: string, preserveSelection = false): LoraSpecInput[] => {
@@ -4217,6 +4282,7 @@ export function ImagesPage({
         // A refused load keeps the resident model and its provenance, so the seed would not move: reseed the
         // Engine select from the resident build rather than replay the refused pick on the next Reapply.
         setEngineSeed("");
+        setPrecisionReseed((n) => n + 1);
         dismissLoadToast();
         if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
@@ -6386,6 +6452,15 @@ export function ImagesPage({
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
+          disabledReasons={precisionDisabledReasons(
+            [["fp8", "FP8"], ["int8", "INT8"], ["nvfp4", "NVFP4"], ["mxfp8", "MXFP8"]],
+            precisionAvailability,
+          )}
+          advisoryReasons={precisionAdvisoryReasons(
+            [["fp8", "FP8"], ["int8", "INT8"], ["nvfp4", "NVFP4"], ["mxfp8", "MXFP8"]],
+            status?.loaded ? status.family : null,
+            status?.transformer_quant_denials,
+          )}
           options={[
             ["auto", "Auto (fastest for GPU)"],
             ["none", "Off (run the checkpoint as-is)"],
