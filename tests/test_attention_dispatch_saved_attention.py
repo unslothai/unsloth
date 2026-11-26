@@ -258,11 +258,20 @@ def test_auto_mode_on_measured_rocm_registers_the_selector(monkeypatch):
     assert SA._ROCM_SDPA_SELECT is SA._default_rocm_sdpa_selector
 
 
-@pytest.mark.parametrize("capability", [(8, 6), (9, 0), (10, 0), (12, 0)])
-def test_auto_mode_stays_off_on_unmeasured_nvidia(monkeypatch, capability):
+# (6, 1) is never measured, so the off branch runs whatever the zoo table holds.
+@pytest.mark.parametrize(
+    "capability", [(6, 1), (7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)]
+)
+def test_auto_mode_follows_the_zoo_measured_table_on_nvidia(monkeypatch, capability):
+    """unsloth_zoo decides which cards were measured (``_AUTO_MIN_SEQ``; sm120 joined in zoo #2796), so the
+    expectation is read from that table: a measured card routes from its threshold, every other one stays off."""
     _fake_gpu(monkeypatch, capability)
-    assert ad._load_saved_attention() == (None, None)
-    assert SA._AUTO_ACTIVE[0] is False
+    if capability in SA._AUTO_MIN_SEQ:
+        assert ad._load_saved_attention() == (SA.saved_attention_call, SA._AUTO_MIN_SEQ[capability])
+        assert SA._AUTO_ACTIVE[0] is True
+    else:
+        assert ad._load_saved_attention() == (None, None)
+        assert SA._AUTO_ACTIVE[0] is False
 
 
 def test_explicit_setting_routes_every_call(monkeypatch):
