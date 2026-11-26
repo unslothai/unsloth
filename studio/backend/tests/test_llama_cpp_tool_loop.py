@@ -7746,7 +7746,9 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         lambda messages, *_a, **_kw: sum(len(str(m.get("content", ""))) for m in messages),
     )
     monkeypatch.setattr(llama_cpp, "_can_reset_epoch", lambda *_a, **_kw: True)
-    monkeypatch.setattr(llama_cpp, "_keeps_compaction_boundary", lambda thread_id: thread_id == "t1")
+    monkeypatch.setattr(
+        llama_cpp, "_keeps_compaction_boundary", lambda thread_id: thread_id == "t1"
+    )
     monkeypatch.setattr(
         llama_cpp,
         "_archive_and_recall",

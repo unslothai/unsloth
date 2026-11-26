@@ -42008,7 +42008,10 @@ class LlamaCppBackend:
                                     elif "trim_target" in truncation:
                                         budget = min(
                                             budget,
-                                            max(truncation["trim_target"], truncation["prompt_tokens_after"]),
+                                            max(
+                                                truncation["trim_target"],
+                                                truncation["prompt_tokens_after"],
+                                            ),
                                         )
                                     if measured <= budget:
                                         _auto = refreshed
