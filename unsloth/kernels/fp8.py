@@ -2133,13 +2133,43 @@ def _fp8_unit_scale(device):
 def _fp8_unit_scale_epilogue_kernel(
     acc_ptr, sx_ptr, sw_ptr, y_ptr, N, numel, BLOCK: tl.constexpr
 ):  # block size
-    # (acc * row scale) * column scale in float32, rounded once: the order Inductor emits for the traced path.
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
     acc = tl.load(acc_ptr + offs, mask = mask, other = 0.0)
     sx = tl.load(sx_ptr + offs // N, mask = mask, other = 0.0)
     sw = tl.load(sw_ptr + offs % N, mask = mask, other = 0.0).to(tl.float32)
     tl.store(y_ptr + offs, ((acc * sx) * sw).to(y_ptr.dtype.element_ty), mask = mask)
+
+
+# Opaque under compile, so the compiled wrapper and the direct path run this same kernel (bitwise equal outputs).
+@_opaque_under_compile(
+    "fp8_unit_scale_epilogue",
+    lambda acc, x_scale, weight_scale, dtype: torch.empty(
+        acc.shape, device = acc.device, dtype = dtype
+    ),
+)
+def _fp8_unit_scale_epilogue(
+    acc: torch.Tensor, x_scale: torch.Tensor, weight_scale: torch.Tensor, dtype: torch.dtype
+) -> torch.Tensor:
+    """(acc [M, N] * x_scale [M, 1]) * weight_scale [N, 1] in float32, rounded once to dtype."""
+    if acc.device.type != "cuda" or torch.version.hip is not None:
+        return (acc * x_scale.float() * weight_scale.to(torch.float32).view(1, -1)).to(dtype)
+    acc, x_scale, weight_scale = acc.contiguous(), x_scale.contiguous(), weight_scale.contiguous()
+    out = torch.empty(acc.shape, device = acc.device, dtype = dtype)
+    numel = acc.numel()
+    if numel:
+        with _fp8_triton_device_context(acc, static_device_count = True):
+            _fp8_unit_scale_epilogue_kernel[(triton.cdiv(numel, 1024),)](
+                acc,
+                x_scale,
+                weight_scale,
+                out,
+                acc.shape[1],
+                numel,
+                BLOCK = 1024,
+                num_warps = 4,
+            )
+    return out
 
 
 def _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, out_dtype):
@@ -2155,30 +2185,7 @@ def _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, out_dtype):
         use_fast_accum = True,
     )
     acc = acc[0] if isinstance(acc, tuple) else acc
-    if (
-        torch.compiler.is_compiling()
-        or acc.device.type != "cuda"
-        or torch.version.hip is not None
-        or not (acc.is_contiguous() and x_scale.is_contiguous() and weight_scale.is_contiguous())
-    ):
-        # Traced: Inductor fuses this into one pass.
-        acc = acc * x_scale * weight_scale.to(torch.float32).view(1, -1)
-        return acc if out_dtype == torch.float32 else acc.to(out_dtype)
-    out = torch.empty(acc.shape, device = acc.device, dtype = out_dtype)
-    numel = acc.numel()
-    if numel:
-        with _fp8_triton_device_context(acc, static_device_count = True):
-            _fp8_unit_scale_epilogue_kernel[(triton.cdiv(numel, 1024),)](
-                acc,
-                x_scale,
-                weight_scale,
-                out,
-                acc.shape[1],
-                numel,
-                BLOCK = 1024,
-                num_warps = 4,
-            )
-    return out
+    return _fp8_unit_scale_epilogue(acc, x_scale, weight_scale, out_dtype)
 
 
 def _parse_fp8_dequant_max_rows(value):

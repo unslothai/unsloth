@@ -90,13 +90,19 @@ def _rowwise_inputs(
     return x, w8, w_inv, w_inv.reshape(1, 1).expand(1, N).contiguous()
 
 
+def _row_reference(x, w8, w_inv, dtype):
+    x8, x_inv = FL.quantize_rowwise(x, E4M3)
+    return ((x8.float() @ w8.float().t()) * x_inv * w_inv).to(dtype)
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-def test_fp8_lora_forward_and_dgrad_fall_back_to_tensorwise(windows, dtype):
+def test_fp8_lora_forward_and_dgrad_keep_row_scaling(windows, dtype):
     x, w8, w_inv, w_inv_row = _rowwise_inputs()
     x = x.to(dtype)
     out = FL.fp8_lora_fwd(x, w8, w_inv_row)
     assert out.dtype == dtype and out.shape == (32, 48)
-    assert torch.equal(out, FL.fp8_lora_fwd(x, w8, w_inv))
+    # Per-row activation scales survive: the unit-scale tensorwise GEMM plus a float32 rescale.
+    torch.testing.assert_close(out, _row_reference(x, w8, w_inv_row, dtype))
     assert FL._ROWWISE_UNSUPPORTED == {x.device}
     # Recorded once: the next call skips the row-wise attempt.
     calls_before = len(windows)
@@ -106,15 +112,29 @@ def test_fp8_lora_forward_and_dgrad_fall_back_to_tensorwise(windows, dtype):
     dx = FL.fp8_lora_dgrad(dy, w8, w_inv_row[:, :1].expand(1, 64).contiguous(), False)
     assert dx.shape == (32, 64) and torch.isfinite(dx).all()
     ref = dy.float() @ (w8.float() * w_inv)
-    assert ((dx.float() - ref).norm() / ref.norm()) < 0.15
+    assert ((dx.float() - ref).norm() / ref.norm()) < 0.1
 
 
-def test_rowwise_scaled_mm_returns_none_instead_of_raising(windows):
+def test_fp8_lora_base_state_trains_on_the_row_recipe(windows, monkeypatch):
+    monkeypatch.setattr(FL, "_SCALING", "row")
+    W = torch.randn(48, 64).bfloat16()
+    state = FL.Fp8LoRABaseState(W)
+    assert state.scaling == "row" and state.w_inv_fwd.dim() == 2
+    x = torch.randn(32, 64).bfloat16()
+    y = state.matmul(x, W)
+    ref = x.float() @ W.float().t()
+    assert ((y.float() - ref).norm() / ref.norm()) < 0.08
+    dx = state.dgrad(torch.randn(32, 48).bfloat16(), W)
+    assert dx.shape == (32, 64) and torch.isfinite(dx).all()
+
+
+def test_rowwise_scaled_mm_runs_at_unit_scale_instead_of_raising(windows):
     x8 = torch.ones(16, 32).to(E4M3)
-    rows, cols = torch.ones(16, 1), torch.ones(1, 16)
+    rows, cols = torch.full((16, 1), 0.5), torch.full((1, 16), 0.25)
     for dtype in (torch.bfloat16, torch.float16, torch.float32):
-        assert FL._rowwise_scaled_mm(x8, x8.t(), rows, cols, dtype, True) is None
-    assert not FL._rowwise_ok(torch.bfloat16, x8.device)
+        out = FL._rowwise_scaled_mm(x8, x8.t(), rows, cols, dtype, True)
+        assert out.dtype == dtype and torch.equal(out.float(), torch.full((16, 16), 4.0))
+    assert FL._rowwise_ok(torch.float16, x8.device)
 
 
 def test_other_rowwise_errors_still_raise(monkeypatch):
@@ -133,19 +153,13 @@ def test_other_rowwise_errors_still_raise(monkeypatch):
     assert FL._ROWWISE_UNSUPPORTED == set()
 
 
-def test_rowwise_probe_and_scaling_choice(windows, monkeypatch):
+def test_rowwise_probe_is_cached_per_device(windows):
     device = torch.device("cpu")
-    monkeypatch.setattr(FL, "scaling_for_class", lambda gpu_class: "row")
-    monkeypatch.setattr(FL, "_SCALING", "auto")
     assert FL.rowwise_supported(device) is False
     assert windows == ["tensor", "row"]
-    assert FL._scaling_for(device) == "tensor"
+    assert FL.rowwise_supported(device) is False
     assert windows == ["tensor", "row"]  # cached per device
-    state = FL.Fp8LoRABaseState(torch.randn(32, 64).bfloat16())
-    assert state.scaling == "tensor" and state.w_inv_fwd.dim() == 0
-    # An explicit UNSLOTH_FP8_LORA_SCALING=row is kept; its GEMMs fall back per call.
-    monkeypatch.setattr(FL, "_SCALING", "row")
-    assert FL._scaling_for(device) == "row"
+    assert FL._ROWWISE_UNSUPPORTED == {device}
 
 
 def test_rowwise_probe_keeps_row_when_it_runs_or_fails_otherwise(monkeypatch):

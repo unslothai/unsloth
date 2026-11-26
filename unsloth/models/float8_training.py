@@ -480,14 +480,7 @@ def resolve_fp8_lora(
 def fp8_lora_recipe_for(gpu):
     """The frozen-base recipe the kernels run on this GPU class: per-token scales on sm120, tensorwise
     elsewhere (UNSLOTH_FP8_LORA_SCALING overrides; kernels/fp8_lora.scaling_for_class is the one rule)."""
-    kernels = _load_fp8_lora_kernels()
-    scaling = kernels.scaling_for_class(gpu)
-    if scaling == "row" and torch.cuda.is_available() and gpu == _precision.current_gpu_class():
-        # The kernels run tensorwise where this torch build has no row-wise _scaled_mm (Windows wheels).
-        try:
-            scaling = kernels._scaling_for(torch.device("cuda", torch.cuda.current_device()))
-        except Exception:
-            pass
+    scaling = _load_fp8_lora_kernels().scaling_for_class(gpu)
     return "fp8_lora_rowwise" if scaling == "row" else FP8_LORA_RECIPE
 
 

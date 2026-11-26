@@ -84,11 +84,7 @@ def _scaling_for(device):
             gpu_class = "sm120" if torch.cuda.get_device_capability(device)[0] >= 12 else "other"
     except Exception:
         pass
-    scaling = scaling_for_class(gpu_class)
-    # The row-wise default needs torch's row-wise _scaled_mm kernel, which the Windows wheels do not ship.
-    if scaling == "row" and _SCALING == "auto" and not rowwise_supported(device):
-        return "tensor"
-    return scaling
+    return scaling_for_class(gpu_class)
 
 
 # What torch raises for a _scaled_mm scaling this build lacks ("Rowwise scaling is not currently supported on
@@ -119,8 +115,8 @@ def _note_rowwise_unsupported(device):
     if device not in _ROWWISE_UNSUPPORTED:
         _ROWWISE_UNSUPPORTED.add(device)
         print(
-            f"Unsloth: this torch build has no row-wise fp8 _scaled_mm on {device}; "
-            "fp8 LoRA uses tensorwise scaling there."
+            f"Unsloth: this torch build has no row-wise fp8 _scaled_mm on {device}; row-scaled fp8 "
+            "GEMMs run on the tensorwise kernel there, with the scales applied in float32."
         )
 
 
@@ -420,14 +416,24 @@ _ROWWISE_BF16_ONLY = set()
 
 
 def _rowwise_ok(dtype, device) -> bool:
-    return device not in _ROWWISE_UNSUPPORTED and (
-        dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY
+    return (
+        dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY or device in _ROWWISE_UNSUPPORTED
     )
 
 
+def _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum):
+    """A row-scaled GEMM on the tensorwise kernel (torch builds without the row-wise one, the Windows wheels): unit
+    scales and float32 out, as fp8_lora_accum runs it, then both scales in float32, rounded once to dtype."""
+    one = torch.ones((), device = a.device, dtype = torch.float32)
+    raw = _scaled_mm(a, b, one, one, torch.float32, fast_accum)
+    return raw.mul_(scale_a).mul_(scale_b).to(dtype)
+
+
 def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
-    """None (run tensorwise) when this torch build has no row-wise kernel, or for fp16 when this device's
-    rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf."""
+    """None for fp16 when this device's rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf. Without
+    a row-wise kernel at all, the unit-scale tensorwise GEMM keeps the row scaling."""
+    if a.device in _ROWWISE_UNSUPPORTED:
+        return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
     out_dtype = _out_dtype(dtype)
     try:
         if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
@@ -447,7 +453,7 @@ def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
         if not _is_unsupported(exc):
             raise
         _note_rowwise_unsupported(a.device)
-        return None
+        return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
 
 
 def _weight_scale(w_inv):
