@@ -3676,18 +3676,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
-            "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
+            "# R3 replays vLLM's rollout routes (fast_inference); R2 (UNSLOTH_GRPO_ROUTING_REPLAY_R2=1) replays pi_old's, no vLLM needed.\n"
+            "_unsloth_replay_on = os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine')\n"
+            "if _unsloth_replay_on or os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY_R2', '0') == '1':\n"
             "    try:\n"
             "        from unsloth_zoo.routing_replay import install_routing_replay\n"
             "    except ImportError:\n"
-            "        print('Unsloth: UNSLOTH_GRPO_ROUTING_REPLAY=1 needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
+            "        print('Unsloth: MoE routing replay needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
             "    else:\n"
             "        from unsloth.models._routing_replay import routing_replay_hook_snapshot, prepare_routing_replay\n"
             "        # TRL scores the PEFT reference through self.model.disable_adapter(), so prepare that object.\n"
             "        _unsloth_replay_model = getattr(self, 'model', None)\n"
             "        _unsloth_replay_model = model if _unsloth_replay_model is None else _unsloth_replay_model\n"
             "        _unsloth_replay_hooks_before = routing_replay_hook_snapshot(_unsloth_replay_model)\n"
-            "        install_routing_replay(model, model.vllm_engine, getattr(self, 'processing_class', None))\n"
+            "        install_routing_replay(model, getattr(model, 'vllm_engine', None), getattr(self, 'processing_class', None))\n"
             "        # Pick the router weight formulas outside compilation; PEFT reference scoring routes naturally.\n"
             "        prepare_routing_replay(_unsloth_replay_model, _unsloth_replay_hooks_before)\n"
             "pass\n"
