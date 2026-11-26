@@ -126,10 +126,15 @@ def _edited_order(
                     ):
                         moves = with_single_moves
         elif common_base != common_layout:
-            return _merge_order(layout, saved)
+            return _merge_order(layout, saved), False
     if moves:
-        if saved == base and (switched_to_manual or set(saved).issubset(layout)):
-            return _merge_order(layout, saved)
+        visible = set(layout)
+        placed = any(
+            move["id"] != move["targetId"] and move["id"] in visible and move["targetId"] in visible
+            for move in moves
+        )
+        if saved == base and (switched_to_manual or set(saved).issubset(visible)):
+            return _merge_order(layout, saved), placed
         primary = saved
         if unranked_first and saved != base:
             ranked = set(saved).union(base)
@@ -139,9 +144,9 @@ def _edited_order(
         order = _replay_placements(_merge_order(primary, layout), moves)
         if saved == base:
             ranked = set(saved)
-            return _merge_order(layout, [row for row in order if row in ranked])
-        return order
-    return _merge_order(saved, layout)
+            return _merge_order(layout, [row for row in order if row in ranked]), placed
+        return order, placed
+    return _merge_order(saved, layout), False
 
 
 def _merge(
@@ -199,7 +204,7 @@ def _merge(
     for move in order_moves:
         moves_by_section.setdefault(move["sectionId"], []).append(move)
     saved_order = stored.get("sectionOrder", [])
-    order = _edited_order(
+    order, _ = _edited_order(
         saved_order,
         base["sectionOrder"],
         layout["sectionOrder"],
@@ -235,7 +240,7 @@ def _merge(
                     removed.update(assigned_rows.get(key, ()))
                 saved = [row for row in saved if row not in removed]
                 previous = [row for row in previous if row not in removed]
-            row_order[key] = _edited_order(
+            row_order[key], placed = _edited_order(
                 saved,
                 previous,
                 ids,
@@ -244,6 +249,14 @@ def _merge(
                 switched_to_manual = switched_to_manual,
                 unranked_first = previous_sort == sort == "manual" and not importing,
             )
+            if (
+                placed
+                and not importing
+                and key in live
+                and sort == "manual"
+                and sections[key]["sort"] != sort
+            ):
+                sections[key] = {**sections[key], "sort": sort}
     result["rowOrder"] = {key: ids for key, ids in row_order.items() if key in live}
     return result
 

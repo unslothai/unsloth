@@ -1357,6 +1357,47 @@ def test_sidebar_sections_keeps_a_placement_dependent_on_a_previous_drag(
     assert saved["rowOrder"]["work"] == list("bacdefgih")
 
 
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_sidebar_sections_preserves_manual_intent_of_a_surviving_drag(client, cancelled):
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    base = save(
+        "initial",
+        {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys("abc", "work"),
+            "rowOrder": {"work": list("abc")},
+        },
+    )
+    peer = save(
+        "peer", {**base, "sections": {"work": {"name": "Research", "sort": "updated"}}}, base
+    )
+    assert peer["sections"]["work"]["sort"] == "updated"
+
+    moved = {"sectionId": "work", "id": "b", "targetId": "a", "edge": "top"}
+    moves = [moved, {**moved, "edge": "bottom"}] if cancelled else [moved]
+    rows = list("abc" if cancelled else "bac")
+    saved = save("local", {**base, "rowOrder": {"work": rows}}, base, moves)
+    assert saved["sections"]["work"] == {
+        "name": "Research",
+        "sort": "updated" if cancelled else "manual",
+    }
+    assert saved["rowOrder"]["work"] == rows
+
+
 @pytest.mark.parametrize(
     ("initial", "first", "second", "expected", "sort"),
     [
