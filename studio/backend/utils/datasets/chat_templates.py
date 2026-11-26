@@ -143,6 +143,12 @@ def get_tokenizer_chat_template(tokenizer, model_name):
     return tokenizer
 
 
+def alpaca_dataset_template(tokenizer):
+    """Return the legacy marker name when the model has no native chat template."""
+    template = getattr(tokenizer, "chat_template", None)
+    return None if template and template != STUDIO_ALPACA_CHAT_TEMPLATE else "alpaca"
+
+
 def get_training_chat_template(tokenizer, model_name, final_format):
     if getattr(tokenizer, "chat_template", None):
         return tokenizer
@@ -727,6 +733,8 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
+        dataset_template = alpaca_dataset_template(tokenizer)
+        native_template = dataset_template is None
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
         preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
@@ -742,6 +750,31 @@ def apply_chat_template_to_dataset(
             for instruction, input_, output, system in zip(
                 instructions, inputs, examples["output"], systems
             ):
+                if native_template:
+                    prompt = cell_text(instruction)
+                    if context := cell_text(input_).strip():
+                        prompt += "\n\n" + context
+                    messages = [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": cell_text(output)},
+                    ]
+                    if isinstance(system, str) and system.strip():
+                        messages.insert(0, {"role": "system", "content": system})
+                    try:
+                        text = _render_messages(tokenizer, messages)
+                    except Exception:
+                        if messages[0]["role"] != "system":
+                            raise
+                        # Templates without a system role carry explicit instructions in the user turn.
+                        messages.pop(0)
+                        messages[0]["content"] = system + "\n\n" + prompt
+                        text = _render_messages(tokenizer, messages)
+                    if not isinstance(text, str) or not text.strip():
+                        raise ValueError("The model's chat template did not render the Alpaca example")
+                    if remove_bos_prefix and (bos := getattr(tokenizer, "bos_token", None)):
+                        text = text.removeprefix(bos)
+                    texts.append(text)
+                    continue
                 if not (isinstance(system, str) and system.strip()):
                     system = preamble
 
@@ -771,6 +804,7 @@ def apply_chat_template_to_dataset(
 
             return {
                 "dataset": formatted_dataset,
+                "dataset_template": dataset_template,
                 "success": True,
                 "warnings": warnings,
                 "errors": errors

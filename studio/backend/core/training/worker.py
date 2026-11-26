@@ -3735,6 +3735,7 @@ def _run_mlx_training(
     # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
     format_type = "raw" if is_cpt else config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
+    dataset_template = None
     dataset_final_format = ""
     eval_final_format = ""
     try:
@@ -3854,6 +3855,7 @@ def _run_mlx_training(
             for message in info.get("run_warnings", []):
                 _send("warning", message = message)
             dataset_final_format = str(info.get("final_format", "") or "").lower()
+            dataset_template = info.get("dataset_template")
             eval_final_format = dataset_final_format
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
@@ -4136,7 +4138,7 @@ def _run_mlx_training(
             model_name,
             train_on_responses_only,
             notify = lambda level, message: _send("status", status_message = message),
-            dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
+            dataset_template = dataset_template,
         )
         if not masking_applied:
             # Masking miss changes the run's objective, so warn in the sticky warning list, not a status line.

@@ -5177,7 +5177,7 @@ class UnslothTrainer:
                     train_on_responses_only,
                     num_proc = config_args["dataset_num_proc"],
                     notify = _notify,
-                    dataset_template = ("alpaca" if dataset_final_format == "alpaca" else None),
+                    dataset_template = dataset.get("dataset_template"),
                 )
 
                 if not masking_applied:

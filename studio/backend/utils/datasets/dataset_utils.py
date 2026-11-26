@@ -1429,7 +1429,7 @@ def format_and_template_dataset(
         if (
             is_gemma
             and not dataset_info["is_image"]
-            and not is_alpaca
+            and (not is_alpaca or getattr(tokenizer, "chat_template", None))
             and _tokenizer_adds_bos(tokenizer)
         ):
             remove_bos_prefix = True
@@ -1465,6 +1465,7 @@ def format_and_template_dataset(
 
         return {
             "dataset": template_result["dataset"],
+            "dataset_template": template_result.get("dataset_template"),
             "detected_format": dataset_info["detected_format"],
             "final_format": final_format,
             "chat_column": dataset_info.get("chat_column"),

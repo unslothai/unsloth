@@ -6,9 +6,11 @@ from datasets import Dataset, load_dataset
 from utils.datasets import convert_alpaca_to_chatml, format_and_template_dataset
 from utils.datasets.cells import cell_text
 
+from utils.datasets.chat_templates import STUDIO_ALPACA_CHAT_TEMPLATE
+
 
 class _Tokenizer:
-    chat_template = "{{ messages }}"
+    chat_template = STUDIO_ALPACA_CHAT_TEMPLATE
     eos_token = "</s>"
 
 
@@ -65,7 +67,7 @@ def test_alpaca_rows_do_not_get_a_second_eos():
 
 def test_alpaca_rows_take_eos_from_a_processors_tokenizer():
     class _Processor:
-        chat_template = "{{ messages }}"
+        chat_template = STUDIO_ALPACA_CHAT_TEMPLATE
         tokenizer = _Tokenizer()
 
     dataset = Dataset.from_dict({"instruction": ["Add 2+2"], "input": [""], "output": ["4"]})
@@ -75,7 +77,7 @@ def test_alpaca_rows_take_eos_from_a_processors_tokenizer():
 
 def test_alpaca_warns_when_tokenizer_has_no_eos():
     class _NoEosTokenizer:
-        chat_template = "{{ messages }}"
+        chat_template = STUDIO_ALPACA_CHAT_TEMPLATE
 
     dataset = Dataset.from_dict({"instruction": ["Add 2+2"], "input": [""], "output": ["4"]})
     result = _format_result(dataset, _NoEosTokenizer())
@@ -198,3 +200,27 @@ def test_alpaca_system_column_formats_from_a_numpy_formatted_dataset():
 
     assert texts[0].startswith("Be brief.\n\n### Instruction:\na\n")
     assert texts[1].endswith("### Instruction:\nb\n\n### Input:\n\n\n### Response:\n2</s>")
+
+
+def test_alpaca_rows_use_the_existing_instruct_template():
+    class InstructTokenizer:
+        chat_template = "native"
+        eos_token = "<end>"
+
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+            assert not tokenize and not add_generation_prompt
+            return "".join(f'<{m["role"]}>{m["content"]}<end>' for m in messages)
+
+    result = _format_result(
+        Dataset.from_list([{
+            "instruction": "Say hello",
+            "input": "in French",
+            "system": "Be brief.",
+            "output": "Bonjour",
+        }]),
+        InstructTokenizer(),
+    )
+    assert result["dataset"][0]["text"] == (
+        "<system>Be brief.<end><user>Say hello\n\nin French<end><assistant>Bonjour<end>"
+    )
+    assert result["dataset_template"] is None
