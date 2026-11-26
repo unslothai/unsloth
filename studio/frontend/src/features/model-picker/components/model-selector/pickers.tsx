@@ -3834,7 +3834,6 @@ export function HubModelPicker({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
-  /** Search Hub's tooltip, when the button opens a page rather than a search. */
   browseHubHint?: string;
   /** Opens the connection's settings for a Connected row's gear. */
   onConfigureConnection?: (providerId: string) => void;

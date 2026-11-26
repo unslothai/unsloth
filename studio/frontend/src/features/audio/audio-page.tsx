@@ -1944,7 +1944,7 @@ export function AudioPage({
               variant="ghost"
               className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={HUB_TASKS_BY_MODE[mode]}
-              // Separate's models are folders of one audio.cpp repo, which no Hub task filter lists.
+              // Separate's models live in one audio.cpp repo tagged text-to-speech, so no Hub task filter finds them.
               hubLink={pageWorkflow === "separate" ? AUDIO_CPP_REPO_URL : undefined}
               catalog={AUDIO_CATALOG}
               cpuLoad={audioDevice === "cpu"}
