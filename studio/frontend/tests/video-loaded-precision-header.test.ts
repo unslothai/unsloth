@@ -40,17 +40,24 @@ test("the video ModelSelector passes the loaded precision, as the Images page do
 });
 
 test("a clip's engaged precision maps to the select value that reproduces it", () => {
-  assert.equal(clipPrecisionSelection("fp8"), "fp8");
-  assert.equal(clipPrecisionSelection("INT8"), "int8");
-  assert.equal(clipPrecisionSelection(null), "none");
-  assert.equal(clipPrecisionSelection("off"), "none");
-  // An older sidecar without the field keeps the current pick.
-  assert.equal(clipPrecisionSelection(undefined), null);
-  assert.equal(clipPrecisionSelection("q4_k_m"), null);
+  assert.equal(clipPrecisionSelection("fp8", "pipeline"), "fp8");
+  assert.equal(clipPrecisionSelection("INT8", "pipeline"), "int8");
+  // A recorded dense run: the sidecar wrote model_kind beside a null transformer_quant.
+  assert.equal(clipPrecisionSelection(null, "pipeline"), "none");
+  assert.equal(clipPrecisionSelection(null, "gguf"), "none");
+  assert.equal(clipPrecisionSelection("off", "pipeline"), "none");
+  assert.equal(clipPrecisionSelection("q4_k_m", "gguf"), null);
+});
+
+test("an older clip without a precision record keeps the current pick, even as the API's null", () => {
+  // /video/gallery serialises an absent transformer_quant (and model_kind) as null, not undefined.
+  assert.equal(clipPrecisionSelection(null, null), null);
+  assert.equal(clipPrecisionSelection(null), null);
+  assert.equal(clipPrecisionSelection(undefined, undefined), null);
 });
 
 test("Restore sets Precision from the clip", () => {
   const restore = VIDEO.slice(VIDEO.indexOf("const restoreSettings = useCallback("));
   const body = restore.slice(0, restore.indexOf('toast.success("Settings restored to inputs")'));
-  assert.match(body, /const precision = clipPrecisionSelection\(video\.transformer_quant\);\s*if \(precision\) setTransformerQuant\(precision\);/);
+  assert.match(body, /const precision = clipPrecisionSelection\(video\.transformer_quant, video\.model_kind\);\s*if \(precision\) setTransformerQuant\(precision\);/);
 });

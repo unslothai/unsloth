@@ -2670,7 +2670,7 @@ function VideoGenerator({
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
       // The precision the clip ran with, for the next load (an NVFP4 clip on a build with NVFP4 off falls back).
-      const precision = clipPrecisionSelection(video.transformer_quant);
+      const precision = clipPrecisionSelection(video.transformer_quant, video.model_kind);
       if (precision) setTransformerQuant(precision);
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
