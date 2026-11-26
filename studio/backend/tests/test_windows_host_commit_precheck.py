@@ -143,6 +143,18 @@ class TestPreLaunch:
         backend._lazy_read_host_bytes = lambda *a, **k: 0
         assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), _CARD, {}, **kwargs)
 
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"LLAMA_ARG_CPU_MOE": "1"},
+            {"LLAMA_ARG_N_CPU_MOE": "40"},
+            {"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"},
+        ],
+    )
+    def test_expert_placement_from_the_environment_counts_too(self, windows, env):
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 16 * _MIB)
+        assert _backend(kv_gb = 32)._windows_host_commit_refusal(_cmd(), _CARD, env, **kwargs) is None
+
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (
             _backend(model_gb = 20)._windows_host_commit_refusal(

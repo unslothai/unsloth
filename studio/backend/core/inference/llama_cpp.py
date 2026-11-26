@@ -17026,7 +17026,11 @@ class LlamaCppBackend:
             kv_on_host = 0.0
             if child_has_no_gpu or not _kv_offload_from_args(argv, _env):
                 kv_on_host = 1.0
-            elif spill and not _extra_args_set_any_flag(argv, self._ARGV_EXPERTS_ON_CPU):
+            elif (
+                spill
+                and not _extra_args_set_any_flag(argv, self._ARGV_EXPERTS_ON_CPU)
+                and not _env_places_tensors_on_cpu(_env)
+            ):
                 # A layer split keeps the KV of the layers left on the CPU in host RAM.
                 kv_on_host = spill / resident
             if kv_on_host and n_ctx > 0:
