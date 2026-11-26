@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Batch-size graphs on a real card: a size-2 graph recorded next to the size-1 one replays with no host sync
-(torch.cuda.set_sync_debug_mode("error") after the warm-ups), into the shared pool, matching the eager step."""
+(torch.cuda.set_sync_debug_mode("error") after the warm-ups), in the batched graphs' own pool, matching the eager
+step."""
 
 from __future__ import annotations
 
@@ -37,11 +38,13 @@ class _TinyDiT(torch.nn.Module):
 @pytest.fixture(autouse = True)
 def _clean():
     cg._POOL_BOX[0] = None
+    cg._BATCH_POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
     cg._CAPTURE_STREAMS.clear()
     yield
     torch.cuda.set_sync_debug_mode(0)
     cg._POOL_BOX[0] = None
+    cg._BATCH_POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
     cg._CAPTURE_STREAMS.clear()
 
@@ -68,8 +71,11 @@ def test_size_two_graph_replays_without_a_host_sync_next_to_size_one(monkeypatch
     torch.cuda.synchronize()
     assert handle.stats["batch_captures"] == 1 and len(handle.cache) == 2
     assert not handle.poisoned
-    pools = {getattr(entry, "pool_token", None) for entry in handle.cache.values()}
-    assert len(pools) == 1, "batched graphs share the one graph pool"
+    single = {e.pool_token for k, e in handle.cache.items() if k not in handle._batched}
+    batched = {e.pool_token for k, e in handle.cache.items() if k in handle._batched}
+    assert (
+        len(single) == 1 and len(batched) == 1 and not single & batched
+    ), "batched graphs have their own pool"
 
     x1, t1 = _inputs(1, 7)
     x2, t2 = _inputs(2, 8)

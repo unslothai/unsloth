@@ -461,8 +461,8 @@ def run_race(
             )
         return clock() - start, list(out.get("images") or [])
 
-    for size in sizes:
-        size = int(size)
+    # Largest first: inside one pool the smaller graphs then reuse the blocks the largest recorded.
+    for size in sorted({int(k) for k in sizes}, reverse = True):
         if size < 2:
             continue
         if allowed_sizes is not None and not allowed_sizes(size):

@@ -443,6 +443,7 @@ def test_the_race_promotes_a_real_win_and_reports_an_exact_path(monkeypatch):
         clock = lambda: clock["t"],
     )
     two, four = report["sizes"]["2"], report["sizes"]["4"]
+    assert list(report["sizes"]) == ["4", "2"], "the largest batch size records first"
     assert two["promoted"] and four["promoted"]
     assert two["neighbour_exact"] is True and two["replay_exact"] is True
     assert set(stored) == {2, 4}

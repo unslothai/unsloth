@@ -206,6 +206,7 @@ def stub_torch(monkeypatch):
 def _clean_module_globals():
     """The shared pool and the live-wrapper set are process-wide, so no test may inherit them."""
     cg._POOL_BOX[0] = None
+    cg._BATCH_POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
     cg._CAPTURE_STREAMS.clear()
     yield
@@ -2455,15 +2456,52 @@ def test_a_race_records_batch_sizes_two_and_four_next_to_size_one(stub_torch):
 
 
 @side_stream
-def test_a_full_cache_never_evicts_a_size_one_graph_for_a_batch(stub_torch):
+def test_batched_graphs_have_their_own_budget_beside_the_size_one_graphs(stub_torch):
+    """A full size-1 cache neither blocks a batch-size graph nor loses a slot to one, and the other way round: batch
+    graphs never take a size-1 prompt-length variant's slot."""
     handle = cg.GraphedForward(_FakeDiT(), max_graphs = 2).enable()
     handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
     handle(_t((1, 8)), timestep = _t((1,)), return_dict = False)
     keys = set(handle.cache)
+    for rows in (4, 2):
+        with cg.batch_rows(rows, capture = True):
+            handle(_t((rows, 4)), timestep = _t((rows,)), return_dict = False)
+    assert keys <= set(handle.cache) and len(handle.cache) == 4
+    assert handle.stats["batch_captures"] == 2 and handle.stats["evictions"] == 0
+    # A third size-1 shape: the size-1 budget is full (cap skip), the batched graphs are not taken.
+    handle(_t((1, 16)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["cap_skips"] == 1 and len(handle.cache) == 4
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 8)), timestep = _t((2,)), return_dict = False)
+    assert handle.stats["batch_eager"] == 1, "the batched budget is full"
+
+
+@side_stream
+def test_batched_graphs_record_into_their_own_pool_unless_shared(stub_torch, monkeypatch):
+    """torch frees a pool's blocks only once no graph uses it: in the size-1 graphs' pool, dropping the batched graphs
+    would give nothing back."""
+    cg._BATCH_POOL_BOX[0] = None
+    handle = _armed()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
     with cg.batch_rows(2, capture = True):
         handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
-    assert set(handle.cache) == keys
-    assert handle.stats["batch_eager"] == 1 and handle.stats["evictions"] == 0
+    with cg.batch_rows(4, capture = True):
+        handle(_t((4, 4)), timestep = _t((4,)), return_dict = False)
+    single = [e.pool_token for k, e in handle.cache.items() if k not in handle._batched]
+    batched = {e.pool_token for k, e in handle.cache.items() if k in handle._batched}
+    assert (
+        len(batched) == 1 and single[0] not in batched
+    ), "one pool for every batched graph, apart from size 1"
+    handle.drop_batched()
+    assert cg._BATCH_POOL_BOX[0] is None and cg._POOL_BOX[0] is not None
+    cg._BATCH_POOL_BOX[0] = None
+    monkeypatch.setenv(cg.BATCH_POOL_ENV, "shared")
+    other = _armed()
+    other(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    with cg.batch_rows(2, capture = True):
+        other(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert len({e.pool_token for e in other.cache.values()}) == 1
+    cg._BATCH_POOL_BOX[0] = None
 
 
 @side_stream

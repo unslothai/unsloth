@@ -907,6 +907,24 @@ def _has_float(key: tuple) -> bool:
 
 # Private pools per graph OOM a dual-DiT family; the graphs never replay concurrently, so share.
 _POOL_BOX: list = [None]
+# Batch-size graphs (batch_rows > 1) record into their own pool, shared by every batched graph (both DiTs of a dual-DiT
+# family included): torch frees a pool's blocks only once no graph uses it, so in the size-1 graphs' pool dropping the
+# batched graphs would give back nothing. "shared" (env) records them beside the size-1 graphs instead.
+BATCH_POOL_ENV = "UNSLOTH_DIFFUSION_BATCH_GRAPH_POOL"
+_BATCH_POOL_BOX: list = [None]
+
+
+def _batch_pool_split() -> bool:
+    return (os.environ.get(BATCH_POOL_ENV) or "split").strip().lower() != "shared"
+
+
+def _pool_box() -> list:
+    """The pool box a capture in this context records into."""
+    rows = _BATCH_ROWS.get()
+    if rows is not None and rows[0] > 1 and _batch_pool_split():
+        return _BATCH_POOL_BOX
+    return _POOL_BOX
+
 
 # A pool id handed to a capture after the last graph recorded into it died is a dangling pointer.
 _LIVE_WRAPPERS: "weakref.WeakSet" = weakref.WeakSet()
@@ -916,17 +934,20 @@ def _drop_pool_if_unused() -> None:
     """Forget the shared pool id once no live graph records into it: capturing into a pool whose graphs are all gone
     dies on the allocator's use_count assert. Checked per graph, not per wrapper: a wrapper still holding graphs in an
     EARLIER pool (one dropped before) does not keep the current id alive."""
-    try:
-        pool = _POOL_BOX[0]
-        if pool is None:
-            return
-        for wrapper in tuple(_LIVE_WRAPPERS):
-            for entry in tuple(wrapper.cache.values()):
-                if getattr(entry, "pool_token", pool) == pool:  # handles are fresh tuples per call
-                    return
-        _POOL_BOX[0] = None
-    except Exception:  # noqa: BLE001
-        pass
+    for box in (_POOL_BOX, _BATCH_POOL_BOX):
+        try:
+            pool = box[0]
+            if pool is None:
+                continue
+            if any(
+                getattr(entry, "pool_token", pool) == pool  # handles are fresh tuples per call
+                for wrapper in tuple(_LIVE_WRAPPERS)
+                for entry in tuple(wrapper.cache.values())
+            ):
+                continue
+            box[0] = None
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # A failed capture (torch >= 2.11) pins its graph and pool forever via the host allocator.
@@ -1024,8 +1045,9 @@ def retire_failed_capture(
     with _FAILED_LOCK:
         # A collision with another recording left nothing behind: kept alive, but not a failure the budget counts.
         (_COLLIDED_GRAPHS if begun_elsewhere else _FAILED_GRAPHS).append(graph)
-    if pool is not None and _POOL_BOX[0] == pool:
-        _POOL_BOX[0] = None
+    for box in (_POOL_BOX, _BATCH_POOL_BOX):
+        if pool is not None and box[0] == pool:
+            box[0] = None
     if not begun_elsewhere:
         note_pool_retired()  # whatever the failed recording took stays cached until the next capture's entry flush
 
@@ -1562,17 +1584,19 @@ class GraphedForward:
         # the recordings ran on their own capture stream, whose cuBLAS workspace outlives them
         release_cached_outside_capture(clear_cublas = getattr(self, "placement", None) is not None)
 
+    def _unbatched_count(self) -> int:
+        batched = getattr(self, "_batched", {})
+        return sum(1 for k in self.cache if k not in batched)
+
     def _eviction_victim(self, incoming_edit: bool) -> Any:
-        """The least recently replayed graph a full planned cache may drop for a new key, else None."""
+        """The least recently replayed size-1 graph a full planned cache may drop for a new size-1 key, else None: an
+        edit's first; an edit never drops a text-to-image graph. Batched graphs have their own budget."""
         batched = getattr(self, "_batched", {})
         edits = getattr(self, "_edit_keys", set())
-        for pick in (batched, edits):
-            victim = next((k for k in self.cache if k in pick), None)
-            if victim is not None:
-                return victim
-        if incoming_edit:
-            return None
-        return next(iter(self.cache), None)
+        victim = next((k for k in self.cache if k in edits and k not in batched), None)
+        if victim is not None or incoming_edit:
+            return victim
+        return next((k for k in self.cache if k not in batched), None)
 
     def _batched_refusal(self, rows: tuple) -> Optional[str]:
         """Why a call carrying ``rows`` requests may not record a new graph here, else None."""
@@ -1586,8 +1610,6 @@ class GraphedForward:
         batched = getattr(self, "_batched", {})
         if sum(1 for k in batched if k in self.cache) >= MAX_BATCHED_GRAPHS:
             return "batched graph cap reached"
-        if len(self.cache) >= self.max_graphs:
-            return "graph cache full: the size-1 graphs stay"
         need = int(self.stats.get("pool_bytes", 0) or 0) * count
         budget = _batch_pool_budget_bytes()
         if budget is not None and need > budget:
@@ -2125,9 +2147,13 @@ class GraphedForward:
                 spec = _flatten((args, kwargs), live)
                 warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
                 return call(*warm_args, **warm_kwargs)
+            # Batched graphs have their own budget (MAX_BATCHED_GRAPHS): they never take a size-1 key's slot.
+            batched_here = rows is not None
             victim = (
                 self._eviction_victim(_has_reference(kwargs))
-                if len(self.cache) >= self.max_graphs and self.plan is not None
+                if not batched_here
+                and self.plan is not None
+                and self._unbatched_count() >= self.max_graphs
                 else None
             )
             if victim is not None:
@@ -2140,7 +2166,7 @@ class GraphedForward:
                 _note_dropped_pools([gone])
                 # The last graph on the shared pool takes the pool with it; never hand its id to the next capture.
                 _drop_pool_if_unused()
-            if len(self.cache) >= self.max_graphs:
+            if not batched_here and self._unbatched_count() >= self.max_graphs:
                 # The recorded graphs keep replaying: one rare new key is no reason to drop them.
                 self.stats["cap_skips"] += 1
                 if not self.cap_hit:
@@ -2438,7 +2464,8 @@ class GraphedForward:
 
             graph = torch.cuda.CUDAGraph()
             # An explicit pool id, never None: a capture that fails must hand its pool back (retire_failed_capture).
-            pool = _POOL_BOX[0]
+            box = _pool_box()
+            pool = box[0]
             if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
                 pool = torch.cuda.graph_pool_handle()
             recorder = _graph_without_flush if recapture else _graph_with_flush
@@ -2462,15 +2489,16 @@ class GraphedForward:
             self._recorded[key] = None
             while len(self._recorded) > 4 * self.max_graphs:
                 self._recorded.pop(next(iter(self._recorded)))
-        if _POOL_BOX[0] is None:
+        box = _pool_box()
+        if box[0] is None:
             try:
-                _POOL_BOX[0] = graph.pool()
+                box[0] = graph.pool()
             except Exception:  # noqa: BLE001 - a private pool per graph still works
                 pass
 
         entry.graph = graph
         # The pool this graph recorded into (see _drop_pool_if_unused), not whatever the box holds by now.
-        entry.pool_token = pool if pool is not None else _POOL_BOX[0]
+        entry.pool_token = pool if pool is not None else box[0]
         out_tensors: list = []
         entry.out_spec = _flatten(out, out_tensors)
         entry.out_tensors = out_tensors
