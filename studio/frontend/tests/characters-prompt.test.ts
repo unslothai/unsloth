@@ -595,6 +595,8 @@ test("plain keys fold case the way /iu does", () => {
   assert.ok(!fires("i", "İstanbul"), "dotted capital I is not i");
   assert.ok(fires("k", "a K reading"), "the Kelvin sign folds to k");
   assert.ok(!fires("strasse", "Straße"), "ß does not expand");
+  assert.ok(!fires("i", "kısa"), "dotless ı is not i");
+  assert.ok(fires("µ", "ΜΙΚΡΌ μ"), "the micro sign folds with mu");
 });
 
 test("a key the budget never reached does not clear an exclusion", () => {

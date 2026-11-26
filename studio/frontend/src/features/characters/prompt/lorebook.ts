@@ -78,15 +78,21 @@ function buildMatcher(trimmed: string, options: KeyOptions): Matcher | null {
   return literalMatcher(trimmed, options);
 }
 
-const folds = new Map<string, string>();
-// Simple case folding, as /iu matched before: Σ σ ς fold together, İ and ß stay themselves.
+// The simple folds (CaseFolding.txt S) whose characters only uppercase to several, so no case mapping reaches them.
+const folds = new Map<string, string>([
+  ["\u1fd3", "\u0390"],
+  ["\u1fe3", "\u03b0"],
+  ["\ufb05", "\ufb06"],
+]);
+// Simple case folding checked against the /iu engine itself: the lowercase of the uppercase when /iu agrees,
+// so Σ σ ς and µ μ fold together while ı, İ and ß stay apart, as the RegExp keys matched.
 function foldChar(ch: string): string {
   let out = folds.get(ch);
   if (out === undefined) {
-    const one = (s: string) => [...s].length === 1;
+    const same = new RegExp(`^${escapeRegExp(ch)}$`, "iu");
     const upper = ch.toUpperCase();
-    const lower = one(upper) ? upper.toLowerCase() : ch.toLowerCase();
-    out = one(lower) ? lower : ch;
+    const candidates = [[...upper].length === 1 ? upper.toLowerCase() : "", ch.toLowerCase()];
+    out = candidates.find((c) => [...c].length === 1 && same.test(c)) ?? ch;
     folds.set(ch, out);
   }
   return out;
