@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 renders the canvas a request names, portrait included: the keyframe is fitted onto it without being
-squashed, and a tiny random release decodes and exports a clip of exactly that size. Landscape and the omitted-size
-default stay as they were."""
+"""MiniMax-H3 renders the requested canvas (portrait included) without squashing the keyframe."""
 
 from __future__ import annotations
 
@@ -23,7 +21,7 @@ H3 = next(f for f in vf._FAMILIES if f.name == "minimax-h3")
 
 
 def _picture(width: int, height: int) -> str:
-    """A data URL whose top third is red and the rest green, so a squash or a turn shows in the band's extent."""
+    """Top third red, so a squash or a turn moves the band."""
     from PIL import Image
 
     img = Image.new("RGB", (width, height), (30, 160, 60))
@@ -34,7 +32,6 @@ def _picture(width: int, height: int) -> str:
 
 
 def _red_band_rows(image) -> float:
-    """Fraction of rows whose centre pixel is red."""
     width, height = image.size
     red = sum(1 for y in range(height) if image.getpixel((width // 2, y))[0] > 128)
     return red / height
@@ -43,10 +40,10 @@ def _red_band_rows(image) -> float:
 @pytest.mark.parametrize(
     "size, source",
     [
-        ((544, 960), (720, 1280)),  # portrait trained size, 9:16 start image
+        ((544, 960), (720, 1280)),
         ((768, 1344), (1080, 1920)),
-        ((960, 544), (1280, 720)),  # landscape
-        ((1024, 1024), (1000, 1000)),  # square
+        ((960, 544), (1280, 720)),
+        ((1024, 1024), (1000, 1000)),
     ],
 )
 def test_i2v_keeps_the_requested_canvas_and_the_picture_upright(size, source):
@@ -57,7 +54,6 @@ def test_i2v_keeps_the_requested_canvas_and_the_picture_upright(size, source):
     assert (width, height) == size
     assert first.size == size
     assert last is None and conditioning == "i2va"
-    # Same aspect in and out: the red third stays a third of the rows (a squash or a turn would move it).
     assert _red_band_rows(first) == pytest.approx(1 / 3, abs = 0.01)
 
 
@@ -72,7 +68,6 @@ def test_t2v_keeps_the_requested_canvas(size):
 
 
 def test_omitted_size_keeps_the_reference_default_canvas():
-    # Unchanged contract: no size means the reference node's 1344x768, whatever the keyframe.
     first, _, width, height, _ = VideoBackend._resolve_keyframes(
         H3, None, _picture(1920, 1080), None, None, None
     )
@@ -100,7 +95,6 @@ def tiny_pipe(tmp_path_factory):
 
 
 def test_portrait_i2v_renders_and_exports_a_portrait_clip(tiny_pipe):
-    """The whole Diffusers render on CPU: latent canvas, decode and MP4 export all stay 544 wide, 960 tall."""
     import av
     from core.inference import video as video_module
 

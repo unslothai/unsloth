@@ -24,7 +24,6 @@ const h3: VideoGenerationDefaults = {
 
 const pagePromise = readFile(new URL("../src/features/video/video-page.tsx", import.meta.url), "utf8");
 
-/** The body and dependency list of `const <name> = useCallback(...)` / `useMemo(...)`. */
 function hook(page: string, name: string, kind: "useCallback" | "useMemo") {
   const start = page.indexOf(`const ${name} = ${kind}(`);
   assert.ok(start >= 0, `video-page.tsx no longer declares ${name} with ${kind}`);
@@ -55,19 +54,14 @@ test("Match source on MiniMax-H3 sends the portrait canvas it shows", () => {
   const matched = matchedCanvas(720, 1280, h3);
   assert.deepEqual(matched, [768, 1344]);
   assert.deepEqual(requestCanvas(true, matched, [864, 480], true), { width: 768, height: 1344 });
-  // Square and landscape keep what they sent before.
   assert.deepEqual(requestCanvas(true, matchedCanvas(1000, 1000, h3), [864, 480], true), { width: 768, height: 768 });
   assert.deepEqual(requestCanvas(true, matchedCanvas(1920, 1080, h3), [864, 480], true), { width: 1344, height: 768 });
-  // A chosen portrait size is sent as chosen.
   assert.deepEqual(requestCanvas(false, matched, [544, 960], true), { width: 544, height: 960 });
 });
 
 test("Generate sends the size the page shows, never one captured before the start frame loaded", async () => {
   const page = await pagePromise;
   const generate = hook(page, "handleGenerate", "useCallback");
-  // Whatever feeds the request's width / height must be a dependency of handleGenerate: replacing the start
-  // frame under Match source updates matchedResolution a render after firstFrame (the image loads async)
-  // while sourceSized stays true, so a missing dependency keeps the previous picture's canvas.
   const spread = generate.body.match(/\.\.\.(requestCanvas\([^)]*\)|[A-Za-z_$][\w$]*),/);
   assert.ok(spread, "handleGenerate no longer spreads the request canvas into the body");
   const inputs = (spread[1].replace(/^requestCanvas/, "").match(IDENT) ?? []).filter(Boolean);
