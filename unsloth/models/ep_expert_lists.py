@@ -54,7 +54,8 @@ def list_shard_problem(block, ep = None):
     kinds = {type(m) for m in experts}
     if len(kinds) != 1 or not any(True for _ in experts[0].parameters()):
         return "experts of different types, or without parameters"
-    shapes = {tuple((n, tuple(p.shape)) for n, p in m.named_parameters()) for m in experts}
+    # Logical shapes: a bitsandbytes 4-bit weight's packed storage can differ between experts of one checkpoint.
+    shapes = {tuple((n, _logical_shape(p)) for n, p in m.named_parameters()) for m in experts}
     if len(shapes) != 1:
         return "experts with different parameter shapes"
     if any(type(b) is not torch.Tensor and b is not None for m in experts for b in m.buffers()):
@@ -177,6 +178,11 @@ def shard_fused_lists(block, mesh, rank, ep):
     block.__dict__[_SHARD] = shard
     shard.exchange = exchange
     return exchange
+
+
+def _logical_shape(p):
+    shape = getattr(getattr(p, "quant_state", None), "shape", None)
+    return tuple(shape) if shape is not None else tuple(p.shape)
 
 
 class _ListShard:
