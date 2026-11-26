@@ -516,6 +516,13 @@ def add_lexical_chunks(conn: sqlite3.Connection, scope: str, document_id: str, c
         _insert_chunk(conn, scope, document_id, chunk, None)
 
 
+def _connection_moved(model_name: str, identity: str) -> bool:
+    if not config.is_connection_model(model_name):
+        return False
+    from .embed_connection import connection_identity
+    return connection_identity(model_name) != identity
+
+
 def replace_document_vectors(
     conn: sqlite3.Connection,
     document_id: str,
@@ -528,8 +535,9 @@ def replace_document_vectors(
     """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
 
     Writes only while the row is still the one that was encoded: present, still under
-    ``stale_model``, with the same chunks, and ``model_name`` still the configured model. A delete,
-    a re-upload, another re-embed or a model switch in between wins, and False is returned."""
+    ``stale_model``, with the same chunks, and ``model_name`` still the configured model on the same
+    connection server. A delete, a re-upload, another re-embed, a model switch or a connection moved
+    to another server in between wins, and False is returned."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -549,6 +557,7 @@ def replace_document_vectors(
             or not current
             # Uncached, under the write lock: old-width vectors would drop every row the new model wrote.
             or config.effective_embedding_model(fresh = True) != model_name
+            or _connection_moved(model_name, identity)
         ):
             conn.rollback()
             return False

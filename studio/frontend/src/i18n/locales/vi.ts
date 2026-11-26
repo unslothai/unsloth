@@ -4425,8 +4425,8 @@ export const vi = {
       summary: {
         single: "Huấn luyện trên một GPU",
         layerSplit: "Mô hình được chia theo từng lớp trên {count} GPU",
-        ddp: "Mô hình vừa một GPU: song song dữ liệu trên {count} GPU",
-        fsdp2: "Mô hình quá lớn cho một GPU: phân mảnh trên {count} GPU",
+        ddp: "Mỗi GPU huấn luyện một bản sao đầy đủ: song song dữ liệu trên {count} GPU",
+        fsdp2: "Trọng số và trạng thái optimizer được phân mảnh trên {count} GPU",
         tp: "Mỗi lớp được chia trên {count} GPU",
         pp: "Các lớp chạy thành {count} giai đoạn pipeline, mỗi GPU một giai đoạn",
         cp: "Mỗi chuỗi được chia trên {count} GPU",
@@ -4437,7 +4437,7 @@ export const vi = {
         noGpu: "Hãy chọn ít nhất một GPU.",
         singleNeedsOne: "Một GPU chỉ dùng đúng một GPU. Hãy bỏ chọn các GPU khác.",
         needsTwo: "Chế độ này cần ít nhất hai GPU.",
-        customSpec: "Nhập bố cục, ví dụ dp=2,tp=2.",
+        customSpec: "Nhập bố cục, ví dụ {example}.",
       },
     },
     preview: {
@@ -5406,6 +5406,7 @@ export const vi = {
       showPromptDescription: "Xem hướng dẫn chính xác được gửi đến mô hình.",
     },
     history: {
+      notSaved: "Chưa lưu vào Lịch sử: bộ nhớ của trình duyệt đã đầy.",
       title: "Lịch sử",
       search: "Tìm trong lịch sử",
       empty: "Các bản dịch của bạn sẽ xuất hiện ở đây.",
@@ -6440,6 +6441,12 @@ export const vi = {
     maximize: "Phóng to cửa sổ",
     restore: "Khôi phục cửa sổ",
     close: "Đóng cửa sổ",
+    mediaCodecs: {
+      title: "Video đã tạo có thể không phát được",
+      // {command}: an apt command line, never translated.
+      description: "Hệ thống này thiếu bộ giải mã video GStreamer. Hãy cài đặt bằng lệnh: {command}",
+      copy: "Sao chép lệnh",
+    },
   },
   runtimeUpdate: {
     installAudio: "Cài đặt runtime âm thanh",

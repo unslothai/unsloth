@@ -255,11 +255,12 @@ jobs:
           python -c 'import pytest' 2> /dev/null || python -m pip install pytest==9.0.3
           python -m pytest -v --tb=short --noconftest -p no:cacheprovider tests/test_python39_compatibility.py
 
-      - name: SFT assistant-mask fallback through the real trainer (HARD GATE)
+      - name: SFT assistant-mask fallback and end-of-turn EOS through the real trainer (HARD GATE)
         # Needs real torch, TRL and unsloth, so it cannot ride the pytest-only version-compat bundle.
         run: |
           python -m pytest -v --tb=short \
-            tests/version_compat/test_sft_assistant_mask_fallback_trainer.py
+            tests/version_compat/test_sft_assistant_mask_fallback_trainer.py \
+            tests/version_compat/test_sft_end_of_turn_eos_trainer.py
 
       - name: generation correctness guards (HARD GATE)
         run: |

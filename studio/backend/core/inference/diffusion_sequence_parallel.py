@@ -3,7 +3,9 @@
 
 """Two-card Ulysses sequence parallel (guidance-free); bit-exact only if GEMMs keep a row's bits at
 any row count; swaps match by module and call kind, not call order; plan mismatch or error keeps
-one card; UNSLOTH_DIFFUSION_SEQUENCE_PARALLEL: 0 never, unset from MIN_TOKENS, force any length."""
+one card; UNSLOTH_DIFFUSION_SEQUENCE_PARALLEL: 0 never, unset from MIN_TOKENS, force any length.
+FLUX.2 runs one joint text + image sequence: each card holds half the text and half the image tokens,
+and every self-attention rebuilds the one-card key order (all text, then all image tokens)."""
 
 from __future__ import annotations
 
@@ -30,6 +32,13 @@ SP_PLANS: dict[str, tuple] = {
         ("blocks.0", "input", "hidden_states", 1, 3),
         ("proj_out", "gather", None, 1, 3),
     ),
+    "Flux2Transformer2DModel": (
+        ("", "input", "hidden_states", 1, 3),
+        ("", "input", "encoder_hidden_states", 1, 3),
+        ("", "input", "img_ids", 1, 3),
+        ("", "input", "txt_ids", 1, 3),
+        ("proj_out", "gather", None, 1, 3),
+    ),
 }
 # Cuts follow the checked diffusers plan; per-token GEMMs whose row count changes (Wan 2.2 TI2V
 # timestep embedding, output proj) run on all tokens on both cards for one-card bits; kinds: input /
@@ -44,10 +53,34 @@ SP_EXEC_PLANS: dict[str, tuple] = {
         ("blocks.0", "input", "hidden_states", 1, 3),
         ("proj_out", "gather_input", 0, 1, 3),
     ),
+    # diffusers' cut of the four root inputs (ids also as [S, 4]); joined before proj_out, as for Wan
+    "Flux2Transformer2DModel": (
+        ("", "input", "hidden_states", 1, 3),
+        ("", "input", "encoder_hidden_states", 1, 3),
+        ("", "input", "img_ids", 1, 3),
+        ("", "input", "img_ids", 0, 2),
+        ("", "input", "txt_ids", 1, 3),
+        ("", "input", "txt_ids", 0, 2),
+        ("proj_out", "gather_input", 0, 1, 3),
+    ),
 }
 # Attention processor classes whose self-attention call passes ``parallel_config`` (diffusers' context parallel
 # hook point): the mark Studio sets there is how a call is told apart from cross-attention.
-SP_PROCESSORS = frozenset({"WanAttnProcessor"})
+SP_PROCESSORS = frozenset(
+    {"WanAttnProcessor", "Flux2AttnProcessor", "Flux2ParallelSelfAttnProcessor"}
+)
+# Joint-sequence denoisers: the root input whose tokens lead every self-attention's sequence. Each card holds its
+# half of them in front of its half of the image tokens; the swap puts them back in one-card order.
+SP_JOINT_PREFIX: dict[str, str] = {"Flux2Transformer2DModel": "encoder_hidden_states"}
+# Root inputs a joint call must leave unset: reference-image KV caching changes what each attention sees.
+SP_UNSPLIT_INPUTS: dict[str, tuple] = {
+    "Flux2Transformer2DModel": (
+        "kv_cache",
+        "kv_cache_mode",
+        "num_ref_tokens",
+        "joint_attention_kwargs",
+    ),
+}
 
 STATS = {
     "forwards": 0,
@@ -172,14 +205,109 @@ def refusal(module: Any, tokens: Optional[int] = None) -> Optional[str]:
     return None
 
 
-def call_tokens(module: Any, latent: Any) -> Optional[int]:
-    """Tokens per sample of a call on ``latent`` (B, C, F, H, W) after patching, or None when unreadable."""
+def call_tokens(
+    module: Any,
+    latent: Any,
+    kwargs: Optional[dict] = None,
+) -> Optional[int]:
+    """Tokens per sample of a call on ``latent``: (B, C, F, H, W) after patching, or a packed (B, S, C) sequence plus
+    the joint prefix (FLUX.2: image + text tokens). None when unreadable."""
     try:
+        prefix = SP_JOINT_PREFIX.get(type(module).__name__)
+        if prefix is not None:
+            text = (kwargs or {}).get(prefix)
+            return int(latent.shape[1]) + (int(text.shape[1]) if text is not None else 0)
         patch = tuple(int(p) for p in module.config.patch_size)
         f, h, w = (int(s) for s in latent.shape[-3:])
         return (f // patch[0]) * (h // patch[1]) * (w // patch[2])
     except Exception:  # noqa: BLE001
         return None
+
+
+def call_refusal(module: Any, kwargs: dict) -> Optional[str]:
+    """Why this call's inputs are not split, or None. Joint calls need both token counts even (each card holds the
+    same number of text and of image tokens, so neither waits on the other) and no reference-image KV cache."""
+    torch = _torch()
+    name = type(module).__name__
+    for key in SP_UNSPLIT_INPUTS.get(name, ()):
+        value = kwargs.get(key)
+        unset = (
+            value is None
+            or value is False
+            or (isinstance(value, (int, float)) and value == 0)
+            or (isinstance(value, dict) and not value)
+        )
+        if not unset:
+            return f"{key} is set"
+    prefix = SP_JOINT_PREFIX.get(name)
+    if prefix is None:
+        return None
+    for key in ("hidden_states", prefix):
+        value = kwargs.get(key)
+        if not torch.is_tensor(value) or value.dim() != 3:
+            return f"{key} is not a [B, S, C] tensor"
+        if int(value.shape[1]) % 2:
+            return f"odd {key} token count ({int(value.shape[1])})"
+    return None
+
+
+def default_request_tokens(pipe: Any, width: int, height: int) -> Optional[tuple]:
+    """(image tokens, text tokens) of a ``width`` x ``height`` default render of ``pipe``, for joint-sequence denoisers
+    only (FLUX.2: 2 x 2 latent patches; the prompt padded to the pipeline's ``max_sequence_length``). None when
+    unreadable."""
+    try:
+        if type(getattr(pipe, "transformer", None)).__name__ not in SP_JOINT_PREFIX:
+            return None
+        side = int(pipe.vae_scale_factor) * 2
+        text = inspect.signature(type(pipe).__call__).parameters["max_sequence_length"].default
+        if side <= 0 or not isinstance(text, int):
+            return None
+        return (int(height) // side) * (int(width) // side), int(text)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _card_identity(device: Any) -> Optional[tuple]:
+    torch = _torch()
+    if getattr(device, "type", None) != "cuda":
+        return None
+    index = torch.device(device).index
+    index = torch.cuda.current_device() if index is None else index
+    props = torch.cuda.get_device_properties(index)
+    return (str(props.name), (int(props.major), int(props.minor)))
+
+
+# Classes whose split also needs two cards of one model (name and compute capability); others keep only the device
+# type rule they shipped with (Wan).
+SP_SAME_CARD = frozenset({"Flux2Transformer2DModel"})
+
+
+def pair_refusal(
+    primary: Any,
+    secondary: Any,
+    cls_name: Optional[str] = None,
+    identify: Optional[Callable[[Any], Any]] = None,
+) -> Optional[str]:
+    """Why two cards do not split a call of ``cls_name`` between them, or None. For :data:`SP_SAME_CARD` classes each
+    card runs half the tokens, so a slower card sets the pace of both (``force`` splits anyway). ``identify``
+    (device -> (name, ...)) replaces the CUDA properties query (placement passes its probed names)."""
+    torch = _torch()
+    primary, secondary = torch.device(primary), torch.device(secondary)
+    if primary.type != secondary.type:
+        return "the replica is on another device type"
+    if mode() == "force" or cls_name not in SP_SAME_CARD:
+        return None
+    try:
+        identify = identify or _card_identity
+        a, b = identify(primary), identify(secondary)
+    except Exception as exc:  # noqa: BLE001 - unreadable card: no split
+        return f"card properties unreadable ({type(exc).__name__})"
+    if a != b:
+        return (
+            f"{primary} ({a[0] if a else '?'}) and {secondary} ({b[0] if b else '?'}) are different cards: each runs "
+            "half the tokens, so the slower one sets the pace"
+        )
+    return None
 
 
 class _Store:
@@ -250,11 +378,19 @@ class _Store:
 
 
 class _Rank:
-    __slots__ = ("store", "rank")
+    """``prefix``: (rank 0's, rank 1's) joint-prefix tokens at the front of every self-attention sequence."""
 
-    def __init__(self, store: _Store, rank: int):
+    __slots__ = ("store", "rank", "prefix")
+
+    def __init__(
+        self,
+        store: _Store,
+        rank: int,
+        prefix: tuple = (0, 0),
+    ):
         self.store = store
         self.rank = rank
+        self.prefix = (int(prefix[0]), int(prefix[1]))
 
 
 @contextlib.contextmanager
@@ -309,20 +445,31 @@ def _ulysses(ctx: _Rank, name: str, inner: Callable, args: tuple, kwargs: dict) 
     else:
         pq = got[0]
         pk, pv = got[1].unbind(0)
+    t0, t1 = ctx.prefix
+    sizes = (int(q.shape[1]), int(pq.shape[1])) if r == 0 else (int(pq.shape[1]), int(q.shape[1]))
+    if sizes[0] < t0 or sizes[1] < t1:
+        raise SequenceParallelError(f"{name}: {sizes} tokens hold no ({t0}, {t1}) prefix")
 
     def join(mine: Any, theirs: Any) -> Any:
-        return torch.cat((mine, theirs) if r == 0 else (theirs, mine), dim = 1)
+        a, b = (mine, theirs) if r == 0 else (theirs, mine)
+        if not (t0 or t1):
+            return torch.cat((a, b), dim = 1)
+        # one-card order: rank 0's prefix, rank 1's prefix, then rank 0's and rank 1's remaining tokens
+        return torch.cat((a[:, :t0], b[:, :t1], a[:, t0:], b[:, t1:]), dim = 1)
 
     full = (join(q[:, :, own], pq), join(k[:, :, own], pk), join(v[:, :, own], pv))
     rest = tuple(args[3:]) if len(args) > 3 else ()
     kw = {key: val for key, val in kwargs.items() if key not in ("query", "key", "value")}
     out = inner(*full, *rest, **kw)
-    mine_n = int(q.shape[1])
-    first = mine_n if r == 0 else int(pq.shape[1])
-    if r == 0:
-        mine_tok, their_tok = out[:, :first], out[:, first:]
+    if not (t0 or t1):
+        pieces = (out[:, : sizes[0]], out[:, sizes[0] :])
     else:
-        their_tok, mine_tok = out[:, :first], out[:, first:]
+        text, img0 = t0 + t1, sizes[0] - t0
+        pieces = (
+            torch.cat((out[:, :t0], out[:, text : text + img0]), dim = 1),
+            torch.cat((out[:, t0:text], out[:, text + img0 :]), dim = 1),
+        )
+    mine_tok, their_tok = pieces if r == 0 else pieces[::-1]
     ctx.store.publish(r, name, "out", (their_tok.contiguous(),))
     (theirs,) = ctx.store.fetch(r, name, "out")
     return torch.cat((mine_tok, theirs) if r == 0 else (theirs, mine_tok), dim = 2)
@@ -535,6 +682,7 @@ def run(
     plan = read_plan(type(module))
     if plan is None or read_plan(type(replica)) is None:
         raise SequenceParallelError("no checked plan")
+    torch = _torch()
     store = _Store(tuple(devices))
     root = [p for p in plan if p[0] == ""]
     forward = type(module).forward
@@ -546,29 +694,47 @@ def run(
 
     a0, k0 = cut(args, kwargs, 0)
     a1, k1 = cut(replica_args, replica_kwargs, 1)
+    prefix = (0, 0)
+    joint = SP_JOINT_PREFIX.get(type(module).__name__)
+    if joint is not None:
+        index = _param_index(forward, joint)
+        held = [
+            k.get(joint, a[index] if index is not None and index < len(a) else None)
+            for a, k in ((a0, k0), (a1, k1))
+        ]
+        if not all(torch.is_tensor(t) and t.dim() == 3 for t in held):
+            raise SequenceParallelError(f"{joint} is not a [B, S, C] tensor")
+        prefix = (int(held[0].shape[1]), int(held[1].shape[1]))
     engaged: tuple = ({}, {})
     handles = []
     try:
         handles += _install_hooks(module, plan, 0, store, engaged[0])
         handles += _install_hooks(replica, plan, 1, store, engaged[1])
         with _patched((module, replica)):
+            replica_error: list = []
 
             def second() -> Any:
                 try:
-                    with _as_rank(_Rank(store, 1)):
+                    with _as_rank(_Rank(store, 1, prefix)):
                         return replica(*a1, **k1)
                 except BaseException as exc:
+                    replica_error.append(exc)
                     store.fail(f"{type(exc).__name__}: {exc}")
                     raise
 
             job = submit(second)
             try:
-                with _as_rank(_Rank(store, 0)):
+                with _as_rank(_Rank(store, 0, prefix)):
                     out = primary_forward(*a0, **k0)
             except BaseException as exc:
                 store.fail(f"{type(exc).__name__}: {exc}")
                 with contextlib.suppress(BaseException):
                     wait(job)
+                if replica_error and isinstance(exc, SequenceParallelError):
+                    # the primary only saw the replica's failure: keep its type (an OOM stays an OOM) as the cause
+                    raise SequenceParallelError(
+                        f"the replica card failed ({type(replica_error[0]).__name__})"
+                    ) from replica_error[0]
                 raise
             wait(job)
     except BaseException as exc:

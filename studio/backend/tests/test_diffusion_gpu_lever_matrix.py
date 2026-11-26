@@ -710,6 +710,7 @@ def probe_h3_video_attention(p: GpuProfile) -> dict:
         "minimax-h3.sdpa_backend",
         "minimax-h3.strided_processor",
         "minimax-h3.flash_sdpa",
+        "minimax-h3.int8_exact_policy",
     )
     off = _na(p)
     if off is not None:
@@ -721,6 +722,7 @@ def probe_h3_video_attention(p: GpuProfile) -> dict:
     from core.inference.video_minimax_h3_attn import (
         cuda_capability,
         h3_attention_backend,
+        h3_int8_exact_kernel,
         h3_int8_load_gate,
         strided_install_backend,
     )
@@ -762,7 +764,33 @@ def probe_h3_video_attention(p: GpuProfile) -> dict:
     # Flash over cuDNN is its own lever (H3_FLASH_FASTER_ARCHS): losing it on a measured arch is a regression.
     out["minimax-h3.flash_sdpa"] = lever(str(getattr(backend, "value", backend)) == "_native_flash")
     out[keys[2]] = lever(strided_install_backend(backend))
+    # Exact-start steps + kernel move clip time on every card (#19344): keep them a golden diff.
+    out[keys[4]] = _h3_exact_policy_cell(gate, backend)
     return out
+
+
+# hidden 7168 / 56 heads
+_H3_HEAD_DIM = 128
+
+
+def _h3_exact_policy_cell(gate: Any, backend: Any) -> dict:
+    """What the load installs, not what the gate allows: needs the strided processor and a CUDA INT8 race (never ROCm)."""
+    from core.inference import diffusion_int8_attention as i8
+    from core.inference.video_minimax_h3_attn import h3_int8_exact_kernel, strided_install_backend
+
+    if not gate.auto:
+        why = "forced_every_step" if gate.forced else "int8_off"
+    elif gate.exact_steps <= 0:
+        why = "int8_every_step"
+    elif not strided_install_backend(backend):
+        why = "inactive:no_strided_processor"
+    elif i8._is_rocm():
+        why = "inactive:rocm_no_race"
+    elif i8.implementation(0, _H3_HEAD_DIM) != "cuda":
+        why = "inactive:no_cuda_kernel"
+    else:
+        return lever(True, cfg = {"steps": gate.exact_steps, "kernel": h3_int8_exact_kernel(backend)})
+    return lever(False, cfg = {"steps": 0, "kernel": "none"}, why = why)
 
 
 _H3I_CODES = (
@@ -2249,6 +2277,8 @@ FUTURE_ARCH_EXCLUSIONS: dict = {
     + " (Triton stand-in tiles)",
     # The fallback compiles for the card's own arch, and the NVRTC the profiles declare (13.0) targets sm75..sm121.
     "sm130.any.int8_attn.serving.*": "the pinned NVRTC cannot target sm130 (the fallback is gated on the toolchain)",
+    "sm130.minimax-h3.int8_exact_policy": "no INT8 attention kernel serves sm130 (see int8_attn.serving), so Auto "
+    "engages no INT8 attention and installs no exact start",
     "sm1[23][01].any.grouped_int8_gemm.tiles": _NEEDS.format("sm121 / sm130")
     + " (spill-measured grouped tiles)",
     "sm1[123][01].any.nvfp4.*": _NEEDS.format("sm110 / sm121 / sm130")
@@ -2368,6 +2398,57 @@ def test_incident_r7_19098_h3_video_auto_int8_on_sm89_and_sm86(key, monkeypatch)
         assert replay.auto is (cap != (8, 9)), replay
         if cap == (8, 9):
             assert replay.exact_steps == 0 and "sm89" in (replay.reason or ""), replay
+
+
+@pytest.mark.parametrize("key", ["rtx3090", "rtx6000_ada", "l4", "a100_40"])
+def test_h3_exact_start_policy_is_a_golden_cell(key, golden, monkeypatch):
+    """R8 (#19344): the 4-step exact start cost the 3090 11% and Ada 5%; step count or kernel changes must diff the golden."""
+    from core.inference import video_minimax_h3_attn as h3
+
+    p = PROFILES[key]
+    cid = f"{key}.minimax-h3.int8_exact_policy"
+
+    def cell():
+        with clean_policy_env(), mock_profile(p):
+            return probe_h3_video_attention(p)["minimax-h3.int8_exact_policy"]
+
+    base = cell()
+    assert base == golden["cells"][cid], (base, golden["cells"][cid])
+    assert base["on"] and f"steps={h3.H3_INT8_EXACT_START_STEPS}" in base["cfg"], base
+    for steps in (h3.H3_INT8_EXACT_START_STEPS - 1, h3.H3_INT8_EXACT_START_STEPS + 1):
+        with monkeypatch.context() as m:
+            m.setattr(h3, "H3_INT8_EXACT_START_STEPS", steps)
+            changed = cell()
+        diffs = diff_cells({cid: golden["cells"][cid]}, {cid: changed})
+        assert diffs and cid in format_diffs(diffs), (steps, changed)
+    with monkeypatch.context() as m:
+        m.setattr(h3, "H3_FLASH_FASTER_ARCHS", h3.H3_FLASH_FASTER_ARCHS ^ {tuple(p.capability)})
+        moved = cell()
+    diffs = diff_cells({cid: golden["cells"][cid]}, {cid: moved})
+    assert diffs and cid in format_diffs(diffs), (moved, base)
+    monkeypatch.setenv(h3.H3_INT8_EXACT_STEPS_ENV, "0")
+    assert cell() == base
+
+
+@pytest.mark.parametrize(
+    "key, active",
+    [("l4", True), ("rtx3090", True), ("t4", False), ("gfx1151", False)],
+)
+def test_h3_exact_policy_cell_records_what_the_load_installs(key, active, golden):
+    """T4 (no strided processor) and ROCm (no race) are inactive even though the gate allows 4 steps."""
+    from core.inference import video_minimax_h3_attn as h3
+
+    p = PROFILES[key]
+    with clean_policy_env(), mock_profile(p):
+        cell = probe_h3_video_attention(p)["minimax-h3.int8_exact_policy"]
+        gate, _ = _h3_video_default_gate(p)
+    assert gate.auto and gate.exact_steps == h3.H3_INT8_EXACT_START_STEPS, gate
+    assert cell == golden["cells"][f"{key}.minimax-h3.int8_exact_policy"], cell
+    if active:
+        assert cell["on"] and f"steps={h3.H3_INT8_EXACT_START_STEPS}" in cell["cfg"], cell
+    else:
+        assert not cell["on"] and cell["cfg"] == "kernel=none,steps=0", cell
+        assert cell["why"].startswith("inactive:"), cell
 
 
 def test_incident_r5_18248_h3_video_int8_attention_auto_by_default():
