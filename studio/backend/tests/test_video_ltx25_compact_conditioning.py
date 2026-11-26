@@ -298,3 +298,121 @@ def test_batched_prompts_with_several_videos_keep_the_full_width(monkeypatch, gu
         stats.append(_delta(before))
     assert all(torch.equal(a, b) for a, b in zip(*outs))
     assert stats[1]["full_encodes"] >= 1 and stats[1]["compact_encodes"] == 0
+
+
+class _KeepingPipe(_Pipe):
+    """``_Pipe`` that keeps each stage's ``encode_prompt`` hidden states, as diffusers' ``__call__`` local does."""
+
+    def __call__(self, *a, **k):
+        seen = []
+        encode = self.encode_prompt
+
+        def spy(**kw):
+            out = encode(**kw)
+            seen.append(out[0])
+            return out
+
+        self.encode_prompt = spy
+        try:
+            out = super().__call__(*a, **k)
+        finally:
+            self.encode_prompt = encode
+        self.kept.extend(seen)
+        return out
+
+
+def _two_stage_kept(monkeypatch, release: str):
+    monkeypatch.setenv(v25.COMPACT_CONDITIONING_ENV, "1")
+    monkeypatch.setenv(v25.RELEASE_PROMPT_ROWS_ENV, release)
+    pipe = _KeepingPipe(_connectors(True))
+    pipe.kept = []
+    v25.install_remote_encode_prompt(pipe, _client(32, 5))
+    before = _stats()
+    with torch.inference_mode(), MS.encode_once(pipe), v25.reuse_connector_outputs(pipe):
+        first = pipe()
+        memo = dict(pipe.__dict__[MS.ENCODE_ONCE_MEMO_ATTR])
+        second = pipe()
+    assert MS.ENCODE_ONCE_MEMO_ATTR not in pipe.__dict__
+    (memo_rows,) = [v[0] for v in memo.values()]
+    return first, second, pipe.kept, memo_rows, _delta(before)
+
+
+def test_both_prompt_copies_are_released_once_the_connector_outputs_are_cached(monkeypatch):
+    kept_first, kept_second, kept_rows, kept_memo, kept_stats = _two_stage_kept(monkeypatch, "0")
+    first, second, rows, memo_rows, stats = _two_stage_kept(monkeypatch, "1")
+    # same connector outputs, both stages, as with both copies kept
+    for ref, got in ((kept_first, first), (kept_second, second), (first, second)):
+        assert all(torch.equal(a, b) for a, b in zip(ref, got))
+    # stage one's encode output and the memo stage two reuses: storage freed, dtype and shape kept
+    assert rows[1] is memo_rows and rows[0] is not memo_rows
+    size = memo_rows.numel() * memo_rows.element_size()
+    for t in (rows[0], memo_rows):
+        assert t.untyped_storage().nbytes() == 0
+        assert t.dtype == kept_memo.dtype and t.shape == kept_memo.shape
+    assert stats["released_rows_bytes"] == 2 * size
+    assert stats["connector_runs"] == 1 and stats["connector_reuses"] == 1
+    # kill switch: both copies alive, nothing released
+    assert all(t.untyped_storage().nbytes() == size for t in (kept_rows[0], kept_memo))
+    assert kept_stats["released_rows_bytes"] == 0
+
+
+def test_a_connector_call_that_would_read_released_rows_fails_loudly(monkeypatch):
+    monkeypatch.setenv(v25.COMPACT_CONDITIONING_ENV, "1")
+    monkeypatch.delenv(v25.RELEASE_PROMPT_ROWS_ENV, raising = False)
+    pipe = _Pipe(_connectors(True))
+    v25.install_remote_encode_prompt(pipe, _client(32, 5))
+    with torch.inference_mode(), MS.encode_once(pipe), v25.reuse_connector_outputs(pipe):
+        pipe()
+        pe, pm, _, _ = pipe.encode_prompt(
+            prompt = "a fox",
+            negative_prompt = "blurry",
+            do_classifier_free_guidance = False,
+            num_videos_per_prompt = 1,
+            prompt_embeds = None,
+            negative_prompt_embeds = None,
+            prompt_attention_mask = None,
+            negative_prompt_attention_mask = None,
+            max_sequence_length = 32,
+            device = pipe._execution_device,
+        )
+        with pytest.raises(RuntimeError, match = "released"):
+            pipe.connectors(pe, pm, padding_side = "right")
+
+
+def test_cfg_concatenation_keeps_the_prompt_rows(monkeypatch):
+    monkeypatch.setenv(v25.COMPACT_CONDITIONING_ENV, "1")
+    monkeypatch.delenv(v25.RELEASE_PROMPT_ROWS_ENV, raising = False)
+    _, _, stats, _ = _two_stage(monkeypatch, "1", guidance = True)
+    assert stats["released_rows_bytes"] == 0
+
+
+def test_rows_another_tensor_shares_are_kept(monkeypatch):
+    """A ``detach()`` alias shares the encode output's storage: releasing it would empty the alias too."""
+    monkeypatch.setenv(v25.COMPACT_CONDITIONING_ENV, "1")
+    monkeypatch.delenv(v25.RELEASE_PROMPT_ROWS_ENV, raising = False)
+    pipe = _KeepingPipe(_connectors(True))
+    pipe.kept = []
+    v25.install_remote_encode_prompt(pipe, _client(32, 5))
+    encode = pipe.encode_prompt
+    aliases = []
+
+    def aliasing(**kw):
+        out = encode(**kw)
+        if not aliases:
+            aliases.append(out[0].detach())
+        return out
+
+    pipe.encode_prompt = aliasing
+    before = _stats()
+    with torch.inference_mode(), MS.encode_once(pipe), v25.reuse_connector_outputs(pipe):
+        first = pipe()
+        memo = dict(pipe.__dict__[MS.ENCODE_ONCE_MEMO_ATTR])
+        second = pipe()
+    (memo_rows,) = [v[0] for v in memo.values()]
+    size = memo_rows.numel() * memo_rows.element_size()
+    alias = aliases[0]
+    # the aliased encode output keeps its rows (the alias its values); the unshared memo copy is still released
+    assert alias.untyped_storage().nbytes() == size and torch.equal(alias, pipe.kept[0])
+    assert memo_rows.untyped_storage().nbytes() == 0
+    assert _delta(before)["released_rows_bytes"] == size
+    assert all(torch.equal(a, b) for a, b in zip(first, second))

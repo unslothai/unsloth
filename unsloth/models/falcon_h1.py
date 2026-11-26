@@ -11,6 +11,7 @@
 
 from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
+from ._cache_kwarg import pop_cache_kwarg
 import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
@@ -614,6 +615,8 @@ def _fast_prepare_inputs_for_generation(
     **kwargs,
 ):
     # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
+    # transformers 5.24 generate passes the cache as `cache`; the fast forward reads past_key_values.
+    past_key_values = pop_cache_kwarg(kwargs, past_key_values)
     empty_past_kv = past_key_values is None
 
     # Slice input_ids to unprocessed tokens, except with input_embeds or synced-GPU overflow.

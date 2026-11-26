@@ -360,6 +360,14 @@ def _evict(
         _note_shrink(index, kind)
 
 
+_GC_SKIP_WAIT_MAX = 4
+
+
+def _checkpoint_skip_pending():
+    pending = getattr(sys.modules.get("unsloth.models._utils"), "checkpoint_skip_pending", None)
+    return pending is not None and bool(pending())
+
+
 def _on_optimizer_step(optimizer, args, kwargs):
     """Safe point: the step's activations are freed; size every device's budget from what is free now."""
     if _MODE is None or _DISABLED or not _SEEN:
@@ -367,6 +375,15 @@ def _on_optimizer_step(optimizer, args, kwargs):
     if (_MODE == "auto" and not _auto_allowed()) or not _ACTIVE:
         if _CACHE:
             clear_dequant_cache(release = True)
+        return
+    if _checkpoint_skip_pending() and STATS["gc_skip_wait"] < _GC_SKIP_WAIT_MAX:
+        # Auto plan's kept activations not measured yet; capped at _GC_SKIP_WAIT_MAX so it cannot stay off.
+        with _lock:
+            for index in list(_SEEN):
+                if _cached_bytes(index):
+                    _evict(index, 0, kind = "budget")
+                _BUDGET[index] = 0
+        STATS["gc_skip_wait"] += 1
         return
     with _lock:
         for key in [k for k, e in _CACHE.items() if e[0].expired()]:
@@ -737,6 +754,9 @@ def _addmm_impl(
     Wd = _dense_from_parts(
         W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, X.shape[0]
     )
+    if Wd.dtype != out.dtype:
+        # NF4 decodes to the quant state's dtype, and in-place addmm_ needs matching dtypes (autocast skips it).
+        Wd = Wd.to(out.dtype)
     out.addmm_(X, Wd.t())
 
 

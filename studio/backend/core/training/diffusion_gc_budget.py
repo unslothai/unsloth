@@ -160,17 +160,68 @@ def save_attention_context_fn(on_save: Optional[Any] = None) -> Optional[Any]:
     if not ops:
         return None
 
+    def keeps(op: Any, args: tuple) -> bool:
+        if op not in ops:
+            return False
+        key = args[1] if len(args) > 1 else None
+        return getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS
+
     def policy(ctx: Any, op: Any, *args: Any, **kwargs: Any) -> Any:
-        if op in ops:
-            key = args[1] if len(args) > 1 else None
-            if getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS:
-                # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
-                if on_save is not None and not getattr(ctx, "is_recompute", False):
-                    on_save(_attention_bytes(args))
-                return save
+        if keeps(op, args):
+            # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
+            if on_save is not None and not getattr(ctx, "is_recompute", False):
+                on_save(_attention_bytes(args))
+            return save
         return recompute
 
-    return functools.partial(create, policy)
+    def contexts() -> tuple:
+        forward, recompute_ctx = create(policy)
+        return _private_saved_outputs(forward, keeps), recompute_ctx
+
+    return contexts
+
+
+def _private_saved_outputs(caching: Any, keeps: Any) -> Any:
+    """Hand the caller a copy of each kept output: Inductor reuses the buffer in place, corrupting the cache (pytorch #201158)."""
+    cls = _private_caching_class(type(caching))
+    if cls is None:
+        return caching
+    caching.__class__ = cls
+    caching._unsloth_keeps = keeps
+    return caching
+
+
+@functools.lru_cache(maxsize = None)
+def _private_caching_class(base: type) -> Optional[type]:
+    """Subclass (not a second stacked mode) of torch's caching mode; None if not a TorchDispatchMode."""
+    try:
+        import torch
+        from torch.utils._python_dispatch import TorchDispatchMode
+        if not (isinstance(base, type) and issubclass(base, TorchDispatchMode)):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    def _copy(t: Any) -> Any:
+        # Fake / functional tensors mean compile tracing: nothing is replayed.
+        return t.clone() if type(t) is torch.Tensor else t
+
+    class _PrivateSavedOutputs(base):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = super().__torch_dispatch__(func, types, args, kwargs)
+            if self._unsloth_keeps(func, args):
+                # Mode is off the stack here, so the copy is not cached.
+                return torch.utils._pytree.tree_map(_copy, out)
+            return out
+
+    _PrivateSavedOutputs.__name__ = base.__name__
+    return _PrivateSavedOutputs
 
 
 class _Checkpoint:

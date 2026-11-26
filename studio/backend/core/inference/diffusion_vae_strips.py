@@ -628,6 +628,7 @@ _FOLD_TAPS = {0: (2,), 1: (1, 2), 2: (0, 1), 3: (0,)}
 # conv -> ((data_ptr, dtype, device, shape, version), folded): dies with the conv, and a ``.data`` swap (Studio's fp32
 # retry, module.to) changes the key, which weight identity + version alone miss.
 _FOLD_CACHE: Any = weakref.WeakKeyDictionary()
+_FOLD_FINITE: Any = weakref.WeakKeyDictionary()
 _FOLD_CALLS = [0]
 
 
@@ -678,6 +679,19 @@ def folded_upsample_weight(conv: Any) -> Any:
     wt = wt.to(w.dtype).contiguous(memory_format = torch.channels_last)
     _FOLD_CACHE[conv] = (key, wt)
     return wt
+
+
+def fold_finite(conv: Any) -> bool:
+    """Summing up to four fp16 taps can overflow to inf where the 2x conv stays finite; such a conv is not folded."""
+    torch = fused._torch()
+    w = conv.weight
+    key = (w.data_ptr(), w.dtype, w.device, tuple(w.shape), w._version)
+    hit = _FOLD_FINITE.get(conv)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    finite = bool(torch.isfinite(folded_upsample_weight(conv)).all())
+    _FOLD_FINITE[conv] = (key, finite)
+    return finite
 
 
 def _fold_ok(conv: Any, x: Any) -> bool:
@@ -739,7 +753,7 @@ def _upsample(
     (``UPSAMPLE_FOLD_ENV``), except on a decoder whose strip decode or fold failed (``full_map_decode``'s retry and
     later decodes), so a failing fold is not run again."""
     conv = up.conv
-    if _fold_allowed() and _fold_on(x) and _fold_ok(conv, x):
+    if _fold_allowed() and _fold_on(x) and _fold_ok(conv, x) and fold_finite(conv):
         _LOCAL.folded = True
         out = _fold_upsample(conv, x, None if defer_bias else conv.bias, full_max = _fold_full_max(x))
         return out, (conv.bias if defer_bias else None)

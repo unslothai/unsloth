@@ -2340,18 +2340,20 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
     )
     pipe = Pipe()
     mg._PLACEMENTS[pipe] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
+    other = None
     try:
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
             reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
         assert reason is not None and "holds the split's components" in reason
+        # a card holding only this load's text encoders takes the replica beside them (they run before the steps)
         te_only = Pipe()
         mg._PLACEMENTS[te_only] = {
             "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
         }
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
-            assert "holds the split's components" in mg.install_cfg_parallel(
-                te_only, offload_policy = "none"
-            )
+            assert mg.install_cfg_parallel(te_only, offload_policy = "none") is None
+        assert str(mg._CFG_ROUTERS[te_only].secondary) == "cuda:1"
+        mg.uninstall_cfg_parallel(te_only)
         other = Pipe()
         mg._PLACEMENTS[other] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
@@ -2359,7 +2361,8 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
         assert str(mg._CFG_ROUTERS[other].secondary) == "cuda:2"
     finally:
         mg.uninstall_cfg_parallel(pipe)
-        mg.uninstall_cfg_parallel(other)
+        if other is not None:
+            mg.uninstall_cfg_parallel(other)
 
 
 def test_background_compile_declines_cfg_parallel(monkeypatch):

@@ -1501,6 +1501,8 @@ def _smoke_source(engine: str) -> str:
         wanted["module"],
         "torch",
         *(name for name in ("bitsandbytes", "torchao") if name in pins),
+        # vLLM 0.28+ serves BitsAndBytes only through this plugin, loaded from its entry point.
+        *(["vllm_bnb_plugin"] if "vllm-bnb-plugin" in pins else []),
     ]
     runtime = (
         "assert torch.version.hip"

@@ -209,11 +209,12 @@ def test_impl_cuda_never_runs_triton(monkeypatch):
         I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.float32, force = True) == 0
     )
     assert not calls and not I._VERIFIED
-    # also with a CUDA kernel that works, and on a card with no CUDA config but a Triton one
+    # also with a CUDA kernel that works, and on a card with no CUDA config but a Triton one (below every listed
+    # card: a newer unlisted one is offered the nearest listed CUDA config instead)
     monkeypatch.setattr(I, "_CUDA_FAILED", {})
     assert I.implementation(0, 128) == "cuda"
-    monkeypatch.setitem(I.TRITON_KERNEL_CONFIGS, (9, 0), I.TRITON_KERNEL_CONFIGS[(8, 0)])
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
+    monkeypatch.setitem(I.TRITON_KERNEL_CONFIGS, (7, 0), I.TRITON_KERNEL_CONFIGS[(8, 0)])
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (7, 0))
     assert I.implementation(0, 128) is None
     monkeypatch.setenv(I.IMPL_ENV, "auto")
     assert I.implementation(0, 128) == "triton"

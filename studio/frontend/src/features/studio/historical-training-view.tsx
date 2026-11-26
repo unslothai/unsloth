@@ -11,6 +11,7 @@ import {
   parseBackendTrainingMethod,
   useTrainingActions,
 } from "@/features/training";
+import { normalizeRunParallel } from "@/features/training/lib/parallel-plan";
 import { translate, useT } from "@/i18n";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
@@ -76,6 +77,7 @@ function mapToViewData(
     currentNumTokens: metrics.final_num_tokens ?? null,
     outputDir: run.output_dir ?? null,
     resumedLater: run.resumed_later ?? false,
+    artifactsAvailable: run.artifacts_available,
     progressPercent:
       run.total_steps && run.final_step
         ? (run.final_step / run.total_steps) * 100
@@ -94,6 +96,7 @@ function mapToViewData(
     error: run.status === "error" ? run.error_message : null,
     warnings: [],
     isTrainingRunning: false,
+    parallel: normalizeRunParallel(detail.config?.parallel),
     modelName: run.display_name ?? run.model_name,
     projectName: run.project_name,
     trainingMethod: parseBackendTrainingMethod(

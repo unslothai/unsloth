@@ -47,6 +47,7 @@ def _captured_generate_kwargs(config, **generate_kwargs):
         "os": os,
         "inspect": inspect,
         "FastBaseModel": SimpleNamespace(for_inference = lambda model: None),
+        "_router_logits_off_for_generate": lambda model, kwargs: None,
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
         "_get_inference_mode_context_manager": lambda model: nullcontext(),

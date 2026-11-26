@@ -49,7 +49,9 @@ from unsloth._decision_common import (
     _option_keys,
     _parsed,
     _predicted,
+    _reads_apart_from_its_object,
     _refuse_private_push_to_public_repo,
+    _report_json_text_states,
     _row_images,
     _rows_problem,
     _served_lengths,
@@ -88,13 +90,21 @@ def _row_audio(row: dict) -> list:
     return found
 
 
-def _decision_clef_items(rows, options: Callable, encode: Callable, validate, report, skip) -> list:
+def _decision_clef_items(
+    rows,
+    options: Callable,
+    encode: Callable,
+    validate,
+    report,
+    skip,
+    d1 = False,
+) -> list:
     # One item per row. `options(question)` names a question's options in the head's order and
     # `encode(state, questions, images, audio)` returns the backend's tokenized fields, raising when they do not fit.
-    items = []
+    items, read, json_text = [], 0, 0
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
-        state = _parsed(row.get("state"))
+        state = row.get("state")
         questions = _parsed(row.get("questions"))
         gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
         if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
@@ -123,6 +133,7 @@ def _decision_clef_items(rows, options: Callable, encode: Callable, validate, re
             )
         if not kept:
             continue
+        read, json_text = read + 1, json_text + _reads_apart_from_its_object(state, d1)
         try:
             encoded = encode(state, kept, _row_images(row), _row_audio(row))
         except (TypeError, ValueError, OSError) as exc:
@@ -138,6 +149,7 @@ def _decision_clef_items(rows, options: Callable, encode: Callable, validate, re
                 "source": {"state": state, "questions": kept},
             }
         )
+    _report_json_text_states(json_text, read, report, d1)
     return items
 
 
@@ -151,7 +163,11 @@ def _decision_dataset(
     # `clef` builds a Clef model's items: the backend's (rows, tokenizer, max_len, validate, report, skip).
     max_len = int(config.get("max_len", 512))
     head_max_len = int(config.get("head_max_len", 192))
-    items, report, skips = [], {"total": 0, "skipped": 0, "reason": None, "truncated": 0}, {}
+    items, report, skips = (
+        [],
+        {"total": 0, "skipped": 0, "reason": None, "truncated": 0, "json_text_states": 0},
+        {},
+    )
 
     def skip(
         index,
@@ -484,6 +500,7 @@ def _clef_items(pipeline, rows, tokenizer, max_len, validate, report, skip) -> l
         validate,
         report,
         skip,
+        d1 = _is_d1(pipeline),
     )
 
 
@@ -1021,7 +1038,7 @@ class FastDecisionModel:
 
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
-        state, config, zoo = _parsed(state), model.decision_config, _decision_zoo()
+        config, zoo = model.decision_config, _decision_zoo()
         images, audio = _row_images({"images": images}), _row_audio({"audio": audio})
         if _is_clef(model):
             pipeline = model._unsloth_pipeline
@@ -1037,7 +1054,7 @@ class FastDecisionModel:
                 raise DecisionDataError("Laya reads text only; images and audio need a Clef model.")
             common, max_len = _laya().common, int(config.get("max_len", 512))
             tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
-            items, keys = [], []
+            state, items, keys = _parsed(state), [], []
             for name, question in questions.items():
                 internal = _internal(question, name)
                 ids, markers = common.build_sequence(

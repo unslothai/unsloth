@@ -279,6 +279,8 @@ def _switch_value(name: str, default: str) -> Optional[str]:
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
+    if value is None and name == "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE" and raw == "fallback":
+        return raw
     if value is None:
         return None
     return None if value == default else value

@@ -71,6 +71,55 @@ def test_a_processor_name_that_is_not_one_folder_is_refused(name):
         service.validate_recipe_names(recipe)
 
 
+_NFD_CAFE = "cafe" + chr(0x301)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "data",
+        "Data",
+        "DATA",
+        "data.",
+        "data ",
+        "images",
+        "Images",
+        "README.md",
+        "metadata.json",
+        "builder_config.json",
+        ".gitattributes",
+        ".git",
+        ".cache",
+    ],
+)
+def test_a_processor_named_like_a_main_dataset_hub_path_is_refused(name):
+    recipe = {"processors": [{"name": name, "processor_type": "schema_transform"}]}
+    with pytest.raises(ValueError, match = "main dataset"):
+        service.validate_recipe_names(recipe)
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [("summary", "Summary"), ("summary", "summary."), ("caf" + chr(0xE9), _NFD_CAFE)],
+)
+def test_processors_that_would_share_a_folder_are_refused(first, second):
+    recipe = {
+        "processors": [
+            {"name": first, "processor_type": "schema_transform"},
+            {"name": second, "processor_type": "schema_transform"},
+        ]
+    }
+    with pytest.raises(ValueError, match = "share one folder"):
+        service.validate_recipe_names(recipe)
+
+
+@pytest.mark.parametrize("name", ["database", "data_v2", "my data", "image", "summary"])
+def test_a_processor_name_near_a_reserved_one_passes(name):
+    service.validate_recipe_names(
+        {"processors": [{"name": name, "processor_type": "schema_transform"}]}
+    )
+
+
 @pytest.fixture
 def python_validator(monkeypatch):
     # Verbatim from data_designer 0.5.4 PythonValidator; the patch keeps the module name in sync.
@@ -152,6 +201,28 @@ def test_job_with_an_escaping_processor_name_is_refused_before_it_starts(monkeyp
     recipe = {
         "columns": [{"name": "a", "column_type": "expression", "expr": "1"}],
         "processors": [{"name": "../../marker", "processor_type": "schema_transform"}],
+    }
+    with pytest.raises(HTTPException) as exc:
+        jobs_routes.create_job(
+            RecipePayload(recipe = recipe), request = None, credential = ("u", None), via_api_key = False
+        )
+    assert exc.value.status_code == 400
+    assert started == []
+
+
+def test_job_with_a_processor_named_data_is_refused_before_it_starts(monkeypatch):
+    import routes.data_recipe.jobs as jobs_routes
+    from models.data_recipe import RecipePayload
+
+    started = []
+    monkeypatch.setattr(
+        jobs_routes,
+        "get_job_manager",
+        lambda: type("M", (), {"start": lambda self, **k: started.append(k)})(),
+    )
+    recipe = {
+        "columns": [{"name": "a", "column_type": "expression", "expr": "1"}],
+        "processors": [{"name": "data", "processor_type": "schema_transform"}],
     }
     with pytest.raises(HTTPException) as exc:
         jobs_routes.create_job(

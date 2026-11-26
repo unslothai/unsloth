@@ -141,7 +141,8 @@ def test_other_functions_and_trainers_still_stripped():
     line = "\n        llm_model.load_weights(state_dict.items())\n"
     for function, trainer_file in (
         ("_generate", "grpo_trainer"),
-        ("_move_model_to_vllm", "rloo_trainer"),
+        ("_generate", "rloo_trainer"),
+        ("_move_model_to_vllm", "nash_md_trainer"),
     ):
         out = _strip_vllm_weight_loads(function, line, trainer_file)
         assert "load_weights" not in out and "pass" in out
@@ -150,7 +151,9 @@ def test_other_functions_and_trainers_still_stripped():
         "_sync_fsdp_params_to_vllm",
         "_sync_fsdp2_params_to_vllm",
     ):
-        assert _strip_vllm_weight_loads(function, line, "grpo_trainer") == line
+        # RLOO (TRL 0.22 to 0.27) carries GRPO's sync methods.
+        for trainer_file in ("grpo_trainer", "rloo_trainer"):
+            assert _strip_vllm_weight_loads(function, line, trainer_file) == line
 
 
 class Params4bit(torch.nn.Parameter):

@@ -1117,7 +1117,7 @@ def test_recipe_workflow_key_belongs_to_the_starting_account(account, monkeypatc
         route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
     )
     monkeypatch.setattr(
-        route, "_ensure_selected_local_model_loaded", lambda recipe, local_names: None
+        route, "_ensure_selected_local_model_loaded", lambda recipe, local_names: (None, None)
     )
     monkeypatch.setattr(
         storage,
