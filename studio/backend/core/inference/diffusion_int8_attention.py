@@ -1721,7 +1721,6 @@ def native_attention(
     scale: Optional[float] = None,
 ) -> Any:
     import torch.nn.functional as F
-
     out = F.scaled_dot_product_attention(
         q.to(v.dtype).permute(0, 2, 1, 3),
         k.to(v.dtype).permute(0, 2, 1, 3),
