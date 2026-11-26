@@ -17014,6 +17014,19 @@ class LlamaCppBackend:
             # host-RAM advisory does, so they neither spill nor pull KV onto the host.
             resident = max(1, model_bytes - max(0, lazy))
             free_vram_bytes = sum(max(0, row[1]) for row in gpus) * 1024 * 1024
+            # A hand-set layer count caps what the GPUs hold, whatever VRAM is free.
+            try:
+                requested = parse_gpu_layers_override(argv)
+            except ValueError:
+                requested = None
+            if requested is None and _env_fixes_gpu_layers(_env):
+                raw = str(_env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip().lower()
+                requested = int(raw) if raw.lstrip("-").isdigit() else None
+            n_layers = getattr(self, "_n_layers", None)
+            if requested is not None and requested >= 0 and n_layers:
+                free_vram_bytes = min(
+                    free_vram_bytes, resident * min(requested, n_layers) // n_layers
+                )
             spill = max(0, resident - free_vram_bytes)
             _, reserves_ram = resolve_effective_memory_state(
                 argv, _env, auto_unmapped = auto_unmapped
@@ -17042,12 +17055,18 @@ class LlamaCppBackend:
                 if parallel_raw is None:
                     parallel_raw = str(_env.get("LLAMA_ARG_N_PARALLEL") or "")
                 n_parallel = max(1, int(parallel_raw) if parallel_raw.strip().isdigit() else 1)
-                kv = self._estimate_kv_cache_bytes(n_ctx, k_type, n_parallel = n_parallel)
+                swa_full = _swa_full_from_args_or_env(argv, _env)
+                kv = self._estimate_kv_cache_bytes(
+                    n_ctx, k_type, n_parallel = n_parallel, swa_full = swa_full
+                )
                 # A refusal must not over-price: K and V each take half of an equal-width cache at
                 # their own type; MLA caches K only.
                 if v_type != k_type and getattr(self, "_kv_lora_rank", None) is None:
                     kv = (
-                        kv + self._estimate_kv_cache_bytes(n_ctx, v_type, n_parallel = n_parallel)
+                        kv
+                        + self._estimate_kv_cache_bytes(
+                            n_ctx, v_type, n_parallel = n_parallel, swa_full = swa_full
+                        )
                     ) // 2
                 private += int(kv * kv_on_host)
             if private <= 0:

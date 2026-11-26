@@ -30,6 +30,7 @@ def _backend(
     seen = None,
 ):
     backend = object.__new__(LlamaCppBackend)
+    swa = backend._seen_swa_full = []
     backend._gguf_read_bytes = lambda _path: int(model_gb * _GB)
     backend._lazy_read_host_bytes = lambda *a, **k: 0
     backend.probe_server_capabilities = lambda *a, **k: {}
@@ -41,6 +42,7 @@ def _backend(
     ):
         if seen is not None:
             seen.append((n_ctx, cache_type, kwargs.get("n_parallel")))
+        swa.append(kwargs.get("swa_full"))
         return int(kv_gb * _GB) if n_ctx else 0
 
     backend._estimate_kv_cache_bytes = kv
@@ -199,6 +201,37 @@ class TestPreLaunch:
         # MLA caches K only, so V's type does not enter.
         backend._kv_lora_rank = 512
         assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
+
+    @pytest.mark.parametrize(
+        "extra, env",
+        [
+            (("-ngl", "1"), {}),
+            (("--n-gpu-layers", "0"), {}),
+            ((), {"LLAMA_ARG_N_GPU_LAYERS": "1"}),
+        ],
+    )
+    def test_a_hand_set_layer_count_caps_the_vram_credit(self, windows, extra, env):
+        # 20 GB fits 30 GB free, but -ngl 1 of 40 layers leaves almost all of it on the CPU.
+        backend = _backend(model_gb = 20, kv_gb = 0)
+        backend._n_layers = 40
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 12 * _MIB)
+        cmd = _cmd("--no-mmap", *extra)
+        assert backend._windows_host_commit_refusal(cmd, _CARD, env, **kwargs)
+        # -1 (every layer) and no count keep the free-VRAM credit.
+        cmd = _cmd("--no-mmap", "-ngl", "-1")
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
+        assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), _CARD, {}, **kwargs) is None
+
+    @pytest.mark.parametrize(
+        "extra, env, want",
+        [((), {}, False), (("--swa-full",), {}, True), ((), {"LLAMA_ARG_SWA_FULL": "1"}, True)],
+    )
+    def test_full_swa_reaches_the_kv_estimate(self, windows, extra, env, want):
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 96 * _MIB)
+        backend = _backend()
+        cmd = _cmd("--no-kv-offload", *extra)
+        backend._windows_host_commit_refusal(cmd, _CARD, env, **kwargs)
+        assert backend._seen_swa_full[-1] is want
 
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (
