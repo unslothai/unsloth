@@ -6816,9 +6816,18 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_items_in_batch = num_items_in_batch,
                 current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                 num_processes = num_processes,
-                sampler_kl_coef = float(getattr(self.args, "unsloth_sampler_kl_coef", 0.0) or 0.0),
-                sampler_kl_estimator = getattr(self.args, "unsloth_sampler_kl_estimator", None)
-                or "k1",
+                # Only when on: grpo_check_sampler_kl has then verified the zoo takes them.
+                **(
+                    {
+                        "sampler_kl_coef": float(self.args.unsloth_sampler_kl_coef),
+                        "sampler_kl_estimator": getattr(
+                            self.args, "unsloth_sampler_kl_estimator", None
+                        )
+                        or "k1",
+                    }
+                    if float(getattr(self.args, "unsloth_sampler_kl_coef", 0.0) or 0.0) != 0.0
+                    else {}
+                ),
             )
         else:
             # With beta = 0 and num_iterations = 1 the no-grad path (and its zoo gate) never runs, and an older
