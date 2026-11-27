@@ -49,6 +49,58 @@ def test_endpoint_sends_the_cli_user_agent_to_inference():
     assert received == ["unsloth-cli"]
 
 
+def test_endpoint_rejects_another_model_instead_of_using_the_resident_model():
+    with antigravity_endpoint("http://127.0.0.1:1", "backend-key", "local-model", {}) as (
+        url,
+        token,
+    ):
+        req = urllib.request.Request(
+            url + "/v1beta/models/gemini-3.8-flash:streamGenerateContent",
+            data = b'{"contents":[{"parts":[{"text":"hello"}]}]}',
+            headers = {"x-goog-api-key": token},
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(req, timeout = 3)
+        assert error.value.code == 404
+
+
+def test_endpoint_reports_truncated_http_chunks_after_partial_text():
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            text = b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            self.wfile.write(f"{len(text):x}\r\n".encode() + text + b"\r\n")
+            self.wfile.write(b"28\r\ndata: {")
+            self.close_connection = True
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as backend:
+        thread = threading.Thread(target = backend.serve_forever)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{backend.server_port}"
+            with antigravity_endpoint(base, "backend-key", "test-model", {}) as (url, token):
+                req = urllib.request.Request(
+                    url + "/v1beta/models/unsloth:streamGenerateContent",
+                    data = b'{"contents":[{"parts":[{"text":"hello"}]}]}',
+                    headers = {"x-goog-api-key": token},
+                )
+                with urllib.request.urlopen(req, timeout = 3) as response:
+                    frames = [
+                        json.loads(line[6:]) for line in response if line.startswith(b"data: ")
+                    ]
+        finally:
+            backend.shutdown()
+            thread.join()
+
+    assert frames[0]["candidates"][0]["content"]["parts"] == [{"text": "partial"}]
+    assert frames[1]["error"]["code"] == 502
+
+
 @pytest.mark.parametrize("stream_started", [False, True], ids = ["prefill", "buffered-tool-call"])
 def test_endpoint_closes_upstream_when_client_cancels(stream_started):
     upstream_ready = threading.Event()
@@ -123,6 +175,31 @@ def test_tool_results_follow_call_ids_even_when_returned_in_reverse_order():
     assert json.loads(first["content"])["output"] == "one"
 
 
+@pytest.mark.parametrize("supports_tools", [False, True])
+def test_chat_request_only_sends_tools_to_capable_models(supports_tools):
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+        "tools": [{"functionDeclarations": [{"name": "read_file"}]}],
+    }
+    request = _chat_request(body, "local-model", {}, supports_tools = supports_tools)
+    assert ("tools" in request) is supports_tools
+    if supports_tools:
+        assert request["tools"][0]["function"]["name"] == "read_file"
+
+
+def test_chat_request_maps_thinking_level_and_honors_explicit_engine_override():
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+        "generationConfig": {"thinkingConfig": {"thinkingLevel": "LOW"}},
+    }
+    assert _chat_request(body, "local-model", {})["reasoning_effort"] == "low"
+    assert (
+        _chat_request(body, "local-model", {"reasoning_effort": "high"})["reasoning_effort"]
+        == "high"
+    )
+    assert "reasoning_effort" not in _chat_request(body, "local-model", {"enable_thinking": False})
+
+
 def test_stream_combines_tool_argument_fragments_and_preserves_usage():
     def frame(delta, finish = None):
         payload = {"choices": [{"delta": delta, "finish_reason": finish}]}
@@ -147,7 +224,8 @@ def test_stream_combines_tool_argument_fragments_and_preserves_usage():
                     {"tool_calls": [{"index": 0, "function": {"arguments": '"demo.txt"}'}}]},
                     "tool_calls",
                 ),
-                b'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}',
+                b'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,'
+                b'"total_tokens":15,"prompt_tokens_details":{"cached_tokens":8}}}',
                 b"data: [DONE]",
             ]
         )
@@ -158,6 +236,7 @@ def test_stream_combines_tool_argument_fragments_and_preserves_usage():
     call = last["content"]["parts"][0]["functionCall"]
     assert call == {"id": "f1", "name": "read_file", "args": {"Path": "demo.txt"}}
     assert events[-1]["usageMetadata"]["totalTokenCount"] == 15
+    assert events[-1]["usageMetadata"]["cachedContentTokenCount"] == 8
 
 
 def test_interrupted_stream_is_an_error():

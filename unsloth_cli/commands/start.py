@@ -7798,7 +7798,9 @@ def _vscode_models_text(
     return json.dumps(updated, indent = 2, ensure_ascii = False) + "\n"
 
 
-def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
+def _vscode_capabilities(
+    base: str, key: str, entry: dict, *, allow_diffusion_tools: bool = False
+) -> tuple:
     # Scoped to the slot serving this model; an older server ignores the query and answers for the primary.
     try:
         query = urlencode({"model": entry["id"]})
@@ -7810,7 +7812,8 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
         # Only a status about this model can vouch for it; an older server reports nothing.
         return True, False, False
     return (
-        status.get("supports_tools") is not False,
+        status.get("supports_tools") is not False
+        or (allow_diffusion_tools and status.get("is_diffusion") is True),
         status.get("is_vision") is True,
         status.get("supports_reasoning") is True,
     )
@@ -9059,13 +9062,18 @@ def antigravity(
         )
         return
 
-    tools, images, thinking = _vscode_capabilities(base, key, entry)
+    # DiffusionGemma status describes Studio's tool loop, while the bridge passes
+    # client tools through to the template.
+    tools, images, thinking = _vscode_capabilities(base, key, entry, allow_diffusion_tools = True)
     window = entry.get("context_length") or entry.get("max_context_length")
     overrides = server_options.request_body()
     if window:
         output = min(65536, max(1, int(window) // 4))
         overrides["max_tokens"] = output
-    with antigravity_endpoint(base, key, entry["id"], overrides) as (url, token):
+    with antigravity_endpoint(base, key, entry["id"], overrides, supports_tools = tools) as (
+        url,
+        token,
+    ):
         custom_model = {
             "modelName": f"gemini-api://{urlparse(url).netloc}/models/unsloth",
             "label": entry["id"],

@@ -12,9 +12,10 @@ import urllib.error
 import urllib.request
 from collections import defaultdict, deque
 from contextlib import contextmanager, suppress
+from http.client import IncompleteRead
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from unsloth_cli._inference import _USER_AGENT, urlopen_no_redirect
 
@@ -74,7 +75,13 @@ def _content_part(part):
     raise ValueError("Antigravity sent unsupported content. Use text or an inline image.")
 
 
-def _chat_request(body, model, overrides):
+def _chat_request(
+    body,
+    model,
+    overrides,
+    *,
+    supports_tools = True,
+):
     messages = []
     system = body.get("systemInstruction", {}).get("parts", [])
     if system:
@@ -140,20 +147,24 @@ def _chat_request(body, model, overrides):
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": f["name"],
-                "description": f.get("description", ""),
-                "parameters": f.get("parametersJsonSchema", {"type": "object", "properties": {}}),
-            },
-        }
-        for group in body.get("tools", [])
-        for f in group["functionDeclarations"]
-    ]
-    if tools:
-        request["tools"] = tools
+    # agy includes declarations even when the custom model disables tools.
+    if supports_tools:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": f["name"],
+                    "description": f.get("description", ""),
+                    "parameters": f.get(
+                        "parametersJsonSchema", {"type": "object", "properties": {}}
+                    ),
+                },
+            }
+            for group in body.get("tools", [])
+            for f in group["functionDeclarations"]
+        ]
+        if tools:
+            request["tools"] = tools
     config = body.get("generationConfig", {})
     for name, field in (
         ("temperature", "temperature"),
@@ -165,6 +176,16 @@ def _chat_request(body, model, overrides):
             request[field] = config[name]
     if config.get("maxOutputTokens"):
         request["max_tokens"] = config["maxOutputTokens"]
+    level = (config.get("thinkingConfig") or {}).get("thinkingLevel")
+    if overrides.get("enable_thinking") is not False and level in (
+        "MINIMAL",
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "XHIGH",
+        "MAX",
+    ):
+        request["reasoning_effort"] = level.lower()
     request.update(overrides)
     if "max_tokens" in overrides and config.get("maxOutputTokens"):
         request["max_tokens"] = min(overrides["max_tokens"], config["maxOutputTokens"])
@@ -227,6 +248,9 @@ def _gemini_stream(lines):
             "candidatesTokenCount": usage.get("completion_tokens", 0),
             "totalTokenCount": usage.get("total_tokens", 0),
         }
+        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+        if cached is not None:
+            last["usageMetadata"]["cachedContentTokenCount"] = cached
     yield last
 
 
@@ -283,9 +307,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"error": {"code": status, "message": message}}).encode())
 
     def do_POST(self):
-        path = urlsplit(self.path).path
-        if not (path.startswith("/v1beta/models/") and path.endswith(":streamGenerateContent")):
-            return self._error(404, "Unknown Antigravity endpoint")
+        if unquote(urlsplit(self.path).path) not in self.server.model_paths:
+            return self._error(
+                404, "Select the Unsloth model to use this local Antigravity endpoint."
+            )
         if not secrets.compare_digest(
             self.headers.get("x-goog-api-key", "").encode(), self.server.token.encode()
         ):
@@ -295,7 +320,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 64 * 1024 * 1024:
                 return self._error(413, "Invalid request size")
             body = _chat_request(
-                json.loads(self.rfile.read(length)), self.server.model, self.server.overrides
+                json.loads(self.rfile.read(length)),
+                self.server.model,
+                self.server.overrides,
+                supports_tools = self.server.supports_tools,
             )
         except (ValueError, KeyError, AttributeError, TypeError) as exc:
             return self._error(400, str(exc))
@@ -334,7 +362,7 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_event(event)
             except (BrokenPipeError, ConnectionResetError):
                 return
-            except (OSError, ValueError, KeyError, TypeError) as exc:
+            except (IncompleteRead, OSError, ValueError, KeyError, TypeError) as exc:
                 if not cancelled.is_set():
                     self._send_event({"error": {"code": 502, "message": str(exc)}})
 
@@ -344,17 +372,30 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def antigravity_endpoint(base, key, model, overrides):
+def antigravity_endpoint(
+    base,
+    key,
+    model,
+    overrides,
+    *,
+    supports_tools = True,
+):
     with ThreadingHTTPServer(("127.0.0.1", 0), _Handler) as server:
+        address = f"127.0.0.1:{server.server_port}"
+        server.model_paths = {
+            f"/v1beta/models/{name}:streamGenerateContent"
+            for name in ("unsloth", f"{address}/models/unsloth")
+        }
         server.url = f"{base.rstrip('/')}/v1/chat/completions"
         server.key = key
         server.model = model
         server.overrides = overrides
+        server.supports_tools = supports_tools
         server.token = secrets.token_urlsafe(32)
         thread = threading.Thread(target = server.serve_forever, daemon = True)
         thread.start()
         try:
-            yield f"http://127.0.0.1:{server.server_port}", server.token
+            yield f"http://{address}", server.token
         finally:
             server.shutdown()
             thread.join()
