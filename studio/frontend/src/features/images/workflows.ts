@@ -84,6 +84,26 @@ export const WORKFLOW_TABS: Array<{
   },
 ];
 
+/**
+ * Models that advertise `unified_edit` expose the same image-conditioned operation for both
+ * editing and reference-guided generation. Keep one entry in navigation for those models while
+ * retaining the `edit` id so request payloads and saved recipes stay backwards-compatible.
+ */
+export function imageWorkflowTabs(unifiedEdit: boolean): (typeof WORKFLOW_TABS)[number][] {
+  if (!unifiedEdit) {
+    return WORKFLOW_TABS;
+  }
+  return WORKFLOW_TABS.filter((tab) => tab.id !== "reference").map((tab) =>
+    tab.id === "edit"
+      ? {
+          ...tab,
+          label: "Edit / Reference",
+          hint: "Change an image or use it as a reference for a new generation",
+        }
+      : tab,
+  );
+}
+
 /** Create and Edit only: the others need a strength or mask, which servers' /images/edits do not take uniformly. */
 export const CONNECTION_WORKFLOWS: readonly WorkflowId[] = ["create", "edit"];
 
