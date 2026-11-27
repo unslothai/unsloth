@@ -4,9 +4,23 @@
 // Fetch caps total in-flight keepalive bodies at 64 KiB; larger bodies go without keepalive.
 const KEEPALIVE_BODY_BUDGET_BYTES = 60 * 1024;
 
-export function isUnderKeepaliveBudget(body: string, copies = 1): boolean {
-  const budget = KEEPALIVE_BODY_BUDGET_BYTES / copies;
+export function isUnderKeepaliveBudget(body: string): boolean {
   // JSON is at least one byte per UTF-16 unit, so short bodies skip encoding.
-  if (body.length <= budget / 3) return true;
-  return new TextEncoder().encode(body).byteLength <= budget;
+  if (body.length <= KEEPALIVE_BODY_BUDGET_BYTES / 3) return true;
+  return new TextEncoder().encode(body).byteLength <= KEEPALIVE_BODY_BUDGET_BYTES;
+}
+
+let reservedBytes = 0;
+
+/** Claims room for one keepalive body among those still in flight; null when it would not fit. */
+export function reserveKeepaliveBody(body: string): (() => void) | null {
+  const bytes = new TextEncoder().encode(body).byteLength;
+  if (reservedBytes + bytes > KEEPALIVE_BODY_BUDGET_BYTES) return null;
+  reservedBytes += bytes;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    reservedBytes -= bytes;
+  };
 }

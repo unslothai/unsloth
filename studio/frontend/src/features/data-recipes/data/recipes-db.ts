@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
-import { isUnderKeepaliveBudget } from "@/lib/keepalive-budget";
+import { reserveKeepaliveBody } from "@/lib/keepalive-budget";
 import { normalizeNonEmptyName } from "@/utils";
 import { useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
@@ -94,14 +94,13 @@ export async function saveRecipe(
       input.learningRecipeTitle ?? existing?.learningRecipeTitle,
     baseUpdatedAt: input.baseUpdatedAt ?? existing?.updatedAt,
   });
+  const release = input.keepalive ? reserveKeepaliveBody(body) : null;
   let record: RecipeRecord;
   try {
     record = await recipeRequest<RecipeRecord>(`/${encodeURIComponent(id)}`, {
       method: "PUT",
       body,
-      keepalive: input.keepalive
-        ? isUnderKeepaliveBudget(body, input.keepaliveCopies)
-        : undefined,
+      keepalive: input.keepalive ? release !== null : undefined,
     });
   } catch (error) {
     // A losing copy's 409 must not evict a save at or past this version that already landed.
@@ -113,6 +112,8 @@ export async function saveRecipe(
       recentRecipeCache.delete(id);
     }
     throw error;
+  } finally {
+    release?.();
   }
   mutationVersion += 1;
   // Saves can overlap when a closing page sends its last edit; a late reply must not roll back.

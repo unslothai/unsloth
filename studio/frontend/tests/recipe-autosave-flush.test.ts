@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import * as keepaliveBudget from "../src/lib/keepalive-budget.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -623,4 +624,23 @@ test("an exit save deferred behind a save in flight only cleans uploads queued a
   await s.server.release();
   assert.equal(s.server.puts.length, 2);
   assert.ok(!s.uploads.removed.includes("next-editor"));
+});
+
+test("a keepalive save still in flight from an earlier call counts against the budget", async () => {
+  const s = setup();
+  await s.edit({ text: "x".repeat(40 * 1024) });
+  await s.hide();
+  await s.edit({ text: "y".repeat(40 * 1024) });
+  await s.fire("pagehide");
+  assert.deepEqual(s.server.puts.map((p) => p.keepalive), [true, false]);
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { text: "y".repeat(40 * 1024) });
+});
+
+test("the editor route remounts per recipe so pending versions never cross recipes", () => {
+  const route = readFileSync(
+    new URL("../src/app/routes/data-recipes.$recipeId.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(route, /<EditRecipePage key=\{recipeId\} recipeId=\{recipeId\} \/>/);
 });
