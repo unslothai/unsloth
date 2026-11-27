@@ -70,11 +70,9 @@ import {
   type DiffusionTrainingInfo,
   type DiffusionTrainingRunDetail,
   type DiffusionTrainingRunSummary,
-  type DiffusionTrainingStatus,
   datasetItemCount,
   getDiffusionTrainingInfo,
   getDiffusionTrainingRun,
-  getDiffusionTrainingStatus,
   listDiffusionDatasetExamples,
   listDiffusionDatasetImages,
   listDiffusionTrainingRuns,
@@ -127,6 +125,7 @@ import { useSystemInfo } from "@/hooks/use-system";
 import { diffusionTrainGuideUrl } from "./diffusion-train-guides";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
 import { runningTrainingSelection, trainingRunSelection } from "./diffusion-train-restore";
+import { useDiffusionTrainingStatus } from "./use-diffusion-training-status";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 import {
   MediaGenerationPresetControl,
@@ -597,7 +596,7 @@ export function DiffusionTrainPanel({
     onScroll: onSettingsScroll,
     className: settingsFadeClass,
   } = useScrollFades();
-  const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
+  const { status, poll } = useDiffusionTrainingStatus(active);
   const [prevRuns, setPrevRuns] = useState<DiffusionTrainingRunSummary[]>([]);
   const [viewRun, setViewRun] = useState<DiffusionTrainingRunDetail | null>(null);
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
@@ -938,21 +937,6 @@ export function DiffusionTrainPanel({
     },
     [defaultPresetParams, setFamilyName, setBaseChoice],
   );
-
-  const poll = useCallback(async () => {
-    try {
-      setStatus(await getDiffusionTrainingStatus());
-    } catch {
-      /* best-effort; a failed poll should not surface an error while the tab is open */
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!active) return;
-    void poll();
-    const id = window.setInterval(() => void poll(), 1500);
-    return () => window.clearInterval(id);
-  }, [active, poll]);
 
   const applyRunSelection = useCallback(
     (run: { familyName: string; baseModel: string | null }) => {
