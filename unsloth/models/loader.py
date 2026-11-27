@@ -41,6 +41,7 @@ from .float8_training import (
     mark_fp8_lora,
     resolve_float8_training,
     resolve_fp8_lora,
+    float8_training_request,
 )
 from .mistral_format import (
     MistralFormatRedirect,
@@ -1457,6 +1458,11 @@ class FastLanguageModel(FastLlamaModel):
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         fp8_lora = None
+        _int8_request = float8_training_request(
+            kwargs.get("float8_training", None), full_finetuning
+        )
+        if _int8_request is not kwargs.get("float8_training", None):
+            kwargs["float8_training"] = _int8_request
         fp8_request = kwargs.get("float8_training", None)
         if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
             fp8_lora = resolve_fp8_lora(
@@ -2425,6 +2431,11 @@ class FastModel(FastBaseModel):
         )
         user_config = kwargs.pop("config", None)
         fp8_lora = None
+        _int8_request = float8_training_request(
+            kwargs.get("float8_training", None), full_finetuning
+        )
+        if _int8_request is not kwargs.get("float8_training", None):
+            kwargs["float8_training"] = _int8_request
         if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
             fp8_lora = resolve_fp8_lora(
                 kwargs.pop("float8_training"),
