@@ -155,6 +155,19 @@ def test_moss_image_never_batches():
     assert coalesce_prompt_key(family, None, "a fox") is None
 
 
+def test_moss_image_renders_alone_when_its_module_cannot_import(monkeypatch):
+    """coalesce_prompt_key never raises when the MOSS module (diffusers at import) is unavailable."""
+    import sys
+
+    from core.inference.diffusion import coalesce_prompt_key
+
+    monkeypatch.delitem(sys.modules, "core.inference.diffusion_moss_image", raising = False)
+    monkeypatch.setitem(sys.modules, "diffusers.configuration_utils", None)
+    family = types.SimpleNamespace(name = "moss-image")
+    pipe = types.SimpleNamespace(transformer = object())
+    assert coalesce_prompt_key(family, pipe, "a fox") is None
+
+
 def test_qwen_image_21_never_batches():
     """A batch gains about 3% (A100, INT8) while a member lands about 35 dB from its solo render."""
     from core.inference.diffusion import coalesce_prompt_key

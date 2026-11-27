@@ -5127,8 +5127,10 @@ def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
 
     name = getattr(family, "name", None)
     if name == MOSS_IMAGE_FAMILY_NAME:
-        from .diffusion_moss_image import coalesce_key
-        try:
+        if getattr(pipe, "transformer", None) is None:
+            return None
+        try:  # the MOSS module needs diffusers at import; a missing or broken one renders alone
+            from .diffusion_moss_image import coalesce_key
             return coalesce_key(pipe)
         except Exception:  # noqa: BLE001 - an unreadable load renders alone
             return None
