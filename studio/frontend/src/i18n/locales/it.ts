@@ -4584,6 +4584,12 @@ export const it = {
       epochs: "Epoche",
       useMaxSteps: "Usa gli step massimi",
       useEpochs: "Usa le epoche",
+      stepGuidancePass: "Circa {steps} passi sono un passaggio sulle tue {rows} righe con un batch effettivo di {batch}.",
+      stepGuidanceFloor: "Un passaggio sulle tue {rows} righe è di soli {passSteps} passi con un batch effettivo di {batch}, quindi circa {steps} passi (alcuni passaggi) sono un minimo ragionevole.",
+      stepGuidanceCap: "Un passaggio sulle tue {rows} righe è di {passSteps} passi con un batch effettivo di {batch}; {steps} passi addestrano su una parte, spesso sufficiente per una prima esecuzione.",
+      stepGuidanceEpoch: "Un'epoca è di circa {passSteps} passi sulle tue {rows} righe con un batch effettivo di {batch}.",
+      stepGuidancePacking: "Il packing unisce le righe brevi, quindi un passaggio può richiedere meno passi.",
+      useSuggestedSteps: "Usa {steps}",
       maxStepsTooltip:
         "Sovrascrive il numero totale di step dell'ottimizzatore.",
       epochsTooltip: "Numero di passaggi completi sul dataset.",
