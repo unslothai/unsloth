@@ -49,7 +49,9 @@ def _mode() -> str:
 def _runtime_affected() -> bool:
     import torch
 
-    if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+    from .rocm_bf16 import is_rocm_torch
+
+    if is_rocm_torch(torch) or not torch.cuda.is_available():
         return False
     try:
         cudnn = torch.backends.cudnn.version()
