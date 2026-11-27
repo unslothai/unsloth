@@ -13992,6 +13992,11 @@ def test_text_repo_prefers_active_cache_across_formats(tmp_path, monkeypatch):
     monkeypatch.setattr(studio_db, "list_scan_folders", list)
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
 
+    rows = models_route.collect_local_models(tmp_path / "models")
+    assert [(row.active_cache, row.model_format) for row in rows] == [
+        (True, "gguf"),
+        (False, "safetensors"),
+    ]
     for name in ("org/Mixed", "org/Mixed:Q4_K_M"):
         assert resolver.resolve_local_gguf(name)[:2] == (str(active_snapshot), "Q4_K_M")
     assert resolver.resolve_local_gguf(str(previous_snapshot))[:2] == (

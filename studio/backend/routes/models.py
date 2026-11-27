@@ -395,6 +395,17 @@ def collect_local_models(
         [_with_scan_model_id(row) for row in local_inventory._filter_hidden_models(rows)]
     )
     listed = local_inventory._dedupe_local_models(rows)
+    # Keep the preferred entry first without moving a repo ahead of another model's aliases.
+    by_hf_repo: dict[str, list[int]] = {}
+    for i, row in enumerate(listed):
+        if row.source == "hf_cache" and row.model_id:
+            by_hf_repo.setdefault(row.model_id.strip().lower(), []).append(i)
+    for slots in by_hf_repo.values():
+        if len(slots) < 2:
+            continue
+        preferred = sorted((listed[i] for i in slots), key = lambda row: row.active_cache is not True)
+        for i, row in zip(slots, preferred):
+            listed[i] = row
     if folded is not None:
         kept = {id(row) for row in listed}
         folded.extend(row for row in rows if id(row) not in kept)
