@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// No user setting may be lost on upgrade/downgrade; hidden is acceptable, lost is not.
-// The version stamp is a downgrade lock: toStoredConfig must stamp the oldest capable version.
+// Nothing may be lost on upgrade/downgrade; stamp oldest capable version as a downgrade lock.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -591,8 +590,7 @@ const PANEL = readFileSync(
 );
 
 test("opening the panel ticks Remember for any model with a resolvable row", () => {
-  // Adoption is unconditional on user intent; a guard needing intent must change here.
-  // Spelled term by term so a new condition fails the whole-block match and names itself.
+  // Adoption ignores user intent; a guard needing it must change here, spelled term by term.
   const adoptGuard = [
     "if \\(",
     "resolvedRow &&",

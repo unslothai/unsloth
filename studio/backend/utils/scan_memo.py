@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Memoises per-repo lookups a model inventory scan repeats (root path, HF cache setting, scan
-folders); scoped to one scan, never kept across requests."""
+"""Per-scan memo of repeated per-repo lookups; scoped to one scan, never kept across requests."""
 
 from __future__ import annotations
 
@@ -29,7 +28,6 @@ def invalidate_scan_memos() -> None:
 
 @contextmanager
 def scan_memo() -> Iterator[None]:
-    """Memoize lookups inside; a nested scope joins the outer one."""
     current = _scope.get()
     if current is not None and _CLOSED not in current:
         yield
@@ -44,7 +42,6 @@ def scan_memo() -> Iterator[None]:
 
 
 def scan_memo_active() -> bool:
-    """Whether the caller runs inside an open scan_memo() scope."""
     memo = _scope.get()
     return memo is not None and _CLOSED not in memo
 
@@ -65,7 +62,6 @@ def memoized(key: Hashable, compute: Callable[[], _T]) -> _T:
 
 
 def in_scan_memo(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Run a sync or async function inside scan_memo()."""
     if inspect.iscoroutinefunction(fn):
 
         @functools.wraps(fn)

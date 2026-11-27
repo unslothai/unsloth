@@ -56,8 +56,7 @@ def test_the_nullcontext_shim_is_the_failure_this_leg_exists_for():
 
 
 def test_one_visible_card_fails_and_says_only_that():
-    """A pinned run measures the wrong machine, so with one visible card only the count failure is
-    reported; later rules would flag arrays sized correctly for that card."""
+    """Pinned runs measure the wrong machine: with one card, report only the count failure."""
     facts = dict(
         GOOD,
         device_count = 1,
@@ -74,8 +73,7 @@ def test_one_visible_card_fails_and_says_only_that():
 
 
 def test_an_import_before_the_cards_were_visible_is_caught_separately():
-    """unsloth.kernels.utils binds its devices once at import, so importing it before both cards
-    were visible is a separate failure with its own fix, reported apart."""
+    """unsloth.kernels.utils binds devices at import, so an early import is a separate failure."""
     facts = dict(GOOD, module_device_count = 1)
     broken = _payload().multi_gpu_failures(facts, expected_cards = 2)
     assert broken and "imported before the cards were visible" in broken[0]
@@ -92,8 +90,7 @@ def test_short_stream_and_buffer_arrays_each_fail():
 
 
 def test_missing_facts_are_a_failure_rather_than_a_silence():
-    """A null or empty multi-GPU reading must be a failure, not silence; that gap once let a payload
-    be carried without ever executing."""
+    """Null or empty multi-GPU readings must fail; a silent pass once let a payload never run."""
     payload = _payload()
     assert payload.multi_gpu_failures(None, expected_cards = 2)
     assert payload.multi_gpu_failures({}, expected_cards = 2)
@@ -138,8 +135,7 @@ def test_the_reading_is_taken_from_the_module_and_not_recomputed():
 
 
 def test_the_leg_asks_for_two_cards_and_the_BUILT_payload_enforces_it():
-    """Assert against the generated notebook, not the dataclass field, because a field nothing emits
-    looks like coverage and enforces nothing."""
+    """Assert on the generated notebook: a dataclass field nothing emits looks like coverage."""
     leg = legs.LEGS["multi_gpu"]
     assert leg.all_cards is True
     notebook = build_kernel.build_payload_notebook(
@@ -155,8 +151,7 @@ def test_the_leg_asks_for_two_cards_and_the_BUILT_payload_enforces_it():
 
 
 def test_every_OTHER_leg_still_requires_exactly_one():
-    """The pin check is what catches a driver that failed to pin, and widening
-    it for this leg must not widen it for the rest."""
+    """Pin check catches unpinned drivers; widen it for multi_gpu only, not the other legs."""
     for name, leg in legs.LEGS.items():
         if name == "multi_gpu":
             continue
@@ -168,13 +163,11 @@ def test_every_OTHER_leg_still_requires_exactly_one():
 
 
 def test_the_leg_is_small_enough_to_co_tenant():
-    """The leg must stay small enough to co-tenant: at a whole card it would block gptoss for its
-    whole life (12.78 of the 13.0 budget in CARD_VRAM_BUDGET_GB) and lengthen the kernel."""
+    """Must co-tenant with gptoss: a whole card would block it, using 12.78 of the 13.0 budget."""
     leg = legs.LEGS["multi_gpu"]
     budget = 13.0  # CARD_VRAM_BUDGET_GB in build_kernel.py
 
-    # Expressed against the budget, not a fixed number: the leg must still share a card with any
-    # ordinary leg.
+    # Relative to the budget, not fixed: the leg must share a card with any ordinary leg.
     others = [
         other.vram_gb
         for name, other in legs.LEGS.items()
@@ -249,8 +242,7 @@ def test_it_runs_UNPINNED_or_it_measures_the_single_card_branch():
 
 
 def test_the_reservation_is_all_or_nothing():
-    """A partial reservation can hold card 0 while waiting for card 1, leaving capacity unused and
-    deadlocking a big leg that waits for card 0; checks must all run before any card is charged."""
+    """Checks must run before any card is charged, or a partial hold can deadlock a big leg."""
     source = _driver_source()
     body = source.split("def _admit_all(name):")[1].split("def _release_all")[0]
     check, commit = body.split("for g in range(N_GPU):")[1:3]
@@ -279,8 +271,7 @@ def test_the_contention_is_global_and_the_vram_is_per_card():
 
 
 def test_the_all_card_lane_is_joined_with_the_card_workers():
-    """It runs BESIDE the training legs, so anything concluding the cards are
-    free has to wait for it too."""
+    """It runs beside training legs, so anything declaring the cards free must wait for it."""
     source = _driver_source()
     assert "for t in all_card_threads:" in source
     assert source.index("for t in all_card_threads:") < source.index(
@@ -332,8 +323,7 @@ def test_single_device_reaches_the_child_and_sets_a_device_map():
     body = ast.unparse(train)
     assert "single_device" in body
     assert "'device_map'] = {'': 0}" in body or '"device_map"] = {"": 0}' in body
-    # The cycle loads the model, so the flag must be forwarded. Check the append, not the string:
-    # the add_argument call in main() would satisfy a substring check.
+    # The cycle child loads the model, so the flag must be appended to cmd, not just parsed.
     main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
     assert "cmd.append('--single-device')" in ast.unparse(main), (
         "the flag is parsed but never forwarded, so the cycle child loads "

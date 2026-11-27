@@ -105,8 +105,7 @@ def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
 
 
 def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool:
-    """A named variant needs its own safetensors, plus an index when sharded; None is the root
-    checkpoint."""
+    """A named variant needs its own safetensors, plus an index when sharded; None is the root."""
     if variant is None:
         return True
     if f"model.{variant}.safetensors" in names:

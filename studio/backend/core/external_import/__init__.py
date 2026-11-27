@@ -212,8 +212,7 @@ def first_user_text(messages: list[dict]) -> str:
 
 
 def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict:
-    # upsert_chat_thread nulls columns it is not handed, so the stored row is the base:
-    # sandbox container, compare pair and fork origin survive a re-import.
+    # Upsert nulls unset columns; stored row is the base, so sandbox, compare, fork survive.
     return {
         **existing,
         "id": transcript.thread_id,
@@ -263,8 +262,7 @@ def _reader(revision: str) -> str:
 def _pending_messages(
     transcript: Transcript, existing: bool, stored: list[dict], mark: Optional[tuple[int, str]]
 ) -> list[dict]:
-    # Only turns appended since the last import. The ledger count, not the message rows,
-    # says which those are: a message deleted in Studio leaves no row behind.
+    # Only turns past the ledger count are new; a message deleted in Studio leaves no row.
     if not existing:
         return list(transcript.messages)
     if mark is None:
@@ -282,8 +280,7 @@ def _pending_messages(
         pending = transcript.messages[turns:]
     else:
         pending = transcript.messages[transcript.inherited :]
-    # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
-    # does not orphan it (the frontend refuses a thread with a missing parent).
+    # Hang new turns off the nearest existing ancestor (frontend refuses a missing parent).
     present = {message["id"] for message in stored}
     by_id = {message["id"]: message for message in transcript.messages}
     reseated = []
@@ -438,8 +435,7 @@ def run_import(source: Source, *, home: Optional[Path] = None) -> ImportSummary:
     summary = ImportSummary()
     now_ms = int(time.time() * 1000)
     projects = source.list_projects(source.home(home))
-    # An empty Studio (clear-all, fresh database) is a blank slate for this source's chats only:
-    # other tombstones still stop a stale tab resurrecting a chat the user deleted.
+    # Empty Studio lifts only this source's tombstones; others still stop stale-tab revival.
     if not studio_db.list_chat_threads():
         studio_db.lift_chat_thread_tombstones(
             thread_id_for(source, source.session_id(p))

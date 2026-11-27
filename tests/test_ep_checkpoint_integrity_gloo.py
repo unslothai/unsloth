@@ -267,6 +267,7 @@ def _utils_save_lora_adapter():
     wanted = {
         "_unsloth_model_parallel_marker",
         "_is_unsloth_tensor_parallel",
+        "_is_unsloth_pipeline_parallel",
         "_is_unsloth_expert_parallel",
         "save_lora_adapter",
     }
@@ -461,8 +462,18 @@ def _case_optimizer_round_trip(rank, world, tmp):
             ]
             for n in g["params"]
         ),
-        "trainable_names": sorted(n for n, p in model.named_parameters() if p.requires_grad),
+        # Every rank's trainable names: per-expert modules (transformers 4.x) are held by one rank each.
+        "trainable_names": sorted({n for names in _all_names(model) for n in names}),
     }
+
+
+def _all_names(model):
+    import torch.distributed as dist
+
+    mine = sorted(n for n, p in model.named_parameters() if p.requires_grad)
+    every = [None] * dist.get_world_size()
+    dist.all_gather_object(every, mine)
+    return every
 
 
 def _worker(rank, world, tmp, case):

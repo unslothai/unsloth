@@ -14,9 +14,8 @@ VIDEO_CPU_SETTING_KEY = "developer_mode_video_cpu"
 VIDEO_CPU_ENV = "UNSLOTH_VIDEO_ALLOW_CPU"
 DEFAULT_VIDEO_CPU_ENABLED = False
 
-# Host RAM below which the Settings dialog warns before enabling; the smallest video family,
-# Wan2.1-T2V-1.3B, peaked at 24.5 GiB server RSS on CPU (float32, 832x480, 5 frames), so 32 GiB
-# leaves room for the OS.
+# Host RAM below which the Settings dialog warns: Wan2.1-T2V-1.3B, the smallest video family, peaked
+# at 24.5 GiB server RSS on CPU (float32, 832x480, 5 frames); 32 GiB leaves room for the OS.
 VIDEO_CPU_MIN_RAM_GB = 32
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -49,8 +48,7 @@ def video_cpu_env_override() -> Optional[bool]:
 
 
 def get_video_cpu_setting() -> bool:
-    """The persisted owner setting. Read from the owner's store whoever asks, since it is installation
-    wide; a missing or unreadable setting is the default (off)."""
+    """Installation-wide setting read from the owner's store; missing or unreadable means off."""
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as

@@ -70,7 +70,6 @@ test("MLX modes and an explicit Auto survive storage; the drafter only with a dr
   const pinned = pinSpeculativeMode({ speculativeType: null }, "auto", { specDraftModel: "o/d" });
   assert.equal(normalizePerModelConfig(pinned).specDraftModel, "o/d");
   assert.equal(pinSpeculativeMode({ speculativeType: "mtp" }, "auto", {}).speculativeType, undefined);
-  // A new live drafter re-seeds an open editor.
   const auto = normalizePerModelConfig({ speculativeType: "auto" });
   assert.notEqual(loadedConfigSignature(auto), loadedConfigSignature({ ...auto, specDraftModel: "o/d" }));
 });

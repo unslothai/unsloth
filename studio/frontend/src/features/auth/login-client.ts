@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import {
   normalizeAccountUsername,
   resetFullAccessForMultiUser,
@@ -129,10 +130,11 @@ export async function loginWithPassword(
     }),
   });
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    throw new LoginError(payload?.detail ?? "Login failed.", response.status);
+    const payload = await response.json().catch(() => null);
+    throw new LoginError(
+      formatApiErrorBody(payload) ?? "Login failed.",
+      response.status,
+    );
   }
   return response.json();
 }

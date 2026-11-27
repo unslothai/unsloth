@@ -37,6 +37,15 @@ try:
 except Exception:
     pass
 
+# Windows ROCm: PAL_DISABLE_SDMA=1 before HIP initialises (rocm-systems#12571 stale copy after an event record).
+try:
+    from utils.rocm_pal_env import (
+        apply_windows_rocm_pal_defaults as _apply_windows_rocm_pal_defaults,
+    )
+    _apply_windows_rocm_pal_defaults()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -175,8 +184,7 @@ def _process_tree_rss_mb(process: Any) -> int:
     return round(total / 1024**2)
 
 
-# Windows AMD ROCm DLL injection: Python 3.8+ ignores PATH for extension modules, so register ROCm bin
-# dirs with os.add_dll_directory() to find amdhip64.dll etc. before any torch import.
+# Python 3.8+ ignores PATH for DLLs; add ROCm bin dirs via os.add_dll_directory() before torch.
 if sys.platform == "win32":
     # Module scope: the handle removes the search-path entry when garbage collected.
     _ROCM_DLL_HANDLES: list = []
@@ -798,8 +806,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
 
-    # Repair only after hardware is needed. A cold Apple Silicon launch must not
-    # import mlx_lm/transformers merely to check whether they need repairing.
+    # Repair waits for hardware; Apple Silicon cold starts must not import mlx_lm/transformers.
     def repair_mlx() -> None:
         try:
             from utils.mlx_repair import start_mlx_autorepair_if_needed
@@ -1048,8 +1055,7 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
 
     try:
-        # Boot pass settles only orphaned runs; a wedged run is swept on an interval once its lease
-        # expires.
+        # Boot settles only orphaned runs; wedged runs are swept on a timer after lease expiry.
         from core.inference.chat_generation_runs import start_lease_sweeper
         start_lease_sweeper(app)
     except Exception as exc:
@@ -1401,6 +1407,16 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
+def _modelscope_page_links() -> dict:
+    from utils.hub_settings import MODELSCOPE
+
+    if _active_hub_source() != MODELSCOPE:
+        return {}
+    from hub.modelscope.upstream import page_links
+
+    return {"modelscope_pages": page_links()}
+
+
 _CSP_CACHE: dict = {}
 
 
@@ -1567,8 +1583,7 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
-# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by older chat
-# sidebars every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+# Schema built on the event loop stalls requests (#9712); built once in a worker thread.
 _openapi_build_lock = threading.Lock()
 _build_openapi_schema = app.openapi
 
@@ -1697,9 +1712,7 @@ _BODY_PROTECTED_PREFIXES = (
     # llama-server passthrough POSTs; keyless inference scope admits them.
     "/tokenize",
     "/detokenize",
-    # Everything else, root routes included (/models/load). FastAPI reads a body before the route's auth
-    # dependency runs, so an unlisted prefix let an unauthenticated client stream an unbounded body into memory.
-    # Uploads that need more are the explicit passthroughs below.
+    # Bodies read before auth: unlisted prefixes let unauthenticated clients stream unbounded.
     "/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -2562,6 +2575,7 @@ async def health_check(request: Request, detect_hardware: bool = False):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint.
         **_reportable_hf_endpoints(request),
         "hub_source": _active_hub_source(),
+        **_modelscope_page_links(),
         "hub_proxy": _hub_endpoint_proxy.relay_path(
             _hub_endpoint_proxy.HUB_PREFIX,
             browser_hf_endpoint(),
@@ -2740,8 +2754,7 @@ def _schedule_shutdown(request: Request) -> dict:
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            # Runs cleanup on its own thread so uvicorn can close the port; main thread still waits
-            # on _shutdown_event before exit; one cleanup per shutdown trigger.
+            # Own thread: uvicorn can close port; main awaits _shutdown_event; one per trigger.
             with _shutdown_thread_lock:
                 state = request.app.state
                 if getattr(state, "_shutdown_trigger", None) is not trigger:
@@ -3121,6 +3134,24 @@ def _checkpoint_quant_formats() -> list[str]:
         return []
 
 
+def _checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
+    """Formats in ``formats`` that load but run dequantized here. Torch-free."""
+    try:
+        from utils.hardware.nvidia import get_checkpoint_quant_dequant_only
+        return get_checkpoint_quant_dequant_only(formats)
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
+
+
+def _repair_recommendation() -> Optional[dict]:
+    """Torch-free; None off Windows, off CUDA, or when the install already has the managed torch."""
+    try:
+        from utils.hardware.windows_repair import windows_repair_recommendation
+        return windows_repair_recommendation()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return None
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -3285,7 +3316,11 @@ def get_system_info(
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
         # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
-        "checkpoint_quant_formats": _checkpoint_quant_formats(),
+        "checkpoint_quant_formats": (_quant_formats := _checkpoint_quant_formats()),
+        # FP8 kinds this torch runs dequantized: fp8_rowwise without a row-wise or tensorwise fp8 GEMM. Additive key.
+        "checkpoint_quant_dequant_only": _checkpoint_quant_dequant_only(_quant_formats),
+        # Windows: an existing home older than the managed torch. Additive key, null otherwise.
+        "repair_recommendation": _repair_recommendation(),
     }
 
 
@@ -3399,8 +3434,7 @@ def get_disk_space(
     if readings:
         tightest = min(readings, key = lambda r: r["free_gb"])
         answer = dict(tightest)
-        # Redact the path for non-owners (API keys, managed accounts); use the INVENTORY redactor,
-        # since redact_host_paths leaves a field named 'path' alone.
+        # Redact for non-owners via INVENTORY redactor; redact_host_paths leaves 'path' alone.
         from utils.account_context import is_owner_context
 
         return redact_inventory_host_paths(
@@ -3436,9 +3470,11 @@ def get_hardware_info(
         export_capability,
         video_capability,
     )
+    from utils.hardware.hardware import _backend_label
 
     body = {
         "gpu": get_gpu_summary(),
+        "device_backend": _backend_label(get_device()),
         "versions": get_package_versions(),
         # Export capability + torch-aware reason; the Export UI grays out with the message.
         **export_capability(),
@@ -3846,8 +3882,7 @@ def setup_frontend(
         # Unknown /api and /v1 paths raise a real 404 so the api_errors handlers pick the right envelope.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
-        # MCP clients probe these before connecting; the app shell with a 200 reads as an OAuth server, and
-        # they would start a login Unsloth Studio does not offer instead of sending the API key.
+        # MCP clients read a 200 app shell as OAuth and log in instead of sending the API key.
         if full_path.startswith(".well-known/oauth-"):
             raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):

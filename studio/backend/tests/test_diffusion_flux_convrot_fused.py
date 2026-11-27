@@ -510,8 +510,7 @@ def span_patched(env):
 def test_flux3_joint_block_under_span_forward_shares_the_quant(
     span_patched, monkeypatch, span, mode
 ):
-    """The span forward wins the class first, so the joint block patch goes to the stock it delegates to (no span)
-    and to its own attention + MLP call (span): one shared quant per block either way, outputs bit for bit stock."""
+    """Span forward wins the class; joint block patch shares one quant per block, bit-exact."""
     torch, f3, fused, gemm, cond = span_patched
     calls = {"shared": 0, "producer": 0}
     _force_on(monkeypatch, torch, fused, gemm, calls)

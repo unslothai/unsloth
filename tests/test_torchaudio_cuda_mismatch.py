@@ -129,8 +129,7 @@ def test_an_absent_torchaudio_is_not_invented(monkeypatch, fresh):
 
 
 def test_an_unrelated_failure_is_re_raised(monkeypatch, fresh):
-    """Swallowing it would hide a real error behind a message about CUDA
-    versions, which is the failure mode this whole file exists to avoid."""
+    """Unrelated errors must propagate, not hide behind a CUDA-version message."""
     _stage(monkeypatch, fresh, RuntimeError("something else entirely"))
     with pytest.raises(RuntimeError, match = "something else entirely"):
         fresh.disable_torchaudio_if_cuda_mismatched()

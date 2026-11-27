@@ -11,8 +11,7 @@ import {
 
 let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 
-// Desktop quit never fires beforeunload; Rust asks instead, from the tray and (outside macOS) the
-// close button.
+// Desktop quit never fires beforeunload; Rust asks via tray and (outside macOS) close button.
 function publishTrainingActive(active: boolean): void {
   if (!isTauri) return;
   void import("@tauri-apps/api/core")

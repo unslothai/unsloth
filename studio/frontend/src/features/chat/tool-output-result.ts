@@ -15,8 +15,7 @@ function defuseSentinels(text: string): string {
   return text.replace(SENTINEL_LINE, " $1");
 }
 
-/** Shared by writer and reader. Truncation cannot fall back to length; cancelled tools return
- *  only a status line, so an absent short stream also counts. */
+/** Cancelled tools return only a status line, so an absent stream counts; no length fallback. */
 export function shouldPreserveFullOutput(rawFull: string, rawResult: string): boolean {
   const full = defuseSentinels(rawFull);
   const result = defuseSentinels(rawResult);

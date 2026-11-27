@@ -149,8 +149,7 @@ def test_placement_measured_activation_reads_the_load_reserve():
 
 
 def test_generate_passes_the_placement_row_to_the_guard():
-    """The load's measured reserve first; a calibrated placement without one (FLUX.3 Klein Base on a T4: no
-    phase seed) falls back to the row the plan itself read."""
+    """Measured reserve first; without one (no phase seed), fall back to the plan's own row."""
     import inspect
 
     import core.inference.diffusion as diffusion

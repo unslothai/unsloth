@@ -55,7 +55,6 @@ def test_installers_agree_on_pin_floor_and_hashes():
         pins[name] = _one(pin_re, text, name)
         floors[name] = _one(floor_re, text, name)
         pin = pins[name]
-        # Every uv artifact the script names is the pinned release: archives, wheels, mirror probes.
         for version in re.findall(r"uv/releases/download/(\d+\.\d+\.\d+)/", text):
             assert version == pin, (name, version)
         wheels = re.findall(r"/uv-(\d+\.\d+\.\d+)-py3-none-\S+?\.whl", text)
@@ -82,7 +81,6 @@ def test_installers_agree_on_pin_floor_and_hashes():
     assert set(floors.values()) == {".".join(map(str, FLOOR))}, floors
     assert _version(next(iter(pins.values()))) >= FLOOR
 
-    # The two shell scripts and the two PowerShell scripts carry identical tables.
     assert tables["install.sh"] == tables["studio/setup.sh"]
     assert tables["install.ps1"] == tables["studio/setup.ps1"]
 

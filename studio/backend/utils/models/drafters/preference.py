@@ -14,8 +14,7 @@ from utils.models.drafters.common import (
 
 
 def dspark_precision_rank(name: str) -> int:
-    """Sidecar precision preference, Q8_0 first as the DSpark model card recommends; shared with hub
-    download and VRAM sizing so budgeted and fetched files match."""
+    """Q8_0 first per DSpark's model card; shared with hub download and VRAM budget to match."""
     base = Path(name).name.lower()
     if "-q8_0" in base:
         return 0
@@ -33,12 +32,10 @@ PREFERRED_DSPARK_FILENAMES = frozenset({"dspark-inkling-2-mini-q8_0_old.gguf"})
 
 
 def dspark_preferred_first(name: str) -> int:
-    """0 for a drafter published as the preferred file for its model, else 1."""
     return 0 if Path(name).name.lower() in PREFERRED_DSPARK_FILENAMES else 1
 
 
 def dspark_preference_key(name: str) -> tuple[int, int, str]:
-    """Sort key picking the preferred sidecar by name alone (no filesystem)."""
     return dspark_preferred_first(name), dspark_precision_rank(name), Path(name).name.lower()
 
 
@@ -69,7 +66,6 @@ dflash_precision_rank = dspark_precision_rank
 
 
 def dflash_preference_key(name: str) -> tuple[int, str]:
-    """Sort key picking the preferred DFlash sidecar by name alone."""
     return dflash_precision_rank(name), Path(name).name.lower()
 
 

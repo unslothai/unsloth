@@ -104,8 +104,7 @@ def test_patched_distributed_type_reads_as_no():
 
 
 def test_patched_distributed_type_keeps_deepspeed():
-    """Under DeepSpeed, NO enables native AMP and get_mixed_precision_context_manager's
-    DeepSpeed fallthrough is a dtype-less, i.e. float16, autocast."""
+    """Under DeepSpeed, NO enables native AMP; the dtype-less fallthrough autocasts in float16."""
     value, comparisons = _read_distributed_type("DEEPSPEED")
     assert value == repr(accelerate.utils.dataclasses.DistributedType.DEEPSPEED), value
     assert comparisons == "False True", comparisons

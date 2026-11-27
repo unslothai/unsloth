@@ -14,10 +14,7 @@ export function registerRefresh(
   supersession.latest = { seq, settled };
 }
 
-/**
- * The refresh that superseded `seq`, or `undefined` when nothing newer is registered, so an
- * unmount bump ends the chain instead of a promise waiting on itself forever.
- */
+/** Newer refresh for seq, or undefined; unmount bump ends the chain, not a self-waiting promise. */
 export function supersedingRefresh(
   supersession: RefreshSupersession,
   seq: number,

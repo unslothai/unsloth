@@ -574,8 +574,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
             and export_type in ("merged", "base", "gguf")
             and current_reap_key(backend) is not None
         ):
-            # The loaded model is the pruned one now; "no REAP" must not export it. Studio loads
-            # the checkpoint again for every export run; an API client has to do the same.
+            # Pruned model: "no REAP" must not export it; API clients must reload per export.
             _send_response(
                 resp_queue,
                 {
@@ -788,8 +787,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
             return
 
-        # Runs before the Unsloth import (transformers captures kernel gates then); security gates
-        # run first, so a blocked checkpoint never triggers a kernel build.
+        # Pre-Unsloth (transformers captures kernel gates); security gates block kernel builds.
         if not _preflight_security_gates(config, resp_queue):
             return
         if not _provision_ssm_kernels(
@@ -889,8 +887,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             if cmd_type == "load":
                 # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
-                # Offline window covers this load's Hub preflights (re-probed per load). The
-                # security gates run before any SSM kernel is provisioned for the checkpoint.
+                # Offline window for Hub preflights; security gates precede SSM kernel builds.
                 with _offline_window_if_unreachable():
                     with remote_lora_base_scope():
                         if not _preflight_security_gates(cmd, resp_queue):

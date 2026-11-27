@@ -23,8 +23,7 @@ export function pickReleased(run: { statusKnown: boolean; generating: boolean; q
   return run.statusKnown && !run.generating && !run.queueBusy;
 }
 
-/** Jobs that finished between two polls, including one queued and finished in between. `prev` null is the first
- *  poll (a reload): what already finished then is not news. */
+/** Jobs finished since the last poll, even if queued in between; null prev (reload) gives none. */
 export function newlyFinished(
   prev: readonly ImageQueueJob[] | null,
   next: readonly ImageQueueJob[],

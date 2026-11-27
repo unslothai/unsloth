@@ -66,8 +66,7 @@ _EXPECTED_PACKAGES = frozenset(
         "safetensors",
     }
 )
-# transformers' core runtime dependencies, past and present. A dependency outside this set is new:
-# it keeps the confirmation, and one a typo away from a known name is flagged.
+# Known transformers deps; unknown ones need confirmation; typos of known ones are flagged.
 _KNOWN_TRANSFORMERS_DEPS = frozenset(
     {
         "filelock",
@@ -85,8 +84,7 @@ _KNOWN_TRANSFORMERS_DEPS = frozenset(
         "typer-slim",
     }
 )
-# Our own recipe names are fixed, so anything within two edits of one is a squat. transformers'
-# dependencies can legitimately change, so only a one-edit miss of a known one is flagged there.
+# Recipe names flag at two edits (squat risk); transformers deps at one, as they may change.
 _PLAN_TYPO_DISTANCE = 2
 _DEP_TYPO_DISTANCE = 1
 
@@ -276,8 +274,7 @@ def _check_release(spec: str, name: str, version: str, primary: bool) -> Package
     files = meta.get("urls")
     if not isinstance(files, list) or not files:
         return PackageScanResult(REVIEW, f"PyPI lists no files for {spec}")
-    # A review reason never ends the checks: only flagged returns early, so a later red flag
-    # still refuses a release an earlier oddity would only have sent to the user.
+    # A review never stops checks; only flagged returns early; a later red flag still refuses.
     reviews: list[str] = []
     digests = []
     for entry in files:
@@ -475,9 +472,8 @@ def _uv_config_names_index(path: str) -> bool:
 
 
 def custom_package_index() -> str | None:
-    """Where a non-PyPI package source is configured for pip or uv (env, pip config, uv.toml), or
-    None. The sidecar install tries uv then pip, so either one's mirror can serve the package, and
-    its artifacts need not match the digests PyPI publishes."""
+    """Where a non-PyPI package source is set for pip or uv (env, pip config, uv.toml), or None;
+    either tool's mirror may serve artifacts whose digests differ from PyPI's."""
     for var in _INDEX_URL_ENVS + _EXTRA_SOURCE_ENVS:
         value = (os.environ.get(var) or "").strip()
         if value and not _only_pypi(value):
@@ -506,8 +502,7 @@ def clear_cache() -> None:
 
 
 def scan_pypi_install(packages: Sequence[str], primary: str = "transformers") -> PackageScanResult:
-    """Scan the install plan *packages* (``name==version`` specs, or bare names for unpinned
-    optional packages). Never raises; see the module docstring for the verdicts."""
+    """Scan install plan packages (name==version or bare names); never raises."""
     key = (tuple(packages), primary)
     with _cache_lock:
         hit = _clean_cache.get(key)
@@ -546,8 +541,7 @@ def _scan(packages: Sequence[str], primary: str) -> PackageScanResult:
         return PackageScanResult(REVIEW, f"{primary} is not pinned to an exact release")
     if _offline():
         return PackageScanResult(REVIEW, "Unsloth is offline, so the release could not be scanned")
-    # Run every check before answering: flagged anywhere wins over a review elsewhere, since a
-    # confirmed install still proceeds past review but never past flagged.
+    # Run every check; flagged beats review; a confirmed install passes review, never flagged.
     hashes: dict = {}
     review = None
     for spec, name, version in pinned:

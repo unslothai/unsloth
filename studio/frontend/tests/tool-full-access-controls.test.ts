@@ -6,6 +6,7 @@ import test from "node:test";
 import { loadWithStubs, stubJsxRuntime, type StubElement } from "./helpers/module-stubs.ts";
 import { hasChatFullAccess, withChatFullAccess, type ChatFullAccessGrant } from "../src/features/chat/utils/chat-full-access.ts";
 import { alwaysAllowableApp } from "../src/features/computer-use/summary.ts";
+import { formatBytes } from "../src/features/hub/lib/format.ts";
 
 type Node = StubElement;
 function descendants(node: unknown): Node[] {
@@ -57,6 +58,7 @@ function harness({ owner = true, disclosure = false, grantedThread = "", scopedF
       "@/components/ui/alert-dialog": { AlertDialog: "Dialog" },
       "@/features/auth": { getAuthSessionEpoch: () => epoch },
       "@/features/auth/account-session": { useFullAccessAllowed: () => owner },
+      "@/features/hub": { formatBytes },
       "@/features/chat/permission-mode-select": { FullAccessConfirmContent: "FullAccessWarning" },
       "@/features/chat/utils/chat-full-access": { hasChatFullAccess, withChatFullAccess },
       "@/features/chat/api/chat-api": {

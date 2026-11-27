@@ -35,8 +35,7 @@ def _jobs() -> dict:
 
 
 def _entries(job_name: str) -> list[dict]:
-    """Entries without a `selection` are skipped, since the floor spot-check leg names its files
-    directly."""
+    """Skips entries with no selection key; the floor spot-check leg names its files directly."""
     job = _jobs()[job_name]
     include = job.get("strategy", {}).get("matrix", {}).get("include", [])
     return [entry for entry in include if "selection" in entry]
@@ -115,8 +114,7 @@ def _ignore_glob_hits(pattern: str, path: str) -> bool:
     return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, f"*/{pattern}")
 
 
-# The repo-root and backend matrix jobs are told apart by membership of each job's own matrix
-# selection; the shape test below keeps the two sets disjoint.
+# Repo-root and backend jobs split by matrix selection; the shape test keeps the sets disjoint.
 
 
 def _over_the_repo_tests(command: str) -> bool:
@@ -153,8 +151,7 @@ BACKEND_ISOLATED = [
     ("tests/test_anthropic_messages.py", "counts SSE keepalives emitted during a 0.24s stall"),
     # Tight at :400: `assert elapsed < 0.2` around a 0.03s join.
     ("tests/test_profile_stats.py", ":400 asserts elapsed < 0.2 around a 0.03s join"),
-    # Timing-tight on a result at :1101 (patched _SWITCH_BUDGET_S = 0.3 vs a 1.98s cold path), and
-    # it mutates keepwarm globals at :2628-2630.
+    # Timing-tight at :1101 (patched 0.3s budget vs 1.98s cold path); mutates keepwarm globals.
     (
         "tests/test_media_auto_switch.py",
         ":1101 asserts started.is_set() under a patched 0.3s budget on a 1.98s cold path, "
@@ -207,6 +204,9 @@ BENIGN_TIMING = {
     ("test_anthropic_admission.py", "_until_queued"),
     # A 5 s poll deadline for two image requests to join one batch: descheduling only delays the poll.
     ("test_openai_images_load_swap.py", "test_a_batch_waiting_through_a_reload_carries_the_pin"),
+    # A 120 s poll deadline for the video generate job to go idle: descheduling only delays the poll.
+    ("test_video_batch.py", "_wait_idle"),
+    ("test_video_batch_ltx25.py", "_wait_idle"),
 }
 
 
@@ -358,15 +358,15 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 20, (
-        f"expected twenty parallel pytest runs, five shards of the backend matrix and fifteen "
+    assert len(parallel) == 40, (
+        f"expected forty parallel pytest runs, five shards of the backend matrix and thirty-five "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 15, (
-        f"expected the fifteen repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 35, (
+        f"expected the thirty-five repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]
@@ -387,9 +387,7 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     assert any("--ignore=" in command for command in root)
     assert {command for command in root} == set(root), "a shard selection appears twice"
     assert len(set(backend)) == 5, "a backend shard selection appears twice"
-    # Non-vacuous for the backend side too.
     assert any(_collects(command, "tests/test_account_contract.py") for command in backend)
-    # Non-vacuous for the repo root too.
     assert any(_collects(command, "tests/test_model_registry.py") for command in root)
     assert len(commands) > 1, "no serial pytest steps found; the ignore checks cannot fail"
 

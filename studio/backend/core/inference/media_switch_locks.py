@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Serializes switches: one at a time per backend, plus one cross-backend GPU lock every GPU-taking
-switch queues on; locks are per event loop, since a module-level asyncio.Lock hangs a second
-loop."""
+"""Serializes switches: one lock per backend and one cross-backend GPU lock all GPU-taking switches
+queue on; locks are per event loop, since a module-level asyncio.Lock hangs a second loop."""
 
 from __future__ import annotations
 
@@ -28,7 +27,6 @@ _switching_guard = threading.Lock()
 
 @contextlib.contextmanager
 def note_switcher(owner: str):
-    """Mark this request as performing a switch on *owner*, for its whole duration."""
     with _switching_guard:
         _switching[owner] = _switching.get(owner, 0) + 1
     try:
@@ -43,7 +41,6 @@ def note_switcher(owner: str):
 
 
 def switcher_count(owner: Optional[str] = None) -> int:
-    """Requests currently switching *owner*, or across every backend when it is None."""
     with _switching_guard:
         if owner is None:
             return sum(_switching.values())
@@ -52,7 +49,6 @@ def switcher_count(owner: Optional[str] = None) -> int:
 
 @contextlib.contextmanager
 def note_waiter(owner: str):
-    """Mark this request as parked on *owner*'s switch lock, doing no work of its own."""
     with _waiters_guard:
         _waiters[owner] = _waiters.get(owner, 0) + 1
     try:
@@ -67,18 +63,15 @@ def note_waiter(owner: str):
 
 
 def waiter_count(owner: str) -> int:
-    """Requests parked on *owner*'s switch lock."""
     with _waiters_guard:
         return _waiters.get(owner, 0)
 
 
 def gpu_switch_lock() -> asyncio.Lock:
-    """The single lock every GPU-taking media switch queues on, per running loop."""
     return switch_lock(_GPU_SWITCH_KEY)
 
 
 def switch_lock(owner: str) -> asyncio.Lock:
-    """The switch lock for *owner* on the running loop, created on first use."""
     loop = asyncio.get_running_loop()
     # weakkeydictionary mutation is not thread-safe, so guard the get-or-create
     with _switch_locks_guard:

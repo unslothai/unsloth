@@ -124,8 +124,7 @@ def test_success_runs_the_check_once_and_keeps_numerics(mods, capsys):
     Q, K, V = _qkv(seg.T)
     rng = torch.get_rng_state()
     out = kernel.flex_shared_prefix_attention(Q, K, V, seg)
-    # First call: the real call, then a grad forward on copies, both under strict mode and with the
-    # real shapes (so the compiled graphs are the ones later calls reuse).
+    # Real call, then grad forward on copies; strict mode, real shapes, so graphs are reused.
     assert calls["strict"] == [False, False]
     assert calls["grad"] == [False, True]
     assert len(set(calls["shapes"])) == 1
@@ -139,7 +138,6 @@ def test_success_runs_the_check_once_and_keeps_numerics(mods, capsys):
     assert kernel.compile_check_failed() is None
     assert capsys.readouterr().out == ""
 
-    # Same output as with the check switched off.
     kernel._COMPILE_CHECKED.clear()
     kernel._COMPILE_CHECK_ON = False
     kernel.clear_block_mask_cache()
@@ -203,7 +201,6 @@ def test_rocm_static_kernel_is_checked_per_padded_length(mods, monkeypatch):
     _grad_call(kernel, short)
     _grad_call(kernel, long)
     _grad_call(kernel, long)
-    # real call + checked copy per new length, then one plain call
     assert calls["flex"] == 2 + 2 + 1
     assert calls["strict"] == [False, False, False, False, True]
     assert sorted(key[-1] for key in kernel._COMPILE_CHECKED) == sorted((short.T_pad, long.T_pad))
@@ -366,9 +363,7 @@ def test_backward_compile_failure_is_caught(mods, monkeypatch):
 
 
 def test_failed_check_backward_frees_its_input_copies(mods, monkeypatch):
-    """The check's pack hook returned its input, so an op that saves its own output formed a cycle gc
-    cannot break: a backward that failed (out of resource retry, compile failure) kept the Q / K / V
-    copies and the check's graph alive."""
+    """Failed backward must free Q/K/V copies: a self-saving op makes a cycle gc cannot break."""
     import gc
     import weakref
 

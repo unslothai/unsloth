@@ -22,8 +22,6 @@ def _in_container() -> bool:
 
 
 def file_manager_kind() -> Optional[FileManager]:
-    """finder on macOS, explorer on Windows and WSL (revealing in the Windows host's Explorer),
-    files on a Linux desktop session, else None (a container, or Linux with no display)."""
     if sys.platform == "darwin":
         return "finder"
     if os.name == "nt":

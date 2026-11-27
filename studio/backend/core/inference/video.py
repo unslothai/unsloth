@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import collections
 import functools
 import inspect
 import os
@@ -39,7 +40,7 @@ import re
 import tempfile
 import threading
 import weakref
-from utils.account_context import account_thread, current_account_id
+from utils.account_context import account_thread, current_account, current_account_id, run_as
 import time
 import types
 from dataclasses import dataclass, field
@@ -351,7 +352,7 @@ from .video_minimax_h3_te import (
     h3_te_resident_gb,
 )
 from .video_encode import encode_x264
-from .video_nvenc import encode_nvenc, nvenc_gpu
+from .video_nvenc import encode_nvenc, nvenc_gpu, nvenc_requested
 from .video_stream_encode import (
     claim_stream,
     offer_stream,
@@ -361,6 +362,7 @@ from .video_stream_encode import (
 from utils.hardware import clear_gpu_cache
 
 from core.inference.inference_gate import holds_inference, pauses_background_embedding
+from utils.keep_awake import keeps_system_awake
 
 # Shared with the image backend so both pin every loader call to the same live cache root
 from core.inference.diffusion import hub_cache_dir
@@ -386,6 +388,46 @@ def _grouped_form_status(pipe: Any) -> Optional[dict]:
     try:
         from .diffusion_grouped_int8 import grouped_form_status
         return grouped_form_status(getattr(pipe, "transformer", None))
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
+
+
+def _video_fp8_gemm_status(state: Any) -> Optional[dict]:
+    """Which fp8 GEMM the loaded fp8 denoiser(s) / text encoder run, as the images status reports it: torchao
+    row-wise, or the unit-scale fallback on a torch build without the row-wise kernel (Windows wheels). A ModelOpt FP8
+    denoiser also reports its own W8A8 route (``modelopt``). None for a load without fp8. Never raises."""
+    try:
+        pipe = getattr(state, "pipe", None)
+        transformer = getattr(pipe, "transformer", None)
+        modelopt = _modelopt_info(transformer)
+        # only the W8A8 runtimes run an fp8 GEMM; stored / dequant ModelOpt layers widen to bf16
+        if modelopt.get("runtime") not in ("static", "dynamic"):
+            modelopt = {}
+        component = None
+        if modelopt or str(getattr(state, "transformer_quant", None) or "").lower() == "fp8":
+            component = "transformer"
+        elif str(getattr(state, "text_encoder_quant", None) or "").lower().startswith("fp8"):
+            component = "text_encoder"
+        if component is None:
+            return None
+        from .diffusion_fp8_unit_scale import gemm_path
+
+        index = None
+        module = getattr(pipe, component, None)
+        for param in module.parameters() if module is not None else ():
+            device = getattr(param, "device", None)
+            if getattr(device, "type", None) == "cuda":
+                index = device.index
+                break
+        out = {**gemm_path(index), "component": component}
+        if modelopt:
+            from .diffusion_modelopt_fp8 import fp8_gemm_calls, gemm_route
+            out["modelopt"] = {
+                "runtime": modelopt.get("runtime"),
+                "route": gemm_route(index),
+                "calls": fp8_gemm_calls(transformer),
+            }
+        return out
     except Exception:  # noqa: BLE001 -- status must never fail
         return None
 
@@ -846,8 +888,7 @@ def _modelopt_load_runtime(
     keep: bool = True,
     priced_offload: bool = False,
 ) -> str:
-    """The ModelOpt FP8 runtime for this card and plan, by the rules Studio's pre-quantized fp8 layers follow: the fp8
-    GEMM where it runs, fp8 storage where the plan streams, else dequantized."""
+    """ModelOpt FP8 runtime: fp8 GEMM if it runs, fp8 storage if streamed, else dequantized."""
     from .diffusion_modelopt_fp8 import modelopt_runtime
 
     backends = _video_comfy_backends(
@@ -939,9 +980,8 @@ def _video_block_backends(target: Any, family: Optional[str]) -> dict:
 
 
 def _video_comfy_reprice(plan: Any, bf16_plan: Any = None) -> bool:
-    """Whether a ComfyUI DiT is re-priced with the offloaded backends: an offloaded plan (fp8 layers dequantize on
-    NVIDIA), or an MPS plan past its resident margin (MPS never offloads; its offloaded backends are its resident ones
-    plus fp8 storage)."""
+    """Whether a ComfyUI DiT is re-priced with offloaded backends: an offloaded plan (fp8 layers
+    dequantize on NVIDIA), or an MPS plan past its resident margin (MPS never offloads)."""
     return not _video_comfy_resident(plan, bf16_plan) or mps_plan_tight(plan)
 
 
@@ -992,9 +1032,8 @@ def _video_comfy_resident_mib(
     keep_key: Any = None,
     offload: bool = False,
 ) -> Optional[int]:
-    """Planning size of a ComfyUI-quantized DiT, before the plan exists: int8 layers are priced as int8 when either
-    int8 runtime runs here, fp8 layers as fp8 when the resident fp8 path does, the rest at bf16 (a dequantized fp8
-    file is twice its size on disk). ``offload`` prices what an offloaded load keeps instead."""
+    """Pre-plan size of a ComfyUI DiT: int8 layers as int8 if an int8 runtime runs, fp8 as fp8 if
+    the resident path does, else bf16; offload prices what an offloaded load keeps."""
     name = getattr(fam, "name", None)
     keep_int8 = keep_fp8 = fp8_stored = False
     exclude: tuple = ()
@@ -1072,8 +1111,7 @@ def _ltx23_prequant_pick(
 
 
 def _draft_decode_ctx(pipe: Any, fam: Any, device: Any, requested: Optional[bool]) -> Any:
-    """The tiny-VAE draft decode for this render when asked for on a Wan family whose decoder is cached, else a
-    no-op context; the full VAE decodes otherwise, so a draft request never fails a render."""
+    """Tiny-VAE draft decode if asked and cached for Wan; else a no-op, so drafts never fail."""
     from . import video_tiny_vae
 
     if not video_tiny_vae.draft_decode_wanted(requested):
@@ -1090,10 +1128,9 @@ def _draft_decode_ctx(pipe: Any, fam: Any, device: Any, requested: Optional[bool
 
 
 def _decodes_untiled_when_fits(family: str, offload_policy: str, device: str, speed: str) -> bool:
-    """Untiled when it fits (free memory read at decode time); not under sequential offload, nor on SPEED_OFF
-    (bit-identical) except Cosmos3, whose reference pipeline decodes untiled (stock tiles seam at 480 / 832 px).
-    On a CPU host "fits" is usable host RAM: the stock tiles recompute their overlaps (Wan2.2 at 896x512: 15 tiles
-    covering 1.6x the frame's pixels), and the decode is the slowest stage there."""
+    """Untiled when free memory fits (read at decode), not under sequential offload or on SPEED_OFF
+    (bit-identical) except Cosmos3 (reference untiled; tiles seam at 480/832 px); on CPU fits is
+    host RAM: stock tiles recompute overlaps (Wan2.2 896x512: 15 tiles, 1.6x pixels)."""
     if device not in ("cuda", "cpu") or offload_policy not in (
         OFFLOAD_NONE,
         OFFLOAD_MODEL,
@@ -1221,9 +1258,8 @@ def h3_fp16_host_shortfall(
     model_kind: str,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
-    """Why a MiniMax-H3 Diffusers load cannot fit a GPU without native bf16, else None. There every precision lands on
-    the released components promoted to float32 (only an explicit int8 conditioner stays int8), all held in host RAM.
-    Never raises; unreadable sizes or RAM refuse nothing."""
+    """Why a MiniMax-H3 load cannot fit a GPU without native bf16, else None; parts go float32 in
+    host RAM (explicit int8 conditioner aside); never raises, unknown sizes refuse nothing."""
     try:
         import torch
 
@@ -1266,9 +1302,8 @@ def h3_fp16_host_shortfall(
 def video_transformer_quant_request(
     transformer_quant: Optional[str], speed_mode: Optional[str]
 ) -> Optional[str]:
-    """The transformer precision a pipeline load runs: unset / auto is the hardware ladder (``auto``), except under an
-    explicit Speed "off", which stays dense bf16 (``off``, bit-exact: auto-quant would engage int8/fp8 and compile);
-    none / off / a scheme is kept as asked."""
+    """Pipeline transformer precision: unset / auto gives ``auto``, or ``off`` under Speed "off"
+    (dense bf16, bit-exact: auto-quant would engage int8/fp8 and compile); others are kept."""
     if transformer_quant is None or str(transformer_quant).strip().lower() in ("", TQ_AUTO):
         speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
         return "off" if speed_off else TQ_AUTO
@@ -1352,10 +1387,8 @@ def ltx25_fp16_host_shortfall(
     speed_mode: Optional[str] = None,
     loras_active: bool = False,
 ) -> Optional[str]:
-    """Why an LTX-2.5 Diffusers load cannot fit host RAM on a non-bf16 GPU, else None.
-
-    fp16 targets widen the pipeline and the encoder worker's Gemma 4 to float32 in host RAM.
-    Never raises; kill switches or an unreadable size refuse nothing."""
+    """Why an LTX-2.5 load cannot fit host RAM on a non-bf16 GPU (else None): fp16 widens pipeline
+    and Gemma 4 to float32; kill switches or unreadable sizes refuse nothing; never raises."""
     try:
         import torch
 
@@ -1500,8 +1533,7 @@ def _assert_video_precision_for_target(
                     "transformer_quant", pinned, reason, off_label = "Off to run the DiT at bf16"
                 )
             )
-    # Gate the mode actually attempted, not the raw int8 request; a hosted conditioner skips this
-    # path.
+    # Gate the mode attempted, not the raw int8 request; a hosted conditioner skips this path.
     if (
         model_kind in ("pipeline", "single_file")
         and getattr(fam, "modular_workflow", None)
@@ -1577,8 +1609,7 @@ def _is_trusted_video_repo(repo_id: str) -> bool:
 
 
 def _cached_checkpoint_file(repo_id: str, filename: str) -> Optional[Path]:
-    """``filename`` in a local ``repo_id`` dir, else its cached hub blob (no network; active, legacy and default cache
-    roots), else None."""
+    """``filename`` in a local ``repo_id`` dir, else its hub cache blob (offline), else None."""
     path = Path(repo_id).expanduser() / filename
     if path.is_file():
         return path
@@ -1738,8 +1769,7 @@ class _CompletedStepTicker:
             return self._event_backed
 
     def mark_boundary(self) -> bool:
-        """Records the denoise end in the stream; True means wait on boundary_reached(), else it is
-        reached."""
+        """Records the denoise end: True means wait on boundary_reached(), else it's reached."""
         event = _record_device_event()
         with self._lock:
             self._boundary = event
@@ -1794,8 +1824,7 @@ class _CompletedStepTicker:
             return True
 
     def completed(self) -> int:
-        """Steps the GPU has finished. Never decreases, never exceeds what was enqueued, never
-        blocks, and never raises."""
+        """Finished GPU steps: monotonic, never above enqueued, never blocking or raising."""
         with self._lock:
             if not self._event_backed:
                 return self._enqueued
@@ -2138,8 +2167,7 @@ def _resolve_load_family_with_source(
             fam = detect_video_family("", override = named) or fam
     from .diffusion_content import SAME_ARCH_VARIANTS, local_pick_file, resolve_family_with_content
 
-    # Same layout, different model: the picked file's own name outranks its repo or folder (a Wan2.1 14B GGUF in a
-    # Wan2.2 A14B repo, or the reverse), local or remote.
+    # Same layout, different model: the picked file's name outranks its repo, local or remote.
     if fam is not None and gguf_filename:
         named = detect_video_family(os.path.basename(gguf_filename))
         if (
@@ -2172,8 +2200,7 @@ def _resolve_load_family_with_source(
 
 
 def _ensure_mp4_encoder_available() -> None:
-    """Fail a load fast when PyAV is missing: the export otherwise dies AFTER a
-    multi-minute denoise, which is the worst possible time to learn about it."""
+    """Fail fast when PyAV is missing, not after a multi-minute denoise at export time."""
     try:
         import av  # noqa: F401
     except Exception as exc:  # noqa: BLE001 -- any import failure means no encoder
@@ -2252,7 +2279,6 @@ class _VideoLoadState:
     fetch_base: Optional[str] = None
     # Content-detected checkpoint variant identifier (LTX-2.3 "ltx-2.3-22b-distilled" / "-dev"), read before the names.
     variant_id: Optional[str] = None
-    # Resident MiniMax-H3 denoiser partition, if any.
     h3_task: Optional[str] = None
     offload_policy: str = "none"
     vae_tiling: bool = True
@@ -2315,13 +2341,10 @@ class _VideoLoadingState:
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
     error_code: Optional[str] = None
-    # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3 GGUF and component
-    # repos). Mirrors the image backend's _SdLoading.asset_repos.
+    # Companion repos pulled besides repo_id / base_repo; mirrors _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
-    # Fetch ROLE ("checkpoint" / "base") -> the one plan this load settled at estimate time: the repo that role
-    # fetches from, the revision it is pinned to and every file with its blob key and size. Written only by the worker
-    # that owns this state (under the load-token check), replaced whole by a re-estimate, never patched by a fetch site.
-    # The fetch sites read their repo + revision from it, and load_progress reads nothing else.
+    # Fetch ROLE (checkpoint/base) maps to one plan settled at estimate time, written only by its
+    # owner, replaced whole, never patched by fetch sites; load_progress reads nothing else.
     fetch_plan: dict[str, "_PlannedFetch"] = field(default_factory = dict)
     # Dead ``<key>.<8 hex>.incomplete`` sizes when a plan first named the file; a re-plan only adds entries.
     incomplete_baseline: dict[str, int] = field(default_factory = dict)
@@ -2336,8 +2359,7 @@ class _PlannedFetch(NamedTuple):
     repo: str
     revision: Optional[str]
     files: tuple
-    # The encoder components the plan left out (hosted pre-cast checkpoints it expected to find); _run_load re-plans
-    # the base when the actual fetches skip a different set.
+    # Encoders the plan omits (hosted pre-casts); _run_load re-plans when fetches skip others.
     skip_te: tuple = ()
     # The other listed candidates a fetch loop may fall back to, in its order, as ``(name, blob key, size)``.
     alternates: tuple = ()
@@ -2424,8 +2446,7 @@ class _RecordedListings:
 
 def _plan_total(plan: dict[str, "_PlannedFetch"]) -> Optional[int]:
     """The bytes a plan sums to (what ``expected_bytes`` reports), None for an empty one."""
-    # Counted once per blob in a repo, exactly as load_progress counts them: two names with identical bytes share one
-    # cache blob, so summing both would leave the bar short of 100% forever.
+    # Once per blob (as load_progress): names with equal bytes share one, else the bar stalls.
     seen: set[tuple[str, str]] = set()
     total = 0
     for entry in plan.values():
@@ -2479,8 +2500,7 @@ def _plan_fetch(
     wanted = list(dict.fromkeys(names))
     repo = _video_fetch_repo(logical, hf_token, files = wanted, checkpoint = checkpoint) or logical
     if repo.lower() != (listing or "").lower():
-        # An upstream kept for its complete cache: the plan describes THAT snapshot (its commit, its blobs), not the
-        # mirror listing, which may already be a newer revision of a file.
+        # Upstream kept for its cache: plan its snapshot; the mirror listing may be newer.
         cached = _cached_snapshot_plan(repo, wanted)
         if cached is not None:
             return _PlannedFetch(repo, cached[0], cached[1])
@@ -3042,9 +3062,8 @@ def _video_fetch_repo(
     ``UNSLOTH_DIFFUSION_NO_MIRROR``. Pure: table lookup, env read, local stat."""
     if not repo_id:
         return repo_id
-    # ``checkpoint``: the user-selected file itself. The opt-out folds a mirror back onto its upstream only for BASE
-    # components; an unsloth carrier repo's own root FP8 / GGUF checkpoints do not exist upstream, so a pick stays in
-    # the repo it was selected from.
+    # A user-selected checkpoint stays in its own repo: the opt-out folds mirrors back onto upstream
+    # only for BASE components; carrier-repo FP8/GGUF checkpoints have no upstream copy.
     no_mirror = _video_no_mirror()
     if checkpoint and no_mirror:
         return repo_id
@@ -3063,12 +3082,9 @@ def _video_fetch_repo(
             if _upstream_whole_in_one_root(repo_id, tuple(files)):
                 return repo_id
         else:
-            # No names to check (assembly, an offline load, progress): the any-weight default would keep a partial
-            # upstream over a complete mirror. Pick the side whose cached snapshot is more complete; upstream on a tie.
-            # A GATED upstream wins only when its snapshot is whole: anything missing would be fetched from the vendor
-            # repo, a 401 for a user without its licence, while the mirror serves the same bytes to everyone. A load
-            # that cannot download keeps the cached upstream unless the mirror is cached too (it may read only the
-            # upstream's cached part, e.g. a GGUF pick that skips the transformer).
+            # With no names, pick the more complete cached side (upstream on a tie, as any-weight
+            # keeps a partial upstream); gated upstreams win only if whole, since a missing file
+            # would 401; a no-download load keeps cached upstream unless the mirror is cached.
             (up, up_whole), mir = (
                 _video_cached_completeness_detail(repo_id),
                 _video_cached_completeness(mirror),
@@ -3095,10 +3111,8 @@ def _can_download() -> bool:
 
 
 def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
-    """The repo to read ``base``'s index from: the one its base pull will stage. The plan keeps a cached upstream only
-    when it already holds the files the pull needs, so the upstream answers only when its snapshot holds every
-    component (its ``text_encoder`` aside: an H3 load may skip those shards); else the mirror, unless the load cannot
-    download and only the upstream is cached."""
+    """Repo for base's index: upstream only if fully cached (text_encoder aside, H3 may skip it),
+    else the mirror, unless the load cannot download and only upstream is cached."""
     from .diffusion_families import _is_local_path, mirror_repo
 
     if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip() or _is_local_path(base):
@@ -3264,9 +3278,8 @@ def _video_offline_base_choice(
 
 
 def _upstream_whole_in_one_root(repo_id: str, files: tuple) -> bool:
-    """Whether ONE cache root (the live one, or the import-time root the fetches fall back to) holds every name in one
-    revision: the only upstream cache assembly can open as a single snapshot. Names split across the two roots are not
-    a hit, so the load takes the mirror instead of a set that assembly sees half of (a 401 on a gated upstream)."""
+    """Whether one of the two cache roots holds every name in one revision, as assembly opens a
+    single snapshot; names split across roots are no hit (a 401 on a gated upstream)."""
     from .diffusion_families import _root_holds_upstream
 
     roots = [Path(hub_cache_dir())]
@@ -3447,8 +3460,7 @@ def _video_listing_repo(repo_id: str) -> str:
 
 
 def _video_repo_aliases(repo_id: Optional[str]) -> tuple[str, ...]:
-    """``repo_id`` plus the other side of its mirror pair, for the guards that must protect whichever id a load is
-    actually reading from (the delete-cached guard, the progress cache scan)."""
+    """repo_id and its mirror-pair twin: the guards must cover whichever id a load reads."""
     if not repo_id:
         return ()
     from .diffusion_families import canonical_base, mirror_repo
@@ -3511,9 +3523,8 @@ def _h3_auto_precision_ok(target: Any = None) -> bool:
 
 
 def h3_streamed_int8_supported(target: Any = None) -> bool:
-    """Whether this host can run H3's hosted INT8 denoiser streamed: the auto gate (CUDA bf16, so
-    sm_80+ on NVIDIA), torchao-aware group offload, and a loader that can read the checkpoint
-    (else auto keeps bf16 and the tier's load is refused). Never raises."""
+    """Whether H3's INT8 denoiser streams here: auto gate (CUDA bf16, sm_80+), torchao-aware
+    offload, loader that reads the checkpoint; else auto keeps bf16, load refused. Never raises."""
     if not _h3_auto_precision_ok(target):
         return False
     try:
@@ -3537,9 +3548,8 @@ def _h3_others_bytes(
     rotating: bool,
     te_streamed: bool = False,
 ) -> int:
-    """Bytes beside the denoiser. ``rotating``: conditioner and VAEs rotate (the 40 GB reserve evicts
-    one before placing the other), so only the larger counts; otherwise they add up. ``te_streamed``: the
-    conditioner counts at its streamed encode footprint."""
+    """Bytes beside the denoiser: when rotating, only the larger of conditioner and VAEs counts (the
+    40 GB reserve evicts one), else they add up; te_streamed uses the streamed footprint."""
     import torch
 
     scale = 2.0 if dtype is torch.float32 else 1.0
@@ -3689,11 +3699,9 @@ def _h3_card_memory_bytes(
     *,
     allow_context: bool = True,
 ) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) VRAM of the H3 render card, or (None, None). No pin = ordinal 0. nvidia-smi / ROCm KFD + sysfs
-    first (no CUDA context); torch only when none answers and ``allow_context``, as the residency and pressure reads
-    always did. The pre-spawn budget passes False: it never pays for a context. Free is less the user's VRAM Budget
-    reserve (raw at the default), so the sd.cpp resident-vs-offload pick, its ``--max-vram`` probe and the
-    server-pressure check all keep that share free."""
+    """(free, total) VRAM of the H3 render card, or (None, None); no pin means ordinal 0. nvidia-smi
+    or ROCm KFD/sysfs first, torch only if none answer and allow_context; the pre-spawn budget
+    passes False and never pays for a context; free is net of the VRAM Budget reserve."""
     if device != "cuda":
         return None, None
     found = _h3_read_card_memory_bytes(ordinal, no_context = True)
@@ -4130,8 +4138,7 @@ def _h3_auto_denoiser_scheme(
 
 
 def _checkpoint_files(gguf_filename: Optional[str], kind: str) -> tuple[str, ...]:
-    """The checkpoint file(s) a gguf / single_file pick reads: the pick, plus its partner expert when the name
-    pairs one (only a dual-expert family gets past validation with such a name, and a single-DiT one never asks)."""
+    """The pick, plus its partner expert when the name pairs one (never for pipeline kinds)."""
     if not gguf_filename:
         return ()
     partner = moe_partner_filename(gguf_filename) if kind != "pipeline" else None
@@ -4188,8 +4195,7 @@ def _video_hosted_denoiser_scheme(
     speed_mode: Optional[str] = None,
     hf_token: Optional[str] = None,
 ) -> Optional[str]:
-    """The scheme a CONVENTIONAL video load would seed from a hosted checkpoint, or None. ``hf_token``
-    reaches the hosted header probe, so a gated artifact is judged, not read as unknown."""
+    """Scheme a conventional load seeds from, or None; hf_token lets gated files be judged."""
     # Only an AUTO precision becomes "off" under Speed="off"; an EXPLICIT scheme is honored, so it keeps its seed.
     auto = requested is None or str(requested).strip().lower() in ("", "auto")
     if auto and speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
@@ -4460,8 +4466,7 @@ class _HeldCacheWrites:
         self.release("the backend sat idle after the load")
 
     def release(self, why: str) -> None:
-        # Started and registered on the pipe under the lock: a concurrent discard either cancels them first or runs
-        # after, so the teardown's finish calls see every started writer.
+        # Started and registered under the lock; a concurrent discard cancels or sees them.
         with self._lock:
             writes = self._take()
             pipe = self._pipe()
@@ -4706,9 +4711,8 @@ def _video_hosted_read_dit_gb(
     native_hosted_planned: Optional[str],
     source_dir: Optional[str],
 ) -> Optional[float]:
-    """The hosted int8 file size (decimal GB) when an explicit int8 ROCm load reads it as the native W8A8 DiT instead
-    of the dense shards (staged in their place), else None. No runtime quant pass follows that read, so it peaks at
-    the file size, not at the dense bf16 DiT. Never raises."""
+    """Hosted int8 file size (decimal GB) when an explicit int8 ROCm load reads it as the native
+    W8A8 DiT, else None; no runtime quant follows, so it peaks at that size. Never raises."""
     try:
         if not _video_hosted_int8_fit_enabled() or native_hosted_planned != TQ_INT8:
             return None
@@ -4733,9 +4737,8 @@ def _video_native_cache_spec(
     kind: str,
     source_dir: Optional[str],
 ) -> Optional[dict]:
-    """Cache spec of the native build an OFFLOADED CUDA load's runtime quant makes, else None. Never raises.
-
-    Must use the same inputs as the quant step (``native_scheme`` / ``native_kwargs``) so a hit replays that build."""
+    """Native build cache spec for an offloaded CUDA load's runtime quant, or None; never raises.
+    Inputs must match the quant step's native_scheme and native_kwargs so a hit replays it."""
     try:
         if kind != "pipeline" or getattr(fam, "modular_workflow", None):
             return None
@@ -5826,9 +5829,7 @@ def _video_group_hooked(module: Any) -> bool:
 
 
 def _video_calibration_companions(pipe: Any) -> dict[str, str]:
-    """The peak calibration key's run-once companion entry: whether the LTX-2 text connectors stream or sit resident
-    (a resident sample omits their streamed window, so the two placements never share peaks). Empty without them,
-    leaving every other family's key as it was."""
+    """Run-once key: LTX-2 connectors streamed or resident; empty without, so peaks never mix."""
     try:
         from .diffusion_memory import run_once_companions
         companions = run_once_companions(pipe)
@@ -6326,11 +6327,9 @@ def _ltx25_denoise_price_mib(
     cfg: bool,
     fps: Optional[float] = None,
 ) -> Optional[int]:
-    """The request guard's denoise headroom above the floor for an LTX-2.5 render the measurements cover, else None
-    (the base overhead stands). Measured: the distilled two-stage render without CFG; the dev checkpoint renders in
-    one stage outside the connector reuse, and CFG batches the negative rows beside the positive ones, so neither
-    releases the prompt rows. Never above the base overhead plus the parked encoder, which the floor without the
-    parking counted: a request the old price admitted stays admitted."""
+    """Denoise headroom above the floor for measured LTX-2.5 distilled two-stage renders (no CFG),
+    else None; dev checkpoint and CFG do not release prompt rows, so excluded; never above base
+    overhead plus the parked encoder, so a request the old price admitted stays admitted."""
     if (os.environ.get(VIDEO_LTX25_DENOISE_PRICE_ENV) or "").strip().lower() in (
         "0",
         "off",
@@ -6407,6 +6406,98 @@ def _ltx25_denoise_price_mib(
         return min(price, DEFAULT_BASE_OVERHEAD_MIB + parked_mib)
     except Exception:  # noqa: BLE001 -- unpriced: the base overhead stands
         return None
+
+
+def video_denoise_required_mib(
+    *,
+    floor_mib: int,
+    denoise_mib: Optional[int] = None,
+    measured_extra_mib: Optional[int] = None,
+) -> int:
+    """MiB the denoise phase needs: the co-resident floor plus its headroom (``denoise_mib`` when priced, else the base
+    overhead), or the recorded peak with margin and slack when that asks for less (as ``video_offload_shortfall_message``)."""
+    required = int(floor_mib) + (
+        DEFAULT_BASE_OVERHEAD_MIB if denoise_mib is None else max(0, int(denoise_mib))
+    )
+    if measured_extra_mib is not None and measured_extra_mib > 0:
+        from .video_stream_residency import MEASURED_PEAK_MARGIN, MEASURED_SLACK_MIB
+        required = min(
+            required,
+            int(floor_mib) + int(measured_extra_mib * MEASURED_PEAK_MARGIN) + MEASURED_SLACK_MIB,
+        )
+    return required
+
+
+def apply_request_prefetch_depth(
+    pipe: Any,
+    *,
+    floor_mib: int,
+    available_mib: int,
+    denoise_mib: Optional[int] = None,
+    measured_extra_mib: Optional[int] = None,
+    logger: Any = None,
+) -> Optional[int]:
+    """Pick this request's prefetch depth for every streamed denoiser and apply it; the depth, or None when nothing
+    streams through the shared prefetcher. The floor prices one group ahead; a memory-tight request (the budget left
+    after the residents cannot hold a second group ahead beside the denoise headroom) runs one ahead, every other
+    request the built depth (2). ``UNSLOTH_DIFFUSION_PREFETCH_DEPTH`` always wins."""
+    try:
+        from .diffusion_offload_prefetch import (
+            module_prefetchers,
+            prefetch_depth_override,
+            set_request_prefetch_depth,
+            streamed_group_mib,
+            tight_prefetch_depth,
+        )
+
+        pfs = []
+        for name in _VIDEO_DENOISER_ATTRS:
+            pfs.extend(module_prefetchers(getattr(pipe, name, None)))
+        if not pfs:
+            return None
+        planned = max(int(getattr(pf, "_unsloth_base_depth", pf.depth)) for pf in pfs)
+        required = video_denoise_required_mib(
+            floor_mib = floor_mib, denoise_mib = denoise_mib, measured_extra_mib = measured_extra_mib
+        )
+        largest = streamed_group_mib(pfs)
+        depth = tight_prefetch_depth(
+            available_mib = int(available_mib),
+            required_mib = required,
+            largest_group_mib = largest,
+            planned_depth = planned,
+        )
+        if set_request_prefetch_depth(pfs, depth) and logger is not None:
+            logger.info(
+                "diffusion.memory: prefetching %d group(s) ahead for this request (%d MiB available)",
+                depth,
+                int(available_mib),
+            )
+        if prefetch_depth_override() is not None:
+            source = "env"
+        else:
+            source = "tight" if depth < planned else "built"
+        try:
+            pipe._unsloth_request_prefetch = {
+                "depth": int(depth),
+                "built_depth": int(planned),
+                # what each prefetcher runs now: a CUDA-graph slot ring keeps its built depth
+                "running_depths": sorted(int(pf.depth) for pf in pfs),
+                "source": source,
+                "available_mib": int(available_mib),
+                "required_mib": int(required),
+                "largest_group_mib": int(largest),
+            }
+        except Exception:  # noqa: BLE001 - a pipe that takes no attributes reports nothing
+            pass
+        return depth
+    except Exception:  # noqa: BLE001 - the prefetchers keep their depth
+        return None
+
+
+def request_prefetch_status(pipe: Any) -> Optional[dict]:
+    """The prefetch depth the last request picked (``apply_request_prefetch_depth``), or None when nothing streams."""
+    info = getattr(pipe, "_unsloth_request_prefetch", None) if pipe is not None else None
+    return dict(info) if isinstance(info, dict) else None
 
 
 def video_offload_shortfall_message(
@@ -6486,8 +6577,7 @@ def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
 # low-noise), so present the second DiT AS ``pipe.transformer`` via a thin proxy.
 # ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
 def _calibration_revision(state: Any) -> Optional[str]:
-    """The exact weights this pipeline holds (cache snapshot commit / local fingerprint, plus the companion base for a
-    GGUF / single-file load), read once per pipeline."""
+    """Snapshot commit or local fingerprint of weights; GGUF/single-file adds companion base."""
     pipe = getattr(state, "pipe", None)
     cached = getattr(pipe, "_unsloth_calibration_revision", None)
     if cached is not None:
@@ -6511,9 +6601,6 @@ def _calibration_revision(state: Any) -> Optional[str]:
 
 
 def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
-    """Attribute names of the denoiser(s) on ``pipe`` to optimise. Just
-    ("transformer",) for a single-DiT family; also "transformer_2" for an MoE family
-    whose second expert is actually present (a checkpoint may ship only the first)."""
     names = ["transformer"]
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         names.append("transformer_2")
@@ -6626,6 +6713,83 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         return (pipe, _SecondDiTView(pipe))
     return (pipe,)
+
+
+def _encode_after_return(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+    """Run a deferred MP4 encode once ``generate``'s own frame has returned, so its locals and closures (pipeline,
+    load state, step callbacks) are freed and an unload during the encode really frees the weights.
+    ``_on_gpu_released`` (begin_generate's worker) runs first with the result; on that path the request's resolved
+    inputs also drop their load state, since the worker's kwargs keep the object alive until the thread ends."""
+
+    @functools.wraps(fn)
+    def wrapper(
+        self,
+        *args: Any,
+        _on_gpu_released: Any = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        result = fn(self, *args, **kwargs)
+        finish = result.pop("_finish_encode", None) if isinstance(result, dict) else None
+        if finish is None:
+            return result
+        if _on_gpu_released is not None:
+            resolved = kwargs.get("_resolved_inputs")
+            if resolved is not None:
+                object.__setattr__(resolved, "state", None)
+        kwargs.clear()
+        # The callback answers whether the encode still owns the slot (a batched job keeps it to the end).
+        owns_slot = _on_gpu_released is None or bool(_on_gpu_released(result))
+        result["mp4_bytes"] = finish(owns_slot)
+        return result
+
+    return wrapper
+
+
+def _host_copy(value: Any) -> Any:
+    """A device tensor as an exact host copy, so an encode after _generate_lock issues no CUDA work."""
+    device = getattr(value, "device", None)
+    if device is not None and getattr(device, "type", "cpu") != "cpu" and hasattr(value, "cpu"):
+        return value.cpu()
+    return value
+
+
+def _encode_outside_lock_enabled() -> bool:
+    """The CPU encode of a finished clip runs after _generate_lock is released, so the next clip's GPU work overlaps
+    it. UNSLOTH_VIDEO_ENCODE_OUTSIDE_LOCK=0 keeps the encode under the lock."""
+    return os.environ.get("UNSLOTH_VIDEO_ENCODE_OUTSIDE_LOCK", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+class _DetachedEncodeSource:
+    """What _encode_mp4 reads off a pipeline (its VAE class for H3's reference save settings, the vocoder's sample
+    rate), copied under _generate_lock: the encode outside it holds no pipeline, so an unload still frees VRAM."""
+
+    def __init__(self, pipe: Any) -> None:
+        self.vae = type(type(getattr(pipe, "vae", None)).__name__, (), {})()
+        rate = getattr(
+            getattr(getattr(pipe, "vocoder", None), "config", None), "output_sampling_rate", None
+        )
+        self.vocoder = types.SimpleNamespace(
+            config = types.SimpleNamespace(output_sampling_rate = rate)
+        )
+
+
+@dataclass
+class _EncodeTail:
+    """A begin_generate job past its GPU work, encoding on its worker thread after handing the job slot on."""
+
+    token: object
+    video_id: Optional[str]
+    account: Optional[str]
+    cancel: threading.Event
+    total: int
+    epoch: int
+    # False once its last cancel check passed: a later Stop can no longer discard it, so it is not answered true.
+    stoppable: bool = True
 
 
 def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseException) -> None:
@@ -6843,8 +7007,7 @@ class VideoBackend:
         self._load_token = 0
         self._cancel_event = threading.Event()
         self._active_generate_cancel: Optional[threading.Event] = None
-        # (load token, client) of an LTX-2.5 Gemma 4 encoder worker whose load has not committed yet; a failed load stops
-        # it.
+        # Pending (load token, client) of an LTX-2.5 Gemma 4 encoder; a failed load stops it.
         self._ltx25_pending_encoder: Optional[tuple[Optional[int], Any]] = None
         self._float_seeds: Optional[tuple[Any, Any]] = None
         # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation queued
@@ -6862,10 +7025,25 @@ class VideoBackend:
         self._generate_job_account: Optional[str] = None
         # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run
         self._gen_video_id: Optional[str] = None
+        # video_id -> (account, terminal record) of recent clips: a page whose clip ended while a
+        # successor took the single progress record still reads its own outcome.
+        self._gen_outcomes: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()
+        # Clips denoised in the running job's batch (video_batch.Rider), and the batch the job is still
+        # gathering from the queue (video_batch.Forming), both under _lock.
+        self._forming: Any = None
+        # The running job's own clip asked to stop while its riders keep denoising.
+        self._leader_stopped = False
+        # The running job's own cancel event (begin_generate's), whatever event its render registered.
+        self._job_cancel: Optional[threading.Event] = None
+        # A queued clip whose GPU work is done but whose CPU encode still runs: it has handed the job slot to the next
+        # clip. One at a time (the semaphore), so finished clips never pile up in host RAM.
+        self._encode_tail: Optional[_EncodeTail] = None
+        self._encode_tail_free = threading.Semaphore(1)
+        # Bumped by every begin_generate, so a tail that ends after a successor started never takes its record.
+        self._slot_epoch = 0
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
-        """Pins the device per worker thread: torch.cuda.set_device is thread-local, not set once at
-        load."""
+        """Pins the device per thread: torch.cuda.set_device is thread-local, not set at load."""
         if ordinal is None:
             return resolve_diffusion_device_target()
         target = resolve_diffusion_device_target(ordinal = ordinal)
@@ -6900,9 +7078,7 @@ class VideoBackend:
         touches the loaded pipeline goes through this: the weights are on ``state.gpu_ordinal``
         and ``state.device`` is un-indexed, so an unpinned thread resolves to its own card."""
         target = self._device_target(state.gpu_ordinal)
-        # And an automatic load back onto its own card, in case this thread is a shared one a previous pinned load left
-        # elsewhere. The image path reaches this through a pooled executor; here it costs one no-op call to keep the two
-        # engines identical. Skipped when the pin above already set that card.
+        # Re-pin to the weights' card: a shared thread may have been left on another card.
         if state.gpu_ordinal is None or state.placed_ordinal != state.gpu_ordinal:
             pin_cuda_ordinal(state.placed_ordinal)
         return target
@@ -6979,8 +7155,7 @@ class VideoBackend:
                     f"{h3_task}. Pick the matching checkpoint."
                 )
         if fam.modular_workflow and kind == "single_file" and not is_h3_comfy_name(gguf_filename):
-            # A modular workflow has no single-file assembly; refuse before the download and the
-            # teardown.
+            # Modular workflows lack single-file assembly; refuse before download and teardown.
             gguf_hint = (
                 f", or a .gguf checkpoint from '{fam.gguf_repo}' for a quantized single-file load"
                 if fam.gguf_repo
@@ -7009,8 +7184,7 @@ class VideoBackend:
                     f"{gguf_hint}"
                 )
         if fam.modular_workflow and kind == "pipeline":
-            # Same normaliser the load uses, so a malformed value raises the identical message it would below and only a
-            # real scheme reaches the availability check.
+            # Same normaliser as the load: malformed values fail identically before the check.
             requested_scheme = normalize_transformer_quant(transformer_quant)
             # A pipeline's modular base IS repo_id, so validation judges the variant the load will ask for.
             quant_base = repo_id
@@ -7050,7 +7224,6 @@ class VideoBackend:
 
         if is_h3_native(fam, kind):
             validate_h3_transformer_filename(gguf_filename or "")
-            # The GGUF filename and explicit task must name the same partition.
             picked = h3_transformer_task(gguf_filename or "")
             if h3_task and h3_task != picked:
                 raise ValueError(
@@ -7159,8 +7332,7 @@ class VideoBackend:
                             f"'{root.name}' is one expert of a dual-expert pair, but its partner "
                             f"'{partner.name}' is not in the same folder."
                         )
-                # The loader hands a local FILE straight through (ignoring gguf_filename), so the file's own suffix must
-                # match the kind.
+                # Local FILE loads ignoring gguf_filename, so its suffix must match the kind.
                 suffix = root.suffix.lower()
                 if kind == "gguf" and suffix != ".gguf":
                     raise ValueError(
@@ -7255,11 +7427,9 @@ class VideoBackend:
                 family_override = updates.get("family_override", family_override)
                 transformer_quant = updates.get("transformer_quant", transformer_quant)
                 text_encoder_quant = updates.get("text_encoder_quant", text_encoder_quant)
-        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a load
-        # that dies tens of GB later, and only once so free VRAM cannot re-rank the choice after the weights land. Gated
-        # on the resolved backend, since XPU / MPS / CPU ignore physical ids and would otherwise 400 a selection the
-        # contract drops. Re-ranked only when the caller did not already do it: free VRAM moves between the route's
-        # preflight and here, so resolving twice can approve a scheme against one card and place the weights on another.
+        # Resolved once here and carried to the worker: a bad pick is the route's 400, and VRAM
+        # cannot re-rank after the weights land; gated on the backend (XPU/MPS/CPU ignore physical
+        # ids); re-ranked only if the caller has not, since VRAM moves between preflight and here.
         auto_ordinal = gpu_ordinal is None and not gpu_ids
         if gpu_ordinal is None and gpu_ids:
             gpu_ordinal = (
@@ -7331,10 +7501,8 @@ class VideoBackend:
         )
 
         h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
-        # Both ids: an install may hold the components under either the mirror or the repack it was mirrored from, and
-        # whichever one this load reads must be protected.
+        # Protect both mirror and repack ids: an install may hold the components under either.
         claimed_assets = (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
-        # Claim the hosted LTX-2.3 FP8 DiT repo with _loading.
         if _ltx23_prequant_serves_on_card(
             fam,
             resolve_video_model_kind(gguf_filename, model_kind),
@@ -7446,6 +7614,16 @@ class VideoBackend:
                 kwargs["transformer_quant"] = video_lora.dense_transformer_quant(
                     fam, kwargs.get("transformer_quant"), kwargs.get("loras")
                 )
+                # An H3 side-branch LoRA on the modulation / time embedder needs the released denoiser: decided
+                # here, from the resolved adapters, so the plan and skip_transformer_weights stage its shards.
+                kwargs["transformer_quant"] = video_lora.planned_side_branch_quant(
+                    fam,
+                    kwargs.get("transformer_quant"),
+                    kwargs.get("loras"),
+                    hf_token = kwargs.get("hf_token"),
+                    local_files_only = local_files_only,
+                    cancel_event = cancel_event,
+                )
             else:
                 kwargs.pop("loras", None)
             ltx25_dev = _ltx25_dev_load(
@@ -7479,9 +7657,8 @@ class VideoBackend:
             kwargs["h3_task"] = _h3_single_file_task(
                 fam, kind, kwargs.get("gguf_filename"), kwargs.get("h3_task")
             )
-            # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes
-            # those dense shards. Resolved through the family default the loader applies, so an unset request on a
-            # family whose default is a hosted encoder does not stage the dense one. kwargs keep the RAW request.
+            # Fp8 encoder requests, and unset ones on families defaulting to it, load a hosted
+            # pre-cast checkpoint, so dense shards are not counted; kwargs keep the RAW request.
             te_planned, _ = video_te_quant_request(
                 fam,
                 kwargs.get("text_encoder_quant"),
@@ -7494,8 +7671,7 @@ class VideoBackend:
                 kwargs.get("gpu_ordinal"),
                 base = base,
             )
-            # Verify the hosted denoiser here, or keep dense shards: it drops 66 GB and is never re-
-            # checked.
+            # Verify the hosted denoiser here, or keep dense shards: it drops 66 GB unchecked.
             h3_auto_denoiser = (
                 self._h3_planned_auto_denoiser_scheme(
                     fam,
@@ -7630,10 +7806,8 @@ class VideoBackend:
                         # Baseline first: load_progress reads lock-free and counts partials once a plan is set.
                         self._loading.incomplete_baseline = self._plan_partials(planned_files)
                         self._loading.fetch_plan = planned_files
-                    # The conditioner artifact comes from a THIRD repo, neither repo_id nor base_repo, so without this
-                    # the delete-cached guard would let it be deleted out from under the in-flight fetch (or out from
-                    # under the assembly, while the base snapshot that no longer carries a dense encoder is still coming
-                    # down). Same registration the native H3 path makes for its companions.
+                    # Conditioner lives in a third repo (neither repo_id nor base_repo): register as
+                    # an asset repo or delete-cached guard may remove it mid-fetch/assembly.
                     if h3_te_scheme:
                         self._loading.asset_repos = self._loading.asset_repos + (
                             h3_te_quant_source(h3_te_scheme),
@@ -7669,9 +7843,7 @@ class VideoBackend:
                 fetch_partner = bool(
                     getattr(fam, "is_moe", False) and kind != "pipeline" and partner
                 )
-                # One choice for the pick and its partner expert, settled on both names, so they come from one repo and
-                # progress reads that repo for both.
-                # The estimate's plan when it made one (the repo + revision progress reads); else settled here.
+                # Pick and partner expert share one repo; reuses the estimate's plan if any.
                 checkpoint_plan = planned_files.get(_FETCH_CHECKPOINT)
                 checkpoint_repo = (
                     checkpoint_plan.repo
@@ -7710,8 +7882,7 @@ class VideoBackend:
                         reuse_other_cache_root = True,
                         local_files_only = local_files_only,
                     )
-            # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE +
-            # tokenizer; recompute the estimate.
+            # LTX-2.3 supplies VAEs/vocoder/connectors; base pull shrinks, recompute estimate.
             ltx23 = False
             if fam is not None and fam.name == "ltx-2" and kind != "pipeline":
                 from .video_ltx2 import is_ltx23_checkpoint
@@ -7869,8 +8040,7 @@ class VideoBackend:
             base_plan = planned_files.get(_FETCH_BASE)
             actual_te_skip = tuple(te_skipped) + tuple(h3_te_skipped)
             if base_plan is not None and set(base_plan.skip_te) != set(actual_te_skip):
-                # An encoder fetch fell back (or found more than planned): the base file set changed, so its repo /
-                # revision choice is settled again on the new names, and progress follows.
+                # Encoder fallback or extra files: base set changes; re-settle repo/revision.
                 expected = self._estimate_download_bytes(
                     kwargs["repo_id"],
                     kwargs.get("gguf_filename"),
@@ -7931,16 +8101,13 @@ class VideoBackend:
             )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs).
             kwargs["_base_local_dir"] = None if ltx23 else base_local
-            # The repo the exact-name check staged the base into: re-deciding at assembly without the names would flip a
-            # partially cached upstream back in (LTX-2.3 resolves every component through it).
-            # The predownload's choice; when it left early (no scoped pull), the plan it was handed still stands.
+            # Use the exact-name check's staged repo; re-deciding without names flips a partial
+            # upstream in (LTX-2.3 resolves through it). Early predownload keeps the handed plan.
             kwargs["_base_fetch_repo"] = base_fetch_choice.get("repo") or (
                 base_plan.repo if base_plan is not None else None
             )
             if kwargs["_base_fetch_repo"] is None and kind != "pipeline":
-                # No plan (a cache-only load): assembly's nameless choice counts every index component, and an upstream
-                # holding the transformer folders this pick replaces (or 2.3's unused VAEs) would outscore a mirror
-                # holding what the load reads.
+                # Cache-only: nameless assembly counts all index parts, so upstream may win.
                 kwargs["_base_fetch_repo"] = _video_offline_base_choice(
                     base,
                     tuple(p.rstrip("/") for p in VideoBackend._LTX23_BASE_PREFIXES)
@@ -7979,9 +8146,21 @@ class VideoBackend:
                         pinned_snapshot[0],
                         pinned_snapshot[1][:12],
                     )
+            from .host_pinning import cuda_is_integrated
             from .safetensors_pread import pread_safetensors
 
             from .diffusion_families import pinned_repo_revision
+
+            try:
+                _ordinal = kwargs.get("gpu_ordinal")
+                _target = (
+                    resolve_diffusion_device_target()
+                    if _ordinal is None
+                    else resolve_diffusion_device_target(ordinal = _ordinal)
+                )
+                integrated_cuda = cuda_is_integrated(_target.torch_device)
+            except Exception:  # noqa: BLE001 - unresolvable target: the platform default
+                integrated_cuda = False
 
             checkpoint_cached_repo = (
                 str(checkpoint_local) if checkpoint_local is not None else kwargs["repo_id"]
@@ -7998,7 +8177,7 @@ class VideoBackend:
             def _load(offline: bool) -> None:
                 if forced_offline:
                     kwargs["local_files_only"] = offline
-                with pread_safetensors():
+                with pread_safetensors(integrated_cuda = integrated_cuda):
                     with pinned_repo_revision(
                         kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
                     ):
@@ -8186,9 +8365,7 @@ class VideoBackend:
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend: CPU policy, and no VIDEO claim held.
         if sd_cpp_args_mod.forces_cpu_backend(native_device):
             native_device = "cpu"
-        # What the accelerator decision below was made on, or None when it was never asked (a CPU or MPS target never
-        # consults it). Re-checked under the reader claim, so a replacement that arrives mid-load cannot silently change
-        # the answer this device choice rests on.
+        # Accelerator basis (None if never asked); re-checked under the claim against a swap.
         listed_accelerator: Optional[bool] = None
         decided_accelerator: Any = _UNREAD_ACCELERATOR
         if target.backend not in ("cpu", "mps"):
@@ -8397,7 +8574,6 @@ class VideoBackend:
                 not in ("0", "false", "no", "off")
                 and sd_cpp_supports_sage_attn(binary)
             )
-            # The CPU fallback runs on no card, so drop the ordinal.
             native_ordinal = None if native_device == "cpu" else gpu_ordinal
             # Under the claim like every other probe here; None on the CPU fallback
             native_device_name = (
@@ -8522,8 +8698,7 @@ class VideoBackend:
                 base_flags = tuple(native_offload),
                 accelerator = fit_accelerator,
                 check_gtt = check_gtt,
-                # The torch card is the Vulkan device only when the pin resolved; otherwise sd.cpp picks its own,
-                # so no slot is named and the tightest amdgpu card is read.
+                # Torch slot only if pinned; else sd.cpp picks, so tightest amdgpu is read.
                 gtt_pci_slot = _torch_pci_slot(native_ordinal)
                 if check_gtt and native_device_name
                 else None,
@@ -8589,8 +8764,7 @@ class VideoBackend:
                 native_fit_note = fit.note
             if native_fit_note:
                 logger.warning("video.h3_native_memory_fit: %s", native_fit_note)
-        # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
-        # whatever was selected.
+        # After policy so the pin sees CPU-left modules; else sd.cpp always uses ordinal 0.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
         if native_fit_flags is not None:
             native_fit_flags += tuple(
@@ -8740,9 +8914,7 @@ class VideoBackend:
             release_if(VIDEO, lambda: token is None or token == self._load_token)
 
     def _close_pending_ltx25_encoder(self, token: Any = _ANY_LOAD) -> None:
-        """Stop an LTX-2.5 encoder worker whose load never committed (failed, cancelled or superseded).
-
-        With ``token``, only the worker that load started: a newer load's worker is left alone."""
+        """Stops an uncommitted LTX-2.5 encoder worker; a token spares a newer load's worker."""
         with self._lock:
             pending = self._ltx25_pending_encoder
             if pending is None or (token is not _ANY_LOAD and pending[0] != token):
@@ -8767,8 +8939,7 @@ class VideoBackend:
         diffusion_gguf_compile.uninstall_all()
         uninstall_group(GROUP_VIDEO_FUSED)
 
-    # LTX-2.3 gets DiT/connectors/VAEs/vocoder from the checkpoint + extras, so only the 2.0 base scheduler / text
-    # encoder / tokenizer are pulled.
+    # LTX-2.3 takes DiT/connectors/VAEs/vocoder from checkpoint+extras; only 2.0 base files.
     _LTX23_BASE_PREFIXES = ("scheduler/", "text_encoder/", "tokenizer/")
 
     @staticmethod
@@ -8781,8 +8952,7 @@ class VideoBackend:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
         if getattr(fam, "name", None) == "ltx-2.5":
-            # The sidecar worker loads LTX-2.5's hosted int8 ConvRot Gemma 4 encoder; resolving it here is what lets
-            # the plan, the estimate and the pre-fetch stage that file and drop the dense text_encoder/ shards.
+            # Hosted int8 encoder resolved here; plan, estimate and prefetch skip dense shards.
             from .video_ltx25 import ltx25_te_prequant_sources
             return ltx25_te_prequant_sources(
                 text_encoder_quant, base or str(getattr(fam, "base_repo", "") or "")
@@ -8850,8 +9020,7 @@ class VideoBackend:
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
                 path = Path(
                     hf_hub_download_with_xet_fallback(
-                        # The repo the base pull reads: a fresh install fetches the index from the mirror, never the
-                        # vendor id, and an upstream cache holding only an older index does not win it.
+                        # Index from mirror, not vendor id; a stale upstream cache never wins.
                         _video_index_repo(base, local_files_only = local_files_only),
                         "modular_model_index.json",
                         hf_token,
@@ -9108,8 +9277,7 @@ class VideoBackend:
                     base = base,
                     speed_mode = speed_mode,
                 ):
-                    # The low-RAM route offloads the DiT on an fp16-only card: read the hosted int8 file (25 GB) as
-                    # native Linears instead of pulling the 42 GB dense shards and quantising them at load.
+                    # Fp16-only low-RAM: read 25 GB hosted int8 file, not 42 GB dense shards.
                     hosted = _video_native_hosted_scheme(fam, TQ_INT8, target)
                     if native_hosted is not None and hosted is not None:
                         native_hosted.append(hosted)
@@ -9250,8 +9418,7 @@ class VideoBackend:
 
     @staticmethod
     def _h3_te_index_source(pipe: Any) -> Optional[str]:
-        """Repo the pipeline's own modular index names for text_encoder; None means refuse, never
-        substitute."""
+        """Pipeline's own modular index for text_encoder; None means refuse, never substitute."""
         try:
             spec = pipe.get_component_spec("text_encoder")
         except Exception:  # noqa: BLE001 -- no spec, no substitution
@@ -9599,8 +9766,7 @@ class VideoBackend:
     def _te_prequant_hub_files(
         sources: dict[str, Any], api: Any
     ) -> dict[str, list[tuple[str, int]]]:
-        """Pre-cast checkpoints that resolve on the Hub; delegated so plan and resolver name one
-        artifact."""
+        """Pre-cast checkpoints on the Hub; delegated so plan and resolver name one artifact."""
         from .diffusion_te_prequant import te_prequant_hub_files
         return te_prequant_hub_files(sources, api, logger)
 
@@ -9982,6 +10148,10 @@ class VideoBackend:
             if lora_refusal:
                 raise ValueError(lora_refusal)
             transformer_quant = video_lora.dense_transformer_quant(fam, transformer_quant, loras)
+            # Cache only (a plan downloads nothing); an adapter not cached yet plans the released denoiser.
+            transformer_quant = video_lora.planned_side_branch_quant(
+                fam, transformer_quant, loras, hf_token = hf_token
+            )
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -9995,9 +10165,8 @@ class VideoBackend:
         te_planned, _ = video_te_quant_request(
             fam, text_encoder_quant, base = base, speed_mode = load_kwargs.get("speed_mode")
         )
-        # The same resolution the load makes, so an H3 auto pick the loader will serve from a hosted checkpoint is not
-        # staged dense here first: that is 66.3 GB the panel downloads and the load never opens, and the replacement
-        # would then arrive outside this plan.
+        # Same resolution as the load: an H3 auto pick the loader serves from a hosted checkpoint is
+        # not staged dense first (66.3 GB unopened), else the swap lands outside the plan.
         transformer_quant = (
             self._h3_planned_auto_denoiser_scheme(
                 fam,
@@ -10054,8 +10223,7 @@ class VideoBackend:
             revision: Optional[str] = None,
             checkpoint: bool = False,
         ) -> int:
-            """Counts required files and where the loader finds each; which to stage is decided per
-            repo later."""
+            """Counts required files and where the loader finds each; staging is decided later."""
             from core.inference.diffusion import DiffusionBackend
 
             def _where(name: str, size: int) -> Optional[str]:
@@ -10220,8 +10388,7 @@ class VideoBackend:
                 )
                 base_revision = getattr(info, "sha", None) if fetch_base == listing else None
                 if fetch_base.lower() != (listing or "").lower():
-                    # An upstream kept for its complete cache: probe THAT snapshot (its commit, its sizes), as
-                    # _plan_fetch does for the load, not the mirror head, whose sizes may be a newer revision.
+                    # Probe that upstream snapshot (its commit, sizes), not the mirror head.
                     cached = _cached_snapshot_plan(fetch_base, [n for n, _ in base_files])
                     if cached is not None:
                         base_revision = cached[0]
@@ -10230,8 +10397,7 @@ class VideoBackend:
                     fetch_base,
                     base_files,
                     revision = base_revision,
-                    # A pipeline pick has no single file: the base IS the selected model (base = repo_id above). Under a
-                    # GGUF pick the base is a companion, so it stays unflagged.
+                    # Pipeline base is the model; a GGUF base is a companion, kept unflagged.
                     checkpoint = kind == "pipeline",
                 )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
@@ -10277,8 +10443,7 @@ class VideoBackend:
 
     @staticmethod
     def _h3_bundled_repo(repo_id: str, filename: str, hub_repo: str) -> str:
-        """A local bundle that holds filename, else the Hub repo; the bundle carries its own Qwen
-        and VAEs."""
+        """Local bundle with filename, else Hub repo; the bundle carries its own Qwen and VAEs."""
         root = Path(repo_id).expanduser()
         if root.is_dir():
             from .diffusion_families import resolve_local_gguf_child
@@ -10405,8 +10570,7 @@ class VideoBackend:
     def _pick_looks_like_ltx23(
         fam: Any, repo_id: str, gguf_filename: Optional[str], kind: str
     ) -> bool:
-        """Name-only check (header unreadable at plan time); under-guessing only defers to load-time
-        pull."""
+        """Name-only: header unreadable at plan time; under-guessing defers to load-time pull."""
         if kind == "pipeline" or fam is None or getattr(fam, "name", None) != "ltx-2":
             return False
         from .video_ltx2 import LTX23_EXTRAS_REPO
@@ -10569,8 +10733,7 @@ class VideoBackend:
                 return None
             from huggingface_hub import HfApi
 
-            # Listed from the mirror (byte identical, so the same names and sizes), then the fetch repo is settled
-            # against the EXACT names: an upstream snapshot that already holds every one of them keeps being used.
+            # Mirror listing; an upstream snapshot holding all exact names keeps being used.
             listing = _video_listing_repo(base)
             info = hub_reachability.model_info(
                 HfApi(token = hf_token or None),
@@ -10841,14 +11004,12 @@ class VideoBackend:
             return _progress("error", error = loading.error, error_code = loading.error_code)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
-        # The load's own plan, settled once at estimate time by the worker that owns this state: the repo + revision
-        # every fetch site reads, and each file's blob key and size. Nothing else is consulted.
+        # Estimate-time plan: repo, revision, each file's blob key and size; nothing else.
         plan = dict(getattr(loading, "fetch_plan", None) or {})
         if plan:
             downloaded = self._planned_bytes(plan, getattr(loading, "incomplete_baseline", None))
         else:
-            # No plan (offline, a failed estimate, or a state built outside _run_load): the whole cache of each id's
-            # default fetch side.
+            # No plan (offline, failed estimate, or outside _run_load): each id's whole cache.
             reading: dict[str, str] = {}
             for rid, is_checkpoint in ((loading.repo_id, True), (loading.base_repo, False)):
                 if rid:
@@ -10873,8 +11034,7 @@ class VideoBackend:
         )
 
     def loading_repo_ids(self) -> tuple[str, ...]:
-        """In-flight load repos, which the delete-cached guard must refuse while a download or
-        assembly runs."""
+        """In-flight load repos; delete-cached must refuse them during a download or assembly."""
         with self._lock:
             loading = self._loading
             if loading is None or loading.error is not None:
@@ -10985,6 +11145,9 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 expert_pair = bool(getattr(fam, "is_moe", False)),
             )
+            transformer_quant = video_lora.side_branch_transformer_quant(
+                fam, transformer_quant, baked_loras
+            )
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -11023,9 +11186,8 @@ class VideoBackend:
             pass
 
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo, repo_id)
-        # Where the base's components are FETCHED from when no staged snapshot dir covers them: its unsloth mirror.
-        # ``base`` stays the upstream id every table below is keyed on.
-        # The predownload's exact-name choice when it made one, so assembly reads the repo it just staged.
+        # Components no staged snapshot covers fetch from unsloth mirror; base is the upstream id
+        # tables key on; a predownload's exact-name choice wins so assembly reads what it staged.
         fetch_base = _base_fetch_repo or _video_fetch_repo(base, hf_token) or base
 
         with self._lock:
@@ -11076,8 +11238,7 @@ class VideoBackend:
         te_auto_retry = (
             text_encoder_quant if text_encoder_quant_auto and te_auto_unavailable else None
         )
-        # LTX-2.5 on an fp16-only card whose host cannot hold the float32 load: plan and load as a bf16 card (hosted int8
-        # DiT, bf16 companions), then compute in float32 below. ``lowram_target`` is the real card, restored then.
+        # LTX-2.5 fp16-only low-RAM: plan as bf16, compute in float32, restore the real card.
         lowram_target = None
         if fam.name == "ltx-2.5":
             from .video_ltx25_lowram import decide_lowram, storage_target
@@ -11326,9 +11487,8 @@ class VideoBackend:
                 else:
                     mib = estimate_safetensors_dense_mib(size_mib)
                     if fam.name == "ltx-2" and mib is not None:
-                        # The file also bundles VAE / audio VAE / vocoder, already priced as companions. The connectors
-                        # under this prefix stay in: the table undercounts them (~2.9 of 6 GB), and dropping them plans
-                        # below the peak.
+                        # VAE, audio VAE and vocoder are priced as companions; connectors stay in:
+                        # the table undercounts them, so dropping them plans below the peak.
                         dit_mib = safetensors_prefix_mib(str(path), "model.diffusion_model.")
                         if dit_mib is not None:
                             mib = min(mib, dit_mib)
@@ -11738,8 +11898,7 @@ class VideoBackend:
             )
 
             ltx25_dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
-            # A stale load's pending worker goes only while this load is current; a superseded load that resumes here
-            # must not stop the newer load's worker.
+            # Stale workers go only while current; superseded loads must not stop newer ones.
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
                     raise RuntimeError("Video load was cancelled or superseded.")
@@ -11772,8 +11931,7 @@ class VideoBackend:
                 base_repo = base,
                 bind_device = _video_sidecar_multigpu(fam),
             )
-            # Installed only while this load is current: a load superseded during the start must not overwrite the
-            # newer load's worker (whose token-scoped cleanup could then never find it).
+            # Install if current: overwriting a newer worker orphans it from token cleanup.
             with self._lock:
                 superseded = _load_token is not None and _load_token != self._load_token
                 if not superseded:
@@ -11789,8 +11947,7 @@ class VideoBackend:
             ensure_ltx2_pipelines_importable(logger)
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
-        # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across
-        # roots.
+        # cache_dir pins loads to the live root, so a mid-session change cannot split a model.
         def _pinned_base_kwargs() -> dict[str, Any]:
             """A hub-id base read takes the plan's commit; the staged dir already is that commit."""
             return (
@@ -12244,8 +12401,7 @@ class VideoBackend:
                     text_encoder_device = ltx23_te_device,
                 )
             elif fam.name == "ltx-2.5":
-                # The split 2.5 DiT (bf16, int8-convrot or GGUF); connectors, VAEs, vocoder and upsampler come from the
-                # pack, the encoder from the worker.
+                # Split 2.5 DiT (bf16/int8-convrot/GGUF); rest from pack, encoder from worker.
                 from .video_ltx25 import (
                     is_ltx25_single_file_base,
                     load_ltx25_comfy_transformer,
@@ -12829,7 +12985,7 @@ class VideoBackend:
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
             from .diffusion_te_truncate import truncate_text_encoders
-            truncate_text_encoders(pipe, logger = logger)
+            truncate_text_encoders(pipe, logger = logger, family = getattr(fam, "name", None))
             text_encoder_outcome = quantize_text_encoders(
                 pipe,
                 target,
@@ -13084,8 +13240,7 @@ class VideoBackend:
                     is_gguf = gguf_transformer,
                     family = family,
                     speed_mode = effective_speed,
-                    # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled
-                    # DiT crashes)
+                    # Auto cache may engage, so fullgraph is dropped: FBCache crashes under it.
                     cache_active = cache_graph_break or cache_may_toggle,
                     offload_active = speed_offload,
                     cuda_graph_default = False,
@@ -13300,9 +13455,8 @@ class VideoBackend:
                 vae_bf16_mode = install_rocm_vae_bf16_decode(pipe, target, logger = logger)
                 if vae_bf16_mode:
                     speed_optims += ("vae_bf16_decode", f"vae_bf16_{vae_bf16_mode}")
-            # Offload-first retry on a decode OOM, installed last: its decode scope is the outermost decode layer
-            # (one recovery session per logical decode) and every inner wrapper that falls back on an OOM (wide
-            # tiles, untiled-when-fits) frees the card through it first (diffusion_vae_oom.free_first).
+            # Offload-first OOM retry, installed last: outermost decode scope, one session per
+            # decode; inner OOM fallbacks free through it first (diffusion_vae_oom.free_first).
             try:
                 from .diffusion_vae_oom import install as install_vae_oom_retry
                 install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
@@ -13625,7 +13779,13 @@ class VideoBackend:
                     "so the LoRA has nothing to bake into."
                 )
         merged = sum(
-            video_lora.bake_into_module_(getattr(pipe, attr), files, device = device, label = label)
+            video_lora.bake_into_module_(
+                getattr(pipe, attr),
+                files,
+                device = device,
+                label = label,
+                family = getattr(fam, "name", None),
+            )
             for attr, label, files in targets
         )
         video_lora.mark_baked(pipe, tuple(e[:3] for e in baked), specs)
@@ -13737,8 +13897,7 @@ class VideoBackend:
         quantized CONDITIONER and the released bfloat16 DENOISER; ``"none"`` pins the released
         component either way; an explicit scheme is honored or falls back with the reason
         recorded."""
-        # Component configs and the dense weights are FETCHED from the base's unsloth mirror; ``base`` stays the
-        # upstream id the prequant / te-prequant tables are keyed on.
+        # Weights from the unsloth mirror; base stays the upstream id prequant tables key on.
         fetch_base = _base_fetch_repo or _video_fetch_repo(base, hf_token) or base
         # Defence in depth: validate_load_request now refuses a single_file modular pick outright, so this is
         # unreachable from the routes. It stays because this method is also reachable directly, and by the time it runs
@@ -13811,8 +13970,7 @@ class VideoBackend:
                 comfy_scheme = None
             scheme = None
         if transformer_quant_is_auto and comfy_scan is None:
-            # Skip if the plan already acted, since the dense shards are gone and cannot be re-
-            # decided safely.
+            # Skip if the plan already acted: dense shards are gone, so re-deciding is unsafe.
             unreadable_blocked: list = []
             auto_fallback_scheme = _h3_auto_denoiser_planned or _h3_auto_denoiser_scheme(
                 fam,
@@ -14142,7 +14300,23 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
-        if baked_loras:
+        if baked_loras and video_lora.side_branch_enabled(fam):
+            # Unmerged: the denoiser's weights (bf16 or hosted int8 codes) stay as released and every adapted Linear
+            # adds its low-rank branch, so the update is never rounded into a 16-bit or 8-bit weight.
+            adapted = video_lora.attach_side_branch_(
+                getattr(pipe, denoiser_component),
+                [(e[1], e[2]) for e in baked_loras],
+                label = f"{fam.label} denoiser",
+                family = getattr(fam, "name", None),
+            )
+            video_lora.mark_baked(pipe, tuple(e[:3] for e in baked_loras), lora_specs)
+            logger.info(
+                "video.lora_side_branch: %d adapter(s) on %d layer(s) of the %s denoiser, weights unmerged",
+                len(baked_loras),
+                adapted,
+                transformer_quant_engaged or "bf16",
+            )
+        elif baked_loras:
             # Into the released bf16 denoiser, before the forward patch, placement, streaming or compile.
             if transformer_quant_engaged is not None:
                 raise ValueError(
@@ -14808,11 +14982,9 @@ class VideoBackend:
                     family = family,
                     speed_mode = effective_speed,
                     cache_active = False,
-                    # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the
-                    # onload hooks are live and fullgraph has to drop.
+                    # Pinned denoiser: conditioner, VAEs rotate; onload hooks forbid fullgraph.
                     offload_active = offload_policy != "none",
-                    # a denoiser pinned under the others' offload rotation never moves, so the fused int8 GEMM can
-                    # engage
+                    # Pinned denoiser stays out of rotation, so the fused int8 GEMM can engage.
                     denoiser_offloaded = bool(denoiser_streamed) or not denoiser_pinned,
                     cuda_graph_default = False,
                     logger = log,
@@ -15240,8 +15412,7 @@ class VideoBackend:
     # ── generation ───────────────────────────────────────────────────────────
 
     def loaded_family(self) -> Optional[VideoFamily]:
-        """Resident pipeline's family, read via getattr so a state without one degrades instead of
-        raising."""
+        """Resident pipeline's family, or None when nothing is loaded or the state lacks one."""
         with self._lock:
             state = self._state
         return getattr(state, "family", None) if state is not None else None
@@ -15317,9 +15488,16 @@ class VideoBackend:
         live_preview: Optional[bool] = None,
         draft_decode: Optional[bool] = None,
         before_commit: Optional[Callable[[], None]] = None,
+        record_outcome: bool = True,
+        batch_open: bool = False,
+        join: bool = False,
     ) -> dict[str, int]:
         """Returns at once (proxy caps ~100 s). VIDEO_NOT_LOADED_MSG and VIDEO_GENERATION_BUSY_MSG map to 409.
-        ``before_commit`` runs under the lock just before the reservation; raising aborts it."""
+        ``before_commit`` runs under the lock just before the reservation; raising aborts it.
+        ``record_outcome`` False keeps a Video page clip's id out of the /v1/videos job store.
+        ``batch_open`` (the queue has compatible clips waiting behind this one) lets the job gather them
+        until ``seal_batch``; ``join`` adds this clip to that gathering batch instead, and is refused
+        with VIDEO_GENERATION_BUSY_MSG when it cannot share the denoise (it stays queued)."""
         if input_reference is not None and (first_frame is not None or reference_images):
             raise ValueError(
                 "input_reference cannot be combined with explicit conditioning inputs."
@@ -15337,7 +15515,10 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_MODEL_CHANGED_MSG)
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
-                if self._generate_job_active:
+                if join:
+                    if self._forming is None or not self._forming.room():
+                        raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+                elif self._generate_job_active:
                     raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
             resolved_first_frame = first_frame
             resolved_reference_images = reference_images
@@ -15411,9 +15592,90 @@ class VideoBackend:
                 audio_flow_shift = audio_shift,
                 continuation = continuation,
             )
+            batch_key = None
+            if batch_open or join:
+                from . import video_batch
+
+                declined = video_batch.request_decline_reason(
+                    first_frame = first_pil,
+                    last_frame = last_pil,
+                    references = references,
+                    continuation = continuation,
+                    draft_decode = draft_decode,
+                ) or video_batch.load_decline_reason(state)
+                if declined is None:
+                    declined = self._batch_engine_decline(state)
+                if declined is None and getattr(state, "cache_auto", False):
+                    from .diffusion_cache import FBCACHE_MIN_STEPS
+
+                    # Auto turns FBCache on at this many steps, and its residual test spans the whole batch.
+                    if steps is None or int(steps) >= FBCACHE_MIN_STEPS:
+                        declined = "Auto engages a step cache at this step count"
+                if declined is None:
+                    batch_key = video_batch.request_key(
+                        width = canvas_w,
+                        height = canvas_h,
+                        num_frames = run_num_frames,
+                        fps = fps,
+                        steps = steps,
+                        guidance = guidance,
+                        guidance_2 = guidance_2,
+                        flow_shift = shift,
+                        audio_flow_shift = audio_shift,
+                    )
+                else:
+                    logger.info("video.batch: renders alone (%s)", declined)
+                if join and batch_key is None:
+                    raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
             with self._lock:
                 if self._state is not state:
                     continue
+                if join:
+                    forming = self._forming
+                    if (
+                        forming is None
+                        or forming.state is not state
+                        or not forming.room()
+                        or forming.key != batch_key
+                        or not self._generate_job_active
+                        or (forming.leader_cancel is not None and forming.leader_cancel.is_set())
+                    ):
+                        raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+                    validate_video_request_shape(
+                        state.family,
+                        width = width,
+                        height = height,
+                        num_frames = run_num_frames,
+                        fps = fps,
+                    )
+                    if before_commit is not None:
+                        before_commit()
+                    rider_account = current_account()
+                    forming.riders.append(
+                        video_batch.Rider(
+                            video_id = video_id,
+                            account_id = rider_account.account_id,
+                            account = rider_account,
+                            prompt = prompt,
+                            negative_prompt = negative_prompt,
+                            seed = seed,
+                            cancel = cancel,
+                            record_outcome = record_outcome,
+                            gen_kwargs = {"guidance_2": guidance_2},
+                        )
+                    )
+                    fam = state.family
+                    return {
+                        "width": canvas_w,
+                        "height": canvas_h,
+                        "num_frames": (
+                            run_num_frames
+                            if run_num_frames is not None
+                            else getattr(fam, "default_num_frames", None)
+                        ),
+                        "fps": fps if fps is not None else getattr(fam, "default_fps", None),
+                        "model": getattr(state, "repo_id", None),
+                    }
                 if self._generate_job_active:
                     raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
                 validate_video_request_shape(
@@ -15425,10 +15687,33 @@ class VideoBackend:
                 )
                 if before_commit is not None:
                     before_commit()
+                self._leader_stopped = False
+                self._job_cancel = cancel
+                self._forming = (
+                    video_batch.Forming(
+                        key = batch_key,
+                        state = state,
+                        limit = video_batch.max_rows(),
+                        leader_cancel = cancel,
+                    )
+                    if batch_key is not None
+                    else None
+                )
+                job_forming = self._forming
+                run_cancel: Any = cancel
+                if job_forming is not None:
+                    # From the start, so a Stop before the seal is this clip's alone: the render ends
+                    # only once every clip in it stopped, or on an unload / superseding load.
+                    run_cancel = video_batch.AllCancelled(
+                        cancel,
+                        lambda: [rider.cancel for rider in job_forming.riders],
+                        hard = lambda: self._teardown_waiters > 0,
+                    )
                 self._generate_job_active = True
                 self._generate_job_token = job_token
+                self._slot_epoch += 1
                 self._generate_job_account = current_account_id()
-                self._active_generate_cancel = cancel
+                self._active_generate_cancel = run_cancel
                 self._gen_video_id = video_id
                 self._gen = {
                     "active": True,
@@ -15438,10 +15723,16 @@ class VideoBackend:
                     "eta_seconds": None,
                 }
                 self._last_request_shape = None
+                _note_clip_started(state.family, canvas_w, canvas_h, run_num_frames, steps)
                 break
         worker = account_thread(
             # Not in kwargs: those are also replayed as a valid generate() call.
-            target = functools.partial(self._run_generate, job_token = job_token, video_id = video_id),
+            target = functools.partial(
+                self._run_generate,
+                job_token = job_token,
+                video_id = video_id,
+                **({} if record_outcome else {"record_outcome": False}),
+            ),
             kwargs = dict(
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -15454,9 +15745,10 @@ class VideoBackend:
                 guidance_2 = guidance_2,
                 seed = seed,
                 _resolved_inputs = resolved_inputs,
-                cancel_event = cancel,
+                cancel_event = run_cancel,
                 live_preview = live_preview,
                 draft_decode = draft_decode,
+                **({"_batch": job_forming} if job_forming is not None else {}),
             ),
             daemon = True,
         )
@@ -15466,7 +15758,7 @@ class VideoBackend:
             # No thread started, so release the reservation; RuntimeError only, a signal may leave a live worker.
             self._finish_generate_job(
                 job_token = job_token,
-                cancel_event = cancel,
+                cancel_event = run_cancel,
                 error = "Video generation could not start.",
             )
             raise
@@ -15501,12 +15793,17 @@ class VideoBackend:
         cancel_event: threading.Event,
         job_token: Optional[object] = None,
         video_id: Optional[str] = None,
+        record_outcome: bool = True,
         **gen_kwargs: Any,
     ) -> None:
         """Reservation never outlives its thread after BaseException; begin_generate looks it up by name."""
         try:
             self._run_generate_body(
-                cancel_event = cancel_event, job_token = job_token, video_id = video_id, **gen_kwargs
+                cancel_event = cancel_event,
+                job_token = job_token,
+                video_id = video_id,
+                record_outcome = record_outcome,
+                **gen_kwargs,
             )
         finally:
             if job_token is not None:
@@ -15522,6 +15819,7 @@ class VideoBackend:
         cancel_event: threading.Event,
         job_token: Optional[object] = None,
         video_id: Optional[str] = None,
+        record_outcome: bool = True,
         **gen_kwargs: Any,
     ) -> None:
         """Worker for begin_generate; unexpected errors are logged in full, the client gets
@@ -15529,7 +15827,7 @@ class VideoBackend:
         from . import video_gallery
 
         def _record_outcome(error: Optional[str] = None) -> None:
-            if video_id is None:
+            if video_id is None or not record_outcome:
                 return
             try:
                 video_gallery.record_job_outcome(
@@ -15538,8 +15836,35 @@ class VideoBackend:
             except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the backend busy
                 logger.warning("video.persist_job_outcome_failed: %s", exc)
 
+        handed_shape: list = []
+
+        def _hand_off_slot(result: dict[str, Any]) -> bool:
+            """Hand the job slot on before this clip's deferred encode; True when the encode still owns it."""
+            batch = gen_kwargs.get("_batch")
+            if batch is not None:
+                with self._lock:
+                    # Sealed by now: the load state is only read by a join, so the encode holds no pipeline.
+                    batch.state = None
+                    shared = bool(batch.riders)
+                if shared:
+                    # A job any clip joined keeps its slot until every member is saved and settled
+                    # (_finish_generate_job settles and records its riders), so it never hands off.
+                    return True
+            shape = self._last_request_shape
+            if self._hand_off_encode(job_token, cancel_event, result.get("steps")):
+                handed_shape.append(shape)
+            return False
+
+        def _request_shape() -> Optional[dict[str, Any]]:
+            # Once handed off, _last_request_shape is the next clip's.
+            return handed_shape[0] if handed_shape else self._last_request_shape
+
         try:
-            result = self.generate(cancel_event = cancel_event, **gen_kwargs)
+            result = self._generate_members(
+                cancel_event,
+                gen_kwargs,
+                on_gpu_released = _hand_off_slot if job_token is not None else None,
+            )
         except ValueError as exc:
             _record_outcome(str(exc))
             self._finish_generate_job(
@@ -15550,13 +15875,13 @@ class VideoBackend:
             msg = str(exc)
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
-                msg = video_failure_detail(exc, self._last_request_shape)
+                msg = video_failure_detail(exc, _request_shape())
             _record_outcome(msg)
             self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            detail = video_failure_detail(exc, self._last_request_shape)
+            detail = video_failure_detail(exc, _request_shape())
             _record_outcome(detail)
             self._finish_generate_job(
                 job_token = job_token,
@@ -15567,6 +15892,16 @@ class VideoBackend:
 
         # Persist the clip with its full recipe as the JSON sidecar the gallery reads back.
         created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for rider, rider_result in result.pop("riders", None) or ():
+            self._save_rider_clip(rider, rider_result, result, gen_kwargs, created_at)
+        batch = gen_kwargs.get("_batch")
+        if batch is not None and batch.leader_cancel is not None and batch.leader_cancel.is_set():
+            # This job's own clip stopped while its riders kept the shared denoise going.
+            _record_outcome(VIDEO_CANCELLED_MSG)
+            self._finish_generate_job(
+                job_token = job_token, cancel_event = cancel_event, error = VIDEO_CANCELLED_MSG
+            )
+            return
         try:
             record = video_gallery.save(
                 result["mp4_bytes"],
@@ -15623,6 +15958,264 @@ class VideoBackend:
             total = result["steps"],
         )
 
+    def _generate_members(
+        self,
+        cancel_event: Any,
+        gen_kwargs: dict,
+        on_gpu_released: Optional[Callable[[dict], bool]] = None,
+    ) -> dict:
+        """One render of the job's clip and its riders. A batch that runs out of memory (or would not fit)
+        renders its clips one at a time instead, each rider saved as it finishes, so no clip is lost or
+        rendered twice. ``on_gpu_released`` (the slot handoff) reaches only the first render: a clip rendered
+        one at a time after a batch failed belongs to a job with riders, which keeps its slot to the end."""
+        batch = gen_kwargs.get("_batch")
+        try:
+            return self.generate(
+                cancel_event = cancel_event,
+                **({"_on_gpu_released": on_gpu_released} if on_gpu_released is not None else {}),
+                **gen_kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001 -- re-raised unless a batch can be salvaged
+            if batch is None:
+                raise
+            with self._lock:
+                # A batch that failed takes no more clips.
+                batch.sealed.set()
+                riders = list(batch.riders)
+            from .video_batch import BatchDoesNotFit
+
+            if not riders or not (isinstance(exc, BatchDoesNotFit) or is_oom_error(exc)):
+                raise
+            logger.warning(
+                "video.batch: %s; rendering the %d clips one at a time",
+                "out of memory" if is_oom_error(exc) else exc,
+                1 + len(riders),
+            )
+        solo = {k: v for k, v in gen_kwargs.items() if k != "_batch"}
+        own_stop = batch.leader_cancel or threading.Event()
+        result: Optional[dict] = None
+        leader_error: Optional[BaseException] = None
+        if not own_stop.is_set():
+            try:
+                result = self.generate(cancel_event = own_stop, **solo)
+            except Exception as exc:  # noqa: BLE001 -- the riders still render; raised below
+                leader_error = exc
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for rider in riders:
+            if rider.outcome is not None or rider.cancel.is_set():
+                continue
+            try:
+                one = self.generate(
+                    cancel_event = rider.cancel,
+                    **{
+                        **solo,
+                        "prompt": rider.prompt,
+                        "negative_prompt": rider.negative_prompt,
+                        "seed": rider.seed,
+                        "live_preview": False,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 -- one clip's failure is its own
+                if str(exc) != VIDEO_CANCELLED_MSG:
+                    logger.error("video.generate_failed: %s", exc, exc_info = True)
+                    with self._lock:
+                        self._settle_rider_locked(
+                            rider, error = video_failure_detail(exc, self._last_request_shape)
+                        )
+                continue
+            self._save_rider_clip(rider, one, one, solo, created_at)
+        if leader_error is not None:
+            raise leader_error
+        if result is None:
+            # The job's own clip stopped before its rerun; its riders are saved above.
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+        return result
+
+    def _save_rider_clip(
+        self,
+        rider: Any,
+        rider_result: Optional[dict],
+        result: dict,
+        gen_kwargs: dict,
+        created_at: str,
+    ) -> None:
+        """Save one rider's clip under its own id and recipe, and settle it; a stopped rider is only settled.
+        Runs as the rider's account, not the job's: the gallery and job store are per account."""
+        _as_rider(
+            rider,
+            self._save_rider_clip_as_rider,
+            rider,
+            rider_result,
+            result,
+            gen_kwargs,
+            created_at,
+        )
+
+    def _save_rider_clip_as_rider(
+        self,
+        rider: Any,
+        rider_result: Optional[dict],
+        result: dict,
+        gen_kwargs: dict,
+        created_at: str,
+    ) -> None:
+        from . import video_gallery
+
+        def _record(error: Optional[str] = None) -> None:
+            if rider.video_id is None or not rider.record_outcome:
+                return
+            rider.recorded = True
+            try:
+                video_gallery.record_job_outcome(
+                    rider.video_id, completed_at = int(time.time()), error = error
+                )
+            except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the batch
+                logger.warning("video.persist_job_outcome_failed: %s", exc)
+
+        with self._lock:
+            stopped = rider.outcome is not None or rider_result is None
+            if stopped:
+                self._settle_rider_locked(rider, error = VIDEO_CANCELLED_MSG)
+            else:
+                rider.closed = True
+        if stopped:
+            _record((rider.outcome or {}).get("error") or VIDEO_CANCELLED_MSG)
+            return
+        # A solo rerun returns the whole result; a batch row only what differs from the job's clip.
+        merged = {**result, **rider_result}
+        try:
+            record = video_gallery.save(
+                merged["mp4_bytes"],
+                {
+                    "prompt": rider.prompt,
+                    "negative_prompt": merged.get("negative_prompt"),
+                    "width": merged["width"],
+                    "height": merged["height"],
+                    "num_frames": merged["num_frames"],
+                    "fps": merged["fps"],
+                    "duration_s": (
+                        merged["num_frames"] / float(merged["fps"]) if merged.get("fps") else 0.0
+                    ),
+                    "steps": merged["steps"],
+                    "guidance": merged["guidance"],
+                    "guidance_2": rider.gen_kwargs.get("guidance_2", gen_kwargs.get("guidance_2")),
+                    "seed": merged["seed"],
+                    "has_audio": bool(merged.get("has_audio", False)),
+                    "conditioning": merged["conditioning"],
+                    "flow_shift": merged.get("flow_shift"),
+                    "audio_flow_shift": merged.get("audio_flow_shift"),
+                    "model": merged["repo_id"],
+                    "model_kind": merged.get("model_kind"),
+                    "gguf_filename": merged.get("gguf_filename"),
+                    "transformer_quant": merged.get("transformer_quant"),
+                    "text_encoder_quant": merged.get("text_encoder_quant"),
+                    "memory_mode": merged.get("memory_mode"),
+                    "offload_policy": merged.get("offload_policy"),
+                    **(
+                        {"baked_loras": list(merged["baked_loras"])}
+                        if merged.get("baked_loras")
+                        else {}
+                    ),
+                    "created_at": created_at,
+                },
+                **({"video_id": rider.video_id} if rider.video_id is not None else {}),
+            )
+        except Exception as exc:  # noqa: BLE001 -- disk failure must reach the poller
+            logger.error("video.persist_failed: %s", exc)
+            _record("Failed to save the generated video.")
+            with self._lock:
+                self._settle_rider_locked(rider, error = "Failed to save the generated video.")
+            return
+        _record()
+        with self._lock:
+            self._settle_rider_locked(rider, video = record, total = int(merged["steps"]))
+
+    def _hand_off_encode(
+        self, job_token: object, cancel_event: threading.Event, steps: Optional[int]
+    ) -> bool:
+        """The clip's GPU work is done and only its CPU encode is left: free the job slot so the queue starts the next
+        clip now. At most one clip encodes past its slot; a second waits here, slot held, for the first to end."""
+        self._encode_tail_free.acquire()
+        with self._lock:
+            if self._generate_job_token is not job_token:
+                self._encode_tail_free.release()
+                return False
+            total = int(steps or 0)
+            self._encode_tail = _EncodeTail(
+                token = job_token,
+                video_id = self._gen_video_id,
+                account = self._generate_job_account,
+                cancel = cancel_event,
+                total = total,
+                epoch = self._slot_epoch,
+            )
+            self._generate_job_token = None
+            self._generate_job_active = False
+            if self._active_generate_cancel is cancel_event:
+                self._active_generate_cancel = None
+            # The clip answers by id from here (generate_outcome); the record is the next clip's.
+            self._gen = {"active": False}
+            self._gen_video_id = None
+            # Only a job no clip joined hands off (_hand_off_slot): its sealed, empty batch ends here.
+            self._forming = None
+            self._leader_stopped = False
+            self._job_cancel = None
+            # The GPU is free: this is when the next clip can start, so the queue's ETA clock ends here.
+            _note_clip_finished(True, total)
+        _wake_video_queue()
+        return True
+
+    def _finish_encode_tail(
+        self, tail: _EncodeTail, video: Optional[dict], error: Optional[str]
+    ) -> None:
+        """Publish a handed-off clip's terminal state; the caller holds _lock. The progress record takes it only
+        while no later clip has started."""
+        self._encode_tail = None
+        self._encode_tail_free.release()
+        if error is not None:
+            terminal = {
+                "active": False,
+                "phase": "failed",
+                "error": error,
+                "step": 0,
+                "total": 0,
+                "eta_seconds": None,
+            }
+            logger.info(
+                "video_generation_progress",
+                phase = "failed",
+                percent = 0,
+                step = 0,
+                total_steps = 0,
+                error = error,
+            )
+        else:
+            terminal = {
+                "active": False,
+                "phase": "completed",
+                "video": video,
+                "step": tail.total,
+                "total": tail.total,
+                "eta_seconds": None,
+            }
+            logger.info(
+                "video_generation_progress",
+                phase = "completed",
+                percent = 100,
+                step = tail.total,
+                total_steps = tail.total,
+                video_id = (video or {}).get("id"),
+            )
+        if self._generate_job_token is None and self._slot_epoch == tail.epoch:
+            self._gen = dict(terminal)
+            self._gen_video_id = tail.video_id
+            self._generate_job_account = tail.account
+        if tail.video_id is not None:
+            self._gen_outcomes[tail.video_id] = (tail.account, dict(terminal))
+            self._gen_outcomes.move_to_end(tail.video_id)
+            while len(self._gen_outcomes) > 64:
+                self._gen_outcomes.popitem(last = False)
+
     def _finish_generate_job(
         self,
         *,
@@ -15635,6 +16228,10 @@ class VideoBackend:
         """Publish a job's terminal state once, keyed on its token, as the busy flag may be a
         successor's."""
         with self._lock:
+            tail = self._encode_tail
+            if tail is not None and job_token is not None and tail.token is job_token:
+                self._finish_encode_tail(tail, video, error)
+                return
             if self._generate_job_token is not job_token:
                 return
             self._generate_job_token = None
@@ -15676,9 +16273,332 @@ class VideoBackend:
                     total_steps = total,
                     video_id = (video or {}).get("id"),
                 )
+            # Riders the worker did not settle end with this job: its error, or nothing saved.
+            forming, self._forming = self._forming, None
+            for rider in list(getattr(forming, "riders", ()) or ()):
+                if rider.outcome is None:
+                    self._settle_rider_locked(
+                        rider,
+                        error = VIDEO_CANCELLED_MSG
+                        if rider.cancel.is_set()
+                        else (error or "The generation ended before a clip was saved."),
+                    )
+            self._leader_stopped = False
+            self._job_cancel = None
+            # Under the lock, so a successor's start cannot be paired with this clip's time. A shared
+            # denoise's time is not one clip's, so it never feeds the queue's per-clip ETA.
+            shared = bool(getattr(forming, "riders", None))
+            _note_clip_finished(error is None and not shared, total)
+            if self._gen_video_id is not None:
+                self._gen_outcomes[self._gen_video_id] = (
+                    self._generate_job_account,
+                    dict(self._gen),
+                )
+                self._gen_outcomes.move_to_end(self._gen_video_id)
+                while len(self._gen_outcomes) > 64:
+                    self._gen_outcomes.popitem(last = False)
+        # Riders settled without a save (a failed or stopped batch) persist their outcome too, each as its own account.
+        self._record_rider_outcomes(forming)
+        # Outside the lock: the queue starts the next video as soon as this one ends.
+        _wake_video_queue()
 
+    def _record_rider_outcomes(self, forming: Any) -> None:
+        from . import video_gallery
+        with self._lock:
+            pending = [
+                rider
+                for rider in list(getattr(forming, "riders", ()) or ())
+                if rider.outcome is not None
+                and not rider.recorded
+                and rider.record_outcome
+                and rider.video_id is not None
+            ]
+            for rider in pending:
+                rider.recorded = True
+        for rider in pending:
+            error = rider.outcome.get("error") if rider.outcome.get("phase") == "failed" else None
+            try:
+                _as_rider(
+                    rider,
+                    video_gallery.record_job_outcome,
+                    rider.video_id,
+                    completed_at = int(time.time()),
+                    error = error,
+                )
+            except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the backend busy
+                logger.warning("video.persist_job_outcome_failed: %s", exc)
+
+    def generate_outcome(self, video_id: str, expected_account: Optional[str]) -> Optional[dict]:
+        """The terminal progress record of the clip ``video_id``, for the account that ran it; a clip still encoding
+        after handing the GPU on answers as exporting."""
+        with self._lock:
+            tail = self._encode_tail
+            if tail is not None and tail.video_id is not None and tail.video_id == video_id:
+                if tail.account != expected_account:
+                    return None
+                return {
+                    "active": True,
+                    "phase": "export",
+                    "step": tail.total,
+                    "total": tail.total,
+                    "eta_seconds": None,
+                    "video_id": video_id,
+                    "total_steps": tail.total,
+                    "fraction": 1.0 if tail.total else 0.0,
+                }
+            kept = self._gen_outcomes.get(video_id)
+        if kept is None or kept[0] != expected_account:
+            return None
+        gen = dict(kept[1])
+        total = int(gen.get("total") or 0)
+        gen.update(
+            video_id = video_id,
+            active = False,
+            total_steps = total,
+            fraction = 1.0 if gen.get("phase") == "completed" else 0.0,
+        )
+        return gen
+
+    # ── clips that share a denoise (video_batch) ─────────────────────────────
+
+    def forming_batch(self) -> bool:
+        """True while the running job still takes compatible queued clips into its denoise."""
+        with self._lock:
+            forming = self._forming
+            return bool(self._generate_job_active and forming is not None and forming.room())
+
+    def seal_batch(self) -> int:
+        """Close the running job's batch to new clips; returns how many clips it holds. Idempotent."""
+        with self._lock:
+            forming = self._forming
+            if forming is None:
+                return 0
+            forming.sealed.set()
+            return 1 + sum(1 for rider in forming.riders if rider.outcome is None)
+
+    def _batch_engine_decline(self, state: Any) -> Optional[str]:
+        """Engine-side reasons a load renders one clip per denoise (video_batch covers the load's modules)."""
+        bg = getattr(state, "bg_compile", None)
+        if bg is not None and bg.pending():
+            # The eager render records the compile's inputs: a batch would compile at that batch size.
+            return "a background compile is pending"
+        if self._inline_float_seeds(state) is not None:
+            return "the compile's first clip is still seeding"
+        from .video_dmd import dmd_timesteps
+
+        if (
+            dmd_timesteps(
+                *(
+                    getattr(state, name, None)
+                    for name in ("variant_id", "gguf_filename", "display_repo_id", "repo_id")
+                )
+            )
+            is not None
+        ):
+            return "a DMD student samples its own noise per clip"
+        return None
+
+    def _seal_batch_rows(self, forming: Any, cancel: Any) -> list:
+        """Wait (bounded) for the queue to hand over its riders, then seal; the live riders, in queue order."""
+        from .video_batch import SEAL_TIMEOUT_S
+
+        deadline = time.monotonic() + SEAL_TIMEOUT_S
+        while not forming.sealed.wait(0.1):
+            if self._teardown_waiters:
+                break
+            if time.monotonic() >= deadline:
+                logger.info(
+                    "video.batch: sealed after %.0f s without the queue's word", SEAL_TIMEOUT_S
+                )
+                break
+        with self._lock:
+            forming.sealed.set()
+            riders = [rider for rider in forming.riders if rider.outcome is None]
+        if riders:
+            from . import video_batch
+            video_batch.note("batches")
+            video_batch.note("rows", 1 + len(riders))
+        return riders
+
+    def _rider_record_locked(self, rider: Any) -> dict:
+        if rider.outcome is not None:
+            gen = dict(rider.outcome)
+        else:
+            gen = dict(self._gen)
+            gen["active"] = True
+            # The live preview is the job's own clip.
+            gen.pop("preview", None)
+            gen.pop("preview_seq", None)
+        gen["video_id"] = rider.video_id
+        total = int(gen.get("total") or 0)
+        step = int(gen.get("step") or 0)
+        gen["total_steps"] = total
+        gen["fraction"] = (
+            1.0
+            if gen.get("phase") == "completed"
+            else (min(1.0, step / total) if total > 0 else 0.0)
+        )
+        return gen
+
+    def _job_riders_locked(self) -> list:
+        forming = self._forming
+        return list(forming.riders) if forming is not None else []
+
+    def _keep_outcome_locked(
+        self, video_id: Optional[str], account: Optional[str], gen: dict
+    ) -> None:
+        if video_id is None:
+            return
+        self._gen_outcomes[video_id] = (account, dict(gen))
+        self._gen_outcomes.move_to_end(video_id)
+        while len(self._gen_outcomes) > 64:
+            self._gen_outcomes.popitem(last = False)
+
+    def _settle_rider_locked(
+        self,
+        rider: Any,
+        *,
+        video: Optional[dict] = None,
+        error: Optional[str] = None,
+        total: int = 0,
+    ) -> None:
+        if rider.outcome is not None:
+            return
+        if error is not None:
+            rider.outcome = {
+                "active": False,
+                "phase": "failed",
+                "error": error,
+                "step": 0,
+                "total": 0,
+                "eta_seconds": None,
+            }
+        else:
+            rider.outcome = {
+                "active": False,
+                "phase": "completed",
+                "video": video,
+                "step": total,
+                "total": total,
+                "eta_seconds": None,
+            }
+        self._keep_outcome_locked(rider.video_id, rider.account_id, rider.outcome)
+        logger.info(
+            "video_generation_progress",
+            phase = rider.outcome["phase"],
+            batch_member = True,
+            video_id = rider.video_id,
+        )
+
+    def _stop_rider_locked(self, rider: Any) -> bool:
+        if rider.outcome is not None or getattr(rider, "closed", False):
+            return False
+        rider.cancel.set()
+        self._settle_rider_locked(rider, error = VIDEO_CANCELLED_MSG)
+        return True
+
+    def _settle_stopped_members(
+        self,
+        riders: list,
+        leader_cancel: Any = None,
+    ) -> None:
+        """At a step boundary: a clip whose own Stop arrived without cancel_generate (a chat tool's stop)
+        settles now; the shared denoise keeps going for the rest."""
+        with self._lock:
+            for rider in riders:
+                if rider.cancel.is_set() and rider.outcome is None:
+                    self._settle_rider_locked(rider, error = VIDEO_CANCELLED_MSG)
+            if leader_cancel is not None and leader_cancel.is_set():
+                self._publish_leader_stopped_locked()
+
+    def _publish_leader_stopped_locked(self) -> None:
+        if self._leader_stopped:
+            return
+        self._leader_stopped = True
+        self._keep_outcome_locked(
+            self._gen_video_id,
+            self._generate_job_account,
+            {
+                "active": False,
+                "phase": "failed",
+                "error": VIDEO_CANCELLED_MSG,
+                "step": 0,
+                "total": 0,
+                "eta_seconds": None,
+            },
+        )
+
+    def member_progress(
+        self, video_id: Optional[str], account: Optional[str]
+    ) -> Optional[dict[str, Any]]:
+        """A rider's progress for its own account (by id, else its account's first live rider); None when
+        ``account`` has no clip riding in the running batch."""
+        with self._lock:
+            for rider in self._job_riders_locked():
+                if rider.account_id != account:
+                    continue
+                if video_id is not None and rider.video_id != video_id:
+                    continue
+                if video_id is None and (
+                    rider.outcome is not None or account == self._generate_job_account
+                ):
+                    continue
+                return self._rider_record_locked(rider)
+        return None
+
+    def progress_for_video(self, video_id: str) -> Optional[dict[str, Any]]:
+        """The clip ``video_id``'s own record wherever it is: ended, riding a batch, or the running job.
+        For callers that already scoped ``video_id`` to the caller's account."""
+        with self._lock:
+            kept = self._gen_outcomes.get(video_id)
+            rider = next((r for r in self._job_riders_locked() if r.video_id == video_id), None)
+            if kept is None and rider is not None:
+                return self._rider_record_locked(rider)
+            live = self._gen_video_id == video_id and self._generate_job_active
+        if kept is not None:
+            gen = dict(kept[1])
+            total = int(gen.get("total") or 0)
+            gen.update(
+                video_id = video_id,
+                active = False,
+                total_steps = total,
+                fraction = 1.0 if gen.get("phase") == "completed" else 0.0,
+            )
+            return gen
+        if live:
+            gen = self.generate_progress()
+            if gen.get("video_id") == video_id:
+                return gen
+        return None
+
+    def cancel_rider(self, video_id: Optional[str], account: Optional[str]) -> bool:
+        """Stop ``account``'s clip riding the running batch (by id, else all of its riders)."""
+        with self._lock:
+            stopped = False
+            for rider in self._job_riders_locked():
+                if rider.account_id != account:
+                    continue
+                if video_id is not None and rider.video_id != video_id:
+                    continue
+                stopped = self._stop_rider_locked(rider) or stopped
+            return stopped
+
+    def generation_accounts(self) -> frozenset:
+        """Every account with a clip in the running job: its own and its riders'."""
+        with self._lock:
+            if not self._generate_job_active:
+                return frozenset()
+            accounts = {self._generate_job_account}
+            accounts.update(
+                rider.account_id for rider in self._job_riders_locked() if rider.outcome is None
+            )
+            accounts.discard(None)
+            return frozenset(accounts)
+
+    @keeps_system_awake
     @holds_inference
     @vram_budget_scope("video")
+    @_encode_after_return
     def generate(
         self,
         *,
@@ -15708,9 +16628,17 @@ class VideoBackend:
         live_preview: Optional[bool] = None,
         # Wan only: decode the final latent with the tiny VAE (fast, lower fidelity). None = UNSLOTH_VIDEO_DRAFT_DECODE.
         draft_decode: Optional[bool] = None,
+        # The batch begin_generate opened for this clip (video_batch.Forming): its riders share the denoise.
+        _batch: Any = None,
     ) -> dict[str, Any]:
+        """Render one clip. The GPU part runs under _generate_lock; the CPU MP4 encode of a clip that was not
+        streamed during its decode runs after this frame returns (_encode_after_return), so a queued successor's GPU
+        work overlaps it and no pipeline reference outlives the lock."""
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
+        # Riders sealed into this clip's denoise; empty renders exactly the single-clip path.
+        riders: list = []
+        row_seeds: list = []
         with self._generate_lock:
             # Never render beside a background compile; wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
@@ -15738,8 +16666,7 @@ class VideoBackend:
             prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
             if prebuild is not None:
                 prebuild.yield_to_render("video", logger)
-            # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
-            # nothing truthful to report.
+            # Bound after resolution; None means the failure came first, so nothing to report.
             request_shape: Optional[dict[str, Any]] = None
             # Compile still pending: this render runs eager and records the denoiser inputs for it.
             from . import diffusion_bg_compile as bg_compile
@@ -15752,6 +16679,8 @@ class VideoBackend:
             i2v_swap = contextlib.ExitStack()
             # Encodes Wan chunks while the VAE decodes; closed in the finally on cancel or failure.
             stream_session = None
+            # Set once this clip's encode is deferred past the lock (see generate()).
+            finish_encode = encode_args = None
             try:
                 # First: on a fresh thread, un-indexed device calls resolve to the default card.
                 self._state_device_target(state)
@@ -15853,8 +16782,7 @@ class VideoBackend:
                             "This FastWan checkpoint is a DMD few-step student, which only the Diffusers engine "
                             "samples; load the Diffusers repo instead of a GGUF file."
                         )
-                    # A DMD student is distilled at fixed timesteps, without CFG: other counts or a CFG scale
-                    # would sample a model it was never trained to be.
+                    # DMD student: fixed steps, no CFG; other counts or scales are untrained.
                     if steps != len(dmd_ts) or guidance != 1.0:
                         logger.info(
                             "video.dmd: %d steps / CFG %s requested; this DMD student runs its trained %d "
@@ -15885,6 +16813,22 @@ class VideoBackend:
                     )
 
                 import torch
+
+                if _batch is not None:
+                    riders = self._seal_batch_rows(_batch, cancel)
+                if riders:
+                    # ``cancel`` is begin_generate's video_batch.AllCancelled: the shared denoise stops only
+                    # once every clip in it stopped, or on an unload / superseding load.
+                    logger.info(
+                        "video.batch: %d clips share one denoise (%s)", 1 + len(riders), fam.name
+                    )
+                batch_rows = 1 + len(riders)
+                if riders:
+                    from .video_batch import BatchDoesNotFit, auto_size_decline
+                    unmeasured = auto_size_decline(state, batch_rows)
+                    if unmeasured is not None:
+                        # Before any denoise: the clips render one at a time, none lost or rendered twice.
+                        raise BatchDoesNotFit(unmeasured)
 
                 if state.engine == "diffusers" and fam.modular_workflow and state.device != "cpu":
                     from .video_minimax_h3 import (
@@ -16082,13 +17026,20 @@ class VideoBackend:
                         # only when engaged, so a lever-off load keeps the key (and the peaks) it had before
                         **_memory_levers_key(state),
                     )
+                    # A batch has its own peaks (one-clip keys are unchanged); its denoise holds every row at once.
+                    single_calibration = calibration
+                    denoise_frames = int(frames) * batch_rows
+                    if batch_rows > 1:
+                        calibration = video_stream_residency.with_extra(
+                            calibration, "batch", batch_rows
+                        )
                     # Tag BEFORE the residency fit: after a reload the fit reads process-wide peaks through this key.
                     video_stream_residency.arm_request(
                         state.pipe,
                         key = calibration,
                         width = width,
                         height = height,
-                        frames = frames,
+                        frames = denoise_frames,
                         device = device_obj,
                         rearm = False,
                     )
@@ -16114,7 +17065,7 @@ class VideoBackend:
                             floor_mib = request_floor_mib,
                             width = width,
                             height = height,
-                            frames = frames,
+                            frames = denoise_frames,
                             logger = logger,
                         )
                     else:
@@ -16123,32 +17074,27 @@ class VideoBackend:
                             key = calibration,
                             width = width,
                             height = height,
-                            frames = frames,
+                            frames = denoise_frames,
                             device = device_obj,
                         )
                     available_bytes = _request_available_bytes(device_obj, torch.cuda)
-                    shortfall = video_offload_shortfall_message(
-                        family = fam.name,
-                        floor_mib = request_floor_mib,
-                        available_mib = int(available_bytes // (1024 * 1024)),
-                        placement = f"'{state.offload_policy}' offload",
-                        width = width,
-                        height = height,
-                        frames = frames,
-                        decode_floor_mib = request_decode_floor_mib,
-                        measured_extra_mib = video_stream_residency.measured_extra_mib(
-                            calibration, int(width) * int(height) * int(frames)
-                        ),
-                        decode_mib = _video_tiled_decode_mib(
-                            state,
-                            width = width,
-                            height = height,
-                            frames = frames,
-                            available_mib = int(available_bytes // (1024 * 1024)),
-                            device = device_obj,
-                            decode_floor_mib = request_decode_floor_mib,
-                        ),
-                        denoise_mib = _ltx25_denoise_price_mib(
+                    batch_denoise_mib = (
+                        video_stream_residency.batch_denoise_mib(
+                            single_calibration,
+                            int(width) * int(height) * int(frames),
+                            batch_rows,
+                            DEFAULT_BASE_OVERHEAD_MIB,
+                        )
+                        if batch_rows > 1
+                        else None
+                    )
+                    request_measured_mib = video_stream_residency.measured_extra_mib(
+                        calibration, int(width) * int(height) * int(frames) * batch_rows
+                    )
+                    request_denoise_mib = (
+                        batch_denoise_mib
+                        if batch_denoise_mib is not None
+                        else _ltx25_denoise_price_mib(
                             state,
                             family = fam.name,
                             width = width,
@@ -16159,9 +17105,41 @@ class VideoBackend:
                             or bool(references),
                             cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
                             fps = out_fps,
+                        )
+                    )
+                    apply_request_prefetch_depth(
+                        state.pipe,
+                        floor_mib = request_floor_mib,
+                        available_mib = int(available_bytes // (1024 * 1024)),
+                        denoise_mib = request_denoise_mib,
+                        measured_extra_mib = request_measured_mib,
+                        logger = logger,
+                    )
+                    shortfall = video_offload_shortfall_message(
+                        family = fam.name,
+                        floor_mib = request_floor_mib,
+                        available_mib = int(available_bytes // (1024 * 1024)),
+                        placement = f"'{state.offload_policy}' offload",
+                        width = width,
+                        height = height,
+                        frames = frames,
+                        decode_floor_mib = request_decode_floor_mib,
+                        measured_extra_mib = request_measured_mib,
+                        decode_mib = _video_tiled_decode_mib(
+                            state,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            available_mib = int(available_bytes // (1024 * 1024)),
+                            device = device_obj,
+                            decode_floor_mib = request_decode_floor_mib,
                         ),
+                        denoise_mib = request_denoise_mib,
                     )
                     if shortfall is not None:
+                        if batch_rows > 1:
+                            from .video_batch import BatchDoesNotFit
+                            raise BatchDoesNotFit(shortfall)
                         raise RuntimeError(shortfall)
 
                 # diffusers reproduces a Metal seed only with a CPU generator.
@@ -16172,6 +17150,10 @@ class VideoBackend:
                 if seed is None:
                     seed = int(generator.seed()) % (2**53)
                 generator = generator.manual_seed(int(seed))
+                for rider in riders:
+                    if rider.seed is None:
+                        # Resolved once: a one-at-a-time rerun after an OOM replays the same clip.
+                        rider.seed = int(torch.Generator().seed()) % (2**53)
 
                 # Snapshot the resolved request for failure logs; no prompt text, only its length.
                 request_shape = {
@@ -16280,6 +17262,21 @@ class VideoBackend:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
                 if fam.modular_workflow:
                     kwargs["output"] = ["videos", "audio", "sampling_rate"]
+                if riders:
+                    from .video_batch import row_generators
+
+                    # Row i is drawn from its own clip's generator at the one-clip shape: its solo noise.
+                    kwargs["prompt"] = [prompt] + [rider.prompt for rider in riders]
+                    row_seeds = [int(seed)] + [int(rider.seed) for rider in riders]
+                    kwargs["generator"] = row_generators(row_seeds, generator_device)
+                    negatives = [negative_prompt] + [rider.negative_prompt for rider in riders]
+                    if not fam.supports_cfg:
+                        for rider in riders:
+                            rider.negative_prompt = None
+                    elif any(negatives) and "negative_prompt" in call_params:
+                        # An absent negative prompt is the empty one, as Diffusers reads None alone.
+                        kwargs["negative_prompt"] = [text or "" for text in negatives]
+                    request_shape["batch"] = batch_rows
                 if bg_eager and not i2v_active and _bg_i2v_render(first_pil, i2v_active):
                     # Same as the i2v swap above, for a family that conditions without one (its own render).
                     i2v_swap.enter_context(bg_compile.no_record())
@@ -16431,8 +17428,7 @@ class VideoBackend:
                     self._gen.update(phase = "decode", eta_seconds = None)
 
                 def _on_decode() -> None:
-                    """Mark the decode boundary in the stream, retrying under contention; flip when
-                    the GPU reaches it."""
+                    """Mark decode boundary; retry under contention; flip when GPU reaches it."""
                     if float_seeds is not None:
                         # Before the VAE decode's compile adds its own names.
                         float_seeds.keep()
@@ -16473,9 +17469,13 @@ class VideoBackend:
                     if not cancel.is_set():
                         _tick(step_index + 1)
                         if previewer is not None:
-                            previewer.on_step(
-                                callback_kwargs.get("latents"), getattr(p, "scheduler", None)
-                            )
+                            latents = callback_kwargs.get("latents")
+                            if riders and latents is not None:
+                                # The preview is this job's own clip, row 0.
+                                latents = latents[:1]
+                            previewer.on_step(latents, getattr(p, "scheduler", None))
+                    if riders:
+                        self._settle_stopped_members(riders, getattr(cancel, "leader", None))
                     if cancel.is_set():
                         p._interrupt = True
                     cross_forward_step(p, step_index, timestep = timestep)
@@ -16529,6 +17529,15 @@ class VideoBackend:
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         # NaN / inf pixels are refused at the decode, before a clamp or PIL / uint8 cast hides them.
                         stack.enter_context(finite_video_decode(pipe))
+                        if riders:
+                            from .video_batch import eager_render, per_row_decode, per_row_encode
+
+                            # Outermost: each clip decodes alone, through every layer above.
+                            stack.enter_context(per_row_decode(pipe, lambda: batch_rows))
+                            # The batch shape never compiles or captures on a user's request.
+                            stack.enter_context(eager_render(pipe))
+                            # Each clip's prompt is encoded alone, as in its own render.
+                            stack.enter_context(per_row_encode(pipe))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
                         if stream_session is not None:
@@ -16569,6 +17578,12 @@ class VideoBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
+                if riders and state.transformer_cache:
+                    from .video_batch import BatchDoesNotFit
+
+                    # A step cache judges the whole batch's residual: one clip would decide another's skips.
+                    # Before any denoise: the clips render one at a time, each with its own cache decision.
+                    raise BatchDoesNotFit("a step cache engaged for this render")
                 # A step cache keys residuals on cond / uncond context, invisible to a graph key: graphs armed with the cache off run eager.
                 graph_handles = tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
                 if graph_handles:
@@ -16605,9 +17620,11 @@ class VideoBackend:
                 stream_session = open_stream_encode(
                     pipe,
                     out_fps,
+                    # One clip's frames per session: a batch encodes each clip after its decode.
                     engage = not fam.modular_workflow
                     and not fam.has_audio
-                    and ltx25_render_call is None,
+                    and ltx25_render_call is None
+                    and not riders,
                     logger = logger,
                 ) or open_h3_stream_encode(
                     pipe,
@@ -16657,11 +17674,14 @@ class VideoBackend:
                     seeded = kwargs.get("generator")
                     if isinstance(seeded, torch.Generator):
                         seeded.manual_seed(int(seed))
+                    elif isinstance(seeded, list):
+                        # A batch: each row's generator back to its own clip's seed, so the retry draws its solo noise.
+                        for row_generator, row_seed in zip(seeded, row_seeds):
+                            row_generator.manual_seed(int(row_seed))
                     return render_call()
 
                 try:
-                    # The draft decoder first: the decode-phase / finite / uint8 wrappers progress_ctx installs then
-                    # wrap whichever decoder runs, so the decode phase (and its residency release) still fires.
+                    # Draft decoder first; the decode phase still fires whichever decoder runs.
                     with grad_ctx, protect_ctx, draft_ctx, progress_ctx(), sigma_ctx:
                         output = render_thread.run("video", _render_streamed_after_oom)
                 except _VideoGenerationCancelled:
@@ -16723,20 +17743,69 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
-                # Encoded during the decode when its frames (and soundtrack) are exactly these (_encode_mp4 claims it).
-                with offer_stream(stream_session):
-                    if audio_sample_rate is None:
-                        mp4_bytes = self._encode_mp4(
-                            video_frames, out_fps, audio_track, pipe if fam.has_audio else None
-                        )
-                    else:
-                        mp4_bytes = self._encode_mp4(
-                            video_frames,
-                            out_fps,
-                            audio_track,
-                            pipe if fam.has_audio else None,
-                            audio_sample_rate = int(audio_sample_rate),
-                        )
+                rider_results: list = []
+                batch_audio = getattr(output, "audio", None) if riders and fam.has_audio else None
+                for index, rider in enumerate(riders, start = 1):
+                    if rider.cancel.is_set():
+                        rider_results.append(None)
+                        continue
+                    # LTX-2.5's soundtrack is per row too (its audio latents ride the batch); Wan has none.
+                    rider_audio = (
+                        batch_audio[index]
+                        if batch_audio is not None and len(batch_audio) > index
+                        else None
+                    )
+                    rider_results.append(
+                        {
+                            "mp4_bytes": self._encode_mp4(
+                                output.frames[index],
+                                out_fps,
+                                rider_audio,
+                                pipe if rider_audio is not None else None,
+                            ),
+                            "seed": int(rider.seed),
+                            "negative_prompt": rider.negative_prompt,
+                            "num_frames": len(output.frames[index]),
+                            "has_audio": rider_audio is not None,
+                        }
+                    )
+                # A clip not streamed during its decode is encoded on the CPU after the lock is released (NVENC
+                # stays under it: it encodes on the GPU). finish_encode below runs it.
+                # A shared denoise encodes every clip here, under the lock, as its job keeps the slot to the end.
+                deferred_encode = (
+                    stream_session is None
+                    and not riders
+                    and _encode_outside_lock_enabled()
+                    and not nvenc_requested()
+                )
+                if deferred_encode:
+                    mp4_bytes = None
+                    encode_args = (
+                        video_frames,
+                        out_fps,
+                        audio_track,
+                        _DetachedEncodeSource(pipe) if fam.has_audio else None,
+                    )
+                    encode_kwargs = (
+                        {}
+                        if audio_sample_rate is None
+                        else {"audio_sample_rate": int(audio_sample_rate)}
+                    )
+                else:
+                    # Encoded during the decode when its frames (and soundtrack) are exactly these (_encode_mp4 claims it).
+                    with offer_stream(stream_session):
+                        if audio_sample_rate is None:
+                            mp4_bytes = self._encode_mp4(
+                                video_frames, out_fps, audio_track, pipe if fam.has_audio else None
+                            )
+                        else:
+                            mp4_bytes = self._encode_mp4(
+                                video_frames,
+                                out_fps,
+                                audio_track,
+                                pipe if fam.has_audio else None,
+                                audio_sample_rate = int(audio_sample_rate),
+                            )
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
@@ -16748,17 +17817,25 @@ class VideoBackend:
                     # after decode and export: this peak sizes the next request of its size
                     video_stream_residency.record_request_peak(pipe, logger = logger)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
-                self._gen = {"active": False}
-                # Deregister under cancel_generate's lock before the trim, or a late Stop is answered true wrongly.
-                with self._lock:
-                    if cancel.is_set():
-                        raise RuntimeError(VIDEO_CANCELLED_MSG)
-                    if self._active_generate_cancel is cancel:
-                        self._active_generate_cancel = None
+                finish_encode = None
+                if deferred_encode:
+                    # The encode outside the lock touches no GPU memory, and Stop keeps reaching this clip meanwhile.
+                    encode_args = tuple(_host_copy(a) for a in encode_args)
+                    finish_encode = self._detached_encoder(
+                        encode_args, encode_kwargs, cancel, request_shape
+                    )
+                else:
+                    self._gen = {"active": False}
+                    # Deregister under cancel_generate's lock before the trim, or a late Stop is answered true wrongly.
+                    with self._lock:
+                        if cancel.is_set():
+                            raise RuntimeError(VIDEO_CANCELLED_MSG)
+                        if self._active_generate_cancel is cancel:
+                            self._active_generate_cancel = None
                 if bg_eager:
                     _settle_bg_compile(bg, i2v = _bg_i2v_render(first_pil, i2v_active))
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
-                return {
+                result = {
                     "mp4_bytes": mp4_bytes,
                     "seed": int(seed),
                     "repo_id": state.display_repo_id or state.repo_id,
@@ -16784,8 +17861,10 @@ class VideoBackend:
                     "offload_policy": state.offload_policy,
                     "baked_loras": video_lora.baked_lora_names(state.pipe),
                     "draft_decode": bool(getattr(draft_ctx, "calls", 0)),
+                    **({"riders": list(zip(riders, rider_results))} if riders else {}),
                 }
             except Exception as exc:
+                finish_encode = None
                 self._gen = {"active": False}
                 if is_oom_error(exc):
                     # Drop graphs on any CUDA OOM: live graphs pin pool memory empty_cache() cannot reclaim.
@@ -16811,12 +17890,60 @@ class VideoBackend:
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:
-                    if self._active_generate_cancel is cancel:
+                    if self._active_generate_cancel is cancel and finish_encode is None:
                         self._active_generate_cancel = None
                 # The pinned clip and stream chunks (~3x the clip) otherwise stay in torch's host cache until unload.
-                output = video_frames = None
+                output = video_frames = encode_args = None
                 release_pinned_host_memory()
                 _release_held_cache_writes(getattr(state, "pipe", None), "the first render ended")
+        if finish_encode is not None:
+            result["_finish_encode"] = finish_encode
+        return result
+
+    def _detached_encoder(
+        self,
+        encode_args: tuple,
+        encode_kwargs: dict[str, Any],
+        cancel: threading.Event,
+        request_shape: Optional[dict[str, Any]],
+    ) -> Callable[[bool], bytes]:
+        """The encode generate() runs after _generate_lock is released. ``owns_slot`` False: begin_generate's worker
+        has handed the progress record to the next clip, so this clip's end must not write it."""
+        held = [encode_args]
+
+        def finish(owns_slot: bool) -> bytes:
+            try:
+                mp4_bytes = self._encode_mp4(*held[0], **encode_kwargs)
+                if owns_slot:
+                    self._gen = {"active": False}
+                # Deregister under cancel_generate's lock, or a late Stop is answered true wrongly.
+                with self._lock:
+                    if cancel.is_set():
+                        raise RuntimeError(VIDEO_CANCELLED_MSG)
+                    if owns_slot and self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
+                    tail = self._encode_tail
+                    if tail is not None and tail.cancel is cancel:
+                        tail.stoppable = False
+                return mp4_bytes
+            except Exception as exc:
+                if owns_slot:
+                    self._gen = {"active": False}
+                _log_failed_generation(request_shape, exc)
+                raise
+            finally:
+                with self._lock:
+                    if owns_slot and self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
+                held.clear()
+                # The clip's pinned frames are free now; a render holding the lock trims the cache itself.
+                if self._generate_lock.acquire(blocking = False):
+                    try:
+                        release_pinned_host_memory()
+                    finally:
+                        self._generate_lock.release()
+
+        return finish
 
     @staticmethod
     def _resolve_keyframes(
@@ -16957,8 +18084,7 @@ class VideoBackend:
         flow_shift: Optional[float],
         audio_flow_shift: Optional[float],
     ) -> tuple[Optional[float], Optional[float]]:
-        """Sigma shifts default to released values; sd.cpp rejects non-default audio shifts it
-        cannot apply."""
+        """Default to released shifts; sd.cpp rejects non-default audio shifts it cannot apply."""
         validate_video_flow_controls(fam, flow_shift, audio_flow_shift, engine = engine)
         shift = flow_shift if flow_shift is not None else fam.default_flow_shift
         audio_shift = (
@@ -17640,8 +18766,21 @@ class VideoBackend:
 
     def forget_terminal_video(self, video_id: Optional[str] = None) -> bool:
         """Drop a deleted clip's terminal record, else the UI resurrects a ghost card; live jobs are
-        kept."""
+        kept. Its by-id outcome goes too (with no id, as on a clear, every completed one of the
+        caller's account: a clear only deletes the caller's own clips)."""
+        account = current_account_id()
         with self._lock:
+            if video_id is not None:
+                kept = self._gen_outcomes.get(str(video_id))
+                if kept is not None and kept[1].get("phase") == "completed":
+                    self._gen_outcomes.pop(str(video_id), None)
+            else:
+                for vid in [
+                    vid
+                    for vid, kept in self._gen_outcomes.items()
+                    if kept[0] == account and kept[1].get("phase") == "completed"
+                ]:
+                    self._gen_outcomes.pop(vid, None)
             gen = self._gen
             if self._generate_job_active or not isinstance(gen, dict):
                 return False
@@ -17661,15 +18800,47 @@ class VideoBackend:
         """Stop the in-flight generation; expected_* are rechecked under begin_generate's lock,
         so a cancel of a finished job cannot hit its successor."""
         with self._lock:
-            if expected_video_id is not None and self._gen_video_id != expected_video_id:
-                return False
-            if expected_account is not None and self._generate_job_account != expected_account:
-                return False
+            riders = [rider for rider in self._job_riders_locked() if rider.outcome is None]
+            if riders and expected_video_id is not None:
+                rider = next((r for r in riders if r.video_id == expected_video_id), None)
+                if rider is not None:
+                    if expected_account is not None and rider.account_id != expected_account:
+                        return False
+                    return self._stop_rider_locked(rider)
+            stopped = False
+            if expected_video_id is None and expected_account is not None:
+                # An account-wide stop (a deleted account) reaches its riders too.
+                for rider in riders:
+                    if rider.account_id == expected_account:
+                        stopped = self._stop_rider_locked(rider) or stopped
             cancel = self._active_generate_cancel
-            if cancel is None:
-                return False
-            cancel.set()
-            return True
+            if (
+                cancel is not None
+                and (expected_video_id is None or self._gen_video_id == expected_video_id)
+                and (expected_account is None or self._generate_job_account == expected_account)
+            ):
+                if (
+                    any(not rider.cancel.is_set() for rider in riders)
+                    and self._job_cancel is not None
+                ):
+                    # Only this job's own clip stops: the riders sharing its denoise keep going.
+                    self._job_cancel.set()
+                    self._publish_leader_stopped_locked()
+                    return True
+                cancel.set()
+                return True
+            # A clip encoding after handing the GPU on is still in progress until its last cancel check: Stop
+            # discards it. Without an id it is reached only when no render of the caller's runs.
+            tail = self._encode_tail
+            if (
+                tail is not None
+                and tail.stoppable
+                and (expected_video_id is None or tail.video_id == expected_video_id)
+                and (expected_account is None or tail.account == expected_account)
+            ):
+                tail.cancel.set()
+                return True
+            return stopped
 
     # ── teardown + status ────────────────────────────────────────────────────
 
@@ -17771,10 +18942,15 @@ class VideoBackend:
                 from .gpu_arbiter import VIDEO, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
 
-                if (
-                    self._active_generate_cancel is not None
-                    and self._generate_job_account != expected_account
+                if self._active_generate_cancel is not None and (
+                    self._generate_job_account != expected_account
+                    or any(
+                        rider.account_id != expected_account
+                        for rider in self._job_riders_locked()
+                        if rider.outcome is None
+                    )
                 ):
+                    # Another account's clip is in the render, its own or riding this job's batch.
                     raise GpuBusyForAnotherAccountError(VIDEO, 1)
                 require_resident_control(
                     VIDEO, self._state.repo_id if self._state is not None else None
@@ -17792,8 +18968,7 @@ class VideoBackend:
             self._ltx25_pending_encoder = None
         if pending_encoder is not None:
             _stop_ltx25_encoder(pending_encoder[1])
-        # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free
-        # while the clip still holds it.
+        # Await the signalled generation before freeing, else VRAM reads free while still held.
         with self._generate_lock:
             with self._lock:
                 try:
@@ -17938,10 +19113,12 @@ class VideoBackend:
             ),
             "baked_loras": video_lora.baked_lora_names(getattr(state, "pipe", None)),
             "baked_lora_specs": video_lora.baked_lora_specs(getattr(state, "pipe", None)),
+            "lora_fuse": video_lora.lora_fuse_status(getattr(state, "pipe", None)),
             # Structural refusal only (kind, two experts); the transformer_quant refusal depends on the next load.
             "lora_refusal": video_lora.load_refusal(fam, state.kind, None),
             **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
             "text_encoder_quant": state.text_encoder_quant,
+            "fp8_gemm": _video_fp8_gemm_status(state),
             "has_audio": fam.has_audio,
             "prompt_hint": fam.prompt_hint,
             "supports_cfg": fam.supports_cfg,
@@ -17991,6 +19168,7 @@ class VideoBackend:
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "render_engagement": _render_engagement(getattr(state, "pipe", None)),
+            "request_prefetch": request_prefetch_status(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 
@@ -18115,16 +19293,73 @@ def _family_shape_defaults(fam) -> dict:
     }
 
 
+def _as_rider(rider: Any, target: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Call ``target`` as the account that queued ``rider``; a rider with no captured account runs as the caller."""
+    account = getattr(rider, "account", None)
+    if account is None:
+        return target(*args, **kwargs)
+    return run_as(account, target, *args, **kwargs)
+
+
+def _note_clip_started(fam, width, height, num_frames, steps) -> None:
+    """Tell the video queue which shape now runs, for its ETAs; never fails a generation."""
+    try:
+        from core.inference import video_queue
+
+        name = getattr(fam, "name", None)
+        frames = num_frames if num_frames is not None else getattr(fam, "default_num_frames", None)
+        video_queue.clip_started(
+            (name, width, height, frames),
+            steps if steps is not None else getattr(fam, "default_steps", None),
+        )
+    except Exception:  # noqa: BLE001 -- ETA bookkeeping only
+        pass
+
+
+def _note_clip_finished(ok: bool, steps: Optional[int]) -> None:
+    try:
+        from core.inference import video_queue
+        video_queue.clock.finished(ok, steps or None)
+    except Exception:  # noqa: BLE001 -- ETA bookkeeping only
+        pass
+
+
+def _wake_video_queue() -> None:
+    try:
+        from core.inference import video_queue
+        video_queue.notify()
+    except Exception:  # noqa: BLE001 -- the queue still has its poll
+        pass
+
+
 def generation_in_flight() -> bool:
     """Read the background-job marker without constructing or locking the backend."""
     backend = _backend
-    return backend is not None and bool(backend._generate_job_active)
+    return backend is not None and (
+        bool(backend._generate_job_active) or backend._encode_tail is not None
+    )
 
 
 def retire_load_for_account(account_id: str) -> bool:
     """Tear down an in-flight video load ``account_id`` started, without constructing the backend."""
     from hub.services.models.account_access import retire_media_load
     return retire_media_load("video", account_id, _backend)
+
+
+def generation_accounts_in_flight() -> frozenset:
+    """Every account with a clip in the running video job (riders of a shared denoise included)."""
+    backend = _backend
+    if backend is None or not backend._generate_job_active:
+        return frozenset()
+    return backend.generation_accounts()
+
+
+def encode_account_in_flight() -> Optional[str]:
+    """The account whose finished clip is still encoding after handing the GPU on, read without constructing the
+    backend."""
+    backend = _backend
+    tail = getattr(backend, "_encode_tail", None) if backend is not None else None
+    return tail.account if tail is not None else None
 
 
 def generation_account_in_flight() -> Optional[str]:

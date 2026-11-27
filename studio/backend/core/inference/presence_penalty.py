@@ -7,8 +7,7 @@ import torch
 
 
 def apply_presence_penalty(input_ids, scores, penalty: float, prompt_len: int):
-    """OpenAI/llama.cpp presence penalty, subtracted once per distinct completion token (prompt
-    excluded, multiplicity ignored); in place; negatives raise; zero is a no-op."""
+    """Presence penalty once per distinct completion token, in place; negatives raise."""
     if not penalty:
         return scores
     vocab_size = scores.shape[-1]

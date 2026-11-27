@@ -42,8 +42,7 @@ _STATE: dict = {
 _TABLE_DIR = Path(__file__).resolve().parent / "rocm_gemm_tables"
 # Tables with this stem suffix also carry training GEMM rows (NT / NN).
 TRAIN_SUFFIX = "_train"
-# Tables were measured at torch's default hipBLASLt workspace; torch 2.11-2.14 drops a saved solution needing more
-# without falling back, which can leave the GEMM output unwritten.
+# Measured at torch's default hipBLASLt workspace; torch 2.11-2.14 can leave output unwritten.
 _WORKSPACE_ENVS = ("HIPBLASLT_WORKSPACE_SIZE", "CUBLASLT_WORKSPACE_SIZE")
 
 
@@ -187,8 +186,7 @@ def _pre(_module: Any, args: Any, kwargs: Any) -> None:
     """Tune only on a call shaped like the previous one, so one-off shapes (first call, prefix prefill) never tune."""
     import torch
 
-    # A whole-module compile (a U-Net on the max tier) traces the hooks: the lock and the process-global switch break
-    # fullgraph, so a compiled call only reads the table and tuning stays with eager calls.
+    # Whole-module compiles trace hooks: lock and global switch break fullgraph; tune eagerly.
     if torch.compiler.is_compiling():
         return
     key = _call_key(args, kwargs)

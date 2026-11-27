@@ -130,9 +130,8 @@ def set_model_aliases(
     model_ids: Iterable[str] = (),
     revision: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Replace the whole alias list; the same input always stores the same value. ``model_ids``
-    are real ids an alias may not reuse: the rewrite would silently serve other weights.
-    ``revision`` is the list the caller edited; a caller without one predates load settings."""
+    """Replaces the alias list (idempotent); alias names may not reuse model_ids, or rewrites would
+    silently serve other weights; revision is the list edited, absent for pre-load callers."""
     from storage.studio_db import upsert_app_settings
     from utils.openai_auto_switch_settings import _invalidate
 
@@ -167,7 +166,6 @@ def set_model_aliases(
 
 
 def model_alias_map() -> dict[str, str]:
-    """Lowercased alias name -> target model id."""
     return {alias["name"].lower(): alias["model"] for alias in get_model_aliases()}
 
 

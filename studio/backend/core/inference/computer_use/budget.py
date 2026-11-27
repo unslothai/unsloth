@@ -83,8 +83,7 @@ class ImageBudget:
         self._sizes: dict = {}
 
     def _cell_size(self) -> Optional[tuple[int, int]]:
-        """(edge in pixels of one image token, tokens around an image's cells); cell 0 when no
-        whole-cell grid counts exactly, as with a fixed-size encoder."""
+        """(edge in px, tokens around cells) or (0, 0) when no whole-cell grid counts exactly."""
         if self._cell is None:
             found = (0, 0)
             for probe in _CELL_PROBES:

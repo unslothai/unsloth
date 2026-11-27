@@ -51,8 +51,6 @@ def num_experts_of(config) -> Optional[int]:
 
 
 def _experts_count(module) -> Optional[int]:
-    """Expert count of an experts container: ModuleList / ModuleDict length (SwitchTransformers uses
-    a ModuleDict), num_experts attribute, or leading dim of its 3-D params."""
     if isinstance(module, (torch.nn.ModuleList, torch.nn.ModuleDict)) and len(module) > 1:
         return len(module)
     for key in _EXPERT_COUNT_KEYS:
@@ -82,8 +80,6 @@ def _router_width(module) -> Optional[int]:
 
 
 def _is_stacked_experts(module, n_cfg) -> bool:
-    """A container holding all experts' weights as 3-D parameters [num_experts, ...] (GraniteMoE's
-    ParallelExperts `input_linear`), whatever it is called. Convolutions (Mamba's conv1d) are 3-D too."""
     if not n_cfg or isinstance(module, torch.nn.modules.conv._ConvNd):
         return False
     return any(p.dim() == 3 and p.shape[0] == n_cfg for p in module.parameters(recurse = False))
@@ -96,9 +92,8 @@ def _is_experts_child(name, module, n_cfg) -> bool:
 
 
 def _expert_subtrees(model, n_cfg) -> set:
-    """ids of modules inside an expert or shared expert: subtrees of each experts child and
-    shared-expert MLP. A container routing over stacked expert weights itself (JetMoE's attention
-    experts) is not a collection of experts and stays inspectable."""
+    """Ids of modules inside an expert or shared expert; a container routing over stacked expert
+    weights (JetMoE's attention experts) is not an expert collection and stays inspectable."""
     inside = set()
     for _, parent in model.named_modules():
         for name, child in parent.named_children():
@@ -113,17 +108,15 @@ def _expert_subtrees(model, n_cfg) -> set:
 
 
 def find_routers(model) -> Dict[str, str]:
-    """{fqn: reason} for every module that scores tokens over experts: output width equals the
-    expert count, and it sits beside an experts container (a child whose name contains expert,
-    not shared, or one with stacked 3-D expert weights). Without a container, the config's count
-    plus a matching 2-D weight suffices only for a known router leaf name."""
+    """{fqn: reason} for routers over experts: width equals the expert count, beside an experts
+    container (non-shared child with expert in its name, or stacked 3-D expert weights); without
+    one, config count plus a matching 2-D weight suffices only for a known router leaf name."""
     config = getattr(model, "config", None)
     n_cfg = num_experts_of(config) if config is not None else None
     found = {}
     inside_experts = _expert_subtrees(model, n_cfg)
     for parent_name, parent in model.named_modules():
-        # Inside an expert or shared expert (`experts.3`, `shared_expert`): its projections can be as wide as
-        # the expert count (Qwen3-Next: 512 experts, moe_intermediate_size 512) but never route.
+        # In an expert or shared expert: projections can be expert-count wide but never route.
         if id(parent) in inside_experts:
             continue
         experts = [(n, c) for n, c in parent.named_children() if _is_experts_child(n, c, n_cfg)]
@@ -137,8 +130,7 @@ def find_routers(model) -> Dict[str, str]:
             out = _router_width(child) if counts else _out_features(child)
             if out is None or out not in widths:
                 continue
-            # No experts container beside it: only a router name counts; `gate_proj` is excluded here
-            # because a dense MLP's gate_proj can be as wide as the expert count.
+            # No experts container: router names only; dense gate_proj can be expert-wide.
             if not counts and child_name.lower() not in (
                 "gate",
                 "router",
@@ -251,9 +243,7 @@ def _language_roots(model):
             if any(_is_block_stack(m) for m in modules[name].modules()):
                 roots.append((name, modules[name]))
                 break
-    # Keep a root only when no other candidate lies inside it (Idefics3: get_decoder() is the whole
-    # multimodal model, the embedding's ancestor is its text model). Unrelated roots: get_decoder() wins
-    # (T5: the shared embedding sits above both stacks).
+    # Drop roots with a candidate inside (Idefics3); unrelated roots: get_decoder() wins (T5).
     roots = [
         (n, m)
         for n, m in roots
@@ -263,10 +253,9 @@ def _language_roots(model):
 
 
 def decoder_layers(model):
-    """Returns (fqn prefix, number of layers) of the longest ModuleList of blocks holding Linear
-    layers in the language decoder (beside the input embedding, or HF get_decoder()); experts
-    lists and lists nested in another are ignored. Vision / audio / encoder stacks lose to other
-    stacks; an encoder-only model keeps its single stack; (None, 0) when there is none."""
+    """Returns (fqn prefix, layer count) of the longest Linear-block ModuleList in the language
+    decoder (beside input embedding or get_decoder()); expert and nested lists ignored; vision /
+    audio / encoder stacks lose to others; encoder-only keeps its one stack; (None, 0) if none."""
     root, decoder = _language_roots(model)
     candidates = []
     for name, module in decoder.named_modules():

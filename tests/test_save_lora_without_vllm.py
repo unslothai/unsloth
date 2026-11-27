@@ -55,8 +55,7 @@ def _engine_guard(function):
 
 
 def _outside_the_guard(function):
-    """The function body minus the engine guard; set subtraction would drop names assigned in both
-    places."""
+    """Body minus the engine guard; set subtraction would drop names assigned in both places."""
     return ast.Module(
         body = [
             node
@@ -78,8 +77,7 @@ def test_save_lora_is_set_outside_the_engine_guard():
 
 
 def test_the_engine_path_keeps_the_zoo_helper():
-    """Saving under vLLM is read back by vLLM's own LoRA loader, so what that
-    file carries is not changed here."""
+    """Saved LoRA files are read by vLLM's own loader, so their contents are not changed here."""
     guard = ast.unparse(_engine_guard(_patch_function()))
     assert "from unsloth_zoo.vllm_utils import save_lora" in guard
     assert "functools.partial(save_lora, model)" in guard

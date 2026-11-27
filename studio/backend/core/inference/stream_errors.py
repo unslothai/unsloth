@@ -87,7 +87,6 @@ class LlamaStreamError(RuntimeError):
 
 
 def stream_error_from_chunk(chunk: Any) -> Optional[LlamaStreamError]:
-    """A raisable error for a streamed chunk, or None when the chunk is not one."""
     message = error_message_from_chunk(chunk)
     if message is None:
         return None

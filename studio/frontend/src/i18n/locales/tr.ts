@@ -2619,6 +2619,10 @@ export const tr = {
         confirmDescriptionChatOnly:
           "Sunucuyu durdurur ve yükleyiciyi yeniden çalıştırır. Bu bir Yalnızca sohbet kurulumu olduğundan yükleyici onu PyTorch ile tam kuruluma da yükseltir; toplamda birkaç gigabayt. Sohbetler ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Şimdi onar",
+        recommendedTorch:
+          "Onarım önerilir: bu kurulumda PyTorch {torch} var; bu, RTX 50 serisi GPU'ların desteklendiği yönetilen {managedTorch} sürümünden eski.",
+        recommendedDriver:
+          "PyTorch {torch}, RTX 50 serisi GPU'ların desteklendiği yönetilen {managedTorch} sürümünden eski, ancak bu GPU sürücüsü CUDA 13'ü desteklemiyor. Önce GPU sürücüsünü güncelleyin, ardından kurulumu onarın.",
       },
       resetPreferences: {
         sectionTitle: "Tehlikeli bölge",
@@ -4835,6 +4839,12 @@ export const tr = {
       epochs: "Epoch",
       useMaxSteps: "Maksimum Adım kullan",
       useEpochs: "Epoch kullan",
+      stepGuidancePass: "Yaklaşık {steps} adım, {batch} etkin batch ile {rows} satırınız üzerinden bir geçiştir.",
+      stepGuidanceFloor: "{rows} satırınız üzerinden bir geçiş, {batch} etkin batch ile yalnızca {passSteps} adımdır; bu yüzden yaklaşık {steps} adım (birkaç geçiş) makul bir alt sınırdır.",
+      stepGuidanceCap: "{rows} satırınız üzerinden bir geçiş, {batch} etkin batch ile {passSteps} adımdır; {steps} adım bunun bir kısmında eğitir ve ilk çalıştırma için çoğu zaman yeterlidir.",
+      stepGuidanceEpoch: "Bir epoch, {batch} etkin batch ile {rows} satırınız üzerinden yaklaşık {passSteps} adımdır.",
+      stepGuidancePacking: "Paketleme kısa satırları birleştirir, bu yüzden bir geçiş daha az adım sürebilir.",
+      useSuggestedSteps: "{steps} kullan",
       maxStepsTooltip: "Toplam optimize edici adımı sayısını geçersiz kılar.",
       epochsTooltip: "Veri kümesi üzerinden yapılacak tam geçiş sayısı.",
       contextLength: "Bağlam",

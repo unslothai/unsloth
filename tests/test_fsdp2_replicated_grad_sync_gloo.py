@@ -503,7 +503,9 @@ def test_replicated_sync_follows_the_ga_sync_flag():
             assert m["nodefer_vs_old"] == [], (rank, mode, m)
 
             assert m["calls"]["old"] == [1] * (3 * GA), (rank, mode, m)
-            deferred = mode != "each"  # Auto without a fit layout defers synchronization.
+            # Auto without a fit layout skips, and still reduce-scatters this all-trainable model's units
+            # every micro-batch: the replicated gradients wait for the last one all the same.
+            deferred = mode != "each"
             want = ([0] * (GA - 1) + [1]) * 3 if deferred else [1] * (3 * GA)
             assert m["calls"]["new"] == want, (rank, mode, m)
             assert m["calls"]["oracle"] == ([0] * (GA - 1) + [1]) * 3, (rank, mode, m)
