@@ -1462,6 +1462,29 @@ def _settle_delay(delay_s: float) -> float:
         return delay_s  # a typo in the env must not change production behaviour
 
 
+# Kill switch for the unified-memory stable stop below (default on).
+SETTLE_STABLE_ENV = "UNSLOTH_SETTLE_UNIFIED_STABLE_STOP"
+
+
+def _settle_stable_tolerance_mib(total_mib: int) -> int:
+    """Read-to-read drift still counted as stable on a unified pool: OS jitter, far below any plan threshold."""
+    return max(256, int(total_mib) // 200)
+
+
+def _settle_stable(prev: DeviceMemory, nxt: DeviceMemory) -> bool:
+    """Unified / system memory only: two consecutive reads agree, so nothing is being released or taken. Discrete
+    VRAM keeps its full spacing (a transient tenant on a busy card is what that spacing waits out)."""
+    if (os.environ.get(SETTLE_STABLE_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    if not (prev.is_unified and nxt.is_unified):
+        return False
+    if None in (prev.free_mib, nxt.free_mib, nxt.total_mib):
+        return False
+    return abs(int(nxt.free_mib) - int(prev.free_mib)) <= _settle_stable_tolerance_mib(
+        nxt.total_mib
+    )
+
+
 def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
@@ -1490,7 +1513,7 @@ def settled_snapshot_device_memory(
         torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
         pass
-    best = snapshot_device_memory(target)
+    best = prev = snapshot_device_memory(target)
     delay_s = _settle_delay(delay_s)
     for attempt in range(max(0, attempts - 1)):
         if best.free_mib is not None and best.total_mib is not None:
@@ -1505,8 +1528,12 @@ def settled_snapshot_device_memory(
         except Exception:  # noqa: BLE001
             break
         nxt = snapshot_device_memory(target)
+        stable = _settle_stable(prev, nxt)
+        prev = nxt
         if nxt.free_mib is not None and (best.free_mib is None or nxt.free_mib > best.free_mib):
             best = nxt
+        if stable:
+            break
     return best
 
 
