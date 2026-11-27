@@ -77,6 +77,8 @@ def _train(
     steps = 4,
     tmp_path = None,
     ga = 1,
+    save_steps = 0,
+    resume = None,
 ):
     from transformers import Trainer, TrainingArguments
 
@@ -99,14 +101,15 @@ def _train(
         report_to = [],
         use_cpu = True,
         logging_steps = 1,
-        save_strategy = "no",
+        save_strategy = "steps" if save_steps else "no",
+        save_steps = save_steps or 500,
         seed = 0,
         dataloader_num_workers = 0,
         disable_tqdm = True,
     )
     trainer = T(model = model, args = args, train_dataset = _dataset())
     af.install_auto_fit_optimizer(trainer)
-    trainer.train()
+    trainer.train(resume_from_checkpoint = resume)
     return trainer
 
 
@@ -620,3 +623,29 @@ def test_planner_budgets_tied_and_looped_gradients(af):
     }  # layer 1 runs three times
     layer = sum(p.numel() * p.element_size() for p in model.model.layers[1].parameters())
     assert af._reused_bytes(model, params) == tied.numel() * tied.element_size() + layer
+
+
+def test_resuming_keeps_the_optimizer_family(af, sr, monkeypatch, tmp_path):
+    """A run trained with the SGD tier records it in its checkpoints; resuming in the default mode keeps SGD (its
+    groups lack AdamW's options), even where the standard step would now fit (no CUDA here: no prediction)."""
+    import json
+
+    first = _train(
+        af, sr, _tiny_model(), monkeypatch, "lomo", 0.0, steps = 2, tmp_path = tmp_path, save_steps = 1
+    )
+    checkpoint = tmp_path / "checkpoint-2"
+    assert json.loads((checkpoint / "unsloth_auto_fit.json").read_text()) == {"tier": "sgd"}
+    resumed = _train(
+        af,
+        sr,
+        _tiny_model(),
+        monkeypatch,
+        "",
+        0.0,
+        steps = 3,
+        tmp_path = tmp_path,
+        resume = str(checkpoint),
+    )
+    assert type(resumed._unsloth_in_backward_optimizer.optimizer) is torch.optim.SGD
+    assert resumed.state.global_step == 3
+    del first

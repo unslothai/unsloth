@@ -23,6 +23,7 @@ convolutions, fused experts), which it sizes as if they were matrices and then f
 """
 
 import contextlib
+import json
 import os
 import weakref
 
@@ -42,6 +43,8 @@ _OFF = ("0", "false", "no", "off")
 _FORCED = ("in_backward", "lomo", "adalomo")
 _MARK = "_unsloth_updates_in_backward"
 _INSTALLED = "_unsloth_auto_fit_installed"
+_TIER = "_unsloth_auto_fit_tier"
+_TIER_FILE = "unsloth_auto_fit.json"  # in each checkpoint: the optimizer tier it was trained with
 
 
 def auto_fit_mode():
@@ -235,6 +238,17 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             if len(groups) == len(saved):
                 state_dict = dict(state_dict, param_groups = groups)
             state_dict = dict(state_dict, state = {k: s for k, s in state.items() if s})
+        elif isinstance(state_dict, dict) and state_dict.get("param_groups"):
+            # A checkpoint of the SGD tier lacks this optimizer's group options (betas, eps): keep ours for those.
+            saved = state_dict["param_groups"]
+            if len(saved) == len(self.optimizer.param_groups):
+                state_dict = dict(
+                    state_dict,
+                    param_groups = [
+                        {**{k: v for k, v in current.items() if k != "params"}, **group}
+                        for current, group in zip(self.optimizer.param_groups, saved)
+                    ],
+                )
         return self.optimizer.load_state_dict(state_dict)
 
     def _reset(self):
@@ -1000,12 +1014,88 @@ def _convert(
         base, max_grad_norm = max_norm, model = getattr(trainer, "model", None)
     )
     setattr(trainer, _MARK, True)
+    setattr(trainer, _TIER, tier)
     trainer._unsloth_in_backward_optimizer = wrapper
     _wrap_clip(trainer)
     _arm_training_step(trainer, wrapper)
     if message:
         print(message)
     return wrapper
+
+
+def _resume_dir(trainer):
+    resume = trainer.__dict__.get("_unsloth_resume_from_checkpoint")
+    if not resume:
+        return None
+    if isinstance(resume, bool):
+        try:
+            from transformers.trainer_utils import get_last_checkpoint
+            return get_last_checkpoint(trainer.args.output_dir)
+        except Exception:
+            return None
+    return str(resume)
+
+
+def _recorded_tier(trainer):
+    """(tier recorded in the checkpoint being resumed, resuming?). A checkpoint without the file was trained with
+    the standard step."""
+    folder = _resume_dir(trainer)
+    if not folder:
+        return None, False
+    try:
+        with open(os.path.join(folder, _TIER_FILE), encoding = "utf-8") as f:
+            return json.load(f).get("tier") or "standard", True
+    except FileNotFoundError:
+        return "standard", True
+    except Exception:
+        return None, True
+
+
+def _keep_family_on_resume(trainer, model, mode, tier, message):
+    """An SGD-tier checkpoint resumes with the SGD tier, and an AdamW checkpoint never switches to it."""
+    recorded, resuming = _recorded_tier(trainer)
+    if not resuming or mode != "auto" or recorded is None:
+        return tier, message
+    if recorded == "sgd":
+        if _blocker(trainer, model, False) is not None:
+            return tier, message
+        return "sgd", (
+            "Unsloth: this checkpoint was trained with LOMO's update (plain SGD stepped inside backward), so the "
+            f"resumed run keeps it. Set {_ENV}=0 to turn this off."
+        )
+    if tier == "sgd":
+        optim = _optim_name(getattr(trainer, "args", None)) or "the optimizer"
+        return None, (
+            f"Unsloth: full finetuning would need LOMO's update to fit, but this checkpoint was trained with {optim}, "
+            f"so the resumed run keeps {optim} ({_ENV}=lomo forces the switch)."
+        )
+    return tier, message
+
+
+def _install_tier_record(trainer):
+    try:
+        from transformers import TrainerCallback
+    except Exception:
+        return
+    ref = weakref.ref(trainer)
+
+    class _RecordTier(TrainerCallback):
+        def on_save(self, args, state, control, **kwargs):
+            trainer = ref()
+            tier = getattr(trainer, _TIER, None) if trainer is not None else None
+            folder = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            if tier in (None, "standard") or not os.path.isdir(folder):
+                return
+            try:
+                with open(os.path.join(folder, _TIER_FILE), "w", encoding = "utf-8") as f:
+                    json.dump({"tier": tier}, f)
+            except OSError:
+                pass
+
+    try:
+        trainer.add_callback(_RecordTier())
+    except Exception:
+        pass
 
 
 def install_auto_fit_optimizer(trainer):
@@ -1026,6 +1116,8 @@ def install_auto_fit_optimizer(trainer):
         _drop_previous(trainer)  # a new optimizer for this trainer (another train() / model_init)
         mode = auto_fit_mode()
         tier, message = (None, None) if mode == "off" else _decide(trainer, model, mode)
+        tier, message = _keep_family_on_resume(trainer, model, mode, tier, message)
+        setattr(trainer, _TIER, "adalomo" if tier == "adalomo" else "standard")
         if tier == "adalomo":
             _set_optim(trainer.args, tier)
             setattr(trainer, _MARK, True)
@@ -1041,5 +1133,16 @@ def install_auto_fit_optimizer(trainer):
 
     create_optimizer.__wrapped__ = original
     trainer.create_optimizer = create_optimizer
+    train = getattr(trainer, "train", None)
+    if train is not None:
+
+        def train_and_record_resume(*args, **kwargs):
+            resume = kwargs.get("resume_from_checkpoint", args[0] if args else None)
+            trainer.__dict__["_unsloth_resume_from_checkpoint"] = resume
+            return train(*args, **kwargs)
+
+        train_and_record_resume.__wrapped__ = train
+        trainer.train = train_and_record_resume
+    _install_tier_record(trainer)
     setattr(trainer, _INSTALLED, True)
     return True
