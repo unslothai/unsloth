@@ -1035,79 +1035,30 @@ def _is_session_terminated(exc: BaseException) -> bool:
     )
 
 
-# SEP-2243: servers reject tools/call when required Mcp-Param-* headers are missing. Older drafts
-# used -32001 for HeaderMismatch; the current spec uses -32020. Match on the message so -32001
-# "Session not found" stays a session-gone signal above.
-
-
-def _error_message(exc: BaseException) -> str:
-    error = getattr(exc, "error", None)
-    message = getattr(error, "message", None)
-    return str(message if message is not None else exc)
-
-
-def _looks_like_header_mismatch(text: str) -> bool:
-    lowered = text.lower()
-    if "header mismatch" in lowered or "headermismatch" in lowered:
-        return True
-    return "mcp-param-" in lowered and ("missing" in lowered or "mismatch" in lowered)
+# SEP-2243: a modern server rejects a tools/call (unrun) with HeaderMismatch when the client mirrored no
+# Mcp-Param-* headers; the SDK only mirrors them for tools this session listed.
+_HEADER_MISMATCH = -32020
 
 
 def _is_header_mismatch(exc: BaseException) -> bool:
-    """True when a remote MCP server refused the call for missing/mismatched Mcp-Param-* headers."""
-    message = _error_message(exc)
-    if _looks_like_header_mismatch(message):
-        return True
-    error = getattr(exc, "error", None)
-    code = getattr(error, "code", None)
-    # -32020 is HeaderMismatch only; do not treat bare -32001 as one (session-gone uses that too).
-    return code in (-32020, 32020) and _is_protocol_error(exc)
+    return _is_protocol_error(exc) and getattr(exc.error, "code", None) == _HEADER_MISMATCH
 
 
-def _result_header_mismatch(result: Any) -> bool:
-    if not getattr(result, "is_error", False):
-        return False
-    parts = []
-    for block in getattr(result, "content", None) or []:
-        text = getattr(block, "text", None)
-        if text:
-            parts.append(str(text))
-    return _looks_like_header_mismatch("\n".join(parts))
+def _speaks_param_headers(client) -> bool:
+    # Protocol versions are ISO dates; Mcp-Param-* start at 2026-07-28.
+    return str(getattr(client, "protocol_version", None) or "") >= "2026-07-28"
 
 
-async def _refresh_tool_schemas(client) -> None:
-    """Reload tools/list so the transport can emit Mcp-Param-* from x-mcp-header annotations."""
-    probe = getattr(client, "list_tools_mcp", None) or client.list_tools
-    await probe()
-
-
-async def _call_tool_respecting_headers(
-    client,
-    name: str,
-    args: dict,
-    *,
-    raise_on_error: bool = False,
-):
-    """Call a tool; on SEP-2243 header mismatch, re-list tools once and retry the same call."""
+async def _call_tool_with_param_headers(client, name: str, args: dict):
+    """The spec's recovery, as in the mcp and Go SDK clients: on HeaderMismatch re-list tools and resend once."""
     try:
-        result = await client.call_tool(name, args, raise_on_error = raise_on_error)
+        return await client.call_tool(name, args, raise_on_error = False)
     except Exception as exc:
         if not _is_header_mismatch(exc):
             raise
-        logger.info(
-            "MCP tool %r missing Mcp-Param-* headers; refreshing tools/list and retrying once",
-            name,
-        )
-        await _refresh_tool_schemas(client)
-        return await client.call_tool(name, args, raise_on_error = raise_on_error)
-    if _result_header_mismatch(result):
-        logger.info(
-            "MCP tool %r returned header mismatch; refreshing tools/list and retrying once",
-            name,
-        )
-        await _refresh_tool_schemas(client)
-        return await client.call_tool(name, args, raise_on_error = raise_on_error)
-    return result
+    logger.info("MCP tool %r rejected for missing Mcp-Param-* headers; re-listing tools", name)
+    await client.list_tools()
+    return await client.call_tool(name, args, raise_on_error = False)
 
 
 def _transport_dead(session) -> bool:
@@ -1266,16 +1217,14 @@ class _McpSession:
             await client.__aenter__()
             # No await between: close() must see the client after a racing abort.
             self.client = client
-            # HTTP sessions often list tools on a different short-lived client; warm here so the
-            # first tools/call can emit Mcp-Param-* from x-mcp-header without a failed round-trip.
-            if not is_stdio(self.url):
+            # Discovery lists tools on another client: list here so the first call carries Mcp-Param-*.
+            if not is_stdio(self.url) and _speaks_param_headers(client):
+                probe = getattr(client, "list_tools_mcp", None) or client.list_tools
                 try:
-                    await _refresh_tool_schemas(client)
+                    await asyncio.wait_for(probe(), _SESSION_LIVENESS_TIMEOUT)
                 except Exception:  # noqa: BLE001
                     logger.debug(
-                        "MCP tools/list warm after connect failed for %s",
-                        self.url,
-                        exc_info = True,
+                        "MCP tools/list after connect failed for %s", self.url, exc_info = True
                     )
             return client
 
@@ -2546,7 +2495,7 @@ def _call_session_tool(
                         slot,
                         dispatch(session.client)
                         if dispatch is not None
-                        else _call_tool_respecting_headers(session.client, name, args),
+                        else _call_tool_with_param_headers(session.client, name, args),
                     ),
                     rem,
                     cancel_event,
@@ -2636,7 +2585,7 @@ def call_tool_sync(
             if config_check is not None and not config_check():
                 raise RuntimeError("MCP server was updated or removed while connecting")
             # raise_on_error=False so an is_error result keeps its image content.
-            return await _call_tool_respecting_headers(client, name, args)
+            return await _call_tool_with_param_headers(client, name, args)
 
     try:
         if is_stdio(url) or (scope and not use_oauth):
@@ -2766,7 +2715,7 @@ def _ui_request_sync(
 def call_tool_structured_sync(
     url: str, headers: Optional[dict], name: str, args: dict, **kw
 ) -> dict:
-    dispatch = lambda client: _call_tool_respecting_headers(client, name, args)  # noqa: E731
+    dispatch = lambda client: _call_tool_with_param_headers(client, name, args)  # noqa: E731
     label = f"MCP tool '{name}'"
     return _structured_result(
         _ui_request_sync(url, headers, label, dispatch, rpc = ("tools/call", name), **kw)
