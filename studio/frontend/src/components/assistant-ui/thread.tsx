@@ -7981,10 +7981,9 @@ const MessageError: FC = () => {
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message min-w-0 flex-1 whitespace-pre-wrap break-words" />
         {!researchRunId && !researchActive && (
-          <ActionBarPrimitive.Reload asChild={true}>
+          <ActionBarPrimitive.Reload asChild={true} disabled={Boolean(reloadUnavailableReason)}>
             <button
               type="button"
-              disabled={Boolean(reloadUnavailableReason)}
               title={reloadUnavailableReason}
               className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
