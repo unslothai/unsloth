@@ -154,6 +154,15 @@ def _plain_structlog_tracebacks():
 
 
 @pytest.fixture(autouse = True)
+def _no_real_windows_commit_reading(monkeypatch):
+    """Tests fake the host's RAM; on a Windows runner the real commit headroom would otherwise leak
+    into the llama.cpp pre-launch check (the commit-check tests fake their own)."""
+    module = sys.modules.get("core.inference.llama_cpp")
+    if module is not None and hasattr(module, "_windows_host_commit_headroom_mib"):
+        monkeypatch.setattr(module, "_windows_host_commit_headroom_mib", lambda: None)
+
+
+@pytest.fixture(autouse = True)
 def _no_vae_structural_verdict_cache(monkeypatch):
     """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
     (the cache tests turn it on against a temp dir)."""

@@ -453,27 +453,88 @@ def apply_truncation(pipe: Any, plan: dict) -> dict:
     return report
 
 
+def _probe_candidates(pipe: Any) -> set:
+    """Encoder attrs ``probe_consumption`` would build a target for (before it runs encode_prompt)."""
+    import torch
+
+    found: set = set()
+    for attr in _TEXT_ENCODER_ATTRS:
+        encoder = getattr(pipe, attr, None)
+        if not isinstance(encoder, torch.nn.Module) or getattr(encoder, TRUNCATION_ATTR, None):
+            continue
+        stack = _find_stack(encoder)
+        if stack is None or any(is_passthrough(m) for m in stack[1]):
+            continue
+        found.add(attr)
+    return found
+
+
+def _cached_plan(pipe: Any, family: Optional[str]) -> tuple[Optional[dict], Optional[dict]]:
+    """``(fingerprint, stored plan)``; either is None on a miss, an unkeyable pipeline or the cache switched off."""
+    try:
+        from . import diffusion_te_truncate_cache as cache
+
+        if not cache.enabled():
+            return None, None
+        import torch
+
+        attrs = tuple(
+            a for a in _TEXT_ENCODER_ATTRS if isinstance(getattr(pipe, a, None), torch.nn.Module)
+        )
+        fp = cache.fingerprint(pipe, family = family, encoder_attrs = attrs)
+        stored = cache.load(fp)
+        if stored is None:
+            return fp, None
+        candidates = _probe_candidates(pipe)
+        if any(attr not in candidates for attr in stored):
+            return fp, None  # an encoder the probe would skip now: probe instead of guessing
+        return fp, stored
+    except Exception:  # noqa: BLE001 - the cache only ever saves a probe
+        return None, None
+
+
+def _store_plan(fp: Optional[dict], plan: dict) -> None:
+    if fp is None:
+        return
+    try:
+        from . import diffusion_te_truncate_cache as cache
+        cache.store(fp, plan)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def truncate_text_encoders(
     pipe: Any,
     *,
     logger: Any = None,
     encode_kwargs: Optional[dict] = None,
+    family: Optional[str] = None,
 ) -> dict:
-    """Probe + apply. Never raises: any failure keeps every encoder whole and returns ``{"skipped": reason}``."""
+    """Probe + apply. Never raises: any failure keeps every encoder whole and returns ``{"skipped": reason}``.
+    The generic probe's verdict is reused from disk when nothing it depends on changed (diffusion_te_truncate_cache)."""
     if pipe is None:
         return {"skipped": "no pipeline"}
     if not truncate_enabled():
         return {"skipped": TRUNCATE_ENV}
-    try:
-        plan = probe_consumption(pipe, encode_kwargs)
-    except Exception as exc:  # noqa: BLE001
-        if logger is not None:
-            logger.info(
-                "diffusion.text_encoder: dead-tail probe declined (%s); encoders kept whole", exc
-            )
-        return {"skipped": f"probe: {exc}"}
+    fp, plan = _cached_plan(pipe, family) if encode_kwargs is None else (None, None)
+    cached = plan is not None
+    if plan is None:
+        try:
+            plan = probe_consumption(pipe, encode_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if logger is not None:
+                logger.info(
+                    "diffusion.text_encoder: dead-tail probe declined (%s); encoders kept whole",
+                    exc,
+                )
+            return {"skipped": f"probe: {exc}"}
+        _store_plan(fp, plan)
+    elif logger is not None:
+        logger.info(
+            "diffusion.text_encoder: dead-tail verdict reused from the cache; probe skipped"
+        )
     if not plan:
-        return {"skipped": "nothing to probe"}
+        return {"skipped": "nothing to probe", **({"cached": True} if cached else {})}
     try:
         report = apply_truncation(pipe, plan)
     except Exception as exc:  # noqa: BLE001
@@ -497,7 +558,10 @@ def truncate_text_encoders(
                 ", lm_head dropped" if entry["head_dropped"] else "",
                 entry["bytes_freed"] / 2**30,
             )
-    return {"plan": plan, "truncated": report}
+    out = {"plan": plan, "truncated": report}
+    if cached:
+        out["cached"] = True
+    return out
 
 
 def live_slots(stack: Any) -> list[int]:

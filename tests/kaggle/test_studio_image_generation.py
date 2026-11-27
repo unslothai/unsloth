@@ -43,8 +43,7 @@ def _png(width: int, height: int, payload: bytes) -> bytes:
 
 
 def test_the_assertion_exists_and_is_off_by_default():
-    """Last priority, and it pulls a diffusion checkpoint the rest of the
-    payload has no use for. A dispatch that wants it says so."""
+    """Off by default: it pulls a diffusion checkpoint the rest of the payload does not need."""
     assert _body()
     assert "self.assert_image_generation()" in _body("execute")
     assert '"--image-generation",' in SRC
@@ -58,16 +57,14 @@ def test_the_run_is_the_smallest_the_schema_allows():
 
 
 def test_the_size_is_read_from_the_file_and_not_from_the_record():
-    """The gallery record repeats what was asked for. Comparing the request
-    against itself is the vacuity this rule exists against."""
+    """The gallery record repeats the request, so read the size from the PNG IHDR bytes."""
     body = _body()
     assert 'int.from_bytes(png[16:20], "big")' in body
     assert 'int.from_bytes(png[20:24], "big")' in body
 
 
 def test_the_ihdr_offsets_are_right():
-    """The IHDR width and height offsets are checked against a PNG built in the test, since an
-    off-by-four would read a plausible number and still pass other rules."""
+    """Off-by-four IHDR offsets read a plausible size, so check them on a PNG built here."""
     blob = _png(256, 256, zlib.compress(b"\x00" * 16))
     assert int.from_bytes(blob[16:20], "big") == 256
     assert int.from_bytes(blob[20:24], "big") == 256
@@ -77,8 +74,7 @@ def test_the_ihdr_offsets_are_right():
 
 
 def test_a_flat_image_is_a_failure():
-    """A pipeline whose weights never loaded returns a uniform frame that is a valid PNG of the
-    right size and passes every other rule, so a flat image must fail."""
+    """Unloaded weights yield a flat frame that passes other rules, so flat images must fail."""
     func = _func("assert_image_generation")
     assert any(
         isinstance(n, ast.If) and ast.unparse(n.test) == "flat" for n in ast.walk(func)
@@ -102,8 +98,7 @@ def test_the_bytes_are_fetched_raw_rather_than_through_the_json_client():
 
 
 def test_the_pipeline_is_unloaded_in_a_finally():
-    """The diffusion pipeline is the largest thing the payload puts on a T4; it must be unloaded in
-    a finally, or it takes the card from whatever runs next."""
+    """Unload the diffusion pipeline in a finally, or it keeps the T4 from whatever runs next."""
     func = _func("assert_image_generation")
     finals = "\n".join(
         ast.unparse(n) for t in ast.walk(func) if isinstance(t, ast.Try) for n in t.finalbody
@@ -122,8 +117,7 @@ def test_a_load_or_generate_error_is_a_failure_rather_than_a_skip():
 
 
 def test_it_runs_while_the_server_is_still_up():
-    """Image generation must run before the UI phase, which stops the server and refuses every later
-    request."""
+    """Image generation must run before the UI phase, which stops the server for good."""
     run = _body("execute")
     image_at = run.index("self.assert_image_generation()")
     ui_at = run.index("self.assert_chat_ui()")
@@ -148,8 +142,7 @@ def test_the_load_is_WAITED_ON_rather_than_assumed_synchronous():
 
 
 def test_a_load_that_never_finishes_fails_rather_than_generating_anyway():
-    """The refusal branch: falling through to generate after the deadline reports a 409 under the
-    generation's name and sends the reader after the wrong component."""
+    """Generating after the deadline reports a 409 under the wrong component's name."""
     func = _func("assert_image_generation")
     src = ast.get_source_segment(SRC, func) or ""
     marker = "never reported loaded within"

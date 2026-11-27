@@ -264,8 +264,7 @@ def test_relocation_block_leaves_a_fully_qualified_llama_cpp_dir_alone(tmp_path)
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_relocation_block_refuses_a_studio_home_under_the_system_root(tmp_path):
-    """Relocating the CWD does not move $StudioHome, which SYSTEM resolves under
-    System32\\config\\systemprofile: fail rather than install there."""
+    """$StudioHome stays under System32 when the CWD moves, so refuse instead of installing."""
     system_root = tmp_path / "Windows"
     current_dir = system_root / "System32"
     current_dir.mkdir(parents = True)
@@ -478,8 +477,7 @@ def _cd_line(message: str, shell: str) -> str:
 )
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_cli_guard_cd_line_actually_runs_in_powershell(profile_name: str, tmp_path):
-    """The advertised recovery command must survive a paste: Set-Location takes one -Path,
-    so an unquoted profile with a space fails."""
+    """The advertised cd line must quote the profile path: Set-Location takes one -Path."""
     profile = tmp_path / profile_name
     profile.mkdir()
     message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = str(profile))
@@ -542,8 +540,7 @@ def test_cli_guard_message_repeats_the_actual_command():
     ), "the retry line must reproduce the invoked command, re-quoting arguments with spaces"
 
 
-# HKCU Run values carry no working directory, so Desktop and its CLI children start in
-# System32; they move out instead of refusing.
+# HKCU Run values carry no cwd, so Desktop and its CLI children start in System32; move out.
 _RELOCATED = r"C:\Users\me\.unsloth"
 
 
@@ -567,8 +564,7 @@ def test_cli_guard_relocates_a_desktop_managed_command(argv: list[str]):
 
 
 def test_cli_guard_lands_where_the_desktop_puts_its_children():
-    """studio/src-tauri/src/process.rs pins ~/.unsloth; both halves must agree, or the
-    cwd-relative ./models scan finds different folders depending on which half ran."""
+    """process.rs pins ~/.unsloth; if the halves disagree, cwd-relative ./models scans differ."""
     _, _, chdir_calls = _guard_outcome(
         r"C:\Windows\System32", argv = ["unsloth", "studio", "--api-only"]
     )
@@ -596,8 +592,7 @@ def test_cli_guard_relocates_when_the_desktop_marks_the_child():
     ],
 )
 def test_cli_guard_marker_does_not_authorise_a_command_carrying_a_path(rest: list[str]):
-    """The backend and everything below it inherit the marker, so it must not
-    widen the set to commands that resolve a path the caller gave them."""
+    """The marker is inherited downstream, so it must not authorise commands that take a path."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", *rest],
@@ -659,8 +654,7 @@ def test_cli_guard_fails_closed_when_the_work_dir_cannot_be_created():
 
 
 def test_cli_guard_never_relocates_into_the_public_profile():
-    """A SYSTEM or service profile must not send one account's caches, scans and
-    outputs into a folder every other account on the machine can write."""
+    """SYSTEM or service profiles must not send caches or outputs to a folder others can write."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", "--api-only"],
@@ -716,8 +710,7 @@ def test_cli_guard_only_relocates_the_exact_desktop_argv(argv: list[str]):
 
 
 def test_cli_guard_marker_does_not_cover_path_taking_commands():
-    """The marker is inherited by everything the backend spawns, so it authorises
-    the studio commands the desktop runs and nothing else."""
+    """The marker is inherited by all backend children, so it only authorises studio commands."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "train", "--dataset", ".\\data.json"],
@@ -768,8 +761,7 @@ def test_cli_guard_finds_the_real_windows_folder_past_a_shadowed_windir():
 
 
 def test_cli_guard_ignores_a_windir_that_holds_no_system32():
-    """A WINDIR pointed at the user's own profile must not turn their project
-    folders into system folders, which would block every command they run."""
+    """A WINDIR without System32 must not turn the user's project folders into system folders."""
     message, colour, _ = _guard_outcome(
         r"C:\Users\me\projects\llm",
         argv = ["unsloth", "train"],
@@ -780,8 +772,7 @@ def test_cli_guard_ignores_a_windir_that_holds_no_system32():
 
 
 def test_cli_guard_keeps_working_when_nothing_looks_like_windows():
-    """No candidate holds System32 (an unusual image, or a test): fall back to
-    SystemRoot rather than trusting the settable value."""
+    """Without a System32 candidate, fall back to SystemRoot rather than the settable value."""
     _, colour, _ = _guard_outcome(
         r"E:\Windows\System32",
         argv = ["unsloth", "train"],
@@ -792,8 +783,7 @@ def test_cli_guard_keeps_working_when_nothing_looks_like_windows():
 
 
 def test_cli_guard_pins_a_relative_studio_home_before_moving():
-    """Unsloth resolves the override with Path.resolve(), which anchors a relative
-    value to the working directory, so moving first would retarget it."""
+    """Path.resolve() anchors relative values to the cwd, so pin them before the move."""
     environ_out: dict[str, str] = {}
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
@@ -822,8 +812,7 @@ def test_cli_guard_pins_every_relative_path_override(name: str):
 
 
 def test_cli_guard_does_not_recreate_a_profile_that_is_not_mounted():
-    """A roaming profile that has not arrived yet has a writable parent, so
-    makedirs would build an empty second one that shadows the real profile."""
+    """A profile not yet mounted has a writable parent: makedirs would create an empty shadow."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", "--api-only"],
@@ -833,8 +822,7 @@ def test_cli_guard_does_not_recreate_a_profile_that_is_not_mounted():
 
 
 def test_cli_guard_never_relocates_into_the_public_profile_from_userprofile():
-    """The public profile is readable and writable by every account on the
-    machine, so it is no place for one account's caches, scans and outputs."""
+    """The public profile is world-writable, so it is no place for caches, scans or outputs."""
     public = r"C:\Users\Public"
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
@@ -847,8 +835,7 @@ def test_cli_guard_never_relocates_into_the_public_profile_from_userprofile():
 
 @pytest.mark.parametrize("public", [r"C:\Users\Public", r"c:\users\public\\"])
 def test_safe_user_dir_rejects_the_public_profile_from_either_candidate(public: str):
-    """It is the folder that is shared, not the variable that named it, so `~`
-    resolving there is refused exactly as USERPROFILE is."""
+    """Refusal follows the folder, not its variable, so ~ resolving there is refused as well."""
     environ = {"USERPROFILE": r"C:\Windows\System32\config\systemprofile", "PUBLIC": public}
     chosen = _system_dir_guard.safe_user_dir(
         environ,
@@ -903,8 +890,7 @@ def test_cli_guard_pins_the_local_checkout_update_reads():
     ],
 )
 def test_only_a_value_naming_one_folder_counts_as_fully_qualified(value: str, qualified: bool):
-    """isabs() answered True for a leading separator until Python 3.13 and False
-    after it, so the folder a value names must not be decided by it."""
+    """isabs() flipped at Python 3.13 for a leading separator, so it cannot decide the folder."""
     assert _system_dir_guard._is_fully_qualified(value, ntpath) is qualified
 
 
@@ -956,8 +942,7 @@ def test_cli_guard_accepts_an_extended_unc_profile_in_either_case(profile: str):
 
 
 def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
-    """ "D:cache" means the current directory on drive D, which join() cannot know
-    and which the move changes, so Windows itself has to resolve it first."""
+    """D:cache means drive D's current directory, so Windows must resolve it before the move."""
     environ_out: dict[str, str] = {}
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
@@ -971,8 +956,7 @@ def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
 
 
 def test_cli_guard_refuses_to_move_when_a_drive_relative_override_cannot_be_resolved():
-    """Moving anyway would silently retarget it, which is what the pinning exists
-    to prevent, so the guard fails closed instead."""
+    """Moving anyway would silently retarget a drive-relative override; fail closed instead."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", "--api-only"],
@@ -1299,8 +1283,7 @@ def test_cli_guard_goes_back_when_the_move_lands_somewhere_still_refused():
 
 
 def test_cli_guard_restores_the_real_sys_path_when_the_move_fails():
-    """The console script passes no list, so the guard snapshots the real sys.path before pinning
-    it; otherwise a failed chdir leaves import roots it never agreed to."""
+    """Snapshot sys.path before pinning, so a failed chdir cannot leave unagreed import roots."""
     import sys
 
     before = list(sys.path)

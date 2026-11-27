@@ -6133,17 +6133,42 @@ def patch_enable_input_require_grads():
     def _sub_model_hook(owner):
         # transformers >= 5 hooks every sub-model; a frozen tower's backward is wasted, downstream still gets grad.
         def make_inputs_require_grads(module, input, output):
-            # Traced: keep the flag, since a graph need not retrace when a tower is unfrozen later.
-            if torch.compiler.is_compiling() or any(p.requires_grad for p in owner.parameters()):
+            if not torch.compiler.is_compiling():
+                trains = any(p.requires_grad for p in owner.parameters())
+            else:
+                # Traced (Unsloth compiles some towers, e.g. Gemma 3's SigLIP): read the flag the outer model's
+                # eager pre-hook keeps (_refresh_tower_trains). Setting it changes the module's attribute dict, so
+                # a later unfreeze retraces on every torch; a parameter's requires_grad alone does not (torch
+                # 2.10 skips those tensor guards). Without the flag, keep the grad as before.
+                trains = getattr(owner, "_unsloth_tower_trains", None)
+                trains = True if trains is None else trains
+            if trains:
                 return outer_hook(module, input, output)
 
         return make_inputs_require_grads
+
+    def _refresh_tower_trains(owners):
+        # Before the outer forward: record whether each hooked tower trains, writing only on a change.
+        def refresh(module, args):
+            if torch.compiler.is_compiling():
+                # The outer call is traced too, where a requires_grad read may be unguarded (torch 2.10): clear the
+                # flag, so the traced embedding hook keeps the grad, as before.
+                for owner in owners:
+                    owner._unsloth_tower_trains = None
+                return
+            for owner in owners:
+                trains = any(p.requires_grad for p in owner.parameters())
+                if owner.__dict__.get("_unsloth_tower_trains") is not trains:
+                    owner._unsloth_tower_trains = trains
+
+        return refresh
 
     outer_hook = make_inputs_require_grads
 
     @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
         hooks = []
+        owners = []  # sub-models whose input-grad hook depends on whether they train
         seen_modules = set()
         # Read per call, so setting the env after `import unsloth` still applies.
         keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
@@ -6182,8 +6207,12 @@ def patch_enable_input_require_grads():
                 if module is self or keep_frozen_towers
                 else _sub_model_hook(module)
             )
+            if hook is not make_inputs_require_grads:
+                owners.append(module)
             hooks.append(input_embeddings.register_forward_hook(hook))
 
+        if owners:
+            hooks.append(self.register_forward_pre_hook(_refresh_tower_trains(owners)))
         self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
             self._require_grads_hook = hooks[0]
@@ -8608,6 +8637,22 @@ def fix_dynamo_config_thread_visibility():
         _patched_load_config.__unsloth_patched__ = True
         ConfigModule.load_config = _patched_load_config
 
+    # The get_hash() / config view caches are ContextVars too: fresh ones make every thread recompute, else
+    # Inductor's FX-graph cache key goes stale (as unsloth_zoo.torch_config._invalidate_caches).
+    _cache_vars = (
+        ("_hash_dirty_var", True),
+        ("_hash_cache_var", None),
+        ("_get_dict_dirty_keys_var", None),
+        ("_get_dict_cache_var", None),
+    )
+
+    def _invalidate_config_caches(module):
+        module_dict = module.__dict__
+        module_name = module_dict.get("__name__", "torch_config")
+        for attr, default in _cache_vars:
+            if isinstance(module_dict.get(attr, None), ContextVar):
+                original_setattr(module, attr, ContextVar(f"{module_name}.{attr}", default = default))
+
     @functools.wraps(original_setattr)
     def _patched_setattr(self, name, value):
         original_setattr(self, name, value)
@@ -8622,6 +8667,7 @@ def fix_dynamo_config_thread_visibility():
                     # A process-wide value (set_torch_config, TORCHINDUCTOR_* env) shadows default: replace it too.
                     if _unset is not None and entry.env_value_default is not _unset:
                         entry.env_value_default = value
+                    _invalidate_config_caches(self)
             except Exception:
                 pass
 

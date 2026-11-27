@@ -514,3 +514,38 @@ test("a preset picked inside a chat leaves the model's remembered sampling alone
   assert.equal(entry.fastMode, fastMode);
   assert.ok("maxTokens" in entry, "a whole snapshot, not only the moved key");
 });
+
+test("explicit model sampling saved from a paired chat reaches New chat", () => {
+  loadOrPoll(GEMMA);
+  const store = useChatRuntimeStore.getState;
+  store().setActiveThreadId("edited-thread");
+  store().applyThreadScopedSettings("edited-thread", {});
+  store().setActivePresetSource("modified", "temperature");
+  store().setParams({ ...store().params, temperature: 0.23, topP: 0.62 });
+  store().setRememberedParamsForModel(GEMMA, { temperature: 0.23, topP: 0.62 });
+
+  store().setActiveThreadId("new-thread");
+  store().applyThreadScopedSettings(null, null);
+  assert.equal(store().params.temperature, 0.23);
+  assert.equal(store().params.topP, 0.62);
+  loadOrPoll(QWEN);
+  loadOrPoll(GEMMA);
+  assert.equal(store().params.temperature, 0.23);
+  assert.equal(store().params.topP, 0.62);
+});
+
+test("New chat restores ordinary sampling edits made since the model loaded", () => {
+  loadOrPoll(GEMMA);
+  const store = useChatRuntimeStore.getState;
+  store().setActivePresetSource("modified", "temperature");
+  store().setParams({ ...store().params, temperature: 0.23 });
+  assert.equal(store().paramsByModel[GEMMA]?.temperature, 0.23);
+
+  store().setActiveThreadId("existing-thread");
+  store().applyThreadScopedSettings("existing-thread", { temperature: 0.75 });
+  assert.equal(store().params.temperature, 0.75);
+
+  store().setActiveThreadId("new-thread");
+  store().applyThreadScopedSettings(null, null);
+  assert.equal(store().params.temperature, 0.23);
+});

@@ -18,7 +18,6 @@ _SHARED_COMPOSER_TSX = _FRONTEND / "features" / "chat" / "shared-composer.tsx"
 # Pairs are positional in actions.py, so they are checked as pairs.
 _RENDERED_BY = (_ATTACHMENT_TSX, _SHARED_COMPOSER_TSX)
 
-# The coupling check only understands bare class names.
 _BARE_CLASS = re.compile(r"^\.([A-Za-z][\w-]*)$")
 _BARE_ATTRIBUTE = re.compile(r"^\[([A-Za-z][\w-]*)\]$")
 

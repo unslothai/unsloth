@@ -238,7 +238,7 @@ _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
     "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),
 }
 
-# Windows on ARM has one CUDA torch, NVIDIA's 2.14.0+cu134 (CUDA 13.4, the first with a Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there.
+# Windows on ARM CUDA torch is NVIDIA's (2.14.0+cu134 first, CUDA 13.4 being the first Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there, built for torch 2.14 only.
 _UNSLOTH_WIN_ARM64_PREFIXES = frozenset({"causal_conv1d", "mamba_ssm"})
 _WIN_ARM64_TORCH_MM = "2.14"
 _WIN_ARM64_MIN_CUDA = (13, 4)
@@ -252,7 +252,7 @@ def _cuda_at_least(env: dict[str, str], floor: tuple[int, int]) -> bool:
     return (major, minor) >= floor
 
 
-# NVIDIA's flash-attn for Windows on ARM, built for the torch 2.14.0+cu134 the WoA installer takes. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
+# NVIDIA's flash-attn for Windows on ARM, one release per torch minor the WoA installer can take. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
 NVIDIA_WOA_FLASH_ATTN_RELEASE_URL = (
     "https://github.com/NVIDIA/pytorch-windows-ci/releases/download/Flash-Attention-for-WoA"
 )
@@ -265,6 +265,25 @@ NVIDIA_WOA_FLASH_ATTN_SHA256 = {
     "cp314": "b016989f1d30a01edc9fff9ba5643170174c27cc12968fdaa33ca1c055eb17aa",
     "cp314t": "c5269dc146c61a35e95df34aea81f35b85d7449d912325e4af00640f63cfcd5a",
 }
+# torch minor -> (release URL, abi tag -> sha256). Exact minor: a wheel built for one torch does not load on another.
+NVIDIA_WOA_FLASH_ATTN_RELEASES: dict[str, tuple[str, dict[str, str]]] = {
+    NVIDIA_WOA_FLASH_ATTN_TORCH_MM: (
+        NVIDIA_WOA_FLASH_ATTN_RELEASE_URL,
+        NVIDIA_WOA_FLASH_ATTN_SHA256,
+    ),
+    "2.15": (
+        f"{NVIDIA_WOA_FLASH_ATTN_RELEASE_URL}-torch2.15",
+        {
+            "cp311": "aea522334852454885af363360da7a38471a29c229ef14dd1dae2e27faa87fed",
+            "cp312": "52d7c6d05b6857384336a1356504f34ec7022ec51dffaa822f09b4564fbc35f4",
+            "cp313": "a108a9f39c622d21d35a4d94ec7c3095d89718bda7878616ec31534d00e826eb",
+            "cp314": "51b34de575067b1fe6044cb924a37ff9c4e05ce60a3fb88914ad4cb2ad1fb7b8",
+            "cp314t": "f78dfbbe84e7016da1028480f4b216ec58c274f80f00639e91e2ce78d538cad7",
+            "cp315": "90b90880e663289ef935cc1bd959578d18607c9214947a818be0ba82cc706314",
+            "cp315t": "37794b35f1c32edf5c5e074b2391fc678f433390589b5efc4761426a137d7d02",
+        },
+    ),
+}
 
 
 def is_windows_wheel_env(env: dict[str, str] | None) -> bool:
@@ -276,20 +295,21 @@ def nvidia_woa_flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     """NVIDIA's win_arm64 flash-attn for this env, with its pinned #sha256= fragment, else None."""
     if env is None or env.get("platform_tag") != "win_arm64":
         return None
-    if env.get("torch_mm") != NVIDIA_WOA_FLASH_ATTN_TORCH_MM or not _cuda_at_least(
-        env, _WIN_ARM64_MIN_CUDA
-    ):
+    torch_mm = str(env.get("torch_mm") or "")
+    release = NVIDIA_WOA_FLASH_ATTN_RELEASES.get(torch_mm)
+    if release is None or not _cuda_at_least(env, _WIN_ARM64_MIN_CUDA):
         return None
+    release_url, digests = release
     python_tag = env.get("python_tag") or ""
     abi_tag = env.get("abi_tag") or python_tag
-    digest = NVIDIA_WOA_FLASH_ATTN_SHA256.get(abi_tag)
+    digest = digests.get(abi_tag)
     if not python_tag or digest is None or not abi_tag.startswith(python_tag):
         return None
     filename = (
-        f"flash_attn-{NVIDIA_WOA_FLASH_ATTN_VERSION}+cu13torch{NVIDIA_WOA_FLASH_ATTN_TORCH_MM}"
+        f"flash_attn-{NVIDIA_WOA_FLASH_ATTN_VERSION}+cu13torch{torch_mm}"
         f"-{python_tag}-{abi_tag}-win_arm64.whl"
     )
-    return f"{NVIDIA_WOA_FLASH_ATTN_RELEASE_URL}/{filename}#sha256={digest}"
+    return f"{release_url}/{filename}#sha256={digest}"
 
 
 def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | None) -> str | None:

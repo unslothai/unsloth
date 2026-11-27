@@ -37,7 +37,6 @@ def mod():
 
 @pytest.fixture
 def cuda_route(mod, monkeypatch):
-    # Select the CUDA mm.dtype route on CPU tensors and record which dtypes reach mm(..., out_dtype = ...).
     monkeypatch.setattr(mod, "_MM_OUT_DTYPE", True)
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True), raising = False)
     calls = []

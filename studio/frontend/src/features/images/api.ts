@@ -37,6 +37,7 @@ export interface DiffusionResolvedControl {
 import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
 
 export interface DiffusionStatus {
+  chat_swap_available?: boolean;
   loaded: boolean;
   /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
   precision_options?: Record<string, string | null> | null;
@@ -237,6 +238,8 @@ export interface DiffusionLoadRequest {
     | "aiter"
     | "flash_sdpa";
   int8_attention?: "auto" | "on" | "off";
+  // Omitted = auto (env switch, else off).
+  lora_fuse?: "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
@@ -442,6 +445,21 @@ export async function parseJson<T>(response: Response): Promise<T> {
     throw new Error(await readFastApiError(response));
   }
   return (await response.json()) as T;
+}
+
+export type ChatImageSwapSetting = { enabled: boolean; managed_by_env: boolean };
+
+export async function chatImageSwapSetting(
+  enabled?: boolean,
+  signal?: AbortSignal,
+): Promise<ChatImageSwapSetting> {
+  const options = enabled === undefined ? { signal } : {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+    signal,
+  };
+  return parseJson(await authFetch("/api/settings/chat-image-swap", options));
 }
 
 export async function getDiffusionStatus(
@@ -964,8 +982,13 @@ export async function getDiffusionTrainingRun(
   return parseJson(await authFetch(`/api/train/diffusion/runs/${encodeURIComponent(jobId)}`));
 }
 
-export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
-  return parseJson(await authFetch("/api/train/diffusion/status"));
+/** The raw body, so a poller can skip an unchanged reply without parsing it. */
+export async function getDiffusionTrainingStatusText(): Promise<string> {
+  const response = await authFetch("/api/train/diffusion/status");
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+  return response.text();
 }
 
 export interface DiffusionDatasetSummary {

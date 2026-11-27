@@ -4976,6 +4976,7 @@ class FastBaseModel:
 
         # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
+        kwargs = gguf_dequantize_kwargs(kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)
         if config_attn_impl is None:
@@ -5485,7 +5486,22 @@ class FastBaseModel:
         def _is_degraded_vlm(_t):
             return is_vlm and _t is not None and not hasattr(_t, "image_processor")
 
-        tokenizer, _primary_err = _acquire_processor(local_files_only)
+        # A GGUF repo with no tokenizer files: the tokenizer lives in the GGUF's metadata (text only).
+        from .._gguf_load import load_gguf_tokenizer_if_missing
+
+        tokenizer = load_gguf_tokenizer_if_missing(
+            tokenizer_name,
+            kwargs.get("gguf_file") if tokenizer_name == model_name else None,
+            revision = _tokenizer_revision,
+            token = token,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = local_files_only,
+            trust_remote_code = trust_remote_code,
+            padding_side = "left",
+        )
+        _primary_err = None
+        if tokenizer is None:
+            tokenizer, _primary_err = _acquire_processor(local_files_only)
         # Online network failure or degrade: raise so @_offline_aware_load retries from cache. Permanent / missing-file errors propagate, and when already offline keep what we got.
         if (
             (tokenizer is None or _is_degraded_vlm(tokenizer))
@@ -6295,7 +6311,9 @@ class FastBaseModel:
 
         from .lora_init import fast_lora_init, record_fast_pissa
         from ._utils import block_swap_shaped
+        from .loader_utils import _patch_peft_for_native_fp8
 
+        _patch_peft_for_native_fp8(model)  # DoRA on native fp8 linears reads the dense weight
         with (
             fast_lora_init() as fast,
             block_swap_shaped(

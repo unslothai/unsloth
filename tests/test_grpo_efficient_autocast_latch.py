@@ -113,8 +113,7 @@ def _forced_float32_trainer(use_vllm):
 
 
 def test_efficient_call_without_vllm_records_no_autocast_for_forced_float32(monkeypatch):
-    # Without vLLM and with nothing scored, nothing latched before the efficient call did, and zoo then
-    # trained a forced float32 model with no loss autocast. A latch here turns on float16 autocast.
+    # Without vLLM or scoring, a latch here would turn on float16 autocast for forced float32.
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
     monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
     ns = _namespace()
@@ -152,8 +151,7 @@ def test_efficient_call_with_vllm_latches_forced_float32_as_the_old_forward_did(
 
 
 def test_efficient_call_without_vllm_still_latches_an_ordinary_trainer(monkeypatch):
-    # Only forced float32 models stay unlatched: an ordinary trainer keeps its own precision even when the
-    # process-wide env (another trainer, or an explicit setting) says otherwise.
+    # Only forced float32 models stay unlatched; ordinary trainers ignore the process-wide env.
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
     monkeypatch.delenv("UNSLOTH_FORCE_FLOAT32", raising = False)
     ns = _namespace()

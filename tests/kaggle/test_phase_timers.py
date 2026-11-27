@@ -30,8 +30,7 @@ def hub(monkeypatch):
 
 
 def test_an_unattached_timer_reports_none_not_zero(monkeypatch):
-    """An unattached timer must report seconds as None, not 0.0, since 0.0 looks identical to a warm
-    cache and would hide a broken instrument."""
+    """Unattached timer reports None, not 0.0, which looks like a warm cache and hides a fault."""
     monkeypatch.setitem(sys.modules, "huggingface_hub", types.ModuleType("huggingface_hub"))
     monkeypatch.delitem(sys.modules, "transformers.utils.hub", raising = False)
     timer = FetchTimer().install()
@@ -93,8 +92,7 @@ def test_nested_calls_are_not_counted_twice(hub, tmp_path):
         elapsed = time.time() - started
 
     assert timer.calls == 4, "every call is counted"
-    # Against the outer call's own elapsed time: double counting lands near 2x, and descheduling
-    # stretches both sides equally.
+    # Double counting lands near 2x the outer call's elapsed time; descheduling stretches both.
     assert (
         timer._seconds <= elapsed * 1.5
     ), f"nested seconds counted twice: {timer._seconds} against {elapsed} elapsed"
@@ -117,8 +115,7 @@ def test_a_raising_download_still_restores_the_module(hub):
 
 
 def test_the_split_never_reports_a_negative_weight_load(hub, tmp_path):
-    """The two clocks are the same clock, but rounding can still put the fetch a
-    tenth past the phase, and a negative duration reads as a broken report."""
+    """Same clock; rounding can put the fetch a tenth past the phase; never report negative."""
     blob = tmp_path / "f.bin"
     blob.write_bytes(b"z")
 
@@ -135,8 +132,7 @@ def test_the_split_never_reports_a_negative_weight_load(hub, tmp_path):
 
 
 def test_no_alias_of_a_hub_download_is_left_unwrapped(monkeypatch):
-    """Modules that hold their own alias of a hub download must be wrapped, or sharded fetches go
-    untimed."""
+    """Every module alias of a hub download must be wrapped, or sharded fetches go untimed."""
     real_hub = types.ModuleType("huggingface_hub")
     real_hub.hf_hub_download = lambda *a, **k: ""
     real_hub.snapshot_download = lambda *a, **k: ""
@@ -222,8 +218,7 @@ def test_an_unattached_timer_is_not_rendered_as_a_zero_second_fetch():
 
 
 def test_every_leg_ships_the_module():
-    """A timer the payload cannot import measures nothing. Asserted against the
-    registry rather than a hardcoded list, so a new leg cannot miss it."""
+    """Every leg must ship phase_timers.py or the timer measures nothing; LEGS covers new legs."""
     sys.path.insert(0, str(ROOT / ".github" / "scripts"))
     from kaggle_t4_ci.legs import LEGS
 

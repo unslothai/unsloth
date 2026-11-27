@@ -644,6 +644,14 @@ _CUT_CACHE_NAME = "diffusion_int8_cutlass_race.json"
 _CUT_CACHE_MAX = 512
 
 
+def _cut_forget_card(index: Any) -> None:
+    """Drop card ``index``'s in-process plan, races and row records: the paired-rows switch changed, so verdicts
+    raced under the other setting must not be reused (the disk cache key splits the same way). Already swapped
+    Linears fall back to today's path until this load's plan publishes, as after a failed launch."""
+    for d in (_CUT_PLAN, _CUT_DONE, _CUT_RACES, _CUT_LIVE, _CUT_ROWS, _CUT_ROWS_PENDING, _CUT_CKEY):
+        d.pop(index, None)
+
+
 def _cut_key(n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> tuple:
     return (int(n), int(k), str(xs_dtype), str(ws_dtype), bool(bias))
 
@@ -910,6 +918,8 @@ _RACE_SOURCES = {
         # sustained winners re-timed in pairs with today's path (the clock a denoise step shares)
         "paired_enabled",
         "paired_for",
+        "PAIRED_ROW_FAMILIES",
+        "paired_rows",
         "paired_cost_us",
         # how a race picks among its near-tied winners
         "_FILL_TIE",
@@ -1048,6 +1058,9 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 _today_tiles(index),
                 digest,
             )
+        ) + (
+            # paired-family verdicts must not be shared with unpaired loads
+            "|paired_rows" if cut.paired_rows(index) else ""
         )
     except Exception:  # noqa: BLE001
         return None
@@ -3345,6 +3358,12 @@ def _swap_on(
     global _OP_HANDLE
     import torch
 
+    from . import diffusion_int8_cutlass as _cut
+
+    # before any plan (and any early return) of this swap
+    was = _cut.paired_rows(index)
+    if _cut.set_paired_rows(index, transformer) != was:
+        _cut_forget_card(index)
     multi = len(_split_cards(transformer)) > 1
     recs = [(m, _eligible(m)) for m in transformer.modules()]
     recs = [(m, r) for m, r in recs if r is not None and (not multi or _weight_card(m) == index)]

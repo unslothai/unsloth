@@ -16265,19 +16265,35 @@ def _thread_document_ids(thread_id) -> set | None:
     return {d["id"] for d in docs if d.get("status") == "completed" and d.get("num_chunks")}
 
 
-def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
+def build_rag_autoinject(
+    conversation: list[dict],
+    rag_scope: dict | None,
+    *,
+    whole_document_only: bool = False,
+) -> dict | None:
     """Pre-retrieves the latest turn for models that skip search_knowledge_base. Toggle rag_scope.autoinject or RAG_AUTOINJECT; floor RAG_AUTOINJECT_MIN_SCORE."""
     try:
         from core.rag.retrieval import query_vector_memo
     except Exception:  # noqa: BLE001 - the build reports an unavailable RAG stack itself
-        return _build_rag_autoinject(conversation, rag_scope)
+        return _build_rag_autoinject(
+            conversation, rag_scope, whole_document_only = whole_document_only
+        )
     # The thread retry, the hybrid retry and the dense probe re-ask the same query: encode it once.
     with query_vector_memo():
-        return _build_rag_autoinject(conversation, rag_scope)
+        return _build_rag_autoinject(
+            conversation, rag_scope, whole_document_only = whole_document_only
+        )
 
 
-def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
+def _build_rag_autoinject(
+    conversation: list[dict],
+    rag_scope: dict | None,
+    *,
+    whole_document_only: bool = False,
+) -> dict | None:
     enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
+    if whole_document_only and not whole_doc_requested:
+        return None
     if not enabled and not whole_doc_requested:
         return None
     thread_id = rag_scope.get("thread_id")
@@ -16305,6 +16321,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
     # Zero or below is no limit to the search, which then returns its own default count.
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None and sidebar_k > 0 else lean_k
     budget: int | None = None
+    whole_document = False
     # Only trust a GGUF actually serving this same window.
     ctx_tokens = (
         _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
@@ -16343,6 +16360,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             logger.warning("RAG whole-document context failed: %s", exc)
             whole = None
         if whole is not None:
+            whole_document = True
             text, sources = whole
             project_id = rag_scope.get("project_id")
             if project_id:
@@ -16364,6 +16382,9 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                     if trimmed is not None:
                         text, sources = trimmed
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
+
+    if whole_document_only and not whole_document:
+        return None
 
     def retrieve(*, max_tokens = None, **scope):
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
@@ -16501,6 +16522,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
         sources = sources,
     )
     logger.info("RAG auto-inject: %d passage(s)", len(sources))
+    built["whole_document"] = whole_document
     return built
 
 

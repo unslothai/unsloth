@@ -77,8 +77,7 @@ def test_a_cell_that_lost_messages_is_excluded_as_itself_and_not_as_the_run(tmp_
 
 
 def test_coverage_that_does_not_apply_does_not_fail_the_cell(tmp_path):
-    """Fully mounted arms publish no aria-posinset, so coverage does not apply and must not fail the
-    cell."""
+    """Fully mounted arms publish no aria-posinset, so coverage does not apply and cannot fail."""
     rows, passed = _rows(
         tmp_path,
         {
@@ -110,8 +109,7 @@ def test_coverage_that_applies_but_was_never_measured_is_not_a_pass(tmp_path):
 
 
 def test_an_undifferentiated_coverage_None_is_not_a_pass_either(tmp_path):
-    """A payload written before the state existed carries the ambiguity and nothing that resolves
-    it. That is exactly the reading the gate must not resolve in favour of a pass."""
+    """Payloads from before the state existed have ambiguous coverage; the gate must not pass."""
     rows, passed = _rows(
         tmp_path,
         {"probe_attempted": True, "head_reached": True, "ordinal_coverage_complete": None},
@@ -144,8 +142,7 @@ def test_a_coarse_sweep_over_a_thread_missing_its_middle_does_not_pass_the_gate(
 
 
 def test_a_continuous_sweep_that_saw_every_ordinal_passes_the_gate(tmp_path):
-    """The positive control for the test above: the same joining, on a sweep that did establish
-    coverage. Without it, "not a pass" could be coming from a gate that passes nothing."""
+    """Positive control: a full sweep passes, or 'not a pass' proves nothing."""
     rows, passed = _rows(
         tmp_path,
         _coverage(

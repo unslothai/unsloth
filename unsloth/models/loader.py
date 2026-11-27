@@ -79,6 +79,7 @@ from .loader_utils import (
     _load_probe_memo_scope,
     _memo_config_probe,
     _resolved_revision,
+    _cached_missing_adapter_error,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -1406,10 +1407,15 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
-        from ._utils import _unsloth_load_begins
+        from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
+        from .._gguf_load import require_gguf_package
 
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+        )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -1742,6 +1748,15 @@ class FastLanguageModel(FastLlamaModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,
@@ -2413,10 +2428,15 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
-        from ._utils import _unsloth_load_begins
+        from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
+        from .._gguf_load import require_gguf_package
 
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+        )
         user_config = kwargs.pop("config", None)
         fp8_lora = None
         if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
@@ -2768,6 +2788,15 @@ class FastModel(FastBaseModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if user_config is None and adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,

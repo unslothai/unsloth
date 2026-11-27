@@ -2006,7 +2006,7 @@ def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatc
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setattr(
         "core.training.diffusion_train_common.training_precision_preflight_error",
-        lambda fam, prec: (
+        lambda fam, prec, cfg = None: (
             "This trainer requires a bfloat16-capable GPU (Ampere or newer)."
             if fam != "sdxl"
             else None
@@ -2194,7 +2194,7 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
     # Pin the precision preflight so a GPU-less host does not 400 for another reason.
     monkeypatch.setattr(
         "core.training.diffusion_train_common.training_precision_preflight_error",
-        lambda fam, prec: None,
+        lambda fam, prec, cfg = None: None,
     )
     monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
     r = client.post(

@@ -22,7 +22,7 @@ def _default_serial_names() -> frozenset:
     from .diffusion_flux3 import FLUX3_FAMILY_NAMES
 
     # FLUX.3 and Anima loop one prompt per modular call; MiniMax-H3-Image runs each image as batch 1 (lockstep);
-    # MOSS loops samples outside its layer loop.
+    # MOSS loops samples outside its layer loop except on a measured layer-major load (_moss_layer_major).
     return frozenset(
         (
             *FLUX3_FAMILY_NAMES,
@@ -31,6 +31,22 @@ def _default_serial_names() -> frozenset:
             MOSS_IMAGE_FAMILY_NAME,
         )
     )
+
+
+def _moss_layer_major(family: Any, pipe: Any) -> bool:
+    """A MOSS load that runs a batch layer-major on a card with a measured win (diffusion_moss_image.coalesce_key)."""
+    from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
+
+    if (
+        getattr(family, "name", None) != MOSS_IMAGE_FAMILY_NAME
+        or getattr(pipe, "transformer", None) is None
+    ):
+        return False
+    try:
+        from .diffusion_moss_image import coalesce_key
+        return coalesce_key(pipe) is not None
+    except Exception:  # noqa: BLE001 - an unreadable load renders alone
+        return False
 
 
 def _qwen21_denoiser(pipe: Any) -> bool:
@@ -43,7 +59,7 @@ def default_batched_forward(family: Any, pipe: Any = None) -> bool:
     if getattr(family, "layer_count", 0):
         return False  # the layered pipeline's per-prompt layer stride is only right for one input
     if getattr(family, "name", None) in _default_serial_names():
-        return False
+        return _moss_layer_major(family, pipe)
     if pipe is not None and _qwen21_denoiser(pipe):
         return False  # lays out a batch from row 0, so it splits by text length and gains nothing
     return True
