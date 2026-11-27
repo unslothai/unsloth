@@ -866,6 +866,8 @@ def _install_sh_hint(
             # Lifted: without _shell_quote the substitutions come back empty.
             _shell_fn(lines, "_shell_quote"),
             helper if repairs is None else f"_amd_node_repairs() {{ printf '%s\\n' '{repairs}'; }}",
+            # The block calls it; the notice on a mixed CUDA host prints the same text.
+            _shell_fn(lines, "_print_closed_amd_node_repairs"),
             block,
         ]
     )
@@ -1861,6 +1863,7 @@ def _install_sh_kfd_scope(
             *_run_scope_defs(lines, nvidia = nvidia),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             "\n".join(lines[_filter_start : _filter_end + 1]),
+            _shell_fn(lines, "_print_closed_amd_node_repairs"),
             "\n".join(lines[block_start : end + 1]),
         ]
     )

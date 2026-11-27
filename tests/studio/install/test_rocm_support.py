@@ -100,6 +100,7 @@ def _gpu_record_helpers(source: str) -> str:
             "_amd_prefer_discrete_gfx",
             "_hsa_override_gfx_arch",
             "_amd_gfx_is_shadowing_integrated",
+            "_amd_gfx_is_strix_apu",
             "_amd_gfx_has_wheel_route",
             "_amd_arch_index_family_for_gfx",
             "_amd_generic_tag_carries_gfx",

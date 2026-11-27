@@ -181,6 +181,7 @@ def _wheel_route_defs(*, arch_family: bool = True, rocminfo: str = _rocminfo_stu
         _shell_function("_amd_mask_survivors"),
         _shell_function("_amd_runtime_gfx_target"),
         _shell_function("_amd_gfx_is_shadowing_integrated"),
+        _shell_function("_amd_gfx_is_strix_apu"),
         _shell_function("_amd_prefer_discrete_gfx"),
         _shell_function("_rocminfo_gpu_records"),
         _shell_function("_amd_ordered_gfx_devices"),
