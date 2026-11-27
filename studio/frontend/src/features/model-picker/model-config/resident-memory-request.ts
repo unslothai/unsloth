@@ -74,6 +74,7 @@ export function resolveResidentEstimateRequest(
   settings: ReturnType<typeof selectResidentEstimateSettings>,
   context: number | null,
   mlx?: {
+    loadIn4bit?: boolean;
     kvQuant: string | null;
     pleOffload?: number | null;
     expertOffload?: number | null;
@@ -97,6 +98,7 @@ export function resolveResidentEstimateRequest(
     ...(mlx
       ? {
           maxSeqLength: Math.floor(context),
+          loadIn4bit: mlx.loadIn4bit,
           mlxKvQuant: mlx.kvQuant,
           mlxPleOffload: mlx.pleOffload ?? "off",
           mlxExpertOffload: mlx.expertOffload ?? "off",

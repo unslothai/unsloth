@@ -8,6 +8,7 @@ import { useMemo } from "react";
 import {
   type PerModelConfig,
   isServedByLlamaCpp,
+  isLocalMlxCheckpoint,
   residentIsServedByMlx,
 } from "../model-config/per-model-config";
 
@@ -152,7 +153,11 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       disableVision: disableVision ?? false,
       engramPrecision: isGguf ? (engramPrecision ?? null) : null,
       chatTemplateOverride: chatTemplateOverride ?? null,
-      ...(isGguf || isMlx ? {} : { loadIn4bit }),
+      ...(isLocalMlxCheckpoint(isMlx, checkpoint)
+        ? { mlxLoadIn4bit: loadIn4bit }
+        : isGguf || isMlx
+          ? {}
+          : { loadIn4bit }),
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"

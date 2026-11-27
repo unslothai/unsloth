@@ -23,14 +23,37 @@ const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
 const rollbackStart = runtime.indexOf("engine: stateBeforeUnload.loadedEngine,");
 const rollbackEnd = runtime.indexOf("is_lora: previousIsLora,", rollbackStart);
 assert.ok(rollbackStart >= 0 && rollbackEnd > rollbackStart);
-const rollback = new Function(
+const rollbackBody = new Function(
   "stateBeforeUnload",
   "rollbackNativePathLease",
   "hfToken",
   "rollbackMaxSeqLength",
   "rollbackConfig",
+  "isLocalMlxCheckpoint",
+  "previousIsMlx",
+  "previousActiveLoadId",
+  "previousCheckpoint",
+  "previousIsLora",
+  "rollbackState",
   `return { ${runtime.slice(rollbackStart, rollbackEnd)} };`,
-) as (state: Record<string, unknown>, ...rest: unknown[]) => Record<string, unknown>;
+);
+
+function rollback(
+  resident: Record<string, unknown>,
+  lease: string | undefined,
+  token: string | null,
+  maxSeqLength: number,
+  config?: Record<string, unknown>,
+  localMlx = false,
+  loadIn4bit = false,
+): Record<string, unknown> {
+  return rollbackBody(
+    resident, lease, token, maxSeqLength, config,
+    (isMlx: boolean, path: string) => isMlx && path.startsWith("/"),
+    localMlx, null, localMlx ? "/models/export" : "org/model", false,
+    { params: { loadIn4bit } },
+  );
+}
 
 test("a failed switch restores the managed resident's precision and parallel mode", () => {
   const resident = hydrate("org/model", {
@@ -73,4 +96,14 @@ test("a failed switch restores the managed resident's KV cache, seed and memory 
   assert.equal(request.engine_kv_cache_dtype, "fp8");
   assert.equal(request.engine_seed, 0);
   assert.equal(request.engine_gpu_memory_utilization, 0.5);
+});
+
+test("failed switches restore either local MLX precision", () => {
+  const resident = hydrate("/models/export", {});
+  assert.equal(rollback(resident, undefined, null, 4096, {}, true).load_in_4bit, false);
+  assert.equal(
+    rollback(resident, undefined, null, 4096, { mlxLoadIn4bit: true }, true).load_in_4bit,
+    true,
+  );
+  assert.equal(rollback(resident, undefined, null, 4096, undefined, true, true).load_in_4bit, true);
 });

@@ -35,6 +35,7 @@ function useActiveConfigFor(patch: Record<string, unknown>, gguf = true) {
       react: { useMemo: (factory: () => unknown) => factory() },
       "../model-config/per-model-config": {
         isServedByLlamaCpp: () => gguf,
+        isLocalMlxCheckpoint: () => false,
         residentIsServedByMlx: () => false,
       },
     },

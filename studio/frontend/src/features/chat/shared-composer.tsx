@@ -182,6 +182,7 @@ import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   confirmManagedEngineIfNeeded,
+  isLocalMlxCheckpoint,
   isServedByMlx,
   savedContextPin,
   resolveResidentInitialConfig,
@@ -1881,12 +1882,16 @@ export function SharedComposer({
         // Own config only: inheriting the shared snapshot would be treated as a pin.
         const effectiveCustomContextLength = ownConfig.customContextLength;
         const paneEngine = targetIsGguf ? "auto" : (ownConfig.engine ?? "auto");
+        const localMlxCheckpoint = isLocalMlxCheckpoint(targetIsMlx, sel.id, sel.isLora);
+        const loadIn4bitChoice = localMlxCheckpoint
+          ? ownConfig.mlxLoadIn4bit === true
+          : ownConfig.loadIn4bit !== false;
         let paneEngineFields = {
           engine: paneEngine,
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
           ...engineLaunchFieldsFromParams(ownConfig),
-          load_in_4bit: paneEngine === "auto" && ownConfig.loadIn4bit !== false,
+          load_in_4bit: paneEngine === "auto" && loadIn4bitChoice,
           ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
             ? {
                 gpu_ids:
@@ -2103,6 +2108,7 @@ export function SharedComposer({
               loadedContextLength: loadedContextFields(resp).loadedContextLength,
             }),
             ...paneQwenParams,
+            ...(localMlxCheckpoint ? { loadIn4bit: paneEngineFields.load_in_4bit } : {}),
             ...(targetIsGguf
               ? {}
               : {

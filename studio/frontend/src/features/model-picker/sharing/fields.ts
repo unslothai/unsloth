@@ -63,6 +63,7 @@ export type SharedConfigKey = Exclude<
   | "engineSeed"
   | "engineGpuMemoryUtilization"
   | "loadIn4bit"
+  | "mlxLoadIn4bit"
   // A named drafter can be a local directory.
   | "specDraftModel"
 >;

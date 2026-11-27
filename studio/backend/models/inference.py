@@ -173,7 +173,11 @@ class LoadRequest(BaseModel):
         False,
         description = "max_seq_length is the previous load's fitted context, not a user choice",
     )
-    load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
+    load_in_4bit: bool = Field(
+        True,
+        description = "Enable runtime 4-bit quantization. Omitting this field disables "
+        "runtime quantization for local MLX checkpoints.",
+    )
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
@@ -1191,7 +1195,8 @@ class EstimateMemoryRequest(BaseModel):
     load_in_4bit: bool = Field(
         True,
         description = "Quantize an unquantized checkpoint to 4 bits on load, as "
-        "/load does by default. Priced because it is the difference between a "
+        "/load does by default for Hub models. Local MLX checkpoints disable runtime quantization "
+        "when this field is omitted. This setting is the difference between a "
         "checkpoint's shards and what those shards go resident as. A checkpoint "
         "carrying its own quantization is priced at its shards, and asking for 4 "
         "bits on top can make it unsizable, because the real load refuses that.",

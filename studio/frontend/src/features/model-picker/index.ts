@@ -91,6 +91,7 @@ export {
   resumesThought,
   contextPinPatch,
   listPerModelConfigs,
+  isLocalMlxCheckpoint,
   isServedByMlx,
   residentIsServedByMlx,
   savedContextPin,

@@ -150,15 +150,19 @@ def _indexed_shards(model_dir: str) -> list:
     ]
 
 
-def mlx_shard_files(model_dir: str, config: Optional[dict] = None) -> list:
+def mlx_shard_files(
+    model_dir: str, config: Optional[dict] = None, *, vision: Optional[bool] = None
+) -> list:
     """The shards the package that would load this model actually reads."""
     names = [
         (os.path.basename(path), path)
         for path in glob.glob(os.path.join(model_dir, "*.safetensors"))
     ]
-    if config is None:
-        return [path for _, path in names]
-    if _builds_on_mlx_vlm(config):
+    if vision is None:
+        if config is None:
+            return [path for _, path in names]
+        vision = _builds_on_mlx_vlm(config)
+    if vision:
         return _indexed_shards(model_dir) or [
             path for name, path in names if name != "consolidated.safetensors"
         ]
@@ -339,6 +343,33 @@ def _safetensors_header(shard: str) -> dict:
         if not 0 < length <= limit:
             raise ValueError(f"{shard} declares a {length}-byte safetensors header")
         return json.loads(handle.read(length))
+
+
+def mlx_saved_16bit_dtype(model_dir: str, *, vision: bool) -> Optional[str]:
+    """Find a dense checkpoint's uniform 16-bit dtype without reading tensor data."""
+    try:
+        with open(os.path.join(model_dir, "config.json"), encoding = "utf-8") as handle:
+            config = json.load(handle)
+        text_config = config.get("text_config") or {}
+        if any(
+            section.get(key)
+            for section in (config, text_config)
+            for key in ("quantization", "quantization_config")
+        ):
+            return None
+        dtypes = {
+            meta["dtype"]
+            for shard in mlx_shard_files(model_dir, vision = vision)
+            for name, meta in _safetensors_header(shard).items()
+            if name != "__metadata__"
+        }
+    except (OSError, ValueError, AttributeError, KeyError, TypeError):
+        return None
+    if len(dtypes) == 1:
+        (dtype,) = dtypes
+        if dtype in ("F16", "BF16"):
+            return _SAFETENSORS_DTYPES[dtype]
+    return None
 
 
 def _runtime_dtype():

@@ -52,6 +52,7 @@ import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-ca
 import {
   isServedByLlamaCpp,
   resumesThought,
+  isLocalMlxCheckpoint,
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
@@ -3784,17 +3785,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       candidate.ggufVariant,
     );
     const platform = usePlatformStore.getState();
+    const candidateIsMlx = isServedByMlx(
+      candidate.kind === "gguf",
+      platform.deviceType,
+      platform.chatOnlyReason,
+      platform.mlxInference,
+    );
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
       customContextLength: config.customContextLength,
-      isMlx: isServedByMlx(
-        candidate.kind === "gguf",
-        platform.deviceType,
-        platform.chatOnlyReason,
-        platform.mlxInference,
-      ),
+      isMlx: candidateIsMlx,
       pinnedMaxSeqLength: config.maxSeqLength,
       defaultMaxSeqLength: candidate.maxSeqLength,
     });
@@ -3897,12 +3899,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.customContextLength ?? null,
       effectiveMaxSeqLength,
     );
-    const candidateIsMlx = isServedByMlx(
-      candidate.kind === "gguf",
-      platform.deviceType,
-      platform.chatOnlyReason,
-      platform.mlxInference,
-    );
     // MLX falls back to the standing preference: the live store may hold another model's settings.
     const standingSpec = candidateIsMlx
       ? resolveSpeculativeSettingsForLoad({ usePersistedPreference: true })
@@ -3920,11 +3916,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
       ? config.chatTemplateOverride
       : null;
+    const localMlxCheckpoint = isLocalMlxCheckpoint(candidateIsMlx, modelPath);
     const request: LoadModelRequest = {
       model_path: modelPath,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
-      load_in_4bit: config.loadIn4bit !== false,
+      load_in_4bit: localMlxCheckpoint
+        ? config.mlxLoadIn4bit === true
+        : config.loadIn4bit !== false,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
@@ -4024,6 +4023,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         {
           ...store.params,
           ...(candidate.kind === "gguf" ? {} : { maxSeqLength: loadedWindow }),
+          ...(localMlxCheckpoint ? { loadIn4bit: request.load_in_4bit } : {}),
           // Through the ceiling so value and slider agree; the app default could halve Max Tokens.
           maxTokens: localMaxTokensCeiling(
             loadedContextFields(loadResp).loadedContextLength,

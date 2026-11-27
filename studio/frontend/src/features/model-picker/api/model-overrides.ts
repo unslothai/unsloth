@@ -378,6 +378,7 @@ export function fromApiOverride(
     npuPrefillChunkLen: override.npu_prefill_chunk_len ?? local.npuPrefillChunkLen,
     npuImgPreResize: override.npu_img_pre_resize ?? local.npuImgPreResize,
     loadIn4bit: override.load_in_4bit ?? local.loadIn4bit,
+    mlxLoadIn4bit: override.load_in_4bit ?? local.mlxLoadIn4bit,
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
     llamaExtraArgs: extraArgs,
@@ -487,7 +488,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.mlxFastVerify) {
     payload.mlx_fast_verify = true;
   }
-  if (config.loadIn4bit === false) {
+  if (config.mlxLoadIn4bit === true) {
+    payload.load_in_4bit = true;
+  } else if (config.loadIn4bit === false) {
     payload.load_in_4bit = false;
   }
   if (config.chatTemplateOverride?.trim()) {

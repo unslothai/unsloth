@@ -196,6 +196,7 @@ import { isExternalModelId } from "../external-providers";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
+  isLocalMlxCheckpoint,
   isServedByMlx,
   normalizeMaxSeqLength,
   residentIsServedByMlx,
@@ -1603,6 +1604,11 @@ export function useChatModelRuntime() {
           ) &&
           // Identity alone is not enough: differing launch config is a real reload.
           residentRuntimeMatchesConfig(status, comparedConfig, {
+            localMlxCheckpoint: isLocalMlxCheckpoint(
+              status.is_mlx === true,
+              loadPath,
+              typeof selection !== "string" && selection.isLora,
+            ),
             speculativeType: readPersistedSpeculativeType(),
             gpuMemoryMode: readPersistedGpuMemoryMode(),
             gpuLayers: GPU_LAYERS_AUTO,
@@ -2260,7 +2266,6 @@ export function useChatModelRuntime() {
               pendingLoadConfig?.engramPrecision ??
               stateBeforeUnload.engramPrecision,
           };
-          const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
           let loadEngineFields = {
             engine: stateBeforeUnload.params.engine ?? "auto",
             engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
@@ -2334,6 +2339,15 @@ export function useChatModelRuntime() {
               platform.chatOnlyReason,
               platform.mlxInference,
             );
+            const localMlxCheckpoint = isLocalMlxCheckpoint(
+              targetIsMlx,
+              loadPath,
+              isLora,
+            );
+            const loadIn4bitChoice = localMlxCheckpoint
+              ? (pendingLoadConfig ?? resolveInitialConfig(modelId, ggufVariant).config)
+                  .mlxLoadIn4bit === true
+              : stateBeforeUnload.params.loadIn4bit !== false;
             // Only a same-model reload without a staged config reuses the resident's settings; otherwise the
             // drafter is this model's own and a standing mode goes through the resolver.
             if (targetIsMlx && (pendingLoadConfig != null || switchingModelOrVariant)) {
@@ -2688,6 +2702,9 @@ export function useChatModelRuntime() {
                   presetEditedKeys: useChatRuntimeStore.getState().presetEditedKeys,
                   loadedContextLength: loadedFields.loadedContextLength,
                 }),
+                ...(localMlxCheckpoint
+                  ? { loadIn4bit: loadEngineFields.engine === "auto" && loadIn4bitChoice }
+                  : {}),
                 ...(isGguf
                   ? {}
                   : {
@@ -2987,7 +3004,13 @@ export function useChatModelRuntime() {
                   max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit:
                     stateBeforeUnload.loadedEngine === "auto" &&
-                    rollbackConfig?.loadIn4bit !== false,
+                    (isLocalMlxCheckpoint(
+                      previousIsMlx,
+                      previousActiveLoadId || previousCheckpoint,
+                      previousIsLora,
+                    )
+                      ? (rollbackConfig?.mlxLoadIn4bit ?? rollbackState.params.loadIn4bit) === true
+                      : rollbackConfig?.loadIn4bit !== false),
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
                   trust_remote_code:

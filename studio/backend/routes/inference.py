@@ -13973,6 +13973,21 @@ async def load_model_for_preview(
             _auto_switch_process_lock.release()
 
 
+def _requested_load_in_4bit(config: ModelConfig, request) -> bool:
+    """Default to the saved weights for a local MLX checkpoint."""
+    from utils.hardware import DeviceType, get_device
+
+    if (
+        "load_in_4bit" not in getattr(request, "model_fields_set", {"load_in_4bit"})
+        and getattr(config, "is_local", False)
+        and not (getattr(config, "is_gguf", False) or getattr(config, "is_lora", False))
+        and getattr(request, "engine", "auto") == "auto"
+        and get_device() == DeviceType.MLX
+    ):
+        return False
+    return request.load_in_4bit
+
+
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
     16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
@@ -17033,7 +17048,7 @@ def _mlx_load_identifier(identifier: str) -> str:
 def _mlx_estimate_load_in_4bit(config, request) -> bool:
     """The 4-bit setting the load resolves, not the one the panel sent."""
     # Same order as the load route: a full-finetune output loads 16-bit before any tier check.
-    if not _effective_load_in_4bit(config, request.load_in_4bit):
+    if not _effective_load_in_4bit(config, _requested_load_in_4bit(config, request)):
         return False
     from utils.transformers_version import latest_tier_forces_16bit
 
@@ -21257,11 +21272,12 @@ async def _load_model_impl(
             )
 
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
-        effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        if effective_load_in_4bit != request.load_in_4bit:
+        requested_load_in_4bit = await asyncio.to_thread(_requested_load_in_4bit, config, request)
+        effective_load_in_4bit = _effective_load_in_4bit(config, requested_load_in_4bit)
+        if effective_load_in_4bit != requested_load_in_4bit:
             logger.info(
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
-                f"from adapter_config.json / base model (requested {request.load_in_4bit})"
+                f"from adapter_config.json / base model (requested {requested_load_in_4bit})"
             )
         # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the guard to match.
         if effective_load_in_4bit and not config.is_gguf:
@@ -21840,7 +21856,7 @@ async def _load_model_impl(
         _resident_entry = backend.models.get(backend.active_model_name)
         if isinstance(_resident_entry, dict):
             _resident_entry["max_seq_length_requested"] = int(request.max_seq_length or 0)
-            _resident_entry["load_in_4bit_requested"] = bool(request.load_in_4bit)
+            _resident_entry["load_in_4bit_requested"] = requested_load_in_4bit
             # Persist placement so a reload doesn't land on a different GPU.
             _resident_entry["gpu_ids_requested"] = (
                 list(request.gpu_ids) if request.gpu_ids else None
@@ -22431,7 +22447,8 @@ async def validate_model(
                     diffusion_kind = placement.diffusion_kind,
                 ):
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
-        effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
+        requested_load_in_4bit = await asyncio.to_thread(_requested_load_in_4bit, config, request)
+        effective_load_in_4bit = _effective_load_in_4bit(config, requested_load_in_4bit)
         placement = await _preflight_native_audio_placement(config, request, placement)
 
         # Cover [adapter, base]: either repo can ship auto_map code or a poisoned pickle.

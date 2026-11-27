@@ -7284,6 +7284,11 @@ class MLXInferenceBackend:
             from hub.utils.mlx_variants import download_precision_folder
             load_source = download_precision_folder(model_name, precision_folder, hf_token)
 
+        if dtype is None and not (load_in_4bit or is_lora) and getattr(config, "is_local", False):
+            from core.inference.mlx_memory import mlx_saved_16bit_dtype
+
+            load_kwargs["dtype"] = mlx_saved_16bit_dtype(load_source, vision = use_vlm)
+
         knobs = offload
 
         # Auto is planned only where the load is priced: not distributed, an adapter or an explicit dtype.

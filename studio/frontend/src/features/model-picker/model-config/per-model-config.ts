@@ -6,6 +6,8 @@ import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   cachedRepoConfigId,
   ggufVariantFromStorageKey,
+  isNativeFileLabel,
+  isOllamaMlxModelId,
   isStandaloneGgufPath,
   modelIdFromStorageKey,
   modelStorageKey,
@@ -13,6 +15,7 @@ import {
   normalizeModelIdentity,
   publicModelId,
 } from "./model-identity";
+import { looksLikeLocalPath } from "@/lib/local-path";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import type { LoadModelRequest } from "@/features/chat/types/api";
 import {
@@ -31,6 +34,8 @@ export interface PerModelConfig {
   engine?: "auto" | "vllm" | "sglang";
   /** Default engine only; optional so older blobs parse, and anything but false is the 4-bit default. */
   loadIn4bit?: boolean;
+  /** Local MLX checkpoints use saved precision unless runtime quantization is selected. */
+  mlxLoadIn4bit?: boolean;
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
@@ -193,6 +198,18 @@ export function isServedByMlx(
   if (isGguf || deviceType !== "mac") return false;
   if (typeof mlxInference === "boolean") return mlxInference;
   return !NO_MLX_REASONS.has(chatOnlyReason ?? "");
+}
+
+export function isLocalMlxCheckpoint(
+  isMlx: boolean,
+  path: string,
+  isLora = false,
+): boolean {
+  return (
+    isMlx &&
+    !isLora &&
+    (looksLikeLocalPath(path) || isNativeFileLabel(path) || isOllamaMlxModelId(path))
+  );
 }
 
 /** Native-audio checkpoints load on Apple Silicon without MLX; `loadedIsMlx` null means not loaded. */
@@ -557,6 +574,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "npuPrefillChunkLen",
   "npuImgPreResize",
   "loadIn4bit",
+  "mlxLoadIn4bit",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
@@ -1182,6 +1200,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       partial.engineGpuMemoryUtilization,
     ),
     loadIn4bit: partial.loadIn4bit !== false,
+    ...(partial.mlxLoadIn4bit === true ? { mlxLoadIn4bit: true } : {}),
     customContextLength:
       typeof partial.customContextLength === "number" &&
       Number.isFinite(partial.customContextLength) &&
@@ -1488,6 +1507,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.engineSeed == null &&
     config.engineGpuMemoryUtilization == null &&
     config.loadIn4bit !== false &&
+    config.mlxLoadIn4bit !== true &&
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&

@@ -9,7 +9,7 @@ import test from "node:test";
 import { readSrc, registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
-const { normalizePerModelConfig, isDefaultConfig, DEFAULT_PER_MODEL_CONFIG } =
+const { normalizePerModelConfig, isDefaultConfig, DEFAULT_PER_MODEL_CONFIG, isLocalMlxCheckpoint } =
   await import("../src/features/model-picker/model-config/per-model-config.ts");
 const { loadedConfigSignature } = await import(
   "../src/features/model-picker/model-config/config-signature.ts"
@@ -46,7 +46,7 @@ test("4-bit stays the default, and only an explicit off is a setting", () => {
   );
 });
 
-test("the server row carries only a 16-bit choice and reads it back", () => {
+test("the server row carries an explicit precision choice and reads it back", () => {
   assert.equal(
     "load_in_4bit" in toApiOverride(DEFAULT_PER_MODEL_CONFIG),
     false,
@@ -55,6 +55,18 @@ test("the server row carries only a 16-bit choice and reads it back", () => {
   assert.equal(row.load_in_4bit, false);
   assert.equal(fromApiOverride(row).loadIn4bit, false);
   assert.equal(fromApiOverride({}).loadIn4bit, true);
+  const localOptIn = normalizePerModelConfig({ mlxLoadIn4bit: true });
+  assert.equal(isDefaultConfig(localOptIn), false);
+  assert.equal(toApiOverride(localOptIn).load_in_4bit, true);
+  assert.equal(fromApiOverride(toApiOverride(localOptIn)).mlxLoadIn4bit, true);
+  assert.equal(normalizePerModelConfig({ loadIn4bit: true }).mlxLoadIn4bit, undefined);
+});
+
+test("local MLX precision applies to checkpoint paths", () => {
+  assert.equal(isLocalMlxCheckpoint(true, "/models/export"), true);
+  assert.equal(isLocalMlxCheckpoint(false, "/models/export"), false);
+  assert.equal(isLocalMlxCheckpoint(true, "/models/adapter", true), false);
+  assert.equal(isLocalMlxCheckpoint(true, "org/model"), false);
 });
 
 test("a resident loaded at the other precision is reloaded, GGUF never is", () => {
@@ -89,6 +101,14 @@ test("a resident loaded at the other precision is reloaded, GGUF never is", () =
   );
 });
 
+test("a local MLX resident uses the explicit opt-in when matching a pick", () => {
+  const local = { ...standing, localMlxCheckpoint: true };
+  const resident = { is_mlx: true, load_in_4bit: true };
+  assert.equal(residentRuntimeMatchesConfig(resident, DEFAULT_PER_MODEL_CONFIG, local), false);
+  const optIn = { ...DEFAULT_PER_MODEL_CONFIG, mlxLoadIn4bit: true };
+  assert.equal(residentRuntimeMatchesConfig(resident, optIn, local), true);
+});
+
 test("every default-engine load path sends the choice, vLLM and SGLang never 4-bit", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(
@@ -99,11 +119,11 @@ test("every default-engine load path sends the choice, vLLM and SGLang never 4-b
   const composer = readSrc("features/chat/shared-composer.tsx");
   assert.match(
     composer,
-    /load_in_4bit: paneEngine === "auto" && ownConfig\.loadIn4bit !== false,/,
+    /load_in_4bit: paneEngine === "auto" && loadIn4bitChoice,/,
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.equal(
-    (adapter.match(/load_in_4bit: config\.loadIn4bit !== false,/g) ?? [])
+    (adapter.match(/load_in_4bit: localMlxCheckpoint\s*\? config\.mlxLoadIn4bit === true\s*:\s*config\.loadIn4bit !== false,/g) ?? [])
       .length,
     1,
   );
