@@ -5350,10 +5350,8 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .composer-run-settings > * {
 	flex: 1 0 auto;
 }
-/* The row above the footer is marked in TSX, not found with `:has(+ [data-pinned-footer])`: a bare
-   :has() is matched against every element, which marks every parent as having children styled by
-   their siblings, so inserting any child restyles the parent's whole subtree (the whole page for
-   <body>, on every modal open and close, once KaTeX's MathML is on the page). */
+/* Marked in TSX: a bare `:has(+ ...)` here made each modal open restyle the whole page
+   (tests/studio/test_sibling_rules_have_a_key.py). */
 .composer-run-settings [data-pinned-footer-above] {
 	margin-bottom: calc(20px * var(--ui-space-scale, 1));
 }
@@ -5719,7 +5717,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 		flex-basis: 100%;
 	}
 
-	/* A class, not `form ~ div`: a sibling combinator ending in a bare tag is matched against every div. */
+	/* A class, not `form ~ div` (tests/studio/test_sibling_rules_have_a_key.py). */
 	.browser-web-toolbar > .browser-web-toolbar-trailing {
 		margin-inline-start: auto;
 	}
