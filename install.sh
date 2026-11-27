@@ -4368,6 +4368,8 @@ _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 # Apple Silicon: 2.13 is the first with fused MPS attention (mflux needs >=2.13); 2.15 lacks cp310/torchvision.
 _MACOS_TORCH_CEILING="2.15.0"
 _MACOS_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
+# An existing home below this moves to the new-install spec; fixed at Studio's fused-attention gate, not the pin.
+_MACOS_TORCH_MOVE_FLOOR="2.13.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -7048,13 +7050,12 @@ if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL"
     fi
 elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
     # Same policy as cu130: keep a resident 2.4-2.14, move a fresh home (or an explicit upgrade).
-    # Except a resident release below 2.13 (no fused MPS attention): it moves too when the route is
+    # Except a resident release below _MACOS_TORCH_MOVE_FLOOR (no fused MPS attention): it moves too when the route is
     # open, unless UNSLOTH_TORCH_UPGRADE is set (=0 keeps it).
     _PRESERVE_TORCH_CONSTRAINT="${TORCH_CONSTRAINT%%,*},<${_MACOS_TORCH_CEILING}"
-    _macos_floor="${_MACOS_NEW_INSTALL_TORCH#torch>=}"; _macos_floor="${_macos_floor%%,*}"
     _macos_below_floor=false
     if [ "$_EXISTING_INSTALL" = true ] && [ -z "${UNSLOTH_TORCH_UPGRADE:-}" ] \
-       && [ -n "$(_previous_torch_pin "$_PREV_TORCH_VER" "${TORCH_CONSTRAINT%%,*},<${_macos_floor}" keep)" ]; then
+       && [ -n "$(_previous_torch_pin "$_PREV_TORCH_VER" "${TORCH_CONSTRAINT%%,*},<${_MACOS_TORCH_MOVE_FLOOR}" keep)" ]; then
         _macos_below_floor=true
     fi
     if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \

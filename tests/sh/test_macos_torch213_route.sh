@@ -88,9 +88,10 @@ assert_eq "install.sh new-install body matches the replayed one" "yes" \
     "$(grep -A2 '^if \[ -z "\$_PREV_TORCH_PIN" \] && \[ "\$_MACOS_NEW_INSTALL_ROUTE" = true \]; then$' "$INSTALL_SH" | tail -2 \
         | tr -d '\n' | grep -qF 'TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"' && echo yes)"
 substep() { :; }
-eval "$(grep -E '^_(CU130|MACOS)_(TORCH_CEILING|NEW_INSTALL_TORCH)=' "$INSTALL_SH")"
+eval "$(grep -E '^_(CU130|MACOS)_(TORCH_CEILING|NEW_INSTALL_TORCH|TORCH_MOVE_FLOOR)=' "$INSTALL_SH")"
 assert_eq "macOS ceiling" "2.15.0" "$_MACOS_TORCH_CEILING"
 assert_eq "macOS new-install spec" "torch>=2.13.0,<2.14.0" "$_MACOS_NEW_INSTALL_TORCH"
+assert_eq "macOS move floor is the fused-attention gate" "2.13.0" "$_MACOS_TORCH_MOVE_FLOOR"
 SKIP_TORCH=false; TORCH_INDEX_URL="$CPU"; PACKAGE_NAME="unsloth"
 _run_block() {  # $1 existing-install flag, $2 previous torch version, $3 default floor
     _EXISTING_INSTALL="$1"; _PREV_TORCH_VER="$2"
@@ -206,6 +207,15 @@ for os in linux wsl windows; do
     TORCH_INDEX_URL="$CPU"
 done
 OS=macos
+# A later pin bump (here to 2.14) must not move a 2.13 home: the floor is its own literal.
+_pin_saved="$_MACOS_NEW_INSTALL_TORCH"; _MACOS_NEW_INSTALL_TORCH="torch>=2.14.0,<2.15.0"
+_run_block true "2.13.0"
+assert_eq "pin bumped to 2.14: an existing 2.13 home is kept" "torch==2.13.0" "$TORCH_CONSTRAINT"
+_run_block true "2.13.1"
+assert_eq "pin bumped to 2.14: an existing 2.13.1 home is kept" "torch==2.13.1" "$TORCH_CONSTRAINT"
+_run_block true "2.10.0"
+assert_eq "pin bumped to 2.14: an existing 2.10 home moves to the bumped pin" "torch>=2.14.0,<2.15.0" "$TORCH_CONSTRAINT"
+_MACOS_NEW_INSTALL_TORCH="$_pin_saved"
 rm -f "$_SUBSTEP_LOG"
 substep() { :; }
 
