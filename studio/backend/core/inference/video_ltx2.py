@@ -540,6 +540,8 @@ def _copy_file_chunks(
             handles.put(handle)
 
     stream = torch.cuda.Stream(device = device)
+    # The targets come from the current stream's pool: wait for its queued work before the side stream writes them.
+    stream.wait_stream(torch.cuda.current_stream(device))
     try:
         with ThreadPoolExecutor(
             max_workers = max(1, threads), thread_name_prefix = "unsloth-direct-load"
