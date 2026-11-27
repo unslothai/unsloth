@@ -181,12 +181,23 @@ def test_a_volume_without_hard_links_still_never_replaces_unless_asked(
     assert (workdir / "report.xlsx").read_bytes() == b"upload"
 
 
-def _mint_download_token(session, name):
+def _mint_download_token(
+    session,
+    name,
+    keyless = False,
+):
     import json
+    from types import SimpleNamespace
+    from unittest import mock
 
     from routes import inference
 
-    link = asyncio.run(inference.create_sandbox_download_link(session, name, "u"))
+    with mock.patch(
+        "auth.authentication.request_admitted_without_credential", return_value = keyless
+    ):
+        link = asyncio.run(
+            inference.create_sandbox_download_link(SimpleNamespace(), session, name, "u")
+        )
     assert link.headers["cache-control"] == "no-store"
     return json.loads(link.body)["token"]
 
@@ -235,6 +246,9 @@ def test_sandbox_download_link_is_bound_to_the_session_file_and_expiry(tools, mo
     with pytest.raises(HTTPException) as missing:
         _mint_download_token(session, "missing.txt")
     assert missing.value.status_code == 404
+    with pytest.raises(HTTPException) as keyless:
+        _mint_download_token(session, name, keyless = True)
+    assert keyless.value.status_code == 403
     (mint,) = [r for r in inference.router.routes if r.path == "/sandbox-download-link"]
     assert inference.get_current_subject in [d.call for d in mint.dependant.dependencies]
 
@@ -277,8 +291,7 @@ def test_sandbox_download_link_follows_a_concurrent_legacy_move(monkeypatch, tmp
         return str(migrated), str(migrated / filename)
 
     monkeypatch.setattr(inference, "_contained_sandbox_path", resolve)
-    link = asyncio.run(inference.create_sandbox_download_link("thread", "report.txt", "u"))
-    assert link.status_code == 200
+    assert _mint_download_token("thread", "report.txt")
 
 
 @pytest.mark.parametrize("token", [None, "older-client-token"])
