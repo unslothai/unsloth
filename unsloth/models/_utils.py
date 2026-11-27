@@ -98,6 +98,8 @@ __all__ = [
     "_get_inference_mode_context_manager",
     "hf_login",
     "maybe_prefetch_hf_snapshot",
+    "gguf_dequantize_kwargs",
+    "gguf_drop_bitsandbytes",
     "resolve_vllm_model_path",
     "is_moe_model",
     "install_block_swap",
@@ -597,13 +599,8 @@ def _is_hip_build():
 
 
 def _triton_probe(index):
-    import triton
-    import triton.language as tl
-
-    @triton.jit
-    def _add_one(X, N, BLOCK: tl.constexpr):  # BLOCK: 16, a fixed probe size
-        offsets = tl.arange(0, BLOCK)
-        tl.store(X + offsets, tl.load(X + offsets, offsets < N) + 1, offsets < N)
+    # Module-level kernel: Triton < 3.4 cannot see a function-local `tl` (NameError, FlexAttention off).
+    from ._triton_probe_kernel import _add_one
 
     x = torch.zeros(16, device = f"cuda:{index}", dtype = torch.float32)
     with torch.cuda.device(index):
@@ -3943,6 +3940,40 @@ def _prefetch_ignore_patterns(
         except Exception:
             pass
     return ignore_patterns
+
+
+def gguf_dequantize_kwargs(kwargs):
+    """Load a `gguf_file` as an ordinary dense, trainable model.
+
+    From transformers 5.17 a GGUF load goes through `GgufHfQuantizer`. Left at its default it either keeps
+    Qwen3.5 / LFM2 weights packed (forward only, wherever the ggml kernel resolves, today Apple MPS), or, for
+    every other architecture, dequantizes them but leaves the quantizer attached with `is_trainable = False`,
+    so Trainer refuses LoRA and full finetuning alike. `GgufConfig(dequantize = True)` unpacks every weight and
+    drops the quantizer, which is what a GGUF load did before 5.17. A `quantization_config` the caller passed
+    is left alone."""
+    if not kwargs.get("gguf_file") or kwargs.get("quantization_config") is not None:
+        return kwargs
+    try:
+        from transformers import GgufConfig
+    except ImportError:  # transformers < 5.17 has no GGUF quantizer and always dequantizes
+        return kwargs
+    if "dequantize" not in inspect.signature(GgufConfig.__init__).parameters:
+        return kwargs
+    kwargs["quantization_config"] = GgufConfig(dequantize = True)
+    return kwargs
+
+
+def gguf_drop_bitsandbytes(gguf_file, load_in_4bit, load_in_8bit):
+    """A `gguf_file` is unpacked to dense weights at load, and transformers refuses a bitsandbytes config
+    beside it. So `load_in_4bit` (the default) and `load_in_8bit` are dropped for GGUF loads, with a notice.
+    Returns the new `(load_in_4bit, load_in_8bit)`."""
+    if not gguf_file or not (load_in_4bit or load_in_8bit):
+        return load_in_4bit, load_in_8bit
+    print(
+        "Unsloth: `gguf_file` weights are dequantized at load, so load_in_4bit / load_in_8bit is ignored "
+        "and the model loads in 16bit."
+    )
+    return False, False
 
 
 def maybe_prefetch_hf_snapshot(

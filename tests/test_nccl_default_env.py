@@ -61,7 +61,7 @@ def _top_level_calls(tree):
 def test_init_applies_it_before_anything_can_create_a_process_group():
     """unsloth/__init__.py must call apply_nccl_default_env before it imports torch, transformers,
     accelerate or any Unsloth module that builds a mesh (parallel_env, models)."""
-    tree = ast.parse((_UNSLOTH / "__init__.py").read_text())
+    tree = ast.parse((_UNSLOTH / "__init__.py").read_text(encoding = "utf-8"))
     calls = _top_level_calls(tree)
     applied = [line for line, name in calls if name == "_apply_nccl_default_env"]
     assert applied, "unsloth/__init__.py no longer applies the NCCL defaults"

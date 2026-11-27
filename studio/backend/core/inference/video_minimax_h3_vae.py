@@ -35,6 +35,10 @@ LEVER_TILE_BATCH = "tile_batch"
 LEVER_CANVAS = "canvas"
 LEVER_INT8_DECODER = "int8_decoder"
 LEVER_FP16_ACCUM = "fp16_accum"
+# ROCm: T = 1 causal Conv3d runs as Conv2d of its last tap (other taps see only zero pad; exact, not bitwise).
+LEVER_ROCM_SINGLE_FRAME_ENCODER = "rocm_single_frame_encoder"
+H3_ROCM_SINGLE_FRAME_ENV = "UNSLOTH_H3_ROCM_SINGLE_FRAME_ENCODER"
+H3_VAE_LEVER_CALLS_ATTR = "_unsloth_h3_vae_lever_calls"
 
 _TILE_BATCH_MAX = 4
 _TILE_BATCH_BYTES_PER_TILE = 256 * 2**20
@@ -1514,6 +1518,81 @@ def _triton_jit_toolchain_ok() -> bool:
         return True
 
 
+def h3_vae_lever_calls(vae: Any) -> dict[str, int]:
+    return dict(getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None) or {})
+
+
+def _single_frame_conv_forward(conv: Any, calls: Optional[dict] = None) -> Any:
+    """``conv.forward`` with T = 1 calls lowered to a Conv2d over the last temporal tap."""
+    import torch.nn.functional as F
+
+    stock = conv.forward
+    conv._unsloth_rocm_single_frame_calls = 0
+
+    def forward(hidden_states: Any) -> Any:
+        kt = conv.kernel_size[0]
+        if (
+            hidden_states.dim() == 5
+            and hidden_states.shape[2] == 1
+            and kt > 1
+            and int(getattr(conv, "temporal_padding", 0) or 0) == kt - 1
+            and tuple(conv.padding) == (0, 0, 0)
+            and conv.dilation[0] == 1
+        ):
+            x = hidden_states[:, :, 0]
+            pad = int(getattr(conv, "spatial_padding", 0) or 0)
+            if pad > 0:
+                x = F.pad(x, (pad, pad, pad, pad), mode = conv.spatial_padding_mode)
+            out = F.conv2d(
+                x,
+                conv.weight[:, :, -1],
+                conv.bias,
+                stride = tuple(conv.stride[1:]),
+                padding = 0,
+                dilation = tuple(conv.dilation[1:]),
+                groups = conv.groups,
+            )
+            conv._unsloth_rocm_single_frame_calls += 1
+            if calls is not None:
+                calls[LEVER_ROCM_SINGLE_FRAME_ENCODER] = (
+                    calls.get(LEVER_ROCM_SINGLE_FRAME_ENCODER, 0) + 1
+                )
+            return out.unsqueeze(2)
+        return stock(hidden_states)
+
+    return forward
+
+
+def _install_rocm_single_frame_encoder(vae: Any) -> int:
+    """Returns how many encoder convs were wrapped."""
+    if _env(H3_ROCM_SINGLE_FRAME_ENV) in _FALSE:
+        return 0
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return 0
+    if not torch.cuda.is_available() or not is_rocm_torch(torch):
+        return 0
+    if type(vae).__name__ != "AutoencoderKLMiniMaxH3":
+        return 0
+    encoder = getattr(vae, "encoder", None)
+    if encoder is None:
+        return 0
+    calls = getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None)
+    if not isinstance(calls, dict):
+        calls = {}
+    n = 0
+    for module in encoder.modules():
+        if type(module).__name__ != "MiniMaxH3VideoCausalConv3d" or "forward" in module.__dict__:
+            continue
+        module.forward = _single_frame_conv_forward(module, calls)
+        n += 1
+    if n > 0:
+        calls.setdefault(LEVER_ROCM_SINGLE_FRAME_ENCODER, 0)
+        setattr(vae, H3_VAE_LEVER_CALLS_ATTR, calls)
+    return n
+
+
 def cuda_fast_path_available(vae: Any = None) -> bool:
     try:
         import torch
@@ -1574,11 +1653,24 @@ def apply_h3_vae_speedups(
     planned = plan_h3_vae_levers(speed_mode, workflow = workflow, consumer_gpu = consumer_gpu)
     engaged: list[str] = []
     if not planned or not cuda_fast_path_available(vae):
+        # not bitwise, so off when the plan is empty (speed_mode="off")
         try:
-            vae._unsloth_h3_vae_levers = ()
+            if planned and _install_rocm_single_frame_encoder(vae) > 0:
+                engaged.append(LEVER_ROCM_SINGLE_FRAME_ENCODER)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            if logger is not None:
+                logger.warning(
+                    "video.h3_vae_fast: %s failed, keeping the stock path: %s",
+                    LEVER_ROCM_SINGLE_FRAME_ENCODER,
+                    exc,
+                )
+        try:
+            vae._unsloth_h3_vae_levers = tuple(engaged)
         except Exception:  # noqa: BLE001
             pass
-        return ()
+        if engaged and logger is not None:
+            logger.info("video.h3_vae_fast: engaged %s", ", ".join(engaged))
+        return tuple(engaged)
 
     def _try(name: str, fn) -> None:
         try:

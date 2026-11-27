@@ -159,17 +159,26 @@ test("the translation keeps the source's own surrounding whitespace", () => {
 
 const auto = { sourceName: null, mode: "automatic", tone: "default" } as const;
 
-test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () => {
-  const [message, ...rest] = translateMessages("hy-mt3-1.8b", "Hello", {
-    ...auto,
-    targetName: "French",
-  });
-  assert.equal(rest.length, 0);
-  assert.equal(message.role, "user");
-  assert.equal(
-    message.content,
-    "Translate the following text into French. Note that you should only output the translated result without any additional explanation:\n\nHello",
-  );
+test("Hy-MT3 uses the documented prompt for manual and detected source languages", () => {
+  const source = "Bonjour. Salut. Est-ce que tu veux venir avec moi?";
+  const expected = [
+    {
+      role: "user",
+      content: `Translate the following text into English. Note that you should only output the translated result without any additional explanation:\n\n${source}`,
+    },
+  ];
+  const options = { ...auto, targetName: "English" };
+  for (const { id } of DEDICATED_TRANSLATE_MODELS) {
+    assert.deepEqual(
+      translateMessages(id, source, { ...options, sourceName: "French" }),
+      expected,
+      id,
+    );
+    assert.deepEqual(translateMessages(id, source, options), expected, id);
+  }
+});
+
+test("Hy-MT3 uses the documented style prompt with a manual source language", () => {
   const [styled] = translateMessages("hy-mt3-7b", "Hello", {
     sourceName: "English",
     targetName: "French",
@@ -178,7 +187,7 @@ test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () 
   });
   assert.equal(
     styled.content,
-    "Please translate the following text from English into French. Note that the translation style must strictly conform to [literal, word for word; formal and professional]:\n\nHello",
+    "Please translate the following text into French. Note that the translation style must strictly conform to [literal, word for word; formal and professional]:\n\nHello",
   );
 });
 
@@ -230,7 +239,7 @@ test("an edited prompt replaces the built one and keeps its language placeholder
   assert.equal(
     translateInstruction(
       "hy-mt3-1.8b",
-      templateOptions({ ...auto, targetName: "French" }),
+      templateOptions({ ...auto, sourceName: "English", targetName: "French" }),
     ),
     `Translate the following text into ${TARGET_PLACEHOLDER}. Note that you should only output the translated result without any additional explanation:`,
   );

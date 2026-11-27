@@ -41,7 +41,9 @@ def test_plain_results_round_trip(value):
 
 
 def test_a_path_arrives_as_its_string():
-    assert codec.decode(codec.encode(("ok", pathlib.Path("/tmp/x")))) == ("ok", os.fspath("/tmp/x"))
+    # The path's own string (os.fspath), so a Windows path arrives with its backslashes.
+    path = pathlib.Path("/tmp/x")
+    assert codec.decode(codec.encode(("ok", path))) == ("ok", os.fspath(path))
 
 
 def test_an_object_that_is_not_plain_data_arrives_as_none():
@@ -105,6 +107,7 @@ def _store_functions(module, monkeypatch, store):
         "_timeout": lambda: None,
         "_save_timeout": lambda: None,
         "_EXPORT_COUNTER": {},
+        "_handshake_done": lambda dist, store: None,
     }
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(MODELS / module), "exec"), namespace)
     return namespace, dist
