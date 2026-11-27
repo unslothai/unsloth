@@ -881,7 +881,7 @@ def evaluate(
         try:
             task_names, include_paths = resolve_tasks(tasks, input_key, target_key, tmp_dir)
             tm_kwargs = {}
-            # dataset tasks never reference built-ins; indexing lm-eval's ~15k task yamls costs seconds
+            # dataset tasks never use built-ins: skips the ~15k-yaml index, and a same-name built-in winning on lm-eval 0.4.4-0.4.9
             if all(is_dataset) and "include_defaults" in inspect.signature(TaskManager).parameters:
                 tm_kwargs["include_defaults"] = False
             task_manager = TaskManager(include_path = include_paths or None, **tm_kwargs)
