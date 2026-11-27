@@ -4509,6 +4509,7 @@ export const es = {
       uploadOneFileType: "Sube un archivo {types}.",
       datasetUploaded: "Conjunto de datos subido",
       importPandasJson: "Importar .json como columnas de pandas",
+      importSemicolonCsv: "Usar punto y coma como delimitador en .csv",
       evalDatasetUploaded: "Conjunto de datos de evaluación subido",
       uploadOneFileAtATime: "Sube un archivo a la vez",
       uploadSingleFileDescription:

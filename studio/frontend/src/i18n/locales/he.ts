@@ -4532,6 +4532,7 @@ export const he = {
       uploadOneFileType: "העלה קובץ {types} יחיד.",
       datasetUploaded: "מערך הנתונים הועלה",
       importPandasJson: "ייבוא .json כעמודות pandas",
+      importSemicolonCsv: "שימוש בנקודה-פסיק כמפריד בקובצי .csv",
       evalDatasetUploaded: "מערך נתוני ההערכה הועלה",
       uploadOneFileAtATime: "העלה קובץ אחד בכל פעם",
       uploadSingleFileDescription:

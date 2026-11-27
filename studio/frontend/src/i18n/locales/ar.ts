@@ -4457,6 +4457,7 @@ export const ar = {
       uploadOneFileType: "ارفع ملفًا واحدًا من نوع {types}.",
       datasetUploaded: "تم رفع مجموعة البيانات",
       importPandasJson: "استيراد ملف .json كأعمدة pandas",
+      importSemicolonCsv: "استخدام الفاصلة المنقوطة كفاصل لملفات .csv",
       evalDatasetUploaded: "تم رفع مجموعة بيانات التقييم",
       uploadOneFileAtATime: "ارفع ملفًا واحدًا في كل مرة",
       uploadSingleFileDescription:

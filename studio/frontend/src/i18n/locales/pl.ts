@@ -4816,6 +4816,7 @@ export const pl = {
       uploadOneFileType: "Prześlij jeden plik typu {types}.",
       datasetUploaded: "Przesłano zbiór danych",
       importPandasJson: "Importuj .json jako kolumny pandas",
+      importSemicolonCsv: "Użyj średnika jako separatora dla .csv",
       evalDatasetUploaded: "Przesłano zbiór danych ewaluacyjnych",
       uploadOneFileAtATime: "Przesyłaj jeden plik naraz",
       uploadSingleFileDescription:

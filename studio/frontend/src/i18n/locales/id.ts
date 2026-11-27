@@ -4764,6 +4764,7 @@ export const id = {
       uploadOneFileType: "Unggah satu file {types}.",
       datasetUploaded: "Dataset diunggah",
       importPandasJson: "Impor .json sebagai kolom pandas",
+      importSemicolonCsv: "Gunakan titik koma sebagai pemisah untuk .csv",
       evalDatasetUploaded: "Dataset evaluasi diunggah",
       uploadOneFileAtATime: "Unggah satu file sekaligus",
       uploadSingleFileDescription:

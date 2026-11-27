@@ -4513,6 +4513,7 @@ export const de = {
       uploadOneFileType: "Laden Sie eine {types}-Datei hoch.",
       datasetUploaded: "Datensatz hochgeladen",
       importPandasJson: ".json als pandas-Spalten importieren",
+      importSemicolonCsv: "Semikolon als Trennzeichen für .csv verwenden",
       evalDatasetUploaded: "Eval-Datensatz hochgeladen",
       uploadOneFileAtATime: "Laden Sie jeweils eine Datei hoch",
       uploadSingleFileDescription:

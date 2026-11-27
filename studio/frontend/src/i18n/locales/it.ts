@@ -4489,6 +4489,7 @@ export const it = {
       uploadOneFileType: "Carica un file {types}.",
       datasetUploaded: "Dataset caricato",
       importPandasJson: "Importa .json come colonne pandas",
+      importSemicolonCsv: "Usa il punto e virgola come delimitatore per .csv",
       evalDatasetUploaded: "Dataset di valutazione caricato",
       uploadOneFileAtATime: "Carica un file alla volta",
       uploadSingleFileDescription:

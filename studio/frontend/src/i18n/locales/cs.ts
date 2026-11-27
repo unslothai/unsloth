@@ -4785,6 +4785,7 @@ export const cs = {
       uploadOneFileType: "Nahrajte jeden soubor typu {types}.",
       datasetUploaded: "Datová sada byla nahrána",
       importPandasJson: "Importovat .json jako sloupce pandas",
+      importSemicolonCsv: "Pro .csv použít jako oddělovač středník",
       evalDatasetUploaded: "Vyhodnocovací datová sada byla nahrána",
       uploadOneFileAtATime: "Nahrávejte vždy jen jeden soubor",
       uploadSingleFileDescription:

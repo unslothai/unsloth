@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
 import json
 import threading
@@ -39,6 +40,7 @@ LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
 LOCAL_DATASETS_ROOT = LazyPath(recipe_datasets_root)
 DATASET_UPLOAD_DIR = LazyPath(dataset_uploads_root)
 _REUSE_LOCK = threading.Lock()
+_CSV_CONVERSION_LOCK = threading.Lock()
 _PANDAS_JSON_MAX_MB = 8
 _PANDAS_JSON_CONVERSION_LOCK = threading.Lock()
 
@@ -507,7 +509,9 @@ def _upload_destination(filename: str) -> tuple[str, Path, int, str]:
 
 
 def _native_upload_dataset_response(
-    native_path_lease: str, json_columns: bool = False
+    native_path_lease: str,
+    json_columns: bool = False,
+    csv_delimiter: str = ",",
 ) -> UploadDatasetResponse:
     from core.training.account_jobs import account_path
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
@@ -526,6 +530,7 @@ def _native_upload_dataset_response(
     # A managed account may only import files inside its own workspace, as the RAG/seed/library drops check.
     account_path(grant.canonical_path)
     filename, stored_path, max_bytes, max_label = _upload_destination(grant.canonical_path.name)
+    _validate_csv_delimiter(stored_path, csv_delimiter)
     _validate_json_columns_upload(stored_path, json_columns)
     input_bytes, input_label = _json_columns_input_limit(max_bytes, max_label, json_columns)
     if grant.size_bytes is not None and grant.size_bytes > input_bytes:
@@ -556,7 +561,9 @@ def _native_upload_dataset_response(
         partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
 
-    published = _finish_upload(partial_path, stored_path, max_bytes, max_label, json_columns)
+    published = _finish_upload(
+        partial_path, stored_path, max_bytes, max_label, json_columns, csv_delimiter
+    )
     return UploadDatasetResponse(filename = filename, stored_path = str(published))
 
 
@@ -565,12 +572,14 @@ async def upload_dataset_response(
     native_path_lease: str | None = None,
     *,
     json_columns: bool = False,
+    csv_delimiter: str = ",",
 ) -> UploadDatasetResponse:
     if native_path_lease:
         return await asyncio.to_thread(
             _native_upload_dataset_response,
             native_path_lease,
             json_columns,
+            csv_delimiter,
         )
     if file is None:
         raise HTTPException(status_code = 400, detail = "No dataset file was provided")
@@ -578,6 +587,7 @@ async def upload_dataset_response(
     filename, stored_path, max_bytes, max_label = _upload_destination(
         file.filename or "dataset_upload"
     )
+    _validate_csv_delimiter(stored_path, csv_delimiter)
     _validate_json_columns_upload(stored_path, json_columns)
     input_bytes, input_label = _json_columns_input_limit(max_bytes, max_label, json_columns)
     declared_size = getattr(file, "size", None)
@@ -605,9 +615,20 @@ async def upload_dataset_response(
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
     reused_path = await asyncio.to_thread(
-        _finish_upload, partial_path, stored_path, max_bytes, max_label, json_columns
+        _finish_upload,
+        partial_path,
+        stored_path,
+        max_bytes,
+        max_label,
+        json_columns,
+        csv_delimiter,
     )
     return UploadDatasetResponse(filename = filename, stored_path = str(reused_path))
+
+
+def _validate_csv_delimiter(path: Path, csv_delimiter: str) -> None:
+    if csv_delimiter != "," and (csv_delimiter != ";" or path.suffix != ".csv"):
+        raise HTTPException(status_code = 400, detail = "Semicolon import requires a .csv file.")
 
 
 def _validate_json_columns_upload(path: Path, json_columns: bool) -> None:
@@ -633,11 +654,61 @@ def _unique_json_object(items):
 
 
 def _finish_upload(
-    partial_path: Path, stored_path: Path, max_bytes: int, max_label: str, json_columns: bool
+    partial_path: Path,
+    stored_path: Path,
+    max_bytes: int,
+    max_label: str,
+    json_columns: bool,
+    csv_delimiter: str,
 ) -> Path:
-    if not json_columns:
-        return _publish_upload(partial_path, stored_path)
+    if json_columns:
+        return _finish_pandas_json_upload(partial_path, stored_path, max_bytes, max_label)
+    if csv_delimiter != ",":
+        return _finish_semicolon_csv_upload(
+            partial_path, stored_path, max_bytes, max_label, csv_delimiter
+        )
+    return _publish_upload(partial_path, stored_path)
 
+
+def _finish_semicolon_csv_upload(
+    partial_path: Path, stored_path: Path, max_bytes: int, max_label: str, csv_delimiter: str
+) -> Path:
+    converted_path = partial_path.with_suffix(".csv.part")
+    try:
+        with _CSV_CONVERSION_LOCK:
+            field_limit = csv.field_size_limit()
+            try:
+                source_bytes = partial_path.stat().st_size
+                if source_bytes > field_limit:
+                    try:
+                        csv.field_size_limit(source_bytes)
+                    except OverflowError:
+                        # Python versions that store this as C long cap it at 2 GiB on Windows.
+                        csv.field_size_limit(2**31 - 1)
+                _convert_semicolon_csv(
+                    partial_path, converted_path, max_bytes, max_label, csv_delimiter
+                )
+            finally:
+                csv.field_size_limit(field_limit)
+        return _publish_upload(converted_path, stored_path)
+    except UnicodeDecodeError as exc:
+        # The ANSI code page depends on the exporting locale, so a guessed one would publish mojibake.
+        raise HTTPException(
+            status_code = 400,
+            detail = "Invalid semicolon CSV. The file is not UTF-8; save it from Excel as CSV UTF-8.",
+        ) from exc
+    except (csv.Error, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = f"Invalid semicolon CSV. {exc}") from exc
+    finally:
+        with suppress(OSError):
+            partial_path.unlink(missing_ok = True)
+        with suppress(OSError):
+            converted_path.unlink(missing_ok = True)
+
+
+def _finish_pandas_json_upload(
+    partial_path: Path, stored_path: Path, max_bytes: int, max_label: str
+) -> Path:
     converted_path = partial_path.with_suffix(".rows.part")
     try:
         with _PANDAS_JSON_CONVERSION_LOCK:
@@ -653,6 +724,64 @@ def _finish_upload(
             partial_path.unlink(missing_ok = True)
         with suppress(OSError):
             converted_path.unlink(missing_ok = True)
+
+
+def _csv_records(source, delimiter):
+    last_line = ""
+
+    def lines():
+        nonlocal last_line
+        for line in source:
+            last_line = line
+            yield line
+
+    reader = csv.reader(lines(), delimiter = delimiter, strict = True)
+    end = 0
+    for row in reader:
+        line_count = reader.line_num - end
+        end = reader.line_num
+        if line_count == 1 and not last_line.strip():
+            continue
+        yield row
+
+
+class _ByteCountingWriter:
+    __slots__ = ("file", "written")
+
+    def __init__(self, file):
+        self.file = file
+        self.written = 0
+
+    def write(self, text):
+        data = text.encode("utf-8")
+        self.written += len(data)
+        return self.file.write(data)
+
+
+def _convert_semicolon_csv(partial_path, converted_path, max_bytes, max_label, delimiter):
+    with (
+        partial_path.open(encoding = "utf-8-sig", newline = "") as source,
+        converted_path.open("wb") as target,
+    ):
+        # Excel also accepts a delimiter directive before the header.
+        if source.readline().rstrip("\r\n").lower() != "sep=;":
+            source.seek(0)
+        rows = _csv_records(source, delimiter)
+        header = next(rows, None)
+        if header is None:
+            raise ValueError("Missing CSV header.")
+        out = _ByteCountingWriter(target)
+        writer = csv.writer(out, lineterminator = "\r\n")
+        writer.writerow(header)
+        for row in rows:
+            missing = len(header) - len(row)
+            if missing < 0:
+                raise ValueError("A row has more fields than the header.")
+            writer.writerow(row + [""] * missing if missing else row)
+            if out.written > max_bytes:
+                raise _upload_too_large(max_label)
+        if out.written > max_bytes:
+            raise _upload_too_large(max_label)
 
 
 def _write_pandas_json_rows(

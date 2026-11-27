@@ -4764,6 +4764,7 @@ export const vi = {
       uploadOneFileType: "Tải lên một tệp {types}.",
       datasetUploaded: "Đã tải lên tập dữ liệu",
       importPandasJson: "Nhập .json dưới dạng cột pandas",
+      importSemicolonCsv: "Dùng dấu chấm phẩy làm dấu phân cách cho .csv",
       evalDatasetUploaded: "Đã tải lên tập dữ liệu đánh giá",
       uploadOneFileAtATime: "Mỗi lần chỉ tải lên một tệp",
       uploadSingleFileDescription:

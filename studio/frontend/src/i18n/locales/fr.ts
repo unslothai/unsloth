@@ -4521,6 +4521,7 @@ export const fr = {
       uploadOneFileType: "Téléversez un fichier {types}.",
       datasetUploaded: "Jeu de données téléversé",
       importPandasJson: "Importer le .json comme colonnes pandas",
+      importSemicolonCsv: "Utiliser le point-virgule comme séparateur pour les .csv",
       evalDatasetUploaded: "Jeu de données d'évaluation téléversé",
       uploadOneFileAtATime: "Téléversez un fichier à la fois",
       uploadSingleFileDescription:

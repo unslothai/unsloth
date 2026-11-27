@@ -4481,6 +4481,7 @@ export const ru = {
       uploadOneFileType: "Загрузите один файл {types}.",
       datasetUploaded: "Датасет загружен",
       importPandasJson: "Импортировать .json как столбцы pandas",
+      importSemicolonCsv: "Использовать точку с запятой как разделитель для .csv",
       evalDatasetUploaded: "Датасет для оценки загружен",
       uploadOneFileAtATime: "Загружайте по одному файлу за раз",
       uploadSingleFileDescription:

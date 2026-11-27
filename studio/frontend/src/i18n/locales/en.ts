@@ -4472,6 +4472,7 @@ export const en = {
       uploadOneFileType: "Upload one {types} file.",
       datasetUploaded: "Dataset uploaded",
       importPandasJson: "Import .json as pandas columns",
+      importSemicolonCsv: "Use semicolon delimiter for .csv",
       evalDatasetUploaded: "Eval dataset uploaded",
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:
