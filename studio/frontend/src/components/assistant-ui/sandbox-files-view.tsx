@@ -10,6 +10,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
+import { formatBytes } from "@/features/hub";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { cn } from "@/lib/utils";
@@ -18,13 +19,6 @@ import { FileContextMenu, loadSandboxFile } from "./link-context-menu";
 import { saveSandboxFile } from "./sandbox-download";
 import type { SandboxFile } from "./sandbox-files";
 import { revealSandbox } from "./sandbox-reveal";
-
-function formatSize(size: number | null): string {
-  if (size === null || size === undefined || Number.isNaN(size)) return "";
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function SandboxFileRow({
   sessionId,
@@ -66,8 +60,8 @@ function SandboxFileRow({
       >
         <HugeiconsIcon icon={FileEmpty02Icon} className="size-3.5 shrink-0" />
         <span className="truncate font-mono">{file.name}</span>
-        {file.size !== null && (
-          <span className="text-muted-foreground">{formatSize(file.size)}</span>
+        {file.size != null && (
+          <span className="text-muted-foreground">{formatBytes(file.size)}</span>
         )}
         <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />
       </button>

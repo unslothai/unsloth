@@ -3640,13 +3640,13 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
 
 
 def test_each_quant_row_reads_its_own_dependency_key():
-    """Rows read their own dependency key; with no answer, they fall back to formatBytes."""
+    """Each quant uses its own dependency key and falls back to compactBytes without a result."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     row = src.split("{displayVariants.map((v) => {", 1)[1]
     row = row.split("</TooltipContent>", 1)[0]
     assert 'companionBytesByKey.get(v.dependency_key ?? "") ?? null' in row
     assert (
-        "companionBytes === null ? (\n                  <SizeText value={formatBytes(v.size_bytes)} />"
+        "companionBytes === null ? (\n                  <SizeText value={compactBytes(v.size_bytes)} />"
         in row
     )
     assert "companionBytes={companionBytes}" in row
