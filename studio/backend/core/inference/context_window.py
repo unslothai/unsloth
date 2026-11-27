@@ -700,7 +700,6 @@ def compact_completed_tool_arguments(
     protect_last: int = 0,
     preserve_failed: bool = False,
     protected_message_ids: Optional[set[int]] = None,
-    protected_calls: Optional[set[tuple[int, str]]] = None,
 ) -> tuple[list[dict], int]:
     """Rewrites only the replayed copy, leaving the stored thread and tool arguments byte-identical;
     only answered calls, oldest first; protect_last keeps trailing messages unchanged."""
@@ -724,11 +723,7 @@ def compact_completed_tool_arguments(
         changed = False
         for call in calls:
             function = call.get("function") if isinstance(call, dict) else None
-            if (
-                not isinstance(function, dict)
-                or (index, str(call.get("id") or "")) not in answered
-                or (id(message), str(call.get("id") or "")) in (protected_calls or ())
-            ):
+            if not isinstance(function, dict) or (index, str(call.get("id") or "")) not in answered:
                 new_calls.append(call)
                 continue
             reply = answered[(index, str(call.get("id") or ""))]
@@ -911,7 +906,6 @@ def fit_rolling_context(
     count_tokens: Callable[[list[dict]], int],
     protected_message_ids: Optional[set[int]] = None,
     reserve_tokens: int = 0,
-    prompt_reserve_tokens: int = 0,
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
     headroom_ratio: Optional[float] = None,
@@ -923,9 +917,7 @@ def fit_rolling_context(
     if context_length <= 1:
         return messages, None
 
-    prompt_target = max(
-        1, prompt_budget(context_length, max_tokens) - max(0, int(prompt_reserve_tokens))
-    )
+    prompt_target = prompt_budget(context_length, max_tokens)
     fitted = list(messages)
     initial_tokens = count_tokens(fitted)
     current_tokens = initial_tokens

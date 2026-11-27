@@ -316,15 +316,11 @@ def test_a_result_the_window_actually_cut_is_still_called_starved(monkeypatch):
 
 def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
     """The rescue recount must use the same empty tool stand-in as sizing, or the call's args drop out."""
-    from core.inference import context_window
-
-    # Prompt sizing only: the marginal-token diagnostic prices a shorter prompt on purpose.
-    monkeypatch.setattr(context_window, "_marginal_turn_count", lambda *a, **kw: 0)
 
     counted: list[list] = []
 
     def fake_count(messages, *_args, **_kwargs):
-        counted.append(copy.deepcopy(messages))
+        counted.append(list(messages))
         # Under the prompt budget but prices below _MIN_USEFUL_RESULT_TOKENS, triggering rescue.
         return 3050
 
@@ -337,13 +333,13 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
     monkeypatch.setattr(backend, "count_chat_tokens", fake_count)
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "contents")
 
-    rescue_recounts: list[int] = []
+    rescued: list[int] = []
     real_compact = llama_cpp_module.compact_completed_tool_arguments
 
     def spy_compact(messages, *args, **kwargs):
         fitted, n = real_compact(messages, *args, **kwargs)
         if kwargs.get("protect_last") and n:
-            rescue_recounts.append(len(counted))
+            rescued.append(n)
         return fitted, n
 
     monkeypatch.setattr(llama_cpp_module, "compact_completed_tool_arguments", spy_compact)
@@ -364,11 +360,15 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
         )
     )
 
-    assert rescue_recounts
-    for index in rescue_recounts:
-        call, probe = counted[index][-2:]
-        assert probe["role"] == "tool"
-        assert probe["tool_call_id"] == call["tool_calls"][-1]["id"]
+    assert rescued, "the rescue never ran, so this asserts nothing"
+    ends_on_the_call = [
+        messages
+        for messages in counted
+        if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls")
+    ]
+    assert (
+        not ends_on_the_call
+    ), "a prompt was priced with the pending call's own arguments rendered away"
 
 
 def test_the_zero_room_stub_counts_as_a_window_notice(monkeypatch):
