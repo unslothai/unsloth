@@ -7030,9 +7030,14 @@ class TestInProcessCountTokens:
     @pytest.mark.parametrize(
         "fields, is_mlx, status, detail",
         [
-            ({"enable_tools": True}, False, 503, "No GGUF model loaded"),
+            (
+                {"enable_tools": True},
+                False,
+                503,
+                "Token counting is not available on the transformers backend.",
+            ),
         ],
-        ids = ["not_mlx"],
+        ids = ["transformers_resident"],
     )
     def test_what_it_cannot_price_is_refused(self, monkeypatch, fields, is_mlx, status, detail):
         import routes.inference as inf
@@ -7041,7 +7046,8 @@ class TestInProcessCountTokens:
         with pytest.raises(HTTPException) as exc:
             self._count(monkeypatch, inf.anthropic_count_tokens, payload, is_mlx = is_mlx)
         assert exc.value.status_code == status
-        assert detail in json.dumps(exc.value.detail)
+        assert exc.value.detail == detail
+        assert not exc.value.headers, "no not_loaded problem code for a loaded model"
 
 
 _IP_CHUNKS = [{"delta": {"content": "hi"}}, {"delta": {}, "finish_reason": "stop"}]

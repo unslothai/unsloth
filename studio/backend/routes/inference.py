@@ -45483,6 +45483,21 @@ async def _resident_model_reads_images() -> bool:
     return bool(entry.get("is_vision"))
 
 
+def _refuse_resident_count(entry: dict, *, messages_api: bool = False) -> None:
+    """A resident model a count cannot serve is named, never reported as unloaded."""
+    if entry.get("is_audio"):
+        detail = "Token counting is not available for speech or transcription models."
+    elif entry.get("is_mlx"):
+        return
+    elif entry.get("engine") in ("vllm", "sglang"):
+        if not messages_api:
+            return
+        detail = "Token counting on the Messages API is not available for this engine profile."
+    else:
+        detail = "Token counting is not available on the transformers backend."
+    raise HTTPException(status_code = 503, detail = detail)
+
+
 async def _mlx_count_chat_tokens(
     payload,
     request = None,
@@ -45507,18 +45522,8 @@ async def _mlx_count_chat_tokens(
     entry = getattr(backend, "models", {}).get(active) or {}
     if not entry:
         return None
-    # A resident model is named, never reported as unloaded; vision counts, speech renders no chat.
-    if entry.get("is_audio"):
-        raise HTTPException(
-            status_code = 503,
-            detail = "Token counting is not available for speech or transcription models.",
-        )
+    _refuse_resident_count(entry)
     managed = entry.get("engine") in ("vllm", "sglang")
-    if not (entry.get("is_mlx") or managed):
-        raise HTTPException(
-            status_code = 503,
-            detail = "Token counting is not available on the transformers backend.",
-        )
     if entry.get("engine") == "sglang":
         raise HTTPException(
             status_code = 503,
@@ -46438,8 +46443,9 @@ async def _anthropic_in_process_count(
     backend = await asyncio.to_thread(get_inference_backend)
     active = getattr(backend, "active_model_name", None)
     entry = (getattr(backend, "models", {}) or {}).get(active) or {}
-    if not active or not entry.get("is_mlx"):
+    if not active or not entry:
         return None
+    _refuse_resident_count(entry, messages_api = True)
     fields = _anthropic_chat_fields(
         payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
     )
