@@ -449,11 +449,21 @@ def int8_lora_unavailable(gpu = "current"):
     return int8_lora.int8_lora_supported(torch.device("cuda"))
 
 
+def _parallel_layout_requested() -> bool:
+    try:
+        from .tp_env import env_layout
+        from .ep_native import ep_env_size
+        return env_layout() is not None or ep_env_size() > 1
+    except Exception:
+        return False
+
+
 def float8_training_request(
     float8_training,
     full_finetuning = False,
     quantized_base = False,
     dtype = None,
+    qat_scheme = None,
 ):
     """The LoRA frozen-base request: the float8_training kwarg, or 'int8_lora' when UNSLOTH_LORA_BASE_INT8=1
     and the kwarg is unset. The environment opt-in never fails a load: on a quantized base (load_in_4bit, ...)
@@ -461,6 +471,10 @@ def float8_training_request(
     refuses instead)."""
     if float8_training in (None, False) and not full_finetuning and int8_lora_requested():
         why = "the base is loaded quantized (load_in_4bit / 8bit / fp8)" if quantized_base else None
+        if why is None and _parallel_layout_requested():
+            why = "tensor / pipeline / expert parallel runs keep the frozen base in 16 bit"
+        if why is None and qat_scheme is not None:
+            why = f"qat_scheme = {qat_scheme!r} fake-quantizes the base weight"
         if why is None and dtype in (torch.float32, "float32", "fp32"):
             why = "the int8 base needs bf16 / fp16 activations, the model loads in float32"
         why = why or int8_lora_unavailable()

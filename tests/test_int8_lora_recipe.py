@@ -65,6 +65,21 @@ def test_env_opt_in_on_fp32_load_is_ignored(monkeypatch, capsys, dtype):
         f8t.resolve_fp8_lora("int8_lora", dtype = torch.float32, gpu = "sm120")
 
 
+def test_env_opt_in_on_qat_load_is_ignored(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
+    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
+    assert f8t.float8_training_request(None, qat_scheme = "int8-int4") is None
+    assert "qat_scheme" in capsys.readouterr().out
+
+
+def test_env_opt_in_under_tp_or_ep_is_ignored(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
+    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
+    monkeypatch.setattr(f8t, "_parallel_layout_requested", lambda: True)
+    assert f8t.float8_training_request(None) is None
+    assert "parallel" in capsys.readouterr().out
+
+
 def test_env_unset_changes_nothing(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LORA_BASE_INT8", raising = False)
     assert f8t.float8_training_request(None) is None
