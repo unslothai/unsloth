@@ -10,8 +10,9 @@ import { restoredInpaintMaskOptions } from "../src/features/images/lib/inpaint-o
 import { detailerNotApplied, restoredDetailer } from "../src/features/images/lib/detailer.ts";
 import { fastCfgEndFromRecipe, fastCfgNotApplied } from "../src/features/images/lib/fast-cfg.ts";
 import * as workflows from "../src/features/images/workflows.ts";
+import { isWorkflowEnabled } from "../src/features/images/stores/image-workflow-store.ts";
 
-function restoreSettingsWith(negativeCapable: boolean) {
+function restoreSettingsWith(negativeCapable: boolean, supported: string[] | null = null) {
   const source = readSrc("features/images/images-page.tsx");
   const tree = ts.createSourceFile(
     "images-page.tsx",
@@ -59,7 +60,13 @@ function restoreSettingsWith(negativeCapable: boolean) {
     fastCfgEndFromRecipe,
     fastCfgNotApplied,
     recipeWorkflowTab: workflows.recipeWorkflowTab,
-    toast: { success: () => {} },
+    recipeWorkflowLabel: workflows.recipeWorkflowLabel,
+    isWorkflowEnabled,
+    supported,
+    toast: {
+      success: (title: string) => (state.toastSuccess = title),
+      warning: (title: string) => (state.toastWarning = title),
+    },
   };
   // Every closure name the callback reads that is not a real global resolves to a recording no-op,
   // so a new dependency of restoreSettings (#13569 added changeSamplerChoice / samplerOptions) does
@@ -140,4 +147,16 @@ test("restoring an image-input recipe reopens its own tab and leaves the Create 
     assert.equal(state.setWorkflow, tab, workflow);
     assert.deepEqual(state.setPromptFor, [tab, "a fox"], workflow);
   }
+});
+
+test("restoring a recipe whose tab the loaded model lacks warns instead of claiming a restore", () => {
+  const image = { prompt: "a fox", guidance: 5, steps: 20, seed: 7, width: 1024, height: 1024, workflow: "inpaint" };
+  const lacking = restoreSettingsWith(true, ["create", "edit"]);
+  lacking.restore(image);
+  assert.match(String(lacking.state.toastWarning), /Inpaint, which the loaded model cannot run/);
+  assert.equal("toastSuccess" in lacking.state, false);
+  const capable = restoreSettingsWith(true, ["create", "inpaint"]);
+  capable.restore(image);
+  assert.equal("toastWarning" in capable.state, false);
+  assert.ok(capable.state.toastSuccess);
 });

@@ -3193,7 +3193,12 @@ export function ImagesPage({
     const conditioned =
       restoreInputsNote(image) ?? CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
     if (via === "vary") return;
-    if (conditioned) {
+    // The tab falls back to Create on the next render, leaving the restored prompt in the hidden tab's draft.
+    if (!isWorkflowEnabled(reopened, supported)) {
+      toast.warning(`Settings restored to ${recipeWorkflowLabel(image.workflow)}, which the loaded model cannot run`, {
+        description: "Load a model that supports it to reproduce this image.",
+      });
+    } else if (conditioned) {
       toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`, rescaled);
     } else {
       toast.success("Settings restored to inputs", rescaled);
@@ -3216,7 +3221,7 @@ export function ImagesPage({
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, supported, detailerReady, cfgIntervalSupported]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
