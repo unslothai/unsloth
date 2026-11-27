@@ -51,7 +51,13 @@ def _trained_model(
     lora.base_model_name_or_path = base_dir
     model = get_peft_model(base, lora)
     if snapshot:
-        snapshot_residual_lora_init(model, lora.init_lora_weights)
+        snapshot_residual_lora_init(model, lora.init_lora_weights if snapshot is True else snapshot)
+    if snapshot == "loftq":
+        # What LoftQ leaves behind: a base Q with W ~= Q + B0 @ A0, unscaled, so s0 = 1 while s = alpha / r.
+        with torch.no_grad():
+            for module in model.modules():
+                for A0, B0, _ in getattr(module, "_unsloth_initial_lora", {}).values():
+                    module.get_base_layer().weight.sub_(B0 @ A0)
     model.peft_config["default"].base_model_name_or_path = base_dir
     with torch.no_grad():
         for name, param in model.named_parameters():
@@ -87,6 +93,7 @@ def _config(folder):
         {"alpha_pattern": {"o_proj": 3}},
         {"use_rslora": True, "rank_pattern": {"v_proj": 2}, "alpha_pattern": {"o_proj": 3}},
         {"init_lora_weights": "pissa", "alpha_pattern": {"o_proj": 3}},
+        {"init_lora_weights": False, "snapshot": "loftq"},
     ],
     ids = [
         "default",
@@ -97,6 +104,7 @@ def _config(folder):
         "alpha_pattern",
         "rslora-patterns",
         "pissa-alpha_pattern",
+        "loftq-unit-scale",
     ],
 )
 def test_converter_input_applies_to_the_original_base(tmp_path, monkeypatch, config_kwargs):
