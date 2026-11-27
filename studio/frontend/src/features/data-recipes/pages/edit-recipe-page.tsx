@@ -129,7 +129,10 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       const confirmed = editedVersion.current;
       const inFlight = inFlightVersion.current;
       const candidates = input.recover ? unansweredVersions.current : [];
-      const bases = inFlight !== undefined ? [inFlight] : [...candidates, confirmed];
+      // A recovering exit also keeps the confirmed base: an in-flight save may be cancelled unsent.
+      const bases = input.recover
+        ? [...new Set([...(inFlight === undefined ? [] : [inFlight]), ...candidates, confirmed])]
+        : [inFlight !== undefined ? inFlight : confirmed];
       const updatedAt = Math.max(
         Date.now(),
         Math.max(confirmed ?? 0, inFlight ?? candidates[0] ?? 0) + 1,
@@ -166,7 +169,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       } catch (error) {
         const kept = unansweredVersions.current.filter((v) => v !== updatedAt);
         if (!(error instanceof RecipeApiError)) {
-          unansweredVersions.current = [updatedAt, ...kept].sort((a, b) => b - a).slice(0, 3);
+          unansweredVersions.current = [updatedAt, ...kept].sort((a, b) => b - a);
         } else if (error.status === 409) {
           // Every base tried conflicted, so none of them is the stored version.
           unansweredVersions.current = kept.filter((v) => !bases.includes(v));

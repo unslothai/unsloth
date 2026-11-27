@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import * as keepaliveBudget from "../src/lib/keepalive-budget.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Slot = {
@@ -262,6 +261,11 @@ function fakeServer(initial: Stored) {
   };
 }
 
+// Each test gets its own budget: a PUT a test leaves unreleased must not starve the next one.
+type KeepaliveBudget = typeof import("../src/lib/keepalive-budget.ts");
+const freshBudget = () =>
+  loadWithStubs<KeepaliveBudget>(new URL("../src/lib/keepalive-budget.ts", import.meta.url), {});
+
 const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
 };
@@ -307,7 +311,7 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
       react: hooks,
       "@/features/recipe-studio": { createEmptyRecipePayload: () => ({}) },
       "@/utils": { normalizeNonEmptyName: (n: string) => n.trim() || "Unnamed" },
-      "@/lib/keepalive-budget": keepaliveBudget,
+      "@/lib/keepalive-budget": freshBudget(),
       "./legacy-import": { importLegacyRecipes: async () => undefined },
       "./recipes-api": { recipeRequest: server.recipeRequest, RecipeApiError },
     },
@@ -531,11 +535,12 @@ test("closing the page during a save sends the newer edit on top of it at once",
   await s.fireDebounce();
   await s.edit({ columns: ["second"] });
   await s.fire("pagehide");
-  const [first, second] = s.server.puts;
-  assert.equal(s.server.puts.length, 2);
-  assert.equal(second.keepalive, true);
-  assert.equal(second.body.baseUpdatedAt, first.body.updatedAt);
-  assert.ok(second.body.updatedAt > first.body.updatedAt);
+  const [first, ...exit] = s.server.puts;
+  assert.deepEqual(
+    exit.map((p) => p.body.baseUpdatedAt),
+    [first.body.updatedAt, first.body.baseUpdatedAt],
+  );
+  assert.ok(exit.every((p) => p.keepalive === true && p.body.updatedAt > first.body.updatedAt));
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
   assert.deepEqual(s.errors, []);
@@ -548,11 +553,12 @@ test("a newer edit that reaches the server first cannot overwrite anything", asy
   await s.edit({ columns: ["second"] });
   await s.fire("pagehide");
   await s.server.release("lifo");
+  // Only the copy on the version this tab last confirmed can land, so no other write is lost.
   assert.deepEqual(
     s.server.puts.map((p) => p.outcome),
-    [200, 409],
+    [409, 409, 200],
   );
-  assert.deepEqual(s.server.stored.payload, { columns: ["first"] });
+  assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
 });
 
 test("content another window rejected is not sent again on leave", async () => {
@@ -635,7 +641,7 @@ test("undoing an edit while it saves still saves the undo on leave", async () =>
     if (leave === "pagehide") await s.fire("pagehide");
     else s.editor.unmount();
     await s.server.release();
-    assert.deepEqual(payloads(s), [{ columns: ["b"] }, { columns: ["a"] }], leave);
+    assert.deepEqual(payloads(s).slice(0, 2), [{ columns: ["b"] }, { columns: ["a"] }], leave);
     assert.deepEqual(s.server.stored.payload, { columns: ["a"] }, leave);
   }
 });
@@ -711,7 +717,7 @@ test("a keepalive save still in flight from an earlier call counts against the b
   await s.hide();
   await s.edit({ text: "y".repeat(40 * 1024) });
   await s.fire("pagehide");
-  assert.deepEqual(s.server.puts.map((p) => p.keepalive), [true, false]);
+  assert.deepEqual(s.server.puts.map((p) => p.keepalive), [true, false, false]);
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { text: "y".repeat(40 * 1024) });
 });
@@ -758,6 +764,7 @@ test("a recovery copy that landed without an answer is still tried as the base n
 });
 
 test("a chat settings keepalive body shares the budget with recipe saves", async () => {
+  const keepaliveBudget = freshBudget();
   const sent: (boolean | undefined)[] = [];
   const api = loadWithStubs<{
     saveChatSettingsPatch: (p: object, o: { keepalive?: boolean }) => Promise<unknown>;
@@ -816,6 +823,7 @@ test("an older save succeeding keeps a newer unanswered version as a candidate",
 });
 
 test("chat settings hold their keepalive reservation until the response body is read", async () => {
+  const keepaliveBudget = freshBudget();
   let readBody: () => void = () => undefined;
   const api = loadWithStubs<{
     saveChatSettingsPatch: (p: object, o: { keepalive?: boolean }) => Promise<unknown>;
@@ -949,8 +957,9 @@ test("an upload a pending save still writes is not cleaned when a later save fai
   await s.edit({ columns: ["a"] });
   s.uploads.pending.push("u1");
   await s.fire("pagehide");
+  s.server.failNext(503);
   await s.server.release("lifo");
-  assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 409]);
+  assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 409, 503]);
   assert.ok(!s.uploads.removed.includes("u1"));
 });
 
@@ -1016,4 +1025,33 @@ test("a committed save whose answer body was unreadable is not trusted from the 
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { columns: ["x"] });
   assert.equal(s.db.getCachedRecipe("r1"), null);
+});
+
+test("an unload save also tries the confirmed base when the save in flight is cancelled unsent", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  await s.fire("pagehide");
+  await s.server.cancelOldest(false);
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
+});
+
+test("recovery keeps a landed version however many lost saves follow it", async () => {
+  const s = setup();
+  await s.edit({ columns: ["p"] });
+  await s.fireDebounce();
+  await s.server.cancelOldest(true);
+  for (const v of ["q", "r", "t"]) {
+    // Real edits are 800 ms apart; distinct milliseconds keep the lost versions distinct.
+    await new Promise((r) => setTimeout(r, 3));
+    await s.edit({ columns: [v] });
+    await s.fireDebounce();
+    await s.server.cancelOldest(false);
+  }
+  await s.edit({ columns: ["u"] });
+  s.editor.unmount();
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["u"] });
 });
