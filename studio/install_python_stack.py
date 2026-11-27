@@ -12085,7 +12085,8 @@ def install_python_stack() -> int:
                     errors = "replace",
                     timeout = 10,
                 )
-                _win_amd_gpu = _wr.returncode == 0 and "gcnarchname" in _wr.stdout.lower()
+                # Any exit code: hipinfo can crash after printing gcnArchName (#6043).
+                _win_amd_gpu = "gcnarchname" in _wr.stdout.lower()
             except Exception:
                 pass
         if _win_amd_gpu and not _rocm_windows_torch_installed:

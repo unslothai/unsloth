@@ -3100,23 +3100,16 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 return _venv_candidate
             return None
 
-        _win_probes = [(["hipinfo"], lambda out: "gcnarchname" in out.lower())]
-        for _cmd, _check in _win_probes:
-            _exe = _resolve_exe(_cmd[0])
-            if not _exe:
-                continue
-            try:
-                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
-            except Exception:
-                continue
-            if _result.returncode == 0 and _result.stdout.strip():
-                if _check(_result.stdout):
-                    has_rocm = True
-                    rocm_gfx_targets = _list_rocm_gfx_targets(_result.stdout)
-                    rocm_gfx_target = _pick_rocm_gfx_target(
-                        _result.stdout, hip_filtered = _cmd[0] == "hipinfo"
-                    )
-                    break
+        _exe = _resolve_exe("hipinfo")
+        try:
+            _out = run_capture([_exe], timeout = 10).stdout if _exe else ""
+        except Exception:
+            _out = ""
+        # Any exit code: hipinfo can crash (0xC0000005, some RDNA 4) after printing gcnArchName (#6043).
+        if "gcnarchname" in _out.lower():
+            has_rocm = True
+            rocm_gfx_targets = _list_rocm_gfx_targets(_out)
+            rocm_gfx_target = _pick_rocm_gfx_target(_out, hip_filtered = True)
         # amdhip64.dll alone is not GPU evidence: the HIP SDK installs without an AMD GPU.
 
     # Only probed with no usable NVIDIA and no ROCm, so "without_rocm" holds by construction.
