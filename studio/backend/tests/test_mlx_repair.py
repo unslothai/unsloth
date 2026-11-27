@@ -94,6 +94,11 @@ def test_install_takes_the_zoos_exact_mlx_pin(monkeypatch):
         mr, "_zoo_declared_specifier", lambda name: ">=0.22.0" if name == "mlx" else ""
     )
     assert "mlx==0.32.5" in mr._install_packages()
+    # Below the floor: 0.32.2 is mlx#4431.
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "==0.32.2" if name == "mlx" else ""
+    )
+    assert "mlx==0.32.5" in mr._install_packages()
 
 
 def test_install_keeps_the_full_range_when_the_zoo_declares_nothing(monkeypatch):

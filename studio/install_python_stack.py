@@ -10269,6 +10269,8 @@ def _has_working_git() -> bool:
 # The MLX stack, one place; test_mlx_install.py compares it with utils/mlx_repair.py's
 # _MLX_INSTALL_SPECS.
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.5", "mlx-metal==0.32.5")
+# Oldest zoo mlx pin followed: 0.32.2's GQA-8 decode read row 0's KV for every batch row (mlx#4431).
+_MLX_ZOO_PIN_FLOOR = "0.32.3"
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
 _MLX_VLM_SPEC = "mlx-vlm>=0.6.4,<=0.8.1"
@@ -10376,6 +10378,12 @@ def _mlx_pins_for_installed_zoo() -> tuple[str, ...]:
     if not declared.startswith("==") or any(c in declared for c in ",*"):
         return _MLX_PINS
     version = declared[2:].strip()
+    try:
+        from packaging.version import Version
+        if Version(version) < Version(_MLX_ZOO_PIN_FLOOR):
+            return _MLX_PINS
+    except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
+        return _MLX_PINS
     return (f"mlx=={version}", f"mlx-metal=={version}")
 
 

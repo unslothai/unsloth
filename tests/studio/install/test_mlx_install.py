@@ -385,7 +385,7 @@ def test_mlx_vlm_spec_is_intersected_with_the_installed_zoo(monkeypatch):
         importlib.metadata,
         "requires",
         lambda _name: [
-            'mlx==0.32.1; sys_platform == "darwin" and platform_machine == "arm64"',
+            'mlx==0.32.4; sys_platform == "darwin" and platform_machine == "arm64"',
             'mlx-vlm<0.7.0,>=0.4.4; sys_platform == "darwin" and platform_machine == "arm64"',
             'mlx-lm==0.31.3; sys_platform == "darwin" and platform_machine == "arm64"',
         ],
@@ -395,11 +395,12 @@ def test_mlx_vlm_spec_is_intersected_with_the_installed_zoo(monkeypatch):
     assert "<0.7.0" in spec and "0.31.3" not in spec
     assert stack._mlx_lm_spec_for_installed_zoo() == f"{stack._MLX_LM_SPEC},==0.31.3"
     # The core phase reinstalls zoo with deps, so its exact mlx pin is the one that would stay.
-    assert stack._mlx_pins_for_installed_zoo() == ("mlx==0.32.1", "mlx-metal==0.32.1")
+    assert stack._mlx_pins_for_installed_zoo() == ("mlx==0.32.4", "mlx-metal==0.32.4")
 
 
 @pytest.mark.parametrize(
-    "declared", [None, ['mlx>=0.22.0; sys_platform == "darwin"'], ["mlx==0.32.*"], ["numpy"]]
+    "declared",
+    [None, ['mlx>=0.22.0; sys_platform == "darwin"'], ["mlx==0.32.*"], ["numpy"], ["mlx==0.32.2"]],
 )
 def test_mlx_pins_stay_ours_without_an_exact_zoo_pin(monkeypatch, declared):
     import importlib.metadata
