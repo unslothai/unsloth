@@ -102,6 +102,52 @@ def _fresh_new_mapper_cache():
         loader_utils._NEW_MAPPER_CACHE["entry"] = None
 
 
+# The variables that pick unsloth's device route. Every test in a worker, and every interpreter it spawns,
+# inherits them, so a test module that sets one while it is collected decides the route for all of them
+# (tests/test_pp_native_fused_ce.py once left UNSLOTH_FORCE_CPU=1: 14 tests elsewhere in its shard failed).
+_DEVICE_ROUTE_ENV = (
+    "UNSLOTH_FORCE_CPU",
+    "UNSLOTH_ALLOW_CPU",
+    "UNSLOTH_DISABLE_CPU_FALLBACK",
+    "UNSLOTH_FORCE_GPU_PATH",
+    "CUDA_VISIBLE_DEVICES",
+)
+_DEVICE_ROUTE_AT_START = {name: os.environ.get(name) for name in _DEVICE_ROUTE_ENV}
+
+
+def device_route_changes(before: dict, after: dict) -> list[str]:
+    return [
+        f"{name}: {before[name]!r} -> {after[name]!r}"
+        for name in before
+        if before[name] != after[name]
+    ]
+
+
+@pytest.hookimpl(hookwrapper = True)
+def pytest_make_collect_report(collector):
+    """Fails the collection of a test module that leaves a device route variable changed, and puts it back."""
+    outcome = yield
+    if not isinstance(collector, pytest.Module):
+        return
+    changed = device_route_changes(
+        _DEVICE_ROUTE_AT_START, {name: os.environ.get(name) for name in _DEVICE_ROUTE_ENV}
+    )
+    if not changed:
+        return
+    for name, value in _DEVICE_ROUTE_AT_START.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    report = outcome.get_result()
+    report.outcome = "failed"
+    report.longrepr = (
+        f"{collector.nodeid} changed the device route for every later test while it was imported "
+        f"({'; '.join(changed)}). Set it only inside a test (monkeypatch.setenv) or a child's env=, "
+        "or restore it once the import that needs it is done."
+    )
+
+
 @pytest.hookimpl(trylast = True)
 def pytest_collection_modifyitems(config, items):
     """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py; then UNSLOTH_TEST_SPLIT."""
