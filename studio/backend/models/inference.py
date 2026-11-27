@@ -2808,6 +2808,9 @@ class InputAudio(BaseModel):
 class InputAudioContentPart(BaseModel):
     type: Literal["input_audio"]
     input_audio: InputAudio
+    studio_replay: Optional[Literal[True]] = Field(
+        None, description = "[x-unsloth] Replay audio on its original user turn for GGUF chat."
+    )
 
 
 class UnknownContentPart(BaseModel):

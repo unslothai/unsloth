@@ -2275,15 +2275,25 @@ def _openai_llama_admission_media_tokens(
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     message_video_clips: Optional[list[str]] = None,
     legacy_image_in_messages: bool = False,
+    fitted_messages: Optional[list[dict]] = None,
 ) -> int:
     """Charge the legacy top-level image only when the messages do not already carry it: no double count."""
     extra = 0
     extra += max(0, message_image_parts) * image_tokens
     if not legacy_image_in_messages and _legacy_image_is_distinct(payload):
         extra += image_tokens
-    for audio in _request_audio_clips(payload):
-        if isinstance(audio, str) and audio:
-            extra += _openai_llama_admission_audio_tokens(audio)
+    if fitted_messages is not None and not getattr(payload, "audio_base64", None):
+        extra += sum(
+            part.get("studio_audio_tokens", 0)
+            for message in fitted_messages
+            if isinstance(content := message.get("content"), list)
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "input_audio"
+        )
+    else:
+        for audio in _request_audio_clips(payload):
+            if isinstance(audio, str) and audio:
+                extra += _openai_llama_admission_audio_tokens(audio)
     # _inject_video_part already spliced the legacy clip in, so do not charge it twice.
     if message_video_clips is None:
         value = getattr(payload, "video_base64", None)
@@ -2528,6 +2538,7 @@ def _count_gguf_admission_prompt(
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             message_video_clips = _conversation_video_clips(messages),
             legacy_image_in_messages = prepared_body is not None,
+            fitted_messages = messages,
         )
     except Exception:
         logger.debug("Prompt count unavailable; reserving the context pool", exc_info = True)
@@ -2617,7 +2628,7 @@ async def _openai_llama_admission_reserve_async(
     would make it parse one, or a recording would make it decode one."""
     tokens = _TOKENS_UNSET
     if payload is not None and (
-        getattr(payload, "audio_base64", None)
+        _request_audio_clips(payload)
         or _messages_mention_mcp_images(
             messages_override if messages_override is not None else payload.messages
         )
@@ -2697,6 +2708,7 @@ def _openai_llama_admission_recost(
                 message_image_parts = message_image_parts,
                 image_tokens = _openai_llama_admission_image_tokens(llama_backend),
                 message_video_clips = _conversation_video_clips(conversation),
+                fitted_messages = conversation,
             )
         # Reading 'Max' literally would put the run back on the whole cache at its first round.
         share = max(1, budget // max(1, capacity))
@@ -28670,9 +28682,9 @@ def _decode_within(
 def _request_audio_clips(payload) -> list[str]:
     """Every recording the request carries, ``audio_base64`` first."""
     first = getattr(payload, "audio_base64", None)
-    if not first:
-        return []
-    return [first, *(getattr(payload, "extra_audio_base64", None) or [])]
+    if first:
+        return [first, *(getattr(payload, "extra_audio_base64", None) or [])]
+    return [part.input_audio.data for part in _studio_audio_replay_parts(payload)]
 
 
 def _audio_too_large_detail(clip_count: int) -> str:
@@ -29431,12 +29443,38 @@ def _reject_misplaced_audio_parts(payload) -> None:
             f"At most {_MAX_AUDIO_CLIPS_PER_REQUEST} audio recordings per request are supported, "
             f"and this one carries {len(parts)}.",
         )
+    replay = [(index, part) for index, part in parts if part.studio_replay]
+    if replay:
+        if (
+            len(replay) != len(parts)
+            or replay[0][0] != replay[-1][0]
+            or replay[-1][0] == last_user
+            or getattr(payload, "audio_base64", None)
+        ):
+            _raise_unsupported_openai_parameter(
+                "messages",
+                "Studio audio replay supports recordings from one earlier user message on a turn "
+                "without new audio.",
+            )
+        if rejection := _request_audio_rejection(payload):
+            raise HTTPException(status_code = rejection[0], detail = rejection[1])
+        return
     if any(index != last_user for index, _ in parts):
         _raise_unsupported_openai_parameter(
             "messages",
             "Audio input is supported on the latest user message, and this one carries it on an "
             "earlier turn. Re-send the recording on the current turn.",
         )
+
+
+def _studio_audio_replay_parts(payload) -> list[InputAudioContentPart]:
+    return [
+        part
+        for msg in getattr(payload, "messages", None) or ()
+        if isinstance(getattr(msg, "content", None), list)
+        for part in msg.content
+        if isinstance(part, InputAudioContentPart) and part.studio_replay
+    ]
 
 
 def _messages_have_input_audio(messages) -> bool:
@@ -29471,7 +29509,7 @@ def _normalise_chat_content_parts(payload) -> None:
             continue
         kept = []
         for part in msg.content:
-            if isinstance(part, InputAudioContentPart):
+            if isinstance(part, InputAudioContentPart) and not part.studio_replay:
                 if msg.role == "user" and part.input_audio.data:
                     lifted.append(part.input_audio.data)
                 continue
@@ -30889,15 +30927,18 @@ def _fit_external_context(
     replays_manual: bool = False,
     keep_ids: Optional[set[int]] = None,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
+    unsummarised: Optional[list[dict]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
-    replays a /compact epoch on a request that may not start one."""
+    replays a /compact epoch on a request that may not start one. ``unsummarised`` is ``messages``
+    before a summary replaced its oldest turns, so those are archived and recalled too."""
     from core.inference import cloud_compaction
     from core.inference.context_window import (
         _ATTACHMENT_FIT_MARGIN,
         estimate_message_tokens_without_unpriced_media,
+        evicted_messages,
         fit_oversized_attachments,
         prompt_budget,
         retrieval_budget,
@@ -30996,11 +31037,22 @@ def _fit_external_context(
         # The catalogue is chosen before this fit, so the turn that first evicts has no
         # search_conversation: recall inline, as the local plain path does, or a question about
         # an evicted attachment on that turn gets "I have no record of it".
+        archived_first = 0
+        if unsummarised and thread_id and evicted_messages(unsummarised, messages):
+            # The archive is capped oldest first: a summarised backlog would defer what this fit cut.
+            archived_first = _archive_and_recall(
+                fitted,
+                messages,
+                branch_messages = unsummarised,
+                thread_id = str(thread_id),
+                style = "inline",
+                recall_done = True,
+            )["counts"].get("archived_messages", 0)
         recall = _archive_and_recall(
             fitted,
-            messages,
+            unsummarised or messages,
             # The loop's own conversation filters, or tool results this turn evicted are unrecallable.
-            branch_messages = messages,
+            branch_messages = unsummarised or messages,
             query_messages = branch,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
@@ -31016,6 +31068,10 @@ def _fit_external_context(
         )
         fitted = recall["conversation"]
         truncation = {**truncation, **recall["counts"]}
+        if archived_first:
+            truncation["archived_messages"] = (
+                truncation.get("archived_messages", 0) + archived_first
+            )
     return fitted, truncation, max_tokens
 
 
@@ -31264,6 +31320,7 @@ async def _finish_external_compaction(
             branch = branch,
             tool_loop = tool_loop,
             keep_ids = cloud_compaction.summary_turn_ids(current) | turn_ids,
+            unsummarised = plan.messages,
         )
         current = fitted
         if evicted and not plan.summarise:
@@ -31275,17 +31332,6 @@ async def _finish_external_compaction(
                 truncation["boundary_messages"] = plan.covered + int(
                     evicted.get("boundary_messages") or evicted["dropped_messages"]
                 )
-                # The fit archived only what it cut from the summarised prompt.
-                archived = await asyncio.to_thread(
-                    _archive_and_recall,
-                    current,
-                    plan.messages,
-                    branch_messages = plan.messages,
-                    thread_id = thread_id,
-                    style = "inline",
-                    recall_done = True,
-                )
-                truncation.update(archived["counts"])
         elif evicted:
             # Nothing could be dropped: the prompt is still too long, and any summary still stands.
             refusal = evicted
@@ -34117,6 +34163,7 @@ async def produce_openai_chat_completions(
     _mcp_image = await _request_mcp_image(payload, _ui_events)
     # Local path only: the lift targets audio_base64, which the proxy never reads.
     _normalise_chat_content_parts(payload)
+    _replayed_audio = bool(_studio_audio_replay_parts(payload))
 
     # Reject malformed function tools here, or llama-server fails opaquely with "Failed to parse tools".
     if payload.tools:
@@ -34233,14 +34280,15 @@ async def produce_openai_chat_completions(
         )
         # Video needs the projector too; its /props gate runs only after load, so refuse before any eviction.
         _needs_video = _request_has_video(payload)
-        _needs_vision = _needs_image or bool(payload.audio_base64) or _needs_video
+        _needs_audio_input = bool(payload.audio_base64) or _replayed_audio
+        _needs_vision = _needs_image or _needs_audio_input or _needs_video
         # Name only the modalities actually attached, so a refusal never reports one the request lacks.
         _modality_label = (
             " or ".join(
                 name
                 for name, present in (
                     ("image", _needs_image),
-                    ("audio", bool(payload.audio_base64)),
+                    ("audio", _needs_audio_input),
                     ("video", _needs_video),
                 )
                 if present
@@ -34251,7 +34299,6 @@ async def produce_openai_chat_completions(
         _video_rejection = _request_video_rejection(payload)
         if _video_rejection is not None:
             raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
-        _needs_audio_input = bool(payload.audio_base64)
 
     # the rest of the audio checks depend on the target's format, so the switch runs them.
     _audio_preflight = (
@@ -34290,8 +34337,14 @@ async def produce_openai_chat_completions(
         require_video = _needs_video,
         audio_preflight = _audio_preflight,
         image_preflight = _image_preflight,
+        gguf_only = _replayed_audio,
+        gguf_only_reason = (
+            "Audio history replay requires a local audio-capable GGUF model."
+            if _replayed_audio
+            else None
+        ),
         tool_images_only = _tool_images_only,
-        serves_npu = True,
+        serves_npu = not _replayed_audio,
         npu_request_check = _npu_switch_check,
     )
     if _audio_preflight is not None:
@@ -34325,6 +34378,11 @@ async def produce_openai_chat_completions(
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
+    if _replayed_audio and not using_gguf:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Audio history replay requires a local audio-capable GGUF model.",
+        )
 
     # Lift ``extra_body`` template controls before sampling and generation read them.
     _normalize_chat_reasoning_controls(payload)
@@ -35077,8 +35135,8 @@ async def produce_openai_chat_completions(
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool, response_format or grammar passthrough")
         _reject_unresumable_thought(payload, llama_backend, _reject)
-        if payload.audio_base64:
-            # Passthrough forwards verbatim, so transcoded audio would never be injected.
+        if payload.audio_base64 or _replayed_audio:
+            # Passthrough forwards verbatim, so validated audio would not be prepared.
             raise _reject(
                 400,
                 "Audio input is not supported together with guided decoding or client-supplied tools yet.",
@@ -35196,7 +35254,7 @@ async def produce_openai_chat_completions(
     if using_gguf:
         # wav/mp3 pass through (llama-server decodes them); other containers are transcoded to WAV.
         prepared_audio: list[tuple[str, str]] = []
-        if payload.audio_base64:
+        if payload.audio_base64 or _replayed_audio:
             if not getattr(llama_backend, "_has_audio_input", False):
                 raise _reject(
                     400,
@@ -35223,8 +35281,16 @@ async def produce_openai_chat_completions(
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
             # Admission reads duration from wav/mp3 headers; other formats would be charged by bytes.
-            payload.audio_base64 = prepared_audio[0][0]
-            payload.extra_audio_base64 = [clip for clip, _ in prepared_audio[1:]] or None
+            if _replayed_audio:
+                for part, (clip, audio_format) in zip(
+                    _studio_audio_replay_parts(payload), prepared_audio, strict = True
+                ):
+                    part.input_audio.data = clip
+                    part.input_audio.format = audio_format
+                prepared_audio = []
+            else:
+                payload.audio_base64 = prepared_audio[0][0]
+                payload.extra_audio_base64 = [clip for clip, _ in prepared_audio[1:]] or None
 
         # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
@@ -46244,7 +46310,7 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for messages containing images.",
         )
     # Same for audio: the completion injects the recording, this cannot.
-    if getattr(payload, "audio_base64", None) or getattr(payload, "extra_audio_base64", None):
+    if _request_audio_clips(payload) or getattr(payload, "extra_audio_base64", None):
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing audio.",
@@ -50465,6 +50531,15 @@ def _openai_messages_for_gguf_chat(
             )
         )
     )
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if part.get("type") == "input_audio" and part.pop("studio_replay", False):
+                part["studio_audio_tokens"] = _openai_llama_admission_audio_tokens(
+                    part["input_audio"]["data"]
+                )
     # Distinct, not absent: a legacy image the thread lacks is real; skip only the byte-equal echo.
     if _legacy_image_is_distinct(payload):
         # The normalizer detects the MIME type from the bytes.
@@ -50493,8 +50568,10 @@ async def _openai_messages_for_gguf_chat_async(
     promoted_out: "Optional[list]" = None,
 ) -> tuple[list[dict], bool]:
     # Restoring a tool result may parse its envelope or source map.
-    if _request_has_image(payload) or any(
-        getattr(message, "role", None) == "tool" for message in payload.messages
+    if (
+        _request_has_image(payload)
+        or _studio_audio_replay_parts(payload)
+        or any(getattr(message, "role", None) == "tool" for message in payload.messages)
     ):
         return await asyncio.to_thread(
             _openai_messages_for_gguf_chat, payload, is_vision, promoted_out

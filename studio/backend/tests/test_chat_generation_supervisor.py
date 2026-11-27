@@ -234,7 +234,7 @@ async def test_create_route_schedules_producer_on_request_loop(monkeypatch):
     response = await run_routes.create_chat_generation_run(_create_payload(), request, "alice")
     assert response["created"] is True
     assert started == [
-        ("run-1", {"thread_id": "thread-1", "model": "local", "images": {}, "external": False})
+        ("run-1", {"thread_id": "thread-1", "model": "local", "media": {}, "external": False})
     ]
 
 
@@ -402,7 +402,7 @@ async def test_a_follow_up_reaches_the_model_with_an_image_the_run_never_stored(
     await supervisor._tasks["run-1"]
     assert observed == [url]
     assert url not in json.dumps(runs_db.get_run("run-1")["requestPayload"])
-    assert supervisor._detached_images == {}
+    assert supervisor._detached_media == {}
 
 
 @pytest.mark.asyncio

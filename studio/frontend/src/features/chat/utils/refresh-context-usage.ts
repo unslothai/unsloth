@@ -6,8 +6,8 @@ import {
   buildLocalTokenCountExtras,
   buildLocalTokenCountHistory,
   buildLocalTokenCountReasoning,
-  findLatestUserAudioBase64,
   findLatestUserVideoBase64,
+  hasUncountableChatAudio,
   messagesContainImage,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
@@ -309,7 +309,7 @@ export async function refreshContextUsage(
     if (messagesContainImage(runMessages)) return;
 
     // audio is omitted from toOpenAIMessages, so counting would price only its text.
-    if (findLatestUserAudioBase64(runMessages)) return;
+    if (hasUncountableChatAudio(runMessages)) return;
 
     // video counting misses server-side frames; declining also avoids hashing up to 85 MB.
     if (findLatestUserVideoBase64(runMessages)) return;

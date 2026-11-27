@@ -221,14 +221,14 @@ def test_durable_run_creation_hashes_images_off_the_event_loop(monkeypatch):
     }
     monkeypatch.setattr(runs_route, "_sanitize_request", lambda payload, request = None: sanitized)
     seen = {}
-    real = runs_route.detach_embedded_images
+    real = runs_route.detach_embedded_media
 
     def watched(payload):
         seen["thread"] = threading.get_ident()
         seen["images"] = real(payload)
         return seen["images"]
 
-    monkeypatch.setattr(runs_route, "detach_embedded_images", watched)
+    monkeypatch.setattr(runs_route, "detach_embedded_media", watched)
 
     def stop(_request):
         raise HTTPException(status_code = 418)

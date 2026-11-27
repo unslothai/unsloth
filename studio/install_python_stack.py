@@ -1638,72 +1638,10 @@ def _bnb_rocm_arch_has_binary() -> bool:
     return {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch) != "aarch64"
 
 
-def _amd_smi_env() -> dict[str, str] | None:
-    """On Windows, env with __COMPAT_LAYER=RunAsInvoker; None elsewhere.
-    NB: RunAsInvoker doesn't stop amd-smi's runtime elevation (its manifest is
-    asInvoker -- it elevates a child via ShellExecute). The real guard is
-    _amd_smi_allowed() below; this is harmless belt-and-suspenders."""
-    if platform.system() != "Windows":
-        return None
-    return {**os.environ, "__COMPAT_LAYER": "RunAsInvoker"}
-
-
-def _path_inside_venv(path: str) -> bool:
-    """True if ``path`` is inside the active venv (sys.prefix).
-
-    The venv hipInfo.exe (AMD wheel, put on PATH by the bnb fix) is NOT a HIP SDK
-    (_amd_smi_allowed)."""
-    try:
-        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
-        _root = os.path.normcase(os.path.realpath(sys.prefix))
-        # A root prefix (C:\ or /) would commonpath-match everything; a venv is never at root.
-        if os.path.dirname(_root) == _root:
-            return False
-        return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
-    except (ValueError, OSError):
-        return False
-
-
-def _external_hipinfo_on_path() -> bool:
-    """True if a hipinfo OUTSIDE the venv is on PATH.
-
-    shutil.which returns only the first hit, so the venv hipInfo could shadow a
-    real HIP SDK's; scan every PATH entry and skip the venv copy."""
-    for _dir in os.environ.get("PATH", "").split(os.pathsep):
-        _dir = _dir.strip('"')  # PATH entries can be quoted on Windows
-        if not _dir:
-            continue
-        _candidate = os.path.join(_dir, "hipinfo.exe")
-        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
-            return True
-    return False
-
-
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi here.
-
-    On Windows w/o a working HIP runtime, amd-smi elevates a child and pops a
-    UAC/DiskPart prompt RunAsInvoker can't suppress. Only call it on Windows with
-    a HIP SDK (hipinfo present) or UNSLOTH_ENABLE_AMD_SMI=1; Linux/macOS always.
-    """
-    if platform.system() != "Windows":
-        return True
-    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
-    if flag in ("1", "true", "yes", "on"):
-        return True
-    if flag in ("0", "false", "no", "off"):
-        return False
-    # hipinfo-on-PATH proxies a real HIP SDK; the venv hipInfo.exe is not one.
-    if _external_hipinfo_on_path():
-        return True
-    for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
-        _root = os.environ.get(_var)
-        if not _root:
-            continue
-        _candidate = os.path.join(_root, "bin", "hipinfo.exe")
-        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
-            return True
-    return False
+    """Never on Windows: amd-smi.exe elevates a child and pops a UAC/DiskPart prompt RunAsInvoker
+    cannot suppress, with or without a HIP SDK."""
+    return platform.system() != "Windows"
 
 
 # Memoized: _ensure_rocm_torch() runs twice on Linux; the disagreement warning prints once.
@@ -1760,7 +1698,6 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 5,
-                env = _amd_smi_env(),
             )
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
@@ -1968,10 +1905,8 @@ def _pick_visible_index(
 def _detect_windows_gfx_arch() -> str | None:
     """Return the gcnArchName on Windows (e.g. 'gfx1200'), or None.
 
-    Probe order matches the PowerShell installer: env-var override, then
-    hipinfo (PATH or HIP_PATH/ROCM_PATH bin), then amd-smi. Without the
-    amd-smi fallback, runtime-only AMD installs lacking hipinfo on PATH
-    return early and `studio update` cannot repair a CPU-only venv.
+    Probe order matches the PowerShell installer: env-var override, hipinfo
+    (PATH or HIP_PATH/ROCM_PATH bin), then the WMI name. Never amd-smi (_amd_smi_allowed).
 
     On multi-GPU hosts, detected gfx tokens are deduplicated (preserving
     enumeration order) and HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES /
@@ -2071,33 +2006,6 @@ def _detect_windows_gfx_arch() -> str | None:
                 return _pick
         except Exception:
             pass
-
-    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
-    if amd_smi:
-        for _args in (("static", "--asic"), ("list",)):
-            try:
-                result = subprocess.run(
-                    [amd_smi, *_args],
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.DEVNULL,
-                    timeout = 10,
-                    env = _amd_smi_env(),
-                )
-                if result.returncode != 0:
-                    continue
-                text = result.stdout.decode(errors = "replace")
-                _labelled = re.findall(
-                    r"(?im)^\s*(?:target_graphics_version|gfx|arch|asic)\b[^:\r\n]*:\s*(gfx[1-9][0-9a-z]{2,3})\b",
-                    text,
-                )
-                _tokens = [t.lower() for t in _labelled]
-                if not _tokens:
-                    _tokens = re.findall(r"\bgfx[1-9][0-9a-z]{2,3}\b", text.lower())
-                _pick = _dedup_pick(_tokens)
-                if _pick:
-                    return _pick
-            except Exception:
-                continue
 
     # Last resort: GPU name via WMI -> arch table (mirrors setup.ps1's $nameArchTable) for driver-only
     # hosts. Only AMD adapters with ConfigManagerErrorCode 0, as setup.ps1 filters $wmiGpus.
@@ -2778,7 +2686,6 @@ def _has_rocm_gpu() -> bool:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 10,
-                env = _amd_smi_env() if cmd[0] == "amd-smi" else None,
             )
         except Exception:
             continue
@@ -2935,7 +2842,7 @@ def _detect_amd_gfx_codes(
         probes.append(["amd-smi", "list"])
         probes.append(["amd-smi", "static", "--asic"])
     for cmd in probes:
-        _env = _amd_smi_env() if cmd[0] == "amd-smi" else None
+        _env = None
         _strip = set()
         if ignore_hsa_override:
             _strip.add("HSA_OVERRIDE_GFX_VERSION")
@@ -12164,38 +12071,23 @@ def install_python_stack() -> int:
         _ensure_xpu_triton()
 
     if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
-        import re as _re_win
-
-        def _win_amd_smi_has_gpu(stdout: str) -> bool:
-            return bool(_re_win.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
-
         _win_amd_gpu = False
-        for _wcmd, _check_fn in (
-            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
-            (["amd-smi", "list"], _win_amd_smi_has_gpu),
-        ):
-            _wexe = shutil.which(_wcmd[0])
-            if not _wexe:
-                continue
-            # Skip amd-smi without a HIP SDK (UAC prompt); only a best-effort note is lost.
-            if _wcmd[0] == "amd-smi" and not _amd_smi_allowed():
-                continue
+        _hipinfo = shutil.which("hipinfo")
+        if _hipinfo:
             try:
                 _wr = subprocess.run(
-                    [_wexe, *_wcmd[1:]],
+                    [_hipinfo],
                     stdout = subprocess.PIPE,
                     stderr = subprocess.DEVNULL,
                     text = True,
                     encoding = "utf-8",
                     errors = "replace",
                     timeout = 10,
-                    env = _amd_smi_env() if _wcmd[0] == "amd-smi" else None,
                 )
+                # Any exit code: hipinfo can crash after printing gcnArchName (#6043).
+                _win_amd_gpu = "gcnarchname" in _wr.stdout.lower()
             except Exception:
-                continue
-            if _wr.returncode == 0 and _check_fn(_wr.stdout):
-                _win_amd_gpu = True
-                break
+                pass
         if _win_amd_gpu and not _rocm_windows_torch_installed:
             _note(
                 "AMD GPU detected but ROCm PyTorch could not be auto-installed. "

@@ -646,8 +646,20 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
             assert torch.equal(offloaded(x), want)
     if type(next(offloaded.parameters())).__name__ == "LinearActivationQuantizedTensor":
         return  # torchao <= 0.17 v1 int8: onload is a plain re-wrap, which inference_mode allows
-    with pytest.raises(Exception), torch.inference_mode():
-        offloaded(x)
+    from core.inference import diffusion_go_compat as go_compat
+
+    if go_compat.is_legacy():
+        # diffusers <= 0.42 moves the whole torchao wrapper (aten.to), which inference_mode rejects
+        with pytest.raises(Exception), torch.inference_mode():
+            offloaded(x)
+        return
+    # huggingface/diffusers#15383 moves the inner tensors and swaps in a fresh wrapper: inference_mode works,
+    # and the weights it streamed still give the same output under no_grad afterwards
+    with torch.inference_mode():
+        for _ in range(2):
+            assert torch.equal(offloaded(x), want)
+    with torch.no_grad():
+        assert torch.equal(offloaded(x), want)
 
 
 @pytest.mark.parametrize("offload_graphs", [True, False])

@@ -509,9 +509,11 @@ class GroupPrefetcher:
             if getattr(self, "capturing", False) and not _pinned_done(pinner, group):
                 raise RuntimeError("a background pin is still swapping this group's host copies")
             pinner.wait(group)
+        from . import diffusion_go_compat as go_compat
+
         go = _go()
-        is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
-        swap = getattr(go, "_swap_torchao_tensor", None)
+        is_torchao = go_compat.is_wrapper_or_false(go)
+        swap = go_compat.swap_fn(go)
         cpu = group.cpu_param_dict
         stream = group.stream
         where = self.slot_of.get(id(group)) if slot else None
@@ -1037,7 +1039,9 @@ def _adopt_top_group(
     ):
         return None
     tensors = _group_tensors(group)
-    is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+    from . import diffusion_go_compat as go_compat
+
+    is_torchao = go_compat.is_wrapper_or_false(go)
     if not tensors or not any(is_torchao(t) for t in tensors):
         return None  # dense: _pin_top_level_group's compute-stream upload already has no host wait
     holder = _tensor_holder(tensors)

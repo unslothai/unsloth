@@ -5649,10 +5649,18 @@ def _guard_preloaded_root(model):
     model.__dict__["_unsloth_tp_root_guard"] = model.register_forward_pre_hook(refuse, prepend = True)
 
 
+def _holds_unapplied_shards(model):
+    """True while a sharded load's slices are still unapplied: a load guard (removed by apply_tensor_parallel /
+    apply_expert_parallel for each module it shards) or a preloaded expert stack apply has not consumed."""
+    return any("_unsloth_tp_load_guard" in m.__dict__ for m in model.modules()) or any(
+        getattr(p, _EXPERT_PRELOAD, None) is not None for p in model.parameters()
+    )
+
+
 def _guard_preloaded_save(model):
-    """save_pretrained of the whole model before apply_expert_parallel would write only this rank's experts: refuse
-    it before anything is written. Once apply has consumed the marks it delegates (expert parallel's collective
-    save chains onto it)."""
+    """save_pretrained of the whole model straight after a tensor / expert parallel sharded load would write only
+    this rank's slices or experts (a checkpoint a fresh load rejects): refuse it before anything is written, as
+    long as forward is refused too. After apply it delegates (expert parallel's collective save chains onto it)."""
     if "_unsloth_tp_save_guard" in model.__dict__:
         return
     save = getattr(model, "save_pretrained", None)
@@ -5661,9 +5669,10 @@ def _guard_preloaded_save(model):
 
     @functools.wraps(save)
     def save_pretrained(*args, **kwargs):
-        if any(getattr(p, _EXPERT_PRELOAD, None) is not None for p in model.parameters()):
+        if _holds_unapplied_shards(model):
             raise RuntimeError(
-                "Unsloth: this model holds only this rank's experts (expert parallel sharded loading); call "
+                "Unsloth: this model was loaded with tensor / expert parallel sharded loading and holds only this "
+                "rank's slices / experts; call apply_tensor_parallel(model, tp_mesh) or "
                 "apply_expert_parallel(model, ep_mesh) before save_pretrained, or save the adapter instead."
             )
         return save(*args, **kwargs)
@@ -5708,7 +5717,6 @@ def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
     if info["sharded_expert_stacks"] and info.get("model") is model:
         _guard_preloaded_modules(model)
         _guard_preloaded_root(model)
-        _guard_preloaded_save(model)
         model.__dict__["_unsloth_tp_load_stats"] = {
             "tp": info["tp"],
             "rank": info["rank"],
@@ -6224,9 +6232,13 @@ def _sharded_from_pretrained(state):
     state = dict(state, models = [], active = False)
 
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
-        return _from_pretrained_sharded(
+        seen = len(state["models"])
+        loaded = _from_pretrained_sharded(
             original, cls, pretrained_model_name_or_path, args, kwargs, state
         )
+        for model in state["models"][seen:]:
+            _guard_preloaded_save(model)  # every sharded load: save refused until apply
+        return loaded
 
     PreTrainedModel.from_pretrained = classmethod(from_pretrained)
     try:

@@ -86,6 +86,7 @@ __all__ = [
     "RESIDUAL_INIT_LORA_WEIGHTS",
     "snapshot_residual_lora_init",
     "lora_relative_to_original_base",
+    "lora_saved_relative_to_original_base",
     "freeze_peft_variant_weights",
     "RaiseUninitialized",
     "fast_inference_setup",
@@ -138,6 +139,7 @@ __all__ = [
     "_resolve_ensure_weight_tying",
     "_vllm_unmovable_embedding_modules",
     "_drop_tied_output_module",
+    "_cover_untied_new_token_rows",
     "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
@@ -9343,6 +9345,12 @@ def snapshot_residual_lora_load(config):
                 PeftModel.load_adapter = hook["original"]
 
 
+def _configured_scaling(model, module, k):
+    # What a reload computes from the saved r and alpha; the live scale moves with set_scale / scale_layer.
+    r, alpha = module.r[k], module.lora_alpha[k]
+    return alpha / (math.sqrt(r) if getattr(model.peft_config.get(k), "use_rslora", False) else r)
+
+
 def _residual_lora_rows(model, adapters):
     from transformers.pytorch_utils import Conv1D
     for name, module in model.named_modules():
@@ -9387,8 +9395,9 @@ def _convertible_adapters(model, selected):
 
 def save_lora_relative_to_original_base(model):
     """Saves (and pushes) write PEFT's `path_initial_model_for_weight_conversion` form: a plain rank-2r LoRA on the
-    original base, `s0 * [B * s / s0, -B0] @ [A; A0]`, loadable anywhere. `load_adapter` into this live model, as
-    Trainer resume and load_best_model_at_end do, slices it back to rank r."""
+    original base, `c * [B * s / c, -B0 * s0 / c] @ [A; A0]` with c the configured scale, which doubling r and alpha
+    keeps, s the live one and s0 the initial one (1 for LoftQ), loadable anywhere.
+    `load_adapter` into this live model, as Trainer resume and load_best_model_at_end do, slices it back to rank r."""
     import inspect
     import json
     import os
@@ -9405,11 +9414,14 @@ def save_lora_relative_to_original_base(model):
         for module, k, name in rows:
             key_A, key_B = f"{name}.lora_A.{k}.weight", f"{name}.lora_B.{k}.weight"
             A0, B0, scaling0 = module._unsloth_initial_lora[k]
-            if key_A not in state_dict or key_B not in state_dict or not scaling0:
+            configured = _configured_scaling(model, module, k)
+            if key_A not in state_dict or key_B not in state_dict or not scaling0 or not configured:
                 return None
             A, B = state_dict[key_A].detach(), state_dict[key_B].detach()
             state_dict[key_A] = torch.cat([A, A0.to(A)], 0)
-            state_dict[key_B] = torch.cat([B * (module.scaling[k] / scaling0), -B0.to(B)], 1)
+            state_dict[key_B] = torch.cat(
+                [B * (module.scaling[k] / configured), -B0.to(B) * (scaling0 / configured)], 1
+            )
         return state_dict
 
     @functools.wraps(original_save)
@@ -9479,6 +9491,28 @@ def save_lora_relative_to_original_base(model):
     model.load_adapter = load_adapter
 
 
+@contextlib.contextmanager
+def lora_saved_relative_to_original_base(model):
+    """For an export that applies the adapter without PEFT re-running its init, such as a GGUF LoRA: inside,
+    `model.save_pretrained` writes the plain LoRA on the original base. Yields False if nothing needs converting."""
+    # A LoRA-GA model saves in that form already.
+    if getattr(model, "_unsloth_residual_save", False) or not any(
+        getattr(module, "_unsloth_initial_lora", None) for module in model.modules()
+    ):
+        yield False
+        return
+    wrapped = ("save_pretrained", "load_adapter", "_unsloth_residual_save")
+    before = {name: vars(model)[name] for name in wrapped if name in vars(model)}
+    save_lora_relative_to_original_base(model)
+    try:
+        yield True
+    finally:
+        for name in wrapped:
+            delattr(model, name)
+        for name, value in before.items():
+            setattr(model, name, value)
+
+
 @torch.no_grad()
 def _native_from_converted(model, adapter_name, folder):
     """Rank-r weights of a converted adapter for the live residual model, or None if `folder` is not one.
@@ -9507,9 +9541,10 @@ def _native_from_converted(model, adapter_name, folder):
     for module, k, key_A, key_B, r in plan:
         A, B = weights[key_A], weights[key_B]
         A0_live, B0_live, scaling0 = module._unsloth_initial_lora[k]
-        A0, B0 = A[r:].to(A0_live), -B[:, r:].to(B0_live)
+        configured = _configured_scaling(model, module, k)
+        A0, B0 = A[r:].to(A0_live), (-B[:, r:] * (configured / scaling0)).to(B0_live)
         weights[key_A] = A[:r].contiguous()
-        weights[key_B] = (B[:, :r] * (scaling0 / module.scaling[k])).contiguous()
+        weights[key_B] = (B[:, :r] * (configured / module.scaling[k])).contiguous()
         if not (torch.equal(A0, A0_live) and torch.equal(B0, B0_live)):
             base = module.get_base_layer().weight
             delta = scaling0 * (B0_live.float() @ A0_live.float() - B0.float() @ A0.float())
@@ -14052,6 +14087,45 @@ def _effective_weight_tying(model, modules_to_save, requested):
     if not _model_ties_embeddings(model):
         return False
     return "embed_tokens" in _embedding_leaves(modules_to_save)
+
+
+def _peft_targets(target_modules, name):
+    if isinstance(target_modules, str):
+        return target_modules != "all-linear" and re.fullmatch(target_modules, name) is not None
+    return any(name == t or name.endswith("." + t) for t in target_modules or ())
+
+
+def _cover_untied_new_token_rows(
+    model,
+    trainable_token_indices,
+    modules_to_save = None,
+    target_modules = None,
+):
+    if isinstance(trainable_token_indices, dict):
+        return trainable_token_indices
+    input_embeddings = model.get_input_embeddings()
+    output_embeddings = model.get_output_embeddings()
+    if (
+        output_embeddings is None
+        or getattr(output_embeddings, "weight", None) is input_embeddings.weight
+    ):
+        return trainable_token_indices
+    names = {id(m): n for n, m in model.named_modules()}
+    input_name, output_name = names.get(id(input_embeddings)), names.get(id(output_embeddings))
+    if input_name is None or output_name is None:
+        return trainable_token_indices
+    full = [modules_to_save] if isinstance(modules_to_save, str) else list(modules_to_save or ())
+    # A LoRA head cannot also take a TrainableTokensWrapper in PEFT.
+    if (
+        output_name in full
+        or _embedding_leaf(output_name) in _embedding_leaves(full)
+        or _peft_targets(target_modules, output_name)
+    ):
+        return trainable_token_indices
+    print(
+        f"Unsloth: You added new tokens, so `{output_name}` also trains the rows in `trainable_token_indices`."
+    )
+    return {input_name: trainable_token_indices, output_name: trainable_token_indices}
 
 
 def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):

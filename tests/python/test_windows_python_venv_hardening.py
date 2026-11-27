@@ -416,7 +416,7 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     )
     # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
     first_uv_pip = source.index("pip install --python $VenvPython")
-    gpu_detection = source.index("function Invoke-AmdSmiNoElevate")
+    gpu_detection = source.index("function Test-NvidiaSmiHasGpu")
 
     assert marker < gate < gpu_detection < first_uv_pip
     assert 'Write-StudioLine "        Managed Python: $VenvPython"' in source
