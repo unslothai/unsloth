@@ -2874,8 +2874,7 @@ function Test-SetupConsoleHeadless {
     return (-not [Environment]::UserInteractive) -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
 }
 
-# The CUDA flavour the trio really installs. On Windows on ARM the trio comes from NVIDIA's
-# win_arm64 index pinned to its own build (e.g. 2.14.0+cu134), not from the $CuTag leaf.
+# Windows on ARM installs NVIDIA's pinned win_arm64 build (e.g. +cu134), not the $CuTag leaf.
 function Get-CudaTorchInstallLabel {
     param([string]$CuTag, [bool]$WinArm64Venv, [string]$WinArm64TorchSpec)
     if ($WinArm64Venv) {
@@ -2885,11 +2884,7 @@ function Get-CudaTorchInstallLabel {
     return $CuTag
 }
 
-# A UAC prompt nobody can answer blocks forever (an unattended run sat 30 min on one). True when
-# no one is there to answer it: UNSLOTH_NONINTERACTIVE=1 (install.ps1 sets it when it detected
-# an unattended session; 0 forces prompting), CI, or no desktop / redirected stdin, the test
-# install.ps1 uses to skip its "Start now?" question. Not stdout: the CLI pipes that for logging.
-# Never in Unsloth Desktop (it explains each prompt first) and never when elevated (no prompt).
+# An unanswerable UAC prompt blocks forever. Not stdout: the CLI pipes it for logging.
 function Test-SetupUacUnanswerable {
     if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
     try {
@@ -3012,7 +3007,6 @@ function Ensure-VCRedist {
         substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
         return
     }
-    # Both routes below are machine-wide installers that raise UAC: unattended, say what to run.
     if (Test-SetupUacUnanswerable) {
         step "vcredist" "missing; not installed (needs admin approval, and this run is unattended)" "Yellow"
         substep "torch and the prebuilt llama.cpp need it. Run this once in an Admin terminal:" "Yellow"
@@ -4831,7 +4825,6 @@ if ($LongPathsEnabled) {
     substep "torch.compile / Triton may fail on very long paths. To enable later, in an Admin terminal:" "Yellow"
     substep 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Yellow"
 } elseif (Test-SetupUacUnanswerable) {
-    # Same outcome as a declined prompt, without waiting on one nobody can answer.
     step "long paths" "could not enable (unattended run; UAC not requested)" "Yellow"
     Write-StudioLine "       torch.compile / Triton may fail on very long paths. Run this manually in an Admin terminal:" -ForegroundColor Yellow
     Write-StudioLine '       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' -ForegroundColor Cyan

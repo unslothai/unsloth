@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
-# An unattended Windows install must not wait on a UAC prompt nobody can answer (winget's VC++
-# dependency for uv, VC++ itself, LongPathsEnabled); it prints the admin command and continues.
-# Also: the CUDA label names the build Windows on ARM really installs, and an emulated or
-# elevated shell on Windows on ARM is told how to relaunch natively.
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'Get-FunctionSource.ps1')

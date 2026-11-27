@@ -1929,9 +1929,7 @@ function Install-UnslothStudio {
         return "unknown"
     }
 
-    # Windows on ARM only. powershell.exe and cmd.exe are ARM64X, so a shell started from an
-    # emulated or elevated parent inherits both; explorer.exe hands the launch to the native,
-    # non-elevated desktop shell. x64 Windows never reaches the message.
+    # ARM64X shells inherit an emulated/elevated parent; explorer.exe relaunches native + non-elevated.
     function Write-Arm64ShellNotice {
         param(
             [Parameter(Mandatory = $true)][string]$HostArch,
@@ -1954,10 +1952,7 @@ function Install-UnslothStudio {
         Write-StudioLine ""
     }
 
-    # A UAC prompt nobody can answer blocks forever: winget's VC++ dependency for uv and setup's
-    # LongPathsEnabled each held an unattended Windows on ARM install. Unattended = no desktop,
-    # redirected stdin (the test that already skips "Start now?"), -NonInteractive, CI, or
-    # UNSLOTH_NONINTERACTIVE=1 (0 forces prompting). Never Desktop, never elevated (no prompt then).
+    # An unanswerable UAC prompt blocks forever. UNSLOTH_NONINTERACTIVE=0 forces prompting.
     function Test-InstallUacUnanswerable {
         param([switch]$Tauri, [string]$Elevated = "unknown")
         if ($Tauri -or $Elevated -eq "true") { return $false }
@@ -6634,7 +6629,7 @@ exit 0
             substep "installing uv package manager..."
         }
         if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {
-            # winget pulls uv's VC++ runtime dependency through a UAC prompt; the release zip needs none.
+            # winget's VC++ dependency raises UAC; the release zip does not.
             if ($script:InstallUacUnanswerable) {
                 substep "unattended run: installing uv from its release archive (winget would wait on a UAC prompt)"
             } else {
@@ -11316,7 +11311,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
             # Clear an inherited value: nothing here detected it.
             Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
         }
-        # setup.ps1 cannot see this shell's -NonInteractive; hand the decision down for its UAC steps.
+        # setup.ps1 cannot see this shell's -NonInteractive.
         $_hadNonInteractive = Test-Path Env:UNSLOTH_NONINTERACTIVE
         if ($script:InstallUacUnanswerable -and -not $_hadNonInteractive) { $env:UNSLOTH_NONINTERACTIVE = "1" }
         try {
