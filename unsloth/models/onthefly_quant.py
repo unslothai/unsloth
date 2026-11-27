@@ -43,6 +43,7 @@ _GROUP = {"nvfp4": 16, "mxfp4": 32}
 # Kill switch: 0 loads 16 bit and keeps it (no FP4 layers), to bisect a model against the 16-bit run.
 ONTHEFLY_ENV = "UNSLOTH_ONTHEFLY_FP4"
 EXPERTS_ENV = "UNSLOTH_MOE_EXPERTS_QUANTIZE"
+_ASYNC_ENV = "HF_DEACTIVATE_ASYNC_LOAD"  # transformers 5: load parameters on the main thread
 
 # Devices whose weights are quantized (the W4A16 kernels run there); others stay 16 bit.
 _QUANT_DEVICES = ("cuda", "xpu")
@@ -405,10 +406,12 @@ def _finalize(model, fmt):
             if original is not None:
                 object.__setattr__(module, "__class__", original)
                 module.__dict__.pop("_unsloth_fp4_base_setattr", None)
-                fmt = module.__dict__.pop("_unsloth_onthefly_experts_fmt", None)
+                experts_fmt = module.__dict__.pop("_unsloth_onthefly_experts_fmt", None)
                 gu = module._parameters.get("gate_up_proj")
-                if fmt is not None and gu is not None and gu.device.type in _QUANT_DEVICES:
-                    _STATS["experts"] += _quantize_expert_stacks(module, fmt)
+                if experts_fmt is not None and gu is not None and gu.device.type in _QUANT_DEVICES:
+                    _STATS["experts"] += _quantize_expert_stacks(module, experts_fmt)
+            if any(_is_packed_stack(module._parameters.get(n)) for n, _ in _EXPERT_STACKS):
+                module._register_state_dict_hook(_dense_state_dict_hook)
             continue
         if type(module) is not _PendingFP4Linear:
             continue
@@ -435,6 +438,7 @@ def _finalize(model, fmt):
         module.__class__ = _UnslothNVFP4Linear
         module.forward = _forward.__get__(module)
         module._unsloth_onthefly_fp4 = True
+        module._register_state_dict_hook(_dense_state_dict_hook)
         count += 1
     if count:
         _patch_peft()
@@ -446,6 +450,76 @@ def _finalize(model, fmt):
     except Exception:
         pass
     return count
+
+
+# ---- saving: a full-model save_pretrained writes the dequantized 16-bit weights ------------------------------
+
+_SAVING = contextvars.ContextVar("unsloth_onthefly_fp4_saving", default = False)
+_EXPERT_STACKS = (("gate_up_proj", "gate_up"), ("down_proj", "down"))
+_PACKED_KEYS = ("weight_packed", "weight_scale", "weight_global_scale")
+
+
+def _is_packed_stack(p):
+    return (
+        isinstance(p, torch.Tensor)
+        and type(p) is not torch.nn.Parameter
+        and hasattr(p, "dequantize")
+    )
+
+
+def _dense_weight(module):
+    from unsloth.kernels.nvfp4 import nvfp4_dequantize
+    return nvfp4_dequantize(
+        module.weight_packed,
+        module.weight_scale,
+        module.weight_global_scale,
+        getattr(module, "_unsloth_nvfp4_dtype", torch.bfloat16),
+    )
+
+
+def _dense_state_dict_hook(module, state_dict, prefix, local_metadata):
+    """Inside save_pretrained only: the packed tensors become the dense `weight` (or expert stack) they decode
+    to, moved to the CPU one layer at a time, so the checkpoint reloads as a plain 16-bit model (the config has
+    no quantization) holding the FP4-rounded values the model trained with."""
+    if not _SAVING.get():
+        return state_dict
+    with torch.no_grad():
+        if "weight_packed" in module._parameters:
+            W = _dense_weight(module)
+            for key in _PACKED_KEYS:
+                state_dict.pop(prefix + key, None)
+            state_dict[prefix + "weight"] = W.to("cpu")
+            del W
+            return state_dict
+        for name, _ in _EXPERT_STACKS:
+            p = module._parameters.get(name)
+            if _is_packed_stack(p) and prefix + name in state_dict:
+                state_dict[prefix + name] = p.dequantize().to("cpu")
+    return state_dict
+
+
+def _install_save_hook(PreTrainedModel):
+    original = PreTrainedModel.save_pretrained
+    if getattr(original, "_unsloth_onthefly_fp4_save", False):
+        return
+
+    @functools.wraps(original)
+    def save_pretrained(self, *args, **kwargs):
+        if not getattr(self, "_unsloth_onthefly_fp4", 0) or _SAVING.get():
+            return original(self, *args, **kwargs)
+        print(
+            "Unsloth: this base was quantized to FP4 at load, so save_pretrained writes its dequantized 16-bit "
+            "weights. Save LoRA adapters with the PEFT model, or merge into the original 16-bit weights with "
+            "save_pretrained_merged."
+        )
+        token = _SAVING.set(True)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            _SAVING.reset(token)
+
+    save_pretrained._unsloth_onthefly_fp4_save = True
+    PreTrainedModel.save_pretrained = save_pretrained
 
 
 _HOOKS_INSTALLED = [False]
@@ -488,11 +562,19 @@ def _install_hooks():
         # The warmup reserves the whole 16-bit model on the GPU up front, the copy this load avoids.
         if callable(warmup):
             mu.caching_allocator_warmup = lambda *args, **kwargs: None
+        # transformers 5 loads with worker threads that materialize 16-bit tensors on the GPU faster than the
+        # main thread consumes them (it turns them off itself for its own on-the-fly quantizers).
+        async_env = os.environ.get(_ASYNC_ENV)
+        os.environ[_ASYNC_ENV] = "1"
         try:
             result = call()
         finally:
             if callable(warmup):
                 mu.caching_allocator_warmup = warmup
+            if async_env is None:
+                os.environ.pop(_ASYNC_ENV, None)
+            else:
+                os.environ[_ASYNC_ENV] = async_env
         if finalize_raw is None:
             _finalize(model, state["fmt"])
         else:
@@ -550,6 +632,7 @@ def _install_hooks():
             if f_is_classmethod
             else staticmethod(_finalize_model_loading)
         )
+    _install_save_hook(PreTrainedModel)
     _HOOKS_INSTALLED[0] = True
     return True
 

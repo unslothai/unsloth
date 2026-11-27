@@ -109,6 +109,23 @@ def run_case(
     stats = onthefly_fp4_stats()
     census_base = _census(model)
     lm_head = model.get_output_embeddings()
+    base_save = None
+    if merge:
+        # A full save of the quantized base must reload as the model it is (dequantized 16-bit weights).
+        from transformers import AutoModelForCausalLM
+
+        probe = torch.randint(0, 1000, (1, 16), generator = torch.Generator().manual_seed(1)).cuda()
+        with torch.no_grad():
+            want0 = model(input_ids = probe).logits.float()
+        base_dir = os.path.join(out_dir, f"base_{mode}_{api}")
+        model.save_pretrained(base_dir)
+        again = AutoModelForCausalLM.from_pretrained(
+            base_dir, dtype = torch.bfloat16, device_map = "cuda"
+        )
+        with torch.no_grad():
+            got0 = again(input_ids = probe).logits.float()
+        base_save = float((got0 - want0).norm() / want0.norm())
+        del again
     model = Fast.get_peft_model(
         model,
         r = 8,
@@ -199,6 +216,7 @@ def run_case(
         "packed_expert_calls": PACKED_EXPERT_STATS.get("calls", 0) - experts0.get("calls", 0),
         "packed_expert_chunks": PACKED_EXPERT_STATS.get("chunks", 0) - experts0.get("chunks", 0),
         "mxfp4_expert_calls": mx["n"],
+        "base_save_reload_rel": base_save,
     }
     model.eval()
     with torch.no_grad():

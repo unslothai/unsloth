@@ -195,6 +195,13 @@ def cpu_hook(monkeypatch):
     )
     monkeypatch.setattr(oq, "_skip_names", lambda: ["lm_head", "mlp.gate", "router"])
     monkeypatch.setattr(oq, "_architecture_skips", lambda config: [])
+    monkeypatch.setattr(
+        oq,
+        "_dense_weight",
+        lambda m: _decode(m.weight_packed, m.weight_scale, m.weight_global_scale).to(
+            torch.bfloat16
+        ),
+    )
 
 
 @pytest.fixture(scope = "module")
@@ -209,8 +216,20 @@ def test_linears_are_quantized_while_the_checkpoint_loads(cpu_hook, tiny_dense, 
 
     ref = AutoModelForCausalLM.from_pretrained(tiny_dense, dtype = torch.bfloat16)
     oq.onthefly_fp4_stats(reset = True)
-    with oq.onthefly_fp4_loading(fmt):
-        model = AutoModelForCausalLM.from_pretrained(tiny_dense, dtype = torch.bfloat16)
+    seen, quantize = [], oq._quantize_linear_
+
+    def recording(module, weight):
+        # transformers 5 must load on the main thread, or its workers stage the 16-bit model on the GPU first.
+        seen.append(os.environ.get("HF_DEACTIVATE_ASYNC_LOAD"))
+        return quantize(module, weight)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(oq, "_quantize_linear_", recording)
+        before = os.environ.get("HF_DEACTIVATE_ASYNC_LOAD")
+        with oq.onthefly_fp4_loading(fmt):
+            model = AutoModelForCausalLM.from_pretrained(tiny_dense, dtype = torch.bfloat16)
+        assert os.environ.get("HF_DEACTIVATE_ASYNC_LOAD") == before
+    assert seen and set(seen) == {"1"}
     stats = oq.onthefly_fp4_stats()
     # 2 layers x (q, k, v, o, gate, up, down); all assigned through the loader, none filled in afterwards.
     assert stats["linear"] == 14 and stats["late"] == 0 and stats["skipped"] == 0
@@ -225,6 +244,28 @@ def test_linears_are_quantized_while_the_checkpoint_loads(cpu_hook, tiny_dense, 
             assert ((W - R).norm() / R.norm()).item() < 0.15
             if fmt == "mxfp4":
                 assert torch.equal(W, _mx_reference(R))
+
+
+def test_full_save_writes_the_dequantized_weights_and_reloads(cpu_hook, tiny_dense, tmp_path):
+    from transformers import AutoModelForCausalLM
+
+    with oq.onthefly_fp4_loading("nvfp4"):
+        model = AutoModelForCausalLM.from_pretrained(tiny_dense, dtype = torch.bfloat16)
+    keys = set(
+        model.state_dict()
+    )  # outside save_pretrained the packed layout is what state_dict holds
+    assert any(k.endswith("weight_packed") for k in keys)
+    model.save_pretrained(str(tmp_path))
+    reloaded = AutoModelForCausalLM.from_pretrained(str(tmp_path), dtype = torch.bfloat16)
+    mods = dict(model.named_modules())
+    for name, module in reloaded.named_modules():
+        if type(mods.get(name)) is _Routed:
+            m = mods[name]
+            want = _decode(m.weight_packed, m.weight_scale, m.weight_global_scale).to(
+                torch.bfloat16
+            )
+            assert torch.equal(module.weight, want), name
+    assert not any(k.endswith("weight_packed") for k in reloaded.state_dict())
 
 
 def test_kill_switch_keeps_16_bit(cpu_hook, tiny_dense, monkeypatch):
@@ -285,6 +326,7 @@ def test_lora_trains_on_an_onthefly_fp4_base(tiny_dense, tmp_path, api, fmt):
     if fmt == "nvfp4":
         # merged_16bit folds the adapter into the 16-bit checkpoint weights (as for NF4), not the FP4 ones.
         assert r["merged_vs_16bit_base_rel"] < 2e-2 < r["merged_rel"], r
+        assert r["base_save_reload_rel"] < 1e-2, r["base_save_reload_rel"]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "W4A16 kernels need a GPU")
