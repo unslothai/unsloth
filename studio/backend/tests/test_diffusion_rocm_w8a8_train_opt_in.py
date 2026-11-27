@@ -88,6 +88,9 @@ def _resume_kernel(monkeypatch, kernel):
 
 def _both_guards(cfg):
     """(preflight reason, trainer child verdict) for one run config."""
+    cfg.resolved_family = (
+        "qwen-image"  # a DiT flow family: the preflight's int8 gates only apply to these
+    )
     pre = common.training_precision_preflight_error(
         cfg.resolved_family, cfg.base_precision, cfg = cfg
     )
