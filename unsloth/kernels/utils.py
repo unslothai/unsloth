@@ -276,19 +276,11 @@ elif DEVICE_TYPE in ("mlx", "npu"):
     ABSMAX_BUFFERS = []
 else:
     if DEVICE_COUNT > 0:
-        _CUDA_STREAMS = {
-            (index := torch.cuda.device(i).idx): ctypes.c_void_p(
-                torch._C._cuda_getCurrentRawStream(index)
-            )
-            for i in range(DEVICE_COUNT)
-        }
-        CUDA_STREAMS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        for k, v in _CUDA_STREAMS.items():
-            CUDA_STREAMS[k] = v
-        CUDA_STREAMS = tuple(CUDA_STREAMS)
-        del _CUDA_STREAMS
+        # Each card's default stream at import, which torch represents as a NULL handle. Not queried: the first stream
+        # query opens a CUDA context on the current card, GPU 0 in a worker that picks its card after import.
+        CUDA_STREAMS = tuple(ctypes.c_void_p(None) for _ in range(DEVICE_COUNT))
+        WEIGHT_BUFFERS = [None] * DEVICE_COUNT
+        ABSMAX_BUFFERS = [None] * DEVICE_COUNT
     else:
         CUDA_STREAMS = ()
         WEIGHT_BUFFERS = []
