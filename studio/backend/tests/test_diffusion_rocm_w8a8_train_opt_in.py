@@ -69,7 +69,6 @@ def test_opt_in_env_values(monkeypatch, value, expected):
 
 @pytest.fixture
 def rocm_preflight(rocm):
-    """The route's pre-eviction precision preflight on a spoofed ROCm GPU host."""
     import torch
 
     for name in ("bf16_unsupported_reason", "dit_accelerator_missing_reason"):
@@ -87,10 +86,7 @@ def _resume_kernel(monkeypatch, kernel):
 
 
 def _both_guards(cfg):
-    """(preflight reason, trainer child verdict) for one run config."""
-    cfg.resolved_family = (
-        "qwen-image"  # a DiT flow family: the preflight's int8 gates only apply to these
-    )
+    cfg.resolved_family = "qwen-image"
     pre = common.training_precision_preflight_error(
         cfg.resolved_family, cfg.base_precision, cfg = cfg
     )
@@ -115,15 +111,13 @@ def test_preflight_accepts_a_w8a8_resume_like_the_child(rocm_preflight):
 
 
 def test_preflight_fresh_int8_run_unchanged(rocm_preflight):
-    _resume_kernel(rocm_preflight, "weight-only")  # never read: no resume
+    _resume_kernel(rocm_preflight, "weight-only")
     pre, child = _both_guards(_cfg(base_precision = "int8"))
     assert pre is None and child == "int8"
-    # Without cfg (older callers) the preflight still assumes a fresh run.
     assert common.training_precision_preflight_error("qwen-image", "int8") is None
 
 
 def test_route_passes_the_resume_config_to_the_preflight():
-    """The start route threads normalized_cfg into the preflight, so it reads the resumed kernel before eviction."""
     import ast
     import inspect
 
@@ -141,7 +135,6 @@ def test_route_passes_the_resume_config_to_the_preflight():
 
 @pytest.fixture
 def int8_build(rocm):
-    """_build_int8_base with the W8A8 conversion result pinned and the torchao weight-only fallback recorded."""
     calls = []
     rocm.setattr(dit, "_int8_quantize_base", lambda *a, **k: calls.append(a))
     rocm.setenv(swap.ROCM_W8A8_TRAIN_ENV, "1")
@@ -159,7 +152,7 @@ def test_rocm_opt_in_w8a8_conversion_failure_is_fatal(int8_build):
     run, calls = int8_build
     with pytest.raises(ValueError, match = "could not be built on this ROCm GPU"):
         run(False)
-    assert calls == []  # never the torchao weight-only base (a no-op stub on Windows ROCm)
+    assert calls == []
 
 
 def test_rocm_opt_in_w8a8_conversion_success_trains_w8a8(int8_build):

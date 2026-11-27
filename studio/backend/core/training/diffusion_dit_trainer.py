@@ -546,9 +546,7 @@ def _build_int8_base(
     device = None,
     fp16_amp: bool = False,
 ) -> bool:
-    """Quantize the frozen int8 base; True when it is W8A8, False when it fell back to torchao weight-only. The fp16
-    path and the ROCm W8A8 opt-in have no weight-only fallback (ROCm refuses torchao int8; the Windows-ROCm stub's
-    quantize_ is a no-op that would train a dense base), so a failed W8A8 conversion raises there instead."""
+    """True if W8A8, False if torchao weight-only. fp16 and ROCm raise instead (Windows-ROCm quantize_ is a no-op)."""
     if _int8_w8a8(cfg) and _apply_int8_w8a8(
         transformer, on_event, cfg.resolved_family, device = device
     ):
@@ -1248,7 +1246,6 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 "'bf16', or 'auto'."
             )
         # int8 has no runtime fallback, so gate on a FUNCTIONAL torchao, not find_spec, which the Windows-ROCm stub satisfies.
-        # The ROCm W8A8 opt-in trains torch._int_mm, not torchao.
         if mode == "int8" and not rocm_w8a8 and not has_functional_torchao():
             raise ValueError(
                 "base_precision='int8' needs a functional torchao install; this host's "

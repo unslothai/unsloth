@@ -1017,8 +1017,8 @@ def training_precision_preflight_error(
     too); the dense precisions needing CUDA; the torchao precisions against a ROCm build, which
     clears the stub test and hands the sm100 floor an AMD gfx version; explicit int8 needing a
     FUNCTIONAL torchao; explicit fp8/mxfp8 against the Windows-ROCm stub; explicit fp8 needing
-    sm89+ and mxfp8 Blackwell. Add a gate there, add it here. Pass the run ``cfg`` so a resume is judged on the
-    int8 kernel its checkpoint trained on, as the child does; without it the run counts as fresh. Never raises."""
+    sm89+ and mxfp8 Blackwell. Add a gate there, add it here. ``cfg`` judges a resume on its checkpoint's int8
+    kernel; omitted = fresh run. Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason

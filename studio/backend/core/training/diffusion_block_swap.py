@@ -92,9 +92,7 @@ ROCM_W8A8_TRAIN_ENV = "UNSLOTH_DIFFUSION_ROCM_W8A8_TRAIN"
 
 
 def rocm_w8a8_train_opt_in(mode: Optional[str], cfg: Any = None) -> bool:
-    """UNSLOTH_DIFFUSION_ROCM_W8A8_TRAIN=1 lets base_precision='int8' train the frozen W8A8 base (torch._int_mm) on a
-    ROCm GPU, which is refused otherwise; only for a W8A8 run, never the torchao weight-only base. Off by default
-    until it is measured faster than bf16 / nf4 on a ROCm card."""
+    """Opt-in: int8 trains the W8A8 base (torch._int_mm) on ROCm, never weight-only. Off until measured faster there."""
     if (mode or "").strip().lower() != "int8":
         return False
     if os.environ.get(ROCM_W8A8_TRAIN_ENV, "").strip().lower() not in ("1", "true", "yes", "on"):
