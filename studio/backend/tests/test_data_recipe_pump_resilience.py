@@ -11,6 +11,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -211,6 +213,31 @@ def test_cancel_wins_over_a_start_still_queued_in_the_worker_pipe(monkeypatch):
     assert m._job.artifact_path is None
     assert [e.get("type") for e in emitted] == ["job.cancelling", "job.cancelled"]
     assert retired and retired[0] is m._job
+
+
+@pytest.mark.parametrize("status", ["completed", "error"])
+def test_cancel_in_the_teardown_window_keeps_the_terminal_status(monkeypatch, status):
+    # The worker has already reported job.completed/job.error but has not exited yet: a cancel
+    # landing in that window must not flip the settled run to cancelling, or the pump finalizes
+    # it as cancelled and rewrites finished_at.
+    m = _manager_with_active_job()
+    m._job.status = status
+    m._job.finished_at = 123.0
+    emitted: list = []
+    retired: list = []
+    monkeypatch.setattr(m, "_emit", lambda e: emitted.append(e))
+    monkeypatch.setattr(m, "_retire_workflow_key", lambda j: retired.append(j))
+
+    assert m.cancel("job-test") is True
+    assert m._job.status == status
+    assert m._job.finished_at == 123.0
+    assert m._proc._alive, "a finishing worker must not be terminated for its settled job"
+    assert emitted == []
+
+    m._proc._alive = False
+    m._pump_loop()
+    assert m._job.status == status
+    assert retired == []
 
 
 def test_normal_start_and_completed_events_still_apply(monkeypatch):
