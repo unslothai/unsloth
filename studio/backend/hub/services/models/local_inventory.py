@@ -335,6 +335,18 @@ def _a_gguf_build_loads(folder: Path) -> bool:
     return not variants or any(split_set_is_loadable(folder / v.filename) for v in variants)
 
 
+def _holds_a_whole_quant_folder(folder: Path) -> bool:
+    """A model folder that keeps each quant in a subfolder (Q4_K_M/) lists as unknown; the resolver loads its quants."""
+    from hub.utils.gguf import list_local_gguf_variants
+    from utils.models.model_config import split_set_is_loadable
+
+    try:
+        variants, _ = list_local_gguf_variants(str(folder), require_existing_files = True)
+    except OSError:
+        return False
+    return any(split_set_is_loadable(folder / v.filename) for v in variants)
+
+
 def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
     """Local folders carry no downloader markers, so only the payload shows a torn download. ``unknown`` is skipped: a diffusers pipeline's weights live in component subdirs."""
     if not rows:
@@ -1485,7 +1497,12 @@ def _scan_custom_folder(
             return True
         if m.source == "hf_cache" and _an_older_snapshot_holds_a_gguf(Path(m.path)):
             return True
-        return _is_diffusers_pipeline_dir(Path(m.path)) or _is_single_checkpoint_dir(Path(m.path))
+        path = Path(m.path)
+        return (
+            _is_diffusers_pipeline_dir(path)
+            or _is_single_checkpoint_dir(path)
+            or (m.model_format == "unknown" and path.is_dir() and _holds_a_whole_quant_folder(path))
+        )
 
     # A ComfyUI root / models/: its denoiser folders are scanned like nested roots.
     from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs

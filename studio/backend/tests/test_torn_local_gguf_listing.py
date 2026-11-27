@@ -148,6 +148,23 @@ def test_a_whole_quant_folder_beside_torn_safetensors_still_resolves(sources, tm
     assert resolver.resolve_local_gguf("torn") is None
 
 
+@pytest.mark.parametrize("shard_size", [64, 0])
+def test_a_publisher_model_with_quant_subfolders_is_listed_when_a_quant_is_whole(
+    sources, tmp_path, shard_size
+):
+    model = tmp_path / "scan" / "publisher" / "Model"
+    model.mkdir(parents = True)
+    (model / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    _gguf(model / "Q4_K_M" / "Model-Q4_K_M-00001-of-00002.gguf")
+    _gguf(model / "Q4_K_M" / "Model-Q4_K_M-00002-of-00002.gguf", size = shard_size)
+
+    resolved = resolver.resolve_local_gguf("publisher/Model:Q4_K_M")
+
+    assert (resolved is not None) == (shard_size > 0)
+    if resolved is not None:
+        assert resolved[1] == "Q4_K_M"
+
+
 def test_a_shard_symlink_is_checked_against_the_set_the_loader_opens(sources, tmp_path):
     hermes = sources.hermes_dirs[0]
     for name in ("Linked-Q4_K_M", "Followed-Q4_K_M"):
