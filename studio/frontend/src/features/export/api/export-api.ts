@@ -365,6 +365,7 @@ export interface ExportStatus {
   active_op_kind?: string | null;
   /** Monotonic counter of finished ops; baseline to detect "my op finished". */
   last_op_seq?: number;
+  last_op_id?: string | null;
   last_op_kind?: string | null;
   last_op_status?: "success" | "error" | "cancelled" | null;
   last_op_output_path?: string | null;

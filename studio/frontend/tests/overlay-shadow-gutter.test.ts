@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The rail clips at its padding box, so it reserves a shadow gutter that its bottom padding
-// and cap pay for, rather than shrinking the cards.
+// The rail clips at its padding box, so a shadow gutter costs bottom padding, not the cards.
 
 import assert from "node:assert/strict";
 import test from "node:test";

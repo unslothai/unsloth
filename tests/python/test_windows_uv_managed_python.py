@@ -321,7 +321,7 @@ def test_the_request(shell, args, env_python, expected):
 # ── The choice made before uv exists: minor and architecture ──
 
 CHOOSE = _function("Get-StudioVenvPythonMinor") + _between(
-    "    # ── uv-managed Python: minor and arch now", "    $DetectedPython = $null\n"
+    "    # -- uv-managed Python: minor and arch now", "    $DetectedPython = $null\n"
 )
 
 
@@ -417,7 +417,7 @@ def test_the_choice(shell, tmp_path, kwargs, expected):
 
 RESOLVE_SITE = _between(
     "    $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion",
-    "    # ── Create the venv;",
+    "    # -- Create the venv;",
 )
 
 

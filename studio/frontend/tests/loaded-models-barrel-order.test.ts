@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Export the preference module first; the indicator now breaks the loaded-models import cycle, so
-// the order is only a guard against a TDZ error on its top-level const.
+// Export the preference module first; the order only guards a TDZ error on a top-level const.
 
 import assert from "node:assert/strict";
 import test from "node:test";

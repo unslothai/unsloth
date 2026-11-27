@@ -47,7 +47,6 @@ _LEASE_RENEW_EVERY_S = 30.0
 # Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 
-# Distinct from TOOL_REJECTED_MESSAGE: the user never declined it.
 TOOL_APPROVAL_EXPIRED_MESSAGE = (
     "This tool call was not run: nobody answered the approval request in time."
 )
@@ -108,7 +107,6 @@ def bind_permission_upgrade(
 
 
 def new_approval_id() -> str:
-    """Mint an unguessable id for one pending tool-call confirmation."""
     return secrets.token_urlsafe(16)
 
 
@@ -146,7 +144,6 @@ def note_host_access(approval_id, tool_name, arguments) -> None:
 
 
 def tool_decision_grants_host_access(approval_id, session_id = None) -> bool:
-    """True when allowing this pending call would let it reach host paths (``note_host_access``)."""
     if not approval_id:
         return False
     with _lock:

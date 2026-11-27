@@ -138,8 +138,7 @@ def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
 
 
 def record_api_usage(receipt: ApiUsageReceipt) -> bool:
-    """Keyed by monitor id so repeated completions cannot double-count; invalid or zero-usage
-    receipts are ignored"""
+    """Keyed by monitor id to dedupe repeats; invalid or zero-usage receipts are ignored."""
     if receipt.kind != "request" or receipt.via_api_key is not True:
         return False
     counts = (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens)
@@ -203,8 +202,7 @@ class ApiUsageWriter:
             return True
 
     def stop(self, timeout: float = _WORKER_DRAIN_TIMEOUT_SECONDS) -> bool:
-        """Stops intake; True once the daemon reads the stop sentinel; on timeout the daemon keeps
-        retrying the accepted head receipt, then drains the rest of the queue and exits"""
+        """Stops intake; True once sentinel is read; on timeout, retries the head then drains."""
         with self._state_lock:
             if not self._stopped:
                 self._stopped = True

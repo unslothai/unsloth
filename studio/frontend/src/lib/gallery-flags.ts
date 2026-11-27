@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Pure, shared by Images and Video. The backend owns order (pinned, then newest or manual key);
- * this only reproduces it so a click lands instantly. */
+/** Mirrors the backend's order (pinned, then newest or manual key) so a click lands instantly. */
 
 export const GALLERY_CHANGED_EVENT = "unsloth:gallery-changed";
 
@@ -27,8 +26,7 @@ export function subscribeGalleryChanged(kind: GalleryKind, onChanged: () => void
 
 export const ARCHIVE_CHANGED_EVENT = "unsloth:archive-changed";
 
-/** Announce that the archived shelf of `kind` changed from Settings (a restore or a delete). Kept apart
- * from the gallery event so a delete, which leaves the active strip as it was, does not refetch it. */
+/** Archived shelf changed; kept apart from the gallery event so a delete skips the refetch. */
 export function notifyArchiveChanged(kind: GalleryKind): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(ARCHIVE_CHANGED_EVENT, { detail: { kind } }));
@@ -67,8 +65,7 @@ function newestFirst<T extends FlaggableItem>(a: T, b: T): number {
   return orderKey(b) - orderKey(a);
 }
 
-/** Pins keep ARRIVAL order (the server sorts by pin time, which the client never learns), except
- * `justPinnedId`, which leads. */
+/** Pins keep arrival order, since the client never sees pin time; justPinnedId leads. */
 export function sortGalleryItems<T extends FlaggableItem>(items: T[], justPinnedId?: string): T[] {
   const pinned = items.filter((i) => i.pinned);
   const rest = items.filter((i) => !i.pinned);
@@ -86,8 +83,7 @@ export function applyPin<T extends FlaggableItem>(items: T[], id: string, pinned
   return sortGalleryItems(next, pinned ? id : undefined);
 }
 
-/** Backend pin rule: between pins pins it, between unpinned unpins it, on the boundary keeps it.
- * Returns `items` unchanged for a no-op. */
+/** Between pins it pins, between unpinned it unpins, boundary keeps it; no-op returns items. */
 export function moveGalleryItem<T extends FlaggableItem>(
   items: T[],
   id: string,
@@ -140,8 +136,7 @@ export function pinnedOrder<T extends FlaggableItem>(items: T[]): string[] {
   return items.filter((i) => i.pinned).map((i) => i.id);
 }
 
-/** `applyPin(..., true)` would promote it to the head. Ids absent from `order` were pinned
- * mid-request and score -1, so the newest pin leads. */
+/** applyPin(..., true) would promote it; ids not in order score -1, so the newest pin leads. */
 export function restorePinOrder<T extends FlaggableItem>(
   items: T[],
   id: string,
@@ -164,12 +159,10 @@ export function mergeGenerated<T extends FlaggableItem>(items: T[], fresh: T[]):
 /** Bounds a recovery probe so a huge pin count cannot scan the gallery. */
 export const NEW_RECORD_PROBE_MAX_PAGES = 5;
 
-/** Proves a generation whose POST response was lost reached the server. A saved record is the
- * first UNPINNED row, not row 0. */
+/** Lost-response POST reached the server; the record is the first UNPINNED row, not row 0. */
 export interface NewRecordProbeBaseline {
   knownIds: ReadonlySet<string>;
-  /** An all-pinned window with more pages behind it cannot judge, since every unpinned row is
-   * unfamiliar. */
+  /** An all-pinned window with pages behind cannot judge: every unpinned row is unfamiliar. */
   canJudgeUnpinned: boolean;
 }
 
@@ -214,7 +207,6 @@ export function serializeById<T>(key: string, task: () => Promise<T>): Promise<T
   );
   queues.set(key, settled);
   void settled.then(() => {
-    // Only the last link clears the key.
     if (queues.get(key) === settled) queues.delete(key);
   });
   return run;
@@ -243,9 +235,8 @@ export async function fetchWhileStable<T>(
 }
 
 /**
- * Archiving shortens the server's shelf mid-request, so a page at the old offset skips a record.
- * `count()` catches a drop during the fetch, `token()` a mutation starting during it, and
- * `pending()` the gap between those two.
+ * Archiving shortens the shelf mid-request, so a page at the old offset skips a record; count()
+ * catches a drop, token() a mutation during it, and pending() the gap between those two.
  */
 export async function fetchNextPage<T>(
   count: () => number,
@@ -265,8 +256,7 @@ export async function fetchNextPage<T>(
   return null;
 }
 
-/** Falls to a neighbour so the preview never blanks with items on screen; `remaining` excludes
- * the removed item. */
+/** Falls to a neighbour so the preview never blanks while items show; remaining excludes it. */
 export function nextSelectedId<T extends FlaggableItem>(
   remaining: T[],
   removedId: string,

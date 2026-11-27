@@ -48,8 +48,7 @@ class _DevProps(ctypes.Structure):
 
 
 def _pci_device_id(get_props, dev) -> str:
-    """Lower-case PCI bus id ("0000:c1:00.0"), which llama.cpp matches to skip a Vulkan device a
-    CUDA one already drives; empty when the build does not report it."""
+    """Lower-case PCI bus id, or empty if unknown; llama.cpp skips Vulkan devices CUDA drives."""
     props = _DevProps()
     try:
         get_props(dev, ctypes.byref(props))
@@ -160,7 +159,6 @@ def main() -> int:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
     def _find_lib(directory, stem):
-        """Find an unversioned library or a versioned runtime soname."""
         path = os.path.join(directory, stem)
         if os.path.isfile(path):
             return path

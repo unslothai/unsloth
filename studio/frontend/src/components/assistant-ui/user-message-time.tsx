@@ -26,9 +26,8 @@ export const UserMessageTime: FC = () => {
     locale,
     withTimeFormat({ dateStyle: "full", timeStyle: "short" }, locale),
   );
-  // A button only so the keyboard reaches the tooltip. Clicking does nothing, so the
-  // cursor stays an arrow, even with pointer cursors on.
-  // The spacer takes the slack, so the tooltip opens only over the time itself.
+  // A button only so the keyboard reaches the tooltip; clicks do nothing, so the cursor stays an
+  // arrow even with pointer cursors on; the spacer confines the tooltip to the time.
   return (
     <div className="mr-2 flex min-w-8 flex-1 justify-end self-center">
       <Tooltip>
@@ -43,7 +42,6 @@ export const UserMessageTime: FC = () => {
               className="aui-user-message-time block truncate select-none"
             >
               {formatMessageDate(createdAt, Date.now(), locale, {
-                // Today reads as just the time.
                 today: (time) => time,
                 yesterday: (time) => t("common.yesterdayAt", { time }),
               })}

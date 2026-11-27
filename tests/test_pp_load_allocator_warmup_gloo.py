@@ -174,12 +174,9 @@ def test_pp_quantize_on_load_warms_only_this_ranks_stages():
             pytest.skip(r["error"])
         assert "error" not in r, r
     for r in res:
-        # The plain load, the pipeline load and the bypassed pipeline load each warm up once.
         assert r["loaded"] == 1 and len(r["records"]) == 3, r
         (plain, staged, _) = r["records"]
-        # A load outside the pipeline context: the whole model, transformers' own async setting.
         assert plain["async_off"] is None, r
-        # The pipeline load: synchronous, and only this rank's stages reserved.
         assert staged["async_off"] == "1", r
         assert 0 < staged["bytes"] < plain["bytes"], r
         assert r["counter_restored"] and r["async_after"] is None, r

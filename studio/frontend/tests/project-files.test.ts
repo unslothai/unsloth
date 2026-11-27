@@ -11,26 +11,12 @@ import {
   changeStatusTone,
   closeSubtree,
   flattenFileTree,
-  formatFileSize,
   joinProjectPath,
   pathsToLoad,
   splitProjectPath,
   toggleOpenPath,
 } from "../src/features/chat/utils/project-files.ts";
 import { readSrc } from "./helpers/kit.ts";
-
-test("file sizes read as B, KB and MB", () => {
-  assert.equal(formatFileSize(0), "0 B");
-  assert.equal(formatFileSize(1023), "1023 B");
-  assert.equal(formatFileSize(1024), "1 KB");
-  assert.equal(formatFileSize(1536), "1.5 KB");
-  assert.equal(formatFileSize(20 * 1024 + 300), "20 KB");
-  assert.equal(formatFileSize(3.4 * 1024 * 1024), "3.4 MB");
-  assert.equal(formatFileSize(5 * 1024 ** 3), "5 GB");
-  assert.equal(formatFileSize(undefined), "");
-  assert.equal(formatFileSize(null), "");
-  assert.equal(formatFileSize(-1), "");
-});
 
 test("paths split into a dimmed folder and an emphasised name", () => {
   assert.deepEqual(splitProjectPath("src/app/main.py"), {

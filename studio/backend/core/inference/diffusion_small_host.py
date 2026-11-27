@@ -554,6 +554,7 @@ def decide_small_host(
     pread_libraries: tuple[str, ...] = (),
     spill_free_mib: Optional[int] = None,
     dense_denoiser: bool = False,
+    force: bool = False,
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
     (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
@@ -585,7 +586,7 @@ def decide_small_host(
     reserve = host_reserve_mib(host_total_mib)
     dense_commit = _dense_commit_mib(converted, dense, pread_libraries)
     storage = {name: comp.dtype for name, comp in converted.items()}
-    forced = small_host_forced()
+    forced = force or small_host_forced()
     if host_available_mib is None and not forced:
         return SmallHostDecision(False, "host RAM unreadable", dense_host_mib = dense)
     commit = None if host_commit_mib is None else int(host_commit_mib)
@@ -632,7 +633,11 @@ def decide_small_host(
     ):
         refuse = _refusal(need, reserve, host_available_mib, "even the low-memory route")
     why = (
-        f"{SMALL_HOST_ENV}=1"
+        (
+            f"{SMALL_HOST_ENV}=1"
+            if small_host_forced()
+            else f"forced by the load (dense {compute} would fit)"
+        )
         if forced and fits
         else f"dense {compute} load needs ~{dense} MiB + {reserve} MiB reserve of host RAM, "
         f"{host_available_mib} MiB available{commit_note}"
@@ -678,8 +683,7 @@ def _spill_choice(
 
 
 def _widened_embed_mib(comp: StoredComponent, compute: str) -> int:
-    """Host MiB of an encoder's token embedding converted to a wider ``compute`` dtype (bf16 -> float32 doubles it,
-    past what the reserve absorbs); 0 at the same width, where the reserve covers the copy as measured on FLUX.2."""
+    """Host MiB of an encoder token embedding, past the reserve when widened; 0 at same width."""
     if _itemsize(compute) <= _itemsize(comp.dtype):
         return 0
     return comp.embed_mib * _itemsize(compute) // _itemsize(comp.dtype)
@@ -733,8 +737,7 @@ def int8_act_counts() -> dict[str, int]:
 
 
 def int8_act_device_ok(device: Any) -> bool:
-    """sm_75 CUDA only (fp32-promoted, int8 tensor cores; on sm_80+ bf16 eager W8A8 does not win; ROCm capabilities
-    differ), and ``torch._int_mm`` must return the exact integer product there."""
+    """sm_75 CUDA only (no bf16 W8A8 win on sm_80+; ROCm differs); torch._int_mm must be exact."""
     import torch
 
     try:
@@ -1490,8 +1493,7 @@ def install_encoder_prefetch(
     device: Any,
     logger: Any = None,
 ) -> int:
-    """Swap each streamed offload group's ``onload_`` of a small-host text encoder for the prefetching copy. Groups made
-    resident are left alone. Returns the number of groups covered (0: unchanged, e.g. kill switch or no CUDA)."""
+    """Swaps streamed onload_ for prefetch copies; returns count, 0 if disabled or no CUDA."""
     if encoder_prefetch_disabled():
         return 0
     try:

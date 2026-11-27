@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import urllib.error
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -98,6 +99,31 @@ def test_model_info_ahead_fills_the_open_scope(monkeypatch):
         mc.read_hub_model_info_ahead("org/model", None).join()
         assert mc._hub_model_info("org/model", None).id == "org/model"
     assert calls == ["org/model"]
+
+
+def test_model_info_read_ahead_resolves_the_lazy_import_on_the_caller_thread(monkeypatch):
+    hub = ModuleType("huggingface_hub")
+    events = []
+
+    def model_info(repo, **kwargs):
+        events.append(("read", threading.current_thread()))
+        return SimpleNamespace(id = repo)
+
+    def resolve(name):
+        if name != "model_info":
+            raise AttributeError(name)
+        events.append(("import", threading.current_thread()))
+        hub.model_info = model_info
+        return model_info
+
+    hub.__getattr__ = resolve
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
+    with mc.shared_hub_model_info():
+        thread = mc.read_hub_model_info_ahead("org/model", None)
+        thread.join()
+        assert mc._hub_model_info("org/model", None).id == "org/model"
+    assert events == [("import", threading.current_thread()), ("read", thread)]
 
 
 def test_a_failed_read_ahead_leaves_the_answer_to_the_probe(monkeypatch):

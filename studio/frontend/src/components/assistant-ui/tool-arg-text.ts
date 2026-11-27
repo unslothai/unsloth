@@ -22,8 +22,7 @@ export const toolArgText = (value: unknown): string => {
     // Not a template literal: `String(sym)` works, `${sym}` throws on symbols.
     return String(value);
   } catch {
-    // Load-bearing: Firefox and Safari throw on deep nesting.
-    // Keep the binding bare: Firefox's is not a RangeError.
+    // Firefox/Safari throw on deep nesting; catch all as Firefox's error is no RangeError.
     return "";
   }
 };

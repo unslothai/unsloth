@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 
 export interface PromptEntry {
   id: string;
@@ -22,8 +23,7 @@ export interface PromptListEntry {
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => null);
   if (!res.ok) {
-    const detail = (body as { detail?: string } | null)?.detail;
-    throw new Error(detail ?? `Request failed (${res.status})`);
+    throw new Error(formatApiErrorBody(body) ?? `Request failed (${res.status})`);
   }
   return body as T;
 }

@@ -2332,6 +2332,10 @@ export const it = {
         confirmDescriptionChatOnly:
           "Arresta il server e riesegue il programma di installazione. Questa è un'installazione solo chat, quindi il programma di installazione la porta anche all'installazione completa con PyTorch, diversi gigabyte in totale. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Ripara ora",
+        recommendedTorch:
+          "Riparazione consigliata: questa installazione ha PyTorch {torch}, precedente al {managedTorch} gestito su cui sono supportate le GPU serie RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} è precedente al {managedTorch} gestito su cui sono supportate le GPU serie RTX 50, ma questo driver GPU non supporta CUDA 13. Aggiorna prima il driver GPU, poi ripara l'installazione.",
       },
       resetPreferences: {
         sectionTitle: "Zona pericolosa",
@@ -4582,6 +4586,12 @@ export const it = {
       epochs: "Epoche",
       useMaxSteps: "Usa gli step massimi",
       useEpochs: "Usa le epoche",
+      stepGuidancePass: "Circa {steps} passi sono un passaggio sulle tue {rows} righe con un batch effettivo di {batch}.",
+      stepGuidanceFloor: "Un passaggio sulle tue {rows} righe è di soli {passSteps} passi con un batch effettivo di {batch}, quindi circa {steps} passi (alcuni passaggi) sono un minimo ragionevole.",
+      stepGuidanceCap: "Un passaggio sulle tue {rows} righe è di {passSteps} passi con un batch effettivo di {batch}; {steps} passi addestrano su una parte, spesso sufficiente per una prima esecuzione.",
+      stepGuidanceEpoch: "Un'epoca è di circa {passSteps} passi sulle tue {rows} righe con un batch effettivo di {batch}.",
+      stepGuidancePacking: "Il packing unisce le righe brevi, quindi un passaggio può richiedere meno passi.",
+      useSuggestedSteps: "Usa {steps}",
       maxStepsTooltip:
         "Sovrascrive il numero totale di step dell'ottimizzatore.",
       epochsTooltip: "Numero di passaggi completi sul dataset.",

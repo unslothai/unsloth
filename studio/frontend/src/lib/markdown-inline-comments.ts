@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * A mid-sentence HTML comment is inline raw HTML: its `-->` may arrive later in the same
- * paragraph, but past the paragraph the `<!--` is ordinary text.
- */
+/** Inline HTML comment: its --> may arrive later in the same paragraph, else <!-- is plain text. */
 
 import { interruptsParagraph } from "@/lib/markdown-list-columns";
 

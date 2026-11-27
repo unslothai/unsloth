@@ -189,6 +189,8 @@ _DPO_VISION_KEYS = (
     "pixel_position_ids",
     "image_position_ids",
     "mm_token_type_ids",
+    # Qwen2-VL / Qwen2.5-VL / Qwen3-VL: one (t, h, w) row per image; TRL < 0.29 DPO drops it.
+    "image_grid_thw",
 )
 
 torch_compile_options = {
@@ -277,6 +279,21 @@ def distillation_trainer_adapter_off_teacher(call_args, extra_args):
 
 RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_adapter_off_teacher)
 RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_adapter_off_teacher)
+
+
+def distillation_trainer_teacher_tokenizer(call_args, extra_args):
+    # TRL checks only vocab_size: Qwen2.5 and Qwen3 share 151936 rows but Qwen3 adds <think> / </think>.
+    if "teacher_model" not in call_args or "processing_class" not in call_args:
+        return ""
+    return (
+        "from unsloth.models._on_policy_distillation import check_teacher_tokenizer as _unsloth_check_teacher_tokenizer\n"
+        # The superclass gets `tokenizer` when the caller used that alias (rl.py), so check the same object.
+        "_unsloth_check_teacher_tokenizer(teacher_model, locals().get('tokenizer') if locals().get('tokenizer') is not None else processing_class, type(self).__name__)\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_teacher_tokenizer)
+RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_teacher_tokenizer)
 
 
 def grpo_trainer_distillation_teacher(call_args, extra_args):
@@ -656,7 +673,12 @@ def dpo_trainer_vision_process_row(
         "chosen_input_ids": chosen_input_ids,
         "rejected_input_ids": rejected_input_ids,
     }
-    if "pixel_values" in processed_features:
+    if "image_grid_thw" in processed_features:
+        # Grid processors return every image's patch rows flattened into one (patches, dim) array, not one
+        # array per row: [0] would keep a single patch row and the vision tower would see too few patches.
+        output["pixel_values"] = processed_features["pixel_values"]
+        output["image_grid_thw"] = processed_features["image_grid_thw"]
+    elif "pixel_values" in processed_features:
         output["pixel_values"] = processed_features["pixel_values"][0]
     if "pixel_attention_mask" in processed_features:
         output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
@@ -783,8 +805,33 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
         "        except Exception:\n"
         "            _unsloth_trl_pad = None\n"
+        "        if all('image_grid_thw' in example for example in examples):\n"
+        # Concatenate patch rows (vision tower + image_grid_thw layout), never a (batch, patches, dim) block;
+        # rows come from TRL's right-padded tensor, else are converted per row on any layout/dtype mismatch.
+        "            _padded = output.get('pixel_values', None)\n"
+        "            _rows = []\n"
+        "            if isinstance(_padded, _unsloth_torch.Tensor) and _padded.dim() >= 2 and _padded.shape[0] == len(examples):\n"
+        "                for _i, example in enumerate(examples):\n"
+        "                    _pv = example['pixel_values']\n"
+        "                    _probe = _unsloth_torch.as_tensor(_pv[:1])\n"
+        "                    if (\n"
+        "                        len(_pv) == 0 or _padded.dim() != _probe.dim() + 1 or _probe.dtype != _padded.dtype\n"
+        "                        or len(_pv) > _padded.shape[1] or _probe.shape[1:] != _padded.shape[2:]\n"
+        "                        or not _unsloth_torch.equal(_padded[_i, :1], _probe)\n"
+        "                        or not _unsloth_torch.equal(_padded[_i, len(_pv) - 1:len(_pv)], _unsloth_torch.as_tensor(_pv[-1:]))\n"
+        "                    ):\n"
+        "                        _rows = []\n"
+        "                        break\n"
+        "                    _rows.append(_padded[_i, :len(_pv)])\n"
+        "            if len(_rows) != len(examples):\n"
+        "                _rows = [_unsloth_torch.as_tensor(example['pixel_values']) for example in examples]\n"
+        "            output['pixel_values'] = _unsloth_torch.cat(_rows, dim=0)\n"
+        "            del _padded, _rows\n"
+        "            output['image_grid_thw'] = _unsloth_torch.cat(\n"
+        "                [_unsloth_torch.as_tensor(example['image_grid_thw']).reshape(-1, 3) for example in examples], dim=0\n"
+        "            )\n"
         "        for _k in " + _vision_keys + ":\n"
-        "            if not all(_k in example for example in examples):\n"
+        "            if _k == 'image_grid_thw' or not all(_k in example for example in examples):\n"
         "                continue\n"
         "            _is_position_key = _k.endswith('position_ids')\n"
         "            _padding_value = -1 if _is_position_key else 0\n"
@@ -803,6 +850,32 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "\n"
         "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
         "    DataCollatorForPreference._unsloth_vision_keys_patch = True\n"
+    )
+
+
+def _unsloth_dpo_is_vision_model(model, processing_class):
+    # TRL 0.22 picks its vision path from MODEL_FOR_VISION_2_SEQ only, which on transformers 4.x leaves out
+    # image-text-to-text models such as Gemma3: their image rows went through the text tokenizer and datasets.map
+    # raised ArrowInvalid. Such a model counts as vision only when it is paired with an image processor.
+    from transformers.models.auto import modeling_auto
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}):
+        return True
+    if model_type not in getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}):
+        return False
+    return (
+        getattr(processing_class, "image_processor", None) is not None
+        and getattr(processing_class, "tokenizer", None) is not None
+    )
+
+
+def dpo_trainer_vision_model_detection(function_name, function):
+    if function_name != "__init__":
+        return function
+    return function.replace(
+        "self.is_vision_model = model.config.model_type in MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.keys()",
+        "self.is_vision_model = _unsloth_dpo_is_vision_model(model, processing_class)",
     )
 
 
@@ -930,6 +1003,8 @@ def dpo_trainer_reference_snapshot(function_name, function):
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_model_detection)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_is_vision_model))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
@@ -1994,6 +2069,98 @@ def _unsloth_seq_packing_shape_noise(model, result, ref, cmask):
     return True
 
 
+def _unsloth_seq_packing_verify_rows(
+    lengths,
+    completion_counts,
+    trusted,
+    limit = 3,
+    model = None,
+):
+    """Rows the packing self-verify scores alone as ground truth (host ints, no sync). Until packing is trusted,
+    under UNSLOTH_GRPO_SEQ_PACKING_VERIFY=1, and for RoPE that switches with length (rows on either side of the
+    switch run different frequencies alone), every row. Otherwise a re-verify of trusted packing at a larger
+    shape scores at most `limit` rows: the last scored row (it follows every other document in the packed
+    stream, so any cross-document leak reaches it), the longest row (the new position range) and the row with
+    the most completion tokens."""
+    import os
+
+    rows = [i for i, (n, c) in enumerate(zip(lengths, completion_counts)) if n >= 2 and c > 0]
+    if (
+        (not trusted)
+        or limit is None
+        or limit <= 0
+        or len(rows) <= limit
+        or os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
+        or (model is not None and _unsloth_seq_packing_rope_switch(model) is not None)
+    ):
+        return [i for i, n in enumerate(lengths) if n >= 2]
+    pick = [rows[-1]]
+    for i in (
+        max(rows, key = lambda r: lengths[r]),
+        max(rows, key = lambda r: completion_counts[r]),
+    ):
+        if i not in pick:
+            pick.append(i)
+    for i in sorted(rows, key = lambda r: -completion_counts[r]):
+        if len(pick) >= limit:
+            break
+        if i not in pick:
+            pick.append(i)
+    return sorted(pick)
+
+
+def _unsloth_seq_packing_rope_switch(model):
+    """Length where the model's RoPE changes its frequencies (LongRoPE short / long factors, dynamic NTK), else None."""
+    config = getattr(model, "config", None)
+    if hasattr(config, "get_text_config"):
+        try:
+            config = config.get_text_config()
+        except Exception:
+            pass
+    scalings = []
+    for scaling in (
+        getattr(config, "rope_scaling", None),
+        getattr(config, "rope_parameters", None),
+    ):
+        if isinstance(scaling, dict):
+            # transformers 5 can key rope_parameters by layer type
+            scalings.append(scaling)
+            scalings.extend(v for v in scaling.values() if isinstance(v, dict))
+    for scaling in scalings:
+        if str(scaling.get("rope_type", scaling.get("type", ""))).lower() in (
+            "longrope",
+            "su",
+            "dynamic",
+        ):
+            switch = (
+                scaling.get("original_max_position_embeddings", None)
+                or getattr(config, "original_max_position_embeddings", None)
+                or getattr(config, "max_position_embeddings", None)
+            )
+            return int(switch) if switch else None
+    return None
+
+
+def _unsloth_seq_packing_trusted_bound(model, value):
+    """Trusted packing bound after a verify passed at `value` tokens: 2x by default, so record lengths that grow a little do
+    not re-run the verify every time. RoPE that switches with length (LongRoPE short / long factors, dynamic NTK)
+    never widens across `original_max_position_embeddings`, and past it stays at `value`."""
+    import os
+
+    value = int(value)
+    # UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH=1 trusts only the exact verified shape (the old rule).
+    try:
+        growth = float(os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "2"))
+    except ValueError:
+        growth = 2.0
+    if not growth > 1:
+        return value
+    switch = _unsloth_seq_packing_rope_switch(model)
+    if switch is None:
+        return int(growth * value)
+    return min(int(growth * value), switch) if value <= switch else value
+
+
 def _unsloth_grpo_packing_leaks(self, unwrapped):
     """True when a packed document's output depends on an earlier document in its row (e.g. OPT's plain causal mask).
 
@@ -3053,6 +3220,34 @@ def grpo_trainer__generate(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
 
 
+def _unsloth_wrap_vllm_generate_with_sleep(function):
+    """Wake a standby (enable_sleep_mode) engine around each self.llm.generate line, then sleep it again."""
+    pattern = re.compile(r".*self\.llm\.generate\(.*\).*", re.MULTILINE)
+    patched = function
+    for match in reversed(list(pattern.finditer(function))):
+        line = match.group(0)
+        indent_match = re.match(r"(\s*)", line)
+        indent = indent_match.group(1) if indent_match else ""
+
+        # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
+        # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
+        wrapped = (
+            f"{indent}_unsloth_sleep_level = None\n"
+            f"{indent}if hasattr(self, 'llm'):\n"
+            f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+            f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
+            f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
+            f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
+            f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
+            f"{indent}        self.llm.wake_up()\n"
+            f"{line}\n\n"
+            f"{indent}if _unsloth_sleep_level is not None:\n"
+            f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
+        )
+        patched = patched[: match.start()] + wrapped + patched[match.end() :]
+    return patched
+
+
 # Older TRL mishandles special tokens: 0.19.0 passed skip_special_tokens = True where it should be False.
 def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
@@ -3396,35 +3591,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     if "wake_up()" not in function:
         # Sleep functionality was added to trl in v0.23.0 (commit edbe823), so do not redo it.
-
-        pattern = re.compile(r".*self\.llm\.generate\(.*\).*", re.MULTILINE)
-        matches = list(pattern.finditer(function))
-        patched = function
-
-        for match in reversed(matches):
-            line = match.group(0)
-            indent_match = re.match(r"(\s*)", line)
-            indent = indent_match.group(1) if indent_match else ""
-
-            # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
-            # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
-            wrapped = (
-                f"{indent}_unsloth_sleep_level = None\n"
-                f"{indent}if hasattr(self, 'llm'):\n"
-                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
-                f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
-                f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
-                f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
-                f"{indent}        self.llm.wake_up()\n"
-                f"{line}\n\n"
-                f"{indent}if _unsloth_sleep_level is not None:\n"
-                f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
-            )
-
-            patched = patched[: match.start()] + wrapped + patched[match.end() :]
-
-        function = patched
+        function = _unsloth_wrap_vllm_generate_with_sleep(function)
 
     _mm_alignment = """
         if (
@@ -4723,6 +4890,19 @@ def online_dpo_trainer__generate_vllm_colocate(function_name, function):
     # Level-2 sleep discards the weights, but the next microbatch of the same step skips the sync.
     if function_name != "_generate_vllm_colocate":
         return function
+    if "self.llm.sleep(" not in function:
+        # TRL < 0.29 OnlineDPO never sleeps the engine: a standby engine would keep ~90% of VRAM during training.
+        return _unsloth_wrap_vllm_generate_with_sleep(function)
+    # Unsloth's allocator never sleeps the shared weights, so a tagged wake_up(tags=["weights"]) maps nothing and
+    # leaves vLLM's executor asleep; the generate wrapper's own wake_up then maps the KV cache a second time
+    # (cumem "invalid argument"). Wake the shared engine untagged, as the GRPO / RLOO sync_weights patch does.
+    function = re.sub(
+        r"^([ \t]+)self\.llm\.wake_up\(tags=(\[[^\]\n]*\])\)\n",
+        r"\1if getattr(self.llm, 'shared_weights', False): self.llm.wake_up()\n"
+        r"\1else: self.llm.wake_up(tags=\2)\n",
+        function,
+        flags = re.MULTILINE,
+    )
     return re.sub(
         r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
         r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",
@@ -5406,7 +5586,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_pad,
                                 **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
                             )
-                        _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                        # Completion tokens per row, one read: active rows and the re-verify row pick.
+                        _pk_ccount_cpu = _pk_cmask.sum(dim = 1).tolist()
+                        _pk_active = sum(1 for _pk_c in _pk_ccount_cpu if _pk_c > 0)
                     if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
@@ -5482,7 +5664,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
                             _pk_use = True  # already verified for this shape
                         else:
-                            # verify against the per-row forward (ground truth)
+                            # verify against the per-row forward (ground truth); a re-verify of trusted packing scores at most 3 rows
+                            _pk_vrows = _unsloth_seq_packing_verify_rows(
+                                _pk_len_cpu,
+                                _pk_ccount_cpu,
+                                _pk_ok is True and _pk_vT > 0,
+                                model = unwrapped_model,
+                            )
                             _pk_ref = torch.zeros_like(_pk_result)
                             with torch.no_grad():
                                 with torch.amp.autocast(
@@ -5490,7 +5678,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
-                                    for _pk_i in range(total_rows):
+                                    for _pk_i in _pk_vrows:
                                         _pk_ni = _pk_len_cpu[_pk_i]
                                         if _pk_ni < 2:
                                             continue
@@ -5537,10 +5725,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             device_synchronize()
                             # Compare over the loss-mask region only.
                             _pk_cm = _pk_cmask.float()
+                            if len(_pk_vrows) < total_rows:
+                                # Rows not scored alone have no reference: leave them out of the compare.
+                                _pk_vsel = torch.zeros(
+                                    total_rows, 1, dtype = _pk_cm.dtype, device = _pk_cm.device
+                                )
+                                _pk_vsel[_pk_vrows] = 1
+                                _pk_cm = _pk_cm * _pk_vsel
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
                             if UNSLOTH_ENABLE_LOGGING:
                                 print(
-                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
+                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} rows={len(_pk_vrows)}/{total_rows} packed-vs-perrow max|d|={_pk_diff:.4f}",
                                     flush = True,
                                 )
                             # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
@@ -5557,12 +5752,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
                                 # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
+                                # 2x past this shape, so a slowly growing record length does not re-verify every time.
                                 if _pk_active >= 2:
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
-                                        _pk_vT, _pk_T
+                                        _pk_vT,
+                                        _unsloth_seq_packing_trusted_bound(unwrapped_model, _pk_T),
                                     )
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
-                                        _pk_vS, _pk_maxseg
+                                        _pk_vS,
+                                        _unsloth_seq_packing_trusted_bound(
+                                            unwrapped_model, _pk_maxseg
+                                        ),
                                     )
                                 _pk_ok = True
                                 _pk_use = True
@@ -7147,6 +7347,9 @@ RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_moe_noise))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_shape_noise))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_rope_switch))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_rows))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_trusted_bound))
 RL_PRE_ITEMS["grpo_trainer"].append(
     _patch_grpo_accumulated_loss_moe_noise(
         _patch_grpo_accumulated_loss_seq_packing_kill(

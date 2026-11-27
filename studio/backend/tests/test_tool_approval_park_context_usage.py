@@ -74,7 +74,6 @@ def _client(monkeypatch, log):
                 "completion_tokens": 3,
                 "context_length": 8192,
             }
-            # The loop now blocks on the user's decision.
             log.append("waiting-for-decision")
             yield {"type": "status", "text": "Searching"}
             yield {

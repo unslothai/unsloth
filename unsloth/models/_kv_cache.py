@@ -81,8 +81,7 @@ if _StaticLayer is not None:
             self.group.members.append(weakref.ref(self))
 
         def _plan(self, q_len):
-            """Capacity for q_len more tokens; grows the group if short. Never during a capture: the host counter is
-            already past the step and the copy would be recorded, not run."""
+            """Grows the group if short; not during capture (the copy would only be recorded)."""
             needed = self.cumulative_length_int + int(q_len)
             if (self.capacity is None or needed > self.capacity) and not _frozen():
                 _grow_group(self.group, bucket(needed, max(int(self.max_cache_len), needed)))
@@ -209,8 +208,7 @@ def supports(model):
 
 
 def make_growable(cache):
-    """Swaps the uninitialised full-attention StaticLayers of a transformers StaticCache for growable ones, in place.
-    Returns the cache. Initialised layers (a cache that already holds tokens) are left as they are."""
+    """Uninitialised full-attention StaticLayers become growable; initialised ones are kept."""
     if GrowableLayer is None or cache is None:
         return cache
     layers = getattr(cache, "layers", None)
@@ -238,8 +236,7 @@ def is_growable(cache):
 
 
 def fills_bucket(cache, q_len):
-    """Whether a step writing q_len tokens fills the last slots of this cache's bucket: a graph captured there
-    can never replay (the next step grows the cache and moves its tensors)."""
+    """Graph captured when a step fills the bucket can't replay: the next step grows it."""
     for layer in _members(cache):
         if layer.capacity is not None and layer.cumulative_length_int + q_len == layer.capacity:
             return True
@@ -289,8 +286,7 @@ def capacity(cache):
 
 
 def short_layers(cache, max_cache_len):
-    """Whether a sliding / chunked layer was cut at the creating call's limit (min(window, limit)), so a longer
-    call up to `max_cache_len` would roll it early."""
+    """Sliding/chunked layers cut at the creating call's limit roll early on longer calls."""
     limit = max((int(layer.max_cache_len) for layer in _members(cache)), default = None)
     if limit is None:
         return False

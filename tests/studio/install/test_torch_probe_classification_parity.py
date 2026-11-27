@@ -164,8 +164,7 @@ class TestClassificationIsAFaithfulTranslation:
         assert env["_is_gpu_build"] == _old_cpu_is_gpu(ver, hip, cuda)
 
     def test_the_xpu_runtime_marker_is_the_one_deliberate_divergence(self, ver, hip, cuda):
-        """An untagged source, conda or private-index XPU wheel carries its runtime only in
-        torch.version.xpu; the old predicate read it as CPU and declined to reinstall."""
+        """Untagged XPU wheels keep runtime only in torch.version.xpu; the old check missed it."""
         env = {
             "re": re,
             "_version": ver,

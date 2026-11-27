@@ -17,8 +17,7 @@ def _runtime_dir() -> str:
 
 
 def test_landlock_rules_exclude_the_per_user_runtime_dir(tmp_path):
-    """/run is granted wholesale, but XDG_RUNTIME_DIR is 0700 for the Studio Unix user:
-    without an exclusion every managed account reads the owner's runtime secrets."""
+    """Exclude XDG_RUNTIME_DIR (0700) from /run, or managed accounts read the owner's secrets."""
     if sys.platform != "linux":
         pytest.skip("Linux rule builder")
     runtime = _runtime_dir()

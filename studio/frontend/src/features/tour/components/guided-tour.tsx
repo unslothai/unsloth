@@ -294,7 +294,7 @@ export function GuidedTour({
                     // Plain rounded, no corner-squircle: at this radius superellipse(2)
                     // hugs the corner about twice as tightly as the arc, which reads as a
                     // boxed-in card rather than a rounded one.
-                    "relative overflow-hidden rounded-3xl",
+                    "glass-card relative overflow-hidden rounded-3xl",
                     "bg-white/95 text-foreground ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-[rgb(255_255_255_/_calc(0.12*var(--contrast-edge-gain,1)))]",
                     "shadow-[0_30px_120px_rgba(0,0,0,0.35)]",
                   )}

@@ -12,6 +12,7 @@ labels != -100). That changes which rows share a step, so it changes the data or
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import heapq
 import inspect
@@ -23,6 +24,7 @@ import torch
 
 __all__ = [
     "karmarkar_karp",
+    "equal_size_partition",
     "balance_step_indices",
     "balance_label_steps",
     "TokenBalancedSampler",
@@ -43,7 +45,9 @@ def karmarkar_karp(
 ):
     """Split indices of `values` into `k` groups with near-equal sums (largest differencing method).
 
-    With `equal_size`, `len(values)` must be a multiple of `k` and every group gets the same count.
+    With `equal_size`, `len(values)` must be a multiple of `k` and every group gets the same count;
+    each group then takes exactly one of every `k` consecutive values in sorted order, which is what
+    ranks stepping in lockstep need (see `balance_step_indices`), and groups come heaviest first.
     Deterministic: ties break on index. Mirrors verl/utils/seqlen_balancing.py:karmarkar_karp.
     """
     k = int(k)
@@ -78,8 +82,84 @@ def karmarkar_karp(
     return [sorted(s[1]) for s in heap[0][2]]
 
 
+def _longest_first(values, k):
+    """Equal-size LPT: rows longest first, each to the lightest group that still has room."""
+    size = len(values) // k
+    groups = [[] for _ in range(k)]
+    heap = [(0, j) for j in range(k)]
+    for i in sorted(range(len(values)), key = lambda i: (-values[i], i)):
+        total, j = heapq.heappop(heap)
+        groups[j].append(i)
+        if len(groups[j]) < size:
+            heapq.heappush(heap, (total + values[i], j))
+    return groups
+
+
+def _swap_refine(values, groups, max_swaps):
+    """1-for-1 swaps between the heaviest group and the lightest one that has a helpful swap, taking
+    the swap that best halves their gap. Group sizes never change, the heaviest sum never grows and
+    the sum of squares strictly falls, so it stops; `max_swaps` bounds the cost."""
+    groups = [list(g) for g in groups]
+    sums = [sum(values[i] for i in g) for g in groups]
+    k = len(groups)
+    for _ in range(max_swaps):
+        hi = min(range(k), key = lambda j: (-sums[j], j))
+        best = None
+        for lo in sorted(range(k), key = lambda j: (sums[j], j)):
+            gap = sums[hi] - sums[lo]
+            if gap <= 0:
+                break
+            keyed = sorted((values[b], p) for p, b in enumerate(groups[lo]))
+            keys = [v for v, _ in keyed]
+            for a_pos, a in enumerate(groups[hi]):
+                # The best partner b has values[b] nearest values[a] - gap / 2.
+                q = bisect.bisect_left(keys, values[a] - gap / 2)
+                for c in (q - 1, q):
+                    if 0 <= c < len(keys):
+                        d = values[a] - keys[c]
+                        if 0 < d < gap:
+                            score = abs(gap - 2 * d)
+                            if best is None or score < best[0]:
+                                best = (score, a_pos, keyed[c][1], lo, d)
+            if best is not None:
+                break
+        if best is None:
+            break
+        _, a_pos, b_pos, lo, d = best
+        groups[hi][a_pos], groups[lo][b_pos] = groups[lo][b_pos], groups[hi][a_pos]
+        sums[hi] -= d
+        sums[lo] += d
+    return [sorted(g) for g in groups]
+
+
+def equal_size_partition(values, k):
+    """`k` equal-count groups of the indices of `values` with the smallest heaviest sum this finds:
+    the better (heaviest sum, then spread) of equal-size differencing and a size-capped longest-first
+    fill, each improved by 1-for-1 swaps. Equal-size differencing alone leaves the heaviest group
+    several % (2 groups) to 20%+ (8 groups) over the mean on long-tailed lengths; this gets within
+    about 0.1-3%. Unlike `karmarkar_karp`, a group may take several of the largest values, so it is
+    for a total per group (ranks that synchronise once per step), not for ranks in lockstep.
+    Deterministic: ties break on index; groups come heaviest first. At most 2 * len(values) swaps."""
+    differenced = karmarkar_karp(values, k, equal_size = True)
+    k = len(differenced)
+    if k < 2 or len(values) <= k:
+        return differenced
+
+    def key(groups):
+        sums = [sum(values[i] for i in g) for g in groups]
+        return (max(sums), max(sums) - min(sums))
+
+    max_swaps = 2 * len(values)
+    best = min(
+        _swap_refine(values, differenced, max_swaps),
+        _swap_refine(values, _longest_first(values, k), max_swaps),
+        key = key,
+    )
+    return sorted(best, key = lambda g: (-sum(values[i] for i in g), g))
+
+
 def _more_even(regrouped, given, weights, size):
-    """Karmarkar-Karp is a heuristic: True unless `given` already has the smaller spread of
+    """The partitioners are heuristics: True unless `given` already has the smaller spread of
     per-group sums over consecutive `size` chunks, so a regroup never ends up less even."""
 
     def spread(order):
@@ -96,6 +176,7 @@ def balance_step_indices(
     grad_accum,
     world_size = 1,
     cross_rank = True,
+    lockstep = True,
 ):
     """Reorder one optimizer step's sampler output (`world_size * grad_accum * batch_size` indices).
 
@@ -103,6 +184,12 @@ def balance_step_indices(
     batches, global batch b goes to rank b % world_size, and rank r's g-th batch of the step is
     global batch g * world_size + r. With `cross_rank` rows move between ranks to equalize per-rank
     tokens; without it each rank keeps its own rows and only its accumulation slots are balanced.
+
+    `lockstep`: ranks wait for each other on every micro-batch (FSDP, pipeline / tensor / context
+    parallel), so a micro-step costs its longest slot over ranks. Equal-size differencing gives every
+    rank one row of each size tier and slots come heaviest first, which lines similar slots up across
+    ranks. False (DDP, which synchronises once per step): only each rank's total matters, which
+    `equal_size_partition` evens out far better on long-tailed lengths.
     """
     bs, ga, ws = int(batch_size), int(grad_accum), int(world_size)
     window = bs * ga * ws
@@ -114,7 +201,11 @@ def balance_step_indices(
         [indices[(g * ws + r) * bs + j] for g in range(ga) for j in range(bs)] for r in range(ws)
     ]
     if cross_rank and ws > 1:
-        groups = karmarkar_karp([lengths[i] for i in indices], ws, equal_size = True)
+        values = [lengths[i] for i in indices]
+        if lockstep:
+            groups = karmarkar_karp(values, ws, equal_size = True)
+        else:
+            groups = equal_size_partition(values, ws)
         regrouped = [[indices[p] for p in group] for group in groups]
         if _more_even(sum(regrouped, []), sum(rank_rows, []), lengths, ga * bs):
             rank_rows = regrouped
@@ -142,7 +233,7 @@ def balance_label_steps(indices, label_counts, step_size):
     steps = len(indices) // step_size
     if steps < 2:
         return list(indices)
-    groups = karmarkar_karp([label_counts[i] for i in indices], steps, equal_size = True)
+    groups = equal_size_partition([label_counts[i] for i in indices], steps)
     groups.sort(key = lambda group: group[0])
     out = [indices[p] for group in groups for p in group]
     return out if _more_even(out, indices, label_counts, step_size) else list(indices)
@@ -156,6 +247,7 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
 
     With `label_counts`, `label_window` consecutive step windows are first regrouped by
     `balance_label_steps`; `balance_lengths` False then leaves each step's rows in that order.
+    `lockstep` is passed to `balance_step_indices`.
     """
 
     def __init__(
@@ -170,6 +262,7 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
         label_counts = None,
         label_window = 1,
         balance_lengths = True,
+        lockstep = True,
     ):
         self.sampler = sampler
         self.lengths = lengths
@@ -181,6 +274,7 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
         self.label_counts = label_counts
         self.label_window = max(int(label_window), 1) if label_counts is not None else 1
         self.balance_lengths = bool(balance_lengths)
+        self.lockstep = bool(lockstep)
 
     def __len__(self):
         return len(self.sampler)
@@ -200,6 +294,7 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
                     self.grad_accum,
                     self.world_size,
                     self.cross_rank,
+                    self.lockstep,
                 )
             )
         return out
@@ -352,8 +447,7 @@ def _splittable_keys(batch):
 
 
 def split_batch_by_token_budget(batch, budget):
-    """Splits a batch to at most budget tokens: padding-free [1, T] batches between whole sequences,
-    padded [B, L] by rows; other shapes are never split."""
+    """Splits to at most budget tokens: [1, T] between sequences, [B, L] by rows; else unsplit."""
     if not isinstance(batch, Mapping) or budget is None or budget <= 0:
         return [batch]
     input_ids = batch.get("input_ids")
@@ -575,8 +669,7 @@ def _exactness_blocker(trainer, step_loss = True):
 
 
 def _length_dependent_rope(trainer):
-    """LongRoPE or dynamic RoPE anywhere in the text config (flat or per layer type): both pick
-    frequencies from each forward's length, which splitting or regrouping changes."""
+    """LongRoPE or dynamic RoPE: frequencies depend on forward length, which splitting changes."""
     config = getattr(getattr(trainer, "model", None), "config", None)
     config = getattr(config, "text_config", None) or config
 
@@ -691,8 +784,32 @@ def _balance_dataloader(
         label_counts = label_counts,
         label_window = _label_window() if labels_mode else 1,
         balance_lengths = balance_lengths,
+        lockstep = _lockstep_ranks(trainer),
     )
     return True
+
+
+def _lockstep_ranks(trainer):
+    """False only for plain DDP, whose ranks synchronise once per optimizer step. FSDP (native or
+    accelerate), DeepSpeed and tensor / pipeline / context / expert parallel ranks also wait for
+    each other inside every micro-batch, so they keep the lockstep layout."""
+    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(
+        trainer, "is_fsdp_enabled", False
+    ):
+        return True
+    if str(os.environ.get("UNSLOTH_FSDP2", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+        "native",
+    ):
+        return True
+    for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE"):
+        value = str(os.environ.get(name, "")).strip()
+        if value and value != "1":
+            return True
+    return False
 
 
 def _same_count_on_every_rank(
@@ -700,8 +817,7 @@ def _same_count_on_every_rank(
     accelerator,
     flag = None,
 ):
-    """True when every rank has the same count. With flag, returns (same, flag on every rank) from
-    the same collective, so a later collective guarded by flag runs on every rank or on none."""
+    """True if all ranks match; flag rides the same collective, so guarded calls stay in step."""
     if accelerator is None or getattr(accelerator, "num_processes", 1) <= 1:
         return True if flag is None else (True, bool(flag))
     import torch.distributed as dist
@@ -756,8 +872,7 @@ def _metric_style(trainer):
 
 
 def _entropy_count(trainer, chunk):
-    """Tokens TRL averages entropy over: the label mask on fused-head TRL, else the attention mask or
-    every position when padding-free."""
+    """Entropy tokens: label mask (fused-head TRL), else attention mask (all if padding-free)."""
     if _metric_style(trainer) == "labels":
         return _label_count(chunk)
     if "attention_mask" in chunk:
@@ -789,10 +904,9 @@ def _is_multi_process(accelerator):
 
 
 def _can_merge_metrics(trainer, model, chunks, accelerator):
-    """Fold per-chunk entries only when token weighting provably reproduces TRL's unsplit value:
-    with several processes only under an initialized process group and without Liger (whose older
-    TRL paths average per-rank ratios), no prompt-learning PEFT (virtual token logits are counted
-    differently per version), one label source, and known TRL metric code."""
+    """Fold chunk entries only when token weighting reproduces TRL's unsplit value: no Liger (older
+    paths average per-rank ratios), no prompt-learning PEFT (logit counts vary by version), one
+    label source, known TRL metric code; multi-process needs an initialized process group."""
     if _is_multi_process(accelerator):
         import torch.distributed as dist
         if not (dist.is_available() and dist.is_initialized()):
@@ -820,8 +934,7 @@ def _metric_lengths(trainer):
 
 
 def _global_chunk_weights(trainer, chunks, accelerator):
-    """Multi-process weights sum token counts over ranks; older attention-style TRL averages
-    per-rank entropy ratios, which cannot be refolded, so entropy stays unfolded."""
+    """Ranks sum token counts; entropy stays unfolded since older TRL averages per-rank ratios."""
     weights = {
         key: [count(trainer, chunk) for chunk in chunks] for key, count in _RATIO_METRICS.items()
     }
@@ -845,8 +958,7 @@ def _merge_chunk_metrics(
     chunks,
     weights = None,
 ):
-    """Fold the per-chunk ratio entries back into one entry for the micro-batch, weighting each chunk by
-    the tokens TRL divided by, so the logged value matches an unsplit step."""
+    """Fold per-chunk ratios weighted by tokens TRL divides by, so logs match unsplit steps."""
     if weights is None:
         weights = {
             key: [count(trainer, chunk) for chunk in chunks]
@@ -944,8 +1056,7 @@ def install_token_budget(trainer):
             if not merge:
                 metrics, lengths = None, None
             if not same_count:
-                # Each chunk runs compute_loss (TRL gathers metrics there) and its own backward:
-                # ranks with different counts would issue mismatched collectives and hang.
+                # Different chunk counts per rank mean mismatched collectives and a hang.
                 _note_once(
                     trainer,
                     "Unsloth: UNSLOTH_TOKEN_BUDGET not splitting steps whose ranks need different chunk counts.",

@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Keyed on the message array identity (rebuilt on every repository change) so typing, which runs
- * every useAuiState selector, does not rescan the thread. Separate cache from
- * research-reply-owners.ts so the two answers never mix.
+ * Keyed on message array identity (rebuilt on every repository change), so typing does not rescan;
+ * separate cache from research-reply-owners.ts so the two answers never mix.
  */
 
 export type ResearchPresenceMessage = { metadata?: unknown };

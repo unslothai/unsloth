@@ -29,9 +29,7 @@ on:
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
       # Read by the Rust test every_shared_case_agrees_with_the_desktop_filter.
       - 'studio/backend/tests/fixtures/access_log_records.json'
-      # The frontend is built here only so tauri-build finds frontendDist; its content is not under
-      # test (Frontend CI, the Linux Tauri job and the Windows/macOS smoke installs build it). What
-      # can break this build on Windows or macOS alone: dependencies and the build config.
+      # Built only so tauri-build finds frontendDist; deps and build config can break it here.
       - 'studio/frontend/package.json'
       - 'studio/frontend/package-lock.json'
       - 'studio/frontend/.npmrc'
@@ -67,9 +65,8 @@ on:
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
       # Read by the Rust test every_shared_case_agrees_with_the_desktop_filter.
       - 'studio/backend/tests/fixtures/access_log_records.json'
-      # The frontend is built here only so tauri-build finds frontendDist; its content is not under
-      # test (Frontend CI, the Linux Tauri job and the Windows/macOS smoke installs build it). What
-      # can break this build on Windows or macOS alone: dependencies and the build config.
+      # Frontend is built here only so tauri-build finds frontendDist; its content is tested
+      # elsewhere. Only dependencies and build config can break it on Windows or macOS alone.
       - 'studio/frontend/package.json'
       - 'studio/frontend/package-lock.json'
       - 'studio/frontend/.npmrc'
@@ -91,9 +88,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # Latest-only on PR branches; on main nothing running is killed, pending runs are replaced.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -155,9 +150,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: npx --prefix studio tauri build --debug --no-bundle
 
-      # GPU rendering Off must reach WebView2 as --disable-gpu without dropping wry's default
-      # flags; Auto must leave the arguments alone. The second launch follows the first at once,
-      # so a WebView2 that cannot switch arguments on a fast relaunch fails here.
+      # GPU rendering Off must pass --disable-gpu to WebView2 without dropping wry's default flags;
+      # Auto leaves args alone; a fast second launch fails if WebView2 cannot switch args.
       - name: GPU rendering Off reaches WebView2
         shell: pwsh
         run: |
@@ -195,8 +189,7 @@ jobs:
   macos-unit-tests:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Rust unit tests (macos)
-    # macos-26, not macos-15: same hardware class but a much shorter queue tail (measured on
-    # studio-mac-install-matrix). Re-measure if queues change.
+    # macos-26 not macos-15: same hardware class, shorter queue; re-measure if queues change.
     runs-on: macos-26
     timeout-minutes: 45
     steps:

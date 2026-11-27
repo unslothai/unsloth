@@ -16,8 +16,7 @@ export function usePublishAccessUrls(enabled: boolean) {
     let cancelled = false;
     let timer: number | undefined;
     let settling = false;
-    // Re-read only mid-transition: a Start left on another tab publishes its URL once the tunnel is up.
-    // A failed read while settling retries too, or the last transitional state would stick.
+    // Settling re-reads catch another tab's Start; a failed read retries or the state sticks.
     const readRemote = () => {
       loadRemoteAccess()
         .then((next) => {

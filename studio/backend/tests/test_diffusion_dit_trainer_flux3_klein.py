@@ -265,9 +265,14 @@ def test_defaults_sit_on_the_16_grid_and_off_grid_resolutions_are_refused(tmp_pa
         DiffusionLoraConfig(**base, resolution = 776).normalized()
 
 
-def test_previews_run_the_base_recipe_with_cfg():
+def test_previews_run_the_inference_recipe_with_cfg():
+    from core.inference.diffusion_families import named_generation_params
+    from core.inference.diffusion_flux3 import FLUX3_REFERENCE_SHIFT
+
     s = sample_inference_settings(FAMILY, BASE)
-    assert (s.steps, s.guidance, s.uses_cfg) == (28, 3.5, True)
+    assert (s.steps, s.guidance, s.uses_cfg, s.shift) == (28, 4.0, True, 16.0)
+    assert s.guidance == named_generation_params(BASE)[1] == named_generation_params(FAMILY)[1]
+    assert s.shift == FLUX3_REFERENCE_SHIFT
 
 
 def test_trained_adapters_are_offered_on_klein_and_klein_base():
@@ -459,6 +464,16 @@ def test_encode_and_forward_reproduce_the_pipelines_transformer_call(tiny_pipe_d
 
 
 @pytest.mark.allow_network
+def test_inference_load_samples_at_the_reference_shift_and_training_keeps_its_own(tiny_pipe_dir):
+    from core.inference.diffusion_flux3 import FLUX3_REFERENCE_SHIFT
+
+    pipe = _load(tiny_pipe_dir)
+    assert pipe.scheduler.config.shift == FLUX3_REFERENCE_SHIFT
+    assert pipe.modular_pipeline().scheduler is pipe.scheduler
+    assert dit._flux3_training_scheduler(None).config.shift == pytest.approx(6.93)
+
+
+@pytest.mark.allow_network
 def test_conditioning_load_skips_the_transformer_and_encodes_the_same(tiny_pipe_dir):
     from core.inference.diffusion_flux3 import load_flux3_pipeline
 
@@ -540,10 +555,87 @@ def test_training_sigmas_are_the_pipelines_shifted_schedule():
     assert torch.allclose(table, 6.93 * u / (1 + 5.93 * u), atol = 1e-5)
     # Timesteps are sigma * 1000, so the forward's timestep / 1000 is exactly the pipeline's flow time.
     assert torch.allclose(sched.timesteps, table * n, atol = 1e-3)
-    # The preview sampler builds the same schedule the pipeline does at 28 steps.
+    # Without a shift override the preview schedule is the training scheduler's own.
     sig, _ = flow_sigmas(sched.config, FAMILY, 28, 64 * 64)
     ref.set_timesteps(sigmas = np.linspace(1.0, 1.0 / 28, 28).tolist())
     assert torch.allclose(sig, ref.sigmas.float(), atol = 1e-6)
+
+
+def _inference_sigmas(steps):
+    """The schedule Studio's FLUX.3 inference samples (load_flux3_pipeline's scheduler, Flux3SetTimestepsStep)."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    from core.inference.diffusion_flux3 import (
+        FLUX3_BASE_BLOCKS,
+        flux3_blocks,
+        flux3_reference_scheduler,
+    )
+
+    shipped = flux3_blocks(FLUX3_BASE_BLOCKS).init_pipeline().scheduler
+    ref = FlowMatchEulerDiscreteScheduler.from_config(flux3_reference_scheduler(shipped).config)
+    ref.set_timesteps(sigmas = np.linspace(1.0, 1.0 / steps, steps).tolist())
+    return ref.sigmas.float()
+
+
+def test_preview_sigmas_are_the_inference_schedule_not_the_training_one():
+    _transformer_cls()
+    sched = dit._flux3_training_scheduler(None)
+    s = sample_inference_settings(FAMILY, BASE)
+    sig, num_train = flow_sigmas(sched.config, FAMILY, s.steps, 64 * 64, s.mu, s.shift)
+    assert torch.allclose(sig, _inference_sigmas(s.steps), atol = 1e-6)
+    assert num_train == 1000.0
+    assert sched.config.shift == pytest.approx(6.93)
+    assert not torch.allclose(
+        sig, flow_sigmas(sched.config, FAMILY, s.steps, 64 * 64)[0], atol = 1e-3
+    )
+
+
+def test_preview_round_denoises_at_the_inference_shift_and_cfg(tmp_path):
+    from types import SimpleNamespace
+
+    from core.training.diffusion_samples import euler_flow_sample, plan_samples
+
+    _transformer_cls()
+    sched = dit._flux3_training_scheduler(None)
+    cfg = SimpleNamespace(
+        sample_every = 10,
+        sample_prompts = ("a cat",),
+        base_model = BASE,
+        seed = 0,
+        resolution = 512,
+        output_dir = str(tmp_path),
+    )
+    plan = plan_samples(cfg, FAMILY, ["a cat"])
+    seen = []
+
+    def velocity(x, t, sig, embeds):
+        seen.append((embeds, float(sig.flatten()[0]), float(t[0])))
+        return torch.full_like(x, 1.0 if embeds == "cond" else 0.0)
+
+    shape = (1, 4, 2, 2)
+    x = euler_flow_sample(
+        plan = plan,
+        index = 0,
+        latent_shape = shape,
+        image_seq_len = 64 * 64,
+        family = FAMILY,
+        scheduler_config = sched.config,
+        velocity = velocity,
+        cond = "cond",
+        uncond = "uncond",
+        device = "cpu",
+        weight_dtype = torch.float32,
+    )
+    ref = _inference_sigmas(28)
+    cond_sigmas = torch.tensor([s for e, s, _ in seen if e == "cond"])
+    assert torch.allclose(cond_sigmas, ref[:-1], atol = 1e-6)
+    assert [e for e, _, _ in seen] == ["cond", "uncond"] * 28
+    # Constant cond 1 / uncond 0 velocities integrate to guidance * (sigma_end - sigma_start) = -4.0.
+    from core.training.diffusion_samples import initial_noise
+
+    assert torch.allclose(
+        x - initial_noise(plan, 0, shape, "cpu"), torch.full(shape, -4.0), atol = 1e-5
+    )
 
 
 def test_timestep_draws_are_uniform_for_flux3_and_logit_normal_elsewhere():

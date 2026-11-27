@@ -2441,6 +2441,10 @@ export const fr = {
         confirmDescriptionChatOnly:
           "Arrête le serveur et relance le programme d'installation. Cette installation est en mode Chat uniquement, donc le programme d'installation la fait aussi passer à l'installation complète avec PyTorch, plusieurs gigaoctets au total. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmAction: "Réparer maintenant",
+        recommendedTorch:
+          "Réparation recommandée : cette installation a PyTorch {torch}, plus ancien que la version gérée {managedTorch} sur laquelle les GPU RTX série 50 sont pris en charge.",
+        recommendedDriver:
+          "PyTorch {torch} est plus ancien que la version gérée {managedTorch} sur laquelle les GPU RTX série 50 sont pris en charge, mais ce pilote GPU ne prend pas en charge CUDA 13. Mettez d'abord à jour le pilote GPU, puis réparez l'installation.",
       },
       resetPreferences: {
         sectionTitle: "Zone de danger",
@@ -4591,6 +4595,12 @@ export const fr = {
       epochs: "Époques",
       useMaxSteps: "Utiliser le nombre max d'étapes",
       useEpochs: "Utiliser les époques",
+      stepGuidancePass: "Environ {steps} étapes correspondent à un passage sur vos {rows} lignes avec un lot effectif de {batch}.",
+      stepGuidanceFloor: "Un passage sur vos {rows} lignes ne fait que {passSteps} étapes avec un lot effectif de {batch} ; environ {steps} étapes (quelques passages) est donc un minimum raisonnable.",
+      stepGuidanceCap: "Un passage sur vos {rows} lignes fait {passSteps} étapes avec un lot effectif de {batch} ; {steps} étapes en entraînent une partie, ce qui suffit souvent pour un premier essai.",
+      stepGuidanceEpoch: "Une époque fait environ {passSteps} étapes sur vos {rows} lignes avec un lot effectif de {batch}.",
+      stepGuidancePacking: "Le packing regroupe les lignes courtes, un passage peut donc prendre moins d'étapes.",
+      useSuggestedSteps: "Utiliser {steps}",
       maxStepsTooltip: "Remplace le nombre total d'étapes d'optimisation.",
       epochsTooltip: "Nombre de passages complets sur le jeu de données.",
       contextLength: "Contexte",

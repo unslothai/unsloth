@@ -120,8 +120,7 @@ def test_llm_workers_install_the_guard(worker):
 
 
 def test_overlapping_wide_head_calls_restore_the_callers_backends_once():
-    """The first of two overlapping wide-head calls returning first must not put the fused kernels back under the
-    second; the caller's backends come back once, after the last returns."""
+    """Of overlapping wide-head calls, only the last to return restores the caller's backends."""
     import threading
 
     seen = {}

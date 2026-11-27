@@ -259,8 +259,7 @@ def test_a_windowed_arm_is_still_caught_when_the_hook_itself_is_gone(browser):
 
 
 def test_a_full_mount_is_still_caught_when_only_the_STATUS_VALUE_changed(browser):
-    """On a full mount no row can be missing, so a quiet scan is blindness even with the attribute
-    present; a hook-presence test alone would miss this likelier change."""
+    """Full mount: no row can be missing, so a quiet scan is blindness even with the attribute."""
     cap = _capture(browser, **_BLIND)
     assert cap["status_hook_present"] is True
     assert cap["in_flight_unplaced"] is True, cap
@@ -282,8 +281,7 @@ def test_the_gap_before_the_first_part_arrives_is_not_a_blind_probe(browser):
 
 
 def test_that_gap_is_still_caught_if_no_message_publishes_a_status_at_all(browser):
-    """The other half: nothing to publish on the LAST message is ordinary, nothing to publish
-    ANYWHERE is a hook that is gone, and a settled message would still be carrying it."""
+    """Silence on the last message is ordinary, but silence everywhere means the hook is gone."""
     cap = _capture(browser, **dict(_BLIND_ATTR, tail_has_parts = False))
     assert cap["status_hook_present"] is False
     assert cap["in_flight_unplaced"] is True, cap

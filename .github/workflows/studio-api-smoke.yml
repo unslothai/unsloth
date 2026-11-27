@@ -8,8 +8,7 @@ name: Unsloth API CI
 on:
   pull_request:
     paths:
-      # Only what the test boots: backend, installer and CLI. The install is --no-torch and the
-      # frontend is never served.
+      # Covers backend, installer and CLI only: --no-torch install, frontend never served.
       - 'studio/backend/**'
       # Backend unit tests are not part of the running Studio this workflow drives.
       - '!studio/backend/tests/**'
@@ -66,9 +65,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # On PR branches only the latest run survives; on main RUNNING runs are never killed and a newer
+  # push replaces only PENDING ones, so a merge burst runs the executing commit plus the tip.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -133,8 +131,7 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
-        # from the near-full repo cache budget.
+        # Save on main only: PR caches evict main's shared copies from a near-full repo budget.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:

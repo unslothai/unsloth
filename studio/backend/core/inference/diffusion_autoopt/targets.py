@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Exact attribute resolvers feed primitives; by-type denoisers() serves profile, audit and no-data
-families, and never feeds a primitive of a registered family"""
+"""Attribute resolvers feed primitives; by-type denoisers() never feed a registered family."""
 
 from __future__ import annotations
 
@@ -67,7 +66,6 @@ def denoiser_dits(pipe: Any) -> list:
 
 
 def denoiser_unet(pipe: Any) -> Any:
-    """The pipe's U-Net when its class is on the whole-compile list, else None."""
     unet = getattr(pipe, "unet", None)
     if unet is not None and type(unet).__name__ in UNET_WHOLE_COMPILE:
         return unet
@@ -140,6 +138,5 @@ def discovered_only(pipe: Any, family: Any = None) -> list:
 
 # ------------------------------------------------------------------------------------------------------- runners
 def runner_for(base: Any, runner: Optional[Any] = None) -> Any:
-    """The pipeline that executes a call: ``runner`` when a workflow swapped one in (from_pipe img2img / inpaint,
-    the I2V class swap, LTX-2.5's condition pipe), else ``base``."""
+    """Pipe that runs a call: runner if a workflow swapped one in (img2img, I2V), else base."""
     return runner if runner is not None else base

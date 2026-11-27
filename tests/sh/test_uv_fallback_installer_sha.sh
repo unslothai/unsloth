@@ -22,7 +22,6 @@ HELPER=$(awk '
     grab && /^}/ { grab = 0 }
 ' "$SETUP_SH")
 
-# A fake installer that leaves a marker when it runs, served by a stubbed downloader.
 printf 'touch "%s/ran"\n' "$WORK" > "$WORK/installer.sh"
 if command -v sha256sum >/dev/null 2>&1; then
     GOOD_SUM=$(sha256sum "$WORK/installer.sh" | awk '{print $1}')
@@ -83,7 +82,6 @@ else
     bad "install.sh and setup.sh pin the same installer script"
 fi
 
-# install.sh checks the digest before its run_maybe_quiet sh line.
 _check=$(grep -n 'UV_INSTALLER_SH_SHA256"' "$INSTALL_SH" | grep -v '^[0-9]*:UV_INSTALLER' | head -1 | cut -d: -f1)
 _run=$(grep -n 'run_maybe_quiet sh "\$_uv_tmp"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 if [ -n "$_check" ] && [ -n "$_run" ] && [ "$_check" -lt "$_run" ]; then

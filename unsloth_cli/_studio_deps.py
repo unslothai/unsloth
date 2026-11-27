@@ -110,15 +110,7 @@ def _venv_executables(root: Path) -> tuple[Path, ...]:
 
 
 def _venv_site_packages(root: Path) -> List[Path]:
-    """The site-packages roots used by this venv's active interpreter.
-
-    A venv upgraded in place can retain lib/pythonX.Y directories from older
-    interpreters. Globbing all of them makes ordinary packages look duplicated,
-    even though only the active interpreter's directory is importable.
-    Deduplicated by real path: purelib hardcodes `lib` while platlib follows
-    sys.platlibdir, so a lib64 build (Fedora, SuSE) names one directory twice
-    through venv's lib64 -> lib symlink.
-    """
+    """Active site-packages (upgrades leave stale lib/pythonX.Y); dedupe by real path (lib64)."""
 
     def existing_inside_root(values) -> List[Path]:
         resolved_root = _resolved(root)
@@ -192,12 +184,7 @@ def _venv_site_packages(root: Path) -> List[Path]:
 
 
 def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:
-    """A requested venv that is not the one this CLI runs in.
-
-    The wheel ships studio/, so a CLI installed outside the managed venv always
-    finds its own copy of the helper first; without this it would then verify
-    its own prefix instead of the venv it was asked about.
-    """
+    """First extra pyvenv.cfg root not this venv; wheel ships studio/, so it would self-verify."""
     running = _resolved(Path(sys.prefix))
     for root in extra_roots:
         if (root / "pyvenv.cfg").is_file() and _resolved(root) != running:
@@ -247,13 +234,8 @@ def _single_read(dist):
 
 
 def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
-    """Installed versions and metadata conflicts inside another venv.
-
-    importlib.metadata reports the running interpreter only, so a foreign
-    site-packages has to be handed to the finder explicitly. Keep multiplicity
-    beside the single-version map: collapsing it here would let a foreign venv
-    with ambiguous core metadata pass manifest verification.
-    """
+    """Versions and conflicts for another venv, passed in because importlib.metadata sees only the
+    running interpreter; collapsing multiplicity would let ambiguous metadata pass."""
     paths = [str(path) for path in _venv_site_packages(root)]
     if not paths:
         return None
@@ -398,15 +380,8 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
 
 
 def _scan_paths() -> Dict[str, list]:
-    """`path=` kwarg limiting a distribution scan to this interpreter's own tree.
-
-    Empty when the interpreter's site-packages cannot be resolved, which leaves
-    the scan at its default of the whole sys.path: over-scanning is the safe
-    direction here, since the alternative is looking at nothing. Deduplicated
-    by real path, because purelib hardcodes `lib` while platlib follows
-    sys.platlibdir, so a lib64 build (Fedora, SuSE) names one directory twice
-    and scanning both reports every package as duplicated.
-    """
+    """`path=` kwarg limiting a scan to this interpreter's tree; empty if unresolvable, so all of
+    sys.path is scanned (over-scanning is safe); dedupe by real path for lib64 builds."""
     import sysconfig
 
     paths = []
@@ -429,8 +404,7 @@ def _scan_paths() -> Dict[str, list]:
     return {"path": paths} if paths else {}
 
 
-# Top-level dirs several wheels write into (einx and torchao both ship test/conftest.py), so one
-# uninstall deletes another's files.
+# Shared dirs (einx and torchao both ship test/conftest.py); uninstall would delete others'.
 _SHARED_NON_RUNTIME_ROOTS = frozenset(
     (
         "test",
@@ -473,15 +447,8 @@ def _shared_non_runtime(rel: str) -> bool:
 
 
 def _installer_rewritten(rel: str) -> bool:
-    """A file our own setup rewrites in place, so its recorded size drifts.
-
-    Only the size is unreliable. The file disappearing is still damage, so the
-    row is kept and only its size dropped.
-
-    So does the managed Scripts/unsloth.exe: when setup publishes none, the update
-    restores a staged copy an older uv may have written with a smaller trampoline
-    than RECORD records (#16897). validate_launcher() already runs it.
-    """
+    """Setup-rewritten files drop only the size check, not existence; so does Scripts/unsloth.exe,
+    whose staged copy an older uv may have written smaller than RECORD (#16897)."""
     parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
     if not parts:
         return False
@@ -672,11 +639,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
 
 
 def running_outside_managed_venv(extra_roots: Sequence[Path] = ()) -> bool:
-    """True when this interpreter is not the managed venv the caller means.
-
-    A pip-installed CLI can drive an update into a venv it does not live in, and
-    anything answered from this interpreter would then describe the wrong tree.
-    """
+    """True outside the managed venv; a pip-installed CLI can drive updates into another venv."""
     if not (Path(sys.prefix) / "pyvenv.cfg").is_file():
         # Not a venv: on Colab the system Python RECORDs legitimately list files the distro never installed.
         return True

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Reports the VirusTotal delta against the reported install.ps1 baseline on three axes:
-# engine verdicts, Sigma rules and YARA rules. GET only: uploading a fresh sample can
-# create the detection. An unknown hash is VOID (exit 3), never clean. Dispatch only.
+# Compares against the reported install.ps1 baseline on three axes (engine, Sigma, YARA); GET only,
+# since uploads can create the detection; unknown hash is VOID (exit 3), never clean; dispatch only.
 
 name: "VirusTotal: installer delta against the reported baseline"
 

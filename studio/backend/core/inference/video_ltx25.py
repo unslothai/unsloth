@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 pipeline, gated to the ltx-2.5 family (no other family reaches this module); Gemma 4
-encoder runs in a worker on the .venv_t5_510 transformers 5.10 sidecar"""
+"""LTX-2.5 pipeline (ltx-2.5 family only); Gemma 4 encoder runs in a transformers 5.10 worker."""
 
 from __future__ import annotations
 
@@ -69,20 +68,17 @@ LTX25_NONE_COMPONENTS = (
 )
 LATENT_UPSAMPLER_SUBFOLDER = "latent_upsampler"
 TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
-# What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
-# Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
+# Encoder CUDA context (~0.6 GB on Hopper / Blackwell) and allocator slack, beyond weights.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# Auto takes the hosted int8 file only when confirmed, else bf16 (never quantizes at load). A100-40 LPIPS vs bf16
-# 0.133 (bf16 encoder 0.141), peak host 71 -> 52 GiB. Env =0 keeps bf16 auto, =1 makes auto an explicit int8.
+# Auto: hosted int8 if confirmed, else bf16 (no load-time quant); env =0 keeps bf16, =1 int8.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
 LTX25_TE_INT8_GB = 13.1
 # The dense bf16 encoder (the family table's text-encoder term), what quantizing at load materializes first.
 LTX25_TE_BF16_GB = 23.9
-# The hosted build of that same at-load quantization (scripts/build_ltx25_te_int8_convrot.py): the worker loads it
-# instead of reading the 23.9 GB bf16 encoder and quantizing it, and the plan drops the dense text_encoder/ shards. A
-# file that cannot be fetched or loaded falls back to the at-load quantization of the dense encoder.
+# Hosted build (scripts/build_ltx25_te_int8_convrot.py) replaces the bf16 read, and the plan drops
+# dense text_encoder/ shards; a fetch or load failure falls back to at-load quantization.
 LTX25_TE_HOSTED_REPO = "unsloth/LTX-2.5-FP8"
 LTX25_TE_HOSTED_FILE = "LTX-2.5-text_encoder-INT8-ConvRot.safetensors"
 LTX25_TE_HOSTED_FORMAT = "unsloth_ltx25_text_encoder_int8_convrot_v1"
@@ -483,8 +479,7 @@ def load_latent_upsampler(
 
 
 def is_ltx25_single_file_base(base: Optional[str], *, fold_mirror: bool = True) -> bool:
-    """Whether ``base`` is the split single-file release (hub id) or a local folder with its layout (the encoder file
-    and the conv VAE beside the DiTs), rather than a Diffusers pack."""
+    """True for a split single-file release (hub id) or its local layout, not a Diffusers pack."""
     text = (base or "").strip()
     if not text:
         return False
@@ -809,9 +804,8 @@ def ltx25_resolve_te_request(
 def ltx25_te_host_gb(
     text_encoder_quant: Optional[str], base: Optional[str], *, bf16_gb: float, scale: float
 ) -> float:
-    """Host GB the encoder worker reads Gemma 4 into, loading at ``scale`` x bf16 (2.0 = float32) on the host.
-
-    Hosted int8 widens only its dense tensors; bf16 and load-time int8 (reads dense first) widen fully."""
+    """Host GB the encoder worker reads Gemma 4 into at ``scale`` x bf16 (2.0 = float32); hosted
+    int8 widens only dense tensors; bf16 and load-time int8 (reads dense first) widen fully."""
     try:
         ltx25_te_quant_scheme(text_encoder_quant)
     except ValueError:
@@ -857,8 +851,7 @@ def sidecar_missing_message(venv_dir: str) -> str:
 
 
 def ensure_text_encoder_sidecar() -> str:
-    """The ``.venv_t5_510`` dir, created / repaired the way the chat and training workers do it; RuntimeError naming
-    the sidecar when it cannot be made usable."""
+    """Makes ``.venv_t5_510`` usable like chat/training workers do; RuntimeError if it cannot."""
     from utils.transformers_version import _VENV_T5_510_DIR, _ensure_venv_t5_510_exists
 
     try:
@@ -1257,7 +1250,6 @@ class Ltx25TextEncoderClient:
         # encode_prompt calls, one per render: the second means a render (and the server's pins) has finished.
         self.renders = 0
 
-    # process management
     def start(self) -> None:
         import multiprocessing as mp
 
@@ -1287,8 +1279,7 @@ class Ltx25TextEncoderClient:
             )
             from utils.process_lifetime import spawn_on_lifetime_thread
 
-            # The child arms PR_SET_PDEATHSIG, which follows the spawning THREAD: a load runs on a short-lived thread,
-            # and a worker started there dies the moment the load returns.
+            # PR_SET_PDEATHSIG follows the spawning thread, so use spawn_on_lifetime_thread.
             spawn_on_lifetime_thread(proc.start)
         self._proc = proc
         self._ready = False
@@ -1402,7 +1393,6 @@ class Ltx25TextEncoderClient:
             proc.kill()
         logger.info("video.ltx25_te: encoder worker stopped")
 
-    # encoding
     def stop_if_busy(self) -> bool:
         """Stop a worker still running an abandoned encode, freeing its card memory; the next encode restarts it."""
         if self._inflight is None or not self.alive():
@@ -1459,8 +1449,7 @@ class Ltx25TextEncoderClient:
                     "prompts": list(prompts),
                     "max_sequence_length": int(max_sequence_length),
                     "server_reserved_mib": _server_reserved_mib(self.config.get("device")),
-                    # The server pins its own host weights during the first render; the encoder's pin waits for that
-                    # so it never takes the host RAM those pins need.
+                    # Encoder pin waits on server's first-render pins, so their RAM stays free.
                     "pin_host": self.renders > 1,
                     "compact": compact,
                 }
@@ -1741,15 +1730,22 @@ def make_ancestral_scheduler(base_scheduler: Any) -> Any:
     Euler down to ``sigma_down = sigma_next**2 / sigma``, then re-noise up to ``sigma_next``. The last step (to 0)
     is plain Euler. Tokens named by ``keep_tokens`` (the conditioned first latent frame of an image-to-video stage)
     take the deterministic Euler step, so the conditioning the pipeline blends in x0 space is not re-noised. Noise
-    comes from ``noise_generator`` (the request's generator) for reproducible renders."""
+    comes from ``noise_generator`` (the request's generator) for reproducible renders.
+
+    Batched clips: ``noise_generator`` is one generator per row, and row i's noise is drawn from generator i at the
+    one-clip shape, exactly its solo draw; ``keep_tokens`` may be one entry per row (None for a row with nothing
+    to keep)."""
     import torch
     from diffusers import FlowMatchEulerDiscreteScheduler
     from diffusers.utils.torch_utils import randn_tensor
 
     class LTX25EulerAncestralScheduler(FlowMatchEulerDiscreteScheduler):
         noise_generator: Any = None
-        # (keep, total): when a sample has ``total`` tokens, its first ``keep`` step deterministically.
-        keep_tokens: Optional[tuple[int, int]] = None
+        # (keep, total): when a sample has ``total`` tokens, its first ``keep`` step deterministically. A list holds
+        # one such entry (or None) per batch row.
+        keep_tokens: Any = None
+        # Each row's renoise comes from its own generator: rows never share a noise stream (video_batch).
+        per_row_noise = True
 
         def __deepcopy__(self, memo: dict) -> Any:
             # The pipelines deep-copy this for the audio stream; the generator is shared, not cloned, so the audio
@@ -1794,7 +1790,18 @@ def make_ancestral_scheduler(base_scheduler: Any) -> Any:
                 )
                 prev = (alpha_next / alpha_down) * x_down + renoise * noise
                 keep = self.keep_tokens
-                if keep is not None and prev.ndim == 3 and prev.shape[1] == keep[1] and keep[0] > 0:
+                if isinstance(keep, list):
+                    for row, row_keep in enumerate(keep[: prev.shape[0]]):
+                        if (
+                            row_keep is not None
+                            and prev.ndim == 3
+                            and prev.shape[1] == row_keep[1]
+                            and row_keep[0] > 0
+                        ):
+                            prev[row, : row_keep[0]] = deterministic[row, : row_keep[0]]
+                elif (
+                    keep is not None and prev.ndim == 3 and prev.shape[1] == keep[1] and keep[0] > 0
+                ):
                     prev[:, : keep[0]] = deterministic[:, : keep[0]]
             self._step_index += 1
             prev = prev.to(model_output.dtype)
@@ -1907,8 +1914,7 @@ def render(
         raise
     finally:
         if image is not None or failed:
-            # Reset pipe's offload hooks on every exit: the condition pipeline shares its modules,
-            # not hooks.
+            # Reset offload hooks on exit: the condition pipeline shares modules, not hooks.
             free = getattr(pipe, "maybe_free_model_hooks", None)
             if callable(free):
                 try:
@@ -1935,8 +1941,7 @@ _RELEASE_SUPPORTED: list = []
 
 
 def prompt_rows_release_supported() -> bool:
-    """Whether this torch can tell a tensor is alone on its storage (the binding ``_release_rows`` needs), probed once;
-    without it nothing is released."""
+    """Whether torch can tell a tensor is alone on its storage; if not, nothing is released."""
     if not _RELEASE_SUPPORTED:
         try:
             import torch
@@ -2252,9 +2257,18 @@ def _render(
                 upsampler.to(video_latents.device)
             try:
                 # ``dtype`` reads a per-layer cast's compute dtype (fp16-card low-RAM route), else the weights'
-                upsampled = upsampler(
-                    video_latents.to(getattr(upsampler, "dtype", None) or param.dtype)
-                )
+                stage1_latents = video_latents.to(getattr(upsampler, "dtype", None) or param.dtype)
+                if stage1_latents.shape[0] > 1:
+                    # Batched clips (video_batch): one clip per call, as in each clip's own render.
+                    upsampled = torch.cat(
+                        [
+                            upsampler(stage1_latents[row : row + 1])
+                            for row in range(stage1_latents.shape[0])
+                        ],
+                        dim = 0,
+                    )
+                else:
+                    upsampled = upsampler(stage1_latents)
             finally:
                 if moved:
                     upsampler.to(home)

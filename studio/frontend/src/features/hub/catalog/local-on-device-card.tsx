@@ -45,6 +45,7 @@ import {
   revealLocalModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
+import { useHubPageUrl } from "../lib/hub-page-url";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
 
 import {
@@ -143,7 +144,7 @@ function BaseModelReference({
 }) {
   const canOpenHub = baseModelSource === "huggingface" && !!baseModelHubId;
   const hfEndpoint = useHfEndpoint();
-  const hubUrl = `${hfEndpoint}/${baseModelHubId}`;
+  const hubUrl = useHubPageUrl(`${hfEndpoint}/${baseModelHubId}`);
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border/55 bg-muted/35 px-3 py-2">
       <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-background/70 text-muted-foreground">

@@ -156,8 +156,13 @@ def test_images_sharing_one_generator_take_successive_batch_noise(h3i, pipe, mon
     with torch.random.fork_rng(devices = []):
         g = torch.manual_seed(seed)
         batch = torch.randn([2, 24, 1, 16, 16], dtype = torch.float32, generator = g, device = "cpu")
-    assert len(seen) % 2 == 0 and seen
-    first, second = seen[0]["hidden_states"][0], seen[len(seen) // 2]["hidden_states"][0]
+    assert seen
+    rows = seen[0]["hidden_states"]
+    if rows.shape[0] == 2:  # one batched forward over both images
+        first, second = rows[0], rows[1]
+    else:
+        assert len(seen) % 2 == 0
+        first, second = rows[0], seen[len(seen) // 2]["hidden_states"][0]
     # the model input is in its compute dtype, as the reference casts it
     assert torch.equal(first, _reference_patchify(batch[0:1]).to(torch.bfloat16).float())
     assert torch.equal(second, _reference_patchify(batch[1:2]).to(torch.bfloat16).float())

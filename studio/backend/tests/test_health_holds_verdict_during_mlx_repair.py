@@ -196,8 +196,7 @@ def _spend_the_handoff_grace(monkeypatch, clock) -> None:
 def test_a_repair_that_has_not_started_holds_the_verdict_while_the_warm_runs(
     apple_silicon, clock, monkeypatch
 ):
-    """The normal case, and the one no timeout could serve: the warm imports transformers
-    and datasets before the scheduler gets its turn, which is minutes on a cold Mac."""
+    """The scheduler waits on the warm's imports: minutes on a cold Mac, so no timeout serves."""
     assert _superseded(monkeypatch, warming = True) is True
     import main as main_mod
 
@@ -235,8 +234,7 @@ def test_a_gap_in_polling_does_not_spend_the_grace_before_the_handoff(
 
 
 def test_a_warm_that_resumes_reopens_the_handoff_grace(apple_silicon, clock, monkeypatch):
-    """A stopped reading between two running ones was a lull, not the handoff, so it must
-    not leave a countdown running that expires while the warm is still working."""
+    """A stopped reading between running ones is a lull: no countdown may expire mid-warm."""
     import main as main_mod
 
     assert _superseded(monkeypatch, warming = True) is True
@@ -257,8 +255,7 @@ def test_a_warm_that_never_ends_hits_the_ceiling(apple_silicon, clock, monkeypat
 
 
 def test_a_live_worker_holds_the_verdict_past_every_window(apple_silicon, clock, monkeypatch):
-    """A real reinstall is capped by _REPAIR_TIMEOUT_S, not by these windows. Expiring under
-    a working install would grey the rows moments before the repair flips them back."""
+    """A real reinstall is capped by _REPAIR_TIMEOUT_S; expiry under it would grey rows early."""
     import main as main_mod
 
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
@@ -287,8 +284,7 @@ def test_a_worker_parked_past_its_budget_stops_holding_the_verdict(
 
 
 def test_a_worker_inside_its_budget_is_never_cut_short(apple_silicon, monkeypatch):
-    """The budget is a backstop for a parked worker, not a cap on a working reinstall: a
-    slow but healthy uv install must keep the verdict held for its whole run."""
+    """Budget backstops parked workers only; a slow healthy uv install stays held for its run."""
     worker_clock = _Clock()
     monkeypatch.setattr(mlx_repair, "_repair_clock", worker_clock, raising = False)
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
@@ -332,8 +328,7 @@ def test_a_spent_window_does_not_revive_a_settled_host(apple_silicon, clock, mon
 
 
 def test_health_settles_the_verdict_once_the_window_is_spent(apple_silicon, clock, monkeypatch):
-    """End to end: the held-back reply must not be permanent on a host whose repair never
-    arrives, or Train and Video spin for the session instead of explaining themselves."""
+    """Without a repair the held reply must settle, or Train and Video spin for the session."""
     import main as main_mod
 
     monkeypatch.setattr(main_mod, "_torch_warm_in_progress", lambda: False)

@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Few-step DMD sampling for distribution-matching distilled Wan students (FastVideo FastWan, dense attention).
-
-A DMD student is trained at a fixed list of timesteps. Each step it predicts the clean latent from its flow
-output, ``x0 = x_t - sigma_t * v``; between steps the prediction is re-noised to the next timestep with fresh
-seeded noise, ``x_next = (1 - sigma_next) * x0 + sigma_next * eps``; the last step returns ``x0``. There is no
-classifier-free guidance. The scheduler below implements exactly that behind the diffusers scheduler interface
-(``set_timesteps`` / ``timesteps`` / ``sigmas`` / ``step``), so the Wan pipeline's own loop, the step callback,
-compile, CUDA graphs, quantisation and offload paths run unchanged; only ``pipe.scheduler`` is swapped for the
-render."""
+"""Few-step DMD sampling for distribution-matching distilled Wan students (FastVideo FastWan, dense
+attention): fixed trained timesteps, x0 = x_t - sigma_t * v, seeded re-noise between steps, no
+CFG, last step returns x0; swapped into pipe.scheduler per render so the pipeline runs unchanged."""
 
 from __future__ import annotations
 
@@ -17,8 +11,7 @@ import contextlib
 import re
 from typing import Any, Iterator, Optional
 
-# The sigma table the students were distilled on: 1000 training timesteps under flow shift 8, each request
-# timestep snapped to its nearest entry (independent of the inference flow_shift in the repo's scheduler config).
+# Trained sigma table (1000 steps, shift 8); timesteps snap to nearest, not repo's flow_shift.
 DMD_TRAINING_SHIFT = 8.0
 DMD_TRAIN_TIMESTEPS = 1000
 
@@ -75,9 +68,7 @@ def dmd_sigmas(timesteps: tuple[int, ...]) -> list[float]:
 
 
 def renoise_seed(seed: int) -> int:
-    """The re-noise stream's seed: derived from the request seed (deterministic per request) but never equal to it.
-    The pipeline draws the initial latent from a generator seeded with the request seed (a CPU one on CPU / MPS), so
-    seeding the re-noise stream with it too would make the first re-noise draw repeat the initial noise exactly."""
+    """Derived from the request seed, never equal to it: reuse would repeat the initial noise."""
     import hashlib
 
     digest = hashlib.sha256(f"unsloth-dmd-renoise:{int(seed)}".encode()).digest()

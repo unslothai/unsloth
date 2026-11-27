@@ -77,7 +77,6 @@ def _invalidate(*keys: str) -> None:
 
 
 def get_keep_resident() -> bool:
-    """True when the loaded model must stay in GPU memory while it is loaded."""
     parsed = _coerce_bool(_cached_setting(KEEP_RESIDENT_SETTING_KEY))
     return parsed if parsed is not None else DEFAULT_KEEP_RESIDENT
 

@@ -72,8 +72,7 @@ def test_fixture_bytes_are_deterministic(tmp_path):
     rebuild_dir.mkdir()
     builder_src = (FIXTURES / "_build.py").read_text(encoding = "utf-8")
     rebuilt_helper = rebuild_dir / "_build.py"
-    # builder_src came out of a checked-in file, so it carries whatever
-    # non-ASCII that file holds and cp1252 cannot encode it back out.
+    # builder_src may hold non-ASCII, which cp1252 cannot encode, so write it as UTF-8.
     rebuilt_helper.write_text(builder_src, encoding = "utf-8")
     shim = rebuild_dir / "run.py"
     shim.write_text(
@@ -531,8 +530,7 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
             "unsloth_zoo/compiler.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
         ),
-        # Matched lines are ordinary metaprogramming, so approving on evidence alone would let a
-        # later payload in the same file ride an unchanged match; hence digest pins.
+        # Ordinary metaprogramming matches, so pin the digest or a later payload rides along.
         (
             "unsloth_zoo/vllm_utils.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
@@ -541,14 +539,12 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
             "unsloth_zoo/temporary_patches/moe_utils.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
         ),
-        # Pinned since 2026.9.x for the same reason as compiler.py: it imports modules by
-        # name and execs, so the matched lines say nothing about the rest of the file.
+        # Pinned like compiler.py: it imports modules by name and execs, so matches say little.
         (
             "unsloth_zoo/mlx/loader.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
         ),
-        # Execs a vLLM method rebuilt from edited source: what runs is decided by the edit
-        # tables and the source lookup elsewhere in the file, not by the matched exec line.
+        # Execs a rebuilt vLLM method; the edit tables decide what runs, not the matched line.
         (
             "unsloth_zoo/vllm_gdn_replayssm.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
@@ -2262,12 +2258,10 @@ def _audited_requirements(root):
             yield "pyproject.toml", spec
 
 
-# unsloth-zoo is ours and released in lockstep, so it is digest- but not version-pinned.
-# Only first-party names may appear here; the test asserts exactly that.
+# First-party only: unsloth-zoo ships in lockstep, so digest-pinned but not version-pinned.
 FIRST_PARTY_DIGEST_PINNED = {"unsloth-zoo"}
 
-# The PyPI `pip` branch declares torch; it must stay a range so cuXXX-torchYYY extras can choose.
-# Digest pinning still reopens on byte changes. Applies only to pyproject, not studio files.
+# Torch stays a range for cuXXX-torchYYY extras; digest pins still reopen; pyproject only.
 PYPROJECT_BOUNDED_RANGE_ALLOWED = {"torch"}
 
 

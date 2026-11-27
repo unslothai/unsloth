@@ -130,8 +130,7 @@ def test_registration_never_overwrites_diffusers_own_entry(monkeypatch):
 
 
 def test_a_class_this_diffusers_lacks_is_not_registered(monkeypatch):
-    """Not tidiness: diffusers getattr()s every registry entry on each from_single_file call, so one
-    missing class breaks all single-file loads."""
+    """A missing class breaks all loads: diffusers getattr()s every registry entry per call."""
     diffusers, sfm = _sfm()
     monkeypatch.setattr(sfm, "SINGLE_FILE_LOADABLE_CLASSES", dict(sfm.SINGLE_FILE_LOADABLE_CLASSES))
     assert getattr(diffusers, "NotAClassThisDiffusersShips2DModel", None) is None
@@ -146,8 +145,7 @@ def test_a_class_this_diffusers_lacks_is_not_registered(monkeypatch):
 
 
 def test_the_transformer_only_single_file_branch_registers_before_loading():
-    """The call site, not just the helper: registration has to precede both the prefix shim (which
-    wraps whatever entry it finds) and the from_single_file it exists for."""
+    """Call site: register before the prefix shim (it wraps any entry) and from_single_file."""
     import inspect
 
     source = inspect.getsource(studio)

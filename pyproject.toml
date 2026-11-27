@@ -88,6 +88,8 @@ studio = [
     # Served locally instead of from a CDN; without them /docs and /redoc render blank.
     "backend/assets/docs_ui/*",
     "backend/assets/pdf/*",
+    "backend/assets/tokenizers/cl100k_base.tiktoken.gz",
+    "backend/assets/tokenizers/tiktoken.LICENSE",
     # Gate verdicts the auto ladder reads: if missing from the wheel, nvfp4 silently drops out.
     "backend/core/inference/nvfp4_gate_record.json",
     # ROCm GEMM tables: if missing from the wheel, gfx1151 silently falls back to the slower pick.
@@ -191,6 +193,8 @@ studio = [
 
 # Optional AWS S3 dataset loading; kept out of the default Studio installation.
 s3 = ["boto3>=1.34.0"]
+# Reading GGUF checkpoints with from_pretrained(..., gguf_file = ...); transformers needs 0.10.0 or newer.
+gguf = ["gguf>=0.10.0"]
 triton = [
     # Not raised past 3.0.0: torch 2.6.0 pins triton==3.2.0, so a higher floor makes it unresolvable.
     # Known triton defects are gated in unsloth_zoo/loss_utils.py and unsloth/import_fixes.py.

@@ -39,14 +39,12 @@ _preview_swap_generation = 0
 # Non-zero while a preview swap loads; catches requests captured after the bump but before release.
 _preview_swap_inflight = 0
 _last_active = time.monotonic()
-# _last_active minus scheduled runs and their swaps: one run must not make the next look attended.
-# Starts at -inf: a Studio nobody has used yet is away, not in use.
+# Skips scheduled runs and swaps, else one run looks attended; unused Studio is away (-inf).
 _last_attended = float("-inf")
 _unattended: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "keepwarm_unattended", default = False
 )
-# The (id, quant) idle-unload last freed, so an alias/unknown request that would otherwise 503 against an empty backend
-# can reload it (set on unload, cleared on reload). The quant lets the reload restore the exact freed variant.
+# Idle-unloaded (id, quant): alias requests reload it, not 503; quant restores that variant.
 _last_unloaded_model = None
 _last_unloaded_mlx = False
 _last_unloaded_intent = None
@@ -198,8 +196,7 @@ class InferenceActivityReservation:
                 self._state = "started"
 
     def finish(self, scope = None) -> None:
-        """Balance a pending or started reservation. Idempotent. A ``scope`` the producer already
-        untracked (an external-provider request) dropped the started count itself."""
+        """Balance a reservation; idempotent. Already-untracked scopes skip the started count."""
         with self._state_lock:
             if self._state == "pending":
                 _note_unpending()
@@ -295,9 +292,7 @@ def other_non_preview_pending_count() -> int:
 
 
 def note_preview_swap() -> None:
-    """Record that a preview swap loaded a new checkpoint. A non-preview request blocked on
-    the lifecycle gate through the swap sees this counter advance and is rejected rather than
-    running against the swapped-in preview checkpoint."""
+    """Bump per preview swap; blocked non-preview requests on the lifecycle gate are rejected."""
     global _preview_swap_generation
     with _lock:
         _preview_swap_generation += 1
@@ -371,9 +366,8 @@ _RESPONSE_FAILED_SCOPE_KEY = "_unsloth_keepwarm_response_failed"
 
 
 def mark_response_failed(scope) -> None:
-    """Flag a response that returned 2xx headers but then failed, so the middleware doesn't
-    treat it as a successful non-preview completion and claim the slot for Unsloth. Safe to
-    call repeatedly; a no-op on a non-dict scope."""
+    """Flag a response that sent 2xx headers then failed, so it is not claimed as a successful
+    non-preview completion; idempotent, no-op on non-dict scope."""
     if isinstance(scope, dict):
         scope[_RESPONSE_FAILED_SCOPE_KEY] = True
 
@@ -399,9 +393,7 @@ def set_current_response_scope(scope) -> None:
 
 
 def mark_current_response_failed() -> None:
-    """Flag the current response failed via the contextvar the middleware set, so an
-    OpenAI-family streaming error emitted deep in a generator (no direct scope handle)
-    still prevents the successful-response slot claim."""
+    """Flags a failed response; OpenAI-family generator stream errors still block the claim."""
     mark_response_failed(_current_response_scope.get())
 
 
@@ -410,8 +402,7 @@ _MEDIA_UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_media_untracked"
 
 
 def untrack_current_media_request(scope) -> None:
-    """Drop this request from its media tracker once the route knows it won't use the local
-    engine, so a call to a saved connection can't hold off a media swap or idle unload."""
+    """Drop this media request if not served locally so it cannot block a swap or idle unload."""
     if not isinstance(scope, dict) or scope.get(_MEDIA_UNTRACKED_SCOPE_KEY):
         return
     owner = scope.get(_MEDIA_TRACKED_SCOPE_KEY)
@@ -424,9 +415,7 @@ def untrack_current_media_request(scope) -> None:
 
 
 def untrack_current_request(scope) -> None:
-    """Drop this request from the in-flight count once the route knows it won't use the
-    local GGUF, so external-provider traffic can't trip the swap busy guard. Idempotent;
-    the middleware then skips its end-decrement."""
+    """Untrack a non-local-GGUF request so it cannot trip the swap busy guard; idempotent."""
     if not isinstance(scope, dict) or scope.get(_UNTRACKED_SCOPE_KEY):
         return
     scope[_UNTRACKED_SCOPE_KEY] = True
@@ -520,8 +509,7 @@ def cancel_preview_serializer_wait(scope) -> None:
 
 
 def inference_lifecycle_gate():
-    """The gate a model swap holds so new inference can't start mid-load. Process-
-    wide, so a swap on one loop blocks inference starting on any other loop."""
+    """Process-wide gate held by model swaps: inference on any loop cannot start mid-load."""
     return _unload_gate()
 
 
@@ -837,8 +825,7 @@ class LlamaKeepWarmMiddleware:
                 media_keepwarm.end_request(media_owner, counted = code not in (401, 403))
             if not chat_tracked:
                 return
-            # Claim BEFORE dropping the admitted count: the preview busy guard keys on it, and decrementing
-            # first lets a preview swap in before this claim clears the wrong checkpoint.
+            # Claim before admitted count drops, or a preview swap clears the wrong checkpoint.
             if (
                 not is_preview
                 and isinstance(code, int)
@@ -870,7 +857,6 @@ class LlamaKeepWarmMiddleware:
         async def send_wrapper(message):
             if message.get("type") == "http.response.start":
                 status["code"] = message.get("status")
-            # Terminal body frame marks a clean end of a (possibly streaming) response.
             is_terminal = message.get("type") == "http.response.body" and not message.get(
                 "more_body", False
             )
@@ -934,8 +920,7 @@ def stash_for_reload(identity, launch = None) -> None:
 
 
 def _note_idle_unload_event(freed, reason: str = "idle") -> None:
-    """Monitor row for an idle auto-unload (or a swap, via ``reason``). Best-effort; uses the
-    stash's advertised repo id so the row never shows the on-disk load path."""
+    """Best-effort monitor row for idle unload/swap; shows advertised repo id, not the path."""
     try:
         from core.inference.api_monitor import api_monitor
         from core.inference.model_ids import public_model_id
@@ -958,9 +943,8 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     )
 
     def _user_pinned(b) -> bool:
-        """Whether the setting spares this model. Re-read like the other
-        settings: a KV save can outlive the user turning this on. getattr keeps
-        a foreign backend (tests) on the old unload-everything path."""
+        """Whether the API-only setting spares this model; re-read like other settings, since a KV
+        save can outlive the toggle. getattr keeps foreign backends on the unload-all path."""
         return get_auto_unload_api_only() and getattr(b, "_loaded_by_user_action", False)
 
     seen_model = None

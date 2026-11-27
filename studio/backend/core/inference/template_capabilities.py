@@ -53,7 +53,6 @@ def _field(node):
 
 
 def _reads_catalog(node, aliases):
-    """Whether this expression reads the tool catalog or a message's tool calls."""
     if _names(node) & aliases:
         return True
     members = list(node.find_all((nodes.Getattr, nodes.Getitem, nodes.Call)))
@@ -82,7 +81,6 @@ def _checks_tool_role(node):
 
 
 def _is_payload(node):
-    """Whether rendering this would put something meaningful in the prompt."""
     if isinstance(node, (nodes.Not, nodes.Compare, nodes.Test)):
         return False
     if isinstance(node, nodes.Filter) and node.name in _REDUCING:
@@ -93,7 +91,6 @@ def _is_payload(node):
 
 
 def _bound_names(node):
-    """The names a `{% set %}` or `{% for %}` target binds, tuple targets included."""
     if isinstance(node, nodes.Tuple):
         return {name for item in node.items for name in _bound_names(item)}
     # `{% set ns.catalog = ... %}` is an NSRef, already naming the container.
@@ -149,8 +146,7 @@ def _join(aliases, arms, exhaustive):
 
 
 def _scan(body, aliases, guarded):
-    """Walk statements, tracking which names hold the catalog; True on first emission.
-    `guarded` means the branch runs only when tools exist, so its prose advertises them."""
+    """Track catalog names; True on first emission; guarded: branch runs only when tools exist."""
     for node in body:
         if isinstance(node, nodes.Output):
             for value in node.nodes:

@@ -141,8 +141,7 @@ def _warn_eager_under_counter(torch):
 
 
 def note_lowp_gemm(name):
-    """Count one GEMM in every open counter not already inside a counted GEMM; returns the ids to release
-    with `release_lowp_gemm` once the call returns."""
+    """Count a GEMM per open counter unless nested; ids go to release_lowp_gemm after the call."""
     inside = _inside()
     entered = [id(counts) for counts in _active() if id(counts) not in inside]
     for counts in _active():

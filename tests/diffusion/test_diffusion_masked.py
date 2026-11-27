@@ -583,13 +583,15 @@ class _WithHead(_Bidirectional):
 
 @pytest.mark.parametrize("name", ["llada", "dream", "nemotron_labs_diffusion"])
 def test_hidden_state_loss_matches_dense_logits(name):
+    from unsloth.models.diffusion_loss import fusable_head
+
     # The fused path swaps the head for its input and projects per chunk; it must equal the logits path.
     inputs, _ = _batch()
     fused, dense = _WithHead(), _Bidirectional()
     dense.load_state_dict(fused.state_dict())
     fused_loss, _ = _ours(name, fused, inputs, 3)
     dense_loss, _ = _ours(name, dense, inputs, 3)
-    assert fused.__dict__["_unsloth_diffusion_fused_head"] == (fused.head, fused.head)
+    assert fusable_head(fused, fused) is fused.head
     assert "forward" not in vars(fused.head)  # the swap is undone
     torch.testing.assert_close(fused_loss, dense_loss, rtol = 1e-6, atol = 1e-6)
     fused_loss.backward()
@@ -612,13 +614,66 @@ def test_dream_zero_noise_level_is_finite(monkeypatch):
 
 
 def test_fused_head_rechecked_after_head_is_replaced():
-    # A head wrapped after the first loss call (e.g. PEFT modules_to_save) must not reuse the cached decision.
+    # A head wrapped after the first loss call (e.g. PEFT modules_to_save) must take the dense path.
     from unsloth.models.diffusion_loss import fusable_head
 
     model = _WithHead()
     assert fusable_head(model, model) is model.head
     model.head = torch.nn.Sequential(model.head)
     assert fusable_head(model, model) is None
+
+
+def test_output_head_hook_installed_after_first_loss():
+    from accelerate.hooks import ModelHook, add_hook_to_module
+
+    class Softcap(ModelHook):
+        def post_forward(self, module, output):
+            return 0.5 * torch.tanh(output / 0.5)
+
+    inputs, _ = _batch()
+    fused, dense = _WithHead(), _Bidirectional()
+    dense.load_state_dict(fused.state_dict())
+    _ours("llada", fused, inputs, 3)
+    for model in (fused, dense):
+        add_hook_to_module(model.head, Softcap())
+    forward = fused.head.forward
+
+    loss, _ = _ours("llada", fused, inputs, 3)
+    expected, _ = _ours("llada", dense, inputs, 3)
+    torch.testing.assert_close(loss, expected)
+    loss.backward()
+    expected.backward()
+    torch.testing.assert_close(fused.head.weight.grad, dense.head.weight.grad)
+    assert fused.head.forward is forward
+
+
+@pytest.mark.parametrize("kind", ["forward_hook", "forward_pre_hook", "instance_forward"])
+def test_output_head_wrapped_after_first_loss_takes_the_dense_path(kind):
+    from unsloth.models.diffusion_loss import fusable_head
+
+    softcap = lambda out: 0.5 * torch.tanh(out / 0.5)
+    inputs, _ = _batch()
+    fused, dense = _WithHead(), _Bidirectional()
+    dense.load_state_dict(fused.state_dict())
+    _ours("llada", fused, inputs, 3)
+    for model in (fused, dense):
+        if kind == "forward_hook":
+            model.head.register_forward_hook(lambda m, a, out: softcap(out))
+        elif kind == "forward_pre_hook":
+            model.head.register_forward_pre_hook(lambda m, a: (softcap(a[0]),))
+        else:
+            model.head.forward = lambda x, f = model.head.forward: softcap(f(x))
+    forward = vars(fused.head).get("forward")
+    assert fusable_head(fused, fused) is None
+
+    loss, _ = _ours("llada", fused, inputs, 3)
+    expected, _ = _ours("llada", dense, inputs, 3)
+    torch.testing.assert_close(loss, expected)
+    loss.backward()
+    expected.backward()
+    for (n, a), b in zip(fused.named_parameters(), dense.parameters()):
+        torch.testing.assert_close(a.grad, b.grad, msg = n)
+    assert vars(fused.head).get("forward") is forward
 
 
 def _window_trainer(model, world = 1):
