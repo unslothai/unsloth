@@ -1037,6 +1037,15 @@ def install_token_budget(trainer):
             *args,
             **kwargs,
         ):
+            if getattr(trainer, "__dict__", {}).get("_unsloth_pipeline_parallel") is not None:
+                # Pipeline parallel (models/pp_env.py) runs its own micro-batches and folds the gradient
+                # accumulation window: chunks of a batch would each flush or join that window as a short batch.
+                _note_once(
+                    trainer,
+                    "Unsloth: UNSLOTH_TOKEN_BUDGET not splitting: pipeline parallel runs each batch as its own "
+                    "micro-batches (UNSLOTH_PP_MICROBATCHES).",
+                )
+                return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             accelerator = getattr(trainer, "accelerator", None)
             distributed_type = str(getattr(accelerator, "distributed_type", "NO")).upper()
             # Only None (loss would be a per-chunk mean), plain or DDP: DeepSpeed and FSDP count micro-steps themselves.

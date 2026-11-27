@@ -289,6 +289,23 @@ def test_budgeted_training_step_sums_chunks_and_syncs_once(monkeypatch):
     assert seen == [(40, None)]
 
 
+def test_budget_leaves_pipeline_parallel_steps_whole(monkeypatch, capsys):
+    """models/pp_env.py's training_step splits each batch into its own micro-batches and folds the GA window;
+    a budget chunk would reach it as a short batch (an explicit UNSLOTH_PP_MICROBATCHES then need not divide
+    it, and the first chunk of a window's last batch would flush the window)."""
+    monkeypatch.setenv("UNSLOTH_TOKEN_BUDGET", "16")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
+    trainer, seen = _fake_trainer()
+    trainer._unsloth_pipeline_parallel = object()  # pp_env.pp_trainer_setup sets the stage here
+    tb.install_token_budget(trainer)
+    batch = _padding_free_batch([5, 9, 3, 12, 7, 4])
+    loss = trainer.training_step(None, batch, 100)
+    assert seen == [(40, 100)]
+    assert abs(float(loss) - 0.40) < 1e-6
+    assert trainer.accelerator.no_sync_calls == 0 and trainer._unsloth_token_budget_splits == 0
+    assert "pipeline parallel" in capsys.readouterr().out
+
+
 def test_balanced_dataloader_end_to_end_with_accelerate_shards(monkeypatch):
     accelerate_data_loader = pytest.importorskip("accelerate.data_loader")
     monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "1")
