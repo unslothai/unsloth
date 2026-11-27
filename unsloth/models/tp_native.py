@@ -5552,6 +5552,29 @@ def _guard_preloaded_root(model):
     model.__dict__["_unsloth_tp_root_guard"] = model.register_forward_pre_hook(refuse, prepend = True)
 
 
+def _guard_preloaded_save(model):
+    """save_pretrained of the whole model before apply_expert_parallel would write only this rank's experts: refuse
+    it before anything is written. Once apply has consumed the marks it delegates (expert parallel's collective
+    save chains onto it)."""
+    if "_unsloth_tp_save_guard" in model.__dict__:
+        return
+    save = getattr(model, "save_pretrained", None)
+    if not callable(save):
+        return
+
+    @functools.wraps(save)
+    def save_pretrained(*args, **kwargs):
+        if any(getattr(p, _EXPERT_PRELOAD, None) is not None for p in model.parameters()):
+            raise RuntimeError(
+                "Unsloth: this model holds only this rank's experts (expert parallel sharded loading); call "
+                "apply_expert_parallel(model, ep_mesh) before save_pretrained, or save the adapter instead."
+            )
+        return save(*args, **kwargs)
+
+    model.__dict__["_unsloth_tp_save_guard"] = True
+    model.save_pretrained = save_pretrained
+
+
 def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
     """transformers' own load of an otherwise quantized checkpoint under expert parallel loading:
     packed_expert_loader reads each packed expert stack for this rank's experts only (ep_packed_load_cut), and a
@@ -5588,6 +5611,7 @@ def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
     if info["sharded_expert_stacks"] and info.get("model") is model:
         _guard_preloaded_modules(model)
         _guard_preloaded_root(model)
+        _guard_preloaded_save(model)
         model.__dict__["_unsloth_tp_load_stats"] = {
             "tp": info["tp"],
             "rank": info["rank"],

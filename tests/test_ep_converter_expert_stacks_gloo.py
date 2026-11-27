@@ -216,6 +216,24 @@ def _case(rank, world, tmp, packed):
         "held": _held(have),
         "whole": _held(want),
     }
+    # Saving the whole model before apply would write only this rank's experts: refused before anything is written.
+    dest = tempfile.mkdtemp()
+    with open(os.path.join(dest, "keep.txt"), "w") as f:
+        f.write("x")
+    try:
+        model.save_pretrained(dest)
+        out["unapplied_save"] = "ran"
+    except RuntimeError as exc:
+        out["unapplied_save"] = str(exc)
+    out["save_dir"] = sorted(os.listdir(dest))
+    # A one-token no-grad eval forward (zoo's fused gpt-oss decode reads the stacks directly) is refused too.
+    try:
+        with torch.no_grad():
+            model.eval()(input_ids = torch.zeros(1, 1, dtype = torch.long))
+        out["unapplied_decode"] = "ran"
+    except RuntimeError as exc:
+        out["unapplied_decode"] = str(exc)
+    model.train()
     if packed:
         out["logical"] = sorted(
             {
@@ -333,6 +351,9 @@ def _common(results, kind):
         assert r["marks"] == [(E, 2, (0, 1))], r["marks"]
         assert r["sliced"], "a rank's stacks are not the full load's rows [lo, hi)"
         assert r["held"] * 2 == r["whole"], (r["held"], r["whole"])
+        assert "apply_expert_parallel" in r["unapplied_save"], r["unapplied_save"]
+        assert r["save_dir"] == ["keep.txt"], r["save_dir"]
+        assert "apply_expert_parallel" in r["unapplied_decode"], r["unapplied_decode"]
 
 
 def test_ep_mxfp4_dequantized_stacks_cut_on_load_match_full_load():
@@ -378,3 +399,13 @@ def test_converter_cut_setter_is_installed_once_and_skips_offloading_maps():
         and not keeps("auto")
     )
     assert not keeps({"": torch.device("cpu")})
+
+
+def test_held_bytes_counts_mxfp4_scales():
+    """Zoo's Mxfp4ExpertParam keeps its scales beside the codes: the per-rank byte counters include them."""
+    zoo = pytest.importorskip("unsloth_zoo.mxfp4_dequant")
+    tpn, _ = _modules()
+    blocks = torch.zeros(E, 2 * I, H // 32, 16, dtype = torch.uint8)
+    scales = torch.zeros(E, 2 * I, H // 32, dtype = torch.uint8)
+    param = zoo.Mxfp4ExpertParam(blocks, mxfp4_scales = scales)
+    assert tpn._held_bytes(param) == blocks.numel() + scales.numel()
