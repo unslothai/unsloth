@@ -277,7 +277,9 @@ def test_search_never_descends_a_symlinked_folder(tmp_path):
 def test_search_bounds_report_truncation(tmp_path, monkeypatch):
     _tree(tmp_path, [f"d{i}/f{i}.txt" for i in range(6)])
     monkeypatch.setattr(project_files, "SEARCH_MAX_DIRS", 3)
-    assert project_files.search_files(str(tmp_path), "f")["truncated"] is True
+    found = project_files.search_files(str(tmp_path), "f", clock = lambda: 0)
+    assert found["truncated"] is True
+    assert len(found["results"]) == 2
 
     monkeypatch.setattr(project_files, "SEARCH_MAX_DIRS", 5000)
     monkeypatch.setattr(project_files, "SEARCH_MAX_FILES", 2)

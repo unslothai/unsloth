@@ -177,6 +177,7 @@ def search_files(
     entries_seen = 0
     files_seen = 0
     truncated = False
+    directory_limit_reached = False
     scored = []
     while pending and not truncated:
         if dirs_seen >= SEARCH_MAX_DIRS or clock() > deadline:
@@ -205,9 +206,11 @@ def search_files(
                         if not _within(root, real) or not os.path.isfile(real):
                             continue
                     elif entry.is_dir(follow_symlinks = False):
+                        if _skips_dir(abs_dir, name):
+                            continue
                         if dirs_seen + len(pending) >= SEARCH_MAX_DIRS:
-                            truncated = True
-                        elif not _skips_dir(abs_dir, name):
+                            directory_limit_reached = True
+                        else:
                             pending.append((rel, entry.path))
                         continue
                     elif not entry.is_file(follow_symlinks = False):
@@ -224,7 +227,7 @@ def search_files(
     best = heapq.nsmallest(limit, scored)
     return {
         "results": [{"path": rel, "name": name} for _, _, _, rel, name in best],
-        "truncated": truncated,
+        "truncated": truncated or directory_limit_reached,
     }
 
 
