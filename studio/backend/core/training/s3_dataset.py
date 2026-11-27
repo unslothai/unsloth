@@ -285,7 +285,8 @@ def _rewritten(value, resolve):
 
 
 def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
-    with open(manifest_path, encoding = "utf-8") as f:
+    # utf-8-sig: a manifest written with a BOM is still one of ours to rewrite.
+    with open(manifest_path, encoding = "utf-8-sig") as f:
         text = f.read()
     try:
         data = None if manifest_path.lower().endswith(".jsonl") else json.loads(text)
@@ -311,7 +312,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
 
 
 def _rewrite_csv_manifest(manifest_path: str, resolve) -> None:
-    with open(manifest_path, encoding = "utf-8", newline = "") as f:
+    with open(manifest_path, encoding = "utf-8-sig", newline = "") as f:
         rows = list(csv.reader(f))
     changed = False
     for row in rows:
