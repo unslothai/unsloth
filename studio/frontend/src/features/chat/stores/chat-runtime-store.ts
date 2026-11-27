@@ -3004,7 +3004,7 @@ type ChatRuntimeStore = {
   setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   setEditingMessageId: (id: string | null) => void;
-  clearCheckpoint: (options?: { persist?: boolean }) => void;
+  clearCheckpoint: (options?: { persist?: boolean; preserveChatRuns?: boolean }) => void;
   setReasoningEnabled: (
     enabled: boolean,
     options?: { persist?: boolean },
@@ -5750,7 +5750,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ...loadedContextFields(null),
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
-      contextUsageByThreadId: {},
+      ...(options?.preserveChatRuns ? {} : {
+        contextUsageByThreadId: {},
+        toolStatusByThreadId: {},
+        toolLiveOutput: {},
+        toolFullOutput: {},
+        activeDiffusionCanvasByThreadId: {},
+        liveGenerationByThreadId: {},
+      }),
       supportsReasoning: false,
       reasoningAlwaysOn: false,
       reasoningEnabled: true,
@@ -5770,11 +5777,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       webFetchToolsEnabled: pillPreference("webFetchToolsEnabled"),
       deepResearchEnabled:
         !state.incognito && pillPreference("deepResearchEnabled"),
-      toolStatusByThreadId: {},
-      toolLiveOutput: {},
-      toolFullOutput: {},
-      activeDiffusionCanvasByThreadId: {},
-      liveGenerationByThreadId: {},
       kvCacheDtype: null,
       mlxKvQuant: null,
       loadedMlxKvQuantRequested: null,
@@ -6863,6 +6865,6 @@ export function clearDeletedProviderSelection(providerId: string): void {
   }
   const runtime = useChatRuntimeStore.getState();
   if (parseExternalModelId(runtime.params.checkpoint)?.providerId === providerId) {
-    runtime.clearCheckpoint({ persist: false });
+    runtime.clearCheckpoint({ persist: false, preserveChatRuns: true });
   }
 }
