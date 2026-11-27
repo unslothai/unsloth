@@ -41,7 +41,6 @@ export function customReasoningEffortLevels(
   return config?.effort_levels ?? DEFAULT_CUSTOM_REASONING_EFFORT_LEVELS;
 }
 
-/** A default or non-effort ladder is dropped on save. */
 export function customReasoningConfigForSave(
   config: CustomReasoningConfig | null,
 ): CustomReasoningConfig | null {
@@ -116,7 +115,6 @@ export function customReasoningRequestFields(
   if (customReasoningStyleTakesEffort(config.style)) {
     if (!enabled || effort === "none") return { reasoning_effort: "none" };
     const levels = customReasoningEffortLevels(config);
-    // Off the ladder -> medium, or no level when the ladder lacks medium.
     const level = levels.includes(effort as CustomReasoningEffortLevel)
       ? (effort as CustomReasoningEffortLevel)
       : levels.includes("medium")
