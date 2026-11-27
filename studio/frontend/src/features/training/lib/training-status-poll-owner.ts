@@ -4,7 +4,6 @@
 /** Each entry says whether a mounted poller is fetching /api/train/status on its own timer right now. */
 const statusPollers = new Set<() => boolean>();
 
-/** Registers a poller; the returned function unregisters it. */
 export function registerTrainingStatusPoller(
   isPolling: () => boolean,
 ): () => void {

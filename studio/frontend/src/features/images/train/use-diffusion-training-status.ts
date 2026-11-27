@@ -32,8 +32,7 @@ export function useDiffusionTrainingStatus(active: boolean): {
   const poll = useCallback(async () => {
     try {
       const text = await getDiffusionTrainingStatusText();
-      // A finished run's status, full history included, is kept until the next start: an
-      // unchanged reply would only rebuild the chart series and re-render the panel.
+      // A finished run's status is kept until the next start; skip unchanged replies to avoid re-renders.
       if (text === lastText.current) return;
       const next = JSON.parse(text) as DiffusionTrainingStatus;
       lastText.current = text;
