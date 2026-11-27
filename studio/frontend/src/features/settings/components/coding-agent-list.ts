@@ -90,7 +90,8 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     id: "antigravity",
     name: "Google Antigravity",
     docsUrl: "https://antigravity.google/docs/getting-started?tab=cli",
-    logo: "google",
+    // Full-color mark from https://antigravity.google/press.
+    icon: "antigravity.svg",
   },
 ];
 
