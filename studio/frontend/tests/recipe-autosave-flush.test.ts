@@ -875,3 +875,19 @@ test("an in-app exit after a save whose answer was lost still lands the newer ed
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
 });
+
+test("reopening after an exit save whose answer was lost reads the recipe again", async () => {
+  const s = setup();
+  await s.edit({ columns: ["left"] });
+  s.editor.unmount();
+  await settle();
+  const reopened = s.open();
+  await s.server.cancelOldest(true);
+  await new Promise((r) => setTimeout(r, 5));
+  reopened.rerender();
+  await settle();
+  await s.edit({ columns: ["again"] });
+  await s.fireDebounce();
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["again"] });
+});
