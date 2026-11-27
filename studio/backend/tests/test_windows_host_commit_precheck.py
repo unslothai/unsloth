@@ -90,6 +90,17 @@ class TestMessage:
 
 
 class TestPreLaunch:
+    @pytest.fixture(autouse = True)
+    def _discrete_cards_only(self, monkeypatch):
+        """The mocked cards are discrete: on a host with a real integrated or unified GPU the live probes
+        would otherwise claim them (tests that model one patch these again)."""
+        monkeypatch.setattr(
+            LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set())
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
+        )
+
     def test_unmapped_spill_past_commit_headroom_is_refused(self, windows):
         # 70 GB GGUF on a 32 GB card copies about 40 GB into private host memory.
         msg = _backend()._windows_host_commit_refusal(
