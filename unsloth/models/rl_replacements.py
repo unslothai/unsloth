@@ -793,9 +793,7 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "        if all('image_grid_thw' in example for example in examples):\n"
         # Flattened patch rows: concatenate along patches (what the vision tower and image_grid_thw expect),
         # never pad per row into a (batch, patches, dim) block.
-        # TRL already converted every row and right padded them into (batch, max_patches, dim): slice those
-        # rows back out instead of converting the nested lists a second time. Any layout or dtype the
-        # padded tensor cannot reproduce exactly falls back to converting each row.
+        # Reuse TRL's right-padded rows; fall back to per-row conversion on any layout/dtype mismatch.
         "            _padded = output.get('pixel_values', None)\n"
         "            _rows = []\n"
         "            if isinstance(_padded, _unsloth_torch.Tensor) and _padded.dim() >= 2 and _padded.shape[0] == len(examples):\n"
@@ -805,7 +803,6 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "                    if (\n"
         "                        len(_pv) == 0 or _padded.dim() != _probe.dim() + 1 or _probe.dtype != _padded.dtype\n"
         "                        or len(_pv) > _padded.shape[1] or _probe.shape[1:] != _padded.shape[2:]\n"
-        # First and last rows must sit where right padding puts them.
         "                        or not _unsloth_torch.equal(_padded[_i, :1], _probe)\n"
         "                        or not _unsloth_torch.equal(_padded[_i, len(_pv) - 1:len(_pv)], _unsloth_torch.as_tensor(_pv[-1:]))\n"
         "                    ):\n"

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Unsloth's DataCollatorForPreference patch (TRL < 0.29, grid-layout vision DPO) rebuilds the flat
-pixel_values from the rows TRL already converted and right padded, instead of converting the nested
-lists a second time. The batch must stay bitwise identical to converting every row again, and any
-padded tensor that cannot reproduce a row exactly must fall back to that conversion. CPU only.
-"""
+"""Grid vision DPO collator reuses TRL's padded pixel rows: bitwise identical to per-row conversion, else falls back."""
 
 from __future__ import annotations
 
@@ -47,7 +43,6 @@ def _patched_collator_class(base_cls = None):
     cls = type("PrivateCollator", (base_cls or _dpo.DataCollatorForPreference,), {})
     g = {"DataCollatorForPreference": cls}
     exec(compile(code.replace(imp, ""), "<patched collator>", "exec"), g)
-    # Idempotent: a second application keeps the first wrapper.
     first = cls.torch_call
     exec(compile(code.replace(imp, ""), "<patched collator>", "exec"), g)
     assert cls.torch_call is first
