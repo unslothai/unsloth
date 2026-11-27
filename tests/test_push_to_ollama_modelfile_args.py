@@ -169,3 +169,24 @@ def test_push_to_ollama_rejects_an_unmapped_model_end_to_end(tmp_path, monkeypat
 
     assert not (tmp_path / "Modelfile_my-model").exists()
     assert calls == []
+
+
+def test_push_to_ollama_matches_the_model_name_in_any_case(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    push_to_ollama, calls, mappers = _load_real()
+    cased = "Unsloth/LLAMA-3-8B-INSTRUCT"
+    assert mappers.MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(cased) is None
+    assert mappers.MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(cased.lower())
+
+    push_to_ollama(
+        tokenizer = _Tokenizer(),
+        base_model_name = cased,
+        gguf_location = "./model.gguf",
+        username = "user",
+        model_name = "my-model",
+        tag = "latest",
+    )
+
+    text = (tmp_path / "Modelfile_my-model").read_text(encoding = "utf-8")
+    assert "FROM ./model.gguf" in text
+    assert [c[0] for c in calls] == ["create", "push"]

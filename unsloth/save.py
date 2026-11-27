@@ -3896,7 +3896,10 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     """
     ollama_modelfile = getattr(tokenizer, "_ollama_modelfile", None)
     if not ollama_modelfile or ollama_modelfile in OLLAMA_TEMPLATES.values():
+        # The mapper holds each name as listed and lowercased, so a differently cased id still matches.
         ollama_template_name = MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(base_model_name)
+        if ollama_template_name is None and isinstance(base_model_name, str):
+            ollama_template_name = MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(base_model_name.lower())
         ollama_modelfile = OLLAMA_TEMPLATES.get(ollama_template_name) or ollama_modelfile
     if not ollama_modelfile:
         print(
