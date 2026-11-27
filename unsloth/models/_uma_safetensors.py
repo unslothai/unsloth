@@ -59,7 +59,8 @@ def _is_cuda_target(device):
 
 def patch_unified_memory_safetensors_load():
     """Wrap ``transformers.modeling_utils.safe_open`` so CUDA-target shard loads
-    open on CPU then clone+``.to(device)``, restoring the UMA fast path.
+    open on CPU (pread when safetensors has it, else an mmap view cloned) then
+    ``.to(device)``, restoring the UMA fast path.
 
     Gated to integrated GPUs (no-op on discrete/CPU/XPU/MLX), ``framework="pt"``
     CUDA targets only, idempotent. Opt out: ``UNSLOTH_DISABLE_UMA_CLONE_LOAD=1``.
@@ -104,7 +105,14 @@ def patch_unified_memory_safetensors_load():
             "false",
             "no",
         )
-        if pread_off or pread_ok[0] is False or kwargs.get("backend") not in (None, "mmap"):
+        # ROCm APUs keep the clone (pread not measured there); a caller's keep-mmap request is honoured
+        if (
+            pread_off
+            or pread_ok[0] is False
+            or getattr(torch.version, "hip", None)
+            or kwargs.get("_unsloth_keep_mmap")
+            or kwargs.get("backend") not in (None, "mmap")
+        ):
             return real_safe_open(*args, **kwargs), kwargs.get("backend") == "pread"
         try:
             handle = real_safe_open(*args, **dict(kwargs, backend = "pread"))

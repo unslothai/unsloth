@@ -257,6 +257,19 @@ def test_cuda_target_opens_on_cpu_with_pread(uma, force_uma, monkeypatch, env, r
     assert handle._private is (expected == "pread")
 
 
+@pytest.mark.parametrize("hip, keep", [("6.4", False), (None, True)])
+def test_cuda_target_keeps_the_clone_on_rocm_or_keep_mmap(uma, force_uma, monkeypatch, hip, keep):
+    calls = []
+    force_uma(True)
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    fake_mu = _install_fake_modeling_utils(monkeypatch, _recording_open(calls))
+    uma.patch_unified_memory_safetensors_load()
+    kwargs = {"_unsloth_keep_mmap": True} if keep else {}
+    handle = fake_mu.safe_open("model.safetensors", framework = "pt", device = "cuda", **kwargs)
+    assert "backend" not in calls[0]
+    assert handle._private is False
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU for the host->device move")
 def test_cuda_target_pread_skips_the_clone(uma, force_uma, monkeypatch, tiny_safetensors):
     if "backend" not in (getattr(safetensors.safe_open, "__text_signature__", None) or ""):

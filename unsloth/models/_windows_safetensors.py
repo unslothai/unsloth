@@ -34,8 +34,8 @@ def _wanted() -> bool:
 
 
 def _may_be_unified_memory() -> bool:
-    # CUDA integrated GPUs (GB10, Thor, Orin, Xavier) are all ARM parts; read without touching CUDA.
-    return platform.machine().strip().lower() in ("aarch64", "arm64")
+    # CUDA integrated GPUs (GB10, Thor, Orin, Xavier) are all ARM parts (Linux / Windows, never macOS); no CUDA call.
+    return sys.platform != "darwin" and platform.machine().strip().lower() in ("aarch64", "arm64")
 
 
 _UMA = None
@@ -74,16 +74,19 @@ def _transformers_needs_it(version: str) -> bool:
 
 @functools.lru_cache(maxsize = None)
 def _supports_backend() -> bool:
-    # safetensors 0.8.0 added backend=; older releases raise TypeError on it
+    # safetensors 0.8.0 added backend=; older releases raise TypeError on it. Read the extension's own class:
+    # safetensors.safe_open may be wrapped by another library as (*args, **kwargs).
     try:
-        import inspect
-
-        from safetensors import safe_open
-
+        from safetensors._safetensors_rust import safe_open
         text = getattr(safe_open, "__text_signature__", None) or ""
         if text:
             return "backend" in text
-        return "backend" in inspect.signature(safe_open).parameters
+    except Exception:
+        pass
+    try:
+        import safetensors
+        from packaging.version import Version
+        return Version(safetensors.__version__) >= Version("0.8.0rc1")
     except Exception:
         return False
 
@@ -120,6 +123,7 @@ def _wrap(real_safe_open, always):
             not keep
             and str(device) == "cpu"
             and kwargs.get("backend") in (None, "mmap")
+            and _env() is not False
             and (always or _unified_memory_now())
         ):
             kwargs["backend"] = "pread"

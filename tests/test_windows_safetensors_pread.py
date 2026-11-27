@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import types
 import warnings
 from pathlib import Path
 
@@ -79,6 +80,8 @@ def _spy(monkeypatch):
         ("linux", "aarch64", None, "5.17.0", True),
         ("win32", "ARM64", None, "5.17.0", True),
         ("linux", "aarch64", "0", "5.5.0", False),
+        # Apple Silicon has no CUDA: nothing to decide per open
+        ("darwin", "arm64", None, "5.5.0", False),
     ],
 )
 @requires_backend
@@ -333,18 +336,15 @@ def test_pread_backend_kwargs(monkeypatch, platform, env, uma, supported, device
     assert ws.pread_backend_kwargs(device) == expected
 
 
+# safetensors < 0.8.0's extension class, as far as detection can see
+_OldSafeOpen = types.SimpleNamespace(__text_signature__ = "(filename, framework, device=...)")
+
+
 def test_safetensors_without_backend_keeps_mmap(monkeypatch):
     """safetensors < 0.8.0: no backend keyword, so nothing is wrapped and the helper adds nothing."""
-    import safetensors
+    import safetensors._safetensors_rust as rust
 
-    def old_safe_open(
-        filename,
-        framework,
-        device = "cpu",
-    ):
-        raise AssertionError("not called")
-
-    monkeypatch.setattr(safetensors, "safe_open", old_safe_open)
+    monkeypatch.setattr(rust, "safe_open", _OldSafeOpen)
     ws._supports_backend.cache_clear()
     try:
         assert ws._supports_backend() is False
@@ -355,6 +355,39 @@ def test_safetensors_without_backend_keeps_mmap(monkeypatch):
         assert modeling_utils.safe_open is before
     finally:
         ws._supports_backend.cache_clear()
+
+
+def test_backend_detection_sees_through_a_wrapped_safe_open(monkeypatch, tmp_path):
+    """Another library wrapping safetensors.safe_open as (*args, **kwargs) must not hide the keyword."""
+    import safetensors
+    from safetensors.torch import save_file
+
+    real = safetensors.safe_open
+    monkeypatch.setattr(safetensors, "safe_open", lambda *a, **k: real(*a, **k))
+    ws._supports_backend.cache_clear()
+    path = str(tmp_path / "x.safetensors")
+    save_file({"w": torch.arange(4, dtype = torch.float32)}, path)
+    try:
+        real(path, framework = "pt", device = "cpu", backend = "pread")
+        accepts = True
+    except TypeError:
+        accepts = False
+    try:
+        assert ws._supports_backend() is accepts
+    finally:
+        ws._supports_backend.cache_clear()
+
+
+@requires_backend
+def test_env_off_after_install_stops_pread(monkeypatch):
+    received = _recording_real(monkeypatch)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(ws.platform, "machine", lambda: "aarch64")
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", "1")
+    assert ws.patch_windows_safetensors_pread()
+    monkeypatch.setenv(ws.PREAD_ENV, "0")
+    modeling_utils.safe_open("shard.safetensors", framework = "pt", device = "cpu")
+    assert received[0].get("backend") is None
 
 
 @requires_backend
