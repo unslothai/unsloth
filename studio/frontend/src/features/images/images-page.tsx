@@ -3105,8 +3105,7 @@ export function ImagesPage({
 
   // `via`: "import" names what was not applied in its own toast; "vary" restores silently for the Vary run.
   const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore"): boolean => {
-    // Conditioning images are not persisted, so the recipe reopens its own tab and Generate waits for them. A tab
-    // the loaded model lacks would fall back to Create and pair these settings with Create's draft, so stop here.
+    // An unsupported tab would fall back to Create and pair these settings with Create's draft.
     const reopened = recipeWorkflowTab(image.workflow);
     if (!isWorkflowEnabled(reopened, supported)) {
       toast.warning(`This image was made with ${recipeWorkflowLabel(image.workflow)}, which the loaded model cannot run`, {
