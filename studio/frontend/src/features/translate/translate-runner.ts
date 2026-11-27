@@ -484,7 +484,6 @@ async function prepareTranslation(options: TranslateSetup): Promise<{
   };
 }
 
-/** Each new name translated on its own, so the passage can be told how to spell it. */
 async function spellNames(
   text: string,
   complete: Complete,

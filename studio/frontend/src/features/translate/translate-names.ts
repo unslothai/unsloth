@@ -3,7 +3,6 @@
 
 export type NameSpelling = { source: string; target: string };
 
-// Each name costs one short model call before its passage.
 const MAX_NAMES_PER_PASSAGE = 12;
 
 // German and Luxembourgish capitalise every noun, so capitals do not mark names there.
