@@ -26,21 +26,18 @@ __all__ = [
 
 
 @triton.jit
-def _row_dot(
-    acc,
+def _row_part(
     w,
     X,
     xk,
     xmask,
-    a,
     BLOCK_N: tl.constexpr,  # the caller's tile rows
     NB: tl.constexpr,  # the caller's quant blocks per tile
     BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
 ):
-    # One activation row against a dequantized tile: the batch-1 sums, so rows stay bit-identical.
+    # One activation row against a dequantized tile: the batch-1 block sums, so rows stay bit-identical.
     x = tl.load(X + xk, mask = xmask, other = 0.0).to(tl.float32)
-    part = tl.sum(tl.reshape(w * x, (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
-    return acc + tl.sum(part * a, axis = 1)
+    return tl.sum(tl.reshape(w * x, (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
 
 
 # M_GROUPS stays specialized: == 1 (every M <= 4) folds the row split (unspecialized 0.5-0.9% slower
@@ -103,6 +100,15 @@ def _gemv_nf4_kernel(
         hi = _nf4_lut(LUT, b >> 4, LUT_MODE)
         lo = _nf4_lut(LUT, b & 15, LUT_MODE)
         w = tl.reshape(tl.join(hi, lo), (BLOCK_N, BLOCK_K))
+        xk = k0 + ks
+        xmask = (xk < K) | EVEN_K
+        part = _row_part(w, X, xk, xmask, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 2:
+            part1 = _row_part(w, X + K, xk, xmask, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 3:
+            part2 = _row_part(w, X + 2 * K, xk, xmask, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 4:
+            part3 = _row_part(w, X + 3 * K, xk, xmask, BLOCK_N, NB, BLOCKSIZE)
         bmask = rmask[:, None] & (((k0 + nbs * BLOCKSIZE) < K) | EVEN_K)[None, :]
         blk = rows64[:, None] * blocks_per_row + (k0 // BLOCKSIZE + nbs)[None, :]
         if NESTED:
@@ -114,15 +120,13 @@ def _gemv_nf4_kernel(
             a = a + offset
         else:
             a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
-        xk = k0 + ks
-        xmask = (xk < K) | EVEN_K
-        acc = _row_dot(acc, w, X, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+        acc += tl.sum(part * a, axis = 1)
         if M_ROWS >= 2:
-            acc1 = _row_dot(acc1, w, X + K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+            acc1 += tl.sum(part1 * a, axis = 1)
         if M_ROWS >= 3:
-            acc2 = _row_dot(acc2, w, X + 2 * K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+            acc2 += tl.sum(part2 * a, axis = 1)
         if M_ROWS >= 4:
-            acc3 = _row_dot(acc3, w, X + 3 * K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+            acc3 += tl.sum(part3 * a, axis = 1)
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
     if M_ROWS >= 2:
         tl.store(OUT + OUT_STRIDE + rows, acc1.to(OUT.dtype.element_ty), mask = rmask)
@@ -187,6 +191,15 @@ def _gemv_nf4_words_kernel(
         m = rmask[:, None] & (kw < words_per_row)[None, :]
         w = tl.load(W + rows64[:, None] * words_per_row + kw[None, :], mask = m, other = 0)
         v = tl.load(LUT + ((w[:, :, None] >> shifts[None, None, :]) & 15))
+        xk = k0 + wk[:, None] * 8 + j[None, :]
+        xmask = xk < K
+        part = _row_part(v, X, xk, xmask, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 2:
+            part1 = _row_part(v, X + K, xk, xmask, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 3:
+            part2 = _row_part(v, X + 2 * K, xk, xmask, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 4:
+            part3 = _row_part(v, X + 3 * K, xk, xmask, BLOCK_N, NB, BLOCKSIZE)
         bmask = rmask[:, None] & ((k0 + nbs * BLOCKSIZE) < K)[None, :]
         blk = rows64[:, None] * blocks_per_row + (k0 // BLOCKSIZE + nbs)[None, :]
         if NESTED:
@@ -197,15 +210,13 @@ def _gemv_nf4_words_kernel(
             a = a + offset
         else:
             a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
-        xk = k0 + wk[:, None] * 8 + j[None, :]
-        xmask = xk < K
-        acc = _row_dot(acc, v, X, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+        acc += tl.sum(part * a, axis = 1)
         if M_ROWS >= 2:
-            acc1 = _row_dot(acc1, v, X + K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+            acc1 += tl.sum(part1 * a, axis = 1)
         if M_ROWS >= 3:
-            acc2 = _row_dot(acc2, v, X + 2 * K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+            acc2 += tl.sum(part2 * a, axis = 1)
         if M_ROWS >= 4:
-            acc3 = _row_dot(acc3, v, X + 3 * K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+            acc3 += tl.sum(part3 * a, axis = 1)
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
     if M_ROWS >= 2:
         tl.store(OUT + OUT_STRIDE + rows, acc1.to(OUT.dtype.element_ty), mask = rmask)
