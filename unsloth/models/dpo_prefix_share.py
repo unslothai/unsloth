@@ -88,10 +88,10 @@ def _min_saved() -> int:
     return _env_number("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "2048", int)
 
 
-# A shared forward runs its decoder layers outside the compiled block (eager LoRA / norm kernels plus
-# flex attention), a roughly fixed host cost per layer, so it pays only once the GEMM time it saves per
-# layer is larger. Qwen3-0.6B LoRA C = 256, 2160 tokens saved: A100 +21% step time (too little GPU work),
-# L4 -25%. _LAYER_US is that break-even: saved tokens x 2 x layer params / measured matmul FLOP/s.
+# A shared forward pays a roughly fixed host cost per layer (flex attention, and the layer runs outside
+# the compiled block), so it wins only once the GEMM time it saves per layer is larger. Qwen3-0.6B LoRA
+# C = 256, 2160 tokens saved: A100 +21% step time (+18% with UNSLOTH_BLOCK_COMPILE=0), L4 -25%.
+# _LAYER_US is that break-even: saved tokens x 2 x layer params / measured matmul FLOP/s.
 def _layer_us_threshold() -> float:
     return _env_number("UNSLOTH_DPO_PREFIX_SHARE_LAYER_US", "500")
 
