@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
+import { reserveKeepaliveBody } from "@/lib/keepalive-budget";
 import { normalizeNonEmptyName } from "@/utils";
 import { useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
@@ -57,6 +58,7 @@ export async function getRecipe(id: string): Promise<RecipeRecord | undefined> {
       `/${encodeURIComponent(id)}`,
     );
     recentRecipeCache.set(id, record);
+    uncertainRecipes.delete(id);
     return record;
   } catch (error) {
     if (error instanceof RecipeApiError && error.status === 404) {
@@ -67,44 +69,98 @@ export async function getRecipe(id: string): Promise<RecipeRecord | undefined> {
 }
 
 export function getCachedRecipe(id: string): RecipeRecord | null {
-  return recentRecipeCache.get(id) ?? null;
+  return uncertainRecipes.has(id) ? null : (recentRecipeCache.get(id) ?? null);
 }
 
 export function primeRecipeCache(record: RecipeRecord): void {
   recentRecipeCache.set(record.id, record);
 }
 
-export async function saveRecipe(
-  input: SaveRecipeInput,
-): Promise<RecipeRecord> {
-  const now = Date.now();
+const pendingSaves = new Map<string, Set<Promise<unknown>>>();
+// A save lost to the network may have landed: the cached record cannot seed an editor until reread.
+// Maps id to the newest version a lost save may have written.
+const uncertainRecipes = new Map<string, number>();
+
+/** Resolves once no save for `id` is pending; null when none is. */
+export function settleRecipeSaves(id: string): Promise<void> | null {
+  if (!pendingSaves.get(id)?.size) return null;
+  return (async () => {
+    // A save deferred behind another is sent from that one's callbacks: yield a task and recheck.
+    for (let pending = pendingSaves.get(id); pending?.size; pending = pendingSaves.get(id)) {
+      await Promise.allSettled([...pending]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  })();
+}
+
+export function saveRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
+  const save = putRecipe(input);
+  if (input.id) {
+    const id = input.id;
+    const set = pendingSaves.get(id) ?? new Set();
+    pendingSaves.set(id, set);
+    set.add(save);
+    void save.catch(() => undefined).finally(() => {
+      set.delete(save);
+      if (!set.size) pendingSaves.delete(id);
+    });
+  }
+  return save;
+}
+
+async function putRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
+  const now = input.updatedAt ?? Date.now();
   const id = input.id ?? crypto.randomUUID();
+  // `known` lets an unloading page skip this read, which the browser would cancel.
   const existing = input.id
-    ? (recentRecipeCache.get(input.id) ?? (await getRecipe(input.id)))
+    ? (recentRecipeCache.get(input.id) ?? input.known ?? (await getRecipe(input.id)))
     : undefined;
+  const body = JSON.stringify({
+    id,
+    name: normalizeNonEmptyName(input.name),
+    payload: input.payload,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
+    learningRecipeTitle:
+      input.learningRecipeTitle ?? existing?.learningRecipeTitle,
+    baseUpdatedAt: input.baseUpdatedAt ?? existing?.updatedAt,
+    alsoBaseUpdatedAt: input.alsoBaseUpdatedAt?.length ? input.alsoBaseUpdatedAt : undefined,
+  });
+  const release = input.keepalive ? reserveKeepaliveBody(body) : null;
   let record: RecipeRecord;
   try {
     record = await recipeRequest<RecipeRecord>(`/${encodeURIComponent(id)}`, {
       method: "PUT",
-      body: JSON.stringify({
-        id,
-        name: normalizeNonEmptyName(input.name),
-        payload: input.payload,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-        learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
-        learningRecipeTitle:
-          input.learningRecipeTitle ?? existing?.learningRecipeTitle,
-        baseUpdatedAt: input.baseUpdatedAt ?? existing?.updatedAt,
-      }),
+      body,
+      keepalive: input.keepalive ? release !== null : undefined,
     });
+    // A 200 whose body was cut off still committed: treat it like a lost answer.
+    if (typeof record?.updatedAt !== "number") {
+      throw new TypeError("The recipe save answer could not be read.");
+    }
   } catch (error) {
-    if (error instanceof RecipeApiError && error.status === 409) {
+    if (!(error instanceof RecipeApiError)) {
+      uncertainRecipes.set(id, Math.max(uncertainRecipes.get(id) ?? 0, now));
+    }
+    // A late 409 must not evict a save at or past this version that already landed.
+    if (
+      error instanceof RecipeApiError &&
+      error.status === 409 &&
+      (recentRecipeCache.get(id)?.updatedAt ?? -1) < now
+    ) {
       recentRecipeCache.delete(id);
     }
     throw error;
+  } finally {
+    release?.();
   }
   mutationVersion += 1;
+  if ((uncertainRecipes.get(id) ?? 0) <= record.updatedAt) uncertainRecipes.delete(id);
+  // Saves can overlap when a closing page sends its last edit; a late reply must not roll back.
+  if ((recentRecipeCache.get(id)?.updatedAt ?? -1) > record.updatedAt) {
+    return record;
+  }
   recentRecipeCache.set(id, record);
   if (recipeListReady) {
     publishRecipeList([

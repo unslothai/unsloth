@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import { reserveKeepaliveBody } from "@/lib/keepalive-budget";
 import type {
   ChatPresetSource,
   RecommendedSamplingKey,
@@ -24,7 +25,6 @@ import {
   ChatSettingsRequestError,
   asBodyTransportFailure,
   isAbortOrTimeout,
-  isUnderKeepaliveBudget,
 } from "../utils/settings-retry";
 
 export type { PersistedInferenceParams };
@@ -138,15 +138,21 @@ export async function saveChatSettingsPatch(
   options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
   const body = JSON.stringify(patch);
-  const response = await authFetch("/api/chat/settings", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body,
-    // keepalive only under the Fetch standard's 64 KiB in-flight budget; over it every engine fails.
-    keepalive: options.keepalive ? isUnderKeepaliveBudget(body) : undefined,
-  });
-  const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
-  return data.settings;
+  // keepalive only under the Fetch standard's 64 KiB in-flight budget; over it every engine fails.
+  const release = options.keepalive ? reserveKeepaliveBody(body) : null;
+  try {
+    const response = await authFetch("/api/chat/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: options.keepalive ? release !== null : undefined,
+    });
+    // The browser counts the body until the response has been read to the end.
+    const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
+    return data.settings;
+  } finally {
+    release?.();
+  }
 }
 
 export async function saveChatSettingsPatchIfCurrent(
