@@ -79,6 +79,7 @@ from .loader_utils import (
     _load_probe_memo_scope,
     _memo_config_probe,
     _resolved_revision,
+    _cached_missing_adapter_error,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -1747,6 +1748,15 @@ class FastLanguageModel(FastLlamaModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,
@@ -2778,6 +2788,15 @@ class FastModel(FastBaseModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if user_config is None and adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,
