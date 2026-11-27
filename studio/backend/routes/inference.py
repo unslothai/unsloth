@@ -56391,6 +56391,8 @@ async def _batched_openai_images(
             expected_load = expected_load,
             **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
             **({"loras": loras} if loras else {}),
+            # Headless: no client polls generate-progress, so skip the per-step previewer.
+            **_live_preview_kwarg(backend.generate, False),
         ),
     )
 
@@ -56509,6 +56511,7 @@ async def _generate_openai_images(
                         **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                         # Only when set, so engines without the parameter keep their call shape.
                         **({"loras": loras} if loras else {}),
+                        **_live_preview_kwarg(backend.generate, False),
                     )
             break
         except DiffusionModelReplacedError:
