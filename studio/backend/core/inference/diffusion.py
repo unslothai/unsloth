@@ -5120,12 +5120,21 @@ def _clip_chunk_counts(pipe: Any, prompt: str) -> Optional[tuple]:
 def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
     """What a prompt must share with batch neighbours to render as alone; None = never batch it.
 
-    MiniMax-H3 / MOSS / Qwen-Image-2.1 gain nothing batched; FLUX.1 pads T5 per call; SD / SDXL chunk per call."""
+    MiniMax-H3 / Qwen-Image-2.1 gain nothing batched; MOSS batches only where its layer-major win was measured;
+    FLUX.1 pads T5 per call; SD / SDXL chunk per call."""
     from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
     from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS
 
     name = getattr(family, "name", None)
-    if name in (MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME):
+    if name == MOSS_IMAGE_FAMILY_NAME:
+        if getattr(pipe, "transformer", None) is None:
+            return None
+        try:  # the MOSS module needs diffusers at import; a missing or broken one renders alone
+            from .diffusion_moss_image import coalesce_key
+            return coalesce_key(pipe)
+        except Exception:  # noqa: BLE001 - an unreadable load renders alone
+            return None
+    if name == MINIMAX_H3_IMAGE_FAMILY_NAME:
         return None
     if type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS:
         return None
