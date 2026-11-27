@@ -75,10 +75,18 @@ def _reference_linear_backward_input(grad_output, packed, ggml_type, shape):
     )
 
 
-@functools.lru_cache(maxsize = None)
+_OPS = []
+
+
 def gguf_ops():
-    """Namespace of (dequantize, linear, linear_backward_input, supports, name). `UNSLOTH_GGUF_KERNELS=reference`
-    forces the torch reference."""
+    """Namespace of (dequantize, linear, linear_backward_input, supports, name), resolved once. A plain global
+    read, so compiled code traces straight into the ops. `UNSLOTH_GGUF_KERNELS=reference` forces the reference."""
+    if not _OPS:
+        _OPS.append(_resolve_ops())
+    return _OPS[0]
+
+
+def _resolve_ops():
     reference = types.SimpleNamespace(
         name = "reference",
         dequantize = _ref.dequantize_gguf,
@@ -238,10 +246,16 @@ class UnslothGGUFLinear(nn.Linear):
             module.bias = (
                 bias if isinstance(bias, nn.Parameter) else nn.Parameter(bias, requires_grad = False)
             )
-        module.register_buffer("input_permutation", input_permutation, persistent = False)
+        module._set_input_permutation(input_permutation)
         if compute_dtype is not None and compute_dtype.is_floating_point:
             module.compute_dtype = compute_dtype
+        gguf_ops()  # resolved before any trace reaches forward
         return module
+
+    def _set_input_permutation(self, permutation):
+        self.register_buffer("input_permutation", permutation, persistent = False)
+        inverse = None if permutation is None else torch.argsort(permutation)
+        self.register_buffer("input_inverse", inverse, persistent = False)
 
     @property
     def shape(self):
@@ -252,13 +266,7 @@ class UnslothGGUFLinear(nn.Linear):
         return _ref.GGML_TYPE_NAMES.get(self.ggml_type, str(self.ggml_type))
 
     def _inverse_permutation(self):
-        perm = self.input_permutation
-        if perm is None:
-            return None
-        cached = self.__dict__.get("_unsloth_inverse_perm")
-        if cached is None or cached[0] is not perm:
-            cached = self.__dict__["_unsloth_inverse_perm"] = (perm, torch.argsort(perm))
-        return cached[1]
+        return self.input_inverse
 
     def dequantize_weight(self, dtype = None):
         return _effective_weight(
@@ -316,7 +324,6 @@ class UnslothGGUFLinear(nn.Linear):
         result = super()._apply(fn, *args, **kwargs)
         if dtype.is_floating_point:
             self.compute_dtype = dtype
-        self.__dict__.pop("_unsloth_inverse_perm", None)
         return result
 
     def extra_repr(self):
@@ -969,8 +976,8 @@ def _densify_in_place(module):
     weight = module.dequantize_weight()
     packed = module._parameters.pop("weight_packed")
     permutation = module._buffers.pop("input_permutation", None)
+    module._buffers.pop("input_inverse", None)
     module.__dict__.pop("_unsloth_packed_state", None)
-    module.__dict__.pop("_unsloth_inverse_perm", None)
     module.__dict__[_GGUF_PACKED_STATE] = (packed, permutation, module.compute_dtype)
     _swap_class(module, nn.Linear)
     module.weight = nn.Parameter(weight, requires_grad = False)
@@ -985,11 +992,7 @@ def _restore_packed_in_place(module):
     if packed.device != device:
         packed = nn.Parameter(packed.data.to(device), requires_grad = False)
     module.register_parameter("weight_packed", packed)
-    module.register_buffer(
-        "input_permutation",
-        None if permutation is None else permutation.to(device),
-        persistent = False,
-    )
+    module._set_input_permutation(None if permutation is None else permutation.to(device))
 
 
 def patch_peft_for_gguf_packed_linears():
