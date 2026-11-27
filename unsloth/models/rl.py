@@ -140,6 +140,31 @@ _ONLINE_DPO_VLLM_SYNC_FUNCTIONS = frozenset(
     )
 )
 
+# Trainers whose vision forward sees the same images several times: GRPO / RLOO repeat each prompt's images
+# num_generations times, DPO concatenates chosen and rejected (images twice), Online DPO samples 2 completions
+# per prompt. KTO, ORPO and CPO pass each image once per forward, so they are left alone.
+_IMAGE_DEDUP_TRAINERS = ("grpo_trainer", "rloo_trainer", "dpo_trainer", "online_dpo_trainer")
+
+
+def _image_dedup_post(trainer_file):
+    """__init__ tail that encodes each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables)."""
+    if trainer_file not in _IMAGE_DEDUP_TRAINERS:
+        return ""
+    # Preference trainers also wrap a separate ref_model: it runs the same repeated images under no_grad.
+    models = "getattr(self, 'model', None),"
+    if trainer_file != "grpo_trainer":
+        models += " getattr(self, 'ref_model', None),"
+    return (
+        "try:\n"
+        "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
+        "except ImportError:\n"
+        "    _unsloth_install_image_dedup = None\n"
+        "if _unsloth_install_image_dedup is not None:\n"
+        f"    for _unsloth_dedup_model in ({models}):\n"
+        "        _unsloth_install_image_dedup(_unsloth_dedup_model)\n"
+        "pass\n"
+    )
+
 
 def _strip_vllm_weight_loads(function, source, trainer_file):
     # GRPO's _move_model_to_vllm returns early under fast_inference (grpo_trainer__move_model_to_vllm),
@@ -1127,6 +1152,29 @@ def _restore_optimizer_from_host(record):
         state[name] = restored[id(host)]
     for param, host in grads:
         param.grad = restored[id(host)]
+
+
+def _wrap_grpo_vllm_lora_rounding(trainer_cls):
+    """train / evaluate of a GRPO trainer with use_vllm run under vllm_lora_rounding, so the trainer rounds the
+    LoRA term as the rollout does; the previous order comes back afterwards (a later SFT keeps the fused one)."""
+    from ..kernels.utils import vllm_lora_rounding
+    for name in ("train", "evaluate"):
+        original = getattr(trainer_cls, name, None)
+        if original is None or getattr(original, "_unsloth_vllm_lora_rounding", False):
+            continue
+
+        def wrapped(
+            self,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            with vllm_lora_rounding(bool(getattr(self, "use_vllm", False))):
+                return _original(self, *args, **kwargs)
+
+        functools.update_wrapper(wrapped, original)
+        wrapped._unsloth_vllm_lora_rounding = True
+        setattr(trainer_cls, name, wrapped)
 
 
 def _wrap_grpo_generate_and_score(trainer_cls):
@@ -3653,6 +3701,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    # fast_inference sizes vLLM max_num_seqs before the trainer exists: warn when one generate call exceeds it.
+    if trainer_file in ("grpo_trainer", "rloo_trainer"):
+        RLTrainer_post += (
+            "try:\n"
+            "    from unsloth.models._vllm_batch_cap import grpo_check_max_num_seqs as _unsloth_check_max_num_seqs\n"
+            "    _unsloth_check_max_num_seqs(self)\n"
+            "except ImportError:\n"
+            "    pass\n"
+        )
+
     # unsloth_distillation_coef / unsloth_sampler_kl_coef: validate once and resolve the teacher (adapter-off base by default).
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
@@ -3662,17 +3720,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "_unsloth_grpo_check_sampler_kl(self)\n"
         )
 
-    # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
-    if trainer_file == "grpo_trainer":
-        RLTrainer_post += (
-            "try:\n"
-            "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
-            "except ImportError:\n"
-            "    _unsloth_install_image_dedup = None\n"
-            "if _unsloth_install_image_dedup is not None:\n"
-            "    _unsloth_install_image_dedup(getattr(self, 'model', None))\n"
-            "pass\n"
-        )
+    # Encode each distinct image of a vision forward once where the trainer repeats them (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
+    RLTrainer_post += _image_dedup_post(trainer_file)
 
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
@@ -4511,6 +4560,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             wrap_grpo_partial_rollout(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap GRPO partial rollout for {RLTrainer_name}: {e}")
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:

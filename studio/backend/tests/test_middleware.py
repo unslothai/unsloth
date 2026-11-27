@@ -1733,6 +1733,15 @@ def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, m
     }
 
 
+def test_health_reports_modelscope_page_links_only_for_modelscope(main_module, monkeypatch):
+    monkeypatch.setattr(main_module, "_active_hub_source", lambda: "huggingface")
+    assert main_module._modelscope_page_links() == {}
+    monkeypatch.setattr(main_module, "_active_hub_source", lambda: "modelscope")
+    pages = main_module._modelscope_page_links()["modelscope_pages"]
+    assert pages["base"] == "https://www.modelscope.cn"
+    assert pages["aliases"]["dataset"]["openai/gsm8k"] == "AI-ModelScope/gsm8k"
+
+
 def test_every_api_write_route_is_body_capped(main_module):
     # FastAPI reads bodies before auth, so an uncapped /api write lets anyone send any size.
     writes = [

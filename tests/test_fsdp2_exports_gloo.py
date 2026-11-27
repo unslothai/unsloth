@@ -30,6 +30,8 @@ import sys  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402
 
+pytestmark = pytest.mark.xdist_group("test_fsdp2_exports_gloo")
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"  # tokenizer only; the weights are built here
 

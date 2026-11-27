@@ -538,6 +538,38 @@ def install_packed_expert_loading() -> bool:
     return True
 
 
+_EXPERT_PRELOAD = (
+    "_unsloth_tp_expert_preload"  # tp_native: a stack expert parallel loading cut to this rank
+)
+
+
+def _expert_preloads(model):
+    """Every stack expert parallel loading already cut to this rank's experts: (module, name, stack, mark)."""
+    out = []
+    for module in model.modules():
+        for name, param in module._parameters.items():
+            mark = getattr(param, _EXPERT_PRELOAD, None) if param is not None else None
+            if mark is not None:
+                out.append((module, name, param, mark))
+    return out
+
+
+def _restore_expert_preloads(preloaded):
+    """The quantized stack replacing a cut one keeps its mark, and its logical shape names every expert (as the
+    cut 16-bit stack did), so PEFT sizes the expert LoRA for the whole model and expert parallel finishes the
+    shard; a mark lost here leaves the block unshardable."""
+    for module, name, old, mark in preloaded:
+        new = module._parameters.get(name)
+        if new is None or new is old:
+            continue
+        setattr(new, _EXPERT_PRELOAD, mark)
+        shape = getattr(new, "_original_shape", None)
+        if shape is not None:
+            new._original_shape = torch.Size((mark[0],) + tuple(shape)[1:])
+        if hasattr(old, "_is_hf_initialized"):
+            new._is_hf_initialized = old._is_hf_initialized
+
+
 def quantize_moe_experts_if_requested(model, full_finetuning = False) -> int:
     """UNSLOTH_MOE_EXPERTS_QUANTIZE=nvfp4|mxfp4|nf4: round-to-nearest the 16-bit routed-expert stacks after load."""
     pe = _zoo()
@@ -555,7 +587,9 @@ def quantize_moe_experts_if_requested(model, full_finetuning = False) -> int:
             "Unsloth: UNSLOTH_MOE_EXPERTS_QUANTIZE is ignored for full finetuning (the experts train)."
         )
         return 0
+    preloaded = _expert_preloads(model)
     count = pe.quantize_moe_expert_stacks(model, fmt)
+    _restore_expert_preloads(preloaded)
     if count:
         print(
             f"Unsloth: quantized {count} 16-bit routed-expert stacks to {fmt.upper()} (round to nearest)."

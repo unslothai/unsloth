@@ -14,6 +14,7 @@
 import contextlib
 import functools
 import os
+import sys
 
 import torch
 
@@ -24,6 +25,7 @@ __all__ = [
     "resolve_teacher_model",
     "on_policy_distillation_advantages",
     "score_completion_logps",
+    "forwards_are_collective",
     "grpo_setup_distillation",
     "grpo_check_sampler_kl",
     "grpo_add_distillation_advantages",
@@ -135,18 +137,47 @@ class AdapterOffTeacher(torch.nn.Module):
         return f"AdapterOffTeacher({type(self._unsloth_adapter_off_student_model).__name__}, adapter disabled)"
 
 
+def _native_parallel_modes(model):
+    """Unsloth's environment-driven native sharding of ``model`` (never reflected in ``args.fsdp``)."""
+    checks = (
+        ("pipeline parallel", "pp_native", "is_pipeline_parallel"),
+        ("FSDP2", "fsdp2_native", "is_native_fsdp2"),
+        ("tensor parallel", "tp_native", "is_tensor_parallel"),
+        ("expert parallel", "ep_native", "is_expert_parallel"),
+    )
+    modes = []
+    for name, module, check in checks:
+        # A mode whose module was never imported has not sharded anything.
+        fn = getattr(sys.modules.get(f"unsloth.models.{module}", None), check, None)
+        try:
+            if callable(fn) and fn(model):
+                modes.append(name)
+        except Exception:
+            pass
+    return modes
+
+
 def resolve_teacher_model(
     teacher_model,
     model,
     args = None,
     who = "GKDTrainer",
+    sharded_forward_ok = False,
 ):
     """``"base"`` becomes the adapter-off view of ``model`` (also inside a DistillationTrainer teacher mapping);
-    anything else is returned unchanged."""
+    anything else is returned unchanged.
+
+    ``sharded_forward_ok``: the caller only runs whole forwards of the teacher, the same number on every rank (GRPO's
+    scoring), so Unsloth's native FSDP2 / tensor / expert parallel student can serve as the teacher. TRL's GKD and
+    DistillationTrainer also call it on their own (generation, projecting hidden states through the head), which
+    sharded weights do not support."""
     if isinstance(teacher_model, dict):
         if not any(is_adapter_off_teacher(t) for t in teacher_model.values()):
             return teacher_model
-        return {k: resolve_teacher_model(t, model, args, who) for k, t in teacher_model.items()}
+        return {
+            k: resolve_teacher_model(t, model, args, who, sharded_forward_ok)
+            for k, t in teacher_model.items()
+        }
     if not is_adapter_off_teacher(teacher_model):
         return teacher_model
     if args is not None and (getattr(args, "deepspeed", None) or getattr(args, "fsdp", None)):
@@ -157,6 +188,14 @@ def resolve_teacher_model(
     if model is None or isinstance(model, str):
         raise ValueError(
             f'Unsloth: {who}(teacher_model = "base") needs the loaded LoRA student as model.'
+        )
+    modes = _native_parallel_modes(model)
+    # A pipeline stage holds only its own layers: a plain forward of it is not the model.
+    refused = [m for m in modes if not sharded_forward_ok or m == "pipeline parallel"]
+    if refused:
+        raise ValueError(
+            f'Unsloth: {who}(teacher_model = "base") scores the student\'s own weights with the adapter off, but '
+            f"they are sharded by {' and '.join(refused)}. Use DDP or one GPU, or pass a separate teacher model."
         )
     return AdapterOffTeacher(model)
 
@@ -185,6 +224,80 @@ def _rows_per_chunk(
     return max(1, int(budget // max(1, seq_len * vocab_size)))
 
 
+def _columns_per_chunk(
+    rows,
+    vocab_size,
+    budget = 1 << 25,
+):
+    # Completion columns scored at once: the float32 [rows, columns, V] gather and log_softmax stay near
+    # budget * 4 bytes each instead of growing with the completion length.
+    return max(1, int(budget // max(1, rows * vocab_size)))
+
+
+def _distributed_world():
+    try:
+        import torch.distributed as dist
+    except Exception:
+        return None
+    if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() == 1:
+        return None
+    return dist
+
+
+def _max_over_ranks(value, device):
+    """The largest ``value`` over all ranks (one tiny all_reduce), or ``value`` when not distributed."""
+    dist = _distributed_world()
+    if dist is None:
+        return value
+    backend = str(dist.get_backend()).lower()
+    if backend == "gloo":
+        device = torch.device("cpu")
+    elif device.type == "cpu" and torch.cuda.is_available():
+        device = torch.device("cuda", torch.cuda.current_device())
+    t = torch.tensor([int(value)], dtype = torch.int64, device = device)
+    dist.all_reduce(t, op = dist.ReduceOp.MAX)
+    return int(t.item())
+
+
+def forwards_are_collective(*models):
+    """True when a forward of any of ``models`` runs collectives (FSDP / ZeRO-3 gathers, tensor / expert parallel
+    all-reduces and all-to-alls), so every rank must run the same number of forwards."""
+    if _distributed_world() is None:
+        return False
+    try:
+        from unsloth_zoo.rl_replacements import grpo_forwards_are_collective
+    except Exception:
+        # An older unsloth_zoo: keep every rank in step whenever training is distributed.
+        return True
+    for model in models:
+        model = (
+            model.__dict__.get("_unsloth_student", model)
+            if isinstance(model, torch.nn.Module)
+            else model
+        )
+        if not isinstance(model, torch.nn.Module):
+            continue
+        try:
+            if grpo_forwards_are_collective(model):
+                return True
+        except Exception:
+            return True
+    return False
+
+
+def _autocast(device, dtype):
+    if dtype is not None and device.type in ("cuda", "xpu", "cpu"):
+        return torch.autocast(device_type = device.type, dtype = dtype)
+    return contextlib.nullcontext()
+
+
+def _no_op_forward(model, device, autocast):
+    # A padding chunk on a rank with fewer rows than another: one token, so its collectives match the other ranks'.
+    ids = torch.zeros((1, 1), dtype = torch.long, device = device)
+    with autocast:
+        model(input_ids = ids, attention_mask = torch.ones_like(ids), use_cache = False)
+
+
 @torch.no_grad()
 def score_completion_logps(
     model,
@@ -195,17 +308,34 @@ def score_completion_logps(
     temperature = 1.0,
     autocast_dtype = None,
     rows_per_chunk = None,
+    sync_chunks = False,
+    columns_per_chunk = None,
 ):
     """Per-token log-probs of ``completion_ids`` under ``model`` in the completion layout ``[B, C]``.
 
     Each left-padded row is rolled to start at column 0 first: Unsloth's training forward drops the 2D attention mask
-    (#11885), and with right padding the causal mask alone already keeps pads out of every real token's context."""
+    (#11885), and with right padding the causal mask alone already keeps pads out of every real token's context.
+
+    ``sync_chunks``: every rank runs the largest chunk count of any rank, padding with one-token forwards, for models
+    whose forwards are collectives (``forwards_are_collective``). The chunk count follows the rank's own length."""
     input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
     attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1).to(torch.long)
     B, L = input_ids.shape
     P, C = prompt_ids.shape[1], completion_ids.shape[1]
     out = torch.zeros(B, C, dtype = torch.float32, device = completion_ids.device)
-    if B == 0 or C == 0:
+    empty = B == 0 or C == 0
+    if empty and not sync_chunks:
+        return out
+    # A teacher on another device than the rollout: run it where its embeddings live.
+    device = input_ids.device
+    get_embed = getattr(model, "get_input_embeddings", None)
+    try:
+        device = get_embed().weight.device if callable(get_embed) else device
+    except Exception:
+        pass
+    if empty:
+        for _ in range(_max_over_ranks(0, device)):
+            _no_op_forward(model, device, _autocast(device, autocast_dtype))
         return out
     left_pad = (attention_mask.cumsum(dim = 1) == 0).sum(dim = 1)
     roll = (torch.arange(L, device = input_ids.device).unsqueeze(0) + left_pad.unsqueeze(1)) % L
@@ -214,50 +344,78 @@ def score_completion_logps(
     # Completion token j sits at P + j - left_pad after the roll, so the logit predicting it is one column earlier.
     pos = (P - 1 - left_pad).unsqueeze(1) + torch.arange(C, device = input_ids.device).unsqueeze(0)
     pos = pos.clamp(min = 0)
-    # A teacher on another device than the rollout: run it where its embeddings live.
-    device = input_ids.device
-    get_embed = getattr(model, "get_input_embeddings", None)
-    try:
-        device = get_embed().weight.device if callable(get_embed) else device
-    except Exception:
-        pass
     ids, att, pos = ids.to(device), att.to(device), pos.to(device)
     head = None
     get_head = getattr(model, "get_output_embeddings", None)
     if callable(get_head):
         head = get_head()
     vocab = getattr(getattr(head, "weight", None), "shape", (None,))[0]
+    # Only the columns from each chunk's earliest predicting position on reach the head (logits_to_keep), so the
+    # teacher's logits memory and head FLOPs scale with the completion, not the prompt. The chunk size stays sized by
+    # the full length: the decoder still runs over every position, and more rows per chunk would raise its peak.
     if rows_per_chunk is None:
         rows_per_chunk = _rows_per_chunk(L, vocab or 1 << 17)
-    device_type = ids.device.type
-    autocast = (
-        torch.autocast(device_type = device_type, dtype = autocast_dtype)
-        if autocast_dtype is not None and device_type in ("cuda", "xpu", "cpu")
-        else contextlib.nullcontext()
-    )
+    pass_keep = True
+    autocast = _autocast(ids.device, autocast_dtype)
+    n_chunks = -(-B // rows_per_chunk)
+    total_chunks = _max_over_ranks(n_chunks, device) if sync_chunks else n_chunks
     # Real logits, with the model's own scaling and softcapping: no hidden-state shortcut while scoring.
     prior_hidden_states = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
     try:
-        for start in range(0, B, rows_per_chunk):
+        for chunk in range(total_chunks):
+            if chunk >= n_chunks:
+                _no_op_forward(model, device, autocast)
+                continue
+            start = chunk * rows_per_chunk
             rows = slice(start, start + rows_per_chunk)
+            keep = L - int(pos[rows].min())
+            kwargs = {"logits_to_keep": keep} if pass_keep and keep < L else {}
             with autocast:
-                outputs = model(input_ids = ids[rows], attention_mask = att[rows], use_cache = False)
+                try:
+                    outputs = model(
+                        input_ids = ids[rows], attention_mask = att[rows], use_cache = False, **kwargs
+                    )
+                except TypeError as error:
+                    # A forward without logits_to_keep (custom or pre-4.50 model): score the full width.
+                    if not kwargs or "logits_to_keep" not in str(error):
+                        raise
+                    pass_keep = False
+                    outputs = model(input_ids = ids[rows], attention_mask = att[rows], use_cache = False)
             logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
             if vocab is not None and logits.shape[-1] != vocab:
                 raise RuntimeError(
                     f"Unsloth: distillation scoring expected logits over {vocab} tokens, but the forward "
                     f"returned a last dimension of {logits.shape[-1]}."
                 )
-            index = pos[rows].to(logits.device).unsqueeze(-1).expand(-1, -1, logits.shape[-1])
-            picked = logits.gather(1, index).to(torch.float32)
-            del logits, outputs
-            if temperature is not None and temperature != 1.0:
-                picked = picked / temperature
-            logps = torch.log_softmax(picked, dim = -1)
-            targets = completion_ids[rows].to(logps.device).unsqueeze(-1)
-            out[rows] = logps.gather(-1, targets).squeeze(-1).to(out.device)
-            del picked, logps
+            # A forward that accepts but ignores logits_to_keep returns all L columns: index from the real width.
+            width = logits.shape[1]
+            if width != L and width != keep:
+                raise RuntimeError(
+                    f"Unsloth: distillation scoring asked for the last {keep} of {L} logit columns, but the forward "
+                    f"returned {width}."
+                )
+            del outputs
+            index = (pos[rows] - (L - width)).to(logits.device)
+            targets = completion_ids[rows].to(logits.device)
+            n_rows, V = index.shape[0], logits.shape[-1]
+            step = columns_per_chunk or _columns_per_chunk(n_rows, V)
+            # Completion columns a slice at a time: log_softmax is per position, so each slice's values are the
+            # full-width ones, while the float32 copies stay [rows, step, V] instead of [rows, C, V].
+            for c0 in range(0, C, step):
+                cols = slice(c0, c0 + step)
+                picked = logits.gather(1, index[:, cols].unsqueeze(-1).expand(-1, -1, V)).to(
+                    torch.float32
+                )
+                if temperature is not None and temperature != 1.0:
+                    picked = picked / temperature
+                logps = torch.log_softmax(picked, dim = -1)
+                del picked
+                out[rows, cols] = (
+                    logps.gather(-1, targets[:, cols].unsqueeze(-1)).squeeze(-1).to(out.device)
+                )
+                del logps
+            del logits
     finally:
         if prior_hidden_states is None:
             os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
@@ -425,8 +583,11 @@ def grpo_setup_distillation(trainer, teacher_model = None):
                 "Unsloth: unsloth_distillation_teacher takes 'base' (the adapter-off base model). Pass any other "
                 "teacher as a loaded model: GRPOTrainer(..., teacher_model = teacher)."
             )
-        # Through resolve_teacher_model, which refuses DeepSpeed / FSDP sharding as for GKD.
-        teacher = resolve_teacher_model(ADAPTER_OFF_TEACHER, trainer.model, args, "GRPOTrainer")
+        # Through resolve_teacher_model, which refuses DeepSpeed / FSDP sharding as for GKD. Native FSDP2 / tensor /
+        # expert parallel are fine here: scoring runs whole forwards, the same number on every rank.
+        teacher = resolve_teacher_model(
+            ADAPTER_OFF_TEACHER, trainer.model, args, "GRPOTrainer", sharded_forward_ok = True
+        )
     else:
         teacher = teacher_model
         if isinstance(teacher, torch.nn.Module):
@@ -454,22 +615,32 @@ def grpo_add_distillation_advantages(trainer, output):
     prompt_ids, prompt_mask = output["prompt_ids"], output["prompt_mask"]
     completion_ids, completion_mask = output["completion_ids"], output["completion_mask"]
     dtype = _autocast_dtype(trainer)
+    student = _unwrap(trainer.accelerator.unwrap_model(trainer.model))
+    # Each rank's chunk count follows its own rollout length: under collective forwards all ranks run the largest.
+    sync = forwards_are_collective(student, teacher)
     student_logps = output.get("sampling_per_token_logps", None)
     if student_logps is not None:
         _refuse_untruncated_filtered_logps(trainer)
-    if student_logps is None or student_logps.shape != completion_ids.shape:
+    rescore = student_logps is None or student_logps.shape != completion_ids.shape
+    if rescore:
         # No sampling logprobs: the policy sampled the tokens itself, at the trainer's temperature.
         _refuse_unreconstructable_sampler(trainer, rescoring = True)
-        student = _unwrap(trainer.accelerator.unwrap_model(trainer.model))
-        student_logps = score_completion_logps(
+    # Every rank joins this all_reduce, rescoring or not.
+    any_rescore = _max_over_ranks(int(rescore), completion_ids.device) if sync else rescore
+    if any_rescore:
+        # A rank that has its sampling logprobs while another rescores runs padding forwards only (zero rows).
+        rows = slice(None) if rescore else slice(0, 0)
+        scored = score_completion_logps(
             student,
-            prompt_ids,
-            prompt_mask,
-            completion_ids,
-            completion_mask,
+            prompt_ids[rows],
+            prompt_mask[rows],
+            completion_ids[rows],
+            completion_mask[rows],
             temperature = getattr(trainer.args, "temperature", 1.0),
             autocast_dtype = dtype,
+            sync_chunks = sync,
         )
+        student_logps = scored if rescore else student_logps
     # The teacher is scored untempered: the advantage is then the reverse KL of the sampler against the teacher.
     teacher_logps = score_completion_logps(
         teacher,
@@ -479,6 +650,7 @@ def grpo_add_distillation_advantages(trainer, output):
         completion_mask,
         temperature = 1.0,
         autocast_dtype = dtype,
+        sync_chunks = sync,
     )
     mask = completion_mask
     tool_mask = output.get("tool_mask", None)

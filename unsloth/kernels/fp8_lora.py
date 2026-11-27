@@ -87,6 +87,69 @@ def _scaling_for(device):
     return scaling_for_class(gpu_class)
 
 
+# What torch raises for a _scaled_mm scaling this build lacks ("Rowwise scaling is not currently supported on
+# your device" on the Windows wheels). An out of memory or a lost device is no verdict.
+_UNSUPPORTED_WORDS = (
+    "not currently supported",
+    "not supported",
+    "unsupported",
+    "is only supported",
+)
+
+
+def _is_unsupported(exc) -> bool:
+    text = str(exc).lower()
+    oom = getattr(torch, "OutOfMemoryError", None)
+    if "out of memory" in text or (isinstance(oom, type) and isinstance(exc, oom)):
+        return False
+    return isinstance(exc, (RuntimeError, NotImplementedError)) and any(
+        word in text for word in _UNSUPPORTED_WORDS
+    )
+
+
+_ROWWISE_UNSUPPORTED = set()  # devices whose torch build has no row-wise _scaled_mm
+_ROWWISE_PROBED = {}
+
+
+def _note_rowwise_unsupported(device):
+    if device not in _ROWWISE_UNSUPPORTED:
+        _ROWWISE_UNSUPPORTED.add(device)
+        print(
+            f"Unsloth: this torch build has no row-wise fp8 _scaled_mm on {device}; row-scaled fp8 "
+            "GEMMs run on the tensorwise kernel there, with the scales applied in float32."
+        )
+
+
+def rowwise_supported(device) -> bool:
+    """False when this device's tensorwise fp8 _scaled_mm runs and the row-wise one raises torch's "not
+    supported". One tiny GEMM pair per device; anything else (no fp8 GEMM, out of memory) keeps row-wise."""
+    device = torch.device(device)
+    if device in _ROWWISE_UNSUPPORTED:
+        return False
+    if torch.version.hip is not None:
+        return True
+    verdict = _ROWWISE_PROBED.get(device)
+    if verdict is not None:
+        return verdict
+    try:
+        x = torch.ones((16, 32), device = device).to(E4M3)
+        one = torch.ones((), device = device, dtype = torch.float32)
+        _scaled_mm(x, x.t(), one, one, torch.bfloat16, False)
+    except Exception:  # no tensorwise fp8 GEMM either: nothing proven, never cached
+        return True
+    try:
+        rows = torch.ones((16, 1), device = device, dtype = torch.float32)
+        _scaled_mm(x, x.t(), rows, rows.t(), torch.bfloat16, False)
+        verdict = True
+    except Exception as exc:
+        if not _is_unsupported(exc):
+            return True
+        verdict = False
+        _note_rowwise_unsupported(device)
+    _ROWWISE_PROBED[device] = verdict
+    return verdict
+
+
 def _env_dgrad():
     value = os.environ.get("UNSLOTH_FP8_LORA_DGRAD", "auto").strip().lower()
     if value in ("0", "false", "off", "no", "bf16", "16bit"):
@@ -353,25 +416,44 @@ _ROWWISE_BF16_ONLY = set()
 
 
 def _rowwise_ok(dtype, device) -> bool:
-    return dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY
+    return (
+        dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY or device in _ROWWISE_UNSUPPORTED
+    )
+
+
+def _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum):
+    """A row-scaled GEMM on the tensorwise kernel (torch builds without the row-wise one, the Windows wheels): unit
+    scales and float32 out, as fp8_lora_accum runs it, then both scales in float32, rounded once to dtype."""
+    one = torch.ones((), device = a.device, dtype = torch.float32)
+    raw = _scaled_mm(a, b, one, one, torch.float32, fast_accum)
+    return raw.mul_(scale_a).mul_(scale_b).to(dtype)
 
 
 def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
-    """None for fp16 when this device's rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf."""
+    """None for fp16 when this device's rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf. Without
+    a row-wise kernel at all, the unit-scale tensorwise GEMM keeps the row scaling."""
+    if a.device in _ROWWISE_UNSUPPORTED:
+        return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
     out_dtype = _out_dtype(dtype)
-    if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
-        try:
-            return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
-        except (RuntimeError, ValueError) as exc:
-            if str(exc) not in (
-                "Only bf16 high precision output types are supported for row-wise scaling.",
-                "Only bf16 and fp16 high precision output types are supported for row-wise scaling.",
-            ):
-                raise
-            _ROWWISE_BF16_ONLY.add(a.device)
-    if dtype == torch.float16:
-        return None
-    return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
+    try:
+        if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
+            try:
+                return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
+            except (RuntimeError, ValueError) as exc:
+                if str(exc) not in (
+                    "Only bf16 high precision output types are supported for row-wise scaling.",
+                    "Only bf16 and fp16 high precision output types are supported for row-wise scaling.",
+                ):
+                    raise
+                _ROWWISE_BF16_ONLY.add(a.device)
+        if dtype == torch.float16:
+            return None
+        return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
+    except (RuntimeError, NotImplementedError) as exc:
+        if not _is_unsupported(exc):
+            raise
+        _note_rowwise_unsupported(a.device)
+        return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
 
 
 def _weight_scale(w_inv):
