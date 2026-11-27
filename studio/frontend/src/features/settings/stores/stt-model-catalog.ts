@@ -10,10 +10,10 @@ import {
   type AudioCppSttKey,
   audioCppDisplayName,
   audioCppModelFor,
-  audioCppSizeLabel,
   audioCppWorkflowsFor,
   isAudioCppFolderId,
 } from "../../audio/audio-cpp-catalog.ts";
+import { formatBytes } from "../../hub/lib/format.ts";
 
 /** Mirrored by the backend sidecars; picker order, recommended first. */
 export const STT_MODELS = [
@@ -126,20 +126,17 @@ export const STT_MODEL_NAMES: Record<DefaultSttModel, string> = {
   ) as Record<AudioCppSttKey, string>),
 };
 // Whisper sizes are f16 GGML; mtmd sizes include the mmproj.
-export const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
-  tiny: "78 MB",
-  base: "148 MB",
-  small: "488 MB",
-  "large-v3-turbo": "1.6 GB",
-  "large-v3": "3.1 GB",
-  "qwen3-asr-0.6b": "1.0 GB",
-  "qwen3-asr-1.7b": "2.5 GB",
+const STT_MODEL_BYTES: Record<DefaultSttModel, number> = {
+  tiny: 78e6,
+  base: 148e6,
+  small: 488e6,
+  "large-v3-turbo": 1.6e9,
+  "large-v3": 3.1e9,
+  "qwen3-asr-0.6b": 1e9,
+  "qwen3-asr-1.7b": 2.5e9,
   ...(Object.fromEntries(
-    AUDIO_CPP_DICTATION_MODELS.map((model) => [
-      model.key,
-      audioCppSizeLabel(model.sizeBytes),
-    ]),
-  ) as Record<AudioCppSttKey, string>),
+    AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model.sizeBytes]),
+  ) as Record<AudioCppSttKey, number>),
 };
 
 export function sttModelName(model: SttModel): string {
@@ -202,6 +199,11 @@ export function sttListedQuantDownloaded(
   );
 }
 
+export function sttModelBytes(model: SttModel): number | undefined {
+  return STT_MODEL_BYTES[model as DefaultSttModel];
+}
+
 export function sttModelSize(model: SttModel): string {
-  return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
+  const bytes = sttModelBytes(model);
+  return bytes ? formatBytes(bytes) : "";
 }

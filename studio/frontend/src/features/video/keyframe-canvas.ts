@@ -26,8 +26,7 @@ export function nearestPresetCanvas(
   return best ? [best[0], best[1]] : null;
 }
 
-/** Preview the backend-owned canvas rule from status defaults. Returns null when the family lacks a
- *  rule or the aspect ratio is unsupported. */
+/** Null when the family has no canvas rule in its defaults, or the aspect is unsupported. */
 export function matchedCanvas(
   aspectWidth: number,
   aspectHeight: number,
@@ -118,16 +117,14 @@ export function familyFirstRenderResolution(
   return null;
 }
 
-/** Whether staging a keyframe switches the size to "Match source". A family whose keyframes keep the chosen
- *  canvas (MiniMax-H3, like the reference workflow) leaves the size alone. */
+/** True unless keyframes keep the chosen canvas (MiniMax-H3, like the reference workflow). */
 export function keyframeSelectsMatchSource(
   defaults: Pick<VideoGenerationDefaults, "keyframe_keeps_canvas"> | null | undefined,
 ): boolean {
   return defaults?.keyframe_keeps_canvas !== true;
 }
 
-/** The width and height a request sends: the chosen size, or for "Match source" nothing (the backend derives it),
- *  except where an omitted size means the family default canvas, which then needs the matched size itself. */
+/** Chosen size; none for "Match source", unless an omitted size needs the matched one. */
 export function requestCanvas(
   sourceSized: boolean,
   matched: readonly [number, number] | null,
@@ -139,8 +136,7 @@ export function requestCanvas(
   return { width: undefined, height: undefined };
 }
 
-/** Which keyframes the loaded checkpoint takes. Newer backends report each one; an older backend
- *  only has supports_keyframes, which meant MiniMax-H3's first-and/or-last pair. */
+/** Newer backends report each; older ones read supports_keyframes, meaning MiniMax-H3's pair. */
 export function keyframeSupport(
   status: Pick<VideoStatus, "supports_keyframes" | "supports_first_frame" | "supports_last_frame">
     | null

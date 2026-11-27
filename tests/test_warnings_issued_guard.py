@@ -61,8 +61,7 @@ def test_the_dict_is_writable_the_way_trl_writes_it():
 
 
 def test_each_model_gets_its_own_dict():
-    """A shared class-level dict would suppress the warning globally, which is
-    a behaviour change rather than a compatibility fix."""
+    """A shared class-level dict would silence the warning globally: a behaviour change."""
     a, b = _Bare(), _Bare()
     GUARD(a)
     GUARD(b)
@@ -71,8 +70,7 @@ def test_each_model_gets_its_own_dict():
 
 
 def test_an_existing_dict_is_left_exactly_as_it_was():
-    """On transformers 4.x and 5.0 the attribute is already a dict, so the guard must be a no-op:
-    same object, same contents, nothing rebound."""
+    """On transformers 4.x and 5.0 it is already a dict, so the guard must not rebind it."""
     m = _Bare()
     original = {"estimate_tokens": True, "other": 1}
     m.warnings_issued = original
@@ -106,8 +104,7 @@ def test_running_twice_is_idempotent():
 
 @pytest.mark.parametrize("value", [None, "Qwen/Qwen2.5-1.5B", 7, object()])
 def test_non_modules_are_left_alone_without_raising(value):
-    """trl accepts a repo id string and builds the model itself, so the guard must leave non-modules
-    alone and never be the thing that raises."""
+    """trl accepts repo id strings, so the guard must leave non-modules alone and never raise."""
     GUARD(value)
     assert not hasattr(value, "warnings_issued")
 
@@ -168,8 +165,7 @@ def _wrapped():
 
 
 def test_the_unwrapped_trainer_reproduces_the_reported_failure():
-    """Without this, the tests below could pass against a bug that no longer
-    exists and nobody would notice."""
+    """Without this, the tests below could pass against a bug that no longer exists."""
     with pytest.raises(AttributeError, match = "warnings_issued"):
         _FakeTrainer(_Bare())
 
@@ -185,8 +181,7 @@ def test_the_wrapper_fixes_it_for_a_keyword_model():
 
 
 def test_the_wrapper_fixes_it_on_the_args_rebuilding_path():
-    """`new_init` has a second branch that rebuilds the config when `args` is
-    passed. The guard must be reached from both, not just the short one."""
+    """new_init's args-rebuilding branch must reach the guard too, not only the short path."""
     t = _wrapped()(_Bare(), args = _FakeConfig())
     assert t.model.warnings_issued == {"estimate_tokens": True}
 
@@ -221,8 +216,7 @@ def test_the_guard_runs_before_the_wrapped_init():
 
 
 def test_the_guard_is_outside_the_version_branch():
-    """`new_init` only rebuilds the config when `args` is in kwargs. A guard
-    nested in that branch would miss every positional-args call."""
+    """Keep the guard outside the args-in-kwargs branch, or positional-args calls skip it."""
     ns = ast.parse(SRC)
     found = []
     for node in ast.walk(ns):
@@ -238,8 +232,7 @@ def test_the_guard_is_outside_the_version_branch():
 
 
 def test_the_generated_compiled_guard_is_still_there():
-    """This change adds a second guard on the eager path. It must not have been
-    made by moving the compiled one, which would regress the default path."""
+    """Eager path gets its own guard; moving the compiled one would regress the default path."""
     rl = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
     assert "warnings_issued_check" in rl
     assert "model.warnings_issued = {}" in rl
@@ -368,8 +361,7 @@ def _wrapped_recording(trainer_base = None, config_class = None):
 
 
 def test_config_kwargs_reach_the_config_the_caller_passed(tmp_path):
-    """Settings that used to be trainer kwargs have to end up on the config.
-    They were computed and then dropped whenever `args` was given."""
+    """Trainer kwargs were dropped whenever args was given, so they must land on the config."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
     assert not config.packing and config.max_length != 2048
@@ -389,8 +381,7 @@ def test_config_kwargs_reach_the_config_the_caller_passed(tmp_path):
 
 
 def test_the_callers_own_config_object_is_the_one_used(tmp_path):
-    """Reinitialising re-triggers trl's mutually exclusive checks, so the values
-    have to be set rather than a new config built."""
+    """Rebuilding re-runs trl's mutually exclusive checks, so set values on the given config."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
 
@@ -447,8 +438,7 @@ def test_a_field_trl_renamed_is_carried_across_to_the_new_name(tmp_path, capsys)
 
 
 def test_the_explicitly_supplied_new_name_beats_the_renamed_old_one(tmp_path, capsys):
-    """Migrating over an explicit new name would silently train with the opposite
-    setting. Covers both branches: the caller's config, and the rebuilt one."""
+    """Migrating over an explicit new name would silently train with the opposite setting."""
     Trainer, config_class = _wrapped_recording()
     fields = {f.name for f in dataclasses.fields(config_class)}
     if "use_liger_kernel" not in fields or "use_liger_loss" in fields:
@@ -548,8 +538,7 @@ def test_auto_packing_wraps_inside_the_backwards_compatible_wrapper():
 
 
 def test_auto_packing_failure_still_leaves_the_wrapper_installed():
-    """Going first, a raise here would skip the wrapping loop and drop pre-0.13
-    compatibility, so the call has to be guarded."""
+    """Guard the call: a raise would skip the wrapping loop and drop pre-0.13 compatibility."""
     for node in ast.walk(ast.parse(SRC)):
         if isinstance(node, ast.FunctionDef) and node.name == "_patch_trl_trainer":
             guarded = any(
@@ -563,8 +552,7 @@ def test_auto_packing_failure_still_leaves_the_wrapper_installed():
 
 
 def test_a_plain_training_arguments_keeps_the_moved_kwargs(tmp_path):
-    """Plain TrainingArguments plus SFT kwargs: trl rebuilds via SFTConfig(**args.to_dict()), which
-    drops attributes set on args, so packing, text field and length must survive."""
+    """Rebuilding drops attributes set on args: packing, text field and length must survive."""
     from transformers import TrainingArguments
 
     Trainer, config_class = _wrapped_recording()
@@ -590,8 +578,7 @@ def test_a_plain_training_arguments_keeps_the_moved_kwargs(tmp_path):
 
 
 def test_an_instance_of_the_displaced_trl_config_is_not_rebuilt(tmp_path):
-    """Unsloth swaps each trl config for a subclass; a config built from the pristine class before
-    that swap must keep the identity path. Rebuilding a GRPOConfig re-raises its post-init checks."""
+    """Displaced trl configs are not rebuilt; GRPOConfig rebuilds re-raise post-init checks."""
     pristine = _sft_config()
 
     class Patched(pristine):

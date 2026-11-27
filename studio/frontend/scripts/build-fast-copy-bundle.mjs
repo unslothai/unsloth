@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Bundles the shipped thread-fast-copy.ts into <out-dir>/fastcopy.js (IIFE `SBFastCopy`).
-// Lives here so bare `vite` resolves from studio/frontend/node_modules.
+// Bundles as IIFE SBFastCopy; lives here so bare `vite` resolves from frontend/node_modules.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";

@@ -33,8 +33,7 @@ WINTEMP=$(mktemp -d)
 cleanup() { rm -rf "$STUBS" "$WINTEMP"; }
 trap cleanup EXIT
 
-# Input-sensitive: only the exact string maps, so a misparsed path is visible.
-# $1 = the only string that maps, $2 = where it maps to.
+# Input-sensitive: only the exact $1 maps to $2, so a misparsed path shows up.
 make_wslpath_stub() {
     cat > "$STUBS/wslpath" <<STUB
 #!/bin/sh
@@ -79,8 +78,7 @@ case "$SCRIPT" in
     "$WINTEMP"/unsloth-shortcut-*.ps1) ok "script lives under the Windows temp" ;;
     *) bad "script is not under the Windows temp: $SCRIPT" ;;
 esac
-# Structural check, not a /tmp prefix check (which broke when TMPDIR=/tmp): the only allocation
-# must be in the resolved Windows temp.
+# Not a /tmp prefix check (broke when TMPDIR=/tmp): exactly one mktemp, in the Windows temp.
 ALLOC=$(printf '%s' "$BLOCK" | grep -c 'mktemp' || true)
 if [ "$ALLOC" -eq 1 ]; then
     ok "exactly one mktemp in the block, so there is no second path to fall back to"
@@ -274,8 +272,7 @@ OUT=$(run_block)
 assert_eq "an unmapped local %TEMP% is still accepted" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
 rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 
-# [automount] enabled=false leaves interop working but exposes no Windows drive, so the
-# shortcut needs a stdin-fed launch path.
+# [automount] enabled=false: interop works, no Windows drive; shortcut needs stdin-fed launch.
 BODY_ALL=$(cat "$INSTALL_SH")
 assert_contains "the generated script is captured once, not written straight to a file" \
     "$BODY_ALL" '_css_ps1_body=$(cat << WSLPS1_EOF'

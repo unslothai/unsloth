@@ -55,8 +55,7 @@ _AUDIO_PROJECTOR_NAMES = (
 # `visual` (Qwen-VL) also runs the video path; VideoLlava has separate `image_tower` / `video_tower`.
 _TOWER_NAMES = ("visual", "vision_tower", "vision_model", "vision_encoder", "vision", "image_tower")
 _VIDEO_TOWER_NAMES = ("video_tower",)
-# Generic encoder attribute names (Phi-4 multimodal `image_embed` / `audio_embed`, `*_encoder`,
-# `*_model`), matched on registered children after the known names above.
+# Generic encoder names (`*_encoder`, `*_model`, `image_embed`), matched after the known names.
 _SUFFIXES = r"(_(embed|embedding|embeddings|encoder|tower|model|processor))?"
 _VISION_TOWER_RE = re.compile(r"^(image|vision|visual|img)" + _SUFFIXES + "$")
 _AUDIO_TOWER_RE = re.compile(r"^(audio|speech)" + _SUFFIXES + "$")
@@ -92,8 +91,7 @@ def _takes(fn, name):
 
 
 def _forward_signature(module):
-    """The forward's signature; a `(*args, **kwargs)` wrapper (zoo temporary patches wrap Gemma4Model's)
-    is looked through to the function it wraps when that one names `pixel_values`."""
+    """Forward signature, through (*args, **kwargs) zoo wrappers if inner takes pixel_values."""
     forward = type(module).forward
     try:
         unwrapped = inspect.unwrap(forward)
@@ -180,8 +178,6 @@ def _given(
     names,
     tensors_only = False,
 ):
-    """Whether this forward call passes a non-None value (a tensor value with `tensors_only`) for any
-    of `names`."""
     check = _is_media_value if tensors_only else (lambda v: v is not None)
     if any(check(kwargs.get(name)) for name in names):
         return True
@@ -275,8 +271,7 @@ def _install_presence_agreement(
     device_of,
     mesh = None,
 ):
-    """Agrees across ranks before encoding; an input with no dummy, or whose dummy cannot be built,
-    raises on every rank so no rank waits in a collective others skip."""
+    """Ranks agree first; no-dummy inputs raise on every rank, so none waits in a collective."""
     signature = _forward_signature(host)
     plan = [(m, m.groups(signature)) for m in modalities]
     slots = [
@@ -516,8 +511,7 @@ def _float_sum(obj, acc = None):
         return acc
     fields = getattr(obj, "__dataclass_fields__", None)
     if fields or isinstance(obj, dict):
-        # Gemma4 sets pooler_output only as an instance attribute, so read __dict__ values as well
-        # as fields.
+        # Gemma4 sets pooler_output only as an instance attribute; read __dict__ values too.
         values = list(obj.values()) if isinstance(obj, dict) else []
         values += [getattr(obj, name, None) for name in fields or ()]
         values += list(getattr(obj, "__dict__", {}).values())
@@ -545,8 +539,7 @@ def _vision_modules(mm, tower):
 
 
 def _managed_by_fsdp(*modules):
-    """Whether any parameter issues a gradient collective: a DTensor (only where its gradient is not
-    None), or a replicated trainable one with the all-reduce hook."""
+    """Param issues a grad collective if DTensor with grad, or replicated trainable with hook."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
@@ -633,8 +626,7 @@ def _audio_plan(model, vision_host = None):
     return host, _Modality("audio", names, "runs an audio tower Unsloth has no dummy for")
 
 
-# Forward arguments that are text (or control) inputs, never a media encoder's: everything else a
-# multimodal model's forward takes is a candidate media input of the generic agreement.
+# Text and control forward args; all other args of a multimodal forward are media candidates.
 _TEXT_KWARGS = frozenset(
     (
         "input_ids",
@@ -726,8 +718,7 @@ def _is_multimodal(chain, candidates):
 
 
 def _outside_backbone(model, chain):
-    """Trainable or FSDP-managed (DTensor) parameters outside the language model that only a media
-    input reaches; the text backbone and input and output embeddings do not count."""
+    """Trainable/DTensor params outside LM reached only by media; not backbone or embeddings."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
@@ -766,10 +757,8 @@ def _outside_backbone(model, chain):
 
 
 def _generic_media_plan(model, named):
-    """Outermost forward agrees on each media input (one bit per sorted candidate argument name)
-    when a multimodal model has trainable or FSDP-managed parameters outside its language model;
-    inputs with no dummy raise on every rank on mismatch; returns (host, leftover modality) or
-    None."""
+    """Outermost forward agrees per media input (1 bit per sorted name) when trainable or FSDP
+    params outside LM; no-dummy mismatches raise on all ranks; returns (host, leftover) or None."""
     chain = _forward_chain(model)
     candidates = _media_candidates(chain)
     if not candidates or not _is_multimodal(chain, candidates):
@@ -816,8 +805,7 @@ def install_vision_dummy(model):
         else _generic_media_plan(model, [m for _, ms in hosts.values() for m in ms])
     )
     if generic is not None:
-        # One agreement, on the outermost forward (every rank runs it, and the media kwargs pass
-        # through it by name): the named modalities (and their dummies) plus every other media input.
+        # Every rank agrees on the outermost forward: named modalities plus other media inputs.
         named = [m for _, ms in hosts.values() for m in ms]
         hosts = {id(generic[0]): (generic[0], named + ([generic[1]] if generic[1] else []))}
     if not hosts:
@@ -883,9 +871,7 @@ def install_vision_dummy(model):
         return None
 
     def embed_hook(module, args, output):
-        # Into the language model's input, like an image rank's masked_scatter: the decoder units' inputs
-        # then require grad on every rank, so FSDP2 runs their post-backward (reduce-scatter) at the same
-        # point of the backward everywhere instead of deferring it to the final callback on this rank.
+        # Decoder inputs need grad on all ranks, so FSDP2 reduce-scatters in the same backward.
         total = state["pending"]
         if total is None or not isinstance(output, torch.Tensor):
             return None

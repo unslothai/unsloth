@@ -169,8 +169,7 @@ export function computeModelMemory(
   const kvBytesPerToken =
     nCtx > 0 && input.kvBytes && input.kvBytes > 0 ? input.kvBytes / nCtx : 0;
 
-  // Uncapped so pressure can tell "full" from "twice over". Auto-fitted rows draw pressure from
-  // the irreducible floor, since the native-context total is an upper bound never opened.
+  // Uncapped to tell full from twice over; auto-fitted rows use the irreducible floor.
   const autoFitted = Boolean(input.contextIsAutoFitted);
   const pressureGb =
     autoFitted && input.gpuFloorBytes != null

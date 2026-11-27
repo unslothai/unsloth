@@ -51,8 +51,7 @@ def parse_alternates(data: object) -> dict[str, frozenset[str]]:
 def repo_alternate_blobs(
     repo_id: str, hf_token, siblings: Optional[Iterable]
 ) -> dict[str, frozenset[str]]:
-    """The repo's declared alternates, or {} when its listing has no manifest or it cannot be read.
-    Fetched only when ``siblings`` (the listing already in hand) names the manifest."""
+    """Alternates, or {} if no manifest or unreadable; fetched only if siblings names it."""
     sibling = next(
         (s for s in siblings or () if getattr(s, "rfilename", None) == ALTERNATES_FILENAME), None
     )

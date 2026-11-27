@@ -108,7 +108,6 @@ def test_prepend_hiding_the_gpu_falls_back_to_the_bundle(monkeypatch, tmp_path, 
 
     assert sysrocm not in _ld(_llama_server_child_env(str(binary)))
     assert _probe_count(calls) == 2
-    # The device enumeration Studio plans with now sees the GPU too.
     assert LlamaCppBackend._run_list_devices(str(binary)) == ["ROCm0"]
 
 

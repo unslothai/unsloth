@@ -87,9 +87,7 @@ def test_prologue_neutralizes_profile_state():
 
 
 def test_proxy_defaults_are_carried_across_rather_than_dropped():
-    """Clearing the table wholesale would break the corporate hosts where a profile proxy
-    entry is the only route to python.org -- and those users are the ones who never run
-    -NoProfile, so they would be trading one broken install for another."""
+    """Dropping proxy defaults strands hosts whose only python.org route is the profile proxy."""
     block = _extract_prologue()
     assert (
         ":Proxy(Credential|UseDefaultCredentials)?$" in block
@@ -136,8 +134,7 @@ def test_script_scoped_uv_state_is_reset_per_invocation():
 
 
 def test_no_bare_uv_token_survives_at_a_call_site():
-    """A profile alias or function named uv outranks PATH, so every invocation goes through
-    the resolved executable."""
+    """A profile alias or function named uv outranks PATH, so use the resolved executable."""
     src = _install_ps1()
     assert "{ uv " not in src, "install scriptblocks must invoke $script:UvExe, not the bare token"
     assert "& uv " not in src, "the version probe must invoke the resolved executable"
@@ -314,9 +311,8 @@ def _probe_lines(stdout: str) -> list[str]:
 )
 @requires_pwsh
 def test_a_real_profile_reproduces_the_same_state(tmp_path):
-    """Anchor for the simulation: a profile pwsh really loads must leave the same state, or every
-    test below measures what the installer never meets; only probe lines are compared, so a
-    banner from a system-wide profile cannot flake it."""
+    """A real profile must leave the same state as the simulation or tests measure what installers
+    never meet; only probe lines are compared, so a system-wide banner cannot flake it."""
     env = _hostile_env(tmp_path)
     paths = _profile_paths(env)
     # Machine-wide profiles load only in the real leg and cannot be redirected, so skip if present.
@@ -479,8 +475,7 @@ def _uv_probe_body(*extra: str) -> str:
 @requires_pwsh
 def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
     fake = _fake_uv(tmp_path / "bin")
-    # The stub stands in for Invoke-InstallCommand (scriptblock built in one scope, invoked
-    # from another) and must be defined ahead of the call.
+    # The stub replaces Invoke-InstallCommand; scriptblocks cross scopes, so define it first.
     body = "\n".join(
         [
             "function Invoke-InstallCommandStub "
@@ -503,9 +498,7 @@ def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
 
 @requires_pwsh
 def test_uv_probe_rejects_a_too_old_uv_and_leaves_the_reset_value(tmp_path):
-    """The version gate must fail closed, or a stale uv would be pinned and used; PATH is replaced,
-    not prepended, since the gate walks every candidate and a real uv on the host would hide the
-    branch under test."""
+    """Fail closed or a stale uv gets pinned; PATH is replaced so a real uv cannot mask it."""
     fake = _fake_uv(tmp_path / "bin", version = "0.7.0")
     res = _run_with_profile(tmp_path, _uv_probe_body(), path_override = fake.parent)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
@@ -546,8 +539,7 @@ def test_a_convincing_uv_function_is_not_accepted_as_uv(tmp_path):
 
 @requires_pwsh
 def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
-    """An alias to a real uv build must still resolve to that executable path, not the alias itself;
-    refusing it would install a second uv over a working machine."""
+    """An alias to a real uv must resolve to its executable; refusing installs a second uv."""
     fake = _fake_uv(tmp_path / "aliased", version = "0.12.4")
     profile = f"Set-Alias uv {_ps_literal(fake)}\n"
     body = _uv_probe_body('    "RESOLVED:$(Resolve-UvExecutable)"')
@@ -562,9 +554,8 @@ def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
 
 
 def test_no_bare_winget_token_survives_at_a_call_site():
-    """winget installs uv, so an alias on it owns the same ground; winget detection must skip
-    aliases and functions as uv detection does; Python no longer comes from winget, as Studio is
-    always on a uv-managed Python."""
+    """winget installs uv, so an alias on it owns the same ground; detection must skip aliases and
+    functions as uv does; Python no longer comes from winget (Studio is uv-managed)."""
     src = _install_ps1()
     assert (
         "Get-Command winget -CommandType Application -All" in src
@@ -588,8 +579,7 @@ def test_module_autoloading_is_restored():
 @requires_pwsh
 @pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_the_powershell_entrypoints_parse(script):
-    """A syntax error here is a total install failure and neither file is imported; setup.ps1 is
-    checked too, since function-level extraction tests would miss a broken brace at file scope."""
+    """Both scripts are parsed whole: a broken brace at file scope is a total install failure."""
     res = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -671,9 +661,7 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
 
 @requires_pwsh
 def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
-    """End to end through real pwsh: with the handoff set the child's table has the proxy back;
-    without it, or with a corrupt value, the child is left exactly as -NoProfile made it and the
-    launch still succeeds. A prelude that could throw would take setup.ps1 down with it."""
+    """Handoff restores the proxy if set; a bad value must not throw, which kills setup.ps1."""
     probe = (
         _proxy_prelude()
         + "Write-Output ('IWR=' + $PSDefaultParameterValues['Invoke-WebRequest:Proxy']); "
@@ -724,9 +712,7 @@ def test_module_autoloading_is_restored_before_the_handoff_needs_it():
 
 @requires_pwsh
 def test_the_filter_takes_lowercase_keys_and_uri_values(tmp_path):
-    """Both are ordinary PowerShell. Parameter names bind case-insensitively, and [uri] is the
-    type the Proxy parameter actually takes, so a careful profile writes it that way. Dropping
-    either leaves a corporate host with no route out."""
+    """Lowercase keys and [uri] are plain PowerShell; dropping either strands corporate hosts."""
     block = tmp_path / "block.ps1"
     block.write_text(_extract_prologue(), encoding = "utf-8", newline = "")
     driver = tmp_path / "drive.ps1"
@@ -793,8 +779,7 @@ def test_a_standalone_update_reconstructs_the_proxy_for_itself():
 
 @requires_pwsh
 def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_path):
-    """The probe must survive a profile pwsh genuinely loads (strict mode on, module autoloading
-    off, a lowercase key, a [uri] value) and return only the proxy entries."""
+    """A hostile profile (strict mode, lowercase key, [uri]) must yield only proxy entries."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
     # From the markers: the frame must survive a profile that prints.
     start = _locate(src, "_PROXY_PROBE_BEGIN = ", "the probe framing")
@@ -878,7 +863,6 @@ def test_the_caller_edition_is_read_from_the_order_not_the_absence(monkeypatch):
     # 5.1 first: the caller is Windows PowerShell.
     monkeypatch.setenv("PSModulePath", f"{windows};{seven}")
     assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
-    # 7 first: the caller is pwsh.
     monkeypatch.setenv("PSModulePath", f"{seven};{windows}")
     assert studio_cmd._profile_probe_hosts()[0] == "pwsh.exe"
     monkeypatch.setenv("PSModulePath", windows)
@@ -890,9 +874,8 @@ def test_the_caller_edition_is_read_from_the_order_not_the_absence(monkeypatch):
 
 
 def test_the_probe_pins_its_own_output_encoding(monkeypatch):
-    """Windows PowerShell 5.1 writes REDIRECTED output in the console code page while this
-    process decodes UTF-8, so a non-ASCII proxy value came back with replacement characters,
-    still parsed as JSON, and handed setup a proxy that does not resolve."""
+    """Windows PowerShell 5.1 writes redirected output in the console code page, not UTF-8; a
+    non-ASCII proxy came back with replacement characters, so the probe pins OutputEncoding."""
     from unsloth_cli.commands import studio as studio_cmd
 
     probe = studio_cmd._PS_PROXY_PROBE
@@ -1033,8 +1016,7 @@ def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
 
 
 def test_a_wildcard_key_claims_the_whole_cmdlet_family(monkeypatch):
-    """Compare wildcard command keys by the cmdlets they match, not as literal strings, or profiles
-    merge."""
+    """Compare wildcard keys by cmdlets they match, not as literal text, or profiles merge."""
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1132,9 +1114,7 @@ def test_the_probe_host_order_follows_the_console_the_user_typed_into(monkeypatc
 
 
 def test_the_uv_alias_is_resolved_before_the_path_candidates():
-    """PowerShell resolves an alias ahead of PATH, so `uv` in a profile that aliases it means
-    that binary -- and checking PATH first made the alias branch unreachable on any machine
-    that also has some uv on PATH."""
+    """PowerShell resolves aliases before PATH, so a PATH-first check hides the alias branch."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     start = _locate(src, "function Get-UvExecutableCandidates {", "the uv resolver")
     body = src[start : start + 2500]
@@ -1201,9 +1181,7 @@ def test_the_parity_workflow_runs_when_the_studio_command_changes():
 
 
 def test_the_parity_job_installs_what_this_suite_imports():
-    """Three tests here import unsloth_cli.commands.studio, which pulls typer -> pyyaml ->
-    pydantic -> click. The job installed pip and pytest only, so on a clean setup-python it
-    died with ModuleNotFoundError before a single test ran, on both matrix legs."""
+    """Install typer, pyyaml, pydantic and click in the parity job, else ModuleNotFoundError."""
     workflow = (
         Path(__file__).resolve().parents[1]
         / ".github"
@@ -1219,8 +1197,7 @@ def test_the_parity_job_installs_what_this_suite_imports():
 
 
 def test_the_probe_output_is_decoded_lossily():
-    """Decode probe output leniently; a UTF-8 profile banner on an ANSI console raises
-    UnicodeDecodeError."""
+    """Decode probe output leniently: a UTF-8 banner on ANSI console raises UnicodeDecodeError."""
     import ast
 
     tree = ast.parse(STUDIO_COMMAND.read_text(encoding = "utf-8"))
@@ -1262,8 +1239,7 @@ def test_a_non_ascii_banner_does_not_cost_the_proxy(monkeypatch):
 
 
 def test_the_setup_child_does_not_hand_the_proxy_secret_to_its_descendants():
-    """The proxy env var is inherited by every descendant process, so it is removed as soon as it is
-    read."""
+    """Proxy env var is inherited by all descendants, so it is removed as soon as it is read."""
     from unsloth_cli.commands.studio import _PS_PROXY_DEFAULTS_PRELUDE
 
     prelude = _PS_PROXY_DEFAULTS_PRELUDE
@@ -1366,8 +1342,7 @@ def test_an_installer_launch_with_no_proxy_still_skips_the_probe(monkeypatch):
 
 
 def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
-    """Both editions installed and both profiles hung meant two full timeouts back to back, so
-    every standalone setup stalled for twice the cost the helper documents."""
+    """One timeout for all hosts; per-host timeouts would stall setup for twice the budget."""
     from unsloth_cli.commands import studio as studio_cmd
 
     budget = 0.4
@@ -1384,7 +1359,6 @@ def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
     assert studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]) is None
     elapsed = time.monotonic() - started
     assert asked, "the probe must have been attempted"
-    # One budget for the whole probe, however many hosts it tries.
     assert sum(asked) <= budget + 0.05, asked
     assert elapsed < budget * 1.8, elapsed
 
@@ -1522,8 +1496,7 @@ def test_the_pwsh_probe_keeps_the_inherited_module_path(monkeypatch):
 
 
 def test_the_probe_reads_the_module_path_windows_actually_exports(monkeypatch):
-    """dict(os.environ) on Windows is keyed PSMODULEPATH and a plain dict is case-sensitive, so
-    reading "PSModulePath" dropped the caller's entries and added a second, case-differing key."""
+    """Windows exports PSMODULEPATH; a case-sensitive read of PSModulePath drops caller paths."""
     from unsloth_cli.commands import studio as studio_cmd
 
     monkeypatch.setattr(studio_cmd.platform, "system", lambda: "Windows")

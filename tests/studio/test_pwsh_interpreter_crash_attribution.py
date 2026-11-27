@@ -12,8 +12,7 @@ import pytest
 
 from unsloth_pwsh_runner import PWSH, PwshInterpreterCrash, run_pwsh
 
-# os.abort() reproduces the CI condition: the helper keys on the signal. PR_SET_DUMPABLE=0
-# first avoids apport cores; Linux-only and non-fatal elsewhere.
+# os.abort() matches CI's signal; PR_SET_DUMPABLE=0 avoids apport cores; non-fatal off Linux.
 _ABORT = [
     sys.executable,
     "-c",
@@ -40,7 +39,6 @@ def test_a_clean_run_with_the_wrong_answer_still_fails_with_its_own_message():
     assert proc.returncode == 3
     assert proc.stdout.strip() == "WRONG"
 
-    # `check` still raises the ordinary CalledProcessError.
     with pytest.raises(subprocess.CalledProcessError):
         run_pwsh(_CLEAN_WRONG_ANSWER, check = True, capture_output = True, text = True)
 
@@ -79,7 +77,6 @@ def test_the_startup_cache_is_redirected_without_disturbing_the_callers_env():
     # PEP 538 locale coercion can add LC_CTYPE, so probe for a named leak, not an exact key set.
     assert marker not in child, "the ambient environment leaked past a hermetic env dict"
 
-    # env = None must still mean inherit.
     inherited = json.loads(run_pwsh(dump, capture_output = True, text = True).stdout)
     assert inherited["XDG_CACHE_HOME"] == child["XDG_CACHE_HOME"]
     assert inherited.get("PATH") == os.environ.get("PATH")

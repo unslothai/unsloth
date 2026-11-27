@@ -80,8 +80,7 @@ _MANAGEMENT_ROUTES = frozenset(
 )
 _SERVED_ROUTES = _PASSTHROUGH_ROUTES | _MANAGEMENT_ROUTES
 
-# The /v1 entries Studio does not implement. A test asserts each is really absent from
-# the assembled app, so implementing one fails CI instead of being shadowed by a 404.
+# Unserved /v1 entries; a test asserts absence so an added route fails CI, not a shadowing 404.
 _UNSERVED_V1_PROBE_PATHS = frozenset(
     {
         "v1/chat/completions/control",
@@ -135,8 +134,7 @@ def _loaded_public_model_id() -> Optional[str]:
 
 
 def _server_props() -> dict:
-    """llama-server's /props, with model_path mapped to the public id like every other
-    Studio response: upstream reports the absolute .gguf path and this is LAN reachable."""
+    """model_path is the public id; upstream reports the absolute .gguf path, LAN reachable."""
     llama_backend = _inference().get_llama_cpp_backend()
     public_id = _loaded_public_model_id()
     llama_loaded = bool(getattr(llama_backend, "is_loaded", False))
@@ -411,8 +409,7 @@ async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str
     resolved = await _resolve_local(model_id)
     path = resolved[0] if resolved else None
     base, suffix = split_model_ref(model_id)
-    # Only a quant the caller named: a bare id resolves to the preferred quant, not the resident one.
-    # The resolver's spelling of it, which maps a legacy label (BF16) onto the current quant.
+    # Only a named quant pins; bare ids mean the preferred quant; legacy BF16 maps to current.
     from core.inference.local_model_resolver import (
         local_gguf_pinned_variant,
         local_gguf_same_build,

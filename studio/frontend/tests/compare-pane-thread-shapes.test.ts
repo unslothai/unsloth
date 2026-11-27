@@ -271,22 +271,18 @@ test("a failed pair read reaches a rendered state, never a blank one", () => {
 });
 
 test("a pair that reads cleanly settles on its own shape", () => {
+  const threads = storedPair([
+    ["base", 20],
+    ["lora", 10],
+  ]);
   assert.deepEqual(
-    comparePairReadState(
-      {
-        threads: storedPair([
-          ["base", 20],
-          ["lora", 10],
-        ]),
-      },
-      false,
-      0,
-    ),
-    { status: "ready", variant: "lora" },
+    comparePairReadState({ threads }, false, 0),
+    { status: "ready", variant: "lora", threads },
   );
   assert.deepEqual(comparePairReadState({ threads: [] }, true, 0), {
     status: "ready",
     variant: "lora",
+    threads: [],
   });
   assert.deepEqual(comparePairReadState({ threads: [] }, null, 0), {
     status: "pending",
@@ -312,6 +308,7 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   assert.ok(
     chatPageSource.includes('return compareRead.variant === "lora" ? ('),
   );
+  assert.ok(chatPageSource.includes("initialThreads={compareRead.threads}"));
   assert.doesNotMatch(chatPageSource, CHECKPOINT_PICKS_RENDERER);
   assert.ok(chatPageSource.includes("if (settled) return;"));
   assert.doesNotMatch(chatPageSource, /settle\(\[\]\)/);

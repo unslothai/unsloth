@@ -353,8 +353,7 @@ def load_ideogram4_transformer(
     check_cancelled()
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    # build at the target dtype: from_config materializes the full ~9B module while the first DiT and the encoder are
-    # resident
+    # Build at target dtype; from_config materializes ~9B beside resident DiT and encoder.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:

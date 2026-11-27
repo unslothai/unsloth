@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Kills Unsloth children when the parent dies abnormally (Job Object, PDEATHSIG, macOS disk record
-swept at startup); best-effort, never raises; stdlib only."""
+"""Kills Unsloth children if parent dies abnormally; best-effort, never raises; stdlib only."""
 
 from __future__ import annotations
 
@@ -252,8 +251,7 @@ def bind_current_process_to_parent_lifetime() -> None:
         # Only arm PDEATHSIG: a getppid() == 1 test would kill a parent-is-pid-1 process.
         _pdeathsig_preexec(os.getppid())
         return
-    # Orphan check uses the creator's sentinel, not a pid compare: under forkserver the kernel
-    # parent is the fork server.
+    # Use the creator's sentinel, since under forkserver the kernel parent is the fork server.
     _pdeathsig_preexec(os.getppid())
     try:
         if not parent.is_alive():
@@ -358,8 +356,7 @@ def _resume_native_caches_in_child() -> None:
     _resume_native_caches()
 
 
-# At import, not lazily: run_server imports this module before anything spawns, and every fork needs it, including
-# the ones that bring their own preexec_fn or call os.fork directly.
+# Registered at import so every fork, even one with its own preexec_fn or os.fork, gets it.
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(
         before = _suspend_native_caches,
@@ -905,12 +902,10 @@ def collect_descendants_known(
         # Not a question about a process, so there is nothing indeterminate about it.
         return [], True
     if not is_signalable_pid(pid):
-        # Below the floor, pid 1 is never walked: every host process descends from init, so a tree
-        # kill would reach the whole machine (a test stand-in at pid 1 took a user's session down).
+        # Never walk pid 1: host processes descend from it, so a tree kill hits everything.
         return [], True
-    # Windows keeps a creating pid after its parent exits and the number is reused, so each
-    # candidate is ordered against its parent's current creation time (a child cannot predate it) at
-    # every depth; with no readable floor nothing is claimed and unreadable candidates are skipped.
+    # Windows reuses pids after the parent exits, so each candidate must postdate its parent at
+    # every depth; with no readable floor nothing is claimed and unreadable ones are skipped.
     if _is_windows():
         return _windows_collect_descendants_known(pid)
     # POSIX: the kernel rewrites parent links on reparent, so no floor is needed.
@@ -950,12 +945,10 @@ def _windows_collect_descendants_known(
     if root_floor is None:
         # No floor means no ancestry proof: indeterminate, not empty.
         return [], False
-    # Floor read before the snapshot: anything created after it is unprovable, so the walk
-    # reports incomplete and later rounds re-snapshot.
+    # Floor read before the snapshot: later arrivals are unprovable, so the walk is incomplete.
     snapshot_floor = _windows_filetime_now()
     table = _child_pid_map()
-    # Ceiling read after the snapshot: a process created later cannot be one the snapshot listed.
-    # Taking it first would wrongly reject genuine children born in the gap.
+    # Ceiling is read after the snapshot, or genuine children born in the gap get rejected.
     snapshot_ceiling = _windows_filetime_now()
     if not table:
         return [], False
@@ -991,8 +984,7 @@ def _windows_collect_descendants_known(
     return found, complete
 
 
-# Kills are asynchronous on both platforms, so wait briefly before calling a pid a survivor;
-# false survivors keep records and cause reap sweeps on every later launch.
+# Kills are async: wait before calling a pid a survivor, or false survivors keep records.
 _KILL_SETTLE_SECONDS = 0.5
 _KILL_SETTLE_POLL_SECONDS = 0.01
 
@@ -1198,8 +1190,7 @@ def _windows_terminate_collected(
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
         attempted.append((pid, identity))
-    # Accounting, not signalling: alive with unreadable identity still counts as running.
-    # Settle first: TerminateProcess is asynchronous.
+    # TerminateProcess is async, so settle first; alive with unreadable identity still counts.
     survivors = _survivors_after_settling(
         attempted,
         lambda pid, identity: (
@@ -1428,7 +1419,6 @@ def _pid_alive(pid: int) -> bool:
                 # ACCESS_DENIED means alive but another user's; else it is gone.
                 return _last_error(ctypes) == ERROR_ACCESS_DENIED
             try:
-                # Signalled means exited; still waiting means running.
                 return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
             finally:
                 kernel32.CloseHandle(handle)
@@ -1578,9 +1568,7 @@ def seconds_since_quit_signal() -> Optional[float]:
 
 
 def begin_process_lifecycle() -> None:
-    """Clears the shutdown latch for an embedded host that calls run_server again; quitting is
-    terminal for a CLI run, but in-process callers like studio/backend/colab.py reuse the
-    interpreter, so an uncleared latch would refuse every spawn."""
+    """Clear the shutdown latch so in-process reruns (studio/backend/colab.py) can spawn again."""
     global _quit_signal_at
     _shutdown_latch.clear()
     _quit_signal_at = None

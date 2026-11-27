@@ -228,8 +228,7 @@ def test_the_install_bearing_jobs_were_not_folded_in() -> None:
 
 
 def test_every_test_file_a_job_runs_triggers_the_workflow() -> None:
-    """A file only this workflow runs must be in its pull_request paths, or a PR editing it never
-    runs it; CPU repo-test shards skip the modules.json trust gate, so this is its only runner."""
+    """Sole-runner files need pull_request paths; CPU shards skip the modules.json trust gate."""
     from fnmatch import fnmatch
 
     doc = _doc()

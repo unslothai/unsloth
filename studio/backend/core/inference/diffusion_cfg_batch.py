@@ -20,9 +20,8 @@ COMPILED_RESIDENT_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED"
 # 0: any graph a paired call compiles turns pairing off for the load, the first render included
 CFG_PAIR_COMPILE_WARMUP_ENV = "UNSLOTH_DIFFUSION_CFG_PAIR_COMPILE_WARMUP"
 
-# FLUX.3 pairs CFG branches only when both prompts fit one 80-token window (padding would change its
-# output); diffusers 0.42.1 pipelines; a shorter negative stays plain;
-# test_diffusion_cfg_batch_policy pins each class to one table.
+# FLUX.3 pairs CFG only when both prompts fit one 80-token window (padding changes its output);
+# diffusers 0.42.1 pipelines; a shorter negative stays plain; see test_diffusion_cfg_batch_policy.
 STATELESS_CLASSES = frozenset(
     {
         "Flux2Transformer2DModel",
@@ -74,8 +73,7 @@ _PADDED_TEXT = (
 # compiled once, in the shape's warm-up render; later prompts of that shape compile nothing.
 COMPILED_RESIDENT_CLASSES = frozenset({"WanTransformer3DModel"})
 
-# Measured slower batched than two calls: (class, card-name substring, "eager" | "compiled") -> measurement. Only
-# these keep two calls under the default; =force still batches them.
+# Measured slower batched: (class, card name, eager|compiled) stay two calls unless =force.
 MEASURED_SLOWER: dict[tuple[str, str, str], str] = {}
 
 _MEASURED_FRACTION = 0.92
@@ -727,8 +725,7 @@ class CfgBatchRouter:
                 for shape in self.shapes.values():
                     if shape.judged and not shape.compiled_at_trial and shape.off is None:
                         if rejudge:
-                            # compiled after an eager render (the deferred profile): this render is the shape's
-                            # compile warm-up, so its batch-2 graph is compiled here, once
+                            # Compiled after eager: this warm-up render compiles batch-2 once.
                             shape.judged = False
                         else:
                             self._shape_off(
@@ -917,8 +914,7 @@ class CfgBatchRouter:
         torch = _torch()
         if getattr(latent.device, "type", None) != "cuda":
             return self._plain(args, kwargs)
-        # never reset the peak counters (other measurements own them); a call that stayed under an
-        # earlier peak leaves its activations unknown
+        # Never reset peak counters (shared); under an earlier peak, activations are unknown.
         base = torch.cuda.memory_allocated(latent.device)
         before = torch.cuda.max_memory_allocated(latent.device)
         out = self._plain(args, kwargs)

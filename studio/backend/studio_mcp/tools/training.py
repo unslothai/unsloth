@@ -246,8 +246,7 @@ async def start_training(
 
 
 async def _acknowledge_start(start_request_id: str) -> None:
-    # A refused start stays the training status until acknowledged, hiding the run that is (or was) going; the
-    # training page acknowledges its own refusals the same way. Best effort: the refusal is what the agent needs.
+    # A refused start hides the real run's status until acknowledged; the ack is best effort.
     try:
         await forward(
             current_caller(),

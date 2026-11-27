@@ -40,6 +40,13 @@ def _backends(F):
         device,
     ):
         out.append("scaled_mm")
+    if F._rowwise_gemm_works(
+        lambda x: torch._scaled_mm(
+            x, x.t(), scale_a = ones(()), scale_b = ones(()), out_dtype = torch.float32
+        ),
+        device,
+    ):
+        out.append("tensorwise")
     if F._fp8_rowwise_backend(device) == "fbgemm":
         out.append("fbgemm")
     return out
@@ -47,7 +54,7 @@ def _backends(F):
 
 def test_backend_is_one_that_runs_here(F):
     backend = F._fp8_rowwise_backend(torch.device(dev, 0))
-    assert backend in ("fbgemm", "scaled_mm", "dequant")
+    assert backend in ("fbgemm", "scaled_mm", "tensorwise", "dequant")
     X = torch.randn(64, 256, device = dev, dtype = torch.bfloat16)
     w, s = _rowwise_weight(512, 256)
     y = F.fp8_linear(X, w, s)
@@ -56,10 +63,11 @@ def test_backend_is_one_that_runs_here(F):
     assert ((y.float() - ref).norm() / ref.norm()) < 0.05
 
 
-@pytest.mark.parametrize("backend", ["dequant", "scaled_mm", "fbgemm"])
-def test_every_backend_matches_reference(F, backend):
+@pytest.mark.parametrize("backend", ["dequant", "scaled_mm", "tensorwise", "fbgemm"])
+def test_every_backend_matches_reference(F, backend, monkeypatch):
     if backend not in _backends(F):
         pytest.skip(f"{backend} is not usable on this GPU")
+    monkeypatch.setattr(F, "_FP8_TENSORWISE_ANY_ROWS_NUMEL", 0)  # small test weight
     torch.manual_seed(0)
     w, s = _rowwise_weight(768, 512)
     X = torch.randn(2, 48, 512, device = dev, dtype = torch.bfloat16, requires_grad = True)

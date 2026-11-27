@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# `pr: true` legs run on pull_request; all run nightly, on main and on dispatch.
-# Counts and keys are pinned by tests/studio/test_install_matrix_selection.py.
+# pr: true legs run on pull_request; all run nightly, main and dispatch; a test pins counts.
 
 macos:
   # `overlay` decides whether this ref's Python is under test; pipe legs use the released package.
@@ -39,7 +38,6 @@ linux:
     overlay: true
     nonroot: true
     pr: true
-  # Same premise with wget as the only transport.
   - label: ubuntu2404-nonroot-wget
     image: ubuntu:24.04
     runner: ubuntu-latest

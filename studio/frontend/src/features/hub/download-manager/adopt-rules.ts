@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Whether an adopted job keeps persisted byte counters. Not for a different generation:
- * the new run's zero would read as "could not measure" and pin the old bytes.
- */
+/** Whether an adopted job keeps persisted bytes; a new generation's zero would pin old bytes. */
 export function carriesOverSeed(
   adopt: boolean,
   persistedGeneration: number | undefined,

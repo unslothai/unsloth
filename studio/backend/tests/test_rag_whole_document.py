@@ -457,6 +457,25 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
     assert _injected_text(result) == "TOPK_LARGE_MODEL_FALLBACK"
 
 
+def test_build_rag_autoinject_whole_document_only_follows_the_history_budget(rag_conn, monkeypatch):
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["whole body"], tokens = [600]
+    )
+    scope = {"thread_id": "t1", "context_length": 4000}
+    long_history = [{"role": "user", "content": "x" * 10_000}, *_convo()]
+    sentinel = ("TOPK_TEXT", [{"citationId": 1, "filename": "doc.pdf", "text": "x"}])
+    searches = []
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: searches.append(kw) or sentinel)
+    excerpts = inf_tools.build_rag_autoinject(long_history, scope)
+    assert _injected_text(excerpts) == "TOPK_TEXT" and excerpts["whole_document"] is False
+
+    searches.clear()
+    assert inf_tools.build_rag_autoinject(long_history, scope, whole_document_only = True) is None
+    assert searches == []
+    whole = inf_tools.build_rag_autoinject(_convo(), scope, whole_document_only = True)
+    assert "whole body" in _injected_text(whole) and whole["whole_document"] is True
+
+
 def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
     monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
     monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)

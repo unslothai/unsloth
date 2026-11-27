@@ -42,8 +42,7 @@ export type DurableRunCandidate = {
   modelIsAudio?: boolean;
   /** A diffusion model is loaded: that path has no durable run to join. */
   loadedIsDiffusion?: boolean;
-  /** THIS turn carries an attachment (image/audio/video), scanned out of the current turn's message alone.
-   * A media turn stays on the subscriber-owned stream; a text follow-up to an earlier screenshot does not. */
+  /** Media in this turn's own message only; such turns stay on the subscriber-owned stream. */
   turnCarriesMedia?: boolean;
   /** The seeded partial is autosaved first and admission 409s a placeholder with content. */
   continuation?: unknown;

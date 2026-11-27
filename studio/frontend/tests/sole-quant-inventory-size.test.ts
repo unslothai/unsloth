@@ -6,6 +6,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 
+import { formatBytes } from "../src/features/hub/lib/format.ts";
+
 const source = ts.createSourceFile(
   "pickers.tsx",
   readFileSync(
@@ -37,7 +39,7 @@ function declaration(name: string): string {
 }
 
 const compiled = ts.transpileModule(
-  `${declaration("formatBytes")}\n${declaration("SoleQuantGgufDeviceRow")}`,
+  `${declaration("compactBytes")}\n${declaration("SoleQuantGgufDeviceRow")}`,
   {
     compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
   },
@@ -81,6 +83,7 @@ const names = [
   "ChevronRightStandardIcon",
   "ejectMenuItemsFor",
   "ModelLoadSettingsAction",
+  "formatBytes",
 ];
 const modelRow = Symbol("ModelRow");
 const values = [
@@ -107,6 +110,7 @@ const values = [
   "right",
   () => [],
   "settings",
+  formatBytes,
 ];
 const renderRow = new Function(
   ...names,

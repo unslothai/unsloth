@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Gives uv a space-free -c/--override/-r file path (uv splits -c/--override on whitespace): 8.3
-short name on Windows, else a temp copy removed at exit; falls back to the original path on
-error."""
+"""Gives uv a space-free -c/--override/-r file path (uv splits -c/--override on whitespace): the 8.3
+short name on Windows, else a temp copy removed at exit; the original path on error."""
 
 from __future__ import annotations
 

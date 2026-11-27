@@ -20,8 +20,7 @@ if _SCRIPTS not in sys.path:
 
 import enforce_kwargs_spacing as K  # noqa: E402
 
-# The full pass looks into a suite only when its parent suite holds two or more
-# statements, so each `pass` case sits under a module with a second statement.
+# The full pass only enters suites whose parent has 2+ statements, so pass cases need _TWO.
 _TWO = "import os\n"
 
 # Each changes under the full post-pass, so the prefilter must let it through.

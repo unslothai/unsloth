@@ -142,8 +142,7 @@ def test_the_prewarm_re_iterates_from_the_start_rather_than_continuing():
 
 
 def test_a_shuffled_pass_after_prewarming_still_covers_every_row():
-    """Same claim with the sampler a real run uses: nothing is missing, and
-    nothing is served twice to make up the count."""
+    """Same for a real run's sampler: no row missing, none served twice to make up the count."""
     torch.manual_seed(0)
     trainer = _FakeTrainer(_view(), shuffle = True)
     _prewarm(trainer, PREWARM)

@@ -31,8 +31,7 @@ from studio_mcp.tools import as_dict, number, opt_text, route_json, strings, try
 POLL_INTERVAL_S = 2.0
 # The longest a load_model or get_job call waits before returning (user decision); clients must allow more.
 MAX_WAIT_S = 240
-# The schema bound for wait_s. Tests shorten MAX_WAIT_S to fractions of a second, and get_job's schema can be
-# built while they do (its annotations are lazy), so the bound must not read the patchable value.
+# Bound for wait_s, not MAX_WAIT_S: tests patch that while get_job's lazy schema is built.
 WAIT_S_LIMIT = 240
 # What a caller still waiting on a job is told to wait before its next get_job without wait_s.
 POLL_AFTER_S = 10
@@ -80,8 +79,7 @@ class LoadJob(job_store.Job):
     fraction: Optional[float] = None
     # Each distinct (fraction, phase) the load went through, for every caller following it.
     marks: list[tuple[float, str]] = field(default_factory = list, repr = False)
-    # The STT download this load started, so unload_model can stop it, and whether the STT load
-    # request is out (it then runs to the end: cancelling its in-process route does not stop it).
+    # STT download (unload_model can stop it); posted: request out, cancelling won't stop it.
     download: Optional[dict] = None
     posted: bool = False
     # A media load POST, shielded: cancelling the job leaves it running, since the route registers its load from a thread.
@@ -187,7 +185,6 @@ def _early(job: LoadJob) -> LoadResult:
 
 
 def outcome(job: LoadJob) -> LoadResult:
-    """A finished load's result; a failed or cancelled one raises its error."""
     if job.status == "completed" and isinstance(job.result, LoadResult):
         return job.result
     if job.status == "cancelled":
@@ -267,9 +264,7 @@ async def start_load(
     return await wait_load(ctx, job, deadline)
 
 
-# The load_model kinds that load through the chat route.
 CHAT_ROUTE_KINDS = ("llm", "tts", "audio")
-# Route slot kinds as MCP kinds.
 ROUTE_KINDS = {"chat": "llm", "audio": "audio", "image": "image", "video": "video"}
 
 
@@ -338,8 +333,7 @@ async def finish_load(
             )
             for name in named
         ]
-    # The route lists what it unloaded to make room, never the model this load replaced in its own
-    # slot (and nothing at all before it had a list), so whatever else left is found by a diff.
+    # Route lists evictions for room, never the replaced model; the rest is found by a diff.
     if any(before.values()):
         after = await resident_slots(caller)
         slots += [
@@ -432,8 +426,7 @@ async def load_llm(
         caller = dataclasses.replace(caller, hf_token = hf_token)
 
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
-        # The GGUF listing and status reads run inside the job, so a slow one never holds the call
-        # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
+        # Reads run in the job, not past wait_s; device='cpu' refused for non-GGUF chat models.
         if precheck is not None:
             await precheck()
         gguf = await place.require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
@@ -463,8 +456,7 @@ async def load_llm(
             raise ToolError("Unsloth Studio did not confirm the load")
         loaded = opt_text(payload.get("model")) or model
         chat = before.get("llm") or []
-        # Serving only: a model merely held in memory behind the new primary no longer serves.
-        # Bounded: the model is loaded, and a stalled read must not keep the job open.
+        # Serving models only (not merely held); a stalled read must not keep the job open.
         status = await _read_json(caller, "/api/inference/status") if chat else None
         # A failed read leaves it unknown whether the previous model still serves.
         after = strings(status.get("serving")) if isinstance(status, dict) else None
@@ -806,8 +798,7 @@ async def _unload_media(caller: Caller, kind: str) -> UnloadResult:
     # this never waits on a POST and never ends a newer load (this caller's, the UI's or another account's).
     tokens = list(_MEDIA_TOKENS.get(_media_key(caller, kind), ()))
     tokens += [job.load_token for job in stopped if job.load_token and job.load_token not in tokens]
-    # What the slot held when this call came, read before any unload goes out: the unload of the
-    # resident below names that load, so one admitted later is never touched.
+    # Read before unloading; the unload names that load, so a later admission is never touched.
     status_read = asyncio.ensure_future(
         asyncio.wait_for(route_json("GET", routes["status"], caller = caller), READ_S)
     )
@@ -834,8 +825,7 @@ async def _unload_media(caller: Caller, kind: str) -> UnloadResult:
         return UnloadResult(kind = kind, model = model if unloaded else None, unloaded = unloaded)
     resident = opt_text(before.get("load_id"))
     if resident is None and "load_id" in before:
-        # Studio reports load ids but could not name this state (admissions or unloads kept landing
-        # while it read): an unconditional unload could end a load admitted since, so none is sent.
+        # Load ids changed mid-read: a blind unload could end a newer load, so none is sent.
         if not unloaded:
             raise ToolError(
                 f"Unsloth Studio could not identify the loaded {kind} model while loads were changing; "
@@ -868,8 +858,7 @@ class _MediaToken:
     answered: Optional[int] = None
 
 
-# Media load tokens this process posted per (account, slot); each drops only on a definitive
-# outcome.
+# Tokens this process posted per (account, slot); each drops only on a definitive outcome.
 _MEDIA_TOKENS: dict[tuple[str, str], dict[str, _MediaToken]] = {}
 _MEDIA_ORDER = itertools.count(1)
 # Unload POSTs this process sent per slot and not answered yet: a load posts only after them.
@@ -899,8 +888,7 @@ async def _post_media_load(caller: Caller, kind: str, token: str, body: dict) ->
 
 
 def _media_token_ready(caller: Caller, kind: str, token: Optional[str]) -> None:
-    # ``token``'s load is shown ready: one whose POST answered before ``token``'s went out was admitted
-    # before it, so it is over (Studio admits no load while another is in flight).
+    # Ready once a load answered before this POST went out; Studio admits one load at a time.
     tokens = _MEDIA_TOKENS.get(_media_key(caller, kind), {})
     newer = tokens.get(token) if token else None
     if newer is None:

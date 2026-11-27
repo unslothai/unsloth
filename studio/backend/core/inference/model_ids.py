@@ -92,7 +92,6 @@ _BNB_SUFFIXES = ("-unsloth-bnb-4bit", "-bnb-4bit")
 
 
 def mlx_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
-    """Return the replacement base repository, or None."""
     if not isinstance(model_name, str) or not model_name.startswith("unsloth/"):
         return None
     if os.path.exists(model_name):
@@ -130,6 +129,5 @@ DEEPSEEK_OCR_MAX_IMAGE_SIDE = 2048
 
 
 def is_deepseek_ocr(model) -> bool:
-    """A loaded DeepSeek-OCR model, which generates through its own infer()."""
     architectures = getattr(getattr(model, "config", None), "architectures", None) or ()
     return hasattr(model, "infer") and not _DEEPSEEK_OCR_ARCHITECTURES.isdisjoint(architectures)

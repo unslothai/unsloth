@@ -126,8 +126,7 @@ def test_windows_teardown_kills_the_tree_and_escalates(monkeypatch, no_signals) 
 
 
 def test_teardown_never_raises_over_the_failure_that_called_it(monkeypatch, posix_branch) -> None:
-    """stop_process runs from a `finally`. A child that outlives SIGKILL must not replace the
-    harness's real error with a TimeoutExpired."""
+    """stop_process runs in a finally; a child outliving SIGKILL must not mask the real error."""
     monkeypatch.setattr(robust.os, "killpg", lambda pid, sig: None, raising = False)
     robust.stop_process(_FakeProc())
 
@@ -172,8 +171,7 @@ def test_start_vite_refuses_a_tree_with_no_frontend_toolchain(
 
 @pytest.mark.parametrize("binary", ["vite", "vite.cmd", "vite.exe", "vite.bunx"])
 def test_the_toolchain_check_accepts_every_platform_binary(monkeypatch, tmp_path, binary) -> None:
-    """bun writes .bunx shims and npm writes .cmd/.exe on Windows, so a POSIX-only name test
-    would reject a perfectly good Windows or bun tree and send someone chasing a phantom."""
+    """npm (.cmd/.exe) and bun (.bunx) shims: a POSIX-only name test rejects valid trees."""
     binaries = tmp_path / "node_modules" / ".bin"
     binaries.mkdir(parents = True)
     (binaries / binary).write_text("", encoding = "utf-8")
@@ -182,8 +180,7 @@ def test_the_toolchain_check_accepts_every_platform_binary(monkeypatch, tmp_path
 
 
 def test_the_toolchain_check_names_a_missing_frontend_separately(monkeypatch, tmp_path) -> None:
-    """Run from outside the repo is a different mistake from run without an install, and the
-    two must not share one message."""
+    """Running outside the repo and running without an install must not share one message."""
     monkeypatch.setattr(robust, "FRONTEND", tmp_path / "not-a-checkout")
     with pytest.raises(RuntimeError, match = "no frontend at"):
         robust._require_frontend_toolchain()
@@ -241,8 +238,7 @@ def test_an_empty_smoke_base_url_means_unset(harness, monkeypatch) -> None:
 
 @pytest.mark.parametrize("harness", ("playwright_chat_autoscroll", "playwright_research_freeze"))
 def test_an_external_smoke_base_url_is_still_honoured(harness, monkeypatch) -> None:
-    """The documented pre-existing invocation. A harness that started its own server anyway
-    would fail on the busy-port check."""
+    """Documented SMOKE_BASE_URL run; starting a server anyway fails the busy-port check."""
     _require_playwright_page()
     import importlib
 
@@ -270,8 +266,7 @@ def _calls(tree, names):
 
 
 def test_every_driver_that_starts_vite_waits_for_it_to_serve() -> None:
-    """start_vite returns once npm is spawned, not once vite listens. A driver that navigates
-    straight away races the dev server, and loses as a connection refused on a slow runner."""
+    """start_vite returns on npm spawn, not vite listen; drivers must wait for vite to serve."""
     import ast
 
     here = Path(__file__).resolve().parent

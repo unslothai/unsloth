@@ -66,8 +66,7 @@ def _asked_for() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
 def _rendered(tsx: str) -> tuple[set[str], set[str]]:
     bar = _assistant_bar_source(tsx)
     tooltips = set(re.findall(r"tooltip=\"([^\"]+)\"", bar))
-    # An item's label is its last line of text before the closing tag. Its attributes can hold
-    # arrow functions, so the opening tag cannot be skipped with a `[^>]*` match.
+    # Label is the last text before closing tag; arrow-function attributes break a [^>] match.
     menu_items = set()
     for body in re.findall(
         r"<ActionBarMorePrimitive\.Item\b([\s\S]*?)</ActionBarMorePrimitive\.Item>", bar

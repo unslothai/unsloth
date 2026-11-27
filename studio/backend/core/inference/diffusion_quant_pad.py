@@ -111,7 +111,6 @@ class PadToMinM(nn.Module):
         prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
         keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
         if destination is None:
-            # Top-level call (``wrapper.state_dict()``): let the inner module build the mapping.
             return self.inner.state_dict(prefix = prefix, keep_vars = keep_vars)
         self.inner.state_dict(destination = destination, prefix = prefix, keep_vars = keep_vars)
         return destination

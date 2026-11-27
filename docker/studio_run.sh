@@ -14,8 +14,7 @@ STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 INITIAL="${UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE:-/run/unsloth/studio-initial-password}"
 
 admin_initialized() {
-    # The bootstrap file is written before the admin row commits, so an interrupted
-    # first launch can leave a file whose password the next launch replaces.
+    # Written before the admin row, so a killed launch leaves a file the next launch replaces.
     python3 - "${STUDIO_HOME}/auth/auth.db" <<'PY'
 import sqlite3, sys
 from urllib.parse import quote
@@ -32,8 +31,7 @@ PY
 }
 
 password_stored() {
-    # Stored = admin row with must_change_password=0; a row predating that column counts as
-    # stored (the CLI migrates it with default 0).
+    # Stored = admin row with must_change_password=0; a pre-column row counts as stored.
     python3 - "${STUDIO_HOME}/auth/auth.db" <<'PY'
 import sqlite3, sys
 from urllib.parse import quote
@@ -70,8 +68,7 @@ if [[ -s "$INITIAL" ]] && ! password_stored; then
     # byte for byte: $(<file) would drop a trailing newline the CLI is meant to see
     IFS= read -r -d '' UNSLOTH_STUDIO_PASSWORD < "$INITIAL" || true
     export UNSLOTH_STUDIO_PASSWORD
-    # The CLI stores it before binding. $$ becomes the CLI at the exec below: once it is
-    # gone without storing (bad password, crash) the file stays for the respawn.
+    # The CLI stores it before binding; $$ becomes the CLI, so the file stays if not stored.
     _wait="${UNSLOTH_STUDIO_PASSWORD_WAIT:-600}"
     [[ "$_wait" =~ ^[0-9]+$ ]] || _wait=600
     (

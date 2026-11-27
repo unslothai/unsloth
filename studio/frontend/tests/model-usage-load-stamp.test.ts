@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Recent" orders by load, so only a selection that is actually loaded is stamped. A remembered
-// model shown in the trigger without being loaded must leave the load times alone.
+// Recent" orders by load, so only a loaded selection is stamped, not one merely shown.
 
 import assert from "node:assert/strict";
 import test from "node:test";

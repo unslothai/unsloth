@@ -45,8 +45,7 @@ DTYPE_ALIASES = {
     "fp32": torch.float32,
 }
 
-# unsloth_zoo==2026.8.15, which this package's floor resolves to, still evals the dtype field, and
-# eval("fp16") is a NameError, so canonicalise to the one spelling both readers evaluate.
+# unsloth_zoo==2026.8.15 still evals dtype fields; eval("fp16") is a NameError: canonicalise.
 _CANONICAL_DTYPE_NAMES = {
     None: "None",
     torch.float16: "torch.float16",

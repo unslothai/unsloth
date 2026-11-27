@@ -761,9 +761,13 @@ def test_save_many_encodes_the_batch_concurrently(monkeypatch):
     barrier = threading.Barrier(4, timeout = 10)
     encode = gallery._png_bytes
 
-    def _encode(image, meta):
+    def _encode(
+        image,
+        meta,
+        threads = None,
+    ):
         barrier.wait()  # breaks (and fails the save) unless all four encodes run at once
-        return encode(image, meta)
+        return encode(image, meta, threads)
 
     monkeypatch.setattr(gallery, "_png_bytes", _encode)
     records = list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch())))
@@ -774,10 +778,14 @@ def test_save_many_keeps_the_images_before_a_failed_encode(monkeypatch):
     _many_cpus(monkeypatch)
     encode = gallery._png_bytes
 
-    def _encode(image, meta):
+    def _encode(
+        image,
+        meta,
+        threads = None,
+    ):
         if meta["batch_index"] == 2:
             raise OSError("disk full")
-        return encode(image, meta)
+        return encode(image, meta, threads)
 
     monkeypatch.setattr(gallery, "_png_bytes", _encode)
     saved = []

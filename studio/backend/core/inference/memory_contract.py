@@ -144,7 +144,6 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
     return {
         "available": estimate.available,
         "reason": estimate.reason,
-        # The aggregate meaning. See the module docstring.
         "weights_bytes": estimate.resident_files_bytes,
         "kv_bytes": estimate.kv_bytes,
         "kv_checkpoint_bytes": estimate.kv_checkpoint_bytes,
@@ -185,7 +184,6 @@ def project_kv_cache_estimate(
 ) -> dict:
     """weights_bytes is the quant file alone, and None (not 0) means no such term for this route."""
     return {
-        # The quant-file meaning. See the module docstring.
         "weights_bytes": estimate.quant_file_bytes or None,
         # Off the GPU and inside weights_bytes, so the bar can take it off the VRAM segment.
         "lookup_table_bytes": estimate.lookup_table_bytes or None,

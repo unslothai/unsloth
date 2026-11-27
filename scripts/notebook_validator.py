@@ -2,8 +2,7 @@
 # coding: utf-8
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""CPU-only notebook validator with subcommands drift, convert, lint, exceptions, api, all, refresh-
-colab; never imports torch or unsloth at module load"""
+"""CPU-only notebook validator CLI; never imports torch or unsloth at module load."""
 
 from __future__ import annotations
 
@@ -232,13 +231,11 @@ COLAB_STRICT_ORACLE_KEYS: dict[str, frozenset[str]] = {
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
 # ----- Compat tables. PRs add rows as new releases land. ----- #
 
-# Lockstep rows only: torchcodec 0.12+ is ABI-stable against torch >=2.11 and is handled by
-# the short-circuit in rule_inst_004_torchcodec_torch rather than by a row here.
+# Lockstep only; torchcodec 0.12+ ABI-stable on torch>=2.11, see rule_inst_004_torchcodec_torch
 TORCHCODEC_ABI_STABLE_TORCH = "2.11"
 TORCHCODEC_ABI_STABLE_CODEC = "0.12"
 
-# torch.minor -> compatible torchcodec minors, from the torchcodec README matrix.
-# Mirrors import_fixes._TORCH_TORCHCODEC_MINORS (test_torchcodec_torch_compat asserts equality).
+# Mirrors import_fixes._TORCH_TORCHCODEC_MINORS; test_torchcodec_torch_compat asserts equality.
 TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -1062,8 +1059,7 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
 
 
 def _piece_is_pip(piece: str) -> bool:
-    """Is this chunk of a chained line a pip command? `!` only ever leads the first piece,
-    and the splitter re-adds it to the rest, so it is normalised before asking."""
+    """`!` only leads the first piece and is re-added to the rest, so normalise it first."""
     # Strip the bang first so `!env X=1 pip ...` matches the env prefix.
     stripped = _strip_exec_prefixes(piece.strip().lstrip("!").strip())[0].strip()
     return bool(stripped) and bool(PIP_LINE_RE.match("!" + stripped))
@@ -1751,7 +1747,6 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 if body_levels:
                     body_levels[-1] = True
                     if keyword in ("then", "do"):
-                        # Condition complete: fold it, invert an until, and record the result.
                         model = test_models[-1]
                         if openers[-1] == "until" and model is not None:
                             model = not model
@@ -1800,8 +1795,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 arm_reached.pop()
                 cond_assumed.pop()
                 cond_models.pop()
-        # A level speaks only once its body has started: `if true` runs, `if false` never does,
-        # anything else may run. A false branch is inverted for else.
+        # Once body starts: if true runs, if false never runs, others may; else inverts false.
         active = [model for level, model in zip(body_levels, test_models) if level]
         if any(model is False for model in active):
             continue  # this branch can never be taken, so nothing in it runs
@@ -1840,8 +1834,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 maybe_called.add((_invoked_name(inner_text), index))
                 ordered.append((inner_text, True))
         if text:
-            # A never-true test makes the body unreachable, not conditional. Fold condition pieces until
-            # then/do closes it.
+            # Never-true test: body unreachable, not conditional; fold pieces until then/do.
             if body_levels and not body_levels[-1]:
                 model = (
                     _for_list_is_nonempty(text) or None
@@ -1927,8 +1920,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     depth = int(level.strip()) if level.strip().isdigit() else 1
                     broke_at = loop[max(len(loop) - depth, 0)] + 1
 
-    # A body is conditional until called; walk the call graph to a fixed point. A call reaches
-    # only a definition that already exists.
+    # A body is conditional until called; walk calls to a fixpoint, reaching only prior defs.
     def _definition_in_force(name: str, at: int) -> str | None:
         """The definition of `name` complete before position `at`, or None."""
         best = None
@@ -2192,8 +2184,7 @@ def _git_source_repository(source: str) -> str:
 
 
 def _git_source_is_allowed(source: str) -> bool:
-    """Exact repository match. Every allowlist entry is one `host/org/repo`, and pip puts a
-    subdirectory in the URL fragment rather than on the path, so nothing needs a prefix."""
+    """Exact host/org/repo match; pip's subdirectory lives in the URL fragment, so no prefix."""
     repository = _git_source_repository(source)
     return any(repository == allowed.lower() for allowed in GIT_PLUS_ALLOWLIST)
 
@@ -2708,8 +2699,7 @@ def rule_inst_004_torchcodec_torch(
     )
     if not torch_v or not codec_v:
         return findings
-    # torchcodec 0.12+ is ABI-stable against torch >= 2.11 (TORCH_TARGET_VERSION 2.11).
-    # An inexact prerelease floor admits the stable release above it.
+    # torchcodec 0.12+ ABI-stable on torch>=2.11; an inexact prerelease floor admits the final.
     codec_clears_abi = at_least(codec_v, TORCHCODEC_ABI_STABLE_CODEC) or (
         not codec_exact and cmp_versions(version_minor(codec_v), TORCHCODEC_ABI_STABLE_CODEC) >= 0
     )
@@ -2894,7 +2884,6 @@ def scan_user_cells(nb: dict[str, Any], file: str) -> list[Finding]:
 
 # ----- DONT_UPDATE_EXCEPTIONS coverage ----- #
 POLICY_CLAUSES_DEFAULT = [
-    # (id, regex, applies_to_predicate_on_install_cell_text)
     (
         "torchao-floor",
         re.compile(r"torchao>=0\.16\.0"),
@@ -3251,8 +3240,7 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
             print(f"::notice::skipping {upstream_name}: {reason}")
             skipped.append(upstream_name)
         snapshot_dir.mkdir(parents = True, exist_ok = True)
-        # The set lands together or not at all; copy aside first, since restoring by rewrite needs
-        # the space the failure proved missing.
+        # Atomic: copy aside first; restoring by rewrite needs the space the failure lacked.
         preserved: dict[str, pathlib.Path] = {}
         for name in payloads:
             live = snapshot_dir / name

@@ -107,7 +107,68 @@ FAMILIES = {
             use_qk_norm = True,
         )
     ),
+    # Expert LoRA factors trained swapped against vanilla PEFT's (unsloth_zoo moe_lora_factor_swap): Llama 4 flags
+    # its [E, in, out] stacks is_transposed, Qwen3-VL-MoE is stored [E, H, 2I] on transformers 5.x. gate_up is
+    # not square, so the save rewrite to vanilla factors engages.
+    "llama4": dict(
+        config = dict(
+            model_type = "llama4_text",
+            vocab_size = 128,
+            hidden_size = 32,
+            intermediate_size = 24,
+            intermediate_size_mlp = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            head_dim = 16,
+            num_local_experts = 4,
+            num_experts_per_tok = 1,
+            interleave_moe_layer_step = 1,
+            use_qk_norm = True,
+            pad_token_id = 0,
+        ),
+        experts = "feed_forward.experts",
+        zoo = "llama4_moe",
+        # Llama4Router is an nn.Linear returning (scores, logits): PEFT's Linear LoRA cannot wrap it
+        exclude_modules = ["router"],
+    ),
+    "qwen3_vl_moe": dict(
+        config = dict(
+            model_type = "qwen3_vl_moe",
+            text_config = dict(
+                vocab_size = 128,
+                hidden_size = 32,
+                intermediate_size = 64,
+                moe_intermediate_size = 24,
+                num_hidden_layers = 2,
+                num_attention_heads = 2,
+                num_key_value_heads = 1,
+                head_dim = 16,
+                num_experts = 4,
+                num_experts_per_tok = 2,
+                decoder_sparse_step = 1,
+                pad_token_id = 0,
+                rope_scaling = dict(
+                    rope_type = "default", mrope_section = [2, 3, 3], mrope_interleaved = True
+                ),
+            ),
+            vision_config = dict(
+                depth = 1,
+                hidden_size = 16,
+                intermediate_size = 32,
+                num_heads = 2,
+                out_hidden_size = 32,
+                deepstack_visual_indexes = [0],
+            ),
+        ),
+        model_class = "Qwen3VLMoeForConditionalGeneration",
+        zoo = "qwen3_vl_moe",
+        # text-only rows: a vision LoRA would get no gradient and hold back DDP's bucket all-reduce
+        exclude_modules = r".*\.visual\..*",
+    ),
 }
+# Families whose zoo patch swaps the expert LoRA factors (on transformers 5.x for Qwen3-VL-MoE).
+SWAPPED = ("llama4", "qwen3_vl_moe")
 REFUSED = {
     "llama": "hf-internal-testing/tiny-random-LlamaForCausalLM",
 }
@@ -157,16 +218,45 @@ def _local_config(tmp, rank, config):
     return path
 
 
+def _zoo_patch(name):
+    """Apply unsloth_zoo's patch for one family in this rank (as model load does), plus the save-side factor
+    rewrite; return whether its experts class trains swapped LoRA factors."""
+    import importlib
+    import importlib.util
+
+    if name is None:
+        return None
+    # spawned ranks skip conftest's device spoof, which unsloth_zoo needs at import
+    spec = importlib.util.spec_from_file_location(
+        "_ep_conftest", os.path.join(os.path.dirname(os.path.abspath(__file__)), "conftest.py")
+    )
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    swap = importlib.import_module("unsloth_zoo.temporary_patches.moe_lora_factor_swap")
+    getattr(importlib.import_module(f"unsloth_zoo.temporary_patches.{name}"), f"patch_{name}")()
+    swap.patch_expert_lora_factor_swap()
+    if name == "llama4_moe":
+        from transformers.models.llama4.modeling_llama4 import Llama4TextExperts as experts
+    else:
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (
+            Qwen3VLMoeTextExperts as experts,
+        )
+    return bool(swap._factors_swapped(experts))
+
+
 def _build(
     build,
     repo,
     overrides = None,
     experts = None,
+    model_class = None,
+    exclude_modules = None,
 ):
     lora = EXPERT_LORA
     if experts is not None:
         lora = dict(target_parameters = [f"{experts}.gate_up_proj", f"{experts}.down_proj"])
-    model = build(repo, overrides = overrides, **lora).train()
+    if exclude_modules is not None:
+        lora = dict(lora, exclude_modules = exclude_modules)
+    model = build(repo, overrides = overrides, model_class = model_class, **lora).train()
     g = torch.Generator().manual_seed(1234)
     with torch.no_grad():  # lora_B = 0 would leave every lora_A gradient of the first step at 0
         for name, p in model.named_parameters():
@@ -239,6 +329,9 @@ def _case_family(
     config = None,
     experts = None,
     dense_routing = False,
+    model_class = None,
+    zoo = None,
+    exclude_modules = None,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
@@ -246,6 +339,7 @@ def _case_family(
 
     if dense_routing:
         _transformers4_gpt_oss_contract()
+    swapped = _zoo_patch(zoo)
     build, tpn, epn = _modules()
     if config is not None:
         repo = _local_config(tmp, rank, config)
@@ -254,7 +348,7 @@ def _case_family(
         mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
     else:  # replica groups of ep ranks, ep innermost
         mesh = init_device_mesh("cpu", (world // ep, ep), mesh_dim_names = ("ep_rep", "ep"))
-    ref = _build(build, repo, overrides, experts)
+    ref = _build(build, repo, overrides, experts, model_class, exclude_modules)
     vocab = tpn._text_config(ref).vocab_size
     rows = [_rows(vocab, r) for r in range(world)]
     n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
@@ -267,7 +361,7 @@ def _case_family(
         torch.nn.utils.clip_grad_norm_([p for p in ref.parameters() if p.grad is not None], 1e9)
     )
 
-    model = _build(build, repo, overrides, experts)
+    model = _build(build, repo, overrides, experts, model_class, exclude_modules)
     epn.apply_expert_parallel(model, mesh)
     group = epn._mesh(model).get_group()
     ddp = DistributedDataParallel(model)
@@ -297,6 +391,7 @@ def _case_family(
         "experts": shard.experts,
         "blocks": len(tpn.moe_blocks_with_experts(model)),
         "ep": epn._mesh(model).size(),
+        "swapped": swapped,
         "has_bias_shards": sorted(
             {
                 k.rsplit(".", 1)[-1]
@@ -478,7 +573,19 @@ _EXPORTS = (
 )
 
 
-def _case_save(rank, world, tmp, repo):
+def _case_save(
+    rank,
+    world,
+    tmp,
+    repo = None,
+    overrides = None,
+    config = None,
+    experts = None,
+    model_class = None,
+    zoo = None,
+    exclude_modules = None,
+    lora_b_layout = None,
+):
     """A direct save_pretrained of a LoRA model with unquantized experts: the adapter equals one process', and
     the gather receives only the expert LoRA factors, on rank 0 alone (never a frozen base stack). Then the merged
     / GGUF exports Unsloth binds on the model are refused without any Trainer (a custom training loop)."""
@@ -486,17 +593,22 @@ def _case_save(rank, world, tmp, repo):
     from safetensors.torch import load_file
     from torch.distributed.device_mesh import init_device_mesh
 
+    if lora_b_layout is not None:
+        os.environ["UNSLOTH_MOE_LORA_B_LAYOUT"] = lora_b_layout
+    swapped = _zoo_patch(zoo)
     build, tpn, epn = _modules()
+    if config is not None:
+        repo = _local_config(tmp, rank, config)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
-    ref = _build(build, repo)
+    ref = _build(build, repo, overrides, experts, model_class, exclude_modules)
     ref_dir = os.path.join(tmp, f"ref_{rank}")
     ref.save_pretrained(ref_dir)
     want = load_file(os.path.join(ref_dir, "adapter_model.safetensors"))
-    experts = {k: p.numel() for k, p in ref.named_parameters() if ".experts." in k}
-    base = {k: n for k, n in experts.items() if "lora_" not in k}
-    lora = sum(n for k, n in experts.items() if "lora_" in k)
+    sizes = {k: p.numel() for k, p in ref.named_parameters() if ".experts." in k}
+    base = {k: n for k, n in sizes.items() if "lora_" not in k}
+    lora = sum(n for k, n in sizes.items() if "lora_" in k)
 
-    model = _build(build, repo)
+    model = _build(build, repo, overrides, experts, model_class, exclude_modules)
     calls = []
     for level in tpn._tp_chain(model):  # what patch_saving_functions binds on an Unsloth model
         for attr in _EXPORTS:
@@ -541,6 +653,20 @@ def _case_save(rank, world, tmp, repo):
         if sorted(got) == sorted(want)
         else None,
         "expert_keys": sum(1 for k in got if ".experts." in k),
+        # factor shapes as trained vs as saved: they differ when the save rewrote swapped factors to vanilla's
+        "trained_shapes": sorted(
+            tuple(p.shape) for k, p in ref.named_parameters() if ".experts." in k and "lora_" in k
+        ),
+        "layouts": sorted(
+            {
+                str(tpn._lora_b_layout(w, a))
+                for n, w in ref.named_modules()
+                if n.endswith(".experts")
+                for a in getattr(w, "lora_B", {}) or {}
+            }
+        ),
+        "saved_shapes": sorted(tuple(t.shape) for k, t in got.items() if ".experts." in k),
+        "swapped": swapped,
         "refused": refused,
         "calls": calls,
     }
@@ -646,6 +772,9 @@ def _spawn(
 def test_ep_family_matches_one_process(family):
     results = _spawn("_case_family", **_family(family))
     _check_family(results, 2)
+    if family == "qwen3_vl_moe" and _transformers_major() >= 5:
+        # zoo stores the stacks [E, H, 2I] on 5.x: the swapped-factor layout this family is here for
+        assert all(r["swapped"] for r in results), [r["swapped"] for r in results]
     if family == "gpt_oss":  # its per-expert biases are sharded with the stacks
         assert results[0]["has_bias_shards"] == ["down_proj_bias", "gate_up_proj_bias"], results[0][
             "has_bias_shards"
@@ -778,6 +907,31 @@ def test_ep_exports_refused_without_a_trainer():
             m is not None and "not supported under expert parallel" in m
             for m in r["refused"].values()
         ), r["refused"]
+
+
+@pytest.mark.parametrize("layout", ("rank_major", "grouped_by_expert"))
+@pytest.mark.parametrize("family", SWAPPED)
+def test_ep_swapped_factor_family_saves_the_one_process_adapter(family, layout):
+    # The EP gather cuts lora_A rows [E*R] and lora_B columns [R*E] by expert whichever stack side they factor; the
+    # save then writes vanilla PEFT's factors (or the legacy [out, E, R] lora_B) from the gathered ones with the
+    # whole expert count, not this rank's: bitwise the one-process file.
+    results = _spawn("_case_save", lora_b_layout = layout, **_family(family))
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["worst"] == 0 and r["expert_keys"] > 0, r
+        assert r["layouts"] == [layout], r["layouts"]
+        assert r["refused"] and all(m is not None for m in r["refused"].values()), r["refused"]
+        if layout == "rank_major":  # the save rewrote the factors exactly when they train swapped
+            assert (r["saved_shapes"] != r["trained_shapes"]) == r["swapped"], r
+    if family == "qwen3_vl_moe" and _transformers_major() >= 5:
+        assert results[0]["swapped"], results[
+            0
+        ]  # else this case would not cover the swapped layout
+
+
+def _transformers_major():
+    import transformers
+    return int(transformers.__version__.split(".")[0])
 
 
 def test_ep_resume_refuses_another_lora_b_layout():

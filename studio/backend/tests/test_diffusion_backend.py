@@ -15396,3 +15396,28 @@ def test_generate_fast_cfg_refused_on_a_pipeline_without_it(fake_runtime, tmp_pa
     assert backend.status()["supports_cfg_interval"] is False
     with pytest.raises(ValueError, match = "Fast CFG"):
         backend.generate(prompt = "a sloth", steps = 50, guidance = 4.0, cfg_interval_end = 0.8)
+
+
+@pytest.mark.parametrize(
+    "request_, env, expected_state, origin, value",
+    [
+        (None, None, None, "default", "off"),
+        (None, "1", None, "env", "on"),
+        ("on", None, "on", "per_load", "on"),
+        ("off", "1", "off", "per_load", "off"),
+    ],
+)
+def test_load_keeps_the_lora_fuse_choice_and_reports_its_origin(
+    fake_runtime, tmp_path, monkeypatch, request_, env, expected_state, origin, value
+):
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    if env is None:
+        monkeypatch.delenv(lora_fuse.LORA_FUSE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(lora_fuse.LORA_FUSE_ENV, env)
+    overrides = {} if request_ is None else {"lora_fuse": request_}
+    backend = _loaded_backend(tmp_path, **overrides)
+    assert backend._state.lora_fuse == expected_state
+    entry = backend.status()["resolved"]["lora_fuse"]
+    assert (entry["origin"], entry["value"]) == (origin, value)

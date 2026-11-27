@@ -278,8 +278,7 @@ def Qwen3Attention_fast_forward_inference(
         Kn.addcmul_(RH_K, sin)
 
     if static is not None:
-        # Captured step: the cache slot is on the device; the attention itself runs eagerly
-        # between two captured segments (static.attention), over the true length.
+        # Slot on device; attention runs eagerly between captured segments over true length.
         self.paged_attention_K.index_copy_(0, static.slot, Kn.permute(2, 0, 1, 3))
         self.paged_attention_V.index_copy_(0, static.slot, Vn.permute(2, 0, 1, 3))
         if static.span is not None:
@@ -331,8 +330,7 @@ def Qwen3Attention_fast_forward_inference(
         # Avoid SDPA GQA drift for batched masked decode.
         use_sdpa_gqa = False
 
-    # Grouped query attention: bsz == 1, and bsz > 1 past the card's crossover, read the KV heads
-    # in place below.
+    # GQA reads KV heads in place at bsz == 1, or bsz > 1 past the card's crossover.
     _, _, cached_len, _ = Knn.shape
     grouped = bsz == 1 or (
         n_groups != 1
@@ -348,8 +346,7 @@ def Qwen3Attention_fast_forward_inference(
 
     if grouped:
         Qn *= self.scalar
-        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
-        # (comment 2153349963).
+        # Scale Q before Q @ K to avoid overflow; ggerganov/llama.cpp#7805 (comment 2153349963)
         A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         if attention_mask is not None:
             A.masked_fill_(~attention_mask, float("-inf"))

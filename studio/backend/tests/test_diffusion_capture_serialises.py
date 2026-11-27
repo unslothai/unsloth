@@ -113,8 +113,7 @@ def _expect_graph_kept(step, handle, x, first, again):
 
 @pytest.mark.skipif(not _CUDA, reason = "needs CUDA")
 def test_a_recording_survives_another_threads_decode_tail():
-    """A recording must survive another thread's decode (first cuBLAS/cuDNN use, host read, event
-    query, pinned alloc); its noise uses an explicit generator."""
+    """A recording must survive another thread's decode; its noise uses an explicit generator."""
 
     def decode_tail():
         gen = torch.Generator(device = "cuda").manual_seed(0)

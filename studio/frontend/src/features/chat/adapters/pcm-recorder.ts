@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** For engines whose MediaRecorder cannot encode audio: WebKitGTK yields zero-byte recordings
- *  (#9543). Raw PCM to WAV, which the STT backend forwards untouched. */
+/** No MediaRecorder encoder: WebKitGTK gives zero-byte recordings (#9543); PCM sent as WAV. */
 
 export interface RecordedDataEvent {
   readonly data: Blob;
@@ -324,8 +323,7 @@ class StartFallbackRecorder implements SegmentRecorder {
   }
 }
 
-/** A recorder for `stream`: MediaRecorder where it encodes, PCM where it does not. `mimeType`
- *  is the MediaRecorder preference and is unused on the PCM path, which always makes WAV. */
+/** MediaRecorder where it can encode, else PCM as WAV; mimeType is ignored on the PCM path. */
 export function createAudioRecorder(
   stream: MediaStream,
   mimeType?: string,

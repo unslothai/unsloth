@@ -30,8 +30,7 @@ __all__ = [
 _AUTO_FLAG = "_unsloth_auto_ddp_find_unused_parameters"
 # LoRA tensors that are used whenever their base layer runs.
 _LORA_PARAM_MARKERS = (".lora_A.", ".lora_B.", ".lora_magnitude_vector.")
-# Modules a step can skip (unrouted experts, a vision tower on a text batch, MTP heads), or that
-# Unsloth's fused loss / embedding paths may read by weight and bypass the LoRA forward.
+# Modules a step can skip, or read by weight in fused loss/embedding code, bypassing LoRA.
 _SKIPPABLE_NAME_MARKERS = (
     "expert",
     "vision",
@@ -213,7 +212,6 @@ def _module_param_ids(base, getter):
 
 
 def _embedding_leaf_names(base):
-    """Leaf names (embed_tokens, lm_head, wte, ...) of the input / output embeddings."""
     targets = []
     for getter in ("get_input_embeddings", "get_output_embeddings"):
         try:
@@ -308,8 +306,7 @@ def _vlm_tower_needs_unused_search(args, model):
 
 def _reentrant_vlm_text_lora(model):
     """Dense VLM only: text LoRA gets False (True crashes under reentrant checkpointing); tower
-    adapters are kept out of DDP and averaged by _all_reduce_tower_grads; experts and heads keep
-    the default"""
+    adapters skip DDP, averaged by _all_reduce_tower_grads; experts and heads keep the default."""
     from transformers import PreTrainedModel
 
     if isinstance(model, PreTrainedModel):
@@ -423,7 +420,6 @@ def _is_full_finetune(model):
 
 
 def _tower_params(model):
-    """Trainable vision / audio tower weights of a VLM."""
     config = getattr(_unwrapped_models(model)[-1], "config", None)
     if not any(
         getattr(c, key, None) is not None for c in _configs(config) for key in _SUBMODEL_CONFIG_KEYS
@@ -462,8 +458,7 @@ def _exclude_towers_from_ddp(model):
 
 
 def _exclude_frozen_from_ddp(model):
-    """DDP start broadcast buckets every param (a second copy of the largest tensor, OOM on T4);
-    skip frozen LoRA weights, which get no gradient"""
+    """DDP broadcast buckets every param (2nd copy, OOM on T4); skip frozen LoRA (no gradient)."""
     if os.environ.get("UNSLOTH_DDP_SYNC_FROZEN", "0") == "1":
         return 0
     if getattr(model, "peft_config", None) is None:
@@ -482,8 +477,7 @@ def _exclude_frozen_from_ddp(model):
 
 
 def _no_dynamo_ddp_graph_split():
-    """DDP graph split breaks non-reentrant recompute: CheckpointError. UNSLOTH_DDP_GRAPH_SPLIT=1
-    keeps it."""
+    """DDP graph split breaks non-reentrant recompute; UNSLOTH_DDP_GRAPH_SPLIT=1 keeps it."""
     if os.environ.get("UNSLOTH_DDP_GRAPH_SPLIT", "0") == "1":
         return False
     try:

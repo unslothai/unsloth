@@ -113,8 +113,7 @@ _QUIET_SUCCESS_PATHS = {
     # Polled by the Images page while the FLUX.3 prompt upsampler downloads.
     "/api/inference/images/prompt-upsampler/status",
     "/api/llama/update-status",
-    # Engine status, re-read every 5s by the Hub while the vLLM GPU probe runs and by the open Settings engine list.
-    # The UI shows each answer, install jobs log their own progress, and a failed read (non-2xx) still logs.
+    # UI shows answers; install jobs log their own progress; failed (non-2xx) reads still log.
     "/api/engines",
     "/api/export/logs",
     "/api/export/status",
@@ -327,8 +326,6 @@ class LoggingMiddleware:
 
 
 def filter_sensitive_data(logger, method_name, event_dict):
-    """Structlog processor to redact native path leases from logs."""
-
     def filter_value(value):
         if isinstance(value, str):
             try:

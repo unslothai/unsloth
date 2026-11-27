@@ -58,7 +58,7 @@ def test_the_mlx_install_step_runs_on_no_torch_installs():
 def test_the_re_resolve_and_health_report_share_the_step_gate():
     """A narrower gate leaves a --no-torch Mac with a stale MLX range or an unexplained chat-only."""
     source = _source()
-    for needle in ("_report_mlx_stack_health(", "_mlx_vlm_spec_now = "):
+    for needle in ("_report_mlx_stack_health(", "_mlx_specs_now = "):
         guards = [
             line.strip()
             for line, following in zip(source.splitlines(), source.splitlines()[1:])
@@ -79,7 +79,6 @@ def test_the_progress_total_uses_the_same_gate_as_the_step():
             continue
         # Sliced by line: the trailing comment on the += 1 lies past the node's extent.
         segment = "\n".join(lines[node.lineno - 1 : node.end_lineno])
-        # The += 1 whose comment names the MLX stack, i.e. the accounting twin.
         if "base_total += 1" in segment and "MLX stack" in segment:
             total_guards.add(ast.get_source_segment(source, node.test) or "")
     assert total_guards, "no base_total accounting found for the MLX stack step"

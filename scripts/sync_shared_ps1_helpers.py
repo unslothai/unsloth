@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = ROOT / "install.ps1"
 SETUP_PS1 = ROOT / "studio" / "setup.ps1"
 
-SHARED_BEGIN = "# ── BEGIN SHARED WITH studio/setup.ps1 ──"
-SHARED_END = "# ── END SHARED WITH studio/setup.ps1 ──"
+SHARED_BEGIN = "# -- BEGIN SHARED WITH studio/setup.ps1 --"
+SHARED_END = "# -- END SHARED WITH studio/setup.ps1 --"
 
 
 def function_span(text: str, name: str) -> tuple[int, int]:

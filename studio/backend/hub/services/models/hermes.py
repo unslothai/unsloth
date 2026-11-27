@@ -25,7 +25,6 @@ _SPLIT_PART = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 
 
 def staged_model_id(path: Path) -> str:
-    """The id Hermes knows a staged GGUF by: its stem, minus any split suffix."""
     return re.sub(r"-\d{5}-of-\d{5}$", "", path.stem)
 
 
@@ -59,7 +58,6 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
 
 
 def scan_hermes_dir(hermes_dir: Path, *, limit: Optional[int] = None) -> List[LocalModelInfo]:
-    """Scan a Hermes models directory for downloaded models."""
     if not hermes_dir.exists() or not hermes_dir.is_dir():
         return []
 
