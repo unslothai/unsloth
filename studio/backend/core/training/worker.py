@@ -5174,42 +5174,46 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 }
             )
 
-    # Offload layers auto-size to allocator budget, so two runs on one card each take a share.
-    # ── 2b. Training VRAM budget ──
-    # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
-    _wants_budget = bool(
-        (config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"))
-        and config.get("offload_layers") == "auto"
-        and config.get("training_type", "LoRA/QLoRA") in ("LoRA/QLoRA", "Continued Pretraining")
-        and not config.get("is_decision")
-        and not config.get("is_embedding")
-    )
-    # Vision / audio loads on several GPUs cannot offload at load, and LoRA setup allocates adapters before it swaps:
-    # a cap would OOM either step, so those runs offload Auto uncapped.
-    _budget_unsupported = (
-        _wants_budget
-        and (len(gpu_ids) if gpu_ids else _visible_gpu_count()) > 1
-        and bool(config.get("is_dataset_image") or config.get("is_dataset_audio"))
-    )
-
-    if _budget_unsupported:
-        logger.info(
-            "Training VRAM budget not applied: multi-GPU vision / audio runs offload at LoRA setup"
+    def _configure_training_vram_budget() -> None:
+        # Offload layers auto-size to allocator budget, so two runs on one card each take a share.
+        # ── 2b. Training VRAM budget ──
+        # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
+        _wants_budget = bool(
+            (config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"))
+            and config.get("offload_layers") == "auto"
+            and config.get("training_type", "LoRA/QLoRA") in ("LoRA/QLoRA", "Continued Pretraining")
+            and not config.get("is_decision")
+            and not config.get("is_embedding")
         )
-        # An out-of-memory error then must not blame a cap that was never set.
-        config["offload_vram_gb"] = None
-        config["offload_vram_gb_per_device"] = None
-    elif _wants_budget:
-        try:
-            import torch as _torch_budget
-            _apply_training_vram_budget(
-                _torch_budget,
-                config.get("offload_vram_gb"),
-                config.get("offload_vram_gb_per_device"),
-                gpu_ids,
+        # Vision / audio loads on several GPUs cannot offload at load, and LoRA setup allocates adapters before it swaps:
+        # a cap would OOM either step, so those runs offload Auto uncapped.
+        _budget_unsupported = (
+            _wants_budget
+            and (len(gpu_ids) if gpu_ids else _visible_gpu_count()) > 1
+            and bool(config.get("is_dataset_image") or config.get("is_dataset_audio"))
+        )
+
+        if _budget_unsupported:
+            logger.info(
+                "Training VRAM budget not applied: multi-GPU vision / audio runs offload at LoRA setup"
             )
-        except Exception as _budget_err:
-            logger.warning("Could not apply the training VRAM budget: %s", _budget_err)
+            # An out-of-memory error then must not blame a cap that was never set.
+            config["offload_vram_gb"] = None
+            config["offload_vram_gb_per_device"] = None
+        elif _wants_budget:
+            try:
+                import torch as _torch_budget
+                _apply_training_vram_budget(
+                    _torch_budget,
+                    config.get("offload_vram_gb"),
+                    config.get("offload_vram_gb_per_device"),
+                    gpu_ids,
+                )
+            except Exception as _budget_err:
+                logger.warning("Could not apply the training VRAM budget: %s", _budget_err)
+
+    if not config.get("s3_config") or config.get("batch_members"):
+        _configure_training_vram_budget()
 
     if config.get("is_decision", False):
         try:
@@ -5432,6 +5436,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # must agree with the formatter, and text manifests keep their original routing.
             config["is_dataset_audio"] = trainer._is_dataset_audio
             _check_finetune_targets_after_detect(trainer, config)
+            _configure_training_vram_budget()
 
         # Start the tqdm monitor early to capture download + tokenization bars.
         import threading as _th

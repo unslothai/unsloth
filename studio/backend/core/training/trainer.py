@@ -8,6 +8,7 @@ import gc
 import os
 import sys
 import types
+from itertools import islice
 
 # Off on Linux so forked map() workers cannot deadlock.
 os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
@@ -406,7 +407,7 @@ def _s3_dataset_has_audio(dataset, audio_paths: frozenset[str], custom_format_ma
         return True
 
     # A filename in a metadata field is insufficient; the audio column must refer to a downloaded object.
-    for row in dataset.select_columns([audio_col]).take(_AUDIO_SNIFF_ROWS):
+    for row in islice(dataset.select_columns([audio_col]), _AUDIO_SNIFF_ROWS):
         value = row[audio_col]
         path = value.get("path") if isinstance(value, dict) else value
         if isinstance(path, str) and path in audio_paths:
