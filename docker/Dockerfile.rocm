@@ -141,22 +141,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
         --index-url "${TORCH_INDEX_URL}" --reinstall "${PIN}"
 
-# bitsandbytes via pip (uv refuses the pre-release wheel's filename/metadata
-# version mismatch) from the build with the ROCm 4-bit GEMV fix (bitsandbytes
-# PR #1887); the fallback is the first PyPI release with it, since 0.49.x and
-# below produce NaNs at decode shape on every AMD GPU. Same URL and fallback
-# as install.sh's _install_bnb_rocm(). No wheel carries gfx906 kernels, so a
-# gfx906 build ships without bitsandbytes (as install.sh does).
+# bitsandbytes from PyPI: 0.50.0 is the first release with the ROCm 4-bit GEMV fix (bitsandbytes
+# PR #1887; 0.49.x and below produce NaNs at decode shape on every AMD GPU) and ships the rocm72
+# library this image needs. bnb's continuous-release_main is rebuilt on every bnb commit under the
+# same file names, so it is not used. Same spec as install.sh's _install_bnb_rocm(). No wheel
+# carries gfx906 kernels, so a gfx906 build ships without bitsandbytes (as install.sh does).
 RUN if grep -q '^ROCM_GFX=gfx906$' /etc/unsloth-rocm-build; then \
         echo "gfx906: no prebuilt bitsandbytes kernels; removing bitsandbytes from the stack"; \
         ${VENV}/bin/python -m pip uninstall -y bitsandbytes || true; \
     else \
-        _BNB_WHL="https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl" \
-        && (${VENV}/bin/python -m pip install \
-                --force-reinstall --no-cache-dir --no-deps "${_BNB_WHL}" \
-            || (echo "[WARN] bnb pre-release install failed; falling back to PyPI bitsandbytes>=0.50.0" >&2 \
-                && ${VENV}/bin/python -m pip install \
-                    --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.50.0")); \
+        ${VENV}/bin/python -m pip install \
+            --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.50.0"; \
     fi
 
 # Pin record (informational; the resolver's own lock is stack.lock.txt beside it).

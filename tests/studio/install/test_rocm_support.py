@@ -793,6 +793,16 @@ def _named_arch_only():
     return (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower() or None
 
 
+def _bnb_split(pip: MagicMock):
+    """A pip_install stand-in that records bitsandbytes installs on pip.bnb, so pip sees only torch."""
+    pip.bnb = MagicMock()
+
+    def route(*args, **kwargs):
+        return (pip.bnb if any("bitsandbytes" in str(a) for a in args) else pip)(*args, **kwargs)
+
+    return route
+
+
 def run_ensure_rocm_torch(
     probe: str = "",
     *,
@@ -813,7 +823,7 @@ def run_ensure_rocm_torch(
         stack.enter_context(patch("platform.machine", return_value = "x86_64"))
         for name, value in {"IS_WINDOWS": False, "IS_MACOS": False, **(attrs or {})}.items():
             stack.enter_context(patch.object(stack_mod, name, value))
-        stack.enter_context(patch.object(stack_mod, "pip_install", pip))
+        stack.enter_context(patch.object(stack_mod, "pip_install", _bnb_split(pip)))
         stack.enter_context(patch.object(stack_mod, "pip_install_try", pip_try))
         for name, value in {"_has_usable_nvidia_gpu": False, **stubs}.items():
             stack.enter_context(patch.object(stack_mod, name, return_value = value))
@@ -1087,9 +1097,8 @@ class TestEnsureRocmTorch:
         )
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
-        assert mock_pip_try.call_count >= 1
-        assert "bitsandbytes" in str(mock_pip_try.call_args_list[0])
-        assert mock_pip_try.call_args.kwargs["force_pip"] is True
+        # bnb comes from PyPI: continuous-release_main is rebuilt under fixed names.
+        assert stack_mod._BNB_ROCM_PYPI_FALLBACK in mock_pip.bnb.call_args.args
 
     def test_rocm_63_selects_correct_tag(self):
         """Generic ROCm 6.3 uses the bnb-compatible floor, which needs the arch declared as non-gfx906."""
@@ -1392,8 +1401,9 @@ GPU: 2
                 with patch("subprocess.run", return_value = mock_probe):
                     with patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]):
                         _ensure_rocm_torch()
-        assert mock_pip.call_count == 1
-        torch_call = str(mock_pip.call_args_list[0])
+        torch_calls = [c for c in mock_pip.call_args_list if "bitsandbytes" not in str(c)]
+        assert len(torch_calls) == 1
+        torch_call = str(torch_calls[0])
         assert "gfx1151" in torch_call
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
@@ -1651,8 +1661,7 @@ GPU: 2
         # Probe timeout: treat torch as unusable and reinstall torch + bitsandbytes.
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
-        assert mock_pip_try.call_count >= 1
-        assert mock_pip_try.call_args.kwargs["force_pip"] is True
+        assert stack_mod._BNB_ROCM_PYPI_FALLBACK in mock_pip.bnb.call_args.args
 
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
@@ -1944,13 +1953,14 @@ class TestGfx1102Rocm64Floor:
                 "UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.1"
             )
         probe = MagicMock(returncode = 0, stdout = probe_stdout)
+        pip = MagicMock()
         with (
             patch.object(m, "IS_WINDOWS", False),
             patch.object(m, "IS_MACOS", False),
             patch.object(m, "_TORCH_RUNTIME_PROBE", None),
             patch.object(m, "_TORCH_BACKEND", ""),
             patch.object(m, "_LAST_AMD_GFX_PROBE", None),
-            patch.object(m, "pip_install") as pip,
+            patch.object(m, "pip_install", _bnb_split(pip)),
             patch.object(m, "pip_install_try", return_value = True),
             patch.object(m, "_has_usable_nvidia_gpu", return_value = False),
             patch.object(m, "_has_rocm_gpu", return_value = True),
@@ -5143,21 +5153,25 @@ class TestInstallBnbWindowsRocm:
             lambda version: True,
         )
 
-    def test_calls_pip_install_try_with_win_amd64_url(self):
-        """Should call pip_install_try with the win_amd64 wheel URL via plain pip."""
+    # A pinned stand-in: the real table is empty since continuous-release_main moves.
+    PINNED_URL = (
+        "https://example.invalid/bitsandbytes-0.50.2-py3-none-win_amd64.whl#sha256=" + "0" * 64
+    )
+
+    def test_installs_the_pypi_floor_not_a_release_url(self):
+        """PyPI >=0.50.0 carries the ROCm fix; bnb's continuous-release_main is rebuilt per commit."""
         with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
             stack_mod._install_bnb_windows_rocm()
         assert mock_pip.call_count == 1
-        call_args = str(mock_pip.call_args_list[0])
-        assert "bitsandbytes" in call_args
-        assert "win_amd64" in call_args
-        # Plain pip: uv mangles the bitsandbytes wheel.
-        assert mock_pip.call_args.kwargs.get("force_pip") is True
+        assert stack_mod._BNB_ROCM_PYPI_FALLBACK in mock_pip.call_args.args
+        assert "continuous-release" not in str(mock_pip.call_args)
 
-    def test_forces_plain_pip_not_uv(self):
-        """The bnb wheel must be installed with plain pip, never uv."""
-        with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
-            stack_mod._install_bnb_windows_rocm()
+    def test_a_listed_wheel_is_installed_with_plain_pip(self):
+        """A wheel listed for win_amd64 goes through plain pip, never uv."""
+        with patch.dict(stack_mod._BNB_ROCM_PRERELEASE_URLS, {"win_amd64": self.PINNED_URL}):
+            with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
+                stack_mod._install_bnb_windows_rocm()
+        assert self.PINNED_URL in mock_pip.call_args.args
         assert mock_pip.call_args.kwargs.get("force_pip") is True
 
     def test_does_not_touch_uv_skip_env_var(self):
@@ -5196,9 +5210,12 @@ class TestInstallBnbWindowsRocm:
     def test_falls_back_to_pypi_when_prerelease_install_fails(self):
         """A blocked GitHub pre-release URL must fall through to the PyPI floor rather
         than leaving Windows ROCm with no working bitsandbytes."""
-        with patch.object(stack_mod, "pip_install_try", side_effect = [False, True]) as mock_pip:
-            with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"):
-                result = stack_mod._install_bnb_windows_rocm()
+        with (
+            patch.dict(stack_mod._BNB_ROCM_PRERELEASE_URLS, {"win_amd64": self.PINNED_URL}),
+            patch.object(stack_mod, "pip_install_try", side_effect = [False, True]) as mock_pip,
+            patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"),
+        ):
+            result = stack_mod._install_bnb_windows_rocm()
         assert result is True
         assert mock_pip.call_count == 2
         assert "win_amd64" in str(mock_pip.call_args_list[0])
@@ -5208,7 +5225,10 @@ class TestInstallBnbWindowsRocm:
         """Both the pre-release wheel and the PyPI fallback must fail before the helper reports failure."""
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("BNB_ROCM_VERSION", None)
-            with patch.object(stack_mod, "pip_install_try", return_value = False) as mock_pip:
+            with (
+                patch.dict(stack_mod._BNB_ROCM_PRERELEASE_URLS, {"win_amd64": self.PINNED_URL}),
+                patch.object(stack_mod, "pip_install_try", return_value = False) as mock_pip,
+            ):
                 result = stack_mod._install_bnb_windows_rocm()
         assert result is False
         assert mock_pip.call_count == 2
