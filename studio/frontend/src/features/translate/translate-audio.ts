@@ -13,6 +13,7 @@ import {
   useSettingsDialogStore,
   useVoiceSettingsStore,
 } from "@/features/settings";
+import { isModelDictationLanguage } from "@/features/settings/stores/voice-settings-store";
 import type { useT } from "@/i18n";
 import { MAX_AUDIO_SIZE_LABEL, getAudioSizeError } from "@/lib/audio-utils";
 import { toast } from "@/lib/toast";
@@ -24,6 +25,7 @@ export async function transcribeAudioFile(
   file: File,
   signal: AbortSignal,
   t: ReturnType<typeof useT>,
+  language: string,
   timed = false,
 ): Promise<string | null> {
   if (file.size === 0 || getAudioSizeError(file.size)) {
@@ -52,6 +54,7 @@ export async function transcribeAudioFile(
     let segments: TranscriptSegment[] = [];
     const transcript = await transcribeAudioBlob(file, {
       model,
+      language: isModelDictationLanguage(model, language) ? language : "",
       ggufVariant,
       signal,
       onSegments: timed

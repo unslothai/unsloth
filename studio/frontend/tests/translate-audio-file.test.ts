@@ -73,7 +73,7 @@ test("every audio file the drop zone takes is transcribed, not sent to the docum
 test("an audio file is transcribed with the Voice settings model and fills the text box", () => {
   assert.match(
     audio,
-    /transcribeAudioBlob\(file, \{\s*model,\s*ggufVariant,\s*signal,\s*onSegments: timed/,
+    /transcribeAudioBlob\(file, \{\s*model,\s*language: isModelDictationLanguage\(model, language\) \? language : "",\s*ggufVariant,\s*signal,\s*onSegments: timed/,
   );
   assert.match(
     audio,
@@ -94,7 +94,7 @@ test("an audio file is transcribed with the Voice settings model and fills the t
 test("only a video asks for segment timings, and timed segments load as SRT", () => {
   assert.match(
     page,
-    /const video = !isAudioAttachmentFile\(file\);\s*try \{\s*const text = await transcribeAudioFile\(file, controller\.signal, t, video\);/,
+    /const video = !isAudioAttachmentFile\(file\);\s*try \{\s*const language =\s*importPrefs\.from === AUTO_SOURCE \? "" : translateSpeechTag\(importPrefs\.from\);\s*const text = await transcribeAudioFile\(file, controller\.signal, t, language, video\);/,
   );
   assert.match(audio, /timed = false,\n\): Promise<string \| null>/);
   assert.match(
