@@ -1,0 +1,12 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1",
+  "FriendlyName": "Unsloth Studio Live Preview",
+  "Description": "Local Level Editor viewport preview and camera navigation.",
+  "Category": "Editor",
+  "CanContainContent": false,
+  "Modules": [
+    { "Name": "UnslothPreview", "Type": "Editor", "LoadingPhase": "PostEngineInit" }
+  ]
+}

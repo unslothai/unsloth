@@ -80,6 +80,7 @@ studio = [
     "backend/requirements/**/*",
     "backend/vendor/**/*",
     "backend/integrations/blender/*.py",
+    "backend/integrations/editor_preview/**/*",
     # Copied into Unreal projects by Studio, never imported by it.
     "backend/integrations/unreal/*.py",
     "backend/plugins/**/*",

@@ -487,6 +487,7 @@ from routes.whisper import router as whisper_router
 from routes.video_restyle import router as video_restyle_router
 from routes.npu import router as npu_router
 from routes.preview import router as preview_router
+from routes.editor_preview import router as editor_preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
@@ -2299,6 +2300,7 @@ app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = [
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
+app.include_router(editor_preview_router, prefix = "/api/editor-preview", tags = ["editor-preview"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(computer_use_router, prefix = "/api/computer-use", tags = ["computer-use"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])

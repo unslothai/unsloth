@@ -80,6 +80,7 @@ import {
 } from "@/features/hub/inventory";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { ChatHeaderMenu, ChatTitleMenu } from "./components/chat-header-menu";
+import { EditorPreviewPanel } from "./editor-preview/editor-preview-panel";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -686,8 +687,12 @@ const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
 const SingleContent = memo(function SingleContent({
   threadId,
+  editorPreviewOpen,
+  closeEditorPreview,
 }: {
   threadId?: string;
+  editorPreviewOpen: boolean;
+  closeEditorPreview: () => void;
 }): ReactElement {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
@@ -717,6 +722,7 @@ const SingleContent = memo(function SingleContent({
       ? state.sessions[openResearchRunId]?.run.threadId
       : undefined,
   );
+  const showEditorPreview = editorPreviewOpen && chatActive && !isMobile;
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
   // Sampled on drag end, not onResize: that fires through the open/close animations too.
   const artifactPanelWidthRef = useRef<string | null>(null);
@@ -725,11 +731,12 @@ const SingleContent = memo(function SingleContent({
     if (size == null) return;
     // Dragged shut means closed.
     if (size <= 5) {
-      closeOrFloatBrowser();
+      if (showEditorPreview) closeEditorPreview();
+      else closeOrFloatBrowser();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, []);
+  }, [closeEditorPreview, showEditorPreview]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -741,9 +748,9 @@ const SingleContent = memo(function SingleContent({
     openResearchThreadId &&
       openResearchThreadId === (threadId ?? activeThreadId),
   );
-  const showResearchPanel = researchMatchesThread && !isMobile;
+  const showResearchPanel = researchMatchesThread && !showEditorPreview && !isMobile;
   const browserOverlaid = useContext(BrowserOverlaidContext);
-  const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;
+  const showBrowserPanel = !showEditorPreview && !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;
   // Research outranks the browser in the side pane, so a new browser open (a card, a link) closes it.
   const handledBrowserOpenRef = useRef(browserOpenSequence);
   useEffect(() => {
@@ -768,7 +775,7 @@ const SingleContent = memo(function SingleContent({
       ? browserPanelDefaultSize(contextSurfaceRef.current?.closest<HTMLElement>(".chat-artifact-split"))
       : ARTIFACT_PANEL_DEFAULT_SIZE;
   });
-  const showContextPanel = showResearchPanel || browserDocked;
+  const showContextPanel = showEditorPreview || showResearchPanel || browserDocked;
 
   const artifactLayoutActive =
     showContextPanel || (!IMMEDIATE_CONTEXT_PANEL && isArtifactPanelLayoutActive);
@@ -1081,7 +1088,7 @@ const SingleContent = memo(function SingleContent({
                 ? "70%"
                 : "0%"
           }
-          collapsible={IMMEDIATE_CONTEXT_PANEL ? !showResearchPanel : showBrowserPanel}
+          collapsible={IMMEDIATE_CONTEXT_PANEL ? !showResearchPanel : showBrowserPanel || showEditorPreview}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -1098,14 +1105,16 @@ const SingleContent = memo(function SingleContent({
             {...{ "data-browser-floating": browserFloating ? "" : undefined }}
             className={cn(
               "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
-              (showResearchPanel || browserDocked) &&
+              (showEditorPreview || showResearchPanel || browserDocked) &&
                 (chatOnRight ? "border-r" : "border-l"),
-              (showResearchPanel || browserDocked) && "border-border/70",
+              (showEditorPreview || showResearchPanel || browserDocked) && "border-border/70",
               browserFloating && "chat-browser-floating",
             )}
             style={showBrowserPanel ? { transform: "none" } : undefined}
           >
-             {showResearchPanel && openResearchRunId ? (
+             {showEditorPreview ? (
+               <EditorPreviewPanel key={threadId ?? activeThreadId} onClose={closeEditorPreview} />
+             ) : showResearchPanel && openResearchRunId ? (
                <ResearchActivityPanel
                  key={openResearchRunId}
                  runId={openResearchRunId}
@@ -2919,6 +2928,8 @@ export function ChatPage({
   );
   const navigate = useNavigate();
 
+  const [editorPreviewOpen, setEditorPreviewOpen] = useState(false);
+  const closeEditorPreview = useCallback(() => setEditorPreviewOpen(false), []);
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const incognito = useChatRuntimeStore((s) => s.incognito);
@@ -5191,6 +5202,10 @@ export function ChatPage({
               />
             ) : null}
             {view.mode === "single" ? <ChatFilesMenu /> : null}
+            {view.mode === "single" && !isMobile ? (
+              <Button size="sm" variant="ghost" aria-pressed={editorPreviewOpen}
+                onClick={() => setEditorPreviewOpen((open) => !open)}>Editor preview</Button>
+            ) : null}
             {view.mode === "single" && (
               <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
@@ -5327,7 +5342,11 @@ export function ChatPage({
                         <>
                           <TemporaryChatSaveBridge />
                           <ChatFilesBridge />
-                          <SingleContent threadId={baseView.threadId} />
+                          <SingleContent
+                            threadId={baseView.threadId}
+                            editorPreviewOpen={editorPreviewOpen}
+                            closeEditorPreview={closeEditorPreview}
+                          />
                         </>
                       )}
                     </NativeAttachmentOwnerScopeContext.Provider>

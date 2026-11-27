@@ -57,6 +57,22 @@ Like Blender, these tools run code in the editor on this computer, so they follo
 gate as local commands: owner only, and off while Remote access or LAN access is on.
 Advanced settings change the port. Tools are named `mcp__<id>__*` (`unity`, `unreal`, `godot`, `figma`, `roblox`).
 
+## Live 3D editor preview
+
+In a single chat on your local Studio installation, select **Editor preview**,
+choose Blender, Godot, Unity, Unreal Engine, or Roblox Studio, then download
+the adapter. Each zip contains editor-specific installation instructions.
+Start a preview in Studio and paste the pairing code into the adapter.
+
+Drag to orbit, Shift-drag to pan, or scroll to zoom. With focus on the
+viewport, use the arrow keys, Shift with the arrow keys, or **+** and **−**.
+The adapter moves the editor viewport camera. Chat scene edits continue to
+use the editor's MCP server.
+
+Preview sessions use a local Studio connection with Remote Access off.
+Closing the panel ends the session. If you restart the editor, start a new
+preview and copy its new pairing code.
+
 ## Large tool catalogs
 
 A server can expose dozens of tools with long descriptions and deeply nested
