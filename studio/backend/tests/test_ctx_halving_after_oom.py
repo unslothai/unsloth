@@ -71,6 +71,8 @@ def test_a_studio_context_that_does_not_fit_is_halved_and_keeps_the_drafter(tmp_
     assert any(b <= a // 2 for a, b in zip(sizes, sizes[1:]))
     assert draft in last and "--spec-default" not in last
     assert backend._effective_context_length == _ctx(last)
+    # #19275: halve before --fit on so MoE experts stay on GPU instead of spilling.
+    assert "--fit" not in last or last[last.index("--fit") + 1] == "off"
 
 
 def test_a_typed_context_is_never_halved(tmp_path):
