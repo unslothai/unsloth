@@ -160,3 +160,16 @@ def test_gkd_and_distillation_trainers_run_the_check(monkeypatch):
     self = type("GKDTrainer", (), {})()
     exec(code, {}, {"teacher_model": "teacher", "processing_class": "tok", "self": self})
     assert seen == [("teacher", "tok", "GKDTrainer")]
+    # The `tokenizer =` alias is what the superclass receives, so it is the one checked.
+    seen.clear()
+    exec(
+        code,
+        {},
+        {"teacher_model": "teacher", "processing_class": None, "tokenizer": "alias", "self": self},
+    )
+    exec(
+        code,
+        {},
+        {"teacher_model": "teacher", "processing_class": "tok", "tokenizer": None, "self": self},
+    )
+    assert seen == [("teacher", "alias", "GKDTrainer"), ("teacher", "tok", "GKDTrainer")]

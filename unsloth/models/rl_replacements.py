@@ -287,7 +287,8 @@ def distillation_trainer_teacher_tokenizer(call_args, extra_args):
         return ""
     return (
         "from unsloth.models._on_policy_distillation import check_teacher_tokenizer as _unsloth_check_teacher_tokenizer\n"
-        "_unsloth_check_teacher_tokenizer(teacher_model, processing_class, type(self).__name__)\n"
+        # The superclass gets `tokenizer` when the caller used that alias (rl.py), so check the same object.
+        "_unsloth_check_teacher_tokenizer(teacher_model, locals().get('tokenizer') if locals().get('tokenizer') is not None else processing_class, type(self).__name__)\n"
     )
 
 
