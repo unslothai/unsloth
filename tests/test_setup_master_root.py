@@ -14,8 +14,7 @@ from pathlib import Path
 
 import pytest
 
-# tests/conftest.py puts tests/_shared on sys.path; see unsloth_pwsh_runner for why a bare
-# pwsh subprocess is not enough under xdist.
+# A bare pwsh subprocess is not enough under xdist; use unsloth_pwsh_runner from tests/_shared.
 from unsloth_pwsh_runner import PWSH, run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -160,8 +159,7 @@ def test_a_staging_root_still_outranks_the_master_root(tmp_path):
 
 
 def test_setup_ps1_derives_both_runtimes_from_the_master_root():
-    """No PowerShell on the Linux runners, so the Windows half is held structurally: both
-    derivations must go through the one helper, and it must read UNSLOTH_HOME."""
+    """No PowerShell on Linux runners: both derivations must use one helper that reads UNSLOTH_HOME."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
     assert "function Get-MasterRootOverride" in src
     helper = _slice(src, "function Get-MasterRootOverride", "function Get-ManagedLlamaCppDir")
@@ -177,8 +175,7 @@ def test_setup_ps1_derives_both_runtimes_from_the_master_root():
 
 @NEEDS_POSIX_BASH
 def test_a_padded_master_root_names_the_same_directory(tmp_path):
-    """storage_roots.unsloth_home() and the CLI both .strip(), so setup has to as well: an
-    unstripped value installs under a directory whose name carries the whitespace."""
+    """Strip like storage_roots.unsloth_home() and the CLI, or the dir name keeps whitespace."""
     root = tmp_path / "portable"
     (root / "studio").mkdir(parents = True)
     env = _env(
@@ -583,12 +580,10 @@ def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
 
 @pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
 def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_path):
-    """Master root and .staging go only when empty, removed in one non-recursive call;
-    enumerate-then-Remove-Item -Recurse raced with new files and hid errors."""
+    """Removed only when empty, in one non-recursive call; enumerate-then-Remove-Item -Recurse raced."""
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
     assert "function _RemoveDirIfEmpty" in ps
     helper = _slice(ps, "    function _RemoveDirIfEmpty {", "\n    # The exact shape")
-    # One atomic call: no -Recurse, and no separate emptiness check.
     assert "[System.IO.Directory]::Delete($Path, $false)" in helper
     assert "-Recurse" not in helper, helper
     assert "Get-ChildItem" not in helper, helper
@@ -733,9 +728,8 @@ UNINSTALL_PS1 = REPO_ROOT / "scripts" / "uninstall.ps1"
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh not available")
 def test_the_windows_uninstaller_resolves_a_relative_root_like_setup(tmp_path):
-    """The uninstaller must resolve a relative UNSLOTH_HOME as setup.ps1 does: GetFullPath anchors
-    at CurrentDirectory, which Set-Location leaves out of step; the owner marker cannot catch it
-    since the wrong path is another real Unsloth install."""
+    """Uninstaller resolves relative UNSLOTH_HOME like setup.ps1: GetFullPath uses CurrentDirectory,
+    which Set-Location leaves stale; the owner marker misses another real Unsloth install."""
     initial = tmp_path / "initial"
     chosen = tmp_path / "chosen"
     (chosen / "portable").mkdir(parents = True)
@@ -815,8 +809,7 @@ def test_the_stop_pass_covers_the_master_root_runtimes():
 
 
 def test_a_shared_staging_directory_is_pruned_not_deleted():
-    """The prebuilt installers share <root>/.staging and prune it only when empty, so anything
-    left in a user-chosen root is not ours to delete recursively."""
+    """Shared <root>/.staging is pruned only if empty; user-chosen roots may hold other files."""
     sh = UNINSTALL_SH.read_text(encoding = "utf-8")
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
     assert 'rmdir "$_mr_root/.staging"' in sh
@@ -1010,8 +1003,7 @@ def test_the_windows_runtime_guard_treats_a_file_as_occupied():
 
 
 def test_neither_uninstaller_takes_a_studio_root_that_is_also_the_master_root():
-    """Never delete a Studio root that is also the master root; a whole-directory delete takes user
-    files."""
+    """Never delete a Studio root that is also the master root: deleting it takes user files."""
     sh = UNINSTALL_SH.read_text(encoding = "utf-8")
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
 
@@ -1128,8 +1120,7 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
 
 
 def test_the_windows_note_writer_creates_its_staging_file_exclusively():
-    """The setup.ps1 half of the test above. Held structurally: the Linux runners have no
-    Windows filesystem to plant a link on, and CreateNew is the thing that must not regress."""
+    """Structural: Linux runners cannot plant a Windows link, so CreateNew must not regress."""
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     block = _slice(ps, "if ((Get-MasterRootOverride) -and -not $StageRoot -and", "\n# ")
     # Comments stripped: the block mentions the old staging name in prose.
@@ -1246,8 +1237,7 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
 
 
 def test_the_windows_note_gate_holds_the_same_two_rules():
-    """The setup.ps1 half of the two tests above. Structural: no PowerShell-on-Linux run can
-    exercise %USERPROFILE% canonicalisation the way a real Windows profile does."""
+    """Structural: PowerShell on Linux cannot exercise %USERPROFILE% canonicalisation."""
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     gate = _slice(ps, "function Test-MasterRootNoteIsHonoured {", "\nif ((Get-MasterRootOverride)")
     assert "$legacy = Get-CanonicalDir" in gate, "the legacy default root is not refused"
@@ -1258,8 +1248,7 @@ def test_the_windows_note_gate_holds_the_same_two_rules():
 
 
 def test_the_windows_note_writer_is_a_no_op_when_the_note_already_says_this():
-    """Skip the write when the note already matches: Move-Item -Force is not atomic and can leave no
-    note."""
+    """Skip the write if unchanged: Move-Item -Force is not atomic and can leave no note."""
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     block = _slice(
         ps, '        $notePath = Join-Path $noteDir ".unsloth-master-root"', "\n    } catch {"
@@ -1270,8 +1259,7 @@ def test_the_windows_note_writer_is_a_no_op_when_the_note_already_says_this():
 
 @pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
 def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
-    """The behaviour, measured: same value twice leaves the file untouched; a different value
-    replaces it; and no staging file survives either way."""
+    """Same value leaves the note untouched, a new one replaces it; no staging file survives."""
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     block = _slice(
         ps, '        $notePath = Join-Path $noteDir ".unsloth-master-root"', "\n    } catch {"
@@ -1317,3 +1305,72 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
     run_pwsh(argv, capture_output = True, text = True, check = True)
     assert note.read_text(encoding = "utf-8").strip() == str(tmp_path / "moved")
     assert int(note.stat().st_mtime) != old_stamp
+
+
+def _torch_cache_may_persist(tmp_path: Path, cases: list[tuple[str, str, str, bool]]) -> list[str]:
+    calls = "\n".join(
+        f"Write-Output (Test-TorchCacheMayPersist {_ps_quote(v)} {_ps_quote(p)} "
+        f"{_ps_quote(h)} ${'true' if custom else 'false'})"
+        for v, p, h, custom in cases
+    )
+    script = tmp_path / "persist_probe.ps1"
+    script.write_text(
+        f"""$txt = Get-Content -Raw "{SETUP_PS1}"
+$m = [regex]::Match($txt, "(?ms)^function Test-TorchCacheMayPersist \\{{.*?^\\}}")
+if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED"; exit 1 }}
+Invoke-Expression $m.Value
+{calls}
+""",
+        encoding = "utf-8",
+    )
+    out = run_pwsh(
+        [PWSH, "-NoProfile", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        check = False,
+    ).stdout.split()
+    assert "EXTRACT-FAILED" not in out, out
+    return out
+
+
+@pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
+def test_a_custom_home_never_repoints_another_installs_inductor_cache(tmp_path):
+    """A scratch UNSLOTH_STUDIO_HOME setup run used to overwrite the real install's USER value."""
+    scratch = r"C:\work\0023\studio_home_emul"
+    ours = scratch + r"\cache\torchinductor"
+    cases = [
+        (ours, r"C:\tc", scratch, True),
+        (ours, r"C:\Users\u\.unsloth\studio\cache\torchinductor", scratch, True),
+        (ours, r"D:\my inductor", scratch, True),
+        # A sibling whose name only starts with this home is not inside it.
+        (ours, r"C:\work\0023\studio_home_emul2\cache\torchinductor", scratch, True),
+        (ours, "", scratch, True),
+        (ours, ours.lower() + "\\", scratch, True),
+        (ours, scratch + r"\cache\old", scratch, True),
+        (
+            r"C:\Users\u\.unsloth\studio\cache\torchinductor",
+            ours,
+            r"C:\Users\u\.unsloth\studio",
+            False,
+        ),
+        (r"C:\tc", ours, r"C:\Users\u\.unsloth\studio", False),
+    ]
+    expected = ["False"] * 4 + ["True"] * 5
+    assert _torch_cache_may_persist(tmp_path, cases) == expected
+
+
+def test_the_user_inductor_cache_write_is_gated_on_ownership():
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
+    writes = [
+        m.start()
+        for m in re.finditer(
+            r"SetEnvironmentVariable\('TORCHINDUCTOR_CACHE_DIR', \$TorchCacheDir, 'User'\)", code
+        )
+    ]
+    assert len(writes) == 1, writes
+    guard = code.rfind("Test-TorchCacheMayPersist", 0, writes[0])
+    assert guard != -1 and "\n}" not in code[guard : writes[0]], "the USER write lost its guard"
+    gate_line = code[code.rfind("\n", 0, guard) : code.find("\n", guard)]
+    assert "$StudioHomeIsCustom" in gate_line, gate_line
+    assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in code[guard - 400 : guard]

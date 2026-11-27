@@ -29,8 +29,7 @@ def _device(path: Path) -> int:
 
 
 def _locate(path: Path) -> tuple[Path, int]:
-    """(nearest existing ancestor, its device). Climbs only past MISSING paths: a fresh install
-    has no cache dir yet, but an unreadable one must not report its parent's volume."""
+    """Nearest existing ancestor, its device; climbs only past missing paths, not unreadable."""
     for candidate in (path, *path.parents):
         try:
             return candidate, _device(candidate)

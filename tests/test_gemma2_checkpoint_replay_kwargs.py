@@ -76,7 +76,6 @@ def _run(gradient_checkpointing, monkeypatch):
 def test_replay_uses_each_layers_sliding_window(monkeypatch):
     seen, grads = _run(True, monkeypatch)
     _, eager = _run(False, monkeypatch)
-    # Checkpointed gradients equal the eager ones.
     torch.testing.assert_close(torch.cat(grads), torch.cat(eager))
     forward, replay = seen[:N_LAYERS], seen[N_LAYERS:]
     assert forward == [(i, i % 2 == 0) for i in range(N_LAYERS)]

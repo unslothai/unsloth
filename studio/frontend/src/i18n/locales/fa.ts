@@ -2614,6 +2614,10 @@ export const fa = {
         confirmDescriptionChatOnly:
           "سرور را متوقف می‌کند و نصب‌کننده را دوباره اجرا می‌کند. این یک نصبِ «فقط گفتگو» است، بنابراین نصب‌کننده آن را به نصب کامل با PyTorch نیز ارتقا می‌دهد که در مجموع چندین گیگابایت است. گفتگوها و تنظیمات حفظ می‌شوند. این کار ممکن است چند دقیقه طول بکشد.",
         confirmAction: "تعمیر اکنون",
+        recommendedTorch:
+          "تعمیر توصیه می‌شود: این نصب PyTorch {torch} دارد که قدیمی‌تر از نسخه مدیریت‌شده {managedTorch} است که GPUهای سری RTX 50 روی آن پشتیبانی می‌شوند.",
+        recommendedDriver:
+          "PyTorch {torch} قدیمی‌تر از نسخه مدیریت‌شده {managedTorch} است که GPUهای سری RTX 50 روی آن پشتیبانی می‌شوند، اما درایور این GPU از CUDA 13 پشتیبانی نمی‌کند. ابتدا درایور GPU را به‌روزرسانی کنید، سپس نصب را تعمیر کنید.",
       },
       resetPreferences: {
         sectionTitle: "منطقهٔ خطر",
@@ -4821,6 +4825,12 @@ export const fa = {
       epochs: "دوره‌ها",
       useMaxSteps: "استفاده از حداکثر گام‌ها",
       useEpochs: "استفاده از دوره‌ها",
+      stepGuidancePass: "حدود {steps} گام یعنی یک دور روی {rows} ردیف شما با دستهٔ مؤثر {batch}.",
+      stepGuidanceFloor: "یک دور روی {rows} ردیف شما با دستهٔ مؤثر {batch} فقط {passSteps} گام است، پس حدود {steps} گام (چند دور) حداقل معقولی است.",
+      stepGuidanceCap: "یک دور روی {rows} ردیف شما با دستهٔ مؤثر {batch} برابر {passSteps} گام است؛ {steps} گام روی بخشی از آن آموزش می‌دهد که اغلب برای اجرای اول کافی است.",
+      stepGuidanceEpoch: "یک دوره حدود {passSteps} گام روی {rows} ردیف شما با دستهٔ مؤثر {batch} است.",
+      stepGuidancePacking: "بسته‌بندی ردیف‌های کوتاه را ترکیب می‌کند، پس یک دور ممکن است گام‌های کمتری بگیرد.",
+      useSuggestedSteps: "استفاده از {steps}",
       maxStepsTooltip: "تعداد کل گام‌های بهینه‌ساز را جایگزین می‌کند.",
       epochsTooltip: "تعداد گذرهای کامل روی مجموعه‌داده.",
       contextLength: "زمینه",

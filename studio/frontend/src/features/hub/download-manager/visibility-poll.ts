@@ -26,9 +26,8 @@ function browserTargets(): VisibilityPollTargets {
 }
 
 /**
- * `run` resolves false to end the chain until the next restart, and must not reject. `delay(hidden)` spaces the runs;
- * null parks a hidden tab until it is shown. Becoming visible refreshes at once unless
- * `wakeOnVisible` is false, which then only suits a `delay` that never parks.
+ * run resolves false to end the chain until restart and must not reject; delay(hidden) spaces runs,
+ * null parks a hidden tab; wakeOnVisible false suits only a delay that never parks.
  */
 export function startVisibilityPoll(
   run: () => Promise<boolean>,

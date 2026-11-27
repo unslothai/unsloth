@@ -196,8 +196,7 @@ def _check(results):
     saved_tp, saved_ref = results[0]["saved_tp"], results[0]["saved_ref"]
     assert set(saved_tp) == set(saved_ref)
     for key in saved_ref:
-        # 3 AdamW steps (eps 1e-8) turn fp32 reduction-order noise on tiny expert grads into ~5e-5 here; a
-        # missed or doubled reduction moves weights by ~lr = 1e-2.
+        # 3 AdamW steps: fp32 reduction noise ~5e-5; a missed/doubled reduction gives ~1e-2.
         torch.testing.assert_close(saved_tp[key], saved_ref[key], rtol = 1e-3, atol = 2e-4, msg = key)
     return results[0]
 
@@ -250,8 +249,7 @@ def test_tp2_attention_dropout_in_a_fused_kernel_is_refused():
 @pytest.mark.parametrize(
     "overrides,kwargs",
     [
-        # Reentrant gradient checkpointing: the attention dropout masks of the no-grad first forward and of the
-        # recompute must both be one process's masks.
+        # Reentrant checkpointing: both attention dropout passes must use one process's masks.
         ({"attention_dropout": 0.25}, {"reentrant_checkpointing": True}),
         # One KV head < tp 2: the replicated key / value projections read the whole (replicated) input.
         ({"num_attention_heads": 4, "num_key_value_heads": 1}, {}),

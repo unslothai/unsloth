@@ -503,7 +503,7 @@ def test_hunyuan_v1_moe_takes_ep_when_picked_and_auto_keeps_ddp():
     assert auto["mode"] == "ddp" and auto["spec"] == "dp=2", auto
 
 
-def test_gpt_oss_qlora_refuses_ep_and_16bit_keeps_it():
+def test_gpt_oss_qlora_plans_ep_like_16bit():
     ep_host = _host(2, ep = True)
     lora = pp.plan(
         {"parallel_mode": "ep", "load_in_4bit": False},
@@ -511,7 +511,19 @@ def test_gpt_oss_qlora_refuses_ep_and_16bit_keeps_it():
         _model(need = 6.0, moe = True, family = "gpt_oss"),
     )
     assert lora["mode"] == "ep" and lora["spec"] == "ep=2", lora
-    # load_in_4bit gpt-oss experts are per-expert Linear4bit lists, which ep cannot shard.
+    qlora = pp.plan(
+        {"parallel_mode": "ep"},
+        ep_host,
+        _model(need = 6.0, moe = True, family = "gpt_oss", mode = "qlora"),
+    )
+    assert qlora["mode"] == "ep" and qlora["spec"] == "ep=2", qlora
+    # A pre-quantized repo name is 4-bit even when the request leaves load_in_4bit off.
+    named = pp.plan(
+        {"parallel_mode": "ep", "model_name": "unsloth/gpt-oss-20b-unsloth-bnb-4bit"},
+        ep_host,
+        _model(need = 6.0, moe = True, family = "gpt_oss"),
+    )
+    assert named["mode"] == "ep" and named["spec"] == "ep=2", named
     fits = pp.plan(
         {"parallel_mode": "auto"},
         ep_host,
@@ -525,21 +537,4 @@ def test_gpt_oss_qlora_refuses_ep_and_16bit_keeps_it():
     )
     assert sharded["mode"] == "fsdp2" and sharded["spec"] == "dp=2,fsdp=1", sharded
     rows = {r["mode"]: r for r in sharded["modes"]}
-    assert not rows["ep"]["available"] and "per-expert Linear lists" in rows["ep"]["reason"], rows[
-        "ep"
-    ]
-    with pytest.raises(pp.ParallelPlanError) as err:
-        pp.plan(
-            {"parallel_mode": "ep"},
-            ep_host,
-            _model(moe = True, family = "gpt_oss", mode = "qlora"),
-        )
-    assert "per-expert Linear lists" in err.value.payload["message"], err.value.payload
-    # A pre-quantized repo name is 4-bit even when the request leaves load_in_4bit off.
-    with pytest.raises(pp.ParallelPlanError) as err:
-        pp.plan(
-            {"parallel_mode": "ep", "model_name": "unsloth/gpt-oss-20b-unsloth-bnb-4bit"},
-            ep_host,
-            _model(need = 6.0, moe = True, family = "gpt_oss"),
-        )
-    assert "per-expert Linear lists" in err.value.payload["message"], err.value.payload
+    assert rows["ep"]["available"], rows["ep"]

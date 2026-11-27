@@ -58,9 +58,7 @@ def _plan(
     prefetch = 0,
     offload = False,
 ):
-    """_generate_gather_plan on a fake CUDA world: units = root + `blocks` blocks of `block` bytes (+ a
-    `tail` unit gathered after the blocks, e.g. a tower). other_free: a second rank's free memory; the
-    agreement takes the elementwise MIN of both ranks' votes and requires equal lengths."""
+    """Fake CUDA world; other_free = peer's free memory; votes: elementwise MIN, equal lengths"""
     import torch.distributed as dist
 
     net = _Net(blocks)
@@ -161,9 +159,8 @@ def test_plan_budgets_the_forward_prefetch_lookahead(monkeypatch):
 
 def test_plan_budgets_the_upfront_gather_peak(monkeypatch):
     monkeypatch.delenv("UNSLOTH_FSDP2_GENERATE_RESIDENT", raising = False)
-    # A 500 MiB unit gathered after the blocks: its all-gather output next to its copied weights
-    # (2 x 500) on top of root + k blocks is the peak, not decode's 300 + 500 + 100 k + 200.
-    # free 1 GiB + 1650 MiB: decode alone would allow 5, the gather's 300 + 100 k + 1000 allows 3.
+    # A 500 MiB tail gather peaks at 2 x 500 + root + k blocks (not decode's 300 + 500 + 100 k +
+    # 200); free 1 GiB + 1650 MiB allows 3 blocks, decode alone would allow 5.
     assert _plan(monkeypatch, free = GIB + 1650 * MIB, tail = 500 * MIB) == (True, 3)
 
 
@@ -211,8 +208,7 @@ def test_request_estimate_reads_the_generate_call():
 
 
 def test_request_estimate_counts_retained_outputs_and_cached_history():
-    """Scores / logits kept per generated token and a supplied cache's history both grow what generate
-    holds; outputs that cannot be sized (attentions, hidden states) and unreadable caches give None."""
+    """Scores, logits and cache history count; unsized outputs and unreadable caches give None."""
     config = types.SimpleNamespace(
         num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
         head_dim = 16, intermediate_size = 128, vocab_size = 50000, torch_dtype = torch.bfloat16,
@@ -261,8 +257,7 @@ def test_request_estimate_counts_retained_outputs_and_cached_history():
 
 
 def test_request_estimate_max_length_ignores_cached_history():
-    """generate bounds a suffix-only call by max_length - len(input_ids), so 4096 cached tokens must not
-    eat the max_length budget: an 8-token suffix with max_length = 2056 decodes 2048 new tokens."""
+    """Suffix calls are capped at max_length - len(input_ids), so cached tokens do not count."""
     config = types.SimpleNamespace(
         num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
         head_dim = 16, intermediate_size = 128, vocab_size = 1000, torch_dtype = torch.bfloat16,
@@ -282,8 +277,7 @@ def test_request_estimate_max_length_ignores_cached_history():
 
 
 def test_request_estimate_sizes_prefill_from_inputs_embeds():
-    """An uncached first step prefills from inputs_embeds (llama _fast_prepare_inputs_for_generation),
-    so 8 tracking ids beside 4096 embedding rows must be sized as a 4096-token prompt."""
+    """Uncached first step prefills from inputs_embeds: 4096 embedding rows size the prompt."""
     config = types.SimpleNamespace(
         num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
         head_dim = 16, intermediate_size = 128, vocab_size = 1000, torch_dtype = torch.bfloat16,
@@ -326,8 +320,7 @@ def test_request_estimate_declines_uncached_generation():
 
 
 def test_request_estimate_counts_dense_padding_mask():
-    """A padded prompt cannot elide the SDPA mask, so prefill holds a dense [batch, 1, prompt, keys]
-    mask plus its construction copies; an all-ones mask adds nothing."""
+    """Padding keeps a dense [batch, 1, prompt, keys] SDPA mask; all-ones masks add nothing."""
     config = types.SimpleNamespace(
         num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
         head_dim = 16, intermediate_size = 128, vocab_size = 1000, torch_dtype = torch.bfloat16,
@@ -507,9 +500,8 @@ def _llama2_7b(fast_path):
 
 
 def test_request_estimate_counts_prefill_and_paged_cache_on_the_fast_path():
-    """Unsloth's fast decode path copies the prefill cache into a paged cache on the first decode step while
-    generate still holds the prefill cache, so a long MHA prompt holds two full caches at once. Llama-2-7B,
-    batch 1, an 8192-token prompt and 4 new tokens: ~4 GiB prefill cache next to the ~4.25 GiB paged one."""
+    """Fast decode copies the prefill cache to a paged cache on step one, while generate still holds
+    the prefill one: Llama-2-7B, batch 1, 8192 tokens, ~4 GiB prefill, ~4.25 GiB paged."""
     from unsloth.models import _decode_graphs as G
 
     batch, prompt, new = 1, 8192, 4
@@ -590,8 +582,7 @@ def test_generate_keeps_resident_prefix_gathered(monkeypatch):
             assert got["peak"] < got["total"], (rank, name, got)
 
 
-# gloo worlds of 2: real collectives, so a rank that diverges or raises shows up as a mismatch,
-# an error or a hang instead of being hidden by a mock.
+# Real gloo collectives (2 ranks): divergence shows as a mismatch, error or hang, not a mock.
 
 
 def _dist_env(rank, world, port, extra):
@@ -690,8 +681,7 @@ def _resident(value):
 
 
 def test_auto_ranks_with_different_caps_agree_on_one_plan():
-    """auto, caps 0 and 3 on the two ranks, both with room for 3 blocks: one fixed-length vote, so
-    both keep 0 (the old per-prefix vote had 2 flags on one rank and 5 on the other)."""
+    """Auto, caps 0 and 3 with room for 3 blocks: one fixed-length vote, so both keep 0."""
     env = [
         {"UNSLOTH_FSDP2_GENERATE_GATHER": "auto", **_resident("0")},
         {"UNSLOTH_FSDP2_GENERATE_GATHER": "auto", **_resident("3")},
@@ -703,8 +693,7 @@ def test_auto_ranks_with_different_caps_agree_on_one_plan():
 
 
 def test_block_mode_ranks_agree_on_the_resident_count():
-    """Forced block with RESIDENT=2 on one rank and 4 on the other: both keep 2 (a local count would
-    send the ranks into different weight all-gathers)."""
+    """Forced block, RESIDENT 2 vs 4 across ranks: both keep 2, or weight all-gathers diverge."""
     env = [
         {"UNSLOTH_FSDP2_GENERATE_GATHER": "block", **_resident("2")},
         {"UNSLOTH_FSDP2_GENERATE_GATHER": "block", **_resident("4")},
@@ -796,8 +785,7 @@ def _loop_reference():
 
 
 def test_block_mode_with_every_block_resident_keeps_cuda_graphs():
-    """Forced block with all 6 blocks resident: nothing streams, so generate must not enter the eager
-    scope (CUDA graphs stay on), and tokens equal one process."""
+    """Forced block, all 6 resident: nothing streams, so no eager scope; CUDA graphs stay on."""
     want = _loop_reference()
     for rank, r in _spawn(_generate_worker, {"resident": "6"}).items():
         assert "error" not in r, (rank, r)
@@ -806,8 +794,7 @@ def test_block_mode_with_every_block_resident_keeps_cuda_graphs():
 
 
 def test_resident_blocks_publish_their_execution_device():
-    """Forced block, 2 of 6 resident: the 2 gathered up front republish their execution device over
-    the stale cuda:0 tag (as a streamed block does on enter); the stream still decodes eagerly."""
+    """Forced block, 2 of 6 resident: they republish their device over the stale cuda:0 tag."""
     want = _loop_reference()
     for rank, r in _spawn(_generate_worker, {"resident": "2"}).items():
         assert "error" not in r, (rank, r)

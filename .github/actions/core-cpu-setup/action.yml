@@ -49,8 +49,7 @@ runs:
       run: pip install uv
 
     - name: Resolve matrix specs (handle __from_pyproject__ sentinel)
-      # Resolve the pyproject sentinel to real transformers/trl specs from the optional extras.
-      # RESOLVED_* go to $GITHUB_ENV so later steps in the calling job see them too.
+      # Resolves the __from_pyproject__ sentinel; RESOLVED_* go to $GITHUB_ENV for later steps.
       shell: bash
       env:
         MATRIX_TRANSFORMERS_SPEC: ${{ inputs.transformers-spec }}

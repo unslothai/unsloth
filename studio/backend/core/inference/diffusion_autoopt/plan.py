@@ -261,8 +261,7 @@ def compile_cache_kwargs(
     offload_below_hooks: bool,
     deferred: bool = False,
 ) -> dict[str, Any]:
-    """The compile kwargs the compile cache fingerprints. ``deferred``: the image backend's 3rd-image profile, which
-    always compiles the ``default`` tier with explicit ``dynamic=True``."""
+    """Compile kwargs the cache fingerprints; deferred forces default tier with dynamic=True."""
     from .. import diffusion_speed as ds  # noqa: PLC0415
 
     mode = SPEED_DEFAULT if deferred else ds.normalize_speed_mode(speed_mode)

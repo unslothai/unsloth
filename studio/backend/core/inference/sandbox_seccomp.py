@@ -98,10 +98,8 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
 
 
 def unix_socket_program(machine: str) -> tuple[tuple[int, int, int, int], ...]:
-    """Managed Landlock tools: refuse socket(AF_UNIX) and the kernel keyrings; stream socketpair() stays.
-    Landlock below ABI 9 does not mediate connect() to a pathname socket, so docker.sock or the session bus
-    stays reachable. io_uring could create the socket without the syscall, and a datagram pair can still
-    connect()."""
+    """Blocks socket(AF_UNIX), keyrings, io_uring (socket sans syscall); keeps stream socketpair();
+    datagrams can connect(); below ABI 9 connect() to pathnames is unmediated (docker.sock)"""
     key = machine.lower()
     if key not in _ABIS or sys.byteorder != "little":
         raise RuntimeError(

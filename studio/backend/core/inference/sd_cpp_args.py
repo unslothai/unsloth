@@ -28,8 +28,7 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "qwen-image": ("--qwen2vl",),
     "qwen-image-edit": ("--qwen2vl",),
     "qwen-image-layered": ("--qwen2vl",),
-    # 2.1 conditions on Qwen3-VL via --llm; --qwen2vl also enables Qwen2-VL's vision, the wrong
-    # door.
+    # 2.1 conditions on Qwen3-VL via --llm, not --qwen2vl (which enables Qwen2-VL's vision).
     "qwen-image-2.1": ("--llm",),
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
@@ -44,6 +43,27 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
 def text_encoder_flags_for_family(family_name: str) -> tuple[str, ...]:
     """sd-cli text-encoder flags for ``family_name`` (empty if unknown)."""
     return _TE_FLAGS_BY_FAMILY.get(family_name, ())
+
+
+# Qwen-Image-Edit refs at QwenImageEditPlusPipeline's 384 x 384 area (upstream sd.cpp#2433); the pinned
+# build clamps sides to 384..560 px (400 vs 196 vision tokens). min == max takes sd.cpp's area branch.
+QWEN_EDIT_REF_IMAGE_ARGS = "vlm_size=147456"
+QWEN_EDIT_REF_AREA_ENV = "UNSLOTH_SD_CPP_QWEN_EDIT_REF_AREA"
+_REF_IMAGE_ARGS_BY_FAMILY: dict[str, str] = {"qwen-image-edit": QWEN_EDIT_REF_IMAGE_ARGS}
+
+
+def ref_image_args_for_family(family_name: Optional[str], has_refs: bool) -> Optional[str]:
+    """sd.cpp ``ref_image_args`` for a run with refs; ``UNSLOTH_SD_CPP_QWEN_EDIT_REF_AREA=0`` disables."""
+    if not has_refs:
+        return None
+    if (os.environ.get(QWEN_EDIT_REF_AREA_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    return _REF_IMAGE_ARGS_BY_FAMILY.get(family_name or "")
 
 
 # sd-cli image-gen mode (older txt2img); img2img is the same mode with --init-img.
@@ -143,10 +163,9 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
-# Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
-# Read from the diffusion GGUF only (A100, Q8_0 DiT + Q4_K_M encoder: 1.57x); the env is process-wide, but prompt rows
-# stay below it. Drop the env once the pin carries fork patch 0016, the build's own Q8_0-only default.
+# Fork patch 0001: Q8_0-only BF16 dequant + cuBLAS for matmuls with >= N rows, not int8 MMQ
+# (k-quants are weight-error bound); Ada/Ampere/Orin keep MMQ (2x faster); env read only from
+# diffusion GGUF, process-wide, prompt rows stay below; drop once pin has fork patch 0016.
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -325,8 +344,7 @@ def metal_implicit_gemm_conv(binary: Optional[str]) -> bool:
 def metal_vae_conv_direct_decision(
     backend_args: Sequence[str] = (), binary: Optional[str] = None
 ) -> tuple[bool, str]:
-    """``(on, reason)`` for direct conv on a Metal VAE. Off unless opted in, on Apple Silicon, with the VAE on Metal and
-    a build carrying the implicit GEMM kernel (or ``force``)."""
+    """Direct conv on a Metal VAE: opt-in, Apple Silicon, implicit GEMM build (or force)."""
     import os
 
     forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
@@ -613,8 +631,7 @@ def sd_cpp_build_number(tag: Optional[str]) -> Optional[int]:
 
 @functools.lru_cache(maxsize = 8)
 def _installed_sd_cpp_tag(binary: str) -> Optional[str]:
-    """The release tag Studio's installer recorded next to ``binary`` (the binary sits at or a few levels under the
-    install root). None for a binary the installer did not place (``SD_CLI_PATH``, PATH, a source build)."""
+    """Installer's release tag beside binary; None for SD_CLI_PATH, PATH or source builds."""
     import json
     from pathlib import Path
 
@@ -733,9 +750,8 @@ GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 # The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
-# The committed "-1" is a placeholder (live server signatures compare on it); a launch swaps it for an explicit GiB
-# budget read before the spawn, so the 2 GiB reserve also covers the child's own CUDA context and cuBLAS workspaces.
-# Other negative values (UMA pinned-weight reserve) are applied by sd.cpp itself and never replaced.
+# Committed -1 is a placeholder (server signatures compare on it), swapped for a GiB budget at
+# launch; 2 GiB reserve covers the child's CUDA context and cuBLAS; other negatives pass through.
 GRAPH_CUT_BUDGET_RESERVE_BYTES = 2 << 30
 GRAPH_CUT_MIN_BUDGET_BYTES = 1 << 30
 GRAPH_CUT_RETRY_SCALE = 0.75
@@ -901,8 +917,7 @@ _ALLOCATION_FAILURE_MARKERS: tuple[str, ...] = (
     "failed to allocate",
     "backend buffer failed",
 )
-# sd.cpp fills free-512 MiB with cached weights, so each phase needs memory the last one released; half leaves it
-# unclaimed when the driver reports the release late (Windows may defer destroying allocations).
+# sd.cpp fills free-512 MiB with cached weights; half leaves room when Windows defers releases.
 IMAGE_VRAM_RETRY_SCALE = 0.5
 
 
@@ -985,14 +1000,12 @@ _GGML_UNSUPPORTED_OP_MARKERS = ("unsupported op", "ggml_abort")
 
 
 def is_ggml_unsupported_op_abort(message: str) -> bool:
-    """Only this abort signature is retried on CPU; OOM kills, real bugs, and corrupt checkpoints
-    are not."""
+    """Only this abort is retried on CPU; OOM kills, real bugs and corrupt checkpoints are not."""
     text = (message or "").lower()
     return all(marker in text for marker in _GGML_UNSUPPORTED_OP_MARKERS)
 
 
-# Bare --vae-tiling on the CPU VAE = 256 px tiles (49 for 1024 px, ~3x slower, per-tile colour shift); take the
-# largest tile spare host RAM holds. FLUX.2 klein 4B 1024 px decode: 185 s at 256, 138 s at 512, 68 s whole.
+# Bare --vae-tiling on CPU = 256 px tiles (slower, colour shift); largest tile host RAM allows.
 CPU_VAE_TILE_ENV = "UNSLOTH_SD_CPP_VAE_TILE"
 CPU_VAE_TILE_SIZES = (1024, 768, 512)
 # Qwen-Image 2.1 measured 3889 MiB per 1024 px tile (worst family) + 30%.
@@ -1091,10 +1104,9 @@ def gpu_vae_tile_size(
     return None
 
 
-# The text encoder follows the VAE onto the card when the card has room: its weights stay in host RAM and sd.cpp
-# segments the encoder to the live free VRAM (prefetching the next segment), then evicts it for the denoiser. On a
-# 2 vCPU T4 the 7.7 GB BF16 Qwen3-4B encoder of FLUX.2 klein took the request from 133 to 56 s; with 7.6 GB free it
-# ran in segments at a 6.2 GB peak. Below this much free VRAM (after the card reserve) the encoder stays on the CPU.
+# The text encoder follows the VAE onto the card when there is room, its weights staying in host
+# RAM; sd.cpp segments it to live free VRAM, prefetching the next segment, then evicts it for the
+# denoiser; below GPU_TE_MIN_FREE_MIB free VRAM (after the card reserve) it stays on CPU.
 GPU_TE_ENV = "UNSLOTH_SD_CPP_TE_GPU"
 GPU_TE_MIN_FREE_MIB = 6000
 
@@ -1185,8 +1197,7 @@ _LORA_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
 
 
 def strip_lora_tags(prompt: str) -> str:
-    """Removes every tag sd-cli would parse, to a fixed point so a split tag cannot reassemble, plus any dangling
-    ``<lora:`` that could pair with a tag appended after it."""
+    """Strips LoRA tags to a fixed point so split ones cannot rejoin, plus any dangling <lora:."""
     out, prev = prompt, None
     while prev != out:
         prev = out
@@ -1212,7 +1223,6 @@ def build_sd_cpp_command(
         raise ValueError("diffusion_model path is required")
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
-    # A --mask without --init-img is invalid (inpaint needs a source image), so reject it here.
     if params.mask and not params.init_img:
         raise ValueError("init_img is required when mask is set (inpaint needs a source image)")
 
@@ -1292,8 +1302,7 @@ def build_sd_cpp_command(
     return cmd
 
 
-# References are already sized. sd.cpp's "max" leaves a short edge <= 2048 untouched; its default
-# "match" is not idempotent after the 32 px snap, so it could resize them again. Pre-#2177 builds ignore it.
+# Refs are pre-sized; use max (match is not idempotent after the snap); pre-#2177 ignores it.
 H3_SIZED_REF_IMAGE_ARGS = "ref_image_size=max"
 
 
@@ -1539,6 +1548,7 @@ def build_img_gen_request(
     custom_sigmas: Optional[list[float]] = None,
     hires: Optional[dict] = None,
     extra_sample_args: Optional[str] = None,
+    ref_image_args: Optional[str] = None,
 ) -> dict:
     """Guidance is split: FLUX distilled values go to distilled_guidance, real CFG scales to txt_cfg."""
     if not str(prompt).strip():
@@ -1585,6 +1595,8 @@ def build_img_gen_request(
     # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
     if ref_images:
         req["ref_images"] = list(ref_images)
+        if ref_image_args:
+            req["ref_image_args"] = str(ref_image_args)
     if qwen_image_layers is not None:
         req["qwen_image_layers"] = int(qwen_image_layers)
     if hires:

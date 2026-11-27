@@ -5,6 +5,7 @@
 // imported directly because their indexes re-export pages kept out of the eager bundle.
 
 import { authFetch, isAccountOwner } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 import { confirmStopRunningChatsIfNeeded } from "@/features/chat/utils/confirm-stop-running-chats";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { isExternalModelId } from "@/features/chat/external-providers";
@@ -356,7 +357,7 @@ export async function ejectLoadedModel(
             `/api/inference/audio/stt/unload?${query}`,
             { method: "POST" },
           );
-          if (!response.ok) throw new Error(await readErrorDetail(response));
+          if (!response.ok) throw new Error(await readFastApiError(response));
           // The unload body is fixed and the backend may serve `gguf` from transformers, so re-read.
           const after = await bounded(readSttStatus);
           // A failed read is null too; treating it as empty would hide a model still holding memory.
@@ -366,14 +367,4 @@ export async function ejectLoadedModel(
       );
     }
   }
-}
-
-async function readErrorDetail(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { detail?: unknown };
-    if (typeof body.detail === "string") return body.detail;
-  } catch {
-    // non-JSON error body
-  }
-  return `Request failed (${response.status})`;
 }

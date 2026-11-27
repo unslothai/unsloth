@@ -17,8 +17,7 @@ _THREAD_POOL_ENV_VARS = (
     "OPENBLAS_NUM_THREADS",
     "NUMEXPR_NUM_THREADS",
 )
-# Every OpenBLAS worker gets its own buffer and a failed allocation kills the process (#12374); past 8 threads
-# numpy gains little on SMT siblings, so the defaults are capped and fitted to the free memory.
+# Failed OpenBLAS buffer allocs kill the process (#12374); 8-thread cap for SMT, memory-fitted.
 _OPENBLAS_DEFAULT_MAX = 8
 _OPENBLAS_THREAD_COST = 32 << 20  # numpy's buffer
 _OPENBLAS_MEMORY_SHARE = 0.1

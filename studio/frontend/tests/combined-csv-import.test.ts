@@ -114,6 +114,24 @@ test("a role,content CSV still imports as one chat named after the file", () => 
   ]);
 });
 
+test("CSV developer rows import as system, unknown roles as user, with or without a header", () => {
+  const rows = [row("Developer", "Answer in one word."), row("narrator", "Once."), row("assistant", "Paris.")];
+  const roles = (doc: string) =>
+    summary(parseImportText(doc, "chat.csv"))[0].messages.map(({ role, text }) => [role, text]);
+  const expected = [
+    ["system", "Answer in one word."],
+    ["user", "Once."],
+    ["assistant", "Paris."],
+  ];
+  assert.deepEqual(roles(csvDocument(["role,content", ...rows])), expected);
+  assert.deepEqual(roles(rows.join("\n")), expected);
+  assert.deepEqual(
+    summary(parseImportText(csvDocument([COMBINED_CSV_HEADER, row("1", "Quiz", "developer", "Be brief.")]), "all.csv"))[0]
+      .messages[0].role,
+    "system",
+  );
+});
+
 const SOURCE = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
 
 function exportMerged(

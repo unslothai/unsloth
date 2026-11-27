@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Runs inside the Unreal Editor (copied into a project's Content/Python). Models hand-writing a pawn, input and
-vehicle physics in Blueprint rarely get a playable game; this adds Epic's tested Blueprint templates mid-session."""
+"""Unreal Editor tools adding Epic's tested Blueprint templates; hand-written games rarely play."""
 
 import json
 import os

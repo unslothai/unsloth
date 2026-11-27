@@ -70,7 +70,6 @@ def test_compiled_block_is_not_split_by_ddp_optimizer():
     results = _run()
     for rank, out in results.items():
         assert out["wrapped"] == ["LlamaDecoderLayer"], out
-        # The compiled region ran (not the stock forward) in every layer.
         assert all(out["compiled"]), out
         assert out["splits"] == [], (rank, out["splits"])
         # Only scoped to the block call: the global setting is the user's.

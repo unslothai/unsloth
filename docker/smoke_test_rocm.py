@@ -55,8 +55,7 @@ def check_torch() -> None:
         bf16 = torch.cuda.is_bf16_supported()
         print(f"device {i}    {name}  arch={arch}  bf16={bf16}")
     print()
-    # ROCm compute capability does not map cleanly to gfx codes, so run a real kernel; a
-    # listed but unusable device fails here.
+    # ROCm capability can't map to gfx, so run a real kernel; listed but unusable devices fail.
     x = torch.ones(64, 64, device = "cuda", dtype = torch.float16)
     y = (x @ x).float().sum().item()
     assert y == 64 * 64 * 64, f"FAIL: fp16 matmul on the GPU returned {y}, expected {64 * 64 * 64}"
@@ -188,8 +187,7 @@ def check_tiny_train() -> None:
 
     changed = sum(int(not torch.equal(a, b.detach())) for a, b in zip(before, trainable))
     assert changed, "FAIL: the optimizer steps left every LoRA weight unchanged"
-    # the same batch five times over at lr 1e-3: the loss has to come down, or the
-    # forward/backward is not computing what it claims
+    # Five steps on one batch must cut the loss (lr 1e-3), else forward/backward is wrong.
     assert (
         losses[-1] < losses[0]
     ), f"FAIL: loss did not decrease over 5 steps on one batch: {losses}"

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Direct safe_open(device=cuda) on CUDA/HIP UMA GPUs: clone tensors to CPU before moving (bit-
-identical); CPU-open then .to() (bnb/HQQ) and XPU keep stock path."""
+"""Direct safe_open(device=cuda) on CUDA/HIP UMA GPUs: read tensors into private CPU memory before moving (pread
+on safetensors >= 0.8, else an mmap view cloned; bit-identical); CPU opens are _windows_safetensors' (pread on CUDA
+UMA), XPU keeps the stock path."""
 
 import os
 import functools
@@ -58,7 +59,8 @@ def _is_cuda_target(device):
 
 def patch_unified_memory_safetensors_load():
     """Wrap ``transformers.modeling_utils.safe_open`` so CUDA-target shard loads
-    open on CPU then clone+``.to(device)``, restoring the UMA fast path.
+    open on CPU (pread when safetensors has it, else an mmap view cloned) then
+    ``.to(device)``, restoring the UMA fast path.
 
     Gated to integrated GPUs (no-op on discrete/CPU/XPU/MLX), ``framework="pt"``
     CUDA targets only, idempotent. Opt out: ``UNSLOTH_DISABLE_UMA_CLONE_LOAD=1``.
@@ -80,34 +82,70 @@ def patch_unified_memory_safetensors_load():
     if getattr(real_safe_open, "_unsloth_uma_clone", False):
         return True
 
-    def _clone_move(tensor, device):
-        # Clone into a regular CPU allocation to restore fast pinned-DMA, then move.
+    def _clone_move(
+        tensor,
+        device,
+        private = False,
+    ):
+        # A pread tensor already owns regular CPU memory; an mmap view is cloned into one to restore fast DMA.
+        if private:
+            return tensor.to(device, non_blocking = False)
         try:
             return tensor.clone().to(device, non_blocking = False)
         except (MemoryError, RuntimeError):
             return tensor.to(device, non_blocking = False)
 
+    # None = not tried yet; False = this safetensors has no backend keyword (< 0.8.0)
+    pread_ok = [None]
+
+    def _open_cpu(args, kwargs):
+        pread_off = (os.environ.get("UNSLOTH_SAFETENSORS_PREAD") or "").strip().lower() in (
+            "0",
+            "off",
+            "false",
+            "no",
+        )
+        # ROCm APUs keep the clone (pread not measured there); a caller's keep-mmap request is honoured
+        if (
+            pread_off
+            or pread_ok[0] is False
+            or getattr(torch.version, "hip", None)
+            or kwargs.get("_unsloth_keep_mmap")
+            or kwargs.get("backend") not in (None, "mmap")
+        ):
+            return real_safe_open(*args, **kwargs), kwargs.get("backend") == "pread"
+        try:
+            handle = real_safe_open(*args, **dict(kwargs, backend = "pread"))
+        except TypeError as error:
+            if "backend" not in str(error):
+                raise
+            pread_ok[0] = False
+            return real_safe_open(*args, **kwargs), False
+        pread_ok[0] = True
+        return handle, True
+
     class _ClonedSlice:
         """Proxy over a safetensors ``PySafeSlice`` that clones+moves on read."""
 
-        __slots__ = ("_real", "_device")
+        __slots__ = ("_real", "_device", "_private")
 
-        def __init__(self, real, device):
+        def __init__(self, real, device, private):
             self._real = real
             self._device = device
+            self._private = private
 
         def __getattr__(self, name):
-            if name in ("_real", "_device"):
+            if name in ("_real", "_device", "_private"):
                 raise AttributeError(name)
             return getattr(self._real, name)
 
         def __getitem__(self, key):
-            return _clone_move(self._real[key], self._device)
+            return _clone_move(self._real[key], self._device, self._private)
 
     class _ClonedSafeOpen:
         """Safetensors-handle proxy: load on CPU, clone+move tensors to CUDA."""
 
-        __slots__ = ("_real", "_device")
+        __slots__ = ("_real", "_device", "_private")
 
         def __init__(self, args, kwargs):
             self._device = kwargs.get("device", args[2] if len(args) > 2 else "cpu")
@@ -117,7 +155,7 @@ def patch_unified_memory_safetensors_load():
             else:
                 kwargs = dict(kwargs)
                 kwargs["device"] = "cpu"
-            self._real = real_safe_open(*args, **kwargs)
+            self._real, self._private = _open_cpu(args, kwargs)
 
         def __enter__(self):
             self._real.__enter__()
@@ -127,15 +165,15 @@ def patch_unified_memory_safetensors_load():
             return self._real.__exit__(*exc)
 
         def __getattr__(self, name):
-            if name in ("_real", "_device"):
+            if name in ("_real", "_device", "_private"):
                 raise AttributeError(name)
             return getattr(self._real, name)
 
         def get_slice(self, name):
-            return _ClonedSlice(self._real.get_slice(name), self._device)
+            return _ClonedSlice(self._real.get_slice(name), self._device, self._private)
 
         def get_tensor(self, name):
-            return _clone_move(self._real.get_tensor(name), self._device)
+            return _clone_move(self._real.get_tensor(name), self._device, self._private)
 
     @functools.wraps(real_safe_open)
     def _uma_safe_open(*args, **kwargs):

@@ -9,8 +9,7 @@ import type { PageRequest } from "./frame-message";
 const MAX_RUNNING = 3;
 const MAX_QUEUED = 256;
 let running = 0;
-// Pages with requests waiting, in turn order. A page that starts one goes to the back, so one busy
-// page can't take every slot another page is waiting for.
+// A page that starts a request goes to the back, so one busy page can't take every slot.
 const turns = new Set<() => boolean>();
 
 function schedule() {
@@ -23,8 +22,7 @@ function schedule() {
 
 type Job = { id: string; request: PageRequest; controller: AbortController };
 
-/** One page's requests to its own site (routes/browser_network.py), made by `send` for the page at
- *  `pageUrl()`. Each gets one `reply`, null when it failed; one the page aborted gets none. */
+/** Each request gets one `reply`, null if it failed; a request the page aborted gets none. */
 export function pageRequests(
   send: (page: string, request: PageRequest, signal: AbortSignal) => Promise<PageResponse>,
   reply: (id: string, answer: PageResponse | null) => void,

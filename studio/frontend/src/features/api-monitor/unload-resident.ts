@@ -18,8 +18,7 @@ export type UnloadResidentResult = {
   stillResident: string | null;
 };
 
-// One retry: an auto-switch can replace the model between read and unload, and /unload on a
-// replaced model is a 200 no-op.
+// Retry: an auto-switch can swap the model before unload, and /unload on it is a 200 no-op.
 export const UNLOAD_RESIDENT_PASSES = 2;
 
 export async function unloadResident(

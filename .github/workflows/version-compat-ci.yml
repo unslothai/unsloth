@@ -97,9 +97,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Text parsing plus PyPI metadata lookups on Python 3.12. Windows stays for its native
-        # paths and shell. macOS has the same POSIX paths and LF checkout as Linux, so it
-        # repeated the Linux leg on the scarcest pool.
+        # 3.12 for text/PyPI; Windows for native paths and shell; macOS dropped, repeats Linux.
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -140,9 +138,8 @@ jobs:
               'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5' 'triton==3.2.0'
               hf_transfer
           - slug: ceiling
-            # datasets carries the declared window: the --no-deps installs below never apply pyproject's cap.
-            # 3.11, not 3.12: lanes sharing an interpreter share one pip cache key.
-            # Both pins must equal pyproject's ceilings (test_a_ceiling_lane_pins_the_declared_ceiling).
+            # --no-deps skips the cap, so datasets is pinned; 3.11 avoids a shared pip cache key;
+            # pins match pyproject's ceilings (test_a_ceiling_lane_pins_the_declared_ceiling).
             python: '3.11'
             # torch 2.15 reached the CPU index before torchvision 0.30, so the pair failed the import guard.
             torch_pins: >-
@@ -188,8 +185,7 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        # Prefixed: this job checks the repo out under `unsloth/`.
-        # One literal name (tests/studio/test_pip_cache_naming.py), so no two lanes may share an interpreter.
+        # Checkout in unsloth/; literal name per lane, so no two lanes share an interpreter.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
           name: version-compat-spoof

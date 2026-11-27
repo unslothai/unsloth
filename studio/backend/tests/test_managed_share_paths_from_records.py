@@ -74,6 +74,5 @@ def test_managed_run_record_share_not_scanned(monkeypatch, tmp_path):
         out = run_as(ALICE, dts._resume_fields, record_dir, status = "error")
         assert out["can_resume"] is False
     assert seen == []
-    # Owner records are scanned exactly as before.
     assert run_as(OWNER, dts._resume_fields, SHARE, status = "error")["can_resume"] is True
     assert seen == [(SHARE, None)]

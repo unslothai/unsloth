@@ -127,8 +127,7 @@ const MISS: Estimate = {
   specUnpriced: false,
 };
 
-/** Per-model configs announce themselves; the standing mode and speculative type live in
- * localStorage, so the runtime store stands in as their notification. */
+/** Per-model configs announce writes; the store stands in for localStorage mode and type. */
 function subscribeToConfigChanges(onChange: () => void): () => void {
   if (typeof window === "undefined") return () => {};
   const onConfigWrite = () => {
@@ -172,8 +171,7 @@ let configsDirty = true;
 
 /** Re-keys the estimate on any config change, e.g. a context edit beside these rows. */
 function readConfigEpoch(): number {
-  // The standing mode, speculative type and session GPU pin also change the budget without a config
-  // write, so fold them in.
+  // Standing mode, speculative type and session GPU pin change budget without a config write.
   const pin = useChatRuntimeStore.getState();
   const pinSignature = `${(pin.selectedGpuIds ?? []).join(",")} ${pin.selectedGpuIndexKind ?? ""} ${pin.speculativeType ?? ""}`;
   const prefSignature = `${readPersistedGpuMemoryMode()} ${readPersistedSpeculativeType()} ${pinSignature}`;
@@ -207,8 +205,7 @@ function pinnedContext(config: PerModelConfig | undefined): number | undefined {
   return config?.customContextLength || config?.maxSeqLength || undefined;
 }
 
-/** False when a pin or CPU offload means the visible-GPU total is not the ceiling. A negative
- * gpuLayers is Auto, as in `gpuFieldsAtDefault`. */
+/** False when a pin or CPU offload makes the GPU total not the ceiling; gpuLayers < 0 is Auto. */
 function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
   const mode = config?.gpuMemoryMode ?? readPersistedGpuMemoryMode();
   if (mode === "manual") return false;
@@ -310,8 +307,7 @@ export function useModelMemory(
   // Opt-in; checked here so a disabled bar costs no request.
   const enabled = useChatRuntimeStore((state) => state.showMemoryBar);
 
-  // Gate before subscribing: the store ticks per streamed token, and an unconditional subscription
-  // woke every row. Both branches are module constants.
+  // Ungated subscriptions woke all rows per token; both branches are module constants.
   const watching = enabled && source != null;
   const epoch = useSyncExternalStore(
     watching ? subscribeToConfigChanges : subscribeNothing,
@@ -319,8 +315,7 @@ export function useModelMemory(
     () => 0,
   );
 
-  // A Vulkan iGPU reports shared RAM and Apple the whole machine, neither a VRAM ceiling, so draw
-  // nothing. Known gap: a ROCm APU's GTT pool is not flagged shared.
+  // Vulkan iGPU and Apple: no VRAM ceiling, draw nothing. ROCm APU GTT is not flagged shared.
   const inferenceGpu = useInferenceGpuInfo();
   const budgetIsDedicatedVram =
     !inferenceGpu.sharedMemory &&
@@ -436,12 +431,10 @@ export function useModelMemory(
       gpuTotalBytes: estimate?.gpuTotalBytes,
       gpuFloorBytes: estimate?.gpuFloorBytes,
       nCtx: estimate?.nCtx,
-      // Dedicated-only: the combined total adds an iGPU's allowance, a view of free RAM. `sharedMemory`
-      // is every(), so a mixed host reads false and reaches here.
+      // Dedicated-only: combined total adds iGPU free-RAM allowance; mixed hosts reach here.
       gpuGb: budgetGb,
       budgetFraction,
-      // Unpinned default loads auto-fit the context, so use the route's answer; an inherited positive
-      // LLAMA_ARG_CTX_SIZE is kept, not fitted.
+      // Auto-fitted unless pinned; inherited positive LLAMA_ARG_CTX_SIZE is kept, not fitted.
       contextIsAutoFitted:
         estimate?.contextIsPinned == null
           ? plan.nCtx == null

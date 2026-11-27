@@ -1294,6 +1294,9 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         backend.diffusion_frame_sink = lambda frame: _send_response(
             resp_queue, {**frame, "request_id": request_id}
         )
+    progress = bool(cmd.get("generation_progress")) and hasattr(backend, "generation_progress_sink")
+    if progress:
+        backend.generation_progress_sink = _progress_sender(resp_queue, request_id)
 
     try:
         gen_kwargs = _generation_kwargs(backend, cmd, cancel_event)
@@ -1347,6 +1350,15 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     finally:
         if frames:
             backend.diffusion_frame_sink = None
+        if progress:
+            backend.generation_progress_sink = None
+
+
+def _progress_sender(resp_queue: Any, request_id: str):
+    return lambda sample: _send_response(
+        resp_queue,
+        {"type": "generation_progress", "request_id": request_id, "sample": sample},
+    )
 
 
 _COMPLETION_OPTIONS = (
@@ -1672,6 +1684,9 @@ class _ResidentBatch:
         rows = cmd.get("rows") or []
         shared = _generation_kwargs(self.backend, cmd, cancel_event)
         shared.pop("cancel_event", None)
+        watched = bool(cmd.get("generation_progress")) and not rows
+        if watched:
+            shared["generation_progress"] = True
         requests = [{**shared, **row} for row in rows] if rows else [shared]
 
         if self.session is None:
@@ -1689,6 +1704,10 @@ class _ResidentBatch:
         handles = [(request_id, row if rows else None) for row in range(len(requests))]
         self._owed[request_id] = None
         prefixes = []
+        watch = getattr(self.session, "watch_progress", None)
+        if watched and callable(watch):
+            # Before admission: a row may prefill while it is admitted.
+            watch(handles[0], _progress_sender(self.resp_queue, request_id))
         try:
             for request, handle in zip(requests, handles):
                 prefixes.append((handle, self.session.admit(request, handle)))

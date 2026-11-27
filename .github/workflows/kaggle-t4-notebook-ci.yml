@@ -61,8 +61,7 @@ on:
       # The gated t4-smoke job runs these scripts by path when the kernel carries Studio.
       - '.github/scripts/kaggle_studio_ci/**'
       - 'pyproject.toml'
-  # Nightly for legs too flaky to gate PRs (grpo's intermittent vLLM standby crash on Turing).
-  # Off the hour to avoid the scheduler peak.
+  # Nightly: grpo's vLLM standby crash on Turing is flaky; off-hour to dodge scheduler peak.
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
@@ -104,8 +103,7 @@ on:
 permissions:
   contents: read
 
-# Not latest-only: a cancelled runner cannot stop kernels it already pushed. The slot is in this
-# group too, or two dispatches meant for both session slots would discard each other while pending.
+# Not latest-only: cancel cannot stop pushed kernels; slot in group so slots don't discard.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.slot || '1' }}
   cancel-in-progress: false
@@ -146,11 +144,9 @@ jobs:
         # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
         run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
-      # budget-hours is the worst case of ONE invocation from launch.py's constants (2 sessions x ~13800s,
-      # ~8 GPU-h); the harness suite recomputes it. reserve-hours 20 caps this leg at 40h spent and is
-      # deliberately above the Unsloth leg's 10. The event action and label stop non-opt-in labels from
-      # forcing runs; label text goes through env, never the shell.
-      # Keyed on the commit under test (not github.sha) so dispatches of one ref collide in the in-flight check.
+      # budget-hours: worst case per launch.py run, recomputed by harness suite; reserve-hours 20
+      # caps at 40h; event action and label stop non-opt-in labels forcing runs; label text via env,
+      # never the shell; keyed on tested commit, not github.sha, so same-ref runs collide.
       - name: Name the commit under test
         id: ref
         env:
@@ -224,11 +220,9 @@ jobs:
     # the harness suite recomputes this relation.
     #   ----------------------------------------------------------------
     timeout-minutes: 260
-    # Not keyed on the ref: the Kaggle account is global. One kernel here plus one Studio kernel is
-    # exactly Kaggle's 2-session cap per account, so each workflow must keep pushing ONE kernel.
+    # Not keyed on ref: Kaggle's 2-session cap is per account; each workflow pushes ONE kernel.
     concurrency:
-      # Slotted and per account: a group allows one runner and only one PENDING run (a second cancels
-      # it), while an account allows 2 sessions. The slot input is 1 or 2 only.
+      # Slots 1 or 2: one PENDING run per group (a second cancels it); 2 sessions per account.
       group: kaggle-t4-account-${{ needs.gate.outputs.account }}-notebook-${{ inputs.slot || '1' }}
       cancel-in-progress: false
     steps:
@@ -263,14 +257,12 @@ jobs:
       - name: Test the harness
         run: |
           python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          # Every third-party module tests/kaggle/test_*.py imports unguarded; test_harness_dependencies.py
-          # keeps this line and that import set in agreement.
+          # Must cover unguarded tests/kaggle imports; test_harness_dependencies.py checks it.
           python -m pip install --quiet pytest transformers peft datasets pillow pyyaml huggingface_hub
           python -c "import torch, sys; sys.exit(None if torch.version.cuda is None else 'torch %s is built for CUDA %s: the CPU-index install was skipped as already satisfied' % (torch.__version__, torch.version.cuda))"
           python -m pytest tests/kaggle -q
 
-      # Resolve a dispatched ref to one commit, so every leg installs the same Unsloth; the harness stays
-      # on the checked-out tree. An unresolvable ref stands the run down.
+      # Resolve the ref once for all legs; harness stays on checkout; unresolvable stands down.
       - name: Resolve the ref under test
         id: ref
         env:
@@ -285,8 +277,7 @@ jobs:
           fi
           # Reuse the gate's resolution: a moving ref could name a commit the gate never keyed on.
           RESOLVED="$GATE_SHA"
-          # A SHA-shaped string may not exist (ls-remote matches refs only); fetching the object proves it is
-          # installable (exit 128 otherwise). Applied to every branch above.
+          # ls-remote matches refs only, so every branch fetches the SHA (exit 128 if absent).
           if ! printf '%s' "$RESOLVED" | grep -Eq '^[0-9a-f]{40}$'; then
             RESOLVED=''
           fi
@@ -346,8 +337,7 @@ jobs:
             --max-steps "$MAX_STEPS" \
             --payload-dir tests/kaggle/t4_smoke
 
-      # A reference compares only to a run of its own step count; recapture runs need skip_reference_band.
-      # See tests/kaggle/t4_smoke/references/README.md.
+      # A reference compares only at its own step count; recaptures need skip_reference_band.
       - name: Build the kernel notebooks
         id: build
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
@@ -414,8 +404,7 @@ jobs:
             $SHARED_WHEELS \
             $SKIP
 
-      # Collect before the recheck: it can take minutes, and the recheck must be last before the push.
-      # It also finds whether a kernel for this commit is already in flight.
+      # Collect (slow) first, recheck last; collect also finds this commit's in-flight kernel.
       - name: Collect finished Kaggle runs
         id: collect
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
@@ -452,9 +441,8 @@ jobs:
             --delete-collected kaggle_collected/collect_result.json \
             --posted kaggle_collected/posted.json
 
-      # kernel-timeout-sec is only a backstop (Kaggle has ignored it); the launcher deleting kernels is
-      # the budget control. Recheck the account right before the push: the gate answer can be stale.
-      # --force skips only the sampling draw. --soft-fail: losing the race while queued is a stand-down.
+      # Kaggle ignores kernel-timeout-sec, so deleting kernels is the budget control; recheck before
+      # push (gate can be stale); --force skips sampling; --soft-fail: lost race stands down.
       - name: Recheck the Kaggle account
         id: recheck
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
@@ -519,8 +507,7 @@ jobs:
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --silent || echo "::warning title=Could not post the pending status::kaggle-t4-notebook"
 
-      # The launcher collects only notebooks and logs, so the Studio payload encodes evidence in cell
-      # output. Harmless on runs without Studio.
+      # Launcher collects only notebooks and logs, so Studio encodes evidence in cell output.
       - name: Unpack the Playwright evidence
         if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb', 'kaggle_collected/**/*_output.ipynb') != ''
         continue-on-error: true

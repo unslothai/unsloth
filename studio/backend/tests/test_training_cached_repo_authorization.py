@@ -214,7 +214,6 @@ def test_local_dataset_paths_in_the_cache_require_caller_authorization(monkeypat
 
     monkeypatch.setattr(training_routes, "cached_read_refused", refuse)
 
-    # An API key with no token of its own: refused, and told which repository to get access to.
     with pytest.raises(HTTPException) as error:
         training_routes._refuse_unauthorized_cached_local_paths([target], False)
     assert error.value.status_code == 422
@@ -460,8 +459,7 @@ def test_an_unreadable_repo_directory_still_counts_as_cached(monkeypatch, cache_
 
 
 def test_a_disabled_eval_path_is_not_authorized(monkeypatch, cache_root):
-    """The route validates local_eval_datasets only while evaluation is on, and so does the
-    trainer, so a stale eval path nothing will ever open must not refuse the run."""
+    """A disabled eval path is never checked, matching the trainer, so it can't refuse the run."""
     import inspect
 
     import routes.training as training_routes
@@ -488,8 +486,7 @@ def test_only_the_effective_diffusion_fetch_target_is_authorized():
 
 
 def test_a_metadata_less_probe_needs_content_not_just_a_revision_dir(cache_root):
-    """The diffusion preflight probes without a metadata name, since it varies by family, so an
-    empty snapshots/<rev>/ left by an interrupted download must not read as usable."""
+    """Metadata-less probes need content; an interrupted download's empty snapshot is unusable."""
     from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
 
     (cache_root / "models--org--empty-rev" / "snapshots" / "abc").mkdir(parents = True)
@@ -503,8 +500,7 @@ def test_a_metadata_less_probe_needs_content_not_just_a_revision_dir(cache_root)
 
 
 def test_a_streaming_start_skips_the_cached_dataset_check():
-    """Streaming reads the Hub (load_dataset(streaming = True)) and never the materialized cache,
-    and the preflight already verified the repo remotely, so asking again only adds a refusal."""
+    """Streaming reads the Hub, never the cache, and preflight already verified it remotely."""
     import inspect
 
     import routes.training as training_routes
@@ -533,8 +529,7 @@ def test_a_metadata_less_probe_ignores_repo_boilerplate(cache_root):
 
 
 def test_a_shadowed_hub_dataset_is_not_the_source():
-    """load_and_format_dataset takes local_datasets, then s3_config, ahead of dataset_source, so a
-    payload carrying both never reads the Hub cache and must not be refused over it."""
+    """Shadowed by local_datasets or s3_config, a Hub dataset is neither read nor refused."""
     from types import SimpleNamespace
 
     from routes.training import _hf_dataset_is_the_source

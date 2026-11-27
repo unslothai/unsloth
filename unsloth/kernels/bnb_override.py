@@ -65,8 +65,7 @@ class _NF4Linear(torch.autograd.Function):
 
 
 def _traced_linear(x, weight, quant_state, bias):
-    """A traced autograd.Function makes AOTAutogradCache bypass the graph; checkpoint only the
-    dequantize (F.linear inside the region would redo the matmul in backward)."""
+    """Checkpoint only dequantize: F.linear would redo matmul; avoids AOTAutogradCache bypass."""
     dtype = x.dtype
 
     def dequantize(weight):
@@ -289,8 +288,7 @@ _nf4_forward._unsloth_nf4_override = True
 
 
 def install_bnb_nf4_override():
-    """Route NF4 bitsandbytes Linear4bit forwards through Unsloth's NF4 kernels. Idempotent; the
-    forward installed before (bitsandbytes' or zoo's patched one) handles everything else."""
+    """Route NF4 Linear4bit forwards to Unsloth kernels; idempotent, rest keep prior forward."""
     if not _ENABLED:
         return False
     try:

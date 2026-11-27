@@ -18,8 +18,7 @@ export function hasResearchMetadata(metadata: unknown): boolean {
   return RESEARCH_METADATA_KEYS.some((key) => key in keys);
 }
 
-/** Swap client copies of server-managed research messages for the stored ones, else the
- *  backend answers 409 and drops the whole autosave payload. */
+/** Use stored copies of server-managed research messages, else the backend 409s the autosave. */
 export function reconcileServerManagedMessages(
   records: MessageRecord[],
   stored: MessageRecord[],

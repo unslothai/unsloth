@@ -61,8 +61,7 @@ jobs:
       - name: Lint workflow triggers + cache keys
         run: python3 scripts/lint_workflow_triggers.py
 
-      # Static floor check (syntax and stdlib symbols via vermin) since PRs only execute the
-      # newest interpreter.
+      # Vermin static check (syntax, stdlib symbols); PRs only run the newest interpreter.
       - name: Backend still runs on the oldest interpreter the matrix claims
         run: python3 scripts/lint_backend_python_floor.py
 
@@ -152,9 +151,8 @@ jobs:
             --ignore=tests/security/test_inherited_custom_dtype_is_neutralized.py
 
 
-  # The four security suites the job above must --ignore (they import torch and
-  # transformers). They run here per tests/studio/test_short_job_absorption.py. CPU torch
-  # is enough: they never touch a device.
+  # Runs the four security suites the job above must --ignore (they import torch and transformers)
+  # per tests/studio/test_short_job_absorption.py; CPU torch is enough, they never touch a device.
   security-regression-suites:
     name: security suites (torch-dependent)
     runs-on: ubuntu-latest

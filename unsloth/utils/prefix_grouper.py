@@ -49,8 +49,7 @@ _ENABLED = _ENV_ENABLED and TORCH_SUPPORTS_PREFIX_GROUPER
 _OFF_LOGGED = False
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
-# Cost gate on saved prompt tokens per call: measured L4 LoRA break-even ~670 (Qwen3-0.6B) and
-# ~560 (Qwen2.5-1.5B) saved tokens, so 1024 keeps a margin.
+# L4 LoRA break-even ~670 (Qwen3-0.6B), ~560 (Qwen2.5-1.5B) saved tokens; 1024 keeps a margin.
 _MIN_SAVED = int(float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_MIN_SAVED", "1024")))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
