@@ -2259,8 +2259,7 @@ def run_inference_process(
 
     mark_log_record_continuations()
 
-    # audio.cpp weights run in audiocpp_server and this worker only proxies to it, so it never
-    # imports torch or transformers: no hardware detection, transformers activation or ML import.
+    # audio.cpp workers only proxy to audiocpp_server: never import torch or transformers.
     _audio_cpp_worker = bool(config.get("audio_cpp"))
     apply_gpu_ids(
         config.get("resolved_gpu_ids"),
@@ -2597,7 +2596,6 @@ def run_inference_process(
                     warmth.active()
         return
 
-    # Torch-side preparation only: an audio.cpp worker imports neither torch nor transformers.
     if not _audio_cpp_worker:
         # Gate before the torchao stub; AMD Triton JIT also needs MSVC CRT headers (#7595).
         if sys.platform == "win32":

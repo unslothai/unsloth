@@ -95,7 +95,6 @@ def test_audio_cpp_worker_skips_torch_and_transformers_but_keeps_gates(tmp_path)
     assert result["transformers"] is False, result
     assert "detect_hardware" not in result["calls"]
     assert "_activate_transformers_version" not in result["calls"]
-    # The offline probe, every security gate and the SSM step still run.
     assert result["hf_hub_offline"] == "1"
     for name in (
         "hf_dns_dead",
