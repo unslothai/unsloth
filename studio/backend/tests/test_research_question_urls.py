@@ -54,6 +54,8 @@ def _run(
     page: str = PAGE,
     question: str = QUESTION,
     max_sources: int = 5,
+    max_steps: int = 2,
+    first_page: str | None = None,
 ):
     from core import research_runs as worker
 
@@ -72,7 +74,7 @@ def _run(
             "question": question,
             "websitePolicy": website_policy,
             "budgets": {
-                "maxSteps": 2,
+                "maxSteps": max_steps,
                 "maxSources": max_sources,
                 "modelTimeoutSeconds": 900,
                 "toolTimeoutSeconds": 10,
@@ -90,7 +92,9 @@ def _run(
 
     def fake_execute_tool(name, arguments, **kwargs):
         calls.append(arguments)
-        return page if "url" in arguments else SEARCH
+        if "url" not in arguments:
+            return SEARCH
+        return first_page if first_page is not None and calls.count(arguments) == 1 else page
 
     async def fake_stream_completion(run, messages, **kwargs):
         if kwargs.get("phase") == "synthesis":
@@ -126,6 +130,23 @@ def test_a_linked_page_that_fails_to_load_is_not_cited(research_home, monkeypatc
 
     assert calls[0] == {"url": LINKED}
     assert LINKED not in [source["url"] for source in finished["sources"]]
+
+
+def test_a_linked_page_that_fails_once_is_read_on_retry(research_home, monkeypatch):
+    finished, calls, synthesis_prompts = _run(
+        monkeypatch, first_page = "Error: request timed out after 10s"
+    )
+
+    assert calls[:2] == [{"url": LINKED}, {"url": LINKED}]
+    assert LINKED in [source["url"] for source in finished["sources"]]
+    assert any(PAGE in prompt for prompt in synthesis_prompts)
+
+
+def test_a_linked_page_that_keeps_failing_is_tried_twice(research_home, monkeypatch):
+    _, calls, _ = _run(monkeypatch, page = "Error: page returned HTTP 503", max_steps = 3)
+
+    assert calls.count({"url": LINKED}) == 2
+    assert {"query": "similar tools"} in calls
 
 
 @pytest.mark.parametrize(
