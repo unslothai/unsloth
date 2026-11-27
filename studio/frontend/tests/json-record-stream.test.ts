@@ -465,3 +465,23 @@ test("a backup that is one multi-line record is searched for damage once, not on
   // Re-searching everything read so far each time would be ~n^2 / (2 * 4096), here over 100x n.
   assert.ok(searched < 2 * text.length, `searched ${searched} chars of a ${text.length}-char file`);
 });
+
+test("a whitespace run longer than a chunk is walked back once, not once per chunk", async () => {
+  // A pending record holding a long run of spaces and newlines: the boundary walk-back must not re-walk it.
+  const run = "  \n".repeat(40000);
+  const text = `{"a": 1,${run}"b": 2}\n{"c": 3}\n`;
+  const test = RegExp.prototype.test;
+  let walked = 0;
+  RegExp.prototype.test = function (this: RegExp, input: string) {
+    if (this.source === "\\s") walked++;
+    return test.call(this, input);
+  };
+  let records: unknown[];
+  try {
+    records = await collect(text, 4096);
+  } finally {
+    RegExp.prototype.test = test;
+  }
+  assert.deepEqual(records, [{ a: 1, b: 2 }, { c: 3 }]);
+  assert.ok(walked < 2 * text.length, `walked ${walked} chars of a ${text.length}-char file`);
+});

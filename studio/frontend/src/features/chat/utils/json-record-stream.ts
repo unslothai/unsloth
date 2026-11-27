@@ -239,9 +239,17 @@ export async function* streamJsonRecords(
           } else {
             // Nothing matched before lastNewline, so a later match spans it and starts at the last
             // non-space character before it, or later: the same leftmost match as a full search.
+            const previous = searched;
             searched = lastNewline;
             let resume = lastNewline - 1;
-            while (resume > start && SPACE_CHAR.test(carry[resume - carryStart])) resume--;
+            while (resume > start && SPACE_CHAR.test(carry[resume - carryStart])) {
+              // Back at the previous search's newline: only space lies between it and carryStart.
+              if (resume === previous) {
+                resume = carryStart;
+                break;
+              }
+              resume--;
+            }
             carry = carry.slice(resume - carryStart);
             carryStart = resume;
           }
