@@ -42,6 +42,8 @@ _STATE: dict = {
     "unfit": {},
     "check": {},
     "accuracy": {},
+    # (card, check) verdicts adopted from the on-disk cache instead of measured in this process
+    "persisted": set(),
     "op": None,
     "op_error": None,
 }
@@ -531,14 +533,24 @@ def _device(index: int) -> str:
 
 
 def verify(index: int, output_dtype: Any) -> bool:
-    """Bit-exact self-check of every config, with and without bias, cached per (card, dtype). OOM is no verdict:
-    False now, retried next call. Never raises."""
+    """Bit-exact self-check of every config, with and without bias, cached per (card, dtype); a pass is persisted
+    across processes (``_namespace``). OOM is no verdict: False now, retried next call. Never raises."""
     import torch
 
     key = (index, output_dtype)
     if key in _STATE["verified"]:
         return verified(index, output_dtype)
     ok = False
+    slot = f"verify|{_dtype_name(output_dtype)}"
+    if triton is not None and not _STATE["failed"].get(index) and _persisted(index, slot) is True:
+        try:
+            _arch(torch.device(_device(index)))  # primed as the measured check does
+        except Exception:  # noqa: BLE001 - unreadable card: measure instead
+            pass
+        else:
+            _STATE["verified"][key] = True
+            _STATE["persisted"].add((index, slot))
+            return verified(index, output_dtype)
     if triton is not None and not _STATE["failed"].get(index):
         try:
             with _LOCK, _on_card(index):
@@ -577,6 +589,8 @@ def verify(index: int, output_dtype: Any) -> bool:
             ok = False
             _STATE["check"][key] = f"{type(exc).__name__}: {exc}"[:2000]
     _STATE["verified"][key] = ok
+    if ok:  # only a pass is persisted: a failure is measured again by the next process
+        _persist(index, slot, True)
     return ok
 
 
@@ -648,7 +662,8 @@ def verify_accuracy(index: int) -> bool:
       itself): kernel <= max(1.05 x the existing path at that accumulate mode, ``_ACC_FLOOR[dtype]``);
     * bf16 output (bf16 kinds): kernel <= 1.05 x the existing path's bf16 output.
 
-    Needs the bf16 self-check; cached per card; an OOM is no verdict (retried). True when any kind passed."""
+    Needs the bf16 self-check; cached per card, and a measured verdict persisted across processes (``_namespace``;
+    an error is not); an OOM is no verdict (retried). True when any kind passed."""
     import torch
 
     if index in _STATE["accuracy"]:
@@ -662,6 +677,11 @@ def verify_accuracy(index: int) -> bool:
             dev = _device(index)
             acc_dtype = torch.float32 if _fp32_out_runs(index) else torch.bfloat16
             info["existing_acc"] = _dtype_name(acc_dtype)
+            stored = _stored_accuracy(index, info["existing_acc"])
+            if stored is not None:
+                _STATE["accuracy"][index] = stored
+                _STATE["persisted"].add((index, "accuracy"))
+                return any(stored["ok"].values())
             one = torch.ones((), device = dev, dtype = torch.float32)
             rows: list = []
             for seed, (m, k, n) in enumerate(_ACC_SHAPES):
@@ -719,7 +739,87 @@ def verify_accuracy(index: int) -> bool:
         info["ok"] = {k: False for k in info["ok"]}
         info["error"] = f"{type(exc).__name__}: {exc}"[:500]
     _STATE["accuracy"][index] = info
+    if "error" not in info and info.get(
+        "shapes"
+    ):  # a measured verdict; an error is measured again next process
+        _persist(index, "accuracy", info)
     return any(info["ok"].values())
+
+
+def _stored_accuracy(index: int, existing_acc: str) -> Optional[dict]:
+    """The persisted accuracy verdict for this card, or None (missing, stale, malformed, or measured against another
+    existing-path accumulator). Never raises."""
+    try:
+        got = _persisted(index, "accuracy")
+        kinds = {_kind(d, f) for d, f in _ACC_KINDS}
+        if (
+            not isinstance(got, dict)
+            or "error" in got
+            or got.get("existing_acc") != existing_acc
+            or not isinstance(got.get("ok"), dict)
+            or set(got["ok"]) != kinds
+            or not all(isinstance(v, bool) for v in got["ok"].values())
+            or not isinstance(got.get("shapes"), list)
+            or len(got["shapes"]) != len(_ACC_SHAPES)
+        ):
+            return None
+        return dict(got, persisted = True)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ---------------------------------------------------------------- verdicts persisted across processes
+
+# Bump when the self-check / accuracy rule changes in a way the source digest does not see.
+_PERSIST_VERSION = 1
+_PERSIST: list = []  # [Namespace or None], built once
+
+
+def _persist_extra() -> dict:
+    """Key components beyond the probe fingerprint (card name + UUID + capability, driver, torch, CUDA, Triton,
+    UNSLOTH_DIFFUSION_* env) and the source digest of this file and the tensorwise path it is measured against."""
+    return {
+        "version": _PERSIST_VERSION,
+        "check_k": _CHECK_K,
+        "acc_shapes": [list(s) for s in _ACC_SHAPES],
+        "acc_ratio": _ACC_RATIO,
+        "acc_floor": dict(_ACC_FLOOR),
+        "configs": [str(c) for c in _fp8_rowwise_gemm.configs] if triton is not None else None,
+        "interpret": _INTERPRET,
+    }
+
+
+def _namespace() -> Any:
+    if not _PERSIST:
+        try:
+            from .diffusion_probe_cache import Namespace
+            _PERSIST.append(
+                Namespace(
+                    "fp8_triton_gemm",
+                    ("diffusion_fp8_triton_gemm.py", "diffusion_fp8_unit_scale.py"),
+                    extra = _persist_extra,
+                )
+            )
+        except Exception:  # noqa: BLE001 - no cache: measured per process
+            _PERSIST.append(None)
+    return _PERSIST[0]
+
+
+def _persisted(index: Any, slot: str) -> Any:
+    try:
+        ns = _namespace()
+        return ns.get(f"cuda:{int(index)}", slot) if ns is not None else None
+    except Exception:  # noqa: BLE001 - a miss, never an error
+        return None
+
+
+def _persist(index: Any, slot: str, value: Any) -> None:
+    try:
+        ns = _namespace()
+        if ns is not None:
+            ns.put(f"cuda:{int(index)}", slot, value)
+    except Exception:  # noqa: BLE001 - a cache write never fails a load
+        pass
 
 
 def accurate(index: Any, output_dtype: Any, fast: Any) -> bool:
@@ -758,6 +858,7 @@ def describe() -> dict:
         },
         "unfit": {i: list(v) for i, v in _STATE["unfit"].items()},
         "accuracy": {i: dict(v) for i, v in _STATE["accuracy"].items()},
+        "persisted": sorted(f"{i}:{slot}" for i, slot in _STATE["persisted"]),
         "skipped_shapes": len(_STATE["skip"]),
         "op_error": _STATE["op_error"],
     }

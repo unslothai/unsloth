@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,8 @@ def _sibling(name: str):
 
 
 rf = _sibling("test_diffusion_fp8_rowwise_fallback")
+_REAL_PERSISTED, _REAL_PERSIST = tg._persisted, tg._persist
+_CHECK_OPERANDS = tg._check_operands
 
 
 @pytest.fixture(autouse = True)
@@ -57,6 +60,10 @@ def _clean(monkeypatch):
         ("_current_device", lambda: 0),
     ):
         monkeypatch.setattr(us, name, stub)
+    # No on-disk verdicts unless a test asks for them (``verdict_cache``).
+    monkeypatch.setattr(tg, "_persisted", lambda index, slot: None)
+    monkeypatch.setattr(tg, "_persist", lambda index, slot, value: None)
+    monkeypatch.setitem(tg._STATE, "persisted", set())
     from core import _torchao_stub
 
     monkeypatch.setattr(_torchao_stub, "torch_is_rocm", lambda: False)
@@ -994,6 +1001,178 @@ def test_accuracy_check_error_fails_closed(monkeypatch):
     assert tg.verify_accuracy(0) is False
     assert "ZeroDivisionError" in tg._STATE["accuracy"][0]["error"]
     assert not tg.accuracy_pending(0)
+
+
+# ---------------------------------------------------------------- verdicts persisted across processes
+
+
+@pytest.fixture
+def verdict_cache(monkeypatch, tmp_path):
+    """A real ``diffusion_probe_cache.Namespace`` on a tmp file, a fake card fingerprint the test can change, and
+    ``new_process()`` dropping every in-process verdict and slot."""
+    from core.inference import diffusion_probe_cache as pc
+
+    fp = {
+        "gpu_name": "NVIDIA GeForce RTX 5090",
+        "capability": "12.0",
+        "driver": "nvrm580.95",
+        "torch": "2.9.0",
+    }
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PROBE_CACHE", raising = False)
+    monkeypatch.setattr(pc, "_cache_file", lambda: tmp_path / "diffusion_quant_probe.json")
+    monkeypatch.setattr(pc, "fingerprint", lambda card: dict(fp, card = card))
+    monkeypatch.setattr(tg, "_persisted", _REAL_PERSISTED)
+    monkeypatch.setattr(tg, "_persist", _REAL_PERSIST)
+
+    def new_process():
+        monkeypatch.setattr(tg, "_PERSIST", [])
+        tg._STATE["accuracy"].clear()
+        tg._STATE["persisted"].clear()
+
+    new_process()
+    return types.SimpleNamespace(
+        fp = fp, new_process = new_process, path = tmp_path / "diffusion_fp8_triton_gemm.json"
+    )
+
+
+def _measure_fails(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("measured on a cache hit")
+
+    monkeypatch.setattr(tg, "_accuracy_operands", boom)
+
+
+def test_accuracy_verdict_cache_hit_skips_the_measurement(monkeypatch, verdict_cache):
+    run, seen = _accuracy_env(monkeypatch)
+    info = run(_scaled(1.2e-4), lambda a, b, fast: _scaled(1e-3 if fast else 1e-4)(a, b))
+    assert verdict_cache.path.is_file() and seen  # miss: measured and stored
+    want = dict(info["ok"])
+    assert (
+        want["bfloat16:fast"] and not want["bfloat16:precise"]
+    )  # a mixed verdict, persisted as measured
+    verdict_cache.new_process()
+    seen.clear()
+    _measure_fails(monkeypatch)
+    assert tg.verify_accuracy(0) is True
+    assert tg._STATE["accuracy"][0]["ok"] == want and tg._STATE["accuracy"][0]["persisted"] is True
+    assert not seen and (0, "accuracy") in tg._STATE["persisted"]
+    assert tg.accurate(0, torch.bfloat16, True) and not tg.accurate(0, torch.bfloat16, False)
+    assert "0:accuracy" in tg.describe()["persisted"]
+
+
+@pytest.mark.parametrize("change", ["driver", "gpu", "torch", "shapes", "source", "existing_acc"])
+def test_accuracy_verdict_cache_key_change_is_a_miss(monkeypatch, verdict_cache, change):
+    run, seen = _accuracy_env(monkeypatch)
+    run(_exact, lambda a, b, fast: _exact(a, b))
+    verdict_cache.new_process()
+    seen.clear()
+    if change == "driver":
+        verdict_cache.fp["driver"] = "nvrm590.10"
+    elif change == "gpu":
+        verdict_cache.fp.update(gpu_name = "NVIDIA GeForce RTX 4090", capability = "8.9")
+    elif change == "torch":
+        verdict_cache.fp["torch"] = "2.10.0"
+    elif change == "shapes":
+        monkeypatch.setattr(tg, "_ACC_SHAPES", ((48, 3072, 64),))
+    elif change == "source":
+        from core.inference import diffusion_probe_cache as pc
+        monkeypatch.setattr(pc.Namespace, "_source_digest", lambda self: "edited")
+    else:
+        us._FP32_OUT[0] = False  # the tensorwise path it was measured against changed
+    assert tg.verify_accuracy(0) is True
+    assert seen and "persisted" not in tg._STATE["accuracy"][0]  # measured again
+
+
+def test_accuracy_verdict_cache_never_stores_an_error_or_an_oom(monkeypatch, verdict_cache):
+    run, seen = _accuracy_env(monkeypatch)
+    monkeypatch.setattr(tg, "_accuracy_operands", lambda *a: 1 / 0)
+    assert tg.verify_accuracy(0) is False
+    tg._STATE["accuracy"].clear()
+
+    def oom(*a, **k):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(tg, "_accuracy_operands", oom)
+    assert tg.verify_accuracy(0) is False
+    assert not verdict_cache.path.exists()
+    assert tg._persisted(0, "accuracy") is None
+
+
+def test_accuracy_verdict_cache_ignores_a_corrupt_file(monkeypatch, verdict_cache):
+    run, seen = _accuracy_env(monkeypatch)
+    verdict_cache.path.write_text("{not json", encoding = "utf-8")
+    info = run(_exact, lambda a, b, fast: _exact(a, b))
+    assert seen and all(info["ok"].values())
+    verdict_cache.new_process()
+    seen.clear()
+    _measure_fails(monkeypatch)
+    assert tg.verify_accuracy(0) is True and not seen  # rewritten whole by the store
+
+
+def test_accuracy_verdict_cache_rejects_a_malformed_entry(monkeypatch, verdict_cache):
+    run, seen = _accuracy_env(monkeypatch)
+    for bad in ({"ok": {"bfloat16:fast": True}}, {"ok": "yes"}, ["x"], {"error": "x", "ok": {}}):
+        tg._persist(0, "accuracy", bad)
+        verdict_cache.new_process()
+        seen.clear()
+        run(_exact, lambda a, b, fast: _exact(a, b))
+        assert seen and "persisted" not in tg._STATE["accuracy"][0], bad
+
+
+def _self_check_env(monkeypatch):
+    import contextlib
+
+    if not tg.available():
+        pytest.skip("no triton")
+    monkeypatch.setitem(tg._STATE, "verified", {})
+    monkeypatch.setitem(tg._STATE, "failed", {})
+    monkeypatch.setitem(tg._STATE, "check", {})
+    monkeypatch.setattr(tg, "_on_card", lambda index: contextlib.nullcontext())
+    monkeypatch.setattr(tg, "_device", lambda index: "cpu")
+    calls = []
+
+    def operands(device):
+        calls.append(device)
+        raise RuntimeError("compile failed")
+
+    monkeypatch.setattr(tg, "_check_operands", operands)
+    return calls
+
+
+def test_self_check_failure_is_never_persisted_and_a_pass_is(monkeypatch, verdict_cache):
+    calls = _self_check_env(monkeypatch)
+    assert tg.verify(0, torch.bfloat16) is False and calls
+    assert tg._persisted(0, "verify|bfloat16") is None
+    # a pass stored by an earlier process: adopted without a launch, per dtype
+    tg._persist(0, "verify|bfloat16", True)
+    verdict_cache.new_process()
+    tg._STATE["verified"].clear()
+    calls.clear()
+    assert tg.verify(0, torch.bfloat16) is True and not calls
+    assert (0, "verify|bfloat16") in tg._STATE["persisted"]
+    assert tg.verify(0, torch.float16) is False and calls  # no stored fp16 pass: measured
+    # a launch failure in this process still turns the card off
+    tg._STATE["failed"][0] = "boom"
+    assert not tg.verified(0, torch.bfloat16)
+
+
+def test_self_check_pass_is_stored_and_adopted_by_the_next_process(monkeypatch, verdict_cache):
+    _self_check_env(monkeypatch)
+    launches = []
+
+    def launch(kern, a, sa, b, sb, bias, dt):  # a bit-exact kernel
+        launches.append(dt)
+        out = (a.float() * sa) @ (b.float() * sb)
+        return (out + bias.float() if bias is not None else out).to(dt)
+
+    monkeypatch.setattr(tg, "_check_operands", lambda device: _CHECK_OPERANDS("cpu"))
+    monkeypatch.setattr(tg, "_launch", launch)
+    assert tg.verify(0, torch.bfloat16) is True and launches
+    assert tg._persisted(0, "verify|bfloat16") is True
+    verdict_cache.new_process()
+    tg._STATE["verified"].clear()
+    launches.clear()
+    assert tg.verify(0, torch.bfloat16) is True and not launches
 
 
 # ---------------------------------------------------------------- self-check depth, autotune key, retries, floor
