@@ -26,6 +26,7 @@ import pytest  # noqa: E402
 import torch  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
+from transformers5_loading import require_core_model_loading  # noqa: E402
 
 E, H, I = 4, 64, 64
 STACKS = ("gate_up_proj", "gate_up_proj_bias", "down_proj", "down_proj_bias")
@@ -312,7 +313,7 @@ def _spawn(
 ):
     if not torch.distributed.is_available() or not torch.distributed.is_gloo_available():
         pytest.skip("requires a PyTorch build with Gloo")
-    pytest.importorskip("transformers.core_model_loading")
+    require_core_model_loading()
     pytest.importorskip("peft")
     try:
         from transformers import GptOssConfig  # noqa: F401
@@ -385,7 +386,7 @@ def test_ep_mxfp4_packed_stacks_cut_on_load():
 def test_converter_cut_setter_is_installed_once_and_skips_offloading_maps():
     """One permanent set_param_for_module wrapper (overlapping loads never restore it out of order); a device map
     that offloads keeps the whole stacks for its dispatch."""
-    pytest.importorskip("transformers.core_model_loading")
+    require_core_model_loading()
     import transformers.core_model_loading as loading
 
     tpn, _ = _modules()
@@ -417,7 +418,7 @@ def test_quantizing_load_counts_packed_scales():
     """The quantize-on-load setter (expert parallel) counts a packed stack's scales in loaded and kept bytes, so
     a cut never reports less than the rank holds."""
     zoo = pytest.importorskip("unsloth_zoo.mxfp4_dequant")
-    pytest.importorskip("transformers.core_model_loading")
+    require_core_model_loading()
     import transformers.core_model_loading as loading
     from transformers import GptOssConfig, GptOssForCausalLM
     from unsloth_zoo.temporary_patches.mxfp4 import patch_peft_param_wrapper_mxfp4

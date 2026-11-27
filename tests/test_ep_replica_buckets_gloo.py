@@ -19,8 +19,9 @@ import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
+from transformers5_loading import require_core_model_loading  # noqa: E402
 
-pytest.importorskip("transformers.core_model_loading")
+require_core_model_loading()
 
 REPO = "trl-internal-testing/tiny-Qwen3MoeForCausalLM"
 CAP = 4096  # bytes: many buckets, and expert stacks larger than one bucket

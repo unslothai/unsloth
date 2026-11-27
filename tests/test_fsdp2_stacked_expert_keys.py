@@ -15,7 +15,10 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
 
-pytest.importorskip("transformers.core_model_loading")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
+from transformers5_loading import require_core_model_loading  # noqa: E402
+
+require_core_model_loading()
 
 
 def _tp():
