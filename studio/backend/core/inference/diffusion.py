@@ -18454,15 +18454,21 @@ class DiffusionBackend:
         steps: Optional[int] = None,
     ) -> bool:
         """Whether an explicitly seeded request may share a call: the measured path at this shape is neighbour-exact
-        and replays a member bit for bit (diffusion_batch_race.seeded_join_ok) at every size it could join."""
+        and replays a member bit for bit (diffusion_batch_race.seeded_join_ok) at every size it could join. A load that
+        still admits unmeasured sizes (policy ``any``) can fire at one of them, so every admitted size needs a verdict."""
         state = self._state
         if state is None:
             return False
         from . import diffusion_batch_race
+        from .image_request_batching import batch_max
 
+        admitted = self.coalesce_batch_sizes(width, height, guidance, steps)
+        sizes = set(range(2, batch_max() + 1)) if admitted is None else set(admitted)
+        sizes = {k for k in sizes if k > int(images or 1)}
+        if not sizes:
+            return False
         measured = _measured_sizes(state, width, height, guidance, steps)
-        winners = [v for v in measured.values() if v.get("promoted")]
-        return bool(winners) and all(diffusion_batch_race.seeded_join_ok(v) for v in winners)
+        return all(diffusion_batch_race.seeded_join_ok(measured.get(k)) for k in sizes)
 
     def batch_race(
         self,
@@ -18513,7 +18519,10 @@ class DiffusionBackend:
         if policy["mode"] == "serial" and not policy.get("measurable"):
             raise diffusion_batch_race.RaceRefused(policy["reason"])
         allowed = None
-        if policy["mode"] == "compiled_sizes":
+        # From the load's compile state, not the policy mode: resident and graphed loads answer serial before it.
+        if "compiled" in (state.speed_optims or ()) and compiled_shapes_are_static(
+            state.pipe, state.speed_mode
+        ):
             dims = (int(width), int(height))
             shapes = getattr(state.compile_cache_ctx, "shapes", None) or ()
             compiled = {int(shape[2]) for shape in list(shapes) if tuple(shape[:2]) == dims}

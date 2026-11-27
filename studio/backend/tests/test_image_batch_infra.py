@@ -955,3 +955,67 @@ def test_a_graphed_verdict_admits_a_size_only_while_its_graph_exists(monkeypatch
     assert race.effective_verdict(graphed_win, 2, restarted)["promoted"] is False
     no_graphs = types.SimpleNamespace(cuda_graphs = ())
     assert race.effective_verdict(graphed_win, 2, no_graphs)["promoted"] is True
+
+
+def test_a_seeded_request_joins_only_when_every_size_it_could_render_at_is_exact(monkeypatch):
+    """A streamed load (policy any) still admits the unmeasured sizes: one exact size 2 says nothing about 3-8."""
+    from core.inference.image_request_batching import batch_max
+
+    exact = {"promoted": True, "neighbour_exact": True, "replay_exact": True}
+    streamed = _engine(offload_policy = "sequential")
+    _verdicts(monkeypatch, {2: exact})
+    assert streamed.coalesce_seeded_ok(1024, 1024, 4.0, 1) is False
+    _verdicts(monkeypatch, {k: exact for k in range(2, batch_max() + 1)})
+    assert streamed.coalesce_seeded_ok(1024, 1024, 4.0, 1) is True
+    # A measured (resident) load admits only the winners: one exact size is enough there.
+    _verdicts(monkeypatch, {2: exact, 4: {"promoted": False}})
+    assert _engine().coalesce_seeded_ok(1024, 1024, 4.0, 1) is True
+
+
+def test_an_eager_win_drops_the_graphs_dispatch_would_otherwise_replay(monkeypatch):
+    """Dispatch never bypasses graphs: when the eager arm wins, the size's race-recorded graphs go, so requests run the
+    arm that was measured."""
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+    dropped = []
+    flag = {"bypassed": False}
+    handle = types.SimpleNamespace(
+        set_bypass = lambda on: flag.update(bypassed = bool(on)),
+        drop_batched = lambda size: dropped.append(size) or 1,
+    )
+    generate, clock, _ = _fake_generate(
+        lambda rows: 1.0 if rows == 1 else (0.3 if flag["bypassed"] else 0.9) * rows
+    )
+    report = race.run_race(
+        generate,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 3,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    verdict = report["sizes"]["2"]
+    assert verdict["promoted"] is True and verdict["arm"] == "batched_eager"
+    assert dropped == [2]
+
+
+def test_a_static_compile_limits_the_race_on_a_resident_or_graphed_load(monkeypatch):
+    """Resident weights return serial (measurable) before the static-compile rule: the race must still skip sizes the
+    compile cache lacks."""
+    import core.inference.diffusion as diffusion_module
+
+    monkeypatch.setattr(diffusion_module, "compiled_shapes_are_static", lambda pipe, mode: True)
+    seen = {}
+    monkeypatch.setattr(race, "run_race", lambda *a, **k: seen.update(k) or {})
+    for extra in ({}, {"offload_policy": "sequential", "cuda_graphs": (object(),)}):
+        engine = _engine(
+            speed_optims = ("compiled",),
+            compile_cache_ctx = types.SimpleNamespace(shapes = [(512, 512, 2)]),
+            **extra,
+        )
+        seen.clear()
+        engine.batch_race(width = 512, height = 512)
+        allowed = seen["allowed_sizes"]
+        assert allowed is not None and allowed(2) and not allowed(4)

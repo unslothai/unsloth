@@ -536,9 +536,10 @@ def run_race(
             report["aborted"] = True
             break
         report["sizes"][str(size)] = verdict
-        if not verdict.get("promoted"):
-            # A losing size never runs batched here: drop its graphs (their own pool returns to the card; under
-            # BATCH_POOL_ENV=shared they stay in the one pool for the next capture).
+        if not verdict.get("promoted") or verdict.get("arm") == "batched_eager":
+            # A losing size never runs batched here, and an eager-won size must not replay the graphs the race
+            # recorded (dispatch never bypasses them; user calls never record new ones): drop that size's graphs (their
+            # own pool returns to the card; under BATCH_POOL_ENV=shared they stay in the one pool).
             dropped = 0
             for handle in handles:
                 drop = getattr(handle, "drop_batched", None)
