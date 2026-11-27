@@ -7759,9 +7759,11 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         llama_cpp, "_keeps_compaction_boundary", lambda thread_id: thread_id == "t1"
     )
     recall_budgets = []
+    grown = []
 
     def archive_and_recall(conversation, *_a, recall_budget_tokens, **_kw):
         recall_budgets.append(recall_budget_tokens)
+        grown.append("recall")
         return dict(conversation = conversation, counts = {}, recalled = False)
 
     monkeypatch.setattr(llama_cpp, "_archive_and_recall", archive_and_recall)
@@ -7829,10 +7831,15 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
             max_tool_iterations = 2,
             tool_choice = tool_choice,
             rag_scope = {"thread_id": "t1", "context_length": 1000, "whole_doc": whole_doc},
+            on_conversation_grew = lambda conversation: grown.append(list(conversation)),
         )
     )
 
     sent = [m.get("content") for m in payloads[0]["messages"] if m["role"] == "tool"]
+    # Recosted after recall when the document grew the prompt, and only then.
+    assert (grown[-1] != "recall") is bool(complete and expected_passage == complete)
+    recosts = [conversation for conversation in grown if conversation != "recall"]
+    assert [m.get("content") for m in recosts[-1] if m["role"] == "tool"] == sent
     expected = [expected_passage] if expected_passage else []
     if not isinstance(tool_choice, dict):
         expected.append("Matching MCP tools")
@@ -7845,15 +7852,14 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         assert truncation["prompt_tokens_after"] == sum(
             len(str(m.get("content", ""))) for m in payloads[0]["messages"]
         )
-    if recall_budgets:
-        from core.inference.context_window import prompt_budget, retrieval_budget
+    from core.inference.context_window import prompt_budget, retrieval_budget
 
-        prompt = truncation["prompt_tokens_after"]
-        recall = retrieval_budget(1000, 80, prompt, reply_returns = True)
-        if expected_passage == complete:
-            target = prompt_budget(1000, 80)
-            recall = min(recall, target - int(target * 0.25) - prompt)
-        assert recall_budgets[0] == recall
+    prompt = truncation["prompt_tokens_after"]
+    recall = retrieval_budget(1000, 80, prompt, reply_returns = True)
+    if expected_passage == complete:
+        target = prompt_budget(1000, 80)
+        recall = min(recall, target - int(target * 0.25) - prompt)
+    assert recall_budgets[0] == recall
     if isinstance(tool_choice, dict):
         assert [t["function"]["name"] for t in payloads[0]["tools"]] == ["search_knowledge_base"]
     assert bool(truncation.get("checkpoint_started")) is (policy == "checkpoint" and not sticky)

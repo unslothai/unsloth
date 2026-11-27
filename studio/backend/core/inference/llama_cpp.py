@@ -42264,6 +42264,7 @@ class LlamaCppBackend:
                     _sticky_boundary_applied = True
                     _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     _fit_recall_cap = float("inf")
+                    _fit_grew_prompt = False
                     if (
                         _retry_whole_document
                         and not _initial_searches_sent
@@ -42330,6 +42331,7 @@ class LlamaCppBackend:
                                         _auto = refreshed
                                         conversation = candidate
                                         truncation["prompt_tokens_after"] = measured
+                                        _fit_grew_prompt = True
                                         if satisfies_choice:
                                             _forced_choice_resolved = True
                                             safe_tools, requested_choice, forced_name = (
@@ -42401,6 +42403,12 @@ class LlamaCppBackend:
                                 _rolling_anchor_ids.add(id(_message))
                             for _ev in _recalled["events"]:
                                 yield _ev
+                    if _fit_grew_prompt and on_conversation_grew is not None:
+                        # Admission was priced on the excerpts at the top of the round; recost what is sent.
+                        try:
+                            on_conversation_grew(conversation)
+                        except Exception:
+                            logger.debug("tool loop recost failed", exc_info = True)
                     if truncation and _records_boundary(truncation):
                         truncation = {
                             **truncation,
