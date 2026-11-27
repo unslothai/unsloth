@@ -268,6 +268,7 @@ class SdCppServer:
         startup_timeout: float = 600.0,
         extra_args: Optional[list[str]] = None,
         rng: Optional[str] = None,
+        metal_vae_conv_direct: bool = False,
     ) -> None:
         """Spawns the server and blocks until ready under the lifecycle lock; extra_args go last so they win, which pins the CPU-backend restart off the GPU."""
         with self._lifecycle_lock:
@@ -292,6 +293,7 @@ class SdCppServer:
                 extra_args = list(extra_args or []),
                 accelerator = binary_accelerator(self.binary),
                 rng = rng,
+                metal_vae_conv_direct = metal_vae_conv_direct,
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
             if files.clip_l:
