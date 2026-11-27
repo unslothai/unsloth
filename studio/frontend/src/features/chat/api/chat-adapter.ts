@@ -7721,7 +7721,12 @@ export function createOpenAIStreamAdapter(
                   const newContainerId = toolEvent.container_id as
                     | string
                     | undefined;
-                  if (newContainerId && resolvedThreadId) {
+                  // Durable Anthropic events are saved atomically with the server event.
+                  if (
+                    newContainerId &&
+                    resolvedThreadId &&
+                    !(generationRun && toolEvent.provider_type === "anthropic")
+                  ) {
                     const field =
                       externalProvider?.providerType === "anthropic"
                         ? "anthropicCodeExecContainerId"
@@ -7775,7 +7780,10 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "container_invalidated") {
-                  if (resolvedThreadId) {
+                  if (
+                    resolvedThreadId &&
+                    !(generationRun && toolEvent.provider_type === "anthropic")
+                  ) {
                     const field =
                       externalProvider?.providerType === "anthropic"
                         ? "anthropicCodeExecContainerId"

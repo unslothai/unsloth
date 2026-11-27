@@ -197,6 +197,57 @@ def test_append_events_still_persists_through_a_reused_connection():
     assert len(runs_db.list_events("r", 0)) >= 15
 
 
+@pytest.mark.parametrize(
+    "expected,current,kind,result",
+    [
+        (None, None, "container_ready", "new-workspace"),
+        ("old-workspace", "old-workspace", "container_invalidated", None),
+        ("old-workspace", "different-workspace", "container_invalidated", "different-workspace"),
+        (None, "different-workspace", "container_ready", "different-workspace"),
+    ],
+)
+def test_a_durable_anthropic_event_updates_only_the_workspace_it_started_with(
+    expected, current, kind, result
+):
+    studio_db.upsert_chat_thread(
+        {
+            "id": "t",
+            "title": "Chat",
+            "modelType": "base",
+            "modelId": "claude",
+            "createdAt": 1,
+            "anthropicCodeExecContainerId": current,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "u",
+            "threadId": "t",
+            "role": "user",
+            "content": [{"type": "text", "text": "x"}],
+            "createdAt": 2,
+        }
+    )
+    runs_db.create_run(
+        run_id = "r",
+        owner_subject = "alice",
+        thread_id = "t",
+        user_message_id = "u",
+        assistant_message_id = "a",
+        request_payload = {
+            "model": "claude",
+            "messages": [],
+            "provider_type": "anthropic",
+            "anthropic_code_exec_container_id": expected,
+        },
+    )
+    token = runs_db.get_worker_token("r")
+    runs_db.mark_running("r", token)
+    event = {"type": kind, "provider_type": "anthropic", "container_id": "new-workspace"}
+    runs_db.append_events("r", token, [("chunk", {"_toolEvent": event})])
+    assert studio_db.get_chat_thread("t")["anthropicCodeExecContainerId"] == result
+
+
 def test_an_idle_connection_on_another_LIVE_thread_is_closed_by_a_global_discard():
     """Global discard must close idle handles on live threads, since Windows refuses the account rename."""
     parked = {}

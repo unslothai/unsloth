@@ -428,6 +428,25 @@ def _append_events_locked(
             ),
         )
         sequences.append(seq)
+        tool_event = payload.get("_toolEvent") if event_type == "chunk" else None
+        if isinstance(tool_event, dict) and tool_event.get("provider_type") == "anthropic":
+            kind = tool_event.get("type")
+            container = tool_event.get("container_id")
+            if kind == "container_invalidated" or (
+                kind == "container_ready" and isinstance(container, str) and container
+            ):
+                # Save with the event. A late event must not replace a newer workspace selection.
+                conn.execute(
+                    """UPDATE chat_threads SET anthropic_code_exec_container_id = ?
+                       WHERE id = (
+                           SELECT thread_id FROM chat_generation_runs
+                           WHERE id = ? AND json_extract(request_json, '$.provider_type') = 'anthropic'
+                       ) AND anthropic_code_exec_container_id IS (
+                           SELECT json_extract(request_json, '$.anthropic_code_exec_container_id')
+                           FROM chat_generation_runs WHERE id = ?
+                       )""",
+                    (container if kind == "container_ready" else None, run_id, run_id),
+                )
     if sequences:
         conn.execute(
             "UPDATE chat_generation_runs SET last_event_seq=?, updated_at=? WHERE id=?",
