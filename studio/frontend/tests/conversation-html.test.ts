@@ -115,3 +115,21 @@ test("the document is standalone and locks out scripts and remote loads", () => 
   assert.match(doc, /<title>A &lt;\/title&gt;&lt;script&gt;<\/title>/);
   assert.match(doc, /<p>x<\/p>/);
 });
+
+test("each reply names the model that wrote it", () => {
+  const body = buildConversationHtmlBody([
+    {
+      title: "Chat",
+      messages: [
+        { role: "user", content: "Compare" },
+        { role: "assistant", content: "First", model: "Qwen3-8B-GGUF" },
+        { role: "assistant", content: "Second", model: "gpt-5 <pro>" },
+        { role: "assistant", content: "Unrecorded" },
+      ],
+    },
+  ]);
+  assert.match(body, /<h3 class="role">Assistant <span class="response-model">Qwen3-8B-GGUF<\/span><\/h3>/);
+  assert.match(body, /<span class="response-model">gpt-5 &lt;pro&gt;<\/span>/);
+  assert.equal(body.match(/<h3 class="role">Assistant<\/h3>/g)?.length, 1);
+  assert.match(body, /<h3 class="role">User<\/h3>/);
+});

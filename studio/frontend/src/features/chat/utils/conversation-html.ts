@@ -20,6 +20,8 @@ export {
 
 export type ConversationHtmlMessage = ConversationMarkdownMessage & {
   readonly images?: readonly string[];
+  /** The model that wrote this reply, so a chat that switched models shows which answered what. */
+  readonly model?: string;
 };
 
 export type NamedConversationHtml = {
@@ -101,21 +103,22 @@ function renderMessages(
   messages: readonly ConversationHtmlMessage[],
 ): string {
   return messages
-    .map(({ role, content, images = [] }) => ({
+    .map(({ role, content, images = [], model }) => ({
       role,
       content,
+      model,
       pictures: images
         .filter(isDataImage)
         .map((src) => `<p><img src="${escapeHtml(src)}" alt=""></p>`)
         .join(""),
     }))
     .filter(({ content, pictures }) => content.trim() || pictures)
-    .map(({ role, content, pictures }) => {
+    .map(({ role, content, pictures, model }) => {
       const html =
         role === "user" || role === "system"
           ? escapeHtml(content)
           : `\n${markdownToHtml(content)}`;
-      return `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">${pictures}${html}</div>\n</section>`;
+      return `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}${model ? ` <span class="response-model">${escapeHtml(model)}</span>` : ""}</h3>\n<div class="content">${pictures}${html}</div>\n</section>`;
     })
     .join("\n");
 }
@@ -148,6 +151,7 @@ h1 { font-size: 18pt; margin: 0 0 4pt 0; }
 .message.system { border-left-color: #bf8700; }
 .message.tool { border-left-color: #8250df; }
 .role { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.04em; color: #57606a; margin: 0 0 4pt 0; }
+.response-model { text-transform: none; letter-spacing: normal; font-weight: normal; }
 .content h1, .content h2, .content h3, .content h4 { font-size: 12pt; margin: 10pt 0 4pt 0; }
 p { margin: 0 0 6pt 0; }
 pre { background-color: #f6f8fa; padding: 6pt 8pt; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9pt; white-space: pre-wrap; word-wrap: break-word; }

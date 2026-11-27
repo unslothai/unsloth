@@ -639,9 +639,18 @@ async function loadConversationForHtml(
             : messageToMarkdown(rest, format === "pdf" ? "pdf" : "markdown"),
         ),
         images,
+        model: msg.role === "assistant" ? responseModelLabel(msg.metadata) : undefined,
       };
     })),
   };
+}
+
+/** The label the reply's details sheet shows, from what was recorded when it streamed. */
+function responseModelLabel(metadata: Record<string, unknown> | undefined): string | undefined {
+  const details = (metadata?.custom as { responseDetails?: Record<string, unknown> } | undefined)
+    ?.responseDetails;
+  const label = details?.modelLabel ?? details?.responseModelId ?? details?.modelId;
+  return typeof label === "string" && label.trim() ? label.trim() : undefined;
 }
 
 async function withSandboxImages(content: unknown): Promise<unknown> {
