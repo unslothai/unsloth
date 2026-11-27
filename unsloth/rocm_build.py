@@ -17,4 +17,11 @@ def is_rocm_torch(torch_mod = None):
             return False
     if getattr(getattr(torch_mod, "version", None), "hip", None):
         return True
-    return "rocm" in str(getattr(torch_mod, "__version__", "") or "").lower()
+    # Never str() a TorchVersion (torch.__version__): Dynamo cannot trace its C str() under fullgraph. A plain str
+    # there (set by a caller or test) wins, else the plain-str torch.version.__version__.
+    version = getattr(torch_mod, "__version__", None)
+    if type(version) is not str:
+        version = getattr(getattr(torch_mod, "version", None), "__version__", None)
+    if type(version) is not str:
+        version = str(version or "")
+    return "rocm" in version.lower()

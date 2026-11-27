@@ -91,3 +91,22 @@ def test_is_rocm_torch_sees_sdk_wheels_without_version_hip():
         assert is_rocm(_torch("7.1.0", "2.9.0"))
         assert not is_rocm(_torch(None, "2.11.0+cu130"))
         assert not is_rocm(_torch(None, "2.11.0"))
+
+
+def test_is_rocm_torch_traces_under_fullgraph():
+    # Called from compiled code (fp8 gates, routers): torch.__version__ is a TorchVersion whose C str() Dynamo
+    # cannot trace, so the version-tag fallback must read the plain-str torch.version.__version__.
+    import torch
+    helpers = [
+        _load("unsloth/rocm_build.py").is_rocm_torch,
+        _load("unsloth/models/_uma_safetensors.py")._is_rocm_torch,
+        _load("unsloth/models/_windows_safetensors.py")._is_rocm_torch,
+    ]
+    for is_rocm in helpers:
+        torch._dynamo.reset()
+
+        def fn(x):
+            return x + int(is_rocm(torch))
+
+        x = torch.zeros(2)
+        assert torch.equal(torch.compile(fn, backend = "eager", fullgraph = True)(x), fn(x))

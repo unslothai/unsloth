@@ -60,10 +60,16 @@ __all__ = [
 def _is_rocm_torch(torch):
     # Inlined, not imported: tests load this file standalone. The +rocm version tag backs up a build that leaves
     # torch.version.hip unset (the AMD SDK gfx1151 wheels checked so far set it).
-    return (
-        bool(getattr(torch.version, "hip", None))
-        or "rocm" in str(getattr(torch, "__version__", "")).lower()
-    )
+    if getattr(torch.version, "hip", None):
+        return True
+    # Never str() a TorchVersion (torch.__version__): Dynamo cannot trace its C str() under fullgraph. A plain str
+    # there (set by a caller or test) wins, else the plain-str torch.version.__version__.
+    version = getattr(torch, "__version__", None)
+    if type(version) is not str:
+        version = getattr(getattr(torch, "version", None), "__version__", None)
+    if type(version) is not str:
+        version = str(version or "")
+    return "rocm" in version.lower()
 
 
 # Read once: an environment lookup inside a compiled forward would be a guard on every call.

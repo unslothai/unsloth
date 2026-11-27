@@ -11,3 +11,6 @@ def drop_rocm_tag(monkeypatch, torch_mod):
         monkeypatch.setattr(
             torch_mod, "__version__", torch_mod.torch_version.TorchVersion(version.split("+")[0])
         )
+    plain = getattr(torch_mod.version, "__version__", None)
+    if isinstance(plain, str) and "rocm" in plain.lower():
+        monkeypatch.setattr(torch_mod.version, "__version__", plain.split("+")[0])
