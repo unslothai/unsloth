@@ -76,13 +76,9 @@ _CACHE_T = os.environ.get("UNSLOTH_INT8_LORA_CACHE_T", "0") == "1"
 _MULTI_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 1
 # Tile (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, warps, stages): fastest on an RTX 5090 and an RTX PRO 6000.
 _TILE = (128, 128, 64, 8, 4, 4)
-_DGRAD_TILE = (
-    128,
-    64,
-    8,
-    4,
-    4,
-)  # BLOCK_M, BLOCK_R (reduction), GROUP_M, warps, stages; output block = GROUP
+# Input gradient (BLOCK_M, BLOCK_R reduction step, GROUP_M, warps, stages), output block = GROUP: fastest of 8 on an
+# RTX PRO 6000 (8 warps for the un-rotation dots in the epilogue).
+_DGRAD_TILE = (128, 128, 8, 8, 3)
 _ROTQ_ROWS = 16
 
 
