@@ -497,10 +497,29 @@ def _state(**fields):
     return types.SimpleNamespace(**base)
 
 
-def test_ltx25_batches_only_when_forced(monkeypatch):
+def test_auto_batches_a_two_stage_low_vram_ltx25_load_and_keeps_the_rest_serial(monkeypatch):
+    from core.inference import video_ltx25
+
     monkeypatch.delenv(video_batch.ENV, raising = False)
-    assert "only when forced" in video_batch.load_decline_reason(_state())
+    monkeypatch.delenv(video_ltx25.TWO_STAGE_ENV, raising = False)
+    # Measured faster batched under Low VRAM, and both gated sizes pass the quality gate.
+    assert video_batch.load_decline_reason(_state()) is None
+    # A DiT kept on the card is compute bound: an eager batch loses to one compiled clip.
+    assert "Low VRAM" in video_batch.load_decline_reason(
+        _state(memory_mode = "auto", offload_policy = "none")
+    )
+    # The one-stage recipe's batch of 2 did not pass the quality gate.
+    monkeypatch.setenv(video_ltx25.TWO_STAGE_ENV, "0")
+    assert "one-stage" in video_batch.load_decline_reason(_state())
+    monkeypatch.delenv(video_ltx25.TWO_STAGE_ENV)
+    # Auto runs only the gated sizes; force runs any.
+    state = _state()
+    assert video_batch.auto_size_decline(state, 1) is None
+    assert video_batch.auto_size_decline(state, 2) is None
+    assert video_batch.auto_size_decline(state, 4) is None
+    assert "not 3" in video_batch.auto_size_decline(state, 3)
     monkeypatch.setenv(video_batch.ENV, "force")
+    assert video_batch.auto_size_decline(state, 3) is None
     assert video_batch.load_decline_reason(_state()) is None
     assert (
         video_batch.load_decline_reason(_state(memory_mode = "auto", offload_policy = "none")) is None
@@ -554,3 +573,37 @@ def test_per_row_encode_stacks_every_output_of_a_four_part_encoder():
     assert out[0][:, 0, 0].tolist() == [2.0, 4.0]
     assert out[1][:, 0].tolist() == [2.0, 4.0]
     assert pipe.encode_prompt is encode_prompt
+
+
+def test_auto_renders_an_ungated_batch_size_one_clip_at_a_time(monkeypatch, saved):
+    import numpy as np
+
+    from core.inference import video_ltx25
+
+    # The two-stage recipe (Auto's gated one).
+    monkeypatch.setenv(video_ltx25.TWO_STAGE_ENV, "1")
+    calls: list = []
+    backend = _backend(monkeypatch, calls)
+    import dataclasses
+
+    backend._state = dataclasses.replace(backend._state, memory_mode = "low_vram")
+    monkeypatch.delenv(video_batch.ENV)
+    rows = [
+        ("a cat on a sofa", 11, "t-0"),
+        ("a dog in the snow", 22, "t-1"),
+        ("rain on a window", 33, "t-2"),
+    ]
+    for prompt, seed, video_id in rows:
+        _solo(backend, prompt, seed, f"solo-{video_id}")
+    rows_seen: list = []
+    backend._state.pipe.transformer.register_forward_pre_hook(
+        lambda module, args, kwargs: rows_seen.append(int(kwargs["hidden_states"].shape[0])),
+        with_kwargs = True,
+    )
+    _batch(backend, rows)
+    # Three clips is not a gated size: every denoiser call holds one clip, and each clip is its solo render.
+    assert rows_seen and set(rows_seen) == {1}
+    for _prompt, _seed, video_id in rows:
+        frames, audio = _clip(saved, video_id)
+        solo_frames, solo_audio = _clip(saved, f"solo-{video_id}")
+        assert np.array_equal(frames, solo_frames) and np.array_equal(audio, solo_audio)

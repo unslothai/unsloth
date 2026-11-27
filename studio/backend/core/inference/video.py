@@ -16932,6 +16932,12 @@ class VideoBackend:
                         "video.batch: %d clips share one denoise (%s)", 1 + len(riders), fam.name
                     )
                 batch_rows = 1 + len(riders)
+                if riders:
+                    from .video_batch import BatchDoesNotFit, auto_size_decline
+                    unmeasured = auto_size_decline(state, batch_rows)
+                    if unmeasured is not None:
+                        # Before any denoise: the clips render one at a time, none lost or rendered twice.
+                        raise BatchDoesNotFit(unmeasured)
 
                 if state.engine == "diffusers" and fam.modular_workflow and state.device != "cpu":
                     from .video_minimax_h3 import (

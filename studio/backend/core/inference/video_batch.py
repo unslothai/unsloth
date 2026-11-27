@@ -42,11 +42,13 @@ WAN_FAMILIES = frozenset(
 LTX25_FAMILY = "ltx-2.5"
 BATCH_FAMILIES = WAN_FAMILIES | {LTX25_FAMILY}
 # Families Auto may batch (on the Low VRAM placement, ``streamed_load``); the rest batch only under
-# UNSLOTH_VIDEO_BATCH=force. LTX-2.5 under Low VRAM is far faster batched (A100-80, 768x512x49, two stages:
-# 39.6 s per clip one at a time, 21.7 batched by 2, 12.7 by 4; 27.8 s compiled one at a time against 10.1 by 4
-# eager), and a batch of 4 passes the paired quality gate against its solo renders, but a batch of 2 does not
-# yet (LPIPS mean difference 0.000, 95% upper bound 0.012 over 24 clips against the 0.01 margin): forced only.
-AUTO_FAMILIES = WAN_FAMILIES
+# UNSLOTH_VIDEO_BATCH=force. LTX-2.5 under Low VRAM, two stages, eager (A100-80, 768x512x49): 39.6 s per clip one
+# at a time, 21.7 batched by 2, 12.7 by 4, and both sizes pass the paired quality gate against the solo renders
+# (72 clips by 2, 24 by 4). The one-stage recipe's batch of 2 did not pass it, so it stays serial.
+AUTO_FAMILIES = WAN_FAMILIES | {LTX25_FAMILY}
+# Batch sizes Auto may run, per family: the sizes whose quality gate passed. Another size renders its clips one at
+# a time (force runs any size).
+AUTO_SIZES = {LTX25_FAMILY: frozenset({2, 4})}
 
 _OFF = frozenset({"0", "off", "false", "no", "disable", "disabled"})
 _FORCE = frozenset({"force", "always", "on", "1", "true", "yes"})
@@ -111,6 +113,9 @@ def load_decline_reason(state: Any) -> Optional[str]:
     if chosen == "auto" and fam.name not in AUTO_FAMILIES:
         # Not yet shown to batch at no quality cost on a measured-faster placement: serial unless forced.
         return "this family batches only when forced (UNSLOTH_VIDEO_BATCH=force)"
+    if chosen == "auto" and fam.name == LTX25_FAMILY and not _ltx25_two_stage():
+        # Measured: the one-stage recipe's batch of 2 drifted past the quality gate's margin.
+        return "the one-stage LTX-2.5 recipe batches only when forced"
     if getattr(state, "transformer_cache", None):
         # A step cache decides on the whole batch's residual, so one clip could change another's skips.
         return "a step cache is on"
@@ -146,6 +151,25 @@ def load_decline_reason(state: Any) -> Optional[str]:
     if chosen == "auto" and not streamed_load(state):
         # Measured: a denoiser kept on the card is compute bound, so a batch is no faster than serial.
         return "only a Low VRAM load is measured faster batched"
+    return None
+
+
+def _ltx25_two_stage() -> bool:
+    try:
+        from .video_ltx25 import two_stage_enabled
+    except Exception:  # noqa: BLE001 -- no LTX-2.5 module: nothing to batch there
+        return False
+    return bool(two_stage_enabled())
+
+
+def auto_size_decline(state: Any, rows: int) -> Optional[str]:
+    """Why Auto renders a sealed batch of ``rows`` clips one at a time (a size its quality gate did not pass),
+    else None. ``force`` runs any size."""
+    if rows <= 1 or mode() != "auto":
+        return None
+    sizes = AUTO_SIZES.get(getattr(getattr(state, "family", None), "name", None))
+    if sizes is not None and int(rows) not in sizes:
+        return f"Auto batches this family {sorted(sizes)} clips at a time, not {int(rows)}"
     return None
 
 
