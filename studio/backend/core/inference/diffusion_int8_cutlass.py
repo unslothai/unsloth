@@ -671,16 +671,12 @@ def paired_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
-# DiT classes whose large-row races (1024 to 8191 rows) take the pair check too. MiniMax-H3-Image runs H3's GEMMs at
-# ~4100 rows a call at 2048x2048, and on the RTX 6000 Ada (300 W) the CUTLASS tiles cost it ~5% a render, as they
-# cost H3 video before the pair check. Every other image family keeps its large-row winners (``paired_for``).
+# DiT classes whose large-row races (1024 to 8191 rows) also take the pair check: H3-Image (~4100 rows) lost ~5% on Ada.
 PAIRED_ROW_FAMILIES = ("MiniMaxH3ImageTransformer2DModel",)
-# card index -> the DiT whose int8 Linears were last swapped on it is a ``PAIRED_ROW_FAMILIES`` class
 _PAIRED_ROWS: dict = {}
 
 
 def set_paired_rows(index: Any, transformer: Any) -> bool:
-    """Record whether card ``index``'s races pair their large-row winners (``transformer``'s class); every swap sets it."""
     on = type(transformer).__name__ in PAIRED_ROW_FAMILIES
     _PAIRED_ROWS[index] = on
     return on
@@ -691,11 +687,8 @@ def paired_rows(index: Any) -> bool:
 
 
 def paired_for(m: int, index: Any = None) -> bool:
-    """Whether an ``m``-row race re-times its winners with each call followed by one of today's (``paired_cost_us``):
-    the 16384-row race, whose verdict video row counts take (``slot``), and on a card loading a
-    ``PAIRED_ROW_FAMILIES`` DiT (``paired_rows``) its large-row races too. At image row counts (4096 to 4608 rows) on
-    L4 it vetoed FLUX.2 klein / Qwen-Image-2.1 winners and cost up to 3% a render, so their races keep their winners.
-    ``UNSLOTH_DIFFUSION_INT8_CUTLASS_PAIRED=0`` keeps every winner."""
+    """Pair-check the 16384-row race, plus large-row races on a ``PAIRED_ROW_FAMILIES`` card. Not other image
+    families: on L4 it vetoed FLUX.2 klein / Qwen-Image-2.1 winners, costing up to 3% a render."""
     if not (paired_enabled() and sustained_for(m)):
         return False
     return m >= _HUGE_M or (m >= _LARGE_M and index is not None and paired_rows(index))
@@ -812,8 +805,7 @@ def race(
     rows = {t: int(dims[t][0]) for t in top if 0 <= t < len(dims)}
     best, fastest = pick(timing, top, base_name, m, rows)
     if best is not None and paired_for(m, index):
-        # winners of the video-row race (decided on sustained timings) and of a paired family's large-row races must
-        # also win where the clock is shared with today's path (``paired_cost_us``)
+        # winners must also win where the clock is shared with today's path
         wins = [t for t in top if timing[t] < timing[base_name] * (1.0 - _MARGIN)]
         with torch.cuda.device(dev):
             paired = paired_cost_us(

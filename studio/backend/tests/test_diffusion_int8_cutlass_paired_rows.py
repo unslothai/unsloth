@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3-Image's large-row CUTLASS races take the pair check; every other image family keeps its winners (CPU).
+"""MiniMax-H3-Image's large-row CUTLASS races take the pair check; other image families keep their winners (CPU).
 
-Tester report: MiniMax-H3-Image at 2048x2048 on the RTX 6000 Ada (300 W) ran ~5% slower with the prebuilt CUTLASS
-GEMM than with UNSLOTH_DIFFUSION_INT8_CUTLASS=0. #19807's pair check (``paired_cost_us``: each winner re-timed as
-(tile, today's path) pairs, the clock a denoise step shares) fixed the same loss on H3 video, but only for the
-16384-row race; H3-Image's calls run ~4100 rows. Pairing every image race cost FLUX.2 klein and Qwen-Image-2.1 up to
-3% on L4, so only ``cut.PAIRED_ROW_FAMILIES`` pair their large-row races.
-
-The cells run the real plan, race, pick, pair check, live row race and ``slot`` with the timers replaced by a card
-model (``_Card``): the L4 (72 W) and RTX 6000 Ada (300 W) clocks of #19807 / R9, applied to every call of 1024 rows
-or more (what the tester's H3-Image loss implies for H3's GEMMs at image rows)."""
+Runs the real plan/race/pair check with timers replaced by a card clock model (``_Card``, L4 and RTX 6000 Ada)."""
 
 from __future__ import annotations
 
@@ -35,9 +27,7 @@ class _Power:
     steady_mhz: dict  # {"today": alone, "cutlass": alone, "paired": a (tile, today's path) pair}
 
 
-# L4: #19807's measured clocks (alone CUTLASS 830-970 vs Triton 1130-1210 MHz, denoise-like loop 1171). Ada: R9's step
-# clocks (CUTLASS=0 ~1240 MHz, all-CUTLASS ~1035 MHz) and an alone CUTLASS clock at which the tiles win alone, as the
-# tester's logs show them doing.
+# L4: #19807's measured clocks. Ada: R9's step clocks, with an alone CUTLASS clock where tiles win alone.
 POWER = {
     "l4": _Power(2040.0, 0.05, {"today": 1290.0, "cutlass": 855.0, "paired": 1171.0}),
     "rtx6000_ada": _Power(2505.0, 0.05, {"today": 1240.0, "cutlass": 1180.0, "paired": 1035.0}),
@@ -46,10 +36,7 @@ POWER = {
 _TILE_SPEED = {0: 0.90, 1: 0.93, 2: 0.97}
 _TILE_ROWS = {0: 128, 1: 128, 2: 256}
 
-# (label, N, K, Linears, rows per call). MiniMax-H3-Image from its vendored transformer config (50 blocks + 2 token
-# refiner blocks, hidden 5376, 56 x 128 heads, SwiGLU 14336, context embedder 5120 -> 5376) at 2048x2048: ~4100 packed
-# rows per call. FLUX.2 klein 4B (5 double + 20 single blocks, hidden 3072) and Qwen-Image-2.1 (60 blocks, hidden
-# 3072) at 1024x1024: 4096 image rows, text rows apart.
+# (label, N, K, Linears, rows per call), from each model's config: H3-Image at 2048x2048, others at 1024x1024.
 INVENTORIES = {
     "MiniMaxH3ImageTransformer2DModel": (
         ("qkv", 7168, 5376, 150, 4100),
@@ -80,9 +67,7 @@ def _is_today(name) -> bool:
 
 
 class _Card:
-    """``time_us``: short bursts at the current clock. ``time_sustained_us``: each candidate back to back, the clock
-    relaxing toward its steady value; inside ``paired_cost_us`` (``pairing``) each call is a (candidate, today's path)
-    pair at the pair's clock. Each race starts at boost."""
+    """Short bursts run at the current clock; sustained runs relax toward steady; paired calls use the pair clock."""
 
     def __init__(self, power: _Power):
         self.p = power
@@ -170,14 +155,12 @@ def _clean(monkeypatch):
         cut._PAIRED_ROWS.update(paired)
 
 
-# the real race and pair check, wrapped afresh by each load (a wrapper of a wrapper would count twice)
+# wrapped afresh by each load (a wrapper of a wrapper would count twice)
 _REAL_RACE, _REAL_PAIRED = cut.race, cut.paired_cost_us
 
 
 def _run_load(monkeypatch, card: str, dit: str) -> dict:
-    """One int8 load of ``dit`` on the modelled card: the swap's family switch, the load plan, then each large call's
-    first call (its live row race). ``{"route": {label: "triton" | "tileN"}, "races": [race inputs],
-    "paired_timings": n}``."""
+    """One int8 load of ``dit`` on the modelled card; returns route, race inputs and image-row pair count."""
     for d in _STATE:
         d.clear()
     sim = _Card(POWER[card])
@@ -255,7 +238,7 @@ def _run_load(monkeypatch, card: str, dit: str) -> dict:
     monkeypatch.setattr(torch, "randint", lazy_randint)
     monkeypatch.setattr(torch.Tensor, "to", to_device)
 
-    # what ``_swap_on`` does first on head (absent on a tree without the family switch)
+    # absent on a tree without the family switch
     switch = getattr(cut, "set_paired_rows", None)
     if switch is not None:
         switch(0, type(dit, (), {})())
@@ -291,7 +274,6 @@ def _run_load(monkeypatch, card: str, dit: str) -> dict:
         ) or {}
         tile = cut.slot(rows, entry) if entry else None
         route[label] = "triton" if tile is None else f"tile{tile}"
-    # image-row races (below the video rows) that ran the pair check
     image_pairs = sum(1 for m in paired_at if m < cut._HUGE_M)
     return {"route": route, "races": races, "image_pairs": image_pairs}
 
@@ -308,26 +290,20 @@ H3I = "MiniMaxH3ImageTransformer2DModel"
 
 
 def test_ada_h3_image_2048_keeps_triton_on_image_rows(monkeypatch):
-    """The tester's cell: on the Ada model every H3-Image Linear at ~4100 rows wins its race alone (short and
-    sustained) and loses paired, so the pair check keeps today's path on all 300 of them. On a tree without the family
-    switch (origin/main) those races keep CUTLASS."""
+    """Ada: H3-Image tiles win alone but lose paired, so all 300 Linears keep today's path (origin/main keeps CUTLASS)."""
     r = _run_load(monkeypatch, "rtx6000_ada", H3I)
     assert _image_rows_on_cutlass(r, H3I) == 0, r["route"]
-    # the new path ran: the 4096-row load race of each of H3's 5 weight shapes and the 4160-row live race of the 4
-    # whose calls run ~4100 rows
+    # 5 load races at 4096 rows + 4 live races at 4160 rows
     assert r["image_pairs"] == 9, r
-    # The kill switch restores the alone verdicts (CUTLASS on every image-row call): the replay bites.
     monkeypatch.setenv(cut.PAIRED_ENV, "0")
     off = _run_load(monkeypatch, "rtx6000_ada", H3I)
     assert _image_rows_on_cutlass(off, H3I) == 300, off["route"]
     assert off["image_pairs"] == 0
-    # same race inputs either way: the switch only adds the pair timing
     assert off["races"] == r["races"]
 
 
 def test_l4_h3_image_routing_unchanged(monkeypatch):
-    """On the L4 model the tiles already lose H3-Image's large-row races alone, sustained: no winner reaches the pair
-    check and the routing is the one without it."""
+    """L4: tiles already lose alone, so no winner reaches the pair check."""
     r = _run_load(monkeypatch, "l4", H3I)
     assert r["image_pairs"] == 0, r
     monkeypatch.setenv(cut.PAIRED_ENV, "0")
@@ -336,7 +312,7 @@ def test_l4_h3_image_routing_unchanged(monkeypatch):
     assert _image_rows_on_cutlass(r, H3I) == 0
 
 
-# origin/main's routing for the other image families on both models (the cells below run unchanged there)
+# origin/main's routing for the other image families
 _MAIN_ROUTES = {
     ("rtx6000_ada", "Flux2Transformer2DModel"): {
         "double_qkv": "tile0",
@@ -352,7 +328,6 @@ _MAIN_ROUTES = {
         "mlp_out_img": "tile0",
         "attn_txt": "tile0",
     },
-    # the L4 model's clocks reject the tiles on every image-row call alone, sustained; text rows race short
     ("l4", "Flux2Transformer2DModel"): {
         "double_qkv": "triton",
         "double_ff_in": "triton",
@@ -373,9 +348,7 @@ _MAIN_ROUTES = {
 @pytest.mark.parametrize("card", ["rtx6000_ada", "l4"])
 @pytest.mark.parametrize("dit", ["Flux2Transformer2DModel", "QwenImageTransformer2DModel"])
 def test_other_image_families_unchanged(monkeypatch, card, dit):
-    """FLUX.2 klein and Qwen-Image-2.1 never run the pair check below the video rows: same race inputs, same
-    verdicts, same routing as with the pair check off (and as origin/main), and their race cache key carries no
-    paired-family suffix."""
+    """FLUX.2 klein and Qwen-Image-2.1 never pair below video rows: routing matches origin/main and pair check off."""
     r = _run_load(monkeypatch, card, dit)
     assert r["image_pairs"] == 0, r
     assert r["route"] == _MAIN_ROUTES[(card, dit)], r["route"]
@@ -386,15 +359,13 @@ def test_other_image_families_unchanged(monkeypatch, card, dit):
 
 
 def test_paired_for_rows_by_family(monkeypatch):
-    """``paired_for``: the 16384-row race on every card; large rows (1024 to 8191) only on a card whose last swap was a
-    ``PAIRED_ROW_FAMILIES`` DiT; never below 1024 rows, nor with the pair check or the sustained race off."""
     assert cut.PAIRED_ROW_FAMILIES == (H3I,)
     cut.set_paired_rows(0, type("Flux2Transformer2DModel", (), {})())
     assert not cut.paired_for(4160, 0) and cut.paired_for(cut._RACE_M_HUGE, 0)
     assert cut.set_paired_rows(0, type(H3I, (), {})())
     assert cut.paired_for(4160, 0) and cut.paired_for(1024, 0) and not cut.paired_for(512, 0)
-    assert not cut.paired_for(4160)  # no card named: the video rows only, as before
-    assert not cut.paired_for(4160, 1)  # another card's load
+    assert not cut.paired_for(4160)
+    assert not cut.paired_for(4160, 1)
     monkeypatch.setenv(cut.SUSTAINED_ENV, "huge")
     assert not cut.paired_for(4160, 0) and cut.paired_for(cut._RACE_M_HUGE, 0)
     monkeypatch.setenv(cut.SUSTAINED_ENV, "large")
@@ -403,12 +374,11 @@ def test_paired_for_rows_by_family(monkeypatch):
 
 
 def test_swap_sets_the_family_switch_first(monkeypatch):
-    """``_swap_on`` records the DiT's family before anything can plan (an early return included), so a FLUX.2 load
-    after an H3-Image one on the same card races unpaired again."""
+    """A FLUX.2 load after H3-Image on the same card races unpaired again, even on an early return."""
     cut.set_paired_rows(0, type(H3I, (), {})())
     monkeypatch.setattr(g8, "_split_cards", lambda t: [0])
     flux = type("Flux2Transformer2DModel", (torch.nn.Module,), {})()
-    assert g8._swap_on(flux, None, 0) == 0  # no int8 Linears: returns before planning
+    assert g8._swap_on(flux, None, 0) == 0
     assert not cut.paired_rows(0)
     h3i = type(H3I, (torch.nn.Module,), {})()
     g8._swap_on(h3i, None, 0)
@@ -416,8 +386,7 @@ def test_swap_sets_the_family_switch_first(monkeypatch):
 
 
 def test_race_cache_key_splits_only_the_paired_family(monkeypatch):
-    """A paired family's verdicts sit under their own race cache key (H3 video shares H3-Image's weight shapes and
-    races them unpaired at image rows); every other load keeps the key it had, so its stored verdicts still serve."""
+    """Only the paired family gets its own cache key (H3 video shares its weight shapes but races unpaired)."""
     monkeypatch.setattr(
         torch.cuda, "get_device_name", lambda *a, **k: "NVIDIA RTX 6000 Ada Generation"
     )

@@ -910,7 +910,6 @@ _RACE_SOURCES = {
         # sustained winners re-timed in pairs with today's path (the clock a denoise step shares)
         "paired_enabled",
         "paired_for",
-        # which DiT classes pair their large-row winners too (a family moved in or out re-races)
         "PAIRED_ROW_FAMILIES",
         "paired_rows",
         "paired_cost_us",
@@ -1052,7 +1051,7 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 digest,
             )
         ) + (
-            # a paired family's large-row verdicts are its own: no other family reads them back, or they its
+            # paired-family verdicts must not be shared with unpaired loads
             "|paired_rows" if cut.paired_rows(index) else ""
         )
     except Exception:  # noqa: BLE001
@@ -3353,7 +3352,7 @@ def _swap_on(
 
     from . import diffusion_int8_cutlass as _cut
 
-    # before any plan of this swap: whether its races pair their large-row winners (``PAIRED_ROW_FAMILIES``)
+    # before any plan (and any early return) of this swap
     _cut.set_paired_rows(index, transformer)
     multi = len(_split_cards(transformer)) > 1
     recs = [(m, _eligible(m)) for m in transformer.modules()]
