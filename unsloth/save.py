@@ -5336,6 +5336,12 @@ def _torchao_gather_options(model, arguments):
     return gather_on_accelerator_if_it_fits(model)
 
 
+def _shard_bytes(max_shard_size):
+    """`max_shard_size` ("5GB", "500MB" or bytes) as bytes for the GGUF dense writer."""
+    from transformers.utils.hub import convert_file_size_to_int
+    return convert_file_size_to_int(max_shard_size)
+
+
 # The dense writer reads the model's own (packed or merged) weights; a supplied state dict would be ignored.
 _GGUF_PACKED_STATE_DICT_REFUSAL = (
     "Unsloth: this model still holds GGUF-packed weights, which are saved from the model itself, so a supplied "
@@ -5571,7 +5577,9 @@ def unsloth_save_pretrained_gguf(
                     raise ValueError(_GGUF_PACKED_STATE_DICT_REFUSAL)
                 print("Unsloth: Model is not a PEFT model. Saving its dequantized GGUF weights...")
                 try:
-                    write_gguf_dense_base(self, save_directory)
+                    write_gguf_dense_base(
+                        self, save_directory, max_shard_bytes = _shard_bytes(max_shard_size)
+                    )
                     if getattr(self, "generation_config", None) is not None:
                         self.generation_config.save_pretrained(save_directory)
                     if tokenizer is not None:
@@ -7680,7 +7688,10 @@ def unsloth_generic_save(
                 )
             print(f"Unsloth: Saving the dequantized GGUF model to '{save_directory}' ...")
             write_gguf_dense_base(
-                model, save_directory, dtype = torch.float32 if _requests_float32(dtype) else None
+                model,
+                save_directory,
+                dtype = torch.float32 if _requests_float32(dtype) else None,
+                max_shard_bytes = _shard_bytes(max_shard_size),
             )
             if getattr(model, "generation_config", None) is not None:
                 model.generation_config.save_pretrained(save_directory)

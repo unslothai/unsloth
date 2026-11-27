@@ -536,7 +536,10 @@ def test_merged_16bit_save_of_an_unwrapped_packed_model(tmp_path):
 
     save_file({"stale": torch.zeros(1)}, str(tmp_path / "out" / "model.safetensors"))
     (tmp_path / "out" / "pytorch_model.bin").write_bytes(b"stale")
-    unsloth_generic_save(merged, None, str(tmp_path / "out"), save_method = "merged_16bit")
+    unsloth_generic_save(
+        merged, None, str(tmp_path / "out"), save_method = "merged_16bit", max_shard_size = "20KB"
+    )
+    assert len(list((tmp_path / "out").glob("model-*-of-*.safetensors"))) > 2
     assert not (tmp_path / "out" / "pytorch_model.bin").exists()
     reloaded = AutoModelForCausalLM.from_pretrained(tmp_path / "out", dtype = torch.float32)
     got = reloaded.state_dict()
