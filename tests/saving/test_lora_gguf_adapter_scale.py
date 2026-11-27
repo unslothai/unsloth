@@ -28,7 +28,11 @@ open(out, "wb").write(b"GGUF")
 """
 
 
-def _trained_model(tmp_path, **config_kwargs):
+def _trained_model(
+    tmp_path,
+    snapshot = True,
+    **config_kwargs,
+):
     torch.manual_seed(0)
     base_dir = str(tmp_path / "base")
     config = LlamaConfig(
@@ -46,7 +50,8 @@ def _trained_model(tmp_path, **config_kwargs):
     lora = LoraConfig(r = R, lora_alpha = 8, target_modules = list(TARGETS), **config_kwargs)
     lora.base_model_name_or_path = base_dir
     model = get_peft_model(base, lora)
-    snapshot_residual_lora_init(model, lora.init_lora_weights)
+    if snapshot:
+        snapshot_residual_lora_init(model, lora.init_lora_weights)
     model.peft_config["default"].base_model_name_or_path = base_dir
     with torch.no_grad():
         for name, param in model.named_parameters():
@@ -79,8 +84,20 @@ def _config(folder):
         {"init_lora_weights": "pissa"},
         {"init_lora_weights": "olora"},
         {"init_lora_weights": "pissa", "use_rslora": True},
+        {"alpha_pattern": {"o_proj": 3}},
+        {"use_rslora": True, "rank_pattern": {"v_proj": 2}, "alpha_pattern": {"o_proj": 3}},
+        {"init_lora_weights": "pissa", "alpha_pattern": {"o_proj": 3}},
     ],
-    ids = ["default", "rslora", "pissa", "olora", "pissa-rslora"],
+    ids = [
+        "default",
+        "rslora",
+        "pissa",
+        "olora",
+        "pissa-rslora",
+        "alpha_pattern",
+        "rslora-patterns",
+        "pissa-alpha_pattern",
+    ],
 )
 def test_converter_input_applies_to_the_original_base(tmp_path, monkeypatch, config_kwargs):
     model, original = _trained_model(tmp_path, **config_kwargs)
@@ -101,11 +118,34 @@ def test_converter_input_applies_to_the_original_base(tmp_path, monkeypatch, con
     # The adapter saved for PEFT and the live model stay as trained.
     native = _config(out)
     assert (native["r"], native["lora_alpha"]) == (R, 8)
+    assert native.get("alpha_pattern", {}) == config_kwargs.get("alpha_pattern", {})
     assert native["use_rslora"] == config_kwargs.get("use_rslora", False)
     assert model.save_pretrained == save_before
 
 
-def test_rslora_with_alpha_pattern_is_refused(tmp_path, monkeypatch):
-    model, _ = _trained_model(tmp_path, use_rslora = True, alpha_pattern = {"v_proj": 2})
-    with pytest.raises(NotImplementedError, match = "single alpha"):
+def test_plain_lora_is_handed_over_as_saved(tmp_path, monkeypatch):
+    model, _ = _trained_model(tmp_path)
+    out, converter_input = _export(model, tmp_path, monkeypatch)
+    assert _config(converter_input) == _config(out)
+    torch.testing.assert_close(
+        load_file(f"{converter_input}/adapter_model.safetensors"),
+        load_file(f"{out}/adapter_model.safetensors"),
+    )
+
+
+@pytest.mark.parametrize(
+    "config_kwargs",
+    [
+        # PEFT cannot write rsLoRA with patterns relative to the original base.
+        {"init_lora_weights": "pissa", "use_rslora": True, "rank_pattern": {"v_proj": 2}},
+        # No initial factors recorded: a PiSSA adapter loaded without Unsloth.
+        {"init_lora_weights": "pissa", "snapshot": False},
+    ],
+    ids = ["pissa-rslora-patterns", "pissa-unrecorded"],
+)
+def test_residual_adapter_without_original_base_form_is_refused(
+    tmp_path, monkeypatch, config_kwargs
+):
+    model, _ = _trained_model(tmp_path, **config_kwargs)
+    with pytest.raises(NotImplementedError, match = "rewritten base"):
         _export(model, tmp_path, monkeypatch)

@@ -82,6 +82,7 @@ from .models._utils import (
     _peft_merged_module_name,
     _peft_untied_lm_head,
     _strip_torchao_fake_quantization,
+    RESIDUAL_INIT_LORA_WEIGHTS,
     lora_relative_to_original_base,
     lora_saved_relative_to_original_base,
 )
@@ -6571,31 +6572,56 @@ def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
 
 
 def _lora_gguf_converter_input(model, tokenizer, lora_dir, scratch_dir):
-    """The adapter folder the converter reads. llama.cpp applies a GGUF LoRA to the original base at scale alpha / r,
-    but PiSSA, OLoRA, ... train on a rewritten base and rsLoRA scales by alpha / sqrt(r). Those are saved into
-    `scratch_dir` in llama.cpp's terms, so `lora_dir` stays as PEFT reads it."""
+    """The adapter folder the converter reads. llama.cpp adds `alpha / r * B @ A` to the original base, with one alpha
+    per file and r read off each tensor, ignoring use_rslora and alpha_pattern. PiSSA, OLoRA, ... train on a rewritten
+    base, so they are saved relative to the original one first; then each lora_B absorbs its PEFT scale over
+    llama.cpp's. Written to `scratch_dir`, so `lora_dir` stays as PEFT reads it."""
     import json
+    from peft.utils import load_peft_weights
+    from peft.utils.other import get_pattern_key
+    from safetensors.torch import save_file
 
-    configs = (getattr(model, "peft_config", None) or {}).values()
-    if not configs:
+    if not getattr(model, "peft_config", None):
         return lora_dir
+    source = lora_dir
     with lora_saved_relative_to_original_base(model) as rewritten_base:
-        if not (rewritten_base or any(getattr(c, "use_rslora", False) for c in configs)):
-            return lora_dir
-        save_lora_to_custom_dir(model, tokenizer, scratch_dir)
-    path = os.path.join(scratch_dir, "adapter_config.json")
-    with open(path, encoding = "utf-8") as f:
+        if rewritten_base:
+            save_lora_to_custom_dir(model, tokenizer, scratch_dir)
+            source = scratch_dir
+    with open(os.path.join(source, "adapter_config.json"), encoding = "utf-8") as f:
         config = json.load(f)
-    if config.get("use_rslora"):
-        if config.get("rank_pattern") or config.get("alpha_pattern"):
-            raise NotImplementedError(
-                "Unsloth: a GGUF LoRA stores a single alpha, so rsLoRA with rank_pattern or alpha_pattern cannot "
-                "be exported as one. Export the merged model as GGUF instead."
-            )
-        config["lora_alpha"] *= config["r"] ** 0.5
-        config["use_rslora"] = False
-        with open(path, "w", encoding = "utf-8") as f:
-            json.dump(config, f, indent = 2)
+    init = config.get("init_lora_weights")
+    if isinstance(init, str) and init.split("_niter_")[0] in RESIDUAL_INIT_LORA_WEIGHTS:
+        # No initial factors recorded, or a form the conversion skips (DoRA, rsLoRA with patterns).
+        raise NotImplementedError(
+            f"Unsloth: this `init_lora_weights = {init!r}` adapter trained on a rewritten base and cannot be "
+            "written relative to the original one, which a GGUF LoRA needs. Export the merged model as GGUF instead."
+        )
+    rslora, alpha = config.get("use_rslora"), config.get("lora_alpha")
+    ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
+    if not (rewritten_base or rslora or alphas or not alpha):
+        return lora_dir
+    gguf_alpha = alpha or 1.0  # llama.cpp reads alpha = 0 as "no scaling"
+    weights = load_peft_weights(source, device = "cpu")
+    for key, B in weights.items():
+        suffix = next((s for s in (".lora_B.weight", ".lora_embedding_B") if key.endswith(s)), None)
+        if suffix is None:
+            continue
+        name = key[: -len(suffix)].removeprefix("base_model.model.")
+        r = ranks.get(get_pattern_key(ranks, name), config["r"])
+        scale = alphas.get(get_pattern_key(alphas, name), alpha) / (r**0.5 if rslora else r)
+        weights[key] = (B.float() * (scale * r / gguf_alpha)).to(B.dtype)
+    for stale in ("adapter_model.bin", "adapter_model.safetensors"):
+        if os.path.exists(os.path.join(scratch_dir, stale)):
+            os.remove(os.path.join(scratch_dir, stale))
+    save_file(
+        {k: v.contiguous() for k, v in weights.items()},
+        os.path.join(scratch_dir, "adapter_model.safetensors"),
+        metadata = {"format": "pt"},
+    )
+    config.update(lora_alpha = gguf_alpha, use_rslora = False, alpha_pattern = {})
+    with open(os.path.join(scratch_dir, "adapter_config.json"), "w", encoding = "utf-8") as f:
+        json.dump(config, f, indent = 2)
     return scratch_dir
 
 
