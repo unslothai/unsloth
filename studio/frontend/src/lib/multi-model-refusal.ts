@@ -84,9 +84,8 @@ function refusalHeaderValue(headers: HeaderBag): string | null {
 }
 
 /**
- * The header decides when it is there: response headers, or the plain dict a padded body
- * carries in `_deferred_error.headers`. Without one, the backend's wording does. The status is
- * accepted but never required, since a padded body answers 200.
+ * A header decides when present (response headers or _deferred_error.headers), else the wording
+ * does; the status is never required, since a padded body answers 200.
  */
 export function isMultiModelRefusal(
   _status: number | null | undefined,

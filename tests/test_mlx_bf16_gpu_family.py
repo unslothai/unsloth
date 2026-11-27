@@ -4,6 +4,7 @@
 """MLX is_bfloat16_supported(): Metal GPU family first (g13/g14 lack bf16), chip name only as fallback."""
 
 import ast
+import importlib.util
 import inspect
 import sys
 import types
@@ -153,7 +154,17 @@ def _mlx_from_pretrained(
         zoo_mlx.vllm_utils = vllm_utils
     monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", zoo_mlx)
+    # The function imports `._gguf_load` relatively; load the real file under its package name without importing
+    # the package, and give the exec'd function a package to resolve against.
+    spec = importlib.util.spec_from_file_location(
+        "unsloth._gguf_load", INIT.parent / "_gguf_load.py"
+    )
+    gguf_load = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gguf_load)
+    monkeypatch.setitem(sys.modules, "unsloth._gguf_load", gguf_load)
     namespace = {
+        "__name__": "unsloth",
+        "__package__": "unsloth",
         "is_bfloat16_supported": lambda: bf16,
         "_inspect": inspect,
         "_types": types,
@@ -255,3 +266,13 @@ def test_fast_inference_starts_vllm_metal_only_when_zoo_picks_it(monkeypatch):
     load, _ = _mlx_from_pretrained(True, monkeypatch, vllm_utils = False)
     model, _ = load("m", fast_inference = True)
     assert not hasattr(model, "load_lora")
+
+
+def test_a_gguf_request_on_mlx_fails_before_zoo_loads_anything(monkeypatch):
+    """#19947: mlx-lm reads safetensors only, so `gguf_file` must be refused, not dropped."""
+    load, calls = _mlx_from_pretrained(True, monkeypatch)
+    with pytest.raises(NotImplementedError, match = "cannot load GGUF"):
+        load("unsloth/Qwen3-0.6B-GGUF", gguf_file = "Qwen3-0.6B-Q4_K_M.gguf")
+    assert calls == []
+    load("unsloth/Qwen3-0.6B")
+    assert len(calls) == 1

@@ -380,7 +380,7 @@ export function RunPreviewCard({
     })),
   );
 
-  const gpu = useGpuInfo();
+  const hostGpuInfo = useGpuInfo();
   // Only where the GPUs section shows, so a single-GPU preview is unchanged.
   const hostGpuCount = useTrainingParallelStore(
     (s) => s.capabilities?.gpus.length ?? 1,
@@ -390,6 +390,21 @@ export function RunPreviewCard({
       ? s.plan
       : null,
   );
+  const hostGpus = useTrainingParallelStore((s) => s.capabilities?.gpus);
+  // Only the plan's GPUs, so unticked cards do not count.
+  const runGpus =
+    parallelPlan && hostGpus
+      ? hostGpus.filter((g) => parallelPlan.gpuIds.includes(g.index))
+      : [];
+  const gpu =
+    runGpus.length > 0
+      ? {
+          ...hostGpuInfo,
+          name: runGpus[0].name,
+          deviceCount: runGpus.length,
+          memoryTotalGb: runGpus.reduce((sum, g) => sum + (g.totalGb ?? 0), 0),
+        }
+      : hostGpuInfo;
   const hfToken = useHfTokenStore((s) => s.token);
   const hasToken = hfApiToken(hfToken) !== undefined;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
@@ -573,10 +588,16 @@ export function RunPreviewCard({
         {parallelPlan && (
           <MetaRow
             label={t("studio.preview.gpus")}
-            value={t("studio.gpus.runChip", {
-              mode: t(PARALLEL_MODE_LABEL_KEYS[parallelPlan.mode]),
-              count: numberFormatter.format(runGpuCount(parallelPlan, hostGpuCount)),
-            })}
+            value={
+              runGpuCount(parallelPlan, hostGpuCount) === 1
+                ? t(PARALLEL_MODE_LABEL_KEYS[parallelPlan.mode])
+                : t("studio.gpus.runChip", {
+                    mode: t(PARALLEL_MODE_LABEL_KEYS[parallelPlan.mode]),
+                    count: numberFormatter.format(
+                      runGpuCount(parallelPlan, hostGpuCount),
+                    ),
+                  })
+            }
           />
         )}
       </section>

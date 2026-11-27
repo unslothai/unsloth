@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Capability filter for the On Device list. Takes Discover's capability picks and
-// shares its detection, so both filter panels behave the same.
+// Capability filter for the On Device list; shares Discover's detection so both panels match.
 
 import type {
   CachedInventoryRow,

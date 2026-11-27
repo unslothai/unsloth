@@ -242,9 +242,13 @@ test("the chat adapter prepares a compare pane before it reads the model", () =>
 test("Refresh or Edit in a compare pane loads that pane's own model", () => {
   assert.match(
     generalCompareSource,
-    /registerComparePaneRunPreparer\(pairId, async \(pane, signal\) => \{\s*const sel = pane === "model1" \? model1 : model2;/,
+    /registerComparePaneRunPreparer\(pairId, async \(pane, signal\) => \{\s*const sel = pane === "model1" \? model1 : model2;\s*if \(!sel\.id\) \{\s*throw new Error\(/,
+    "a pane with no model must not run on whichever model is loaded",
   );
-  assert.match(generalCompareSource, /loadPaneModel\(\{\s*id: sel\.id,/);
+  assert.match(
+    generalCompareSource,
+    /loadPaneModel\(\{\s*id: sel\.id,\s*isLora: sel\.isLora,\s*ggufVariant: sel\.ggufVariant,/,
+  );
   assert.match(generalCompareSource, /checkpointMatchesPick\(\s*store\(\)\.params\.checkpoint,/);
   assert.match(
     generalCompareSource,

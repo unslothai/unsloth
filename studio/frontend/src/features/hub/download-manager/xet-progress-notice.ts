@@ -14,8 +14,7 @@ import {
 
 export const XET_NOTICE_DURATION_MS = 8000;
 
-// Kept short on purpose: a taller toast covers the Model hub toolbar controls (must end above
-// ~158px). Re-measure before adding a sentence.
+// Keep short: taller toasts cover the Model hub toolbar (end above ~158px); re-measure first.
 export const XET_NOTICE_TITLE = "Download is running";
 export const XET_NOTICE_DESCRIPTION =
   "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck.";

@@ -17,7 +17,6 @@ test("the panel body's 1rem reset is layered, so the agent bar's text-ui-12 appl
   const before = CSS.slice(0, at);
   const opened = before.lastIndexOf("@layer base {");
   assert.notEqual(opened, -1);
-  // No rule closes the layer between its opening and the reset.
   assert.doesNotMatch(before.slice(opened), /\n}/);
   assert.match(BAR, /className="flex shrink-0 [^"]*\btext-ui-12\b/);
 });

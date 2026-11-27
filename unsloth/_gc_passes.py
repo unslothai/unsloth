@@ -13,10 +13,8 @@ def collect_garbage(
     before = None,
     after = None,
 ):
-    """Runs up to passes full gc.collect() passes with before and after around each; stops after a
-    pass that finds nothing unless gc.callbacks are registered (they may drop references) or gen
-    2 stats do not show one more empty collection (CPython returns 0 while another thread
-    collects)."""
+    """Stops after an empty pass unless gc.callbacks are registered (they may drop refs) or gen 2
+    stats lack one more empty collection (CPython returns 0 while another thread collects)."""
     for _ in range(passes):
         if before is not None:
             before()

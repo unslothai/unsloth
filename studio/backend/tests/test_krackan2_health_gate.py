@@ -91,8 +91,7 @@ def test_rocm_tools_answer_first(monkeypatch, tmp_path):
 
 
 def test_a_health_poll_does_no_platform_or_name_work(monkeypatch):
-    # The Krackan classification lives in the inventory refresh; a poll on a cached
-    # candidate-less record must not re-run it.
+    # Krackan is classified at inventory refresh; cached candidate-less polls must not redo it.
     calls = []
     monkeypatch.setattr(hw.platform, "system", lambda: calls.append("system") or "Linux")
     monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True)

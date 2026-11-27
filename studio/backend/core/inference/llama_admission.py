@@ -157,7 +157,6 @@ class LlamaAdmissionCancelled(LlamaAdmissionError):
 
 
 def _raw_env(name: str) -> Optional[str]:
-    """Value for a canonical name, falling back to its legacy spelling."""
     value = os.environ.get(name)
     if value is None or not value.strip():
         legacy = _LEGACY_ENV.get(name)
@@ -406,7 +405,6 @@ class LlamaAdmissionLease:
     ) -> bool:
         """Waits for cache room; call between rounds; allow_yield needs --cache-idle-slots; False on timeout."""
         want = max(0, int(tokens or 0))
-        # Cheap path first: growth that already fits never touches the wait line.
         if self.recost(want):
             return True
         if not allow_yield:
@@ -752,7 +750,6 @@ class LlamaAdmissionQueue:
             if self._budget <= 0:
                 return True
             if tokens_to <= tokens_from:
-                # Shrinking always applies, and may let a waiter in.
                 self._committed = max(0, self._committed - (tokens_from - tokens_to))
                 self._grant_waiters_locked()
                 return True
@@ -955,7 +952,6 @@ class LlamaAdmissionQueue:
             return self._in_use == 0 and not self._waiters and not self._parked
 
     def wait_for_change(self, seen: int, timeout_s: float) -> None:
-        """Sleeps up to ``timeout_s``, returning early once the state has changed since ``seen``."""
         with self._lock:
             if self._changes == seen:
                 self._change_sleepers += 1
@@ -1062,7 +1058,6 @@ def get_llama_admission_queue(key: str) -> LlamaAdmissionQueue:
 
 
 def peek_llama_admission_snapshot(key: str) -> Optional[LlamaAdmissionSnapshot]:
-    """Read-only view of one queue's state; never creates a queue."""
     with _QUEUES_LOCK:
         queue = _QUEUES.get(key)
     return queue.snapshot() if queue is not None else None

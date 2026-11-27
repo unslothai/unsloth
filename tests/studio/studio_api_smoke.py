@@ -196,12 +196,21 @@ if code != 200 or not NEW_TOKEN:
 ok("login with NEW -> 200")
 AUTH_HEADER = {"Authorization": f"Bearer {NEW_TOKEN}"}
 
+system_details = {}
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
-    code, _ = http("GET", endpoint, headers = AUTH_HEADER)
+    code, details = http("GET", endpoint, headers = AUTH_HEADER)
     if code == 200:
+        system_details[endpoint] = details
         ok(f"GET {endpoint} authenticated -> 200")
     else:
         fail(f"GET {endpoint} authenticated returned {code} (expected 200)")
+
+system_backend = system_details.get("/api/system", {}).get("device_backend")
+hardware_backend = system_details.get("/api/system/hardware", {}).get("device_backend")
+if hardware_backend and hardware_backend == system_backend:
+    ok(f"Hardware reports the same device backend as System: {hardware_backend}")
+else:
+    fail(f"Hardware backend {hardware_backend!r} differs from System backend {system_backend!r}")
 
 section("Load the GGUF for /v1 tests")
 code, body = http(

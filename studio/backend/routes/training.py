@@ -1775,6 +1775,7 @@ async def plan_parallel_training(
     """A refused mode comes back in `error`, not as a 400, so the Train page can show it inline."""
     from core.training import parallel_plan
     from models.inference import resolve_inventory_handle
+    from utils.models.model_config import shared_hub_model_info
 
     values = request.model_dump()
     values["drafter"] = (
@@ -1796,7 +1797,8 @@ async def plan_parallel_training(
                 _authorize_cache_fallback(name)
             except HTTPException:
                 sizing = {**values, "model_name": None}  # host-only plan, no model facts
-        return parallel_plan.plan_for_request(sizing, hf_token = token, inline_error = True)
+        with shared_hub_model_info():
+            return parallel_plan.plan_for_request(sizing, hf_token = token, inline_error = True)
 
     return await asyncio.to_thread(_plan)
 
@@ -2497,7 +2499,9 @@ async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> N
             "launcher",
             "distributed_backend",
             "reason",
+            "env",
         )
+        if key in plan
     }
     if pin:
         # The worker's mask lists these ids in this order, so rank r runs on gpu_ids[r].
@@ -3169,6 +3173,9 @@ def _build_training_status(
         details = details,
         parallel = getattr(backend, "parallel_plan", None) if exposes_owner_state else None,
         metric_history = metric_history,
+        memory_peaks = (
+            getattr(progress, "memory_peaks", None) if progress and exposes_owner_state else None
+        ),
     )
 
 
@@ -3359,6 +3366,7 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                memory_peaks = getattr(progress, "memory_peaks", None) if progress else None,
             )
 
         def format_sse(
@@ -4046,7 +4054,7 @@ async def start_diffusion_training(
     from core.training.diffusion_train_common import training_precision_preflight_error
 
     _precision_reason = training_precision_preflight_error(
-        normalized_cfg.resolved_family, normalized_cfg.base_precision
+        normalized_cfg.resolved_family, normalized_cfg.base_precision, cfg = normalized_cfg
     )
     if _precision_reason:
         raise HTTPException(status_code = 400, detail = _precision_reason)

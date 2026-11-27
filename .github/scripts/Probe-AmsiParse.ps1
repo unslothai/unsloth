@@ -8,10 +8,11 @@
 .DESCRIPTION
     This is the probe that actually exercises the failure in #10805.
 
-    PowerShell hands a script block to AMSI at COMPILE time, before the first statement runs. So the
-    thing to measure is compilation, not execution, and `[scriptblock]::Create` on the file's text
-    reproduces the exact failing path with none of the side effects of an install: no download, no
-    venv, no registry, no shortcut. A block surfaces as a ParseException whose
+    PowerShell hands a script block to AMSI when it is first invoked, before the first statement
+    runs; `[scriptblock]::Create` alone only parses and never reaches AMSI. So the probe parses the
+    text, then invokes a wrapper that only defines a function holding it: AMSI scans every byte and
+    none of the script's statements run, so there is no download, no venv, no registry and no
+    shortcut. A block surfaces as a ParseException whose
     FullyQualifiedErrorId is `ScriptContainedMaliciousContent` (or `ScriptHasAdminBlockedContent`
     where a policy rather than a signature is responsible).
 
@@ -74,8 +75,12 @@ function Submit-ToCompiler {
         reason    = ''
     }
     try {
-        # Compile only; nothing is invoked.
+        # Parse first, so a syntax error is reported as one.
         $null = [scriptblock]::Create($Text)
+        # AMSI scans a block when it is first invoked, not parsed. The wrapper only DEFINES a
+        # function holding the text, so AMSI sees all of it while none of it runs.
+        $wrapper = "function __unsloth_amsi_probe {`n" + $Text + "`n}"
+        & ([scriptblock]::Create($wrapper))
     } catch {
         $result.errorType = $_.Exception.GetType().FullName
         # The outer error id is a generic 'ParseException'; the real reason is on the inner Errors.

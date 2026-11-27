@@ -92,8 +92,7 @@ def _declined_now(module: Any) -> Optional[str]:
 
 
 def _live_graph_wrapper(denoiser: Any) -> bool:
-    """Whether an enabled CUDA-graph wrapper sits on ``denoiser`` or one of its blocks. Read from the module, not a
-    pipeline: an img2img / inpaint pipeline built by ``from_pipe`` shares the transformer but not the handle tuple."""
+    """CUDA-graph wrapper on denoiser or blocks (read from module: from_pipe lacks handles)."""
     from .diffusion_cuda_graph import _LIVE_WRAPPERS
 
     owned = {id(m) for m in denoiser.modules()}
@@ -333,7 +332,6 @@ def _patch_class(cls: Any) -> bool:
         own = cls.__dict__.get("__call__")
         if getattr(own, "__unsloth_zimage_cfg_split__", False):
             return True
-        # (the class's own __call__ or None when inherited, the patched one)
         patched = _make_call(cls.__call__)
         cls.__call__ = patched
         _PATCHED[cls] = (own, patched)
@@ -442,7 +440,6 @@ def split_aware_request_extra(
 
 
 def guided_runs_at_guidance_off_batch(pipe: Any) -> bool:
-    """Whether a guided render runs at the guidance-off batch."""
     denoiser = getattr(pipe, "transformer", None)
     slots = getattr(denoiser, "__dict__", None)
     if not isinstance(slots, dict) or not slots.get(_ARMED_ATTR) or zimage_cfg_split_disabled():

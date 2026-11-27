@@ -26,6 +26,7 @@ const PLAN_FIELDS = [
   "gradient_checkpointing",
   "optim",
   "offload_layers",
+  "packing",
   "is_dataset_image",
   "is_dataset_audio",
 ] as const;
@@ -61,6 +62,7 @@ export function useParallelPlan(systemGpuCount: number): void {
           s.gradientCheckpointing,
           s.optimizerType,
           s.offloadLayers,
+          s.packing,
           s.isDatasetImage,
           s.isDatasetAudio,
           s.modelType,
@@ -103,6 +105,9 @@ export function useParallelPlan(systemGpuCount: number): void {
       store.clearPlan();
       return;
     }
+    // Marked at once, not after the debounce: until the answer for this key lands, the shown plan is stale.
+    const requestKey = JSON.stringify(request);
+    store.setWantedPlanKey(requestKey);
     const controller = new AbortController();
     const timer = setTimeout(() => {
       store.setPlanLoading();
@@ -110,7 +115,7 @@ export function useParallelPlan(systemGpuCount: number): void {
         .then((result) => {
           if (controller.signal.aborted) return;
           const s = useTrainingParallelStore.getState();
-          if (result.kind === "ok") s.setPlan(result.value);
+          if (result.kind === "ok") s.setPlan(result.value, requestKey);
           else if (result.kind === "unsupported")
             s.setPlanUnavailable("unsupported");
           else s.setPlanUnavailable("error", result.message);

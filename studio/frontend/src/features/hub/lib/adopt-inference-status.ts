@@ -61,8 +61,7 @@ export function adoptResidentModelStatus(
     return false;
   }
   if (!checkpointId) {
-    // Empty status is ambiguous: when idle unload is armed the stash reloads the model, so keep it.
-    // A speech model took the slot outright, so it does not count.
+    // Empty status: keep if idle unload is armed (stash reloads); speech models do not count.
     if (state.idleUnloadArmed && !status.speechOnly) {
       return false;
     }

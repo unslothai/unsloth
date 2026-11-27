@@ -79,3 +79,33 @@ test("opening the install prompt for a retry hides the previous failure", () => 
   assert.match(source, /\{\(error \|\| failed\) && \(/);
   assert.match(source, /\{failed && \(\s*<details>/);
 });
+
+const renderInstalled = (management: boolean) =>
+  renderToStaticMarkup(
+    createElement(EngineInstall as never, {
+      management,
+      engine: {
+        engine: "vllm",
+        version: "0.30.0",
+        installed_version: "0.30.0",
+        installed: true,
+        in_use: false,
+        current: true,
+        can_rollback: true,
+        unsupported_reason: null,
+        job: { phase: null, state: null },
+      },
+    }),
+  );
+
+test("Settings keeps the installed version out of the right-aligned action group", () => {
+  const html = renderInstalled(true);
+  assert.doesNotMatch(html, /Installed/);
+  assert.match(html, /class="[^"]*flex-wrap[^"]*justify-end/);
+});
+
+test("the model picker still shows the installed version beside its actions", () => {
+  const html = renderInstalled(false);
+  assert.match(html, /Installed/);
+  assert.doesNotMatch(html, /justify-end/);
+});

@@ -21,6 +21,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { authFetch } from "@/features/auth";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { refreshContextUsage, useChatRuntimeStore } from "@/features/chat";
 import { listChatProjects } from "@/features/chat/api/chat-api";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
@@ -102,15 +103,8 @@ async function requestMemory(query: string, patch?: object): Promise<Memory> {
       : undefined,
   );
   if (!response.ok) {
-    const body: unknown = await response.json();
-    throw new Error(
-      typeof body === "object" &&
-        body !== null &&
-        "detail" in body &&
-        typeof body.detail === "string"
-        ? body.detail
-        : "Could not save memory.",
-    );
+    const body: unknown = await response.json().catch(() => null);
+    throw new Error(formatApiErrorBody(body) ?? "Could not save memory.");
   }
   return parseMemory(await response.json());
 }

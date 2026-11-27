@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
+import { notifyChatImageToolSettled } from "./chat-image-tool-events";
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
@@ -7649,6 +7650,7 @@ export function createOpenAIStreamAdapter(
                   if (deepResearchHandoff.question !== null) break;
                   continue;
                 }
+                notifyChatImageToolSettled(toolEvent);
                 // Answered in another tab or device: clear the prompt now, not at tool_end.
                 if (toolEvent.type === "tool_approved") {
                   const approvedBackendId =

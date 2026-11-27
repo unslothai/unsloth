@@ -52,8 +52,7 @@ def _compiling() -> bool:
 
 
 def _broadcast_lead(a: tuple, b: tuple) -> Any:
-    """Product of Q's and K's broadcast leading (batch, head) dims: SDPA builds that many score matrices (a mask must
-    broadcast to them). Plain loops, no ``int()`` or generator, so Dynamo traces it with sizes kept symbolic."""
+    """Product of broadcast lead dims; no int() or generator so Dynamo keeps sizes symbolic."""
     if len(a) < len(b):
         a, b = b, a
     b = (1,) * (len(a) - len(b)) + tuple(b)

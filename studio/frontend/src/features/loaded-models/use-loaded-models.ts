@@ -59,8 +59,7 @@ export function useLoadedModels(
   const t = useT();
   const [polled, setEntries] = useState<LoadedModelEntry[]>([]);
   const [heldByOther, setHeldByOther] = useState(false);
-  // Mirrored for the read below, which needs the last rows without taking a
-  // dependency that would rebuild `refresh` on every poll.
+  // Mirrors polled rows for the read below, so refresh does not rebuild on every poll.
   const polledRef = useRef<LoadedModelEntry[]>(NO_ENTRIES);
   // Reported empty rather than cleared, avoiding a setState in an effect.
   const [pending, setPending] = useState<Map<LoadedModelSource, string | null>>(
@@ -221,8 +220,7 @@ export function useLoadedModels(
             t("floatingPanels.loadedModels.toastUnverified", { model: label }),
           );
         } else if (outcome.status === "alreadyFree") {
-          // The row was stale and nothing was unloaded, so say that rather than
-          // report an eject. The row still goes: its memory is free either way.
+          // Nothing unloaded, so no eject toast; the row still goes as its memory is free.
           toast.info(
             t("floatingPanels.loadedModels.toastAlreadyFree", { model: label }),
           );
@@ -241,8 +239,7 @@ export function useLoadedModels(
           toast.success(
             t("floatingPanels.loadedModels.toastEjected", { model: label }),
           );
-          // Drop the row now, rather than offering to eject it again until the next poll. Any read
-          // already in flight predates this and would put the row back, so retire it.
+          // Drop the row now so it is not offered again; an in-flight read would restore it.
           generationRef.current += 1;
           if (mountedRef.current) {
             setEntries((prev) => prev.filter((row) => row.id !== entry.id));

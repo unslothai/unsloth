@@ -73,8 +73,7 @@ def test_strip_fold_matches_the_whole_map(monkeypatch, h):
     )  # 2 input rows per strip
     whole = st._fold_upsample(conv, x, conv.bias)  # noqa: SLF001
     strips = st._fold_upsample(conv, x, conv.bias, full_max = 0)  # noqa: SLF001
-    # Not bitwise: the CPU conv backend may block a strip-sized input differently from the whole map and sum the taps
-    # in another order (fp64 here, so ~1e-16). A seam or halo bug is off by O(1) and still fails.
+    # CPU conv may sum taps in another order (fp64, ~1e-16 gap); a seam or halo bug is O(1).
     assert (whole - strips).abs().max().item() < 1e-10
     assert (strips - _chain(conv, x)).abs().max().item() < 1e-6
 
@@ -223,8 +222,7 @@ def test_portable_decode_keeps_the_fold_and_the_failed_retry_drops_it(monkeypatc
 
 
 def test_full_map_retry_runs_without_the_fold(monkeypatch):
-    """full_map_decode: a failing kernel run marks the decoder; the retry and every later decode of it drop the fold,
-    and a decoder that never failed (ROCm: portable from the start) keeps it."""
+    """A failed kernel run marks the decoder; retries and later decodes drop the fold."""
     seen: list = []
 
     def run(

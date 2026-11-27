@@ -110,7 +110,6 @@ def probe_torch_wheel_env(
                     "torch_mm = parts[0] + '.' + minor; "
                     "print(json.dumps({"
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
-                    # Differs from python_tag only on a free-threaded build (cp314t).
                     "'abi_tag': f'cp{sys.version_info.major}{sys.version_info.minor}' + ('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else ''), "
                     "'torch_mm': torch_mm, "
                     # xFormers publishes one wheel per exact torch PATCH and per CUDA MINOR, so 'torch_mm' / 'cuda_major' cannot pick between them. Full release + full CUDA version: cu126 and cu128 are different builds of the same version string.
@@ -231,14 +230,13 @@ _UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
     ("linux_aarch64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
 }
 
-# Extra cells carrying only some packages: on Linux torch 2.10 to 2.12 ours replace upstream
-# causal-conv1d and mamba-ssm; upstream flash-attn 2.8.1 is smaller than ours, so it stays upstream.
+# Linux torch 2.10-2.12: our causal-conv1d/mamba-ssm (flash-attn 2.8.1 smaller, so upstream).
 _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
     "linux_x86_64": frozenset({"causal_conv1d", "mamba_ssm"}),
     "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),
 }
 
-# Windows on ARM has one CUDA torch, NVIDIA's 2.14.0+cu134 (CUDA 13.4, the first with a Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there.
+# Windows on ARM CUDA torch is NVIDIA's (2.14.0+cu134 first, CUDA 13.4 being the first Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there, built for torch 2.14 only.
 _UNSLOTH_WIN_ARM64_PREFIXES = frozenset({"causal_conv1d", "mamba_ssm"})
 _WIN_ARM64_TORCH_MM = "2.14"
 _WIN_ARM64_MIN_CUDA = (13, 4)
@@ -252,7 +250,7 @@ def _cuda_at_least(env: dict[str, str], floor: tuple[int, int]) -> bool:
     return (major, minor) >= floor
 
 
-# NVIDIA's flash-attn for Windows on ARM, built for the torch 2.14.0+cu134 the WoA installer takes. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
+# NVIDIA's flash-attn for Windows on ARM, one release per torch minor the WoA installer can take. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
 NVIDIA_WOA_FLASH_ATTN_RELEASE_URL = (
     "https://github.com/NVIDIA/pytorch-windows-ci/releases/download/Flash-Attention-for-WoA"
 )
@@ -265,6 +263,25 @@ NVIDIA_WOA_FLASH_ATTN_SHA256 = {
     "cp314": "b016989f1d30a01edc9fff9ba5643170174c27cc12968fdaa33ca1c055eb17aa",
     "cp314t": "c5269dc146c61a35e95df34aea81f35b85d7449d912325e4af00640f63cfcd5a",
 }
+# torch minor -> (release URL, abi tag -> sha256). Exact minor: a wheel built for one torch does not load on another.
+NVIDIA_WOA_FLASH_ATTN_RELEASES: dict[str, tuple[str, dict[str, str]]] = {
+    NVIDIA_WOA_FLASH_ATTN_TORCH_MM: (
+        NVIDIA_WOA_FLASH_ATTN_RELEASE_URL,
+        NVIDIA_WOA_FLASH_ATTN_SHA256,
+    ),
+    "2.15": (
+        f"{NVIDIA_WOA_FLASH_ATTN_RELEASE_URL}-torch2.15",
+        {
+            "cp311": "aea522334852454885af363360da7a38471a29c229ef14dd1dae2e27faa87fed",
+            "cp312": "52d7c6d05b6857384336a1356504f34ec7022ec51dffaa822f09b4564fbc35f4",
+            "cp313": "a108a9f39c622d21d35a4d94ec7c3095d89718bda7878616ec31534d00e826eb",
+            "cp314": "51b34de575067b1fe6044cb924a37ff9c4e05ce60a3fb88914ad4cb2ad1fb7b8",
+            "cp314t": "f78dfbbe84e7016da1028480f4b216ec58c274f80f00639e91e2ce78d538cad7",
+            "cp315": "90b90880e663289ef935cc1bd959578d18607c9214947a818be0ba82cc706314",
+            "cp315t": "37794b35f1c32edf5c5e074b2391fc678f433390589b5efc4761426a137d7d02",
+        },
+    ),
+}
 
 
 def is_windows_wheel_env(env: dict[str, str] | None) -> bool:
@@ -276,20 +293,21 @@ def nvidia_woa_flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     """NVIDIA's win_arm64 flash-attn for this env, with its pinned #sha256= fragment, else None."""
     if env is None or env.get("platform_tag") != "win_arm64":
         return None
-    if env.get("torch_mm") != NVIDIA_WOA_FLASH_ATTN_TORCH_MM or not _cuda_at_least(
-        env, _WIN_ARM64_MIN_CUDA
-    ):
+    torch_mm = str(env.get("torch_mm") or "")
+    release = NVIDIA_WOA_FLASH_ATTN_RELEASES.get(torch_mm)
+    if release is None or not _cuda_at_least(env, _WIN_ARM64_MIN_CUDA):
         return None
+    release_url, digests = release
     python_tag = env.get("python_tag") or ""
     abi_tag = env.get("abi_tag") or python_tag
-    digest = NVIDIA_WOA_FLASH_ATTN_SHA256.get(abi_tag)
+    digest = digests.get(abi_tag)
     if not python_tag or digest is None or not abi_tag.startswith(python_tag):
         return None
     filename = (
-        f"flash_attn-{NVIDIA_WOA_FLASH_ATTN_VERSION}+cu13torch{NVIDIA_WOA_FLASH_ATTN_TORCH_MM}"
+        f"flash_attn-{NVIDIA_WOA_FLASH_ATTN_VERSION}+cu13torch{torch_mm}"
         f"-{python_tag}-{abi_tag}-win_arm64.whl"
     )
-    return f"{NVIDIA_WOA_FLASH_ATTN_RELEASE_URL}/{filename}#sha256={digest}"
+    return f"{release_url}/{filename}#sha256={digest}"
 
 
 def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | None) -> str | None:
@@ -345,9 +363,8 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
-# Cells the pinned releases (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1) publish for cp310-cp313;
-# anything else (CUDA 13 before torch 2.9, aarch64 before 2.7, abiFALSE torch after 2.6) would 404
-# ahead of the source fallback, so it resolves to nothing.
+# Pinned causal-conv1d v1.6.1.post4 and mamba-ssm v2.3.1 publish cp310-cp313; other cells (CUDA 13
+# before torch 2.9, aarch64 before 2.7, abiFALSE after 2.6) would 404 before source fallback.
 _UPSTREAM_SSM_PINS = {
     "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
     "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,
@@ -384,8 +401,7 @@ PINNED_SOURCE_BUILD_MAX_TORCH = (2, 12)
 
 
 def pinned_source_build_supported(env: dict[str, str] | None) -> bool:
-    """Whether a source build of the pinned causal-conv1d / mamba-ssm (or their upstream wheels)
-    can work with this torch; from torch 2.13 on only our prebuilt wheels can."""
+    """Whether source builds or upstream wheels work with this torch; from 2.13 on only ours."""
     try:
         major, minor = (int(part) for part in str((env or {}).get("torch_mm") or "").split(".")[:2])
     except ValueError:

@@ -24,8 +24,7 @@ import tempfile
 
 
 def test_pp_prequantized_inkling_sharded_load(ckpt):
-    """pipeline_sharded_loading of the pre-quantized checkpoint (the default 4-bit Inkling-2-Mini repo): each rank
-    keeps its stages' 4-bit tensors, bitwise those of a full load, and placeholders for the rest."""
+    """Each rank keeps its stages' 4-bit tensors, bitwise as in a full load, with placeholders."""
     results = _run("_case_pp", ckpt)
     for r in results:
         assert os.path.realpath(r["pp_load"]).startswith(os.path.realpath(REPO) + os.sep), r[
@@ -156,8 +155,7 @@ def _load(path):
     if not cls.__dict__.get("_test_4bit"):
         prior = cls.forward
         q._patch_experts_forward(model)
-        # Keep transformers' experts-implementation wrapper visible: zoo only packs the stacks of an experts
-        # forward it routes (the next load would otherwise keep them 16-bit and refuse the 4-bit checkpoint).
+        # Keep the experts wrapper: zoo packs only routed experts, else reload refuses 4-bit.
         functools.update_wrapper(cls.forward, prior)
     return model
 
@@ -190,7 +188,6 @@ def _case_tp(rank, world, tmp, path):
     ids, labels = ink.batch()
     out = {"tp_native": tpn.__file__}
 
-    # (a) full load + LoRA + apply_tensor_parallel against one process.
     ref = ink._train(q._lora(_load(path)), ids, labels)
     model = _load(path)
     out["stacks_4bit"] = _stacks_4bit(model)
@@ -210,7 +207,6 @@ def _case_tp(rank, world, tmp, path):
     want = q._snapshot(model)
     out["ref"], out["full"] = ref, ink._train(model, ids, labels, full = tpn._full)
 
-    # (b) sharded_loading of the pre-quantized checkpoint.
     try:
         with tpn.sharded_loading(mesh):
             model = _load(path)

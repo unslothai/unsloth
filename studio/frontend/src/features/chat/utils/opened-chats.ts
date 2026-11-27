@@ -9,8 +9,7 @@ export function touchOpenedChat(opened: readonly string[], id: string): string[]
   return [id, ...opened.filter((other) => other !== id)];
 }
 
-/** Evicts the least recently opened chats past `limit`, skipping running ones and the open one: a
- *  running chat is never evicted, so the list passes `limit` when more than `limit` are running. */
+/** Evicts least recently opened past limit, sparing running and open chats; list may exceed it. */
 export function keepOpenedChats(
   opened: readonly string[],
   running: ReadonlySet<string>,

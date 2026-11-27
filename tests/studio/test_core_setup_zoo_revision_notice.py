@@ -19,8 +19,7 @@ import yaml
 _REPO = Path(__file__).resolve().parents[2]
 _ACTION = _REPO / ".github" / "actions" / "core-cpu-setup" / "action.yml"
 
-# Executed, not read: needs bash and GNU timeout, which stock macOS lacks. The action
-# only runs on ubuntu-24.04, so skipping loses no coverage.
+# Needs bash and GNU timeout (missing on stock macOS); the action runs only on ubuntu-24.04.
 _MISSING = [tool for tool in ("bash", "timeout") if shutil.which(tool) is None]
 
 pytestmark = pytest.mark.skipif(

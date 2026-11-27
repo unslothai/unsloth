@@ -38,8 +38,7 @@ im = _load_module()
 
 
 def test_pass_inputs_are_a_superset_of_the_tracked_requirements() -> None:
-    """Keep PASS_INPUT_FILES separate: widening TRACKED_REQUIREMENT_FILES makes every install look
-    changed."""
+    """Keep PASS_INPUT_FILES apart: widening tracked list makes every install look changed."""
     assert im.PASS_INPUT_FILES[: len(im.TRACKED_REQUIREMENT_FILES)] == (
         im.TRACKED_REQUIREMENT_FILES
     )
@@ -149,8 +148,7 @@ def test_update_manifest_merges_without_touching_the_rest(tmp_path: pathlib.Path
 
 
 def test_update_manifest_never_creates_one(tmp_path: pathlib.Path) -> None:
-    """The manifest's presence means the install finished; a post-manifest probe
-    must not be able to claim that on its own."""
+    """The manifest means the install finished; a probe run after it must not create one."""
     assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
     assert not (tmp_path / im.MANIFEST_NAME).exists()
 
@@ -184,8 +182,7 @@ def test_update_manifest_merges_into_the_manifest_it_replaces(
 
 
 def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path) -> None:
-    """The writers serialise against another PROCESS, not just another thread: setup.sh,
-    setup.ps1, the installer and the CLI are separate processes on one venv."""
+    """Locks must span processes: setup.sh, setup.ps1, installer and CLI share one venv."""
     order = tmp_path / "order.txt"
     child_code = "\n".join(
         [
@@ -310,8 +307,7 @@ def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatc
 
 
 def test_every_manifest_writer_takes_the_lock() -> None:
-    """A writer outside it reintroduces the race the lock exists for, and nothing in the
-    payloads themselves would show it."""
+    """A writer outside the lock reintroduces the race, and the payloads would not show it."""
     source = pathlib.Path(im.__file__).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     writers = {
@@ -328,8 +324,7 @@ def test_every_manifest_writer_takes_the_lock() -> None:
 
 
 def test_a_root_that_cannot_hold_a_lock_still_writes(tmp_path: pathlib.Path, monkeypatch) -> None:
-    """This module has to run inside a half-built venv and on filesystems that cannot lock.
-    Unserialised is the behaviour that shipped before; failing the install is not."""
+    """Half-built venvs and no-lock filesystems must still write, unserialised as before."""
 
     def _no_open(*_args, **_kwargs):
         raise OSError("no lock file here")
@@ -388,8 +383,7 @@ def test_a_dead_runs_parked_copy_does_not_outlive_the_next_invalidation(
 
 
 def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.Path) -> None:
-    """The ordinary case the fallback must not punish: a leftover file from a run that died
-    is replaced, not treated as an obstruction."""
+    """The fallback must not punish a leftover file from a dead run; it is replaced."""
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
     assert im.remove_manifest(root = tmp_path) is True
@@ -399,8 +393,7 @@ def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX file modes")
 def test_the_manifest_keeps_the_mode_it_had(tmp_path: pathlib.Path) -> None:
-    """The manifest must keep its umask-default mode: mkstemp creates 0600, and silently narrowing a
-    file other tooling may read is a change nobody asked for."""
+    """Keep the umask-default mode; mkstemp's 0600 would silently narrow a file others read."""
     previous = os.umask(0o022)
     try:
         im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
@@ -536,8 +529,7 @@ def test_an_optional_field_cannot_be_invented_by_evidence(tmp_path: pathlib.Path
 
 
 def test_an_absent_distribution_does_not_violate_a_constraint(tmp_path: pathlib.Path) -> None:
-    """A constraints file never asks for an install, so nothing to install is
-    nothing to repair -- otherwise every pass would run forever."""
+    """Constraints never ask for an install, so an absent package cannot be a violation."""
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("nonexistent-dist-xyz<2\n", encoding = "utf-8")
     assert im.violated_constraints(constraints, installed = {}) == []
@@ -560,8 +552,7 @@ def test_an_unpinned_or_unreadable_constraints_file_reports_nothing(tmp_path: pa
 
 
 def test_the_shipped_constraints_file_parses() -> None:
-    """Not an assertion about this machine's venv, only that the real file is
-    readable by the parser the skip gate relies on."""
+    """Not about this venv; only that the shipped constraints file parses for the skip gate."""
     real = REPO_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
     assert isinstance(im.violated_constraints(real, installed = {}), list)
 
@@ -636,8 +627,7 @@ def test_an_unpinned_name_only_has_to_be_present(sidecar: pathlib.Path) -> None:
 
 
 def test_metadata_without_its_package_tree_is_not_current(sidecar: pathlib.Path) -> None:
-    """The failure mode the version check alone cannot see: an interrupted pip
-    leaves METADATA behind and takes the module with it."""
+    """An interrupted pip leaves METADATA but takes the module, which a version check misses."""
     import shutil
 
     shutil.rmtree(sidecar / "transformers")
@@ -656,9 +646,8 @@ def test_a_truncated_recorded_file_forces_a_rebuild(sidecar: pathlib.Path) -> No
 def test_the_file_check_kill_switch_reaches_the_setup_predicate(
     sidecar: pathlib.Path, monkeypatch, value
 ) -> None:
-    """The runtime honours UNSLOTH_SKIP_SIDECAR_FILE_CHECK so a false positive can be
-    turned off without a release; a setup-side scan that ignored it would be the one
-    path left that still wipes the sidecar. Package and version checks still apply."""
+    """Runtime honours UNSLOTH_SKIP_SIDECAR_FILE_CHECK to switch off a false positive without a
+    release; setup's scan must too, or it wipes the sidecar. Package and version checks apply."""
     (sidecar / "transformers" / "__init__.py").write_bytes(b"")
     monkeypatch.setenv(im.SIDECAR_FILE_CHECK_ENV, value)
     assert im.sidecar_is_current(sidecar, PINS) == (True, "")
@@ -676,9 +665,8 @@ def test_a_non_true_kill_switch_value_changes_nothing(
 
 
 def test_a_pinned_package_without_a_record_forces_a_rebuild(sidecar: pathlib.Path) -> None:
-    """pip and uv write RECORD last: a pinned dist-info without one is an interrupted
-    install whose payload the size check cannot see. The optional package is not held
-    to it, since its own top-up clears a recordless dist-info."""
+    """pip and uv write RECORD last, so a pinned dist-info without one is an interrupted install;
+    the optional package is exempt, since its top-up clears a recordless dist-info."""
     (sidecar / "hf_xet-1.4.2.dist-info" / "RECORD").unlink()
     (sidecar / "hf_xet" / "__init__.py").write_bytes(b"")
     ok, reason = im.sidecar_is_current(sidecar, PINS)
@@ -725,8 +713,7 @@ def test_an_extension_built_for_another_interpreter_is_rejected(
 
 
 def test_a_tag_in_a_directory_name_says_nothing_about_the_binary(sidecar: pathlib.Path) -> None:
-    """Wiping several hundred MB over a directory name is the false positive this
-    check must not have."""
+    """A tag in a directory name says nothing about the binary, so it must not trigger a wipe."""
     _sidecar(sidecar, "regex", "2024.1.1", files = ("__init__.py", "regex.cp312.libs/libhelper.so"))
     assert im.sidecar_is_current(sidecar, PINS) == (True, "")
 
@@ -782,8 +769,7 @@ def test_a_module_only_distribution_still_answers_on_its_version(sidecar: pathli
 def test_a_module_only_distribution_whose_module_is_gone_is_not_current(
     sidecar: pathlib.Path,
 ) -> None:
-    """The case the directory probe was there for, on the path that replaces it: an
-    interrupted pip leaves the METADATA and takes the module with it."""
+    """Interrupted pip leaves METADATA but takes the module; the new check must still flag it."""
     _module_dist(sidecar, "six", "1.17.0")
     (sidecar / "six.py").unlink()
     current, reason = im.sidecar_is_current(sidecar, ("six==1.17.0",))
@@ -791,23 +777,20 @@ def test_a_module_only_distribution_whose_module_is_gone_is_not_current(
 
 
 def test_an_import_name_that_matches_neither_spelling_is_current(sidecar: pathlib.Path) -> None:
-    """pillow -> PIL. Neither `pillow` nor `pillow` with dashes swapped is on disk, and
-    guessing the mapping is not something an installer can do."""
+    """Neither pillow nor its dash-swapped form is on disk; the PIL mapping is never guessed."""
     _module_dist(sidecar, "pillow", "11.0.0", modules = ("PIL/__init__.py", "PIL/Image.py"))
     assert im.sidecar_is_current(sidecar, ("pillow==11.0.0",)) == (True, "")
 
 
 def test_a_console_script_alone_does_not_prove_the_payload_arrived(sidecar: pathlib.Path) -> None:
-    """pip records ../../bin/hf and uv records bin/hf, and neither is inside the tree the
-    training worker puts on sys.path. Believing them fails CLOSED on a real sidecar."""
+    """pip and uv record console scripts outside sys.path; trusting them fails closed."""
     _module_dist(sidecar, "toolonly", "1.0", modules = ("bin/toolonly",))
     current, reason = im.sidecar_is_current(sidecar, ("toolonly==1.0",))
     assert current is False and "directory missing" in reason
 
 
 def test_a_distribution_with_no_record_at_all_is_not_current(sidecar: pathlib.Path) -> None:
-    """With no package directory and no RECORD there is no evidence the files landed, so the answer
-    must be not current, which repairs rather than ships an unimportable sidecar."""
+    """No package dir and no RECORD is no evidence the files landed, so it is not current."""
     dist_info = sidecar / "ghost-1.0.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
@@ -1043,9 +1026,8 @@ def test_the_presence_check_answers_blocked_when_it_cannot_look(tmp_path: pathli
     ],
 )
 def test_the_presence_check_reads_the_errno_itself(monkeypatch, code, expected) -> None:
-    """Not Path.exists(): 3.13 raises EACCES out of it and 3.14 returns False (gh-101357), so
-    it means "absent" on one interpreter and "unknown" on the other. Only the four pathlib
-    treated as absent before 3.14 are absent here; anything else is a marker still in place."""
+    """Not Path.exists(): 3.13 raises EACCES, 3.14 returns False (gh-101357); only the four errnos
+    pathlib treated as absent before 3.14 are absent here; anything else is a marker."""
 
     def refuse(self, *args, **kwargs):
         raise OSError(code, os.strerror(code))

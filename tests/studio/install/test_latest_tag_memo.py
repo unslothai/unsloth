@@ -106,9 +106,7 @@ def _tags_asked(monkeypatch, module, attr):
 def test_llama_update_sends_one_latest_head(monkeypatch, opener):
     monkeypatch.setattr(ILP, "_fetch_download_host_json", _no_checksum_asset)
     asked = _tags_asked(monkeypatch, ILP, "_release_asset_download_url")
-    # The currency check (existing_install_current_without_plan) ...
     expected = ILP._expected_release_tag_without_plan({}, "latest", LLAMA_REPO, "")
-    # ... then _select -> iter_resolved_published_releases -> the download-host resolve.
     assert ILP._download_host_resolved_release(LLAMA_REPO) is None
     assert expected == LLAMA_TAG
     assert asked and set(asked) == {LLAMA_TAG}

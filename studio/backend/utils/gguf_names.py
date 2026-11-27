@@ -30,15 +30,13 @@ def is_mmproj_filename(filename: str) -> bool:
 
 
 IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
-# A quant label before the trailing token marks imatrix-weighted weights. Float labels and
-# `.imatrix` do not count: mradermacher names its calibration file `<model>.imatrix.gguf`.
+# Quant label then imatrix marks weights; float labels and .imatrix (calibration files) do not.
 IMATRIX_WEIGHTED_RE = re.compile(
     r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
 )
 
 
 def is_imatrix_filename(path: str) -> bool:
-    """Exclude calibration files, but retain imatrix-weighted models."""
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
     if IMATRIX_TOKEN_RE.search(stem) and not IMATRIX_WEIGHTED_RE.search(stem):

@@ -18,8 +18,7 @@ EXACT_TOLERANCE = 0.02
 # Looser: a windowed list estimates row heights; the failure is an extent that is a fraction of real.
 EXTENT_TOLERANCE = 0.10
 
-# Two-sided against the thread: the lower bound catches truncation (0.61 on a windowed arm), the
-# upper catches store-serialised reasoning/tool output (2.16). Rendered text vs markdown differ ~0.9%.
+# Two-sided: lower catches truncation, upper catches store-serialised reasoning/tool output.
 MIN_CLIPBOARD_COVERAGE = 0.95
 MAX_CLIPBOARD_COVERAGE = 1.10
 

@@ -42,8 +42,7 @@ runs:
       id: uv-cache
       uses: ./.github/actions/uv-cache-restore
 
-    # ROOT-CHECKOUT ONLY: `uses: ./...` resolves from GITHUB_WORKSPACE and takes no expressions
-    # (actions/runner#1348); tests/studio/test_frontend_dist_cache.py asserts every caller is at the root.
+    # Root-only: uses: ./... takes no expressions (actions/runner#1348); a test checks callers.
     - name: Restore the built frontend
       id: fe-dist
       uses: ./.github/actions/frontend-dist-restore

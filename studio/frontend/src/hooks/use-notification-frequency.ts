@@ -133,7 +133,6 @@ export function notificationDue(
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  // Sync changes made in another tab.
   const onStorage = (event: StorageEvent) => {
     if (event.key === null || OWN_KEYS.has(event.key)) listener();
   };

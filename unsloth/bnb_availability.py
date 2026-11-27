@@ -9,9 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A bitsandbytes import can succeed with a dead native library (throw_on_call stubs, bnb 0.46+); a
-real ctypes handle has restype, a stub does not. Leaf module: imports nothing from unsloth,
-decides capability flags, never importability."""
+"""Leaf module (imports nothing from unsloth) for capability flags, never importability: a dead
+native lib still imports (throw_on_call stubs, bnb 0.46+); real ctypes handles have restype."""
 
 __all__ = [
     "bitsandbytes_symbols",
@@ -26,8 +25,7 @@ _C_SYMBOLS = (
     "cdequantize_blockwise_bf16_nf4",
     "cdequantize_blockwise_fp32_nf4",
 )
-# 4bit inference is a gemv on xpu and a naive gemm elsewhere; probing the wrong pair would write off
-# a perfectly good wheel.
+# 4bit inference is gemv on XPU, gemm elsewhere; the wrong pair would reject a good wheel.
 _C_SYMBOLS_XPU = (
     "cgemv_4bit_inference_fp16",
     "cgemv_4bit_inference_bf16",
@@ -56,8 +54,7 @@ def check_native_kernels(bnb, device_type):
         raise ImportError("Unsloth: `bitsandbytes` is not installed.")
     functional = getattr(bnb, "functional", None)
     if functional is None:
-        # A part-initialised bitsandbytes leaves the parent without the attribute while the submodule stays
-        # in sys.modules, which `import x.y as z` reads directly.
+        # Half-init bnb lacks .functional but sys.modules has it; import x.y as z reads it.
         import bitsandbytes.functional as functional
 
     lib = functional.lib

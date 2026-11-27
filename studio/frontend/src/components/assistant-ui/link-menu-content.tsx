@@ -23,6 +23,7 @@ import {
 import { startLibraryChat } from "@/features/library";
 import { useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openExternalLink } from "@/lib/open-link";
@@ -132,8 +133,8 @@ async function postSandbox(sessionId: string, action: "open" | "reveal", file: s
     method: "POST",
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-    throw new Error(typeof body?.detail === "string" ? body.detail : `HTTP ${response.status}`);
+    const body = await response.json().catch(() => null);
+    throw new Error(formatApiErrorBody(body) ?? `HTTP ${response.status}`);
   }
 }
 

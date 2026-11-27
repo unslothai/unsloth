@@ -13,8 +13,7 @@ export function isBlockedByActiveModal(element: HTMLElement): boolean {
   return false;
 }
 
-// While a modal is up a hovered trigger never gets pointerleave, so tooltips must close. Two
-// observers: one cheap body attribute check, and a subtree one only while a modal is up.
+// While a modal is up, hovered triggers get no pointerleave, so tooltips must close.
 let modalLayerUp = false;
 const modalLayerListeners = new Set<() => void>();
 let bodyLayerObserver: MutationObserver | null = null;

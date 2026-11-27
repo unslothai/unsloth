@@ -46,8 +46,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/launchd/install_user_agent.sh",
 )
 
-# Keyed by (script, normalised question) since line numbers move. Do NOT add an entry just to
-# turn a build green: decide the prompt is wanted first.
+# Keyed by (script, normalised question), not line number; never add one just to pass CI.
 APPROVED_PROMPTS: dict[tuple[str, str], str] = {
     ("install.sh", "start unsloth studio now?"): (
         "The one sanctioned preference prompt: launch Unsloth after install."
@@ -104,7 +103,6 @@ _BAT_READ = re.compile(
     re.IGNORECASE,
 )
 
-# A helper filename with or without `scripts/`; names that are not real scripts are ignored.
 _HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
@@ -134,9 +132,7 @@ def _is_comment(line: str) -> bool:
 
 
 def _blank_strings(line: str, script: str = "") -> str:
-    """Blank quoted text so a message naming an input API is not one. A string that
-    still executes is kept: a `$(...)` in a double-quoted shell or PowerShell string,
-    a field in an f-string. Single quotes and a missing f prefix are literal."""
+    """Blank quoted text except executed $(...) and f-string fields; messages are not prompts."""
 
     def keep(match: re.Match) -> str:
         text = match.group(0)
@@ -224,8 +220,7 @@ def _redirected_loop_bodies(lines: list[str]) -> set[int]:
 
 
 def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
-    """Strip triple-quoted regions from a Python line, returning the rest and any delimiter still
-    open; an input() example inside a docstring documents the script, it does not prompt."""
+    """Strips triple-quoted text; an input() in a docstring documents the script, not a prompt."""
     while True:
         if delimiter:
             end = line.find(delimiter)
@@ -304,8 +299,7 @@ def _quoted_strings(line: str) -> list[str]:
 
 
 def normalise_question(text: str) -> str:
-    """Reduce a prompt string to a stable allowlist key: drop the marker and edge
-    punctuation, placeholder the substitutions, then lowercase."""
+    """Reduce a prompt to an allowlist key: drop marker, placeholder substitutions, lowercase."""
     text = _MARKER.sub(" ", text)
     text = _ESCAPE.sub(" ", text)
     text = _SUBSTITUTION.sub("<var>", text)
@@ -321,9 +315,7 @@ def _looks_like_question(text: str) -> bool:
 
 
 def _nearby_questions(lines: list[str], index: int, *, direction: int) -> list[str]:
-    """Readable questions around `lines[index]`, nearest first. Walk back (-1) from a
-    read site to the `printf` that drew it, forward (+1) from a bare `[Y/n]` hint
-    assigned into a variable and interpolated below (the #7016 shape)."""
+    """Nearest questions first: -1 is the printf before a read, +1 a [Y/n] hint (#7016 shape)."""
     candidates = list(_quoted_strings(lines[index]))
     for step in range(1, 9):
         neighbour = index + direction * step
@@ -421,8 +413,7 @@ def test_no_unapproved_interactive_prompts(script: str):
 
 
 def test_approved_prompts_all_still_exist():
-    """Delete a prompt, delete its entry: a stale one waves through a future prompt
-    that happens to reuse the wording."""
+    """Stale entries let a future prompt with the same wording pass; delete with the prompt."""
     live = set()
     for script in SCANNED_SCRIPTS:
         source = (REPO_ROOT / script).read_text(encoding = "utf-8")
@@ -504,9 +495,8 @@ def test_helpers_the_installers_invoke_are_scanned():
 
 
 def test_the_workflow_runs_for_every_scanned_script():
-    """A scanned script whose path filter is missing is only checked on the PR that
-    registers it. Read the filters back rather than keeping two lists in step by
-    hand. Parsed with a regex, not yaml: the parity runner installs pytest only."""
+    """Read the path filters back: a scanned script missing one is only checked on the PR that
+    registers it; regex, not yaml, since the parity runner installs pytest only."""
     workflow = (REPO_ROOT / ".github/workflows/cross-platform-parity-ci.yml").read_text(
         encoding = "utf-8"
     )
@@ -516,7 +506,6 @@ def test_the_workflow_runs_for_every_scanned_script():
         if collecting is not None and entry:
             collecting.append(entry.group(1))
             continue
-        # A comment or blank line inside the list does not end it.
         if collecting is not None and (not line.strip() or line.strip().startswith("#")):
             continue
         if collecting:
@@ -604,17 +593,14 @@ def test_detects_read_dash_p():
     ),
 )
 def test_detects_read_dash_p_without_a_marker(read_line: str):
-    """`-p` carries the prompt itself, so there is no marker and only the read pass
-    stands between these and a stalled install. Bundling is the usual bash
-    spelling, so it must not hinge on a space before `-p`."""
+    """-p prompts carry no marker: only the read pass catches them, bundled flags included."""
     assert [question for _, _, question in find_prompts("studio/setup.sh", read_line + "\n")] == [
         "build llama.cpp with cuda support?",
     ]
 
 
 def test_ignores_dash_p_belonging_to_a_later_command():
-    """`mkdir -p` after a non-interactive read is not a prompt: matching it fails CI
-    on an ordinary installer edit."""
+    """`mkdir -p` after a non-interactive read is not a prompt; matching it would fail CI."""
     source = (
         'read -r _line < "$config_file"; mkdir -p "$_dest"\n'
         'while IFS= read -r _root; do mkdir -p "$_root"; done < "$manifest"\n'
@@ -631,8 +617,7 @@ def test_detects_powershell_read_host():
 
 
 def test_detects_powershell_console_readline():
-    """Read-Host is the usual spelling, but the console reads block just as hard and
-    can carry their question in a variable, out of the marker pass's reach."""
+    """Read-Host is usual, but console reads block too; their question may sit in a variable."""
     source = (
         'Write-Host "  Install desktop shortcuts? $_hint" -NoNewline\n'
         "$reply = [Console]::ReadLine()\n"
@@ -644,8 +629,7 @@ def test_detects_powershell_console_readline():
 
 @pytest.mark.parametrize("read_line", ("read -r _reply", "read _reply", "  read -r _reply"))
 def test_detects_a_bare_read_from_inherited_stdin(read_line: str):
-    """The commonest prompt of all: a question printed with no marker, answered by a
-    read with no redirection. It takes the terminal the installer inherited."""
+    """Printed question with no marker, answered by a bare read: takes the inherited terminal."""
     source = f'printf "  Continue with installation? "\n{read_line}\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
@@ -653,8 +637,7 @@ def test_detects_a_bare_read_from_inherited_stdin(read_line: str):
 
 
 def test_detects_a_bare_read_with_a_fallback():
-    """`|| reply=n` is the house style for an EOF default, and a fallback is not a
-    pipeline: the read still takes the terminal."""
+    """A `|| reply=n` EOF fallback is not a pipeline, so the read still takes the terminal."""
     source = 'printf "  Continue with installation? "\nread -r _reply || _reply=n\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
@@ -681,8 +664,7 @@ def test_detects_an_assignment_prefixed_read():
 
 
 def test_a_comment_naming_a_delimiter_opens_nothing():
-    """The heredoc lesson applied to the other two languages: reading a delimiter out
-    of a comment blanks the rest of the file and takes every prompt in it with it."""
+    """A delimiter named in a comment blanks the rest of the file and hides every prompt in it."""
     python_source = '# opening delimiter is """\nprint("  Enable telemetry? ")\n_reply = input()\n'
     assert [
         question for _, _, question in find_prompts("studio/install_python_stack.py", python_source)
@@ -736,8 +718,7 @@ def test_a_spare_descriptor_on_the_done_is_not_stdin():
 
 
 def test_ignores_code_shaped_text_in_a_literal_string():
-    """Single quotes do not expand in PowerShell, and a plain Python string has no
-    fields. Keeping those would fail CI on a diagnostic message."""
+    """Single quotes and plain Python strings do not expand; flagging them fails CI."""
     assert find_prompts("install.ps1", "Write-Host 'Example: $(Read-Host \"Q?\")'\n") == []
     assert (
         find_prompts("studio/install_python_stack.py", "print(\"Example: {input('Q?')}\")\n") == []
@@ -768,8 +749,7 @@ def test_ignores_a_command_documented_in_a_heredoc():
 
 
 def test_a_here_string_does_not_open_a_heredoc():
-    """`<<<` is a here-string, and install.sh prints one inside a profile marker.
-    Reading it as a heredoc blanked the rest of the file, prompts included."""
+    """A `<<<` here-string is not a heredoc; reading it as one blanked the rest of the file."""
     source = (
         "printf '# <<< Unsloth marker <<<\\n'\nprintf \"  Enable telemetry? \"\nread -r _reply\n"
     )
@@ -814,8 +794,7 @@ def test_detects_a_negated_read():
 
 
 def test_an_interpreter_heredoc_is_not_blanked():
-    """`python - <<PY` runs its body. Hiding real code is worse than reading it as
-    shell, which still leaves the marker pass looking at it."""
+    """An interpreter heredoc runs its body, so hiding it is worse than reading it as shell."""
     source = 'python - <<PY\nprint("Enable telemetry? [Y/n]")\nPY\n'
     questions = [question for _, _, question in find_prompts("install.sh", source)]
     assert "enable telemetry?" in questions
@@ -961,8 +940,7 @@ def test_detects_a_select_loop():
 
 
 def test_interpolation_cannot_rewrite_an_approved_question():
-    """Splicing new wording into an approved prompt is a new question. A substitution
-    at the end is only the marker hint, so that one still normalises away."""
+    """Spliced wording is a new question; a trailing substitution is only the marker hint."""
     assert normalise_question("Start Unsloth Studio %s now? [Y/n]") == (
         "start unsloth studio <var> now?"
     )
@@ -985,8 +963,7 @@ def test_detects_powershell_console_read():
 
 
 def test_validates_every_question_a_read_can_ask():
-    """One read serving a branch each: approving the nearest question would wave the
-    other one through under an allowlisted key."""
+    """Each branch has its own question: one allowlisted key must not wave the other through."""
     source = (
         'if [ "$_telemetry" = ask ]; then\n'
         '    printf "  Enable telemetry? [Y/n] "\n'

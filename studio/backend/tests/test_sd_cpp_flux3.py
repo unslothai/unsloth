@@ -48,9 +48,9 @@ def test_the_gguf_repo_maps_to_its_native_assets(repo, gguf, name, fp8_repo):
     assert fam is not None and fam.name == name
     assert family_sd_cpp_supported(fam)
     assert fam.sd_cpp_vae == (fp8_repo, _VAE_FILE)
-    # sd.cpp detects the FLUX.2 VAE layout for FLUX.3 itself, and applies FLUX.3's own 6.93 shift.
+    # sd.cpp detects the FLUX.2 VAE layout itself; the shift is passed since its built-in is still 6.93.
     assert fam.sd_cpp_vae_format is None
-    assert fam.sd_cpp_flow_shift is None
+    assert fam.sd_cpp_flow_shift == 16.0
     assert fam.sd_cpp_sampling_method == "euler"
     assert sd_cpp_text_encoders_for(fam, repo, gguf) == (_TE,)
     # References go through the VAE: no projector is planned, so text-to-image and editing fetch the same files.
