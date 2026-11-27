@@ -492,3 +492,35 @@ def test_a_thread_outside_any_scope_keeps_unsloths_default(monkeypatch, tmp_path
         release.set()
         worker.join(5)
     assert received == [None]
+
+
+def test_tensor_spans_refuses_an_out_of_range_header_length(tmp_path, monkeypatch):
+    """A corrupt shard's header length is bounded before any read, so it cannot drive a huge allocation."""
+    import struct
+
+    import core.inference.safetensors_pread as sp
+
+    bad = tmp_path / "bad.safetensors"
+    bad.write_bytes(struct.pack("<Q", 1 << 40) + b"{}")
+    reads = []
+    real_open = open
+
+    def tracking_open(*args, **kwargs):
+        fh = real_open(*args, **kwargs)
+        read = fh.read
+
+        def counted(n = -1):
+            reads.append(n)
+            return read(n)
+
+        fh.read = counted
+        return fh
+
+    monkeypatch.setattr("builtins.open", tracking_open)
+    with pytest.raises(ValueError):
+        sp._tensor_spans(str(bad))
+    assert all(n is not None and 0 <= n <= 8 for n in reads), reads
+    short = tmp_path / "short.safetensors"
+    short.write_bytes(struct.pack("<Q", 64) + b"{}")
+    with pytest.raises(ValueError):
+        sp._tensor_spans(str(short))

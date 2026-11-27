@@ -308,8 +308,13 @@ def _with_pread_state_dict(load_state_dict: Any) -> Any:
 
 def _tensor_spans(filename: Any) -> dict[str, tuple[int, int]]:
     """Absolute (offset, length) of every tensor's bytes, from the safetensors header."""
+    from .diffusion_component_sizes import MAX_HEADER_BYTES
+
     with open(filename, "rb") as fh:
         (size,) = struct.unpack("<Q", fh.read(8))
+        # The length is file-supplied: bound it before reading, so a corrupt shard falls back to safe_open's own check.
+        if size > MAX_HEADER_BYTES or 8 + size > os.fstat(fh.fileno()).st_size:
+            raise ValueError(f"{filename}: safetensors header length {size} is out of range")
         header = json.loads(fh.read(size))
     base = 8 + size
     spans = {}
