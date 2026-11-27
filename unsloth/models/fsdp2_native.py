@@ -3248,14 +3248,12 @@ def _mostly_trainable_units(model):
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None:
         return []
-    units = [m for m in model.modules() if isinstance(m, FSDPModule)]
-    nested = set()
-    for unit in units:
+    found = []
+    for unit in (m for m in model.modules() if isinstance(m, FSDPModule)):
+        nested = set()  # parameters owned by this unit's descendant units
         for child in unit.modules():
             if child is not unit and isinstance(child, FSDPModule):
                 nested.update(id(p) for p in child.parameters())
-    found = []
-    for unit in units:
         trainable = frozen = 0
         for p in unit.parameters():
             if id(p) in nested:
