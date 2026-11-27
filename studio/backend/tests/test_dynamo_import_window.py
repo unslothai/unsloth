@@ -41,8 +41,7 @@ def _fake_torch(monkeypatch, *, bind_utils: bool):
 
 
 def test_reports_false_when_utils_is_not_bound_on_the_parent(warm, monkeypatch):
-    """Only the attribute read exposes the broken state; a probe that merely imports would report
-    success exactly when it matters."""
+    """Only the attribute read exposes the broken state; an import probe would falsely pass."""
     _fake_torch(monkeypatch, bind_utils = False)
     assert warm.ensure_dynamo_imported() is False
 
@@ -102,8 +101,7 @@ def test_the_warm_closes_the_window_before_it_starts_a_thread():
 
 
 def test_the_stage_list_and_its_purge_contract_are_untouched():
-    """The dynamo fix sits inside an existing _STAGES stage; purging torch on failure is never
-    right, so the stage list stays pinned."""
+    """Dynamo fix lives in an existing _STAGES stage; purging torch on failure is never right."""
     from utils import torch_warmup
     assert [name for name, _ in torch_warmup._STAGES] == [
         "hardware",
@@ -223,8 +221,7 @@ def test_every_request_thread_entry_point_reaches_that_probe():
 
 
 def test_load_failure_is_logged_with_a_traceback():
-    """The client only ever receives str(exc), so without exc_info here a one-line failure
-    cannot be attributed to any call site. Both issues stalled for exactly this reason."""
+    """Client gets only str(exc), so the log call needs exc_info or a failure can't be traced."""
     source = (_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     for node in ast.walk(tree):
@@ -241,8 +238,7 @@ def test_load_failure_is_logged_with_a_traceback():
 
 
 def test_the_dynamo_failure_is_rewritten_into_something_actionable():
-    """On torch 2.10 a process that loses this import race never recovers, so the message must say
-    restart, not retry."""
+    """On torch 2.10 a lost dynamo import race never recovers, so the message must say restart."""
     from core.inference.diffusion import dynamo_partial_init_message
 
     exc = AttributeError(

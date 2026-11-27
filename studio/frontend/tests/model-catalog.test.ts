@@ -234,6 +234,23 @@ test("vLLM and llama.cpp resolve by bare model name and clamp to low / medium / 
   assert.equal(getExternalReasoningCapabilities("custom", "openai/gpt-oss-20b").supportsReasoning, false);
 });
 
+test("llama.cpp resolves `-hf` repo ids, shards and dated checkpoints like the plain file name", () => {
+  const file = getExternalReasoningCapabilities("llama_cpp", "Qwen3-0.6B-Q4_K_M.gguf");
+  for (const id of [
+    "unsloth/Qwen3-0.6B-GGUF",
+    "unsloth/Qwen3-0.6B-GGUF:Q4_K_M",
+    "Qwen3-0.6B-Q8_0-00001-of-00002.gguf",
+    "C:\\models\\Qwen3-0.6B-Q4_K_M.gguf",
+  ]) {
+    assert.deepEqual(getExternalReasoningCapabilities("llama_cpp", id), file, id);
+  }
+  const dated = getExternalReasoningCapabilities("llama_cpp", "unsloth/DeepSeek-V4.1-Flash-1017-GGUF");
+  assert.deepEqual(dated, getExternalReasoningCapabilities("llama_cpp", "DeepSeek-V4.1-Flash-Q4_K_M.gguf"));
+  assert.equal(dated.supportsReasoning, true);
+  assert.equal(getExternalReasoningCapabilities("llama_cpp", "unsloth/Llama-3.2-1B-Instruct-GGUF").supportsReasoning, false);
+  assert.equal(getExternalReasoningCapabilities("llama_cpp", "unsloth/mystery-7b-GGUF").supportsReasoning, false);
+});
+
 test("vLLM forwards the model's own ladder; llama.cpp still clamps it", () => {
   // Qwen3.8's template accepts low / medium / xhigh only and raises on "high".
   const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3.8-27B");

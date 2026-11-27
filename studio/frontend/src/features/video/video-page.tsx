@@ -64,7 +64,7 @@ import {
 } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
-import { VideoRestylePanel } from "./restyle-panel";
+import { type RestyleRecipe, VideoRestylePanel } from "./restyle-panel";
 import { checkMediaCodecsOnce, desktopMissingMediaCodecPackages } from "./media-codec-notice";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
@@ -195,7 +195,9 @@ import {
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
-import { clipPrecisionSelection } from "@/lib/clip-precision";
+import { clipPrecisionSelection, clipTextEncoderPrecisionSelection } from "@/lib/clip-precision";
+import { MULTI_GPU_BATCH_NOTE, multiGpuPlacementRow } from "@/lib/multi-gpu-placement";
+import { loraFuseLabel } from "@/features/images/lib/lora-fuse";
 import { reseedAction } from "@/lib/failed-load-reseed";
 import {
   activePrecisionDenials,
@@ -325,6 +327,7 @@ import { VideoLoraField } from "./video-lora-field";
 import {
   type GalleryVideo,
   type VideoGenerateProgress,
+  type VideoGenerateResponse,
   type VideoContinuationKeep,
   type VideoReferenceVideo,
   type VideoLoadProgress,
@@ -343,6 +346,7 @@ import {
   getVideoGallery,
   getVideoGenerateProgress,
   getVideoLoadProgress,
+  getVideoQueue,
   getVideoDownloadPlan,
   getVideoStatus,
   loadVideoModel,
@@ -355,6 +359,14 @@ import { isAccountOwner } from "@/features/auth";
 import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
+import {
+  type QueuedVideo,
+  VIDEO_QUEUE_POLL_MS,
+  oldestQueuedVideo,
+  progressIsForVideo,
+  queuedVideoLabel,
+  queuedVideoNext,
+} from "./video-queue";
 import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 const VIDEO_EXAMPLE_PROMPT =
@@ -586,6 +598,14 @@ const CONDITIONING_LABELS: Record<string, string> = {
   v2v: "Continued a clip",
 };
 
+const CONDITIONING_INPUTS: Record<string, string> = {
+  i2va: "the start frame",
+  l2va: "the end frame",
+  fl2va: "the start and end frames",
+  ref2va: "the references",
+  v2v: "the clip to continue",
+};
+
 function clipMeta(video: GalleryVideo): string {
   const secs = video.duration_s > 0 ? `${video.duration_s.toFixed(1)}s` : `${video.num_frames}f`;
   return `${secs} · ${video.width}×${video.height}`;
@@ -771,6 +791,8 @@ function BuildRow({ label, value, badge }: { label: string; value: string; badge
 function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
+  const loraFuse = loraFuseLabel(status.lora_fuse);
+  const multiGpu = multiGpuPlacementRow(status.multi_gpu);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -807,6 +829,20 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {multiGpu ? (
+        <BuildRow
+          label="Multi-GPU"
+          value={multiGpu.label}
+          badge={<InfoHint>{multiGpu.detail}</InfoHint>}
+        />
+      ) : null}
+      {loraFuse ? (
+        <BuildRow
+          label="LoRA"
+          value={loraFuse.label}
+          badge={<InfoHint>{loraFuse.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={
@@ -1261,6 +1297,7 @@ type VideoLoadAdvanced = Pick<
   | "int8_attention"
   | "transformer_cache"
   | "transformer_quant"
+  | "text_encoder_quant"
   | "family_override"
   | "gpu_ids"
   | "allow_oversized_load"
@@ -1460,6 +1497,8 @@ function VideoGenerator({
   >([]);
   const [referenceAudios, setReferenceAudios] = useState<ReferenceMedia[]>([]);
   const [referenceImageSize, setReferenceImageSize] = useState<"match" | "max">("match");
+  // Remounts the pickers on Restore, so a file still being read then is dropped with them.
+  const [restoreGeneration, setRestoreGeneration] = useState(0);
   const [flowShift, setFlowShift] = useState<number | null>(null);
   const [audioFlowShift, setAudioFlowShift] = useState<number | null>(null);
   const [numFrames, setNumFrames] = useState(
@@ -1493,9 +1532,14 @@ function VideoGenerator({
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
+  // Omitted ("auto") takes the family default encoder; "none" pins the dense bf16 one.
+  const [textEncoderQuant, setTextEncoderQuant] = useState<
+    "auto" | NonNullable<VideoLoadAdvanced["text_encoder_quant"]>
+  >("auto");
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
-  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
+    setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   const [canReapply, setCanReapply] = useState(false);
   // Pending LoRA picks; the resident build's baked set is status.baked_lora_specs.
@@ -1509,6 +1553,14 @@ function VideoGenerator({
   }, [busy]);
   const [genStep, setGenStep] = useState<VideoGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Set while our job waits in the server queue; busy stays "generating" so the Cancel control shows.
+  const [queuedVideo, setQueuedVideo] = useState<QueuedVideo | null>(null);
+  const queuePollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The job the progress poll follows; a record tagged with another job's id is skipped.
+  const genVideoId = useRef<string | null>(null);
+  // True while a Generate POST is in flight; a Cancel then waits for the id it returns.
+  const admitting = useRef(false);
+  const cancelOnAdmit = useRef(false);
   // Background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
@@ -1522,6 +1574,7 @@ function VideoGenerator({
   // Kept mounted once opened: its poll is what saves a finished restyle into the gallery.
   const [restyleMounted, setRestyleMounted] = useState(false);
   if (pageMode === "restyle" && !restyleMounted) setRestyleMounted(true);
+  const [restyleRecipe, setRestyleRecipe] = useState<RestyleRecipe | null>(null);
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
@@ -2117,6 +2170,7 @@ function VideoGenerator({
     const action = reseedAction(status, record != null, afterFailedLoad);
     if (action === "auto") {
       setTransformerQuant("auto");
+      setTextEncoderQuant("auto");
       setMemoryMode("auto");
       setAttentionBackend("auto");
       setInt8Attention("auto");
@@ -2132,6 +2186,13 @@ function VideoGenerator({
       ) ?? null,
     );
     if (quant) setTransformerQuant(quant);
+    const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
+      // "off" maps to Dense, NOT Default, or a pinned Dense would silently take the family scheme.
+      (["auto", "none", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
+      ) ?? null,
+    );
+    if (encoder) setTextEncoderQuant(encoder);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
@@ -2696,6 +2757,13 @@ function VideoGenerator({
   // Load a clip's recipe back into the form inputs.
   const restoreSettings = useCallback(
     (video: GalleryVideo) => {
+      // Restyle has its own prompt and seed and fixed settings, so its recipe reopens that tab instead.
+      if (video.conditioning === "restyle") {
+        setRestyleRecipe({ prompt: video.prompt, seed: String(video.seed) });
+        setPageMode("restyle");
+        toast.success("Settings restored. Add the source clip again to reproduce this clip.");
+        return;
+      }
       setPrompt(video.prompt);
       const restoredNegative = video.negative_prompt ?? "";
       setNegativePrompt(restoredNegative);
@@ -2708,6 +2776,8 @@ function VideoGenerator({
       // The precision the clip ran with, for the next load (an NVFP4 clip on a build with NVFP4 off falls back).
       const precision = clipPrecisionSelection(video.transformer_quant, video.model_kind);
       if (precision) setTransformerQuant(precision);
+      const encoderPrecision = clipTextEncoderPrecisionSelection(video.text_encoder_quant, video.model_kind);
+      if (encoderPrecision) setTextEncoderQuant(encoderPrecision);
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
@@ -2736,7 +2806,23 @@ function VideoGenerator({
         setDurationIntentSeconds(video.num_frames / fps);
         setNumFrames(video.num_frames);
       }
-      toast.success("Settings restored to inputs");
+      // Staged inputs and their options are not saved with the recipe, so they reset to defaults.
+      setFirstFrame(null);
+      setLastFrame(null);
+      setContinuationClip(null);
+      setContinuationKeep("last");
+      setReferenceImages([]);
+      setReferenceVideos([]);
+      setReferenceAudios([]);
+      setReferenceImageSize("match");
+      setCropPictureIndex(null);
+      setRestoreGeneration((n) => n + 1);
+      const conditioned = CONDITIONING_INPUTS[video.conditioning ?? ""];
+      toast.success(
+        conditioned
+          ? `Settings restored. Add ${conditioned} again to reproduce this clip.`
+          : "Settings restored to inputs",
+      );
     },
     [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps, statusKnown],
   );
@@ -2971,14 +3057,19 @@ function VideoGenerator({
   }, []);
 
   // Shared with the mount-time resume.
-  const startGenPoll = useCallback(() => {
+  const startGenPoll = useCallback((videoId: string | null = null) => {
     stopGenPoll();
+    genVideoId.current = videoId;
     let pollInFlight = false;
     const pollGenerateOnce = async () => {
       if (pollInFlight) return;
       pollInFlight = true;
       try {
-        const p = await getVideoGenerateProgress();
+        // By id: the queue starts the next clip the moment ours ends, so the shared record can name
+        // a successor before this poll reads our outcome.
+        const p = await getVideoGenerateProgress(genVideoId.current ?? undefined);
+        // The previous job's record can linger until ours takes the engine.
+        if (!progressIsForVideo(p, genVideoId.current)) return;
         if (p.phase === "completed" || p.phase === "failed") {
           stopGenPoll();
           if (!isMounted.current) return;
@@ -3021,6 +3112,59 @@ function VideoGenerator({
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
   }, [ensureSrc, ensureThumbnail, stopGenPoll]);
 
+  const stopQueuePoll = useCallback(() => {
+    if (queuePollTimer.current) clearInterval(queuePollTimer.current);
+    queuePollTimer.current = null;
+  }, []);
+
+  // A busy engine queued our job: show its place until it starts, then hand over to the progress poll.
+  const startQueuePoll = useCallback(
+    (job: QueuedVideo) => {
+      stopQueuePoll();
+      setQueuedVideo(job);
+      let pollInFlight = false;
+      const timer = setInterval(async () => {
+        if (pollInFlight) return;
+        pollInFlight = true;
+        try {
+          const next = queuedVideoNext(await getVideoQueue(), job.videoId);
+          if (queuePollTimer.current !== timer || !isMounted.current) return;
+          if (next.kind === "queued") {
+            setQueuedVideo((prev) =>
+              prev &&
+              prev.position === next.job.position &&
+              prev.etaSeconds === next.job.etaSeconds
+                ? prev
+                : next.job,
+            );
+            return;
+          }
+          stopQueuePoll();
+          setQueuedVideo(null);
+          setGenStep(null);
+          if (next.kind === "started") {
+            startGenPoll(job.videoId);
+            return;
+          }
+          setBusy((prev) => (prev === "generating" ? null : prev));
+          if (next.kind === "failed") showVideoFailureToast(next.error);
+        } catch {
+          // transient; keep polling
+        } finally {
+          pollInFlight = false;
+        }
+      }, VIDEO_QUEUE_POLL_MS);
+      queuePollTimer.current = timer;
+    },
+    [startGenPoll, stopQueuePoll],
+  );
+
+  useEffect(() => {
+    if (busy === "generating") return;
+    stopQueuePoll();
+    setQueuedVideo(null);
+  }, [busy, stopQueuePoll]);
+
   useEffect(() => {
     void (async () => {
       await refreshStatus();
@@ -3039,12 +3183,14 @@ function VideoGenerator({
       }
       setLoadProbed(true);
       // Generation also runs on a daemon thread, so a reload re-enters the poll loop.
+      let resumedRender = false;
       try {
         const g = await readAfterUnload(pendingUnload, getVideoGenerateProgress);
         if (g.active) {
+          resumedRender = true;
           setBusy("generating");
           setGenStep(g.phase === "queued" ? null : g);
-          startGenPoll();
+          startGenPoll(g.video_id ?? null);
         } else if (g.phase === "completed" && g.video) {
           // The terminal record persists until the next job, covering a finish after the mount fetch.
           const clip = g.video;
@@ -3064,13 +3210,27 @@ function VideoGenerator({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      // A job still waiting in the server queue (from this page, the API or chat) resumes its queued view.
+      if (!resumedRender) {
+        try {
+          const queued = oldestQueuedVideo(await getVideoQueue());
+          if (queued && isMounted.current) {
+            setBusy("generating");
+            setGenStep(null);
+            startQueuePoll(queued);
+          }
+        } catch {
+          // Older backends have no queue route.
+        }
+      }
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       stopGenPoll();
+      stopQueuePoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, ensureThumbnail, loadToast]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, startQueuePoll, stopQueuePoll, ensureSrc, ensureThumbnail, loadToast]);
 
   // Stable because route effects depend on loadOrStage.
   const loadControlsRef = useRef({
@@ -3080,6 +3240,7 @@ function VideoGenerator({
     int8Attention,
     transformerCache,
     transformerQuant,
+    textEncoderQuant,
     familyOverride,
     selectedGpu,
     gpuChoices,
@@ -3091,6 +3252,7 @@ function VideoGenerator({
     int8Attention,
     transformerCache,
     transformerQuant,
+    textEncoderQuant,
     familyOverride,
     selectedGpu,
     gpuChoices,
@@ -3111,6 +3273,7 @@ function VideoGenerator({
           kind === "pipeline" && controls.transformerQuant !== "auto"
             ? controls.transformerQuant
             : undefined,
+        text_encoder_quant: controls.textEncoderQuant === "auto" ? undefined : controls.textEncoderQuant,
         family_override: familyOverrideRequired ? explicitFamily(controls.familyOverride) : undefined,
         // Dropped when the chosen card is gone so a stale pick loads automatically instead of 400ing.
         gpu_ids:
@@ -3134,6 +3297,7 @@ function VideoGenerator({
         model_kind: "gguf",
         hf_token: hfApiToken(getHfToken()),
         transformer_quant: advanced.transformer_quant,
+        text_encoder_quant: advanced.text_encoder_quant,
         memory_mode: advanced.memory_mode,
         family_override: advanced.family_override,
         // The plan sizes its file set against the chosen card.
@@ -3212,6 +3376,7 @@ function VideoGenerator({
           int8_attention: advanced.int8_attention,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
+          text_encoder_quant: advanced.text_encoder_quant,
           family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick.
           h3_task: opts.h3Task,
@@ -3378,6 +3543,7 @@ function VideoGenerator({
           // Without the token the lookup fails on a gated base and drops the companion entry.
           hf_token: hfApiToken(getHfToken()),
           transformer_quant: advanced.transformer_quant,
+          text_encoder_quant: advanced.text_encoder_quant,
           memory_mode: advanced.memory_mode,
           family_override: advanced.family_override,
           // The two H3 denoisers are separate downloads.
@@ -4006,15 +4172,36 @@ function VideoGenerator({
     loadToast.setCancel(() => void handleCancelLoad());
   }, [loadToast, handleCancelLoad]);
 
+  const queuedVideoId = queuedVideo?.videoId ?? null;
   const handleCancelGenerate = useCallback(async () => {
     setStopping(true);
+    if (admitting.current) {
+      // The new clip has no id yet; the submit cancels it by id once the POST answers.
+      cancelOnAdmit.current = true;
+      return;
+    }
     try {
-      const { cancelled } = await cancelVideoGeneration();
-      if (!cancelled) setStopping(false);
+      // A queued job is dropped by id; a rendering one stops at the next step.
+      // While rendering, the followed clip's id: the queue may already have started a successor of
+      // this account, and a bare cancel would stop that one instead.
+      const { cancelled } = await cancelVideoGeneration(
+        queuedVideoId ?? genVideoId.current ?? undefined,
+      );
+      if (!cancelled) {
+        setStopping(false);
+        return;
+      }
+      if (queuedVideoId && isMounted.current) {
+        stopQueuePoll();
+        setQueuedVideo(null);
+        setGenStep(null);
+        setBusy((prev) => (prev === "generating" ? null : prev));
+      }
     } catch {
+      // 409 when it already started or ended; the queue poll moves on to its progress.
       setStopping(false);
     }
-  }, []);
+  }, [queuedVideoId, stopQueuePoll]);
 
   // As on Images: a locked ratio keeps the paired side in step; every pair is fitted to the family.
   const dimOptions = useMemo(() => videoDimOptions(sizeLimits), [sizeLimits]);
@@ -4115,8 +4302,13 @@ function VideoGenerator({
     setBusy("generating");
     setGenStep(null);
     // The POST only starts the job (minutes, and the secure tunnel caps responses near 100s).
+    // The finished clip is no longer followed: a Cancel from here on is for the new one.
+    genVideoId.current = null;
+    admitting.current = true;
+    cancelOnAdmit.current = false;
+    let accepted: VideoGenerateResponse;
     try {
-      await generateVideo({
+      accepted = await generateVideo({
         prompt: prompt.trim(),
         // Only when guidance uses it, so the recipe does not record an ignored prompt.
         negative_prompt:
@@ -4164,6 +4356,8 @@ function VideoGenerator({
         live_preview: livePreview,
       });
     } catch (err) {
+      admitting.current = false;
+      cancelOnAdmit.current = false;
       if (!isMounted.current) return;
       const refusal = err instanceof Error ? err.message : null;
       // A refusal is never the user's own Cancel, so one that mentions "cancelled" still shows.
@@ -4174,7 +4368,29 @@ function VideoGenerator({
       void resyncAfterGenerateRefusal();
       return;
     }
-    startGenPoll();
+    admitting.current = false;
+    if (cancelOnAdmit.current) {
+      cancelOnAdmit.current = false;
+      // Cancel was pressed while the POST was in flight: stop exactly the clip it created. The
+      // follow below then reads its cancelled outcome and clears the page.
+      if (accepted.video_id) {
+        try {
+          await cancelVideoGeneration(accepted.video_id);
+        } catch {
+          // 409: it already ended; its outcome still arrives below.
+        }
+      }
+    }
+    // A busy engine queues it server-side (FIFO, round-robin across accounts) instead of refusing.
+    if (accepted.status === "queued" && accepted.video_id) {
+      startQueuePoll({
+        videoId: accepted.video_id,
+        position: accepted.queue_position ?? null,
+        etaSeconds: accepted.eta_seconds ?? null,
+      });
+      return;
+    }
+    startGenPoll(accepted.video_id ?? null);
   }, [
     livePreview,
     prompt,
@@ -4205,6 +4421,7 @@ function VideoGenerator({
     continuationClip,
     continuationKeep,
     startGenPoll,
+    startQueuePoll,
     resyncAfterGenerateRefusal,
   ]);
 
@@ -4276,6 +4493,24 @@ function VideoGenerator({
         </div>
       )}
       <AdvancedSelect
+        label="Text encoder precision"
+        hint={`Shrinks the text encoder to save memory, at some cost to quality. Default lets the model choose, which can be its hosted quantized encoder; pick Dense (bf16) to pin the released encoder. FP8 (storage) is the safe pick and the only one that works with CPU offload. FP8 (compute) needs an RTX 40 series or newer.${nvfp4Diffusion ? " NVFP4 is the smallest." : ""} Restoring a clip's settings restores the precision it ran with. The loaded build below reports what was applied.`}
+        badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
+        value={textEncoderQuant}
+        onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
+        options={withNvfp4Option(
+          [
+            ["auto", "Default"],
+            ["none", "Dense (bf16)"],
+            ["fp8", "FP8 (storage)"],
+            ["fp8_dynamic", "FP8 (compute)"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4"],
+          ] as SelectOption[],
+          nvfp4Diffusion,
+        )}
+      />
+      <AdvancedSelect
         label="Attention"
         hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
@@ -4300,7 +4535,7 @@ function VideoGenerator({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one clip is not part of this release."
+          hint={`Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one clip is not part of this release. ${MULTI_GPU_BATCH_NOTE}`}
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
@@ -4566,7 +4801,7 @@ function VideoGenerator({
       )}
       {restyleMounted && (
         <div className={pageMode === "restyle" ? "contents" : "hidden"} inert={pageMode !== "restyle" || undefined}>
-          <VideoRestylePanel active={active} />
+          <VideoRestylePanel active={active} restore={restyleRecipe} />
         </div>
       )}
       {pageMode === "create" && (
@@ -4659,6 +4894,7 @@ function VideoGenerator({
                   <div className="grid gap-1.5">
                     <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={firstFrame}
                       onChange={(next) => {
                         setFirstFrame(next);
@@ -4673,6 +4909,7 @@ function VideoGenerator({
                   <div className="grid gap-1.5">
                     <span className="text-ui-11 text-muted-foreground/70">End frame</span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={lastFrame}
                       onChange={(next) => {
                         setLastFrame(next);
@@ -4760,6 +4997,7 @@ function VideoGenerator({
                       Picture {referenceImages.length + 1}
                     </span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={null}
                       onChange={(next) =>
                         next &&
@@ -4892,6 +5130,7 @@ function VideoGenerator({
                 ))}
                 {referenceVideos.length < 3 && hasReferenceRoom && (
                   <ReferenceMediaPicker
+                    key={restoreGeneration}
                     kind="video"
                     value={null}
                     label={`Add video ${referenceVideos.length + 1}`}
@@ -4935,6 +5174,7 @@ function VideoGenerator({
                   hasReferenceRoom &&
                   (referenceImages.length > 0 || referenceVideos.length > 0) && (
                     <ReferenceMediaPicker
+                      key={restoreGeneration}
                       kind="audio"
                       value={null}
                       label={`Add audio ${referenceAudios.length + 1}`}
@@ -4984,6 +5224,7 @@ function VideoGenerator({
                 </InfoHint>
               </span>
               <ReferenceMediaPicker
+                key={restoreGeneration}
                 kind="video"
                 value={continuationClip}
                 label="Clip to continue"
@@ -5483,26 +5724,37 @@ function VideoGenerator({
               </div>
             )}
 
-            {/* Live generation progress: a per-step bar with the phase label and ETA, centered when there
-                is nothing else to show. */}
+            {/* Live generation progress (or the queued place): a per-step bar with the phase label and ETA,
+                centered when there is nothing else to show, stacked above the shown clip's action bar
+                (bottom-4, ~40px tall) so it never covers Recipe / Download. */}
             {busy === "generating" && (
               <div
                 className={cn(
                   "pointer-events-none absolute flex justify-center px-4",
-                  selectedSrc || livePreviewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
+                  livePreviewSrc
+                    ? "inset-x-0 bottom-4"
+                    : selectedSrc
+                      ? "inset-x-0 bottom-16"
+                      : "inset-0 items-center",
                 )}
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
                     className="min-h-0"
                     title={null}
-                    message="Starting…"
+                    message={
+                      queuedVideo
+                        ? queuedVideoLabel(queuedVideo.position, queuedVideo.etaSeconds)
+                        : "Starting…"
+                    }
                     progressPercent={
-                      genStep?.phase === "denoise" && genStep.total > 0
+                      !queuedVideo && genStep?.phase === "denoise" && genStep.total > 0
                         ? (genStep.step / genStep.total) * 100
                         : null
                     }
-                    progressLabel={genStep ? genStepLabel(genStep, Boolean(status?.has_audio)) : null}
+                    progressLabel={
+                      !queuedVideo && genStep ? genStepLabel(genStep, Boolean(status?.has_audio)) : null
+                    }
                   />
                 </div>
               </div>

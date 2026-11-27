@@ -18,6 +18,8 @@ import time  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402
 
+pytestmark = pytest.mark.xdist_group("test_fsdp2_native_unsharded_int_mesh_gloo")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
 from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402

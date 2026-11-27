@@ -94,7 +94,6 @@ def stream_codex_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    """Stream Codex, execute requested Unsloth tools, and continue until a final answer."""
     return stream_with_studio_tools(
         CodexTransport(client, run),
         run = ToolLoopRun(

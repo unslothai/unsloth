@@ -4,7 +4,7 @@
 """Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
 and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
 int8_decoder runs on the default / max tiers (UNSLOTH_H3_VAE_INT8=0 keeps it float, =1 adds it to eager);
-CUDA+Triton only, else stock."""
+CUDA+Triton only; ROCm and MPS take only the exact single-frame encoder lowering, else stock."""
 
 from __future__ import annotations
 
@@ -35,6 +35,13 @@ LEVER_TILE_BATCH = "tile_batch"
 LEVER_CANVAS = "canvas"
 LEVER_INT8_DECODER = "int8_decoder"
 LEVER_FP16_ACCUM = "fp16_accum"
+# ROCm: T = 1 causal Conv3d runs as Conv2d of its last tap (other taps see only zero pad; exact, not bitwise).
+LEVER_ROCM_SINGLE_FRAME_ENCODER = "rocm_single_frame_encoder"
+H3_ROCM_SINGLE_FRAME_ENV = "UNSLOTH_H3_ROCM_SINGLE_FRAME_ENCODER"
+# Apple Silicon: the same lowering on MPS, where a T = 1 Conv3d pays for its two zero-pad taps.
+LEVER_MPS_SINGLE_FRAME_ENCODER = "mps_single_frame_encoder"
+H3_MPS_SINGLE_FRAME_ENV = "UNSLOTH_H3_MPS_SINGLE_FRAME_ENCODER"
+H3_VAE_LEVER_CALLS_ATTR = "_unsloth_h3_vae_lever_calls"
 
 _TILE_BATCH_MAX = 4
 _TILE_BATCH_BYTES_PER_TILE = 256 * 2**20
@@ -1514,6 +1521,98 @@ def _triton_jit_toolchain_ok() -> bool:
         return True
 
 
+def h3_vae_lever_calls(vae: Any) -> dict[str, int]:
+    return dict(getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None) or {})
+
+
+def _single_frame_conv_forward(
+    conv: Any,
+    calls: Optional[dict] = None,
+    lever: str = LEVER_ROCM_SINGLE_FRAME_ENCODER,
+) -> Any:
+    """``conv.forward`` with T = 1 calls lowered to a Conv2d over the last temporal tap."""
+    import torch.nn.functional as F
+
+    stock = conv.forward
+    conv._unsloth_rocm_single_frame_calls = 0
+
+    def forward(hidden_states: Any) -> Any:
+        kt = conv.kernel_size[0]
+        if (
+            hidden_states.dim() == 5
+            and hidden_states.shape[2] == 1
+            and kt > 1
+            and int(getattr(conv, "temporal_padding", 0) or 0) == kt - 1
+            and tuple(conv.padding) == (0, 0, 0)
+            and conv.dilation[0] == 1
+        ):
+            x = hidden_states[:, :, 0]
+            pad = int(getattr(conv, "spatial_padding", 0) or 0)
+            if pad > 0:
+                x = F.pad(x, (pad, pad, pad, pad), mode = conv.spatial_padding_mode)
+            out = F.conv2d(
+                x,
+                conv.weight[:, :, -1],
+                conv.bias,
+                stride = tuple(conv.stride[1:]),
+                padding = 0,
+                dilation = tuple(conv.dilation[1:]),
+                groups = conv.groups,
+            )
+            conv._unsloth_rocm_single_frame_calls += 1
+            if calls is not None:
+                calls[lever] = calls.get(lever, 0) + 1
+            return out.unsqueeze(2)
+        return stock(hidden_states)
+
+    return forward
+
+
+def _single_frame_lever() -> Optional[str]:
+    """The single-frame lever this host takes (ROCm or MPS), None elsewhere or when its kill switch is set."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    if torch.cuda.is_available():
+        if is_rocm_torch(torch) and _env(H3_ROCM_SINGLE_FRAME_ENV) not in _FALSE:
+            return LEVER_ROCM_SINGLE_FRAME_ENCODER
+        return None
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available() and _env(H3_MPS_SINGLE_FRAME_ENV) not in _FALSE:
+        return LEVER_MPS_SINGLE_FRAME_ENCODER
+    return None
+
+
+def _install_rocm_single_frame_encoder(vae: Any) -> int:
+    return _install_single_frame_encoder(vae)[1]
+
+
+def _install_single_frame_encoder(vae: Any) -> tuple:
+    """``(lever, wrapped conv count)``; ``(None, 0)`` when no single-frame lever applies."""
+    lever = _single_frame_lever()
+    if lever is None:
+        return None, 0
+    if type(vae).__name__ != "AutoencoderKLMiniMaxH3":
+        return None, 0
+    encoder = getattr(vae, "encoder", None)
+    if encoder is None:
+        return None, 0
+    calls = getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None)
+    if not isinstance(calls, dict):
+        calls = {}
+    n = 0
+    for module in encoder.modules():
+        if type(module).__name__ != "MiniMaxH3VideoCausalConv3d" or "forward" in module.__dict__:
+            continue
+        module.forward = _single_frame_conv_forward(module, calls, lever)
+        n += 1
+    if n > 0:
+        calls.setdefault(lever, 0)
+        setattr(vae, H3_VAE_LEVER_CALLS_ATTR, calls)
+    return lever, n
+
+
 def cuda_fast_path_available(vae: Any = None) -> bool:
     try:
         import torch
@@ -1574,11 +1673,25 @@ def apply_h3_vae_speedups(
     planned = plan_h3_vae_levers(speed_mode, workflow = workflow, consumer_gpu = consumer_gpu)
     engaged: list[str] = []
     if not planned or not cuda_fast_path_available(vae):
+        # not bitwise, so off when the plan is empty (speed_mode="off")
         try:
-            vae._unsloth_h3_vae_levers = ()
+            if planned:
+                lever, wrapped = _install_single_frame_encoder(vae)
+                if wrapped > 0:
+                    engaged.append(lever)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            if logger is not None:
+                logger.warning(
+                    "video.h3_vae_fast: single_frame_encoder failed, keeping the stock path: %s",
+                    exc,
+                )
+        try:
+            vae._unsloth_h3_vae_levers = tuple(engaged)
         except Exception:  # noqa: BLE001
             pass
-        return ()
+        if engaged and logger is not None:
+            logger.info("video.h3_vae_fast: engaged %s", ", ".join(engaged))
+        return tuple(engaged)
 
     def _try(name: str, fn) -> None:
         try:

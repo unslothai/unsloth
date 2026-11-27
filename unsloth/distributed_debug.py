@@ -40,8 +40,7 @@ def apply_debug_distributed_env(environ = None):
     except Exception:
         initialized = False
     if initialized:
-        # Too late to take effect, and ProcessGroupNCCL threads read the environment
-        # concurrently (setenv races getenv), so leave it untouched.
+        # Too late once a process group exists; setenv races NCCL's getenv, so leave it alone.
         print(
             "Unsloth: UNSLOTH_DEBUG_DISTRIBUTED=1 is set but the process group already exists, "
             "so it was not applied. Import unsloth before init_process_group, or export "

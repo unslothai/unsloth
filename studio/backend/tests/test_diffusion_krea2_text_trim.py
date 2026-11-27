@@ -121,3 +121,24 @@ def test_cached_text_keeps_the_512_row_form_an_older_build_can_read(monkeypatch)
     assert old_pe.shape[:2] == (2, 512) and old_mask.shape == (2, 512)
     pe_b, mask_b = dit._krea2_collate(entries, "cpu", torch.float32)
     assert pe_b.shape[1] == 40 and mask_b[1].sum() == 17
+
+
+def test_compiled_pad_pins_krea2_only_when_a_batch_can_mix_lengths():
+    embeds = {"long": _entry(20), "short": _entry(6), "": _entry(3)}
+    assert dit._compiled_text_pad_to("krea-2", True, embeds, 1) is None
+    assert dit._compiled_text_pad_to("krea-2", True, embeds, 2) == 20
+    assert dit._compiled_text_pad_to("krea-2", False, embeds, 2) is None
+    assert (
+        dit._compiled_text_pad_to("qwen-image", True, {"a": (torch.zeros(1, 9, 4), None)}, 1) == 9
+    )
+    assert (
+        dit._compiled_text_pad_to("qwen-image", False, {"a": (torch.zeros(1, 9, 4), None)}, 1)
+        is None
+    )
+    assert dit._compiled_text_pad_to("flux.1", True, embeds, 1) is None
+
+
+def test_batch_one_krea2_steps_stay_unmasked_at_every_caption_length():
+    for valid in (6, 10, 20):
+        pe_b, mask_b = dit._krea2_collate([_entry(valid)], "cpu", torch.float32, pad_to = None)
+        assert pe_b.shape[1] == valid and mask_b is None

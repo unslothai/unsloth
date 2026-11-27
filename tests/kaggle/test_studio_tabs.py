@@ -63,8 +63,7 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def test_every_endpoint_resolves_to_a_route_that_exists():
-    """Each endpoint must resolve to a declared route, since a typo'd path 404s just like a missing
-    router and would wrongly fail a healthy tab."""
+    """Endpoints must match a declared route, or a typo'd path 404s and fails a healthy tab."""
     prefixes = _mounted_prefixes()
     declared = _declared_get_paths()
     unresolved = []
@@ -84,14 +83,12 @@ def test_the_four_tabs_the_directive_names_are_all_covered():
 
 
 def test_it_does_not_use_an_endpoint_that_404s_by_design():
-    """`/jobs/current` raises 404 when no job is running. Using it would make
-    this red on correct behaviour, which is how a check gets switched off."""
+    """/jobs/current 404s by design when idle; using it would fail on correct behaviour."""
     assert all(path != "/api/data-recipe/jobs/current" for _, path in _endpoints())
 
 
 def test_a_404_is_distinguished_from_other_failures():
-    """A 500 is a live route with a broken handler; a 404 is a route that does
-    not exist. They send a reader to different places."""
+    """500 is a live route with a broken handler; 404 is a route that does not exist."""
     func = _func("assert_tabs")
     tests = [ast.unparse(n.test) for n in ast.walk(func) if isinstance(n, ast.If)]
     assert any(t == "code == 404" for t in tests)
@@ -99,8 +96,7 @@ def test_a_404_is_distinguished_from_other_failures():
 
 
 def test_a_200_that_is_not_a_json_object_fails():
-    """Most of these are declared with a response_model, so a bare string or a
-    null means something is standing in for the real handler."""
+    """Most routes declare a response_model, so a bare string or null means a stub answered."""
     func = _func("assert_tabs")
     assert any(
         "isinstance(body, (dict, list))" in ast.unparse(n.test)
@@ -118,7 +114,6 @@ def test_an_endpoint_that_raises_is_a_failure_rather_than_a_skip():
 
 
 def test_it_runs_before_the_long_training_phase():
-    """These need only a logged-in session. Behind a 20-minute training run, a
-    training failure hides whether the tabs exist at all."""
+    """Run before the long training phase so a training failure cannot hide missing tabs."""
     body = _body("execute")
     assert body.index("self.assert_tabs()") < body.index("self.assert_training()")

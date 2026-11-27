@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Turn-end stop tokens for chat models: some checkpoints set eos to a bare document terminator
-while chat turns end with <|im_end|>, so generation runs on. Markers come from the chat_template,
-not vocab membership, since base models may carry unused ChatML tokens. Dependency-light for unit
-tests."""
+"""Turn-end stop tokens for chat models; eos may be a bare document terminator, so generation runs
+past <|im_end|>; markers from chat_template, not vocab (base models may carry unused ChatML)."""
 
 from typing import Optional
 
-# Canonical assistant-turn-end markers per chat family.
 _CHAT_TURN_END_TOKENS = (
     "<|im_end|>",
     "<|eot_id|>",

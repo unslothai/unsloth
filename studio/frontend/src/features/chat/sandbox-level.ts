@@ -8,8 +8,7 @@ import type { PermissionMode, SandboxLevel } from "./stores/chat-runtime-store";
 export const SANDBOX_DOCS_URL =
   "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth";
 
-/** A settled answer says Python or Terminal runs without OS isolation. Unknown (no answer, an old
- *  server) or still probing is not "missing". */
+/** Settled: Python or Terminal runs without OS isolation; unknown or probing is not missing. */
 export function osSandboxMissing(capability: SandboxCapability | null): boolean {
   if (capability === null) return false;
   if (capability.pythonOsIsolated && capability.terminalOsIsolated) return false;

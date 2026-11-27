@@ -81,8 +81,7 @@ runs:
         fi
         echo "the restored frontend was reused; no rebuild happened"
 
-    # Main only: PR-scoped entries are unreadable by other PRs and evict main's copy.
-    # Not always(): a failed install must not store a half-built dist under an immutable key.
+    # Main only (PR entries evict main's copy); no always(): a failed install must not cache.
     - name: Save the built frontend
       if: >-
         (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth')) && inputs.cache-hit != 'true'

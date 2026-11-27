@@ -259,8 +259,7 @@ def test_a_recorded_binary_replaced_by_a_different_one_is_rejected(tmp_path, mon
 def test_a_recorded_binary_replaced_by_a_dangling_symlink_is_rejected(
     tmp_path, monkeypatch, relative
 ):
-    """stat() follows the link, so this arrives as ENOENT rather than as a size mismatch;
-    _runtime_files_match's OSError branch is what has to catch it."""
+    """stat() follows the link to ENOENT; _runtime_files_match's OSError branch must catch it."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     target = install_dir / relative
@@ -275,8 +274,7 @@ def test_a_recorded_binary_replaced_by_a_dangling_symlink_is_rejected(
 @NOT_ROOT
 @pytest.mark.parametrize("relative", HASHED_TIER)
 def test_an_unreadable_recorded_binary_is_rejected(tmp_path, monkeypatch, relative):
-    """chmod 000 leaves size and mtime intact, so only the hash attempt can fail -- and
-    _runtime_files_match fails CLOSED on it, unlike the payload scans."""
+    """chmod 000 keeps size and mtime, only hashing fails: _runtime_files_match fails closed."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     target = install_dir / relative
@@ -339,8 +337,7 @@ def test_the_execute_bit_is_checked_on_every_entrypoint(
 @pytest.mark.parametrize("relative", SIZE_TIER)
 @pytest.mark.parametrize("corruption", ("truncate_half", "truncate_zero", "delete"))
 def test_a_truncated_payload_library_is_rejected(tmp_path, monkeypatch, relative, corruption):
-    """_runtime_payload_has only checks existence, so a half-written libggml.so from a full disk
-    passed; a stat against the recorded size catches it."""
+    """_runtime_payload_has only checks existence; a size stat catches half-written libraries."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     _CORRUPTIONS[corruption](install_dir / relative)
@@ -397,8 +394,7 @@ def test_dropping_the_digest_from_one_entry_downgrades_it_to_the_size_tier(tmp_p
 
 
 def test_an_empty_runtime_files_record_fails_closed(tmp_path, monkeypatch):
-    """(b) The record is the evidence that replaces starting the binaries, so no record
-    is not proof of anything."""
+    """Record replaces starting the binaries as evidence, so an empty record proves nothing."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     payload = _marker(install_dir)
@@ -428,8 +424,7 @@ def test_a_single_non_dict_entry_fails_the_whole_record_closed(tmp_path, monkeyp
 
 
 def test_a_marker_with_no_runtime_files_key_fails_closed(tmp_path, monkeypatch):
-    """Every marker written before this PR is this shape: it takes the full path once,
-    which re-records it."""
+    """Legacy markers have no runtime_files key; taking the full path once re-records them."""
     install_dir = _install(tmp_path, monkeypatch)
     payload = _marker(install_dir)
     payload.pop("runtime_files")
@@ -472,8 +467,7 @@ def _whisper_install(
     *,
     slim: bool = False,
 ) -> Path:
-    """A whisper install tree plus a marker written by the REAL writer, so the
-    fingerprint the keep path recomputes is genuinely self-consistent."""
+    """Install tree and a marker from the real writer, so the fingerprint is self-consistent."""
     install_dir = tmp_path / "whisper.cpp"
     bin_dir = WHISPER.runtime_bin_dir(install_dir, WHISPER_LINUX)
     bin_dir.mkdir(parents = True)
@@ -606,8 +600,7 @@ def test_whisper_a_slim_install_missing_a_wired_library_is_rejected(tmp_path, mo
 
 
 def test_whisper_a_wired_library_truncated_to_one_byte_is_rejected(tmp_path, monkeypatch):
-    """A ggml library truncated to a stub passes the by-name presence check; the recorded size
-    catches it."""
+    """A stubbed libggml passes the by-name presence check; the recorded size catches it."""
     install_dir = _whisper_install(tmp_path, monkeypatch, slim = True)
     bin_dir = WHISPER.runtime_bin_dir(install_dir, WHISPER_LINUX)
     (bin_dir / "libggml.so.0").write_bytes(b"\x00")
@@ -730,9 +723,8 @@ def test_a_group_shared_marker_keeps_its_group(tmp_path, writer):
 def test_every_marker_writer_asks_for_the_owner_then_falls_back_to_the_group(
     tmp_path, writer, monkeypatch
 ):
-    """All three writers chown owner and group first, then group alone: owner plus group is EPERM
-    for a non-root member and loses the group (fixed in core and node by e8d128d24); group alone
-    under root leaves a root-owned 0600 marker unreadable by its owner."""
+    """Writers try owner+group, then group alone: owner+group is EPERM for non-root and loses the
+    group (fixed in e8d128d24); group alone as root leaves root-owned 0600 marker unreadable."""
     path = _live_marker(tmp_path, writer)
     original = path.stat()
     calls: list = []
@@ -758,8 +750,7 @@ def test_every_marker_writer_asks_for_the_owner_then_falls_back_to_the_group(
 @NEEDS_CHOWN
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_permitted_writer_restores_the_owner_and_asks_no_further(tmp_path, writer, monkeypatch):
-    """The root case: when the combined call is allowed, the fallback must not run, or the
-    owner just restored would be left in place by luck rather than by intent."""
+    """If owner+group chown is allowed, no fallback may run, or owner is restored by luck."""
     path = _live_marker(tmp_path, writer)
     original = path.stat()
     calls: list = []
@@ -779,9 +770,8 @@ def test_a_permitted_writer_restores_the_owner_and_asks_no_further(tmp_path, wri
 @NOT_ROOT
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_marker_owned_by_another_user_still_keeps_its_group(tmp_path, writer, monkeypatch):
-    """A group member refreshing a marker owned by another user needs chown(-1, gid): chown(uid,
-    gid) is EPERM and the swallowed failure silently changes the group, undoing the mode restore;
-    the test simulates the kernel rule."""
+    """A group member refreshing another user's marker needs chown(-1, gid); chown(uid, gid) is
+    EPERM and the swallowed failure silently drops the group, undoing the mode restore."""
     path = _live_marker(tmp_path, writer, mode = 0o640)
     other_uid = os.geteuid() + 1
     shared_gid = os.getegid() + 1
@@ -808,8 +798,7 @@ def test_a_marker_owned_by_another_user_still_keeps_its_group(tmp_path, writer, 
 
 
 class _StatWithOwner:
-    """An os.stat_result with st_uid/st_gid overridden, so a marker can stand in for one
-    owned by another user without needing root to create it."""
+    """os.stat_result with st_uid/st_gid overridden: a marker appears owned by another user."""
 
     def __init__(self, base, uid: int, gid: int) -> None:
         self._base = base
@@ -823,8 +812,7 @@ class _StatWithOwner:
 @NEEDS_CHOWN
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_chown_that_is_refused_does_not_abort_the_write(tmp_path, writer, monkeypatch):
-    """Ownership is best effort but the refreshed marker is not: refusing the write because the
-    group could not be restored would leave --force-cpu or a re-probed version unrecorded."""
+    """A refused chown must not abort the write, or --force-cpu goes unrecorded."""
     path = _live_marker(tmp_path, writer, mode = 0o640)
 
     def refuse(*_a, **_k):
@@ -840,8 +828,7 @@ def test_a_chown_that_is_refused_does_not_abort_the_write(tmp_path, writer, monk
 
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_platform_with_no_os_chown_at_all_still_writes(tmp_path, writer, monkeypatch):
-    """Windows: os.chown does not exist. Each writer catches AttributeError beside OSError
-    for exactly this, and the rewrite has to complete anyway."""
+    """No os.chown on Windows: writers catch AttributeError beside OSError and still write."""
     path = _live_marker(tmp_path, writer)
     monkeypatch.delattr(writer.module.os, "chown", raising = False)
     assert not hasattr(writer.module.os, "chown")
@@ -873,8 +860,7 @@ def test_a_replace_that_fails_leaves_the_previous_marker_whole(tmp_path, writer,
 
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_write_that_fails_before_the_swap_strands_no_temp_file(tmp_path, writer, monkeypatch):
-    """The ENOSPC this shape is built to tolerate, raised from the write itself: the temp
-    path is tracked outside the try precisely so it can still be removed."""
+    """Temp path is tracked outside the try so an ENOSPC during the write can still remove it."""
     path = _live_marker(tmp_path, writer)
     before = path.read_bytes()
 

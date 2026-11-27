@@ -83,8 +83,7 @@ def test_the_vision_lora_rule_can_be_turned_off_for_a_language_only_run():
 
 
 def test_an_adapter_that_did_not_move_is_a_failure():
-    """Starts at exactly zero by construction, so any movement is a real
-    optimizer step rather than a tolerance question."""
+    """Starts at exactly zero by construction, so any movement is a real optimizer step."""
     broken = vision_failures(
         _good(adapter_update = {"before": 0.0, "after": 0.0, "tensors": 864, "changed": False}),
         _args(),
@@ -131,8 +130,7 @@ def test_an_export_that_reported_ok_and_wrote_nothing_is_a_failure():
 
 
 def test_the_conversation_shape_matches_the_notebook():
-    """Built from the notebook's own convert_to_conversation. A different shape
-    trains something no notebook produces, which tests the leg."""
+    """Uses the notebook's own convert_to_conversation; any other shape matches no notebook."""
     rows = build_conversations([{"image": "IMG", "text": "x^2"}])
     assert len(rows) == 1
     messages = rows[0]["messages"]
@@ -223,8 +221,7 @@ def test_a_marker_that_matched_nothing_is_refused_rather_than_answered_no():
 
 
 def test_adapter_sum_finds_the_capital_b_peft_names():
-    """Drives the real adapter_sum, since the other rules feed hand-written dicts; that gap is how
-    the capital-B PEFT name bug reached hardware."""
+    """Runs the real adapter_sum; hand-written dicts let the capital-B PEFT name bug through."""
     import torch
 
     from run_vision_t4 import adapter_sum
@@ -283,8 +280,7 @@ def test_a_vision_run_that_wrote_no_report_is_a_failure_not_a_silence():
 
 
 def test_the_vision_step_count_is_pinned_low_rather_than_inherited():
-    """The vision step count is pinned low rather than inherited from the text --max-steps, which
-    would quietly add about half an hour to the T4 leg."""
+    """Pinned low, since inheriting --max-steps would add about half an hour to the T4 leg."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     spawn = src[src.index('"run_vision_t4.py"') :]
     spawn = spawn[: spawn.index("subprocess.run(vision_cmd)")]

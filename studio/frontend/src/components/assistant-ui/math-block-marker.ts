@@ -46,10 +46,7 @@ const BLOCK_TAGS = new Set([
   "h6",
 ]);
 
-/*
- * Size containment does not apply to table internals, and style containment on li hides its list
- * marker, so maths in table cells and list items is abandoned rather than hoisted.
- */
+/* Table internals and li cannot be contained, so maths there is abandoned rather than hoisted. */
 const UNCONTAINABLE_TAGS = new Set([
   "li",
   "ol",

@@ -29,7 +29,6 @@ test("the Export page puts each flow behind its own tab", async () => {
   }
   assert.equal(page.match(/<ImageLoraExportCard /g)?.length, 1);
   assert.equal(page.match(/<Q4nxConvertCard /g)?.length, 1);
-  // An image LoRA deep link opens on its tab.
   assert.match(page, /preselectImageLora \? "diffusion-lora" : "llm"/);
   // A training run deep link fills the LLM form, so it opens that tab.
   assert.match(

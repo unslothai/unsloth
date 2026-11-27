@@ -1305,12 +1305,19 @@ _MOE_EVIDENCE = {
     )
     * 2
     + ("eager: no compiled region",),
-    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process.
+    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process. llama4 / qwen3_vl_moe train expert LoRA factors
+    # swapped against vanilla PEFT's (zoo patches), cut by expert and saved as vanilla's like the others.
     **{
         (family, "lora+experts", False, "ep"): (_EP_FAMILY + f"[{family}]",) * 2
         + ("eager: no compiled region",)
-        for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss")
+        for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss", "llama4", "qwen3_vl_moe")
     },
+    ("gpt_oss", "qlora", False, "ep"): (
+        "tests/test_ep_expert_lists_gloo.py::test_ep_gpt_oss_linear_lists_match_one_process"
+        " + 2x T4 gpt-oss-20b bnb-4bit ep2 vs one T4",
+    )
+    * 2
+    + ("eager: no compiled region",),
 }
 
 
@@ -1327,18 +1334,26 @@ _EP_BLOCKED_FAMILIES = {
     "jetmoe": "its experts forward takes (layer_input,), not (hidden_states, top_k_index, top_k_weights)",
     "longcat_flash": "zero / identity experts: the experts module has no integer num_experts",
 }
-# Families whose load_in_4bit layout expert parallel cannot shard, though their 16-bit layout shards.
-_EP_BLOCKED_4BIT_FAMILIES = {
-    "gpt_oss": (
-        "per-expert Linear lists (down_projs / gate_up_projs): one Linear4bit per expert, not a fused expert "
-        "stack (unsloth_zoo's GptOssExpertsBnb4bit, the load_in_4bit gpt-oss layout)"
-    ),
-}
+# load_in_4bit per-expert lists shard only with equal experts per rank; released checkpoint expert counts.
+_EP_EVEN_4BIT_FAMILIES = {"gpt_oss": (32, 128)}
 
 
-def _family_ep_blocker(family, load_in_4bit = False) -> str:
-    if load_in_4bit and family in _EP_BLOCKED_4BIT_FAMILIES:
-        return _EP_BLOCKED_4BIT_FAMILIES[family]
+def _family_ep_blocker(
+    family,
+    load_in_4bit = False,
+    ep = None,
+    experts = None,
+) -> str:
+    counts = _EP_EVEN_4BIT_FAMILIES.get(family) if load_in_4bit else None
+    if counts and isinstance(experts, int) and experts > 0:
+        counts = (experts,)  # the checkpoint's own count when the caller read its config
+    if counts and isinstance(ep, int) and ep > 1:
+        uneven = [E for E in counts if E % ep]
+        if uneven:
+            return (
+                f"per-expert Linear lists (load_in_4bit {family}) need the experts to split evenly over the ranks: "
+                f"{uneven[0]} experts over {ep}"
+            )
     return _EP_BLOCKED_FAMILIES.get(family, "")
 
 
@@ -1395,8 +1410,8 @@ def _moe_note(family, precision, aux, mode):
         # Not opened: micro-batches resolve at the first step (pp_env.resolve_microbatches), not in the layout.
         return (
             "with UNSLOTH_PP_MICROBATCHES=1 and gpipe it matched one process on 2 T4 (tiny and 128-wide Qwen3-MoE, "
-            "4-bit experts); more micro-batches are refused at the first step (the router loss would be summed "
-            "per micro-batch), and the registry cannot see the micro-batch count before then"
+            "4-bit experts); more micro-batches form the router loss over the whole batch under GPipe (the "
+            "default schedule runs it) and have only run on gloo with 16-bit experts"
         )
     if precision == "qlora":
         # Measured on one G4 (2 NCCL ranks sharing the card): qwen3_moe QLoRA under DDP equals one process over the
@@ -1919,25 +1934,32 @@ def _ep_blocker(
     model,
     ep,
     load_in_4bit = False,
+    experts = None,
 ) -> str:
     """Why apply_expert_parallel would refuse `model` at `ep` ranks, "" if it shards. Strings and
     structureless models fall back to _EP_BLOCKED_FAMILIES (and, for a load_in_4bit load,
-    _EP_BLOCKED_4BIT_FAMILIES); a loaded model is read by structure, its experts' num_experts included."""
+    _EP_EVEN_4BIT_FAMILIES); a loaded model is read by structure, its experts' num_experts included."""
     if not isinstance(ep, int) or ep <= 1 or model is None:
         return ""
     family = model if isinstance(model, str) else _model_traits(model)[0]
     if not callable(getattr(model, "named_modules", None)):
-        return _family_ep_blocker(family, load_in_4bit)
+        return _family_ep_blocker(family, load_in_4bit, ep, experts)
     try:
         from .models import ep_native, tp_native
+
         if ep_native.is_expert_parallel(model):
             return ""
+        from .models import ep_expert_lists
+
         problems = [
-            tp_native.expert_shard_problem(block, ep)
+            None
+            if ep_expert_lists.list_shard_problem(block, ep) is None
+            or ep_expert_lists.fused_list_problem(block, ep) is None
+            else tp_native.expert_shard_problem(block, ep)
             for block in tp_native.moe_blocks_with_experts(model)
         ]
     except Exception:
-        return _family_ep_blocker(family, load_in_4bit)
+        return _family_ep_blocker(family, load_in_4bit, ep, experts)
     if any(problem is None for problem in problems):
         return ""
     reasons = (

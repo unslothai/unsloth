@@ -90,9 +90,8 @@ def _scenario(
     prelude = None,
     windows = None,
 ):
-    """One fresh auto run; returns the block call tags per step and the final auto phase / why.
-    prelude(model, stack) runs once after the DDP wrapper is built; windows replaces the plain loop
-    with (context factory, steps) pairs and records votes and the session schedule around each."""
+    """Returns per-step block call tags and the final auto phase/why; prelude runs after the DDP
+    wrap; windows swaps the loop for (context factory, steps) pairs recording votes/schedule."""
     bc._CUDAGRAPH_STATE = bc._new_cudagraph_state()
     calls = []
     releases = []
@@ -255,7 +254,6 @@ def _run_eval_first(rank, res, bc):
 
 
 def _run_nosync_first(rank, res, bc):
-    # Rank 0 alone runs one extra no_sync() microbatch before training.
     def prelude(model, stack):
         if rank == 0:
             with model.no_sync():
@@ -265,8 +263,7 @@ def _run_nosync_first(rank, res, bc):
 
 
 def _run_join_active(rank, res, bc):
-    # Production cadence: graphs on, then an uneven DDP.join() window (rank 0: 3 inputs, rank 1: none),
-    # then synced training again with join off.
+    # Graphs on, uneven DDP.join() (rank 0: 3 inputs, rank 1: none), then synced, join off.
     bc._AUTO_DDP_RECHECK = 64
     res["join_active"] = _scenario(
         bc,
@@ -336,9 +333,7 @@ def _run_compiled(rank, res, bc):
 
 
 def _run_rank_local(rank, res, bc):
-    # The same DDP model and data on both ranks, with one rank-local difference each: rank 1 alone
-    # compiles ddp.module, or rank 0 alone cannot allocate a tensor while it builds its vote. Both
-    # ranks must still enter the same collectives, so DDP's gradient all_reduce stays in step.
+    # Rank 1 compiles ddp.module; rank 0 cannot allocate while voting; collectives must match.
     votes = [0]
 
     def all_reduce_spy(*args, **kwargs):
@@ -398,8 +393,7 @@ def _worker(
     out,
     group = "main",
 ):
-    # A CI shard may run with UNSLOTH_COMPILE_DISABLE=1 or graphs forced on: every rank starts from
-    # the defaults this test is about, before the module reads them at import.
+    # CI may set UNSLOTH_COMPILE_DISABLE=1 or graphs on; UNSLOTH_ vars cleared before import.
     for key in [k for k in os.environ if k.startswith("UNSLOTH_")]:
         os.environ.pop(key)
     os.environ["UNSLOTH_BLOCK_CUDAGRAPHS"] = "auto"
@@ -569,14 +563,11 @@ def test_uneven_join_window_keeps_the_vote_schedule_aligned():
         _, before, inside, after = s["marks"]  # start, join entered, join left, end
         assert _graphs_from(s) is not None and _graphs_from(s) < 6, s  # on before the window
         assert before["schedule"] is not None and not before["schedule"][2], s
-        # No vote and no count inside the window, on the rank with inputs and the one without.
         assert inside["schedule"] == before["schedule"], s
         assert inside["votes"] == before["votes"], s
-        # Synced training resumes on one schedule: a vote is taken and graphs end off everywhere.
         assert after["votes"] > inside["votes"], s
         assert s["off"] is not None, s
         assert all("graphs" not in step for step in s["steps"][-3:]), s
-    # Rank 0's join forwards ran plain.
     assert all("graphs" not in step for step in s0["steps"][6:9]), s0
     assert s0["marks"][2]["schedule"] == s1["marks"][2]["schedule"], (s0, s1)
     assert s0["marks"][3]["schedule"] == s1["marks"][3]["schedule"], (s0, s1)

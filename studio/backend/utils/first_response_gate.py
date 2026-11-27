@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Start gate for the torch warm: its import torch / CUDA probe hold the GIL for whole C calls, so the desktop's
-first 2 s port probe must be answered before they begin."""
+"""Start gate: torch warm waits for the 2 s port probe; import and CUDA probe hold the GIL."""
 
 from __future__ import annotations
 

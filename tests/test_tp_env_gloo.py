@@ -553,6 +553,71 @@ def _case_model_init(
     }
 
 
+def _case_prebuilt_optimizer(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    kwargs_params = False,
+):
+    """Trainer(optimizers = (optimizer, None)) under UNSLOTH_TP_SIZE alone, on a model get_peft_model did not shard
+    (PEFT's own get_peft_model): the split in Trainer.__init__ replaces the trainable parameters."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    from unsloth.models import tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    model = AutoModelForCausalLM.from_pretrained(ckpt, torch_dtype = torch.float32)
+    torch.manual_seed(1)
+    model = get_peft_model(
+        model, LoraConfig(r = 4, target_modules = "all-linear", init_lora_weights = False)
+    )
+    params = [p for p in model.parameters() if p.requires_grad]
+    extra = {}
+    if kwargs_params is None:
+        pass  # control: the Trainer builds the optimizer after the split
+    elif kwargs_params:
+        extra["optimizer_cls_and_kwargs"] = (torch.optim.AdamW, {"params": params, "lr": 1e-2})
+    else:
+        extra["optimizers"] = (torch.optim.AdamW(params, lr = 1e-2), None)
+    trainer = []
+
+    def run():
+        trainer.append(
+            transformers.Trainer(
+                model = model,
+                args = _trainer_args(tmp, 2, max_steps = 2),
+                train_dataset = _Rows([torch.arange(9)] * 8),
+                **extra,
+            )
+        )
+        before = {
+            n: (p.full_tensor() if hasattr(p, "full_tensor") else p).detach().clone()
+            for n, p in trainer[0].model.named_parameters()
+            if p.requires_grad
+        }
+        trainer[0].train()
+        after = {
+            n: (p.full_tensor() if hasattr(p, "full_tensor") else p).detach().clone()
+            for n, p in trainer[0].model.named_parameters()
+            if p.requires_grad
+        }
+        trainer.append(max((after[n] - before[n]).abs().max().item() for n in before))
+
+    refused = _raised(run)
+    return {
+        "refused": refused,
+        "max_update": trainer[1] if len(trainer) > 1 else None,
+        "is_tp": bool(trainer) and tp_native.is_tensor_parallel(trainer[0].model),
+    }
+
+
 CASES = {
     "units": _case_units,
     "env": _case_env,
@@ -561,6 +626,7 @@ CASES = {
     "dp_average_buckets": _case_dp_average_buckets,
     "accelerate_fsdp": _case_accelerate_fsdp,
     "model_init": _case_model_init,
+    "prebuilt_optimizer": _case_prebuilt_optimizer,
 }
 
 
@@ -596,7 +662,7 @@ def _spawn(
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        if case in ("env", "accelerate_fsdp", "model_init"):
+        if case in ("env", "accelerate_fsdp", "model_init", "prebuilt_optimizer"):
             kwargs["ckpt"] = _checkpoint(tmp)
         procs = [
             ctx.Process(target = _worker, args = (r, world, port, case, tmp, env or {}, kwargs))
@@ -874,3 +940,22 @@ def test_env_tp_model_init_is_refused_after_plain_import(hooked):
     for res in _spawn("model_init", 2, env, hooked = hooked, import_only = True):
         assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
         assert "model_init" in res["refused"] and res["built"] == [], res
+
+
+@pytest.mark.parametrize(
+    "kwargs_params", [False, True], ids = ["optimizers", "optimizer_cls_and_kwargs"]
+)
+def test_env_tp_prebuilt_optimizer_on_an_unsharded_model_is_refused(kwargs_params):
+    """Unrefused, the optimizer stepped the parameters the tensor parallel split replaced: no update at all."""
+    for res in _spawn(
+        "prebuilt_optimizer", 2, {"UNSLOTH_TP_SIZE": "2"}, kwargs_params = kwargs_params
+    ):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "optimizers = (optimizer" in res["refused"], res
+
+
+def test_env_tp_trainer_built_optimizer_on_an_unsharded_model_trains():
+    """The control: without a prebuilt optimizer the same model is split in Trainer.__init__ and trains."""
+    for res in _spawn("prebuilt_optimizer", 2, {"UNSLOTH_TP_SIZE": "2"}, kwargs_params = None):
+        assert res["refused"] is None and res["is_tp"], res
+        assert res["max_update"] > 0, res

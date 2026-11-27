@@ -24,7 +24,6 @@ def reasoning_trigger(seconds: str) -> dict:
 
 
 def test_a_duration_split_across_text_nodes_is_normalised():
-    # A duration split across text nodes must normalise like a single node.
     assert sig(reasoning_trigger("3")) == sig(reasoning_trigger("2"))
 
 
@@ -60,7 +59,6 @@ def test_a_bare_number_with_no_unit_still_moves_the_signature():
 
 
 def test_an_element_boundary_still_breaks_a_text_run():
-    # Joining must not cross element boundaries.
     split = {
         "tag": "div",
         "children": [

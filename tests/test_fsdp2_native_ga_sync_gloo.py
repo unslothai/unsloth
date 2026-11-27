@@ -153,23 +153,18 @@ def _check(layout, res):
     skip, defer, each = (res[m]["per_micro"] for m in ("skip", "defer", "each"))
     units = skip[-1]["rs"]  # units holding trainable parameters (one reduce-scatter each)
     assert units >= (2 if layout == "full" else 1), skip
-    # skip: reduce only on the final micro-batch; every micro-batch gathers again.
     assert [m["rs"] for m in skip] == [0] * (MICRO - 1) + [units], skip
     assert all(m["ag"] >= units for m in skip), skip
-    # defer: same reductions; after the first micro-batch no unit is gathered for forward (kept from
-    # the previous backward). Units resharded after forward (sharded layout) still gather for backward.
     assert [m["rs"] for m in defer] == [0] * (MICRO - 1) + [units], defer
     assert defer[0]["ag"] == skip[0]["ag"], (defer, skip)
     assert all(d["ag"] < s["ag"] for d, s in zip(defer[1:], skip[1:])), (defer, skip)
     if layout == "lora":  # fit layout: kept gathered after forward too, so no gather in between
         assert all(m["ag"] == 0 for m in defer[1:-1]), defer
-    # each: one reduce per unit per micro-batch.
     assert [m["rs"] for m in each] == [units] * MICRO, each
     assert res["auto"]["per_micro"] == (defer if layout == "lora" else each), res["auto"][
         "per_micro"
     ]
     if layout == "full":
-        # skip keeps every trainable weight's whole gradient between micro-batches; each and auto none.
         assert all(b > 0 for b in res["skip"]["held"][:-1]), res["skip"]["held"]
         assert res["each"]["held"][:-1] == [0] * (MICRO - 1), res["each"]["held"]
         assert res["auto"]["held"][:-1] == [0] * (MICRO - 1), res["auto"]["held"]

@@ -97,7 +97,23 @@ def _workers_unusable_reason() -> Optional[str]:
         return f"this process uses the {start_method!r} start method"
     if sys.platform == "darwin":
         return "'multiprocess' forks on macOS, which CPython documents as unsafe there (bpo-33725)"
-    return None
+    return _offload_reason()
+
+
+def _offload_reason() -> Optional[str]:
+    """offload_layers keeps layers page-locked in host RAM, which Linux copies into every forked worker at fork time
+    (not copy-on-write): a 120 GB host tier and 6 workers stalled map at 0 rows. Read only if block_swap is loaded."""
+    module = sys.modules.get("unsloth_zoo.block_swap")
+    probe = getattr(module, "offload_active", None)
+    if probe is None:
+        return None
+    try:
+        active = bool(probe())
+    except Exception:
+        return None
+    if not active:
+        return None
+    return "offload_layers holds model layers page-locked in host RAM, which every forked worker would copy"
 
 
 def _cgroup_cpu_quota() -> Optional[float]:

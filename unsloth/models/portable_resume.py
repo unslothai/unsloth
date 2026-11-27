@@ -76,7 +76,8 @@ def _local(p):
 def _ep_layout(p):
     from .ep_native import _EP
     layout = getattr(p, _EP, None)
-    return None if layout is None or layout[0] == "4bit" else layout
+    # A per-expert module (ep_expert_lists) is whole on the rank holding it, like a pipeline stage's layer.
+    return None if layout is None or layout[0] in ("4bit", "list") else layout
 
 
 def _all_gather_object(obj):
@@ -115,9 +116,11 @@ def _tree_keys(model):
         for j, (name, p) in enumerate(module._parameters.items()):
             if p is not None:
                 keys.setdefault(prefix + name, path + ((0, j),))
+        # Per-expert containers (ep_expert_lists) hold only this rank's experts: order them by global index.
+        experts = getattr(module, "_unsloth_global_expert_keys", False)
         for c, (name, child) in enumerate(module._modules.items()):
             if child is not None:
-                walk(child, f"{prefix}{name}.", path + ((1, c),), seen)
+                walk(child, f"{prefix}{name}.", path + ((1, int(name) if experts else c),), seen)
 
     walk(model, "", (), set())
     return keys
@@ -128,9 +131,15 @@ def _full_value(model, p, value):
     an id map), laid out as `p` is (tensor parallel DTensor, expert parallel shard, or whole)."""
     if _is_dtensor(p):
         from .tp_native import _dtensor_api, _full, _param_layouts
+
+        device = _local(p).device
+        if _is_dtensor(value) and _local(value).device != device:
+            # A host-backed shard (UNSLOTH_OFFLOAD_OPTIMIZER_STATE keeps the state's local tensor in CPU memory):
+            # NCCL gathers device tensors only, so this one tensor goes back to the parameter's device for it.
+            value = _local(value)
         if not _is_dtensor(value):
             value = _dtensor_api()[0].from_local(
-                value.to(_local(p).device),
+                value.to(device),
                 p.device_mesh,
                 p.placements,
                 run_check = False,
@@ -768,7 +777,13 @@ def _load_named(
     if bnb:
         return _bnb_import(inner, loaded)
     # The class method: a Trainer load in progress may have routed the instance's load_state_dict here.
-    return type(inner).load_state_dict(inner, loaded)
+    result = type(inner).load_state_dict(inner, loaded)
+    # That skips the instance override UNSLOTH_OFFLOAD_OPTIMIZER_STATE installs: put the state back on the host
+    # now, as that override does, instead of holding all of it on the device until the first step.
+    offloader = getattr(inner, "_unsloth_state_offloader", None)
+    if offloader is not None:
+        offloader.finish(offloader.offload())
+    return result
 
 
 def remap_scheduler_state(optimizer, state):

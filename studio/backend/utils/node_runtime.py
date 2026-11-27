@@ -23,13 +23,11 @@ _NPM_MAJOR_FLOOR = 11
 
 
 def _npm_meets_floor(version: str) -> bool:
-    """True iff an ``npm -v`` string clears the installer's npm floor."""
     match = re.match(r"v?(\d+)", version.strip())
     return bool(match) and int(match.group(1)) >= _NPM_MAJOR_FLOOR
 
 
 def _version_meets_floor(version: str) -> bool:
-    """True iff a ``node -v`` string clears the installer's version bar."""
     match = re.match(r"v?(\d+)\.(\d+)", version.strip())
     if not match:
         return False
@@ -69,7 +67,6 @@ def managed_node_dir() -> Path:
 
 
 def managed_node_binary() -> Path:
-    """Node executable in the isolated install: ``<dir>/node.exe`` on Windows, ``<dir>/bin/node`` else."""
     node_dir = managed_node_dir()
     if os.name == "nt":
         return node_dir / "node.exe"
@@ -77,7 +74,6 @@ def managed_node_binary() -> Path:
 
 
 def managed_node_bin_dir() -> Path | None:
-    """Directory holding the isolated node/npm/npx executables, or None if not installed."""
     node_dir = managed_node_dir()
     bin_dir = node_dir if os.name == "nt" else node_dir / "bin"
     try:
@@ -92,7 +88,6 @@ _usable_node_cache: dict[tuple[str, str | None], bool] = {}
 
 
 def _reset_managed_node_check() -> None:
-    """Clear the memoized Node verdicts (used by tests)."""
     global _managed_node_ok
     _managed_node_ok = False
     _usable_node_cache.clear()
@@ -196,7 +191,6 @@ def path_with_managed_node(
 
 
 def _npm_version_ok(executable: str, path: str | None = None) -> bool:
-    """Run ``<executable> -v`` and check npm clears the installer floor."""
     return _probe_version(executable, _npm_meets_floor, path)
 
 
@@ -234,7 +228,6 @@ _resolved_node: str | None = None
 
 
 def _reset_resolved_node() -> None:
-    """Clear the memoized executable (used by tests)."""
     global _resolved_node
     _resolved_node = None
 

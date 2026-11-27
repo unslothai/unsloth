@@ -346,8 +346,7 @@ def _pipeline_loading(
         "prequantized_hint": _QUANTIZED_HINT,
         "mesh_hint": "Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).",
         "auto": auto,
-        # A pre-quantized bnb 4-bit checkpoint whose tensors transformers converts on load (Inkling 2): its own
-        # load, per stage, as for a quantize-on-load.
+        # Pre-quantized bnb 4-bit (Inkling 2) converted on load; per-stage as quantize-on-load.
         "prequantized_fallback": lambda original,
         cls,
         name,
@@ -436,9 +435,8 @@ def _bnb4_on_load(cls, name, kwargs):
 
 
 def _quantized_load_bytes(name, kwargs):
-    """Bytes of a whole bitsandbytes 4-bit load of `name`: 2-D linear weights and 3-D expert stacks at about 0.53
-    bytes per parameter (packed codes + absmax) unless the config skips their module, packed / fp8 tensors as
-    stored, the rest in the 16-bit load dtype."""
+    """Bytes of a whole bitsandbytes 4-bit load of name: 2-D linear and 3-D expert weights ~0.53
+    bytes/param (codes + absmax) unless config skips them; packed/fp8 as stored, rest 16-bit."""
     import collections
     import math
 
@@ -516,8 +514,7 @@ def _zero_like(t):
 
 
 def _quantized_placeholder(p, module):
-    """A storage-free stand-in for a just-quantized Params4bit: packed bytes and absmax zero-stride, the QuantState's
-    shape, dtype, blocksize and maps real (so the split costs and LoRA shapes are the full load's)."""
+    """Zero-stride bytes/absmax, real QuantState; split costs, LoRA shapes match the full load."""
     import copy
 
     new = torch.Tensor._make_subclass(type(p), _zero_like(p.data), False)
@@ -583,8 +580,7 @@ def _module_names(root):
 
 
 def _load_quantizing(real, cls, name, args, kwargs, state):
-    """A bitsandbytes 4-bit quantize-on-load read per stage (see the module docstring): transformers' own load,
-    every tensor outside this rank's stages swapped for a placeholder as soon as transformers sets it."""
+    """Bnb 4-bit quantize-on-load per stage; off-stage tensors become placeholders when set."""
     from transformers import core_model_loading as loading
 
     mesh = state["mesh"]
@@ -653,8 +649,7 @@ def _load_quantizing(real, cls, name, args, kwargs, state):
     warm = {}
 
     def keep(model, target_name):
-        # The allocator warmup sees the meta model before any tensor is set: plan this rank's stages from it, in
-        # its own dict, so a warmup that runs without the setter never passes the post-load check below.
+        # Warmup sees the meta model; its own plan dict stops it passing the post-load check.
         if warm.get("model") is not model:
             warm.clear()
             warm.update(stage_plan(model))

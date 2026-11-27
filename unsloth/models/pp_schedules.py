@@ -307,8 +307,7 @@ def _is_compiled(value):
 
 
 def _calls_compiled(forward):
-    """True if `forward` calls a compiled global or closure: unsloth_zoo compiled modules keep the class
-    forward eager and call a compiled `Gemma3MLP_forward`-style function."""
+    """True if forward calls a compiled function; unsloth_zoo keeps class forward eager."""
     fn = _unwrap_callable(forward)
     code = getattr(fn, "__code__", None)
     scope = getattr(fn, "__globals__", None)

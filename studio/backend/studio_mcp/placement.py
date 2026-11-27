@@ -19,7 +19,6 @@ from studio_mcp.outputs import Placement, PlanLoadResult, PlanVariant, SlotModel
 from studio_mcp.tools import as_dict, integer, opt_text, strings, try_json
 
 CHAT_KINDS = ("llm", "tts", "audio")
-# Each media knob and the kinds whose load request takes it.
 MEDIA_KNOBS = {
     "memory_mode": ("image", "video"),
     "speed_mode": ("image", "video"),
@@ -45,7 +44,6 @@ PARTIAL_MESSAGE = "this variant is still downloading or incomplete; wait for it 
 
 
 def media_knobs(kind: str, **knobs: Optional[str]) -> dict[str, str]:
-    """The knobs that were set, refused for a kind whose load does not take them."""
     chosen = {name: value for name, value in knobs.items() if value is not None}
     for name in chosen:
         if kind not in MEDIA_KNOBS[name]:
@@ -242,7 +240,6 @@ async def post_plan(caller: Caller, path: str, body: dict, knobs: dict) -> Any:
 
 
 def pick_variant(listing: Any, variant: Optional[str]) -> Optional[dict]:
-    """The named variant's row in a gguf-variants listing, else the repo's default."""
     listing = as_dict(listing)
     rows = [row for row in listing.get("variants") or [] if isinstance(row, dict)]
     wanted = (variant or opt_text(listing.get("default_variant")) or "").lower()
@@ -253,7 +250,6 @@ def pick_variant(listing: Any, variant: Optional[str]) -> Optional[dict]:
 
 
 def _split(model: str, variant: Optional[str]) -> tuple[str, Optional[str]]:
-    # A GGUF may be named "repo:variant".
     if variant is None and ":" in model and not is_local(model):
         model, _, variant = model.partition(":")
     return model, variant
@@ -352,8 +348,7 @@ def predict(
         for s in slots
         if s.kind == slot_kind and model_identity.same_repo(s.model, model, probe = True)
     ]
-    # A load of a resident repo may load it again (another variant, context, device or build), so it
-    # is predicted as a new load and reported as an upper bound.
+    # Resident repo reloads (variant, context, device or build) predicted as new: upper bound.
     exact = not same_repo
     chat = [s for s in slots if s.kind == "llm"]
     media = [s for s in slots if s.kind in ("image", "video")]
@@ -476,7 +471,6 @@ async def plan_load(
         )
     if kind in MEDIA_PLAN:
         body: dict[str, Any] = {"model_path": repo}
-        # The file load_media sends: a GGUF only for a named variant or a GGUF repo.
         if (
             (variant or "gguf" in repo.lower())
             and row is not None

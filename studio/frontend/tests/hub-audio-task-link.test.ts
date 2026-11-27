@@ -10,7 +10,7 @@ import {
   getHubWebEndpoint,
   resetHfEndpoints,
   setHfEndpoints,
-  setHubWebEndpoint,
+  setHubPageLinks,
 } from "../src/lib/hf-endpoint.ts";
 import { hubAudioTaskSearch, matchesHubAudioTask } from "../src/lib/hub-audio-task.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -82,16 +82,17 @@ test("Separate's repo link opens a page this browser can load, never the relay",
     assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
     // A reachable mirror: /api/health names it and the relay carries the API calls.
     setHfEndpoints("http://studio.local/api/hub/proxy/abc123", null, "huggingface", { endpoint: true });
-    setHubWebEndpoint("https://hf-mirror.example/");
+    setHubPageLinks("https://hf-mirror.example/");
     assert.equal(getHfEndpoint(), "http://studio.local/api/hub/proxy/abc123");
     assert.equal(link(), "https://hf-mirror.example/audio-cpp/audio.cpp-gguf");
-    // A saved-only mirror seen from another host, or ModelScope: health reports huggingface.co.
-    setHubWebEndpoint("https://huggingface.co");
+    // A different relay has no known browser origin yet.
+    setHfEndpoints("http://studio.local/api/hub/proxy/def456", null, "huggingface", { endpoint: true });
     assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
-    setHubWebEndpoint("");
+    setHfEndpoints("http://studio.local/api/hub/modelscope", null, "modelscope");
     assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
+    setHfEndpoints("https://direct-mirror.example", null, "huggingface");
+    assert.equal(link(), "https://direct-mirror.example/audio-cpp/audio.cpp-gguf");
   } finally {
     resetHfEndpoints();
   }
-  assert.match(readSrc("config/env.ts"), /setHubWebEndpoint\(data\.hf_endpoint\);/);
 });

@@ -24,8 +24,7 @@ export function composerDraftKey(threadId: string, shared = false): string {
   return shared ? DRAFT_KEY : `${LEGACY_DRAFT_PREFIX}${threadId}`;
 }
 
-// Pasted attachments live in their own slot rather than inside the text draft, so typing never
-// rewrites a paste that can run to megabytes.
+// Pastes get their own slot so typing never rewrites a paste that can run to megabytes.
 export function composerPasteDraftKey(threadId: string, shared = false): string {
   return shared ? PASTE_DRAFT_KEY : `${LEGACY_PASTE_DRAFT_PREFIX}${threadId}`;
 }
@@ -78,7 +77,6 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
       storageFor(key).removeItem(key);
     }
   } catch {
-    // ignore write failures
   }
 }
 
@@ -113,12 +111,10 @@ export function writeComposerDraft(key: string, text: string): void {
     if (text.length > 0) storageFor(key).setItem(key, text);
     else storageFor(key).removeItem(key);
   } catch {
-    // ignore write failures
   }
 }
 
-// A draft saved per chat before the shared slot existed becomes the shared draft when that chat
-// opens and nothing newer is waiting, so an upgrade never loses unsent text. True if it did.
+// Adopts a per-chat draft as shared unless newer text waits, so upgrades keep unsent text.
 export function adoptLegacyDraft(threadId: string | null, overwrite = false): boolean {
   // Text typed this session and not yet saved is newer than any old slot.
   if (latest && !overwrite) return false;
@@ -167,9 +163,7 @@ export function adoptLegacyDraft(threadId: string | null, overwrite = false): bo
   }
 }
 
-// The chat composer stays mounted, hidden, under Compare's, so every composer publishes its text
-// here and hears the others; `latestDraft` is ahead of the debounced save. Other open tabs are
-// never heard (#15782): the saved slot only seeds a tab once, for a reload or a new tab.
+// Composers hear each other, not other tabs (#15782); the saved slot only seeds a tab once.
 type DraftListener = (text: string, source: symbol) => void;
 const draftListeners = new Set<DraftListener>();
 let latest: string | null = null;
@@ -239,6 +233,5 @@ function dropPerChatDraft(threadId: string): void {
     const pasteKey = `${LEGACY_PASTE_DRAFT_PREFIX}${threadId}`;
     storageFor(pasteKey).removeItem(pasteKey);
   } catch {
-    // ignore
   }
 }

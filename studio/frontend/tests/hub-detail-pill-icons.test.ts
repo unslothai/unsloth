@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Hub detail pills reuse the sidebar's Video and Library icons, Base chips draw
-// Hugeicons' Layer, and the stats row has no Memory pill.
+// Detail pills reuse sidebar Video and Library icons; Base chips use Layer; no Memory pill.
 
 import assert from "node:assert/strict";
 import test from "node:test";
