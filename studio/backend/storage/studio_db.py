@@ -2599,6 +2599,7 @@ def _write_chat_thread_settings_in_conn(
     *,
     replace: Optional[dict] = None,
     merge: Optional[dict] = None,
+    defaults: Optional[dict] = None,
     clear: bool = False,
     seq: Optional[int] = None,
     writer: Optional[str] = None,
@@ -2630,7 +2631,7 @@ def _write_chat_thread_settings_in_conn(
         settings_json = None
     else:
         if merge is not None:
-            base = stored
+            base = {**(defaults or {}), **stored}
             changes = merge
         else:
             base = keep_unreadable(stored) if keep_unreadable else {}
@@ -2648,6 +2649,7 @@ def write_chat_thread_settings(
     *,
     replace: Optional[dict] = None,
     merge: Optional[dict] = None,
+    defaults: Optional[dict] = None,
     clear: bool = False,
     seq: Optional[int] = None,
     writer: Optional[str] = None,
@@ -2663,6 +2665,7 @@ def write_chat_thread_settings(
             id,
             replace = replace,
             merge = merge,
+            defaults = defaults,
             clear = clear,
             seq = seq,
             writer = writer,
