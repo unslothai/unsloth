@@ -4664,6 +4664,13 @@ export const vi = {
       targetFormat: "Định dạng đích",
       targetFormatTooltip:
         "Định dạng dữ liệu huấn luyện của bạn. Tự động phát hiện phù hợp với hầu hết các tập dữ liệu.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "Thông tin truyền trực tuyến tập dữ liệu",
       streaming: {
         label: "Bật truyền trực tuyến",

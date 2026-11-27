@@ -85,6 +85,7 @@ export function serializeConfigToYaml(
     random_seed: state.randomSeed,
     packing: state.packing,
     train_on_completions: state.trainOnCompletions,
+    ...(state.chatTemplate.trim() ? { chat_template: state.chatTemplate } : {}),
     gradient_checkpointing: state.gradientCheckpointing,
     offload_layers: state.offloadLayers,
     offload_vram_gb: state.offloadVramGb,

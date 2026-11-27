@@ -4442,6 +4442,13 @@ export const he = {
       targetFormat: "פורמט יעד",
       targetFormatTooltip:
         "פורמט נתוני האימון שלך. זיהוי אוטומטי מתאים לרוב מערכי הנתונים.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "מידע על הזרמת מערך נתונים",
       streaming: {
         label: "הפעל הזרמה (Streaming)",

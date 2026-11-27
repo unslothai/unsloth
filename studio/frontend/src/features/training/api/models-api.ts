@@ -40,6 +40,7 @@ interface BackendTrainingDefaults {
   vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
+  chat_template?: string | null;
   // Shipped YAML may decode this value as a boolean.
   gradient_checkpointing?: "none" | "true" | "unsloth" | boolean;
   trust_remote_code?: boolean;

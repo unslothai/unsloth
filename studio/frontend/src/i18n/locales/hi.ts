@@ -4375,6 +4375,13 @@ export const hi = {
       targetFormat: "लक्ष्य प्रारूप",
       targetFormatTooltip:
         "आपके ट्रेनिंग डेटा का प्रारूप। ऑटो-डिटेक्ट अधिकांश डेटासेट के लिए काम करता है।",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "डेटासेट स्ट्रीमिंग की जानकारी",
       streaming: {
         label: "स्ट्रीमिंग चालू करें",

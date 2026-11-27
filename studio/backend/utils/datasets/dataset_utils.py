@@ -965,6 +965,7 @@ def format_and_template_dataset(
     raw_text_column = None,
     dataset_revision = None,
     vlm_fallback_instruction = None,
+    chat_template = None,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. vlm_instruction overrides every row's prompt; vlm_fallback_instruction is used only when the split has no per-row question column (a separate eval split passes the training prompt there). Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
     from .tokenizer_fingerprint import install_tokenizer_fingerprint
@@ -1441,6 +1442,7 @@ def format_and_template_dataset(
             add_eos_token = add_eos_token,
             remove_bos_prefix = remove_bos_prefix,
             custom_format_mapping = custom_format_mapping,
+            chat_template = chat_template,
             auto_detect_mapping = auto_detect_mapping,
             batch_size = batch_size,
             num_proc = num_proc,

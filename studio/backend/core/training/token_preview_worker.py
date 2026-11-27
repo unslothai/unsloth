@@ -170,6 +170,7 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
         tokenizer = tokenizer,
         is_vlm = False,
         format_type = config.get("format_type") or "auto",
+        chat_template = config.get("chat_template"),
         dataset_name = config.get("dataset_name"),
         custom_format_mapping = config.get("custom_format_mapping"),
         # In-process: a pool for three rows costs seconds and changes nothing in the output.
@@ -237,7 +238,12 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         texts = _sample(texts, int(request.get("num_samples") or 3), request.get("seed") or 0)
     if not getattr(tokenizer, "chat_template", None):
         tokenizer = copy.deepcopy(tokenizer)
-    tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
+    tokenizer = get_training_chat_template(
+        tokenizer,
+        model_name,
+        final_format,
+        request.get("chat_template"),
+    )
 
     max_length = int(request.get("max_seq_length") or 2048)
     if final_format == PRETOKENIZED_FORMAT:

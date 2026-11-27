@@ -4482,6 +4482,13 @@ export const th = {
       targetFormat: "รูปแบบเป้าหมาย",
       targetFormatTooltip:
         "รูปแบบของข้อมูลการเทรน การตรวจหาอัตโนมัติใช้ได้กับชุดข้อมูลส่วนใหญ่",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "ข้อมูลการสตรีมชุดข้อมูล",
       streaming: {
         label: "เปิดใช้การสตรีม",

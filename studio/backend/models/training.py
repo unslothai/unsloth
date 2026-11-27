@@ -128,6 +128,12 @@ def _resolve_inventory_handle(value: str) -> str:
     return resolve_inventory_handle(value)
 
 
+def _normalize_optional_chat_template(value):
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
 # The strings trainer.normalize_gradient_checkpointing turns into False.
 _CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
 
@@ -159,6 +165,9 @@ class TrainingStartRequest(BaseModel):
     )
     # The same identity the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_name")(_resolve_inventory_handle)
+    _normalize_the_chat_template = field_validator("chat_template")(
+        _normalize_optional_chat_template
+    )
     project_name: Optional[str] = Field(
         None,
         max_length = 80,
@@ -655,6 +664,11 @@ class TrainingStartRequest(BaseModel):
     train_on_completions: bool = Field(
         True, description = "Train on assistant completions where supported"
     )
+    chat_template: Optional[str] = Field(
+        None,
+        max_length = 512 * 1024,
+        description = "Custom tokenizer chat template used for chat-format training; omitted keeps the model or dataset default",
+    )
 
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
     finetune_language_layers: bool = Field(True, description = "Finetune language layers")
@@ -876,6 +890,7 @@ class TokenPreviewRequest(BaseModel):
     format_type: str = "auto"
     custom_format_mapping: Optional[Dict[str, Any]] = None
     train_on_completions: bool = True
+    chat_template: Optional[str] = None
     is_cpt: bool = False
     max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
     num_samples: int = Field(3, ge = 1, le = 8)
@@ -885,6 +900,9 @@ class TokenPreviewRequest(BaseModel):
     final_format: Optional[str] = None
 
     _resolve_the_handles = field_validator("model_name", "dataset_name")(_resolve_inventory_handle)
+    _normalize_the_chat_template = field_validator("chat_template")(
+        _normalize_optional_chat_template
+    )
 
 
 class TrainingStartRequestStatus(BaseModel):

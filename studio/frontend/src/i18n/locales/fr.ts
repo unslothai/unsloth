@@ -4423,6 +4423,13 @@ export const fr = {
       targetFormat: "Format cible",
       targetFormatTooltip:
         "Format de vos données d'entraînement. La détection automatique fonctionne pour la plupart des jeux de données.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel:
         "Informations sur le streaming du jeu de données",
       streaming: {

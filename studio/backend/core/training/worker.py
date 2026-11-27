@@ -3792,6 +3792,7 @@ def _run_mlx_training(
                 dataset_name = hf_dataset or "local",
                 dataset_revision = config.get("dataset_revision"),
                 custom_format_mapping = custom_format_mapping,
+                chat_template = config.get("chat_template"),
                 progress_callback = _fmt_progress,
             )
             if vlm_info.get("success"):
@@ -3820,6 +3821,7 @@ def _run_mlx_training(
                     dataset_name = hf_dataset or "local",
                     dataset_revision = config.get("dataset_revision"),
                     custom_format_mapping = custom_format_mapping,
+                    chat_template = config.get("chat_template"),
                 )
                 if ev_info.get("success"):
                     vision_image_layout = (
@@ -3844,6 +3846,7 @@ def _run_mlx_training(
                 format_type = format_type,
                 dataset_name = hf_dataset or "local",
                 custom_format_mapping = custom_format_mapping,
+                chat_template = config.get("chat_template"),
                 progress_callback = _fmt_progress,
             )
             if info.get("success", True):
@@ -3866,6 +3869,7 @@ def _run_mlx_training(
                     format_type = format_type,
                     dataset_name = hf_dataset or "local",
                     custom_format_mapping = custom_format_mapping,
+                    chat_template = config.get("chat_template"),
                     split_name = "eval",
                     raw_text_column = info.get("raw_text_column"),
                 )
@@ -3900,7 +3904,12 @@ def _run_mlx_training(
         # get_chat_template returns a new tokenizer unless it is an mlx-lm wrapper, so the rows' template stayed in
         # the formatter; mirror the CUDA trainer and re-apply it here (no-op for models with a template).
         from utils.datasets.chat_templates import get_training_chat_template
-        tokenizer = get_training_chat_template(tokenizer, model_name, dataset_final_format)
+        tokenizer = get_training_chat_template(
+            tokenizer,
+            model_name,
+            dataset_final_format,
+            config.get("chat_template"),
+        )
         if _carry_mlx_chat_template_to_processor(model, tokenizer):
             logger.info("Saving the training chat template with the processor")
 
@@ -4063,6 +4072,8 @@ def _run_mlx_training(
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
+    if config.get("chat_template") and "chat_template" in _supported_fields:
+        mlx_config_kwargs["chat_template"] = config["chat_template"]
 
     trainer = MLXTrainer(
         model = model,
@@ -5287,6 +5298,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 local_datasets = config.get("local_datasets") or None,
                 local_eval_datasets = config.get("local_eval_datasets") or None,
                 custom_format_mapping = config.get("custom_format_mapping"),
+                chat_template = config.get("chat_template"),
                 subset = config.get("subset"),
                 train_split = config.get("train_split", "train"),
                 eval_split = config.get("eval_split"),
@@ -5791,6 +5803,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
             train_on_completions = False if is_cpt else config.get("train_on_completions", False),
+            chat_template = config.get("chat_template"),
             enable_wandb = config.get("enable_wandb", False),
             wandb_project = config.get("wandb_project", "unsloth-training"),
             wandb_token = config.get("wandb_token"),

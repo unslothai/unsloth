@@ -196,6 +196,9 @@ export function mapBackendModelConfigToTrainingPatch(
     patch.trainOnCompletions = trainOnCompletions;
   }
 
+  const chatTemplate = toStringValue(training?.chat_template);
+  if (chatTemplate !== undefined) patch.chatTemplate = chatTemplate;
+
   const gradientCheckpointing = toGradientCheckpointing(
     training?.gradient_checkpointing,
   );

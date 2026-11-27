@@ -101,6 +101,7 @@ def _format_dataset(trainer, config: dict, hf_token):
         format_type = config.get("format_type", ""),
         local_datasets = config.get("local_datasets") or None,
         custom_format_mapping = config.get("custom_format_mapping"),
+        chat_template = config.get("chat_template"),
         subset = config.get("subset"),
         train_split = config.get("train_split", "train"),
         dataset_slice_start = config.get("dataset_slice_start"),
@@ -376,15 +377,26 @@ def _text_tokenizer(tokenizer):
     return tokenizer
 
 
-def _member_tokenizer(tokenizer, model_name: str, final_format: str):
+def _member_tokenizer(tokenizer, model_name: str, final_format: str, config: dict):
     from utils.datasets.chat_templates import get_training_chat_template
-    if getattr(tokenizer, "chat_template", None) or final_format not in (
-        "alpaca",
-        "chatml_messages",
-        "chatml_conversations",
+
+    custom_template = config.get("chat_template")
+    if not custom_template and (
+        getattr(tokenizer, "chat_template", None)
+        or final_format
+        not in (
+            "alpaca",
+            "chatml_messages",
+            "chatml_conversations",
+        )
     ):
         return tokenizer
-    return get_training_chat_template(copy.deepcopy(tokenizer), model_name, final_format)
+    return get_training_chat_template(
+        copy.deepcopy(tokenizer),
+        model_name,
+        final_format,
+        custom_template,
+    )
 
 
 def _is_raw_text(final_format: str, config: dict) -> bool:
@@ -423,7 +435,7 @@ def _tokenize_member(
     final_format = (
         str(dataset_info.get("final_format", "")).lower() if isinstance(dataset_info, dict) else ""
     )
-    member_tok = _member_tokenizer(tokenizer, model_name, final_format)
+    member_tok = _member_tokenizer(tokenizer, model_name, final_format, config)
     labels = None
     if final_format == PRETOKENIZED_FORMAT:
         # The lone job's checks (ids inside the vocabulary, mask and label lengths) and truncation: a bad

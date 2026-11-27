@@ -80,6 +80,7 @@ export async function fetchTokenPreview({
       format_type: start.format_type,
       custom_format_mapping: start.custom_format_mapping ?? null,
       train_on_completions: start.train_on_completions,
+      chat_template: start.chat_template ?? null,
       is_cpt: config.trainingMethod === "cpt",
       max_seq_length: start.max_seq_length,
       num_samples: numSamples,

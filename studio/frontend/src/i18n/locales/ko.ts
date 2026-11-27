@@ -4353,6 +4353,13 @@ export const ko = {
       targetFormat: "대상 형식",
       targetFormatTooltip:
         "학습 데이터의 형식입니다. 자동 감지는 대부분의 데이터셋에서 작동합니다.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "데이터셋 스트리밍 정보",
       streaming: {
         label: "스트리밍 활성화",

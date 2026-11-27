@@ -143,6 +143,8 @@ export interface TrainingConfigState {
   drafterCapability: DrafterCapability | null;
   packing: boolean;
   trainOnCompletions: boolean;
+  /** Custom Jinja chat template for chat-format training; empty uses the model or dataset default. */
+  chatTemplate: string;
   /** Explicit user/YAML choices, separate from automatic model and dataset defaults. */
   trainingToggleChoices: { packing?: boolean; trainOnCompletions?: boolean };
   gradientCheckpointing: GradientCheckpointing;
@@ -297,6 +299,7 @@ export interface TrainingConfigActions {
   setDrafterCapability: (value: DrafterCapability | null) => void;
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
+  setChatTemplate: (value: string) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;
   setOffloadLayers: (value: OffloadLayers) => void;
   setOffloadVramGb: (value: number | null) => void;

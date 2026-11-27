@@ -3214,6 +3214,7 @@ class UnslothTrainer:
         local_datasets: Optional[List[str]] = None,
         local_eval_datasets: Optional[List[str]] = None,
         custom_format_mapping: Optional[Dict[str, Any]] = None,
+        chat_template: Optional[str] = None,
         subset: Optional[str] = None,
         train_split: str = "train",
         eval_split: Optional[str] = None,
@@ -3860,6 +3861,7 @@ class UnslothTrainer:
                 dataset_name = dataset_source,
                 dataset_revision = dataset_revision,
                 custom_format_mapping = custom_format_mapping,
+                chat_template = chat_template,
                 progress_callback = self._update_progress,
             )
 
@@ -3902,6 +3904,7 @@ class UnslothTrainer:
                     dataset_name = dataset_source,
                     dataset_revision = dataset_revision,
                     custom_format_mapping = custom_format_mapping,
+                    chat_template = chat_template,
                 )
                 if not eval_info.get("success", True):
                     eval_errors = eval_info.get("errors", [])
@@ -4577,7 +4580,10 @@ class UnslothTrainer:
             # Without a labels column, "Train on responses only" can still mask prompts from input_ids.
             user_labels = pretokenized_mode and has_custom_labels(dataset["dataset"])
             self.tokenizer = get_training_chat_template(
-                self.tokenizer, self.model_name, dataset_final_format
+                self.tokenizer,
+                self.model_name,
+                dataset_final_format,
+                training_args.get("chat_template"),
             )
 
             data_collator = None

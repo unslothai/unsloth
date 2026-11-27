@@ -4385,6 +4385,13 @@ export const ru = {
       targetFormat: "Целевой формат",
       targetFormatTooltip:
         "Формат ваших обучающих данных. Автоопределение работает для большинства датасетов.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "Информация о потоковой передаче датасета",
       streaming: {
         label: "Включить потоковую передачу",

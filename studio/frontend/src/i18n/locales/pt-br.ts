@@ -4385,6 +4385,13 @@ export const ptBR = {
       targetFormat: "Formato de Destino",
       targetFormatTooltip:
         "Formato dos seus dados de treinamento. A detecção automática funciona para a maioria dos datasets.",
+      chatTemplate: "Chat template",
+      chatTemplateTooltip:
+        "Optional Jinja template for chat-format training. Leave empty to use the model or dataset default.",
+      chatTemplateEdit: "Edit template",
+      chatTemplateCustom: "Custom template",
+      chatTemplateEditorDescription:
+        "Override the chat template used to format this training run. Saving an empty template or one that matches the model default clears the override.",
       streamingInfoAriaLabel: "Informações sobre o streaming do dataset",
       streaming: {
         label: "Ativar streaming",

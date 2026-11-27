@@ -143,7 +143,10 @@ def get_tokenizer_chat_template(tokenizer, model_name):
     return tokenizer
 
 
-def get_training_chat_template(tokenizer, model_name, final_format):
+def get_training_chat_template(tokenizer, model_name, final_format, chat_template = None):
+    if chat_template and chat_template.strip():
+        _set_chat_template(tokenizer, chat_template)
+        return tokenizer
     if getattr(tokenizer, "chat_template", None):
         return tokenizer
     if final_format in ("chatml_messages", "chatml_conversations"):
@@ -606,6 +609,7 @@ def apply_chat_template_to_dataset(
     batch_size = 1000,
     num_proc = None,
     progress_callback = None,
+    chat_template = None,
 ):
     """Rejects a non-None custom_prompt_template: Studio cannot persist a matching inference template."""
     dataset = dataset_info["dataset"]
@@ -634,6 +638,9 @@ def apply_chat_template_to_dataset(
     )
     if not eos_token and (add_eos_token or final_format == "alpaca"):
         warnings.append("Tokenizer has no eos_token, so EOS was not appended")
+
+    if chat_template and chat_template.strip():
+        _set_chat_template(tokenizer, chat_template)
 
     # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
@@ -727,7 +734,7 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
-        tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
+        tokenizer = get_training_chat_template(tokenizer, model_name, final_format, chat_template)
 
         preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
 
@@ -790,7 +797,7 @@ def apply_chat_template_to_dataset(
         if not is_standardized:
             warnings.append("Dataset may not be fully standardized")
 
-        if model_name:
+        if model_name and not chat_template:
             tokenizer, kept_own_template = resolve_dataset_chat_template(
                 tokenizer, model_name, dataset, chat_column
             )
