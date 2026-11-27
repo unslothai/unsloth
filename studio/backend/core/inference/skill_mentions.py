@@ -146,11 +146,8 @@ def load_mentioned_skills(
     protected_message_ids = None,
     permission_upgrade = None,
 ):
-    """Inject complete manifests before generation; never a partial one. Caller gates on read_skill.
-
-    Every user @mention is rebuilt into the system message on each request, oldest first, so later
-    turns resend the same system prompt until a skill is newly mentioned, edited or disabled.
-    """
+    """Rebuild every user @mention's complete manifest (never a partial one) into the system message,
+    oldest first, on each request so the prompt cache holds. Caller gates on read_skill."""
     if not messages or not any(
         tool.get("function", {}).get("name") == "read_skill" for tool in (tools or [])
     ):
@@ -189,7 +186,6 @@ def load_mentioned_skills(
         min(_MAX_LOAD_BYTES, max(0, int(context_length) * 2)) if context_length else _MAX_LOAD_BYTES
     )
     loaded_bytes = 0
-    # Cache each read outcome. Only manifests charged to the prompt budget keep their text.
     reads: dict[str, str | SkillError] = {}
     for index, names in mention_turns:
         is_latest = index == latest_index
