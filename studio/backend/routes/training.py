@@ -1797,7 +1797,6 @@ async def plan_parallel_training(
                 _authorize_cache_fallback(name)
             except HTTPException:
                 sizing = {**values, "model_name": None}  # host-only plan, no model facts
-        # One model_info per repo for this request's probes; opened in this thread, never kept.
         with shared_hub_model_info():
             return parallel_plan.plan_for_request(sizing, hf_token = token, inline_error = True)
 

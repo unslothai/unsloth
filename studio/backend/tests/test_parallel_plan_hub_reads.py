@@ -136,7 +136,6 @@ def test_a_missing_repo_still_plans_without_model_facts(client, hub):
     body = _plan(client)
     assert body["error"] is None
     assert body == _unscoped_plan()
-    # A failed read is never shared, so each probe asks again, as before.
     assert hub["calls"][REPO] >= 2
 
 
