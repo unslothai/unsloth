@@ -213,7 +213,7 @@ def quant_cublas_env(
 
 
 # Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only
-# (Metal VAE direct conv is opt-in, Apple Silicon only: ``metal_vae_conv_direct_decision``).
+# (Metal VAE direct conv, every mode, Apple Silicon only: ``metal_vae_conv_direct_decision``).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -225,23 +225,35 @@ def native_speed_flags(
     backend_args: Optional[Sequence[str]] = None,
     accelerator: Optional[str] = None,
     binary: Optional[str] = None,
+    metal_vae_conv_direct: bool = False,
 ) -> list[str]:
-    """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
-    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
+    """sd-cli speed flags for a native speed mode (empty for off / None, except the Metal VAE direct conv). Separate
+    from offload: ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
     ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None.
-    ``binary``: builds listing ``--conv-direct`` (master-963+) get rejected direct conv explicitly, since omitted = auto."""
+    ``binary``: builds listing ``--conv-direct`` (master-963+) get rejected direct conv explicitly, since omitted = auto.
+    ``metal_vae_conv_direct``: the family's VAE takes Metal direct conv by default (``sd_cpp_metal_vae_conv_direct``)."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
+    args = backend_args or ()
+    user_set = any(f in _CONV_DIRECT_FLAGS for f in args)
     if mode in ("", NATIVE_SPEED_OFF):
+        # sd.cpp's auto leaves the Metal VAE on im2col ("no implicit GEMM path"); only that one module changes.
+        if (
+            not user_set
+            and binary
+            and _runs_on_apple_metal(args)
+            and sd_cpp_supports_conv_direct_mode(binary)
+            and rejected_conv_direct_mode(args, accelerator, binary, metal_vae_conv_direct)
+            == METAL_VAE_CONV_DIRECT_MODE
+        ):
+            return ["--conv-direct", METAL_VAE_CONV_DIRECT_MODE]
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        args = backend_args or ()
         if not conv_direct_wanted(args, accelerator):
-            user_set = any(f in _CONV_DIRECT_FLAGS for f in args)
             if not user_set and binary and sd_cpp_supports_conv_direct_mode(binary):
                 return [
                     "--diffusion-fa",
                     "--conv-direct",
-                    rejected_conv_direct_mode(args, accelerator, binary),
+                    rejected_conv_direct_mode(args, accelerator, binary, metal_vae_conv_direct),
                 ]
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
@@ -291,9 +303,10 @@ def rejected_conv_direct_mode(
     backend_args: Sequence[str] = (),
     accelerator: Optional[str] = None,
     binary: Optional[str] = None,
+    metal_vae_conv_direct: bool = False,
 ) -> str:
-    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, ``off,vae=on`` for an opted-in Metal VAE on Apple
-    Silicon with the implicit GEMM Metal CONV_2D (``_metal_vae_conv_direct``), else ``off`` (also the kill switch).
+    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, ``off,vae=on`` for a Metal VAE on Apple Silicon
+    with the implicit GEMM Metal CONV_2D (``_metal_vae_conv_direct``), else ``off`` (also the kill switch).
     Module syntax shipped with ``--conv-direct`` itself (sd.cpp #2134)."""
     import os
 
@@ -301,7 +314,8 @@ def rejected_conv_direct_mode(
     if forced in ("0", "off", "false", "no"):
         return "off"
     if _runs_on_apple_metal(backend_args):
-        return "off,vae=on" if _metal_vae_conv_direct(backend_args, binary) else "off"
+        on = _metal_vae_conv_direct(backend_args, binary, metal_vae_conv_direct)
+        return METAL_VAE_CONV_DIRECT_MODE if on else "off"
     args = list(backend_args)
     diffusion = _diffusion_backend(
         [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
@@ -314,13 +328,16 @@ def rejected_conv_direct_mode(
 
 
 # Metal VAE direct conv: unslothai/stable-diffusion.cpp#103 (ggml patches 0072 / 0073) gives ggml-metal an implicit GEMM
-# CONV_2D. On a virtualized macos-15 M1 runner (Metal timings there are not hardware numbers), SD-Turbo VAE decode went
-# 512 px 12.3 -> 5.4 s and 1664 -> 640 MB of VAE compute buffer; 1024 px decoded untiled in 2.56 GB. No physical Apple
-# Silicon measurement exists yet, so this is OFF by default: ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT=1`` opts in, and
-# then only on an Apple Silicon Mac with a build known to carry the kernel. Intel Macs never get it (their Metal CONV_2D
-# was ~5x slower than im2col and tripped the GPU watchdog). ``=force`` skips the build check (source builds), still
-# Apple Silicon only. The denoiser always keeps im2col.
+# CONV_2D. A virtualized macos-15 M1 runner: SD-Turbo VAE decode 512 px 12.3 -> 5.4 s, compute buffer 1664 -> 640 MB.
+# An M5 Max (FLUX.2 klein 4B Q4_K_M, 1024 px, pin -u9455ee1): VAE 2.33 -> 0.84 s, 14.73 -> 13.4 s per image, 71.65 dB
+# PSNR vs im2col (max pixel diff 1), no hang. sd.cpp's own auto keeps im2col there ("no implicit GEMM path"), so Studio
+# passes it. Default ON for families whose DiffusionFamily sets ``sd_cpp_metal_vae_conv_direct`` (the FLUX.2 VAE and
+# the FLUX.1 ``ae``); ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT=0`` turns it off, ``=1`` opts any other family in. Only an
+# Apple Silicon Mac with a build known to carry the kernel. Intel Macs never get it (their Metal CONV_2D was ~5x slower
+# than im2col and tripped the GPU watchdog). ``=force`` skips the build check (source builds), still Apple Silicon
+# only. The denoiser always keeps im2col.
 METAL_VAE_CONV_DIRECT_ENV = "UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT"
+METAL_VAE_CONV_DIRECT_MODE = "off,vae=on"
 # Unsloth prebuilts carrying the implicit GEMM Metal CONV_2D. Every later sd.cpp master build (> 982) does too.
 METAL_IMPLICIT_GEMM_CONV_TAGS = frozenset({"master-982-0518b34-u9455ee1"})
 METAL_IMPLICIT_GEMM_CONV_MIN_BUILD = 983
@@ -342,32 +359,47 @@ def metal_implicit_gemm_conv(binary: Optional[str]) -> bool:
 
 
 def metal_vae_conv_direct_decision(
-    backend_args: Sequence[str] = (), binary: Optional[str] = None
+    backend_args: Sequence[str] = (),
+    binary: Optional[str] = None,
+    family_default: bool = False,
 ) -> tuple[bool, str]:
-    """Direct conv on a Metal VAE: opt-in, Apple Silicon, implicit GEMM build (or force)."""
+    """Direct conv on a Metal VAE: the family default or the opt-in, Apple Silicon, implicit GEMM build (or force)."""
     import os
 
     forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
     if forced in ("0", "off", "false", "no"):
         return False, "off: UNSLOTH_SD_CPP_CONV_DIRECT=0"
     opt = (os.environ.get(METAL_VAE_CONV_DIRECT_ENV) or "").strip().lower()
-    if opt not in ("1", "on", "true", "yes", "force"):
-        return False, f"off by default (set {METAL_VAE_CONV_DIRECT_ENV}=1 to opt in)"
+    if opt in ("0", "off", "false", "no"):
+        return False, f"off: {METAL_VAE_CONV_DIRECT_ENV}={opt}"
+    opted_in = opt in ("1", "on", "true", "yes", "force")
+    if not opted_in and not family_default:
+        return (
+            False,
+            f"off: not measured for this model's VAE (set {METAL_VAE_CONV_DIRECT_ENV}=1 to opt in)",
+        )
     if not apple_silicon_machine():
         return False, "off: not an Apple Silicon Mac"
     if (_vae_backend(backend_args, None) or "").strip().lower() == "cpu":
         return False, "off: VAE runs on the CPU"
     if opt != "force" and not metal_implicit_gemm_conv(binary):
         return False, "off: this sd.cpp build lacks the implicit GEMM Metal CONV_2D"
-    return True, "on: opted in, Apple Silicon, VAE on Metal"
+    return (
+        True,
+        f"on: {'opted in' if opted_in else 'default for this VAE'}, Apple Silicon, VAE on Metal",
+    )
 
 
 _METAL_VAE_CONV_LOGGED: set = set()
 
 
-def _metal_vae_conv_direct(backend_args: Sequence[str], binary: Optional[str]) -> bool:
+def _metal_vae_conv_direct(
+    backend_args: Sequence[str],
+    binary: Optional[str],
+    family_default: bool = False,
+) -> bool:
     """True when the VAE runs on Metal and should take direct conv (``metal_vae_conv_direct_decision``); logs once."""
-    on, reason = metal_vae_conv_direct_decision(backend_args, binary)
+    on, reason = metal_vae_conv_direct_decision(backend_args, binary, family_default)
     if reason not in _METAL_VAE_CONV_LOGGED:
         _METAL_VAE_CONV_LOGGED.add(reason)
         import logging
@@ -1472,6 +1504,7 @@ def build_sd_cpp_server_command(
     extra_args: Optional[list[str]] = None,
     accelerator: Optional[str] = None,
     rng: Optional[str] = None,
+    metal_vae_conv_direct: bool = False,
 ) -> list[str]:
     """Those dir flags all point at ``scratch_dir``, which must exist: sd-server fails on a missing dir."""
     if not files.diffusion_model:
@@ -1515,7 +1548,8 @@ def build_sd_cpp_server_command(
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
     speed = speed_flags_without(
-        native_speed_flags(native_speed, backend_args, accelerator, binary), offload
+        native_speed_flags(native_speed, backend_args, accelerator, binary, metal_vae_conv_direct),
+        offload,
     )
     cmd += with_module_flash_attn([*offload, *speed], binary)
     cmd += placement
