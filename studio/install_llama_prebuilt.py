@@ -174,63 +174,11 @@ if platform.system() == "Windows":
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 
 
-def _path_inside_venv(path: str) -> bool:
-    """True if ``path`` is inside the active venv (sys.prefix).
-
-    The venv hipInfo.exe (AMD wheel, put on PATH by the bnb fix) is NOT a HIP SDK
-    (_amd_smi_allowed)."""
-    try:
-        _root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Root-dir prefix: commonpath would match every path, and a venv is never at root.
-        if os.path.dirname(_root) == _root:
-            return False
-        return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
-    except (ValueError, OSError):
-        return False
-
-
-def _external_hipinfo_on_path() -> bool:
-    """True if a hipinfo OUTSIDE the venv is on PATH.
-
-    shutil.which returns only the first hit, so the venv hipInfo could shadow a
-    real HIP SDK's; scan every PATH entry and skip the venv copy."""
-    for _dir in os.environ.get("PATH", "").split(os.pathsep):
-        _dir = _dir.strip('"')  # PATH entries can be quoted on Windows
-        if not _dir:
-            continue
-        _candidate = os.path.join(_dir, "hipinfo.exe")
-        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
-            return True
-    return False
-
-
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi here.
-
-    On Windows w/o a working HIP runtime, amd-smi elevates a child and pops a
-    UAC/DiskPart prompt RunAsInvoker can't suppress. Only call it on Windows
-    when a HIP SDK is detectable (hipinfo present) or UNSLOTH_ENABLE_AMD_SMI=1;
-    Linux/macOS always allowed. When skipped, the gfx arch still arrives via the
-    forwarded --rocm-gfx, so prebuilt selection is unaffected.
-    """
-    if platform.system() != "Windows":
-        return True
-    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
-    if flag in ("1", "true", "yes", "on"):
-        return True
-    if flag in ("0", "false", "no", "off"):
-        return False
-    # A real HIP SDK lets amd-smi run un-elevated; ignore the venv hipInfo.exe (not an SDK).
-    if _external_hipinfo_on_path():
-        return True
-    for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
-        _root = os.environ.get(_var)
-        if not _root:
-            continue
-        _candidate = os.path.join(_root, "bin", "hipinfo.exe")
-        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
-            return True
-    return False
+    """Never on Windows: amd-smi.exe elevates a child and pops a UAC/DiskPart prompt RunAsInvoker
+    cannot suppress, with or without a HIP SDK.
+    The gfx arch still arrives via the forwarded --rocm-gfx, so prebuilt selection is unaffected."""
+    return platform.system() != "Windows"
 
 
 windows_hidden_subprocess_kwargs = _core.windows_hidden_subprocess_kwargs
@@ -3152,25 +3100,16 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 return _venv_candidate
             return None
 
-        _win_probes = [(["hipinfo"], lambda out: "gcnarchname" in out.lower())]
-        if _amd_smi_allowed():
-            _win_probes.append((["amd-smi", "list"], _amd_smi_has_gpu))
-        for _cmd, _check in _win_probes:
-            _exe = _resolve_exe(_cmd[0])
-            if not _exe:
-                continue
-            try:
-                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
-            except Exception:
-                continue
-            if _result.returncode == 0 and _result.stdout.strip():
-                if _check(_result.stdout):
-                    has_rocm = True
-                    rocm_gfx_targets = _list_rocm_gfx_targets(_result.stdout)
-                    rocm_gfx_target = _pick_rocm_gfx_target(
-                        _result.stdout, hip_filtered = _cmd[0] == "hipinfo"
-                    )
-                    break
+        _exe = _resolve_exe("hipinfo")
+        try:
+            _out = run_capture([_exe], timeout = 10).stdout if _exe else ""
+        except Exception:
+            _out = ""
+        # Any exit code: hipinfo can crash (0xC0000005, some RDNA 4) after printing gcnArchName (#6043).
+        if "gcnarchname" in _out.lower():
+            has_rocm = True
+            rocm_gfx_targets = _list_rocm_gfx_targets(_out)
+            rocm_gfx_target = _pick_rocm_gfx_target(_out, hip_filtered = True)
         # amdhip64.dll alone is not GPU evidence: the HIP SDK installs without an AMD GPU.
 
     # Only probed with no usable NVIDIA and no ROCm, so "without_rocm" holds by construction.
