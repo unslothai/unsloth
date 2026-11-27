@@ -318,8 +318,7 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
     """The rescue recount must use the same empty tool stand-in as sizing, or the call's args drop out."""
     from core.inference import context_window
 
-    # Diagnostics deliberately compare with the last message removed. This
-    # test checks prompt sizing, not that independent marginal-token probe.
+    # Prompt sizing only: the marginal-token diagnostic prices a shorter prompt on purpose.
     monkeypatch.setattr(context_window, "_marginal_turn_count", lambda *a, **kw: 0)
 
     counted: list[list] = []
