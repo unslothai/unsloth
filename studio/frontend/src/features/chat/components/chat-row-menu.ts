@@ -31,6 +31,7 @@ import {
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import { useChatPreferencesStore } from "../stores/chat-preferences-store";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import {
   getStoredChatThread,
@@ -163,9 +164,10 @@ async function titleFromModel(checkpoint: string, excerpt: string): Promise<stri
   });
   timedOut.catch(() => undefined);
   try {
-    const request = await Promise.race([buildTitleRefreshRequest(checkpoint, excerpt), timedOut]);
+    const customPrompt = useChatPreferencesStore.getState().titlePrompt.trim();
+    const request = await Promise.race([buildTitleRefreshRequest(checkpoint, excerpt, customPrompt), timedOut]);
     if (!request) return null;
-    return await Promise.race([titleFromStream(streamChatCompletions(request, controller.signal)), timedOut]);
+    return await Promise.race([titleFromStream(streamChatCompletions(request, controller.signal), Boolean(customPrompt)), timedOut]);
   } catch {
     return null;
   } finally {
