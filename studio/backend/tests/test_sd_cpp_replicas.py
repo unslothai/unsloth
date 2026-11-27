@@ -366,9 +366,35 @@ def test_host_ram_pricing_pinned_mmap_and_refused():
     assert not rp.price_replica(host_room_mib = 99_999, **dict(kw, limit_mib = 8_000)).fits
 
 
-def test_a_companion_split_becomes_one_server_per_card_when_the_host_holds_both(
-    monkeypatch, tmp_path
-):
+def test_auto_keeps_main_companion_split_for_a_single_user(monkeypatch, tmp_path):
+    # Plenty of host RAM: Auto still runs main's split argv and placement, and a queue starts nothing extra.
+    monkeypatch.setenv("UNSLOTH_SD_CPP_REPLICAS", "off")
+    (tmp_path / "off").mkdir()
+    ref, ref_rig = _auto_load(monkeypatch, tmp_path / "off", sizes = SPILLS_ENCODER, host_room = 30_000)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPLICAS")
+    b, rig = _auto_load(monkeypatch, tmp_path, sizes = SPILLS_ENCODER, host_room = 30_000)
+    primary = rig.servers[0]
+    assert _backend_arg(primary.started["offload"]) == "diffusion=CUDA0,te=CUDA1,vae=CUDA1"
+    assert {k: v for k, v in primary.started.items() if k != "files"} == {
+        k: v for k, v in ref_rig.servers[0].started.items() if k != "files"
+    }
+    assert primary.env == ref_rig.servers[0].env
+    assert b._replicas is None and b.status() == ref.status()
+    assert b.status()["multi_gpu"]["chosen"] == "companion_split"
+    rig.gate.release(1)
+    assert len(b.generate(prompt = "a", width = 256, height = 256, steps = 4, seed = 1)["images"]) == 1
+    first = _start(b, "a")
+    rig.wait(lambda: len(rig.entered) == 2)
+    second = _start(b, "b")
+    time.sleep(0.3)
+    assert len(rig.servers) == 1
+    rig.gate.release(2)
+    first.join(5), second.join(5)
+    assert first.error is None and second.error is None
+
+
+def test_a_server_count_turns_a_companion_split_into_one_server_per_card(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_SD_CPP_REPLICAS", "2")
     b, rig = _auto_load(monkeypatch, tmp_path, sizes = SPILLS_ENCODER, host_room = 30_000)
     primary = rig.servers[0]
     # Run as a one-card Studio would: no --backend pin, masked to its card.
@@ -392,6 +418,7 @@ def test_a_companion_split_becomes_one_server_per_card_when_the_host_holds_both(
 
 def test_a_replica_uses_mmap_when_the_host_cannot_pin_a_second_spill(monkeypatch, tmp_path):
     # At load: the primary's pinned spill plus a replica under --mmap fit. At spawn the primary holds its share.
+    monkeypatch.setenv("UNSLOTH_SD_CPP_REPLICAS", "2")
     rooms = iter([12_000])
     b, rig = _auto_load(
         monkeypatch, tmp_path, sizes = SPILLS_ENCODER, host_room = lambda: next(rooms, 4_000)
@@ -409,6 +436,7 @@ def test_a_replica_uses_mmap_when_the_host_cannot_pin_a_second_spill(monkeypatch
 
 
 def test_the_split_stays_when_the_host_cannot_hold_the_one_card_spill(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_SD_CPP_REPLICAS", "2")
     b, rig = _auto_load(monkeypatch, tmp_path, sizes = SPILLS_ENCODER, host_room = 9_000)
     assert b._replicas is None and "replicas" not in b.status()
     assert _backend_arg(rig.servers[0].started["offload"]) == "diffusion=CUDA0,te=CUDA1,vae=CUDA1"

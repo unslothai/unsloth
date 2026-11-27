@@ -187,8 +187,9 @@ def plan_for_load(
     limit_of: Optional[Callable[[int], Optional[int]]] = None,
     host_room: Optional[Callable[[], Optional[int]]] = None,
 ) -> Optional[ReplicaLoadPlan]:
-    """The replica cards of this load, None when it keeps one server. A companion split is dropped for one-card servers
-    only when the primary's spill and one replica fit the host; a block split (no card holds the model) keeps."""
+    """The replica cards of this load, None when it keeps one server. Auto applies only where the primary already runs
+    on one card. With an explicit server count a companion split is dropped for one-card servers when the primary's
+    spill and one replica fit the host; a block split (no card holds the model) always keeps."""
     from .diffusion_multigpu import current_selection, multigpu_all_enabled
 
     mode, cap = replica_setting()
@@ -227,6 +228,14 @@ def plan_for_load(
         logger.info("sd_cpp.replicas: one server (no other card holds the diffusion model)")
         return None
     drop = False
+    if split is not None and mode != "count":
+        # Auto keeps main's companion split (both cards serving one request, nothing pinned on the host) for a single
+        # user; one-card servers in its place cost host RAM at N=1, so they are opt-in with an explicit server count.
+        logger.info(
+            "sd_cpp.replicas: keeping the companion split (one-card servers need %s=N)",
+            REPLICAS_ENV,
+        )
+        return None
     if split is not None:
         room = host_room()
         own = price_replica(
