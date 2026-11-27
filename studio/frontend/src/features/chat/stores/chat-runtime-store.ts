@@ -5483,8 +5483,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const target = nextState as Record<string, unknown>;
       const applied: Record<string, unknown> = {};
       const paramsPatch: Record<string, unknown> = {};
-      // When leaving a chat, recover the selected model's own sampling beneath its pins.
-      // Keep the installation defaults available for any other model or thread setting.
+      // Leaving a chat: memory saved inside it postdates the defaults captured on entry.
       const checkpoint = state.params.checkpoint;
       const modelMemory = state.paramsByModel[checkpoint];
       const modelDefaults =
