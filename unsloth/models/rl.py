@@ -4699,6 +4699,54 @@ _DPO_REF_ADAPTER_BLOCK = re.compile(
 )
 
 
+# The branch header that owns TRL's add_adapter("ref"): GRPO (beta != 0) and RLOO (always) on TRL 0.27+, written
+# `if is_peft_available() and is_peft_model(model)...:` through 1.3 and `elif is_peft_model(model)...:` from 1.4.
+_RL_REF_ADAPTER_HEADER = re.compile(
+    r"^(?P<head>[ \t]*(?:el)?if\s+)(?:is_peft_available\(\)\s+and\s+)?is_peft_model\(model\)"
+    r"(?:\s+and\s+args\.beta\s*!=\s*0(?:\.0)?)?\s*:(?P<tail>[ \t]*(?:#.*)?)$"
+)
+
+
+def _skip_rl_ref_adapter(init):
+    """Turn off the branch that copies the adapter into a frozen "ref" adapter (as the older GRPO pattern above
+    does): the base model is Unsloth's reference, and the vLLM LoRA sync would also send the ref weights, which
+    vLLM rejects. The header stays and its body goes under `if False:`, so an elif / else chain keeps its meaning."""
+    lines = init.split("\n")
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#") or not re.search(r"\.add_adapter\(\s*[\"']ref[\"']", line):
+            continue
+        depth = len(line) - len(line.lstrip())
+        for j in range(i - 1, -1, -1):
+            above = lines[j]
+            if not above.strip() or above.lstrip().startswith("#"):
+                continue
+            indent = len(above) - len(above.lstrip())
+            if indent >= depth:
+                continue
+            depth = indent
+            if _RL_REF_ADAPTER_HEADER.match(above):
+                end = j + 1
+                while end < len(lines) and (
+                    not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent
+                ):
+                    end += 1
+                while end > j + 1 and not lines[end - 1].strip():
+                    end -= 1
+                body = lines[j + 1 : end]
+                inner = min(len(x) - len(x.lstrip()) for x in body if x.strip())
+                lines[j + 1 : end] = [
+                    " " * inner
+                    + "if False:  # Unsloth: no frozen ref adapter, the base model is the reference"
+                ] + [("    " + x) if x.strip() else x for x in body]
+                break
+            if above.lstrip().startswith(("if ", "elif ", "def ")) or indent == 0:
+                break  # another condition owns it (DPO's ref_model is None, ...): leave it
+        else:
+            continue
+        break
+    return "\n".join(lines)
+
+
 def _guard_dpo_ref_adapter_for_tp(init):
     def _guard(match):
         indent = match.group("indent")
@@ -4768,6 +4816,8 @@ def patch_functions(
         return "\n".join(commented_lines)
 
     init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
+    if trainer_file in ("grpo_trainer", "rloo_trainer"):
+        init = _skip_rl_ref_adapter(init)
 
     if trainer_file == "dpo_trainer":
         init = _guard_dpo_ref_adapter_for_tp(init)
