@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
 import {
   type UnslothSupport,
   classifyUnslothSupport,
@@ -58,10 +59,12 @@ import {
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
 import {
+  fp8MayRunDequantized,
   hasMlxCardTag,
   isMlxId,
   namedOrTaggedMlx,
 } from "../lib/format-filters";
+import { useHubPageUrl } from "../lib/hub-page-url";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -90,7 +93,7 @@ export function ViewRepositoryButton({
   const online = useOnlineStatus();
   const hfEndpoint = useHfEndpoint();
   const hubName = useHubName();
-  const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
+  const url = useHubPageUrl(`${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`);
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
@@ -289,12 +292,15 @@ function ModelStatusChips({
   chatOnly,
   unslothSupport,
   vramInfo,
+  fp8DequantOnly = false,
 }: {
   isDataset: boolean;
   isGguf: boolean;
   chatOnly: boolean;
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
+  /** An FP8 checkpoint this torch build may run only by dequantizing per-channel FP8 to 16-bit. */
+  fp8DequantOnly?: boolean;
 }) {
   // Images/Video pages run these, so they are not unsupported even though chat cannot.
   const showUnsupported =
@@ -306,7 +312,9 @@ function ModelStatusChips({
   // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported && !showVllm;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showChatOnly && !showVram && !showVllm) return null;
+  const showFp8Dequant = !isDataset && !isGguf && fp8DequantOnly && !showUnsupported;
+  if (!showUnsupported && !showChatOnly && !showVram && !showVllm && !showFp8Dequant)
+    return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -399,6 +407,27 @@ function ModelStatusChips({
           </TooltipContent>
         </Tooltip>
       )}
+      {showFp8Dequant && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="FP8 may run via dequant" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            This torch build has no row-wise FP8 GEMM, so a per-channel FP8
+            checkpoint runs via dequant to 16-bit here: it loads, without the
+            FP8 speed or memory saving.
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
+              Block-scaled FP8 checkpoints keep their own FP8 kernel.
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
       {showVram && vramInfo && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -486,6 +515,7 @@ export const ModelInspector = memo(function ModelInspector({
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const checkpointQuantDequantOnly = useGpuInfo().checkpointQuantDequantOnly;
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
@@ -906,6 +936,17 @@ export const ModelInspector = memo(function ModelInspector({
           chatOnly={chatOnly && !mlxRunsHere}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
+          fp8DequantOnly={
+            !isDataset &&
+            fp8MayRunDequantized(
+              {
+                id: model.hubRepoId ?? model.id,
+                isGguf: model.isGguf,
+                quantMethod: model.quantMethod,
+              },
+              checkpointQuantDequantOnly,
+            )
+          }
         />
       </div>
 

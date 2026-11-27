@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reversible, failure-safe, compile-safe accuracy-neutral patches of shared diffusers classes;
-uninstall on off-tier loads and on unload; the chat/diffusion arbiter ensures one active pipe, so
-class-level state is safe"""
+"""Reversible, failure-safe, compile-safe, accuracy-neutral patches of shared diffusers classes;
+uninstalled on off-tier loads and unload; one active pipe makes class-level state safe."""
 
 from __future__ import annotations
 
@@ -43,8 +42,7 @@ except Exception:  # noqa: BLE001
     _NPU = False
 
 
-# Patched forwards, each mirroring diffusers semantics with the fused fast path (``addcmul(input, t1, t2) == input + t1
-# * t2``).
+# Patched forwards use fused addcmul(input, t1, t2): input plus t1 times t2, as in diffusers.
 def _adaln_continuous_forward(self, x, conditioning_embedding):
     emb = self.linear(self.silu(conditioning_embedding).to(x.dtype))
     scale, shift = torch.chunk(emb, 2, dim = 1)
@@ -157,8 +155,7 @@ def uninstall_patches() -> None:
     _orig_rmsnorm_forward = None
 
 
-# fp16 ``off`` tier: fused RMSNorm alone (Colab T4 Z-Image: 4.4 s of a 29.9 s denoise in decomposed RMSNorm).
-# F.rms_norm rounds once (diffusers twice): nearer fp64, not bit-identical.
+# RMSNorm only for fp16 off tier; F.rms_norm rounds once (diffusers twice), not bit-identical.
 FP16_RMSNORM_ENV = "UNSLOTH_DIFFUSION_FP16_RMSNORM"
 FP16_RMSNORM_CLASSES = ("ZImageTransformer2DModel",)
 _fp16_rmsnorm_only: list[type] = []
@@ -215,5 +212,4 @@ def fp16_rmsnorm_installed() -> bool:
 
 
 def is_installed() -> bool:
-    """True if any compile-safe patch is currently installed."""
     return bool(_patched)

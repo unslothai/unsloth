@@ -89,7 +89,6 @@ def test_lend_frees_everything_and_caches_nothing_until_return():
     ack = handle("lend")
     assert ack["kind"] == "lend" and ack["freed_gib"] == round(30 * MIB / GIB, 3) and ack["lent"]
     assert not cache.entries and cache.used == 0 and cache.budget == 0
-    # Lent: a forward caches nothing.
     assert cache.get(object(), torch.bfloat16) is None
     # A preview's suspend/resume inside the lend does not end it.
     cache.suspend()

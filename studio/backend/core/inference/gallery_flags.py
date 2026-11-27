@@ -128,9 +128,8 @@ def _save(directory: Path, data: dict[str, Any]) -> None:
 
 @contextlib.contextmanager
 def _file_lock(directory: Path):
-    """Best-effort cross-process exclusive lock over one directory's store. Generation runs in
-    subprocesses, so the in-process RLock alone would let two of them clobber each other on
-    ``os.replace``. Yields whether the OS lock was taken, so destructive callers can fail closed."""
+    """Best-effort cross-process lock for generation subprocesses: the in-process RLock alone lets
+    them clobber on os.replace; yields whether taken, so destructive callers fail closed."""
     try:
         fd = os.open(str(directory / f"{_STORE_NAME}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     except Exception:
@@ -180,8 +179,7 @@ def _entry(items: dict[str, Any], item_id: str) -> dict[str, Any]:
 
 
 def read(directory: Path) -> dict[str, dict[str, Any]]:
-    """Untrusted stores read as no flags: a lost pin beats an unlisted gallery; deletes need
-    read_trusted."""
+    """Untrusted: no flags (a lost pin beats an unlisted gallery); deletes need read_trusted."""
     with _lock:
         items = _load(directory)[0].get("items", {})
     return {k: v for k, v in items.items() if isinstance(v, dict)}
@@ -324,8 +322,7 @@ def set_flags_locked(
 
 
 def forget(directory: Path, item_ids) -> None:
-    """Drop flags for ids that no longer exist, so a deleted image cannot hand its pin to a
-    future id and the store cannot grow without bound. No-op when nothing is stored."""
+    """Drops flags of deleted ids so no future id inherits a pin or the store grows unbounded."""
     with _lock, _file_lock(directory):
         forget_locked(directory, item_ids)
 
@@ -350,8 +347,7 @@ def forget_locked(directory: Path, item_ids) -> None:
 
 
 def _between(high: Optional[float], low: Optional[float], *, top: float) -> Optional[float]:
-    """Key between high and low (descending), or None if both are None; top is used at the group
-    head so newer media sorts first."""
+    """Key between high and low (descending); group heads use top so newer media sorts first."""
     if high is not None and low is not None:
         mid = (high + low) / 2
         # Out of float precision: tie with the upper neighbour.

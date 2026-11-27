@@ -11,7 +11,6 @@ SSE_LINE_END = re.compile(r"\r\n|\r|\n")
 
 
 async def aiter_sse_lines(response):
-    """``response.aiter_lines()`` that splits only at SSE line ends."""
     if not hasattr(response, "aiter_text"):
         # Not an httpx response: its own lines are already whole.
         lines = response.aiter_lines()

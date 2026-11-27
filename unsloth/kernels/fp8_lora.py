@@ -87,6 +87,80 @@ def _scaling_for(device):
     return scaling_for_class(gpu_class)
 
 
+def _is_oom(exc) -> bool:
+    oom = getattr(torch, "OutOfMemoryError", None)
+    return (isinstance(oom, type) and isinstance(exc, oom)) or "out of memory" in str(exc).lower()
+
+
+def _cuda_context_ok(device) -> bool:
+    """After a failed probe GEMM: surface any error it left (synchronize), let a kernel launch check read and so
+    reset the last CUDA error, then confirm the context still runs work."""
+    if device.type != "cuda":
+        return True
+    try:
+        torch.cuda.synchronize(device)
+    except Exception:
+        pass
+    try:
+        return float(torch.ones(1, device = device).add_(1).item()) == 2.0
+    except Exception:
+        return False
+
+
+_ROWWISE_UNSUPPORTED = set()  # devices whose torch build has no row-wise _scaled_mm
+_ROWWISE_PROBED = {}
+
+
+def _note_rowwise_unsupported(device):
+    if device not in _ROWWISE_UNSUPPORTED:
+        _ROWWISE_UNSUPPORTED.add(device)
+        print(
+            f"Unsloth: this torch build has no row-wise fp8 _scaled_mm on {device}; row-scaled fp8 "
+            "GEMMs run on the tensorwise kernel there, with the scales applied in float32."
+        )
+
+
+def _probe_gemm(x, scale_a, scale_b):
+    out = _scaled_mm(x, x.t(), scale_a, scale_b, torch.bfloat16, False)
+    return bool((out == x.shape[1]).all())
+
+
+def rowwise_supported(device) -> bool:
+    """False when this device's tensorwise fp8 _scaled_mm runs and the row-wise one does not: any failure counts
+    ("Rowwise scaling is not currently supported on your device" on the Windows wheels, cuBLASLt
+    CUBLAS_STATUS_NOT_SUPPORTED on older ones, a wrong answer). One small GEMM pair per device, cached. No verdict
+    (True, not cached) when tensorwise fails too, on out of memory, or when the context is broken afterwards.
+    ROCm runs the same real probe: builds and GPUs without these fp8 GEMMs (gfx1151, or fnuz-only MI300) fail its
+    tensorwise GEMM and give no verdict, so the answer always comes from the device."""
+    device = torch.device(device)
+    if device in _ROWWISE_UNSUPPORTED:
+        return False
+    verdict = _ROWWISE_PROBED.get(device)
+    if verdict is not None:
+        return verdict
+    try:
+        x = torch.ones((64, 128), device = device).to(E4M3)
+        one = torch.ones((), device = device, dtype = torch.float32)
+        if not _probe_gemm(x, one, one):
+            return True
+        rows = torch.ones((64, 1), device = device, dtype = torch.float32)
+    except Exception:  # no tensorwise fp8 GEMM either: nothing proven
+        _cuda_context_ok(device)
+        return True
+    try:
+        verdict = _probe_gemm(x, rows, rows.t())
+    except Exception as exc:
+        if _is_oom(exc):
+            return True
+        verdict = False
+    if not verdict:
+        if not _cuda_context_ok(device):
+            return True
+        _note_rowwise_unsupported(device)
+    _ROWWISE_PROBED[device] = verdict
+    return verdict
+
+
 def _env_dgrad():
     value = os.environ.get("UNSLOTH_FP8_LORA_DGRAD", "auto").strip().lower()
     if value in ("0", "false", "off", "no", "bf16", "16bit"):
@@ -353,25 +427,44 @@ _ROWWISE_BF16_ONLY = set()
 
 
 def _rowwise_ok(dtype, device) -> bool:
-    return dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY
+    return (
+        dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY or device in _ROWWISE_UNSUPPORTED
+    )
+
+
+def _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum):
+    """A row-scaled GEMM on the tensorwise kernel (torch builds without the row-wise one, the Windows wheels): unit
+    scales and float32 out, as fp8_lora_accum runs it, then both scales in float32, rounded once to dtype."""
+    one = torch.ones((), device = a.device, dtype = torch.float32)
+    raw = _scaled_mm(a, b, one, one, torch.float32, fast_accum)
+    return raw.mul_(scale_a).mul_(scale_b).to(dtype)
 
 
 def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
-    """None for fp16 when this device's rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf."""
+    """None for fp16 when this device's rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf. Without
+    a row-wise kernel at all, the unit-scale tensorwise GEMM keeps the row scaling."""
+    if a.device in _ROWWISE_UNSUPPORTED:
+        return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
     out_dtype = _out_dtype(dtype)
-    if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
-        try:
-            return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
-        except (RuntimeError, ValueError) as exc:
-            if str(exc) not in (
-                "Only bf16 high precision output types are supported for row-wise scaling.",
-                "Only bf16 and fp16 high precision output types are supported for row-wise scaling.",
-            ):
-                raise
-            _ROWWISE_BF16_ONLY.add(a.device)
-    if dtype == torch.float16:
-        return None
-    return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
+    try:
+        if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
+            try:
+                return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
+            except (RuntimeError, ValueError) as exc:
+                if str(exc) not in (
+                    "Only bf16 high precision output types are supported for row-wise scaling.",
+                    "Only bf16 and fp16 high precision output types are supported for row-wise scaling.",
+                ):
+                    raise
+                _ROWWISE_BF16_ONLY.add(a.device)
+        if dtype == torch.float16:
+            return None
+        return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
+    except (RuntimeError, NotImplementedError):
+        # Never swallowed here: only the isolated probe can say the row-wise kernel is missing.
+        if rowwise_supported(a.device):
+            raise
+        return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
 
 
 def _weight_scale(w_inv):

@@ -65,8 +65,7 @@ export function apiAutoSwitchMayLoad(
   return !isLora && !ids.some(isMaterializedOllamaLink);
 }
 
-/** /status reports the snapshot path while the picker keys the repo id, and the backend folds the
- *  two only for a quant, so a bare snapshot-path row would survive Forget. */
+/** Backend folds path and repo id only for a quant; a bare snapshot row would survive Forget. */
 export function cachedRepoConfigId(
   modelId: string,
   ggufVariant: string | null | undefined,

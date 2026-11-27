@@ -20,6 +20,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_grpo_packed_raw_logits_nograd as harness  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _exact_verified_shape():
+    # These tests re-verify slightly larger batches; trust only the exact verified shape (no 2x growth).
+    # Own MonkeyPatch, so a test's monkeypatch.undo() keeps it.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "1")
+        yield
+
+
 BIG_KEEP = 34
 
 
@@ -165,8 +174,7 @@ def test_zoo_grad_verify_rewrite():
 
 
 def test_half_of_a_one_token_batch_is_not_narrow(monkeypatch):
-    """The #18120 review's shape: two one-token rollouts, one off by 9 nats. That is the whole batch, not an
-    isolated bf16 outlier, so it keeps the old kill rule instead of skipping."""
+    """18120 shape: two one-token rollouts, one 9 nats off, is not narrow: keep the kill rule."""
     monkeypatch.setattr(harness, "KEEP", 1)
     model = _OutlierModel()
     for prompt, mode in ((2, None), (3, "narrow")):

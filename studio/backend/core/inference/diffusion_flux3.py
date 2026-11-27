@@ -41,9 +41,8 @@ FLUX3_COMPONENT_FOLDERS = {
 }
 
 
-# The prompt upsampler step Diffusers main puts first in both auto block graphs since huggingface/diffusers#15058
-# (2026-10-16). It needs the separate ~19 GB Qwen3.5-9B upsampler, which Studio never loads, and would otherwise run
-# on every call (its text-to-image branch has no trigger input), so it is dropped, as its docstring prescribes.
+# Diffusers main puts this step first in both auto block graphs (huggingface/diffusers#15058); needs
+# ~19 GB Qwen3.5-9B upsampler Studio never loads, and would run every call, so it's dropped.
 FLUX3_PROMPT_UPSAMPLER_STEP = "prompt_upsampler"
 
 
@@ -128,6 +127,25 @@ def flux3_blocks(blocks_class_name: str) -> Any:
     if sub_blocks is not None and FLUX3_PROMPT_UPSAMPLER_STEP in sub_blocks:
         sub_blocks.pop(FLUX3_PROMPT_UPSAMPLER_STEP)
     return blocks
+
+
+# BFL's reference shift (``alpha`` in src/flux3/pipeline.py), raised 6.93 -> 16 in flux-3-image-klein 62e90b9278;
+# diffusers 0.42.1's block graph still uses 6.93. LPIPS vs BFL fell 0.095 -> 0.007 (distilled), 0.079 -> 0.026 (base).
+FLUX3_REFERENCE_SHIFT = 16.0
+
+
+def flux3_reference_scheduler(scheduler: Any) -> Any:
+    """``scheduler`` at BFL's reference shift; unchanged if already there or it has no static ``shift``."""
+    config = getattr(scheduler, "config", None)
+    try:
+        current = config.get("shift") if config is not None else None
+        if current is None or float(current) == FLUX3_REFERENCE_SHIFT:
+            return scheduler
+        if config.get("use_dynamic_shifting", False):
+            return scheduler
+    except (AttributeError, TypeError, ValueError):
+        return scheduler
+    return type(scheduler).from_config(config, shift = FLUX3_REFERENCE_SHIFT)
 
 
 def is_flux3_family(fam: Any) -> bool:
@@ -224,9 +242,8 @@ def flux3_family_blocks_mismatch(
 
 
 def flux3_blocks_class(index: dict, transformer: Any = None) -> str:
-    """The block graph a checkpoint runs. The loaded denoiser decides first: a flow-map DiT (it has the target-time
-    embedder) runs the distilled graph, a CFG DiT the base graph, whatever repo supplied the companions (a single
-    file or GGUF of one variant may sit on the other variant's base). Else the index names it."""
+    """The loaded denoiser decides first: flow-map DiT (has target_timestep_embedder) runs distilled
+    graph, CFG DiT the base, whatever repo gave companions; else the index names it."""
     flow_map = None
     if transformer is not None:
         if hasattr(transformer, "target_timestep_embedder"):
@@ -318,6 +335,23 @@ def flux3_pipeline_class() -> type:
         )
         _PIPELINE_CLASS = type("Flux3KleinPipeline", bases, {})
     return _PIPELINE_CLASS
+
+
+def _guider_runs_both(mp: Any) -> bool:
+    """Both CFG branches on every step. A guidance interval answers False throughout: mixed prefix / no-prefix steps
+    would change the CUDA graph key and the sealed scope would send the later key eager."""
+    guider = getattr(mp, "guider", None)
+    if guider is None or int(getattr(guider, "num_conditions", 1)) <= 1:
+        return False
+    config = getattr(guider, "config", None)
+    try:
+        start = float(getattr(config, "start", 0.0) or 0.0)
+        stop = float(
+            getattr(config, "stop", 1.0) if getattr(config, "stop", None) is not None else 1.0
+        )
+    except (TypeError, ValueError):
+        return False
+    return start <= 0.0 and stop >= 1.0
 
 
 def _reset_guider_step(mp: Any) -> None:
@@ -490,8 +524,7 @@ class _Flux3KleinPipelineMixin:
             raise ValueError("FLUX.3 takes a text prompt (str) per image.")
         generators = generator if isinstance(generator, (list, tuple)) else None
         negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
-        # The text encoder sizes its window per prompt, so the blocks take ONE prompt per call. A batch of
-        # distinct prompts, or one prompt with a generator per image, runs as one call per image.
+        # One prompt per call (text encoder sizes per prompt); batches run one call per image.
         if len(prompts) > 1 or generators is not None:
             count = max(len(prompts), len(generators or ()))
             if len(prompts) == 1:
@@ -547,7 +580,7 @@ class _Flux3KleinPipelineMixin:
                 # The base model's text and reference streams run once per call, not once per step and branch.
                 transformer = getattr(self, "transformer", None)
                 if not self.is_distilled:
-                    cond_blocks.begin_render(transformer)
+                    cond_blocks.begin_render(transformer, guided = lambda: _guider_runs_both(mp))
                 try:
                     _reset_guider_step(mp)
                     with self._step_hooks(
@@ -972,12 +1005,21 @@ def load_flux3_pipeline(
         name = "the processor",
     )
     check_cancelled()
+    from .diffusion_te_vision import drop_enabled, drop_vision_tower, vision_tower_skipped
+
+    # No FLUX.3 mode hands the encoder pixels (references go through the VAE): its vision tower is never read.
+    drop_vision = drop_enabled()
+
+    def _te_load(load_dtype: Any, local: bool) -> Any:
+        with vision_tower_skipped(drop_vision):
+            return Qwen3VLForConditionalGeneration.from_pretrained(
+                repo_id, subfolder = "text_encoder", dtype = load_dtype, **_kw(local)
+            )
+
     if text_encoder is None:
         text_encoder = cache_first(
             lambda local: _manual_cast_load(
-                lambda load_dtype: Qwen3VLForConditionalGeneration.from_pretrained(
-                    repo_id, subfolder = "text_encoder", dtype = load_dtype, **_kw(local)
-                ),
+                lambda load_dtype: _te_load(load_dtype, local),
                 name = "text_encoder",
                 repo_id = repo_id,
                 dtype = dtype,
@@ -990,6 +1032,8 @@ def load_flux3_pipeline(
         )
         text_encoder.eval()
         check_cancelled()
+    if drop_vision and drop_vision_tower(text_encoder):
+        logger.info("diffusion.flux3: the text encoder's unused vision tower is not loaded")
     if transformer is None and with_transformer:
 
         def _transformer(local: bool) -> Any:
@@ -1035,8 +1079,8 @@ def load_flux3_pipeline(
     # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
     if transformer is not None:
         cond_blocks.prepare(transformer)
-    # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
-    scheduler = flux3_blocks(blocks).init_pipeline().scheduler
+    # The repos ship no scheduler; use the block graph's at BFL's reference shift.
+    scheduler = flux3_reference_scheduler(flux3_blocks(blocks).init_pipeline().scheduler)
     return flux3_pipeline_class()(
         transformer = transformer,
         vae = vae,

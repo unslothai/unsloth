@@ -104,6 +104,12 @@ def _slot_of(starts: Any) -> Optional[_Slot]:
 class PlanNotRecordable(RuntimeError):
     """Graph-key hook raise for a non-zero key start: the CUDA graph layers then run the call eager."""
 
+    # diffusion_cuda_graph.GRAPH_DECLINE_ATTR: the status and log name this decline, not a non-tensor argument.
+    graph_decline = (
+        "declined by Krea 2 prefix K/V attention (the per-prompt key start is read on the host, "
+        "a CUDA graph would freeze it)"
+    )
+
 
 def plan_key(transformer: Any) -> tuple:
     held = getattr(transformer, "__dict__", {}).get(STARTS_ATTR)

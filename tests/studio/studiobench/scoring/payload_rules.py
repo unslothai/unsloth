@@ -177,11 +177,9 @@ def comparability_fields(run_meta: dict) -> dict:
         # The host matters: webkit is the default on both Darwin and Linux, so engine alone misses it.
         "system": platform.get("system"),
         "machine": platform.get("machine"),
-        # `machine()` is only the architecture; `node()` separates two Linux x86_64 hosts. Pre-field
-        # payloads carry None and are not comparable, which is correct.
+        # `node()` separates hosts that `machine()` cannot; pre-field None is not comparable.
         "node": platform.get("node"),
-        # Headed and headless use different Chromium binaries since Playwright 1.57; `bool` maps
-        # pre-field payloads to the headless default.
+        # Headed/headless Chromium differ since Playwright 1.57; old payloads default headless.
         "headed": bool(run_meta.get("headed")),
     }
 

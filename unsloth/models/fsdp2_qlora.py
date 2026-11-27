@@ -523,8 +523,7 @@ def patch_fsdp2_params4bit():
                 getattr(self, "_unsloth_param_module", None),
             )
             if unsharded is not None and not getattr(unsharded, _GATHERED_MARK, False):
-                # FSDP2 reallocates NF4 storage each pass, so zoo's address-keyed tables are
-                # re-keyed per call.
+                # FSDP2 reallocates NF4 each pass; zoo's address-keyed tables re-key per call.
                 try:
                     setattr(unsharded, _GATHERED_MARK, True)
                 except Exception:

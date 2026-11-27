@@ -55,8 +55,7 @@ def test_a_listed_model_that_starts_AGREEING_fails():
 
 
 def test_a_listed_model_still_fails_every_other_rule():
-    """A listed model excuses only the batched-generation disagreement; right-padded, unpadded or
-    empty-output batches still fail, keeping that disagreement meaningful."""
+    """A listed model excuses only batched-generation disagreement; other rules still fail."""
     for over, expect in (
         ({"padding_side_after": "right"}, "padding_side_after"),
         ({"distinct_lengths": 1}, "nothing was ever padded"),
@@ -77,8 +76,7 @@ def test_every_entry_names_the_issue_it_is_waiting_on():
 
 
 def test_the_list_is_short_and_explicit():
-    """A growing list is the signal that this mechanism is being used to make
-    reds go away rather than to carry one filed bug."""
+    """Growing list means the mechanism is silencing failures, not carrying one filed bug."""
     assert len(KNOWN_BATCHED_GENERATION_BREAKAGE) <= 3, (
         "if this list is growing, the mechanism is being used to silence "
         "failures rather than to hold one filed upstream bug"

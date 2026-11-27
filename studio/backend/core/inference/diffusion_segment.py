@@ -67,8 +67,7 @@ class SegmenterVariant:
     gated: bool
     license_url: str
     files: tuple = SEGMENTER_FILES
-    # Pre-quantized detector files and the commit that holds them (with the configs and tokenizer); "main" until
-    # that commit is pinned. A file not on the Hub there yet reads as absent, and bf16 is used.
+    # Prequant files and their commit; "main" until pinned; absent files fall back to bf16.
     prequant: tuple = ()
     prequant_revision: Optional[str] = None
 
@@ -142,12 +141,10 @@ TEXT_MAX_LENGTH = 32
 KEEP_ALIVE_SECONDS = 120.0
 # bf16 weights (~1.7 GB) plus the 1008x1008 ViT activations and the allocator's slack.
 _GPU_NEED_MIB = 4096
-# After a call, below this much free (or this fraction of the card) the model leaves at once, so the image model
-# never denoises next to it. The prompt upsampler's tight rule.
+# Tight rule: after a call, unload below this free MiB or fraction; denoising never overlaps.
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
-# bf16's measured drop in mem_get_info free after a Find (reserve + workspace, above its allocated peak), so the bf16
-# pick is not read as tight by _after_call and unloaded. auto goes 8-bit only if free minus this reads tight.
+# bf16 drop after a Find, not read as tight; auto goes 8-bit only if free minus it reads tight.
 _BF16_RESIDENT_MIB = 2560
 
 
@@ -232,8 +229,7 @@ def _override_dir() -> Optional[str]:
         and (
             has(SEGMENTER_WEIGHTS_FILE)
             or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json"))
-            # or only a pre-quantized detector file the precision setting may load (dequantized where it cannot
-            # run quantized); one the setting rejects (fp8 under auto, any under bf16) is not a loadable model
+            # Pre-quant file counts if precision allows (fp8 not under auto, none under bf16).
             or any(
                 _loadable(variant, a) and has(a.filename) and not _broken(str(path), a)
                 for a in variant.prequant
@@ -374,8 +370,7 @@ def _cached_snapshot(
     return None
 
 
-# Pre-quantized files that failed to load even dequantized (corrupt, truncated, built for another rule) in this
-# process. They stop counting as downloaded, so status and the download route offer the bf16 file instead.
+# Pre-quantized files that fail even dequantized stop counting as downloaded; bf16 is offered.
 _BROKEN_PREQUANT: set[str] = set()
 
 
@@ -533,8 +528,7 @@ def _get_download_state():
 
 
 def start_download(hf_token: Optional[str] = None, variant: Optional[str] = None) -> str:
-    """Download ``variant`` (the active one when None) in the background: the configs, the tokenizer and the one
-    weights file this host would run (download_plan), else the bf16 files."""
+    """Background download of ``variant`` (active if None): this host's weights, else bf16."""
     model_id = _resolve_segmenter_id(variant)
     if _SPEC_SEP not in model_id:
         model_id = download_plan(SEGMENTER_VARIANTS[model_id])["spec"]
@@ -600,8 +594,7 @@ def _has_dense_weights(path: Optional[str]) -> bool:
 def _local_artifacts(
     variant: SegmenterVariant, path: Optional[str], *, use_cache: bool
 ) -> list[tuple[SegmenterPrequant, str]]:
-    """(file, its folder) for every pre-quantized file of ``variant`` beside ``path`` or, with ``use_cache``, in its
-    own cached snapshot (which may be another commit than the bf16 one)."""
+    """Pre-quantized (file, folder) pairs of ``variant`` beside path, or cached when use_cache."""
     found = []
     for artifact in variant.prequant:
         if path and (Path(path) / artifact.filename).is_file():
@@ -655,8 +648,7 @@ def plan_weights(
 
 
 def _host_device() -> str:
-    """The device a call would most likely use, for planning without a call: the current CUDA card, else Metal,
-    else the CPU. Reads properties only (no CUDA context)."""
+    """Planning device: current CUDA card, else Metal, else CPU; creates no CUDA context."""
     try:
         import torch
         if torch.cuda.is_available():
@@ -722,8 +714,7 @@ def variant_summary(variant: SegmenterVariant) -> dict:
 
 
 def status() -> dict:
-    """The status route body: can it run, which variant, is it downloaded, is it loaded (and where), and the download
-    progress."""
+    """Status: can it run, which variant, downloaded, loaded (and where), download progress."""
     supported = transformers_supports_sam3()
     override = bool((os.environ.get(ENV_PATH_OVERRIDE) or "").strip())
     if supported:
@@ -757,8 +748,7 @@ def _precision_summary(
     supported: bool,
     override: bool,
 ) -> dict:
-    """The status route's precision fields: what runs (the loaded model), else what a load on this host would use
-    (on disk), else what a download would fetch. ``size_bytes`` is that download's size until it is on disk."""
+    """Loaded model, else on-disk load, else download; size_bytes: download size until on disk."""
     from core.inference.diffusion_segment_quant import requested_precision
 
     body = {"precision_requested": requested_precision()}
@@ -868,9 +858,8 @@ def auto_memory_tight(device: str) -> bool:
 
 
 def _other_owner_on(ordinal: Optional[int]) -> Optional[str]:
-    """The GPU arbiter's resident other than the image model on CUDA card ``ordinal`` (one with unknown GPUs counts
-    for every card; ``ordinal`` None is Apple's single Metal device, which every resident shares), else None. Called under the run lock after the handover fence: a later handover waits for the
-    call (or aborts) instead."""
+    """Other owner on CUDA card ordinal (unknown GPUs count on every card; None is Apple's Metal
+    device); called under the run lock after the handover fence, so later handovers wait."""
     try:
         from core.inference import gpu_arbiter
         held = gpu_arbiter.residents()
@@ -975,8 +964,7 @@ def preprocess(
     dtype: Any,
     size: int = IMAGE_SIZE,
 ) -> Any:
-    """ComfyUI's input: RGB in [0, 1] stretched to 1008x1008 with bilinear interpolation (no crop, no antialias),
-    then SAM 3's normalisation (mean 0.5, std 0.5)."""
+    """RGB [0,1] to 1008x1008 bilinear (no crop or antialias), then mean/std 0.5 normalised."""
     import numpy as np
     import torch
     import torch.nn.functional as F
@@ -1209,8 +1197,7 @@ class MaskSegmenter:
         self._handover_epoch = 0
         # The device of the call in flight: "" until it is chosen, None when no call runs.
         self._call_device: Optional[str] = None
-        # Set (under _state_lock) once the call in flight has read its release flag: a release that times out after
-        # that is not honoured by the call, so it waits out the call's short tail itself.
+        # Set under _state_lock once read; a later timed-out release waits out the tail.
         self._call_settled = False
         # A GPU model moved to host RAM by release(park = True), with what _load matches it against; the next call on
         # the same card, weights and dtype moves it back instead of reading the files again. Never counts as loaded.
@@ -1291,8 +1278,7 @@ class MaskSegmenter:
     def _load_weights(
         self, plan: WeightsPlan, path: str, device: str, dtype: Any
     ) -> tuple[Any, WeightsPlan]:
-        """(model, the plan that loaded). A pre-quantized file that fails to load falls back to the bf16 file, else
-        to the same file dequantized; nothing is left half-placed on the device."""
+        """(model, plan); bad prequant falls back to bf16, else dequantized; no partial load."""
         from transformers import Sam3Model
 
         from core.inference.diffusion_segment_quant import (
@@ -1349,8 +1335,7 @@ class MaskSegmenter:
                     dequantize = True,
                 )
             except Exception as exc:
-                # Not a quantized-kernel problem: the file itself does not load. Stop counting it as downloaded so
-                # the next status offers the bf16 download rather than failing every request on the same file.
+                # Fails even dequantized: stop counting it as downloaded so bf16 is offered.
                 _BROKEN_PREQUANT.add(_prequant_key(plan.model_dir, plan.artifact))
                 _free_device_cache(device)
                 raise RuntimeError(
@@ -1563,8 +1548,7 @@ class MaskSegmenter:
                 honoured = self._call_device is not None and not self._call_settled
                 on_accelerator = self._call_on_accelerator()
             if wait and not honoured:
-                # The call ended (or is ending) without seeing the flag: its tail is short, so wait it out and unload
-                # here rather than leave the weights resident for the next owner.
+                # Call ended without seeing the flag: wait out its short tail, then unload.
                 acquired = self._run_lock.acquire(timeout = _SETTLE_TIMEOUT_SECONDS)
         if not acquired:
             if handover and on_accelerator:
@@ -1614,8 +1598,7 @@ class MaskSegmenter:
             self._run_lock.release()
 
     def _after_call(self) -> None:
-        """Called with ``_run_lock`` held: honour a release that arrived mid-call, drop a GPU copy when the card is
-        tight, else keep it for the keep-alive."""
+        """Under ``_run_lock``: honour mid-call release; drop GPU copy if tight, else keep it."""
         with self._state_lock:
             pending, self._release_pending = self._release_pending, False
             self._call_settled = True
@@ -1669,8 +1652,7 @@ class MaskSegmenter:
         queued_at = self._handover_epoch
         with self._run_lock:
             if allow_gpu and (self._handover_epoch != queued_at or _gpu_handover_in_progress()):
-                # The GPU changed hands while this call waited, or is changing hands now: the new owner may still be
-                # loading onto the card.
+                # GPU changing hands: the new owner may still be loading onto the card.
                 raise SegmenterBusyError("The GPU is changing hands.")
             with self._state_lock:
                 self._call_device, self._call_settled = "", False
@@ -1775,8 +1757,7 @@ class MaskSegmenter:
             caps: dict[str, int] = {}
             for concept in concepts:
                 caps[concept.text] = max(caps.get(concept.text, 0), concept.max_detections)
-            # Per text only its kept scores and boxes outlive the forward: the union of a text's best-``cap`` masks
-            # covers every occurrence's best-``k`` (k <= cap), so the masks are OR-ed in at once and dropped.
+            # Per text, OR of the best-cap masks covers every best-k (k <= cap); then dropped.
             kept: dict[str, tuple[Any, Any, list]] = {}
             for concept in concepts:
                 if concept.text not in kept:
@@ -1913,9 +1894,7 @@ def render_fence() -> Iterator[None]:
 
 
 def _take_render_slot() -> tuple[Any, str]:
-    """(the active image engine's generation lock, acquired) or (None, why not). ``generating`` while a render or
-    a model transition holds it, ``loading`` while a load is in flight; an engine with no lock (or none readable)
-    runs nothing on torch, so the call proceeds with no slot. Never blocks."""
+    """Take the active generation lock, else (None, why): generating or loading; never blocks."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
         engine = get_active_diffusion_engine()
@@ -1943,8 +1922,7 @@ def segment_image(
     threshold: float = DEFAULT_THRESHOLD,
     allow_gpu: bool = True,
 ) -> dict:
-    """The segment route's work: decode the upload (EXIF-upright, as inpaint decodes it), refuse while the image
-    model renders or loads, run SAM 3, answer the route body."""
+    """Route work: decode upload (EXIF-upright), refuse while image model renders/loads."""
     from core.inference.diffusion import decode_b64_image
 
     if not parse_prompt(prompt):

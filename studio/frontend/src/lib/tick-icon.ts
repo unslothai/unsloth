@@ -18,8 +18,7 @@ export const Tick02Icon: IconSvgElement = [
   ],
 ];
 
-// Shifted right so its ink ends as far from the right edge as a leading icon's starts from the
-// left (x=2 less half a stroke).
+// Shifted right to mirror a leading icon's left inset (x=2 less half a stroke).
 export const MenuTickIcon: IconSvgElement = [
   [
     "path",

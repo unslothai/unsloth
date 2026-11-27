@@ -514,14 +514,13 @@ def _pipeline_parallel_env_requested() -> bool:
         return False
 
 
-def _cp_x_tp_env_requested() -> bool:
-    """UNSLOTH_CP_SIZE and UNSLOTH_TP_SIZE above 1 (UNSLOTH_PARALLEL writes both): packed rows are refused there."""
+def _tp_env_requested() -> bool:
+    """UNSLOTH_TP_SIZE above 1 (UNSLOTH_PARALLEL writes it): packed / padding-free rows are refused there."""
     try:
-        cp = int(os.environ.get("UNSLOTH_CP_SIZE", "1").strip() or 1)
         tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1").strip() or 1)
     except ValueError:
         return False
-    return cp > 1 and tp > 1
+    return tp > 1
 
 
 def _should_auto_padding_free(config) -> bool:
@@ -1740,8 +1739,7 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     if getattr(base, "_unsloth_legacy_resume", False):
         return scheduler
 
-    # On a per-instance subclass, not the instance: an instance attribute lands in state_dict and
-    # torch.save cannot pickle it.
+    # On the subclass, not the instance: attrs enter state_dict, which torch.save can't pickle.
     def load_state_dict(self, state_dict):
         state_dict = dict(state_dict)
         if getattr(built, "_unsloth_loaded_previous", False):
@@ -1794,9 +1792,8 @@ def _install_legacy_resume(
             )
             optimizer._unsloth_loaded_legacy = False
             return original(previous)
-        # Every recognisably legacy checkpoint, not only reshaped ones: torch takes group
-        # hyperparameters from the saved dict, so a LoRA resume, where the layouts coincide,
-        # would otherwise reload the 0.0 this change exists to correct.
+        # Migrate every recognisably legacy checkpoint, not only reshaped ones: torch takes group
+        # hyperparameters from saved dict, so same-layout LoRA resumes reload the 0.0 this fixes.
         migrated = _migrate_legacy_optimizer_state(
             state_dict, optimizer, legacy_params, legacy_sizes, group_roles
         )
@@ -1922,8 +1919,7 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if not any("rank" in group for group in param_groups):
-            # FSDP1 gives 1-D views that Q-GaLore's 2-D selection never matches, so raise, not run
-            # plain AdamW.
+            # FSDP1 1-D views never match Q-GaLore's 2-D selection; raise, not plain AdamW.
             raise ValueError(
                 "Unsloth: Q-GaLore was requested but no parameter matched, so the run would "
                 "silently be ordinary AdamW 8bit. Projection needs 2-D parameters; under FSDP "
@@ -1942,7 +1938,6 @@ class UnslothTrainer(SFTTrainer):
                     # GaLore group: keep as-is, since no embeddings are here.
                     new_groups.append(group)
                     continue
-                # Non-GaLore group: split out embedding params.
                 embed_params = []
                 other_params = []
                 for p in group["params"]:
@@ -2189,7 +2184,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             trainer_params.discard("self")
             trainer_params.discard("args")
 
-            # Fields that should be passed to Config init.
             config_fields = {
                 field.name: field for field in dataclasses.fields(config_class) if field.init
             }
@@ -2207,7 +2201,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 inspect.signature(TrainingArguments).parameters.keys()
             )
 
-            # Separate kwargs into trainer kwargs and config kwargs.
             trainer_kwargs = {}
             additional_config_kwargs = {}
             unknown_kwargs = {}
@@ -2248,7 +2241,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                     if key in config_fields or key in moved_params or key in migrated:
                         setattr(config, key, value)
 
-            # Reconstruct kwargs for Trainer.
             kwargs = trainer_kwargs
             kwargs["args"] = config
         _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
@@ -2259,6 +2251,13 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 add_mfu_callback(self)
             except Exception as exc:
                 logger.warning(f"Unsloth: could not enable MFU logging ({exc}).")
+        if os.environ.get("UNSLOTH_LOG_MOE_LOAD", "0") not in ("", "0"):
+            try:
+                from .utils.moe_load import add_moe_load_callback, moe_load_interval
+                if moe_load_interval() > 0:
+                    add_moe_load_callback(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable MoE routing load logging ({exc}).")
         if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
             try:
                 from .utils.run_report import install_memory_report
@@ -2425,10 +2424,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         # UNSLOTH_PP_SIZE: packed rows are not carried between pipeline stages yet (models/pp_env.py).
         is_pipeline_parallel_env = _pipeline_parallel_env_requested()
-        # cp x tp refuses packed rows: never turn them on automatically there. An explicit packing /
-        # padding_free = True stays, so the capability check refuses it with the alternative.
-        auto_off_cp_tp = (
-            _cp_x_tp_env_requested()
+        # tp refuses packed rows: never turn them on here. An explicit packing / padding_free = True
+        # stays, so the capability check refuses it with the alternative.
+        auto_off_tp = (
+            _tp_env_requested()
             and not getattr(config_arg, "packing", False)
             and getattr(config_arg, "padding_free", None) is not True
         )
@@ -2437,7 +2436,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_ring_context_parallel
             or ulysses_packing_blocker is not None
             or is_pipeline_parallel_env
-            or auto_off_cp_tp
+            or auto_off_tp
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
@@ -2675,8 +2674,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         if default_packing:
             _detach_default_packing_batch(self, config_arg)
 
-        # Backstop for deferred cases: refuse rather than clear the flags, since TRL already built its
-        # collator and datasets from them; clearing would silently cross example boundaries.
+        # Refuse, don't clear: TRL built its collator; clearing would cross example boundaries.
         if _packing_gate_deferred and not _forward_accepts_packing_kwargs(
             getattr(self, "model", None)
         ):
@@ -2803,8 +2801,7 @@ def _patch_trl_trainer():
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 
-    # Auto-packing wraps first, inside the backwards-compatible wrapper, so a moved `packing` kwarg
-    # reaches the config before packing is decided.
+    # Auto-packing wraps first, so a moved packing kwarg reaches config before it is decided.
     try:
         _patch_sft_trainer_auto_packing(trl)
     except Exception as exc:

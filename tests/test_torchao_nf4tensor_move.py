@@ -97,8 +97,7 @@ def test_without_the_fix_that_import_fails(tmp_path):
 
 
 def test_an_older_torchao_still_gets_its_own_module(tmp_path):
-    """Appended, not inserted at 0: on torchao < 0.18 the real module must
-    win, or the fix silently swaps out working code."""
+    """Appended last; on torchao < 0.18 the real module must win or working code gets swapped."""
     _make_torchao(tmp_path, old = True, new = True)
     r = _run(
         tmp_path,
@@ -112,8 +111,7 @@ def test_an_older_torchao_still_gets_its_own_module(tmp_path):
 
 
 def test_neither_layout_still_raises(tmp_path):
-    """An empty alias would turn a clear ModuleNotFoundError into an
-    AttributeError later."""
+    """An empty alias would turn a clear ModuleNotFoundError into a later AttributeError."""
     _make_torchao(tmp_path, old = False, new = False)
     r = _run(
         tmp_path,
@@ -187,8 +185,7 @@ def test_it_is_wired_into_the_init_sequence():
 
 
 def test_the_real_environment_is_left_alone():
-    """On a torchao that still ships the old path the fix must be a no-op
-    rather than redirecting a working import."""
+    """With torchao still shipping the old path, the fix must not redirect a working import."""
     # Run in a child: once unsloth is imported the alias makes the new layout read as old.
     p = subprocess.run(
         [
@@ -251,9 +248,7 @@ def test_the_relocated_module_keeps_its_own_specification(tmp_path):
 
 
 def test_the_mlx_branch_installs_the_alias_too():
-    """The MLX branch never reaches _gpu_init.py, the only other caller, so
-    Apple Silicon xcodec2 would still die on the old path. Checked at source
-    level because the branch only runs when mlx is importable."""
+    """MLX skips _gpu_init.py: xcodec2 dies on old path; checked from source since mlx-only."""
     import ast
 
     src = (ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")

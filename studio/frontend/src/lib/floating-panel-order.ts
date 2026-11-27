@@ -24,8 +24,7 @@ export const useFloatingPanelOrderStore = create<FloatingPanelOrderState>(
   }),
 );
 
-/** The front panel takes one step above FLOATING_PANEL, never two. `hidden` (API monitor only)
- * comes forward on its own, since a fully covered panel cannot be clicked. */
+/** One step above FLOATING_PANEL, never two; hidden API monitor comes forward to be clickable. */
 export function floatingPanelZIndex(
   id: FloatingPanelId,
   top: FloatingPanelId | null,

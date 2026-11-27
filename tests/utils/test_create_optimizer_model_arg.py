@@ -50,8 +50,7 @@ def test_create_optimizer_does_not_raise_typeerror_on_a_positional_model():
 
 
 def test_q_galore_refuses_a_model_with_no_projectable_parameters():
-    """FSDP1 hands back 1-D views, which match nothing, so the run must not quietly
-    downgrade to ordinary AdamW."""
+    """FSDP1 hands back 1-D views matching nothing, so the run must not quietly drop to AdamW."""
     import torch
     import torch.nn as nn
     from types import SimpleNamespace
@@ -101,8 +100,7 @@ def test_q_galore_still_builds_when_parameters_are_projectable():
 
 
 def test_embedding_lr_is_rejected_when_wrapping_hid_the_embeddings():
-    """FSDP renames parameters, so the modules_to_save match finds nothing and the
-    requested embedding LR would be dropped in silence."""
+    """FSDP renames them, so modules_to_save matches nothing and embedding LR is silently lost."""
     import torch
     import torch.nn as nn
     from unsloth.trainer import _create_unsloth_optimizer
@@ -123,8 +121,7 @@ def test_embedding_lr_is_rejected_when_wrapping_hid_the_embeddings():
 
 
 def test_embedding_lr_without_embeddings_is_still_fine_off_the_delayed_path():
-    """The pre-existing behaviour: a model that simply does not train its embeddings is
-    ordinary, and must not start raising."""
+    """A model that does not train its embeddings is ordinary and must not start raising."""
     import torch
     import torch.nn as nn
     from unsloth.trainer import _create_unsloth_optimizer

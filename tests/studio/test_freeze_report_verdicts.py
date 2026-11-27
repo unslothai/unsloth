@@ -44,8 +44,7 @@ def verdict(samples, **kwargs):
 
 
 def healthy_samples(end = 240, warmup_lag = 60):
-    """A run that is fine: the watchdog answers from the start, the webview joins once it
-    has loaded, and from then on both keep going to the end of the window."""
+    """Healthy run: watchdog answers from start, webview joins after load; both run to the end."""
     samples, mon, live = [], 0, 0
     for t in range(15, end + 1, 15):
         live += 1
@@ -56,8 +55,7 @@ def healthy_samples(end = 240, warmup_lag = 60):
 
 
 def test_cold_start_is_not_a_freeze():
-    """The webview polls late, not never. Comparing samples from before the warmup
-    boundary made every healthy candidate FROZE at about the moment it started up."""
+    """Webview polls late, not never; comparing pre-warmup samples made healthy runs FROZE."""
     assert verdict(healthy_samples()).startswith("OK")
 
 
@@ -74,8 +72,7 @@ def test_a_real_stall_after_warmup_is_still_caught():
 
 
 def test_both_loops_going_quiet_is_not_healthy():
-    """With the backend gone at 120s and the shell still up, both counters freeze together, so no
-    comparison fails and every other branch declines; it must not fall through to OK."""
+    """Backend gone at 120s, shell up: both counters freeze together; that must not read OK."""
     samples, mon, live = [], 0, 0
     for t in range(15, 241, 15):
         if t <= 120:
@@ -93,8 +90,7 @@ def test_no_watchdog_is_a_measurement_failure_not_a_pass():
 
 
 def test_interrupted_candidate_is_skipped_not_scored():
-    """Ctrl-C is documented as skipping the candidate. Scoring the truncated window puts
-    an OK (or a FROZE) into the summary for a run nobody measured."""
+    """Ctrl-C skips the candidate; a truncated window must not be scored as OK or FROZE."""
     result = verdict(healthy_samples(end = 120), interrupted = True, ran_for = 120)
     assert result.startswith("SKIPPED")
     assert "120s" in result
@@ -109,8 +105,7 @@ def test_clean_exit_late_in_the_window_is_not_a_single_instance_handoff():
 
 
 def test_candidate_env_drops_an_inherited_workaround():
-    """The reporter was told to try workarounds by hand, so one is likely still exported; overlaying
-    on it would run the control through the workaround and misreport it as fine."""
+    """The reporter may have exported a workaround by hand, so the control must drop it."""
     base = {"GDK_BACKEND": "x11", "PATH": "/usr/bin", "DISPLAY": ":0"}
     control = freeze.candidate_env(base, {})
     assert "GDK_BACKEND" not in control
@@ -221,16 +216,14 @@ def test_every_setting_the_app_reads_is_one_the_reporter_clears():
 
 
 def test_ports_cover_the_range_the_desktop_actually_uses():
-    """desktop_candidate_ports() walks 8888..=8908. A leftover backend on any port outside
-    the checked set is neither stopped nor waited for, and the next candidate adopts it."""
+    """PORTS must cover 8888..=8908 (the desktop range); a leftover elsewhere is adopted next."""
     assert freeze.PORTS[0] == 8888
     assert freeze.PORTS[-1] == 8908
     assert 8889 in freeze.PORTS
 
 
 def test_renderer_workaround_comes_from_the_app_not_from_proc():
-    """/proc/<pid>/environ is the environment as it was at execve; the app applies its
-    renderer choice with set_var afterwards, so that file can never show it."""
+    """/proc/<pid>/environ is a snapshot at execve, before the app's set_var renderer choice."""
     shell_out = (
         "12:00:00 [INFO] Unsloth desktop app starting\n"
         "12:00:00 [INFO] NVIDIA on Wayland with an AppImage that cannot load GLES; "
@@ -267,8 +260,7 @@ def test_bare_relative_executable_is_resolved_before_launch(tmp_path, monkeypatc
 
 
 def test_candidate_rationale_survives_a_no_signal_result():
-    """The reason a candidate was tried is a report field that a no-signal run must not overwrite
-    with the measurement-failure explanation."""
+    """The why field must survive a no-signal run, not be replaced by the failure explanation."""
     import inspect
 
     source = inspect.getsource(freeze.run_candidate)
@@ -288,8 +280,7 @@ def test_busy_port_is_not_taken_as_permission_to_stop_a_live_studio(monkeypatch)
 
 
 def test_main_aborts_instead_of_killing_a_running_studio(monkeypatch, capsys, tmp_path):
-    """The end to end shape of the above: an Unsloth backend already answering, with nobody
-    to ask, must reach no candidate at all, so nothing is ever killed."""
+    """A live Unsloth backend with nobody to ask must reach no candidate, so nothing is killed."""
     launched = []
     monkeypatch.setattr(freeze, "studio_backend_pids", lambda: [4321])
     monkeypatch.setattr(freeze, "confirm_stop_running_studio", lambda: False)
@@ -364,8 +355,7 @@ def test_exactly_three_silent_intervals_is_already_stale():
 def test_a_non_executable_appimage_is_refused_with_the_command_that_fixes_it(
     monkeypatch, tmp_path, capsys
 ):
-    """A browser-downloaded AppImage has no execute bit; Popen raises PermissionError, nothing up to
-    the candidate loop catches it, so the run ends in a traceback with no report."""
+    """A browser-downloaded AppImage is not executable; Popen's PermissionError goes uncaught."""
     app = tmp_path / "Unsloth-Desktop.AppImage"
     app.write_text("#!/bin/sh\n")
     app.chmod(0o644)
@@ -382,8 +372,7 @@ def test_a_non_executable_appimage_is_refused_with_the_command_that_fixes_it(
 
 
 def test_discovery_prefers_an_appimage_that_can_actually_be_started(monkeypatch, tmp_path):
-    """Downloads/ is where a non-executable copy lands, and it is usually the newest, so
-    picking purely by mtime handed the launch a file that cannot run."""
+    """Downloads/ copies are often newest but not executable, so picking by mtime alone fails."""
     (tmp_path / "Downloads").mkdir()
     (tmp_path / "Applications").mkdir()
     runnable = tmp_path / "Applications" / "Unsloth-Desktop.AppImage"
@@ -482,8 +471,7 @@ def test_a_stall_watched_for_exactly_stale_after_is_a_freeze():
 
 
 class _Clock:
-    """A monotonic clock that only moves when the code under test sleeps, so a run that
-    takes four minutes of wall time takes none here and its sample times are exact."""
+    """A monotonic clock that moves only when the code under test sleeps, so sample times are exact."""
 
     def __init__(self):
         self.t = 0.0
@@ -576,8 +564,7 @@ def test_an_exit_seen_only_by_the_cleanup_poll_is_still_recorded(monkeypatch, tm
 
 
 def test_signing_out_midway_is_not_reported_as_a_freeze():
-    """Sign-out stops the heartbeat like a freeze; only a webview still requesting shows it is not
-    frozen."""
+    """Sign-out stops heartbeats like a freeze; only a webview still requesting disproves it."""
     samples = [
         (0, 0, 0),
         (15, 3, 3),
@@ -599,8 +586,7 @@ def test_signing_out_midway_is_not_reported_as_a_freeze():
 
 
 def test_sign_in_traffic_from_before_the_stall_does_not_clear_a_freeze():
-    """The evidence is a request the webview made AFTER it went quiet. Every run has auth
-    traffic at startup, and if that counted, the FROZE arm would never fire again."""
+    """Only a webview request made after it went quiet counts; startup auth would mask FROZE."""
     samples = [
         (0, 0, 0),
         (15, 3, 3),
@@ -619,9 +605,8 @@ def test_sign_in_traffic_from_before_the_stall_does_not_clear_a_freeze():
 
 
 def test_the_session_signal_is_the_webview_talking_not_the_shell():
-    """/api/auth/desktop-login is posted by the native shell itself
-    (src-tauri/src/desktop_auth.rs:194), so counting it would let the shell vouch for a
-    webview that is not running, which is the one thing this signal must never do."""
+    """Do not count /api/auth/desktop-login (posted by the native shell,
+    src-tauri/src/desktop_auth.rs:194); the shell would vouch for a webview that is not running."""
     assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/logout" 200')
     assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/refresh" 401')
     assert freeze.SESSION.findall('127.0.0.1 "GET /api/auth/status" 200')
@@ -631,8 +616,7 @@ def test_the_session_signal_is_the_webview_talking_not_the_shell():
 
 
 def test_the_run_records_when_the_session_was_last_asked_about(monkeypatch, tmp_path):
-    """The classifier cannot use a signal the run does not collect. This is the loop and the
-    handoff to classify() as written, not an argument list invented by a test."""
+    """The run must collect the signal; the test drives the real loop and classify() handoff."""
     scripted = [
         _log(3, 3),
         _log(6, 6),

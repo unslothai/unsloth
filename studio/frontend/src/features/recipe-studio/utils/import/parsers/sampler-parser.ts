@@ -61,8 +61,7 @@ function parseCategoryConditionalParams(
 
 const UUID_RESERVED_FORMATS = new Set(["uuid4", "short", "short_form", "upper", "uppercase"]);
 
-// Rebuild the UI string from the three uuid fields buildSamplerParams writes; a prefix equal to a
-// reserved word comes back in its `prefix:` escaped form so re-saving keeps it a prefix.
+// A reserved-word prefix comes back in escaped `prefix:` form so re-saving keeps it a prefix.
 function readUuidFormat(params: Record<string, unknown>): string {
   const prefix = readString(params.prefix)?.trim();
   if (prefix) {

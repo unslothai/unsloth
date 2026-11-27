@@ -168,8 +168,7 @@ def test_release_and_restore_records_again_and_stays_exact():
 
 
 class _Encoder(torch.nn.Module):
-    """A text encoder whose output takes the VRAM the encode release frees, as a real encode's weights and activations
-    do: the stock re-pin then cannot land on the blocks the resident groups gave back."""
+    """Encoder holding VRAM the release freed; the stock re-pin cannot land on those blocks."""
 
     def __init__(self, net, nbytes):
         super().__init__()
@@ -264,8 +263,7 @@ def test_the_render_peak_counts_weights_moved_into_a_stable_range():
 
 
 def test_the_render_peak_counts_a_stable_range_unmapped_before_the_probe_ends():
-    """A model-offload denoiser range is mapped for the denoise and unmapped again before the render's probe ends:
-    the peak still counts it (the allocator never saw those bytes)."""
+    """A stable range unmapped before the probe ends still counts; the allocator never saw it."""
     _cuda()
     from core.inference.diffusion_measured_peaks import PeakProbe
 
@@ -324,8 +322,7 @@ def test_a_group_range_is_rebuilt_when_its_host_tensors_change():
 
 
 def test_a_failed_stable_re_pin_leaves_no_range_mapped(monkeypatch):
-    """A re-pin into the range that raises after mapping it (rebuilding a wrapper weight, say) unmaps the range
-    before the group moves the stock way: the fallback never holds two copies of the group."""
+    """A failed re-pin unmaps its range before the stock move, so two copies never coexist."""
     _cuda()
     seeds = [0, 1, 2]
     want = _eager_reference(6, seeds)
@@ -478,8 +475,7 @@ def test_one_invalidation_flushes_the_retired_pool_once_for_every_re_recorded_ke
 
 
 def test_a_re_record_waits_for_the_retired_pool_flush(monkeypatch):
-    """While the flush is prohibited (another thread records), the re-record is deferred and the step runs eager; it
-    records once that recording ended and the flush went through."""
+    """Re-record waits while another thread records (flush prohibited); the step runs eager."""
     _cuda()
     _reset_retired(monkeypatch)
     monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 0.01)
@@ -508,9 +504,8 @@ def test_a_re_record_waits_for_the_retired_pool_flush(monkeypatch):
 
 
 def test_a_capture_refused_while_another_records_never_empties_the_cache(monkeypatch):
-    """A capture refused because another thread is recording (a retired pool is due and cannot be flushed) runs eager
-    without touching the allocator: an empty_cache or a cuBLAS workspace clear inside that recording could invalidate
-    it. The cleanup stays due and the next capture's entry flush does it once the recording ended."""
+    """A capture refused while another thread records runs eager with no empty_cache or cuBLAS clear
+    (either could invalidate that recording); the cleanup waits for the next entry flush."""
     _cuda()
     _reset_retired(monkeypatch)
     monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 0.01)
@@ -539,9 +534,8 @@ def test_a_capture_refused_while_another_records_never_empties_the_cache(monkeyp
 def test_a_deferred_release_still_clears_the_cublas_workspaces_before_the_next_recording(
     monkeypatch,
 ):
-    """An offloaded wrapper's release also clears the cuBLAS workspaces its recordings left on their capture stream.
-    Deferred because another thread was recording, that clear is owed with the retired pool: the next capture's entry
-    flush does it under the capture lock (no capture recording), once, before it records."""
+    """An offloaded wrapper's release clears the cuBLAS workspaces its recordings left; if deferred,
+    the next capture's entry flush clears them under the capture lock, before it records."""
     _cuda()
     _reset_retired(monkeypatch)
     monkeypatch.setattr(cg, "_CUBLAS_CLEAR_DUE", [False], raising = False)
@@ -572,8 +566,7 @@ def test_a_deferred_release_still_clears_the_cublas_workspaces_before_the_next_r
 
 
 def test_a_settled_retirement_never_waits_on_another_capture(monkeypatch):
-    """Two threads saw the same retirement; the first flushed it and is now recording. The second must not wait on
-    that recording (and be refused after the timeout): its retirements are already flushed."""
+    """A capture never waits on another's recording for a retirement that is already flushed."""
     monkeypatch.setattr(cg, "_RETIRED_POOLS", [1, 1], raising = False)
     monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 5.0)
     monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)  # the first thread is recording
@@ -601,8 +594,7 @@ def test_an_immediate_release_acknowledges_the_retirement_it_flushed(monkeypatch
 def test_a_capture_with_a_pool_due_waits_out_another_recording_instead_of_running_eager(
     monkeypatch,
 ):
-    """No non-captured CUDA work runs during a capture, so a capture needing a pool flush waits for
-    the other recording to end instead of running eager beside it"""
+    """Pool-due captures wait out another recording; no non-captured CUDA work runs beside one."""
     import threading
     import time
 
@@ -630,8 +622,7 @@ def test_a_capture_with_a_pool_due_waits_out_another_recording_instead_of_runnin
 
 
 def test_a_deferred_release_is_owed_before_it_tries_the_lock(monkeypatch):
-    """The release counts its pool (and the cuBLAS clear) before gc and the lock attempt: a capture entering meanwhile
-    already sees it due instead of recording beside the unflushed segments."""
+    """Pool and cuBLAS clear are owed before gc and the lock, so concurrent captures see them."""
     _reset_retired(monkeypatch)
     monkeypatch.setattr(cg, "_CUBLAS_CLEAR_DUE", [False], raising = False)
     seen_during_gc = []
@@ -680,8 +671,7 @@ def test_a_pool_retired_while_a_capture_enters_is_flushed_before_it_records(monk
 
 
 def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeypatch):
-    """Another wrapper retired a pool; this wrapper's first capture is refused in _capturing (replica-side work still
-    held) before anything flushes: the flush stays due for the next capture."""
+    """A capture refused in _capturing before entry leaves another wrapper's retired pool due."""
     _cuda()
     _reset_retired(monkeypatch)
     torch.manual_seed(0)
@@ -706,9 +696,8 @@ def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeyp
 
 
 def test_a_pool_retired_while_the_capture_flushes_is_flushed_before_it_records(monkeypatch):
-    """Retirement is not serialized with captures: another thread's invalidation can retire a pool while this
-    capture's entry flush runs. That flush acknowledges only what was retired before it began, and the entry rechecks
-    before it raises the depth, so the newly retired pool is flushed too before anything records."""
+    """Retirement is not serialized with captures: a pool retired during this capture's entry flush
+    is flushed too before recording, since the entry rechecks before raising the depth."""
     _cuda()
     _reset_retired(monkeypatch)
     torch.manual_seed(0)
@@ -742,9 +731,8 @@ def test_a_pool_retired_while_the_capture_flushes_is_flushed_before_it_records(m
 
 
 def test_a_resident_planned_re_record_flushes_a_pool_another_wrapper_retired(monkeypatch):
-    """The retired-pool rule is process-wide, not per offload placement: a resident wrapper with a capture-safe plan
-    re-records later keys without torch.cuda.graph's flush, so a pool an offloaded wrapper retired must be handed back
-    before that re-record too, or it records a new prompt shape beside the reserved segments."""
+    """Retired pools are process-wide: a resident capture-safe re-record skips torch.cuda.graph's
+    flush, so it must hand back another wrapper's pool or record beside reserved segments."""
     _cuda()
     _reset_retired(monkeypatch)
     torch.manual_seed(0)
@@ -835,8 +823,7 @@ def test_model_offload_replays_under_the_hook_and_records_again_when_weights_mov
 
 
 def test_model_offload_re_records_a_moved_module_without_a_warm_up(monkeypatch):
-    """Every onload of a model-offloaded denoiser may land at new addresses: the same key records again with no
-    warm-up step (its kernels exist), and replays stay exact across many moves."""
+    """Model-offloaded denoiser re-records at new addresses, no warm-up; replays stay exact."""
     monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")
     _cuda()
     pytest.importorskip("accelerate")
@@ -1082,8 +1069,7 @@ def test_a_partly_placed_failed_onload_unmaps_the_range_at_offload(monkeypatch):
 
 
 def test_a_failed_capture_gives_the_stable_range_back(monkeypatch):
-    """A capture that fails poisons the step for the load: the stable range must go too, or every later eager render
-    still maps / unmaps it and syncs the card at each offload for a graph that never replays."""
+    """A failed capture poisons the step: its stable range must be released, not kept mapped."""
     _cuda()
     pytest.importorskip("accelerate")
 
@@ -1176,8 +1162,7 @@ def test_a_declined_block_offload_step_retires_the_stable_repin_once_no_fallback
 
 
 def test_model_offload_stable_range_is_rebuilt_when_a_weight_changes_on_the_host():
-    """A weight added or reshaped on the host after the range was laid out (a new adapter) lands in a rebuilt range,
-    not beside a fully mapped stale one at a new address every onload."""
+    """A host weight change (new adapter) rebuilds the range, not beside a stale mapped one."""
     _cuda()
     pytest.importorskip("accelerate")
     ref, net, hook = _model_offloaded()
@@ -1413,8 +1398,7 @@ def test_per_call_python_state_keys_the_graph():
 
 
 def test_a_failed_capture_leaves_the_cuda_rng_usable_and_on_its_sequence():
-    """An invalidated capture raises in cudaStreamEndCapture before torch ends the generators' capture; every later
-    eager CUDA draw (a pipeline's noise) then failed for the rest of the process."""
+    """A capture invalidated in cudaStreamEndCapture must not break later eager CUDA RNG draws."""
     _cuda()
     torch.cuda.manual_seed(123)
     want = torch.randn(8, device = "cuda")
@@ -1479,8 +1463,7 @@ def test_a_failed_capture_takes_the_allocator_off_its_pool(monkeypatch):
 
 
 def test_model_offload_fingerprint_follows_replaced_buffers():
-    """Module.to() puts NEW tensor objects in _buffers on every move: the fingerprint must read the registry each call,
-    not a list taken once (that list keeps describing the obsolete buffers)."""
+    """Module.to() replaces _buffers tensors, so the fingerprint must re-read the registry."""
     torch.manual_seed(0)
     net = _Net()
     net.register_buffer("scale", torch.ones(4))
@@ -1556,8 +1539,7 @@ def test_an_offloaded_replay_slower_than_eager_drops_the_graphs():
 
 
 def test_a_slower_key_drops_only_its_own_graph():
-    """On an A100 VM Qwen-Image-2.1's first prompt length replayed at eager speed and the next one 16% slower: only the
-    slower key goes eager, the other keeps replaying, and the status stays on."""
+    """A slower key drops only its own graph to eager; the other keys keep replaying."""
     handle, why = _judged([550.0, 552.0], [655.0, 657.0, 654.0], others = ("first",))
     assert why and set(handle.cache) == {"first"} and handle._dropped == {"k"}
     assert handle.capture_error is None
@@ -1763,8 +1745,7 @@ def test_model_offload_stable_range_holds_torchao_int8_weights():
 
 @pytest.mark.parametrize("where", ["forward_refusal", "placement"])
 def test_a_refused_model_offload_leaves_the_stock_onload(monkeypatch, where):
-    """A denoiser whose step stays eager keeps accelerate's own onload: no stable range, no instance ``to``, no
-    re-install hook (so no per-offload card sync for a step that never replays)."""
+    """A refused model offload keeps the stock onload, with no stable range or re-install hook."""
     _cuda()
     pytest.importorskip("accelerate")
     _ref, net, _hook = _model_offloaded()

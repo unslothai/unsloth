@@ -302,8 +302,7 @@ unsafe extern "C-unwind" fn routed_hit_test(
 ) -> *mut AnyObject {
     if let Some(main) = main_view().filter(|main| std::ptr::eq(*main as *const NSView, this.cast()))
     {
-        // `point` is in the superview's coordinates.
-        // Safety: the main thread's view tree.
+        // The point is in the superview's coordinates. Safety: the main thread's view tree.
         let local = main.convertPoint_fromView(point, unsafe { main.superview() }.as_deref());
         if over_page(main, local) {
             return null_mut();
@@ -321,8 +320,7 @@ unsafe extern "C-unwind" fn routed_context_hit_test(
 ) -> *mut AnyObject {
     if let Some(main) = main_view().filter(|main| std::ptr::eq(*main as *const NSView, this.cast()))
     {
-        // Safety: AppKit's NSHitTestContext, on the main thread. Its point is in window
-        // coordinates, passed down unchanged (unlike `hitTest:`'s superview coordinates).
+        // Point is in window coordinates (hitTest: uses superview's). Safety: main thread.
         if let Some(context) = unsafe { context.as_ref() } {
             let has_point: bool = unsafe { msg_send![context, respondsToSelector: sel!(point)] };
             if has_point {

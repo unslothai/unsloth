@@ -343,8 +343,7 @@ jobs:
           # Confirm it holds what this run pushed: baking another run's base is silent.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
-          # Per-arch pushes are OCI indexes (image + attestation) that the merge flattens, so compare
-          # their children, not the per-arch index digest.
+          # Per-arch pushes are OCI indexes the merge flattens; compare their children instead.
           missing=0
           for d in *; do
               want="$(docker buildx imagetools inspect --raw "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}" \
@@ -533,8 +532,7 @@ jobs:
           test -n "$DIGEST"
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
-          # per-arch pushes are indexes (image + attestation) that the merge
-          # flattens, so compare their children, not the index digest; see the base merge
+          # Per-arch pushes are indexes the merge flattens; compare children, not index digest.
           missing=0
           for d in *; do
               want="$(docker buildx imagetools inspect --raw "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}" \
@@ -623,8 +621,7 @@ jobs:
           ok_studio=0; ok_jupyter=0
           for i in $(seq 1 60); do
               if curl -fsS http://localhost:18000/api/health >/dev/null 2>&1; then ok_studio=1;  fi
-              # /api returns 403 (the launcher sets a password hash); /login is
-              # unauthenticated and 200s once up
+              # Jupyter /api 403s (launcher sets password hash); /login is open, 200s once up.
               if curl -fsS http://localhost:18888/login      >/dev/null 2>&1; then ok_jupyter=1; fi
               [ "$ok_studio" = 1 ] && [ "$ok_jupyter" = 1 ] && break
               sleep 5

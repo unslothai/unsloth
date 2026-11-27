@@ -181,6 +181,21 @@ def test_omlx_rows_report_the_omlx_source(collector, tmp_path):
     assert [(m.source, m.model_id) for m in rows] == [("omlx", "mlx-community/Qwen3-4bit")]
 
 
+@pytest.mark.parametrize("source", ["omlx", "lmstudio"])
+@pytest.mark.parametrize("subdir", [".", "publisher"])
+def test_loose_gguf_inventory_skips_companions(tmp_path, source, subdir):
+    folder = tmp_path / subdir
+    folder.mkdir(exist_ok = True)
+    weight = folder / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"GGUF")
+    for name in ("mmproj-F32.gguf", "imatrix.gguf", "mtp-model.gguf"):
+        (folder / name).write_bytes(b"GGUF")
+
+    rows = local_inventory._scan_lmstudio_dir(tmp_path, source = source)
+
+    assert [(Path(row.path), row.capabilities.can_chat) for row in rows] == [(weight, True)]
+
+
 def test_source_is_the_only_difference_from_an_lmstudio_root(tmp_path):
     scan = local_inventory._scan_lmstudio_dir
     _write_mlx_model(tmp_path, "mlx-community", "Same-4bit", shards = 2)

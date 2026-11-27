@@ -83,8 +83,7 @@ def test_a_tool_loop_is_never_charged_more_than_the_cache(label, slots, n_ctx, k
 
 @pytest.mark.parametrize("label,slots,n_ctx,kv_unified", BACKENDS)
 def test_a_single_slot_backend_behaves_as_it_always_did(label, slots, n_ctx, kv_unified):
-    """capacity 1 means share == budget, so a tool loop is charged the whole cache just as
-    #9392 charged it. The common shape on CPU-only and on a VRAM-downshifted load."""
+    """Capacity 1 makes share equal budget, so a tool loop pays the whole cache as #9392 did."""
     if slots != 1:
         pytest.skip("covered by the multi-slot cases")
     budget = _budget(n_ctx, slots, kv_unified)
@@ -120,8 +119,7 @@ def test_max_tokens_on_max_is_not_treated_as_a_promise_to_use_it(label, slots, n
 
 
 class TestNothingChangesWhenTheBudgetIsUnknown:
-    """``budget`` is None when the context length cannot be read back: the pre-#9392
-    slot-only path, which has to stay bit-for-bit what it was."""
+    """budget None (context length unreadable) keeps the pre-#9392 slot-only path bit-for-bit."""
 
     def test_no_budget_means_no_token_cost_at_all(self):
         for tool_loop in (True, False):
@@ -156,8 +154,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
     @pytest.mark.asyncio
     async def test_the_kv_budget_escape_hatch_still_overcommits(self):
-        """UNSLOTH_LLAMA_ADMISSION_KV_BUDGET=0, the documented way out for a backend whose
-        reported context length does not match the cache it allocated."""
+        """UNSLOTH_LLAMA_ADMISSION_KV_BUDGET=0: documented escape for a wrong context length."""
         queue = LlamaAdmissionQueue("escape")
         config = LlamaAdmissionConfig(kv_budget = False)
         first = _lease(queue, tokens = 1500, budget = 2048, config = config)
@@ -210,8 +207,7 @@ class TestOldCallers:
             assert signature.parameters[name].default is None, f"{name} must be optional"
 
     def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` so every parameter stays positional-or-keyword: inserting one silently
-        rebinds the arguments after it for positional callers."""
+        """No bare * allowed: inserting one rebinds arguments after it for positional callers."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -275,8 +271,7 @@ class TestNoPersistentStateChanged:
         assert config.kv_budget is True
 
     def test_the_queue_carries_no_serialised_state(self):
-        """Nothing about a queue is written to disk, and the slots are the whole of its
-        state, so a new field cannot break an old install's stored data."""
+        """Queue state is slots only, never on disk, so a new field cannot break stored data."""
         assert "_reparking" in LlamaAdmissionQueue.__slots__
         queue = LlamaAdmissionQueue("fresh")
         assert queue._reparking == 0, "a fresh queue must start with the line open"
@@ -305,8 +300,7 @@ class TestTheInjectedToolCatalogueIsCharged:
     ]
 
     def test_the_catalogue_is_added_to_the_estimate(self):
-        """On a wide pool the floor is small, so the catalogue sets the price; on a narrow one the
-        floor exceeds the whole request, so masking it there is correct."""
+        """Catalogue sets the price on wide pools; narrow pools mask a floor above the request."""
         import routes.inference as routes_inference
 
         # share 512, smaller than the catalogue
@@ -331,8 +325,7 @@ class TestTheInjectedToolCatalogueIsCharged:
 
     @pytest.mark.asyncio
     async def test_four_tool_chats_are_not_admitted_past_a_small_cache(self):
-        """The live failure at unit level: four short prompts with a real catalogue cannot
-        share 4096 tokens, and admitting all four produced four 500s."""
+        """Live failure: four tool chats overflowed a 4096-token cache, and all four got 500s."""
         import routes.inference as routes_inference
 
         budget = 4096

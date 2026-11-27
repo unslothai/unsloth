@@ -18,6 +18,8 @@ import pytest  # noqa: E402
 import torch  # noqa: E402
 from torch.distributed.tensor import Replicate, Shard  # noqa: E402
 
+pytestmark = pytest.mark.xdist_group("test_tp_native_scaler_fused_gloo")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
 
@@ -40,8 +42,7 @@ def _run(fused, unscale):
     tpn.apply_tensor_parallel(model, mesh["tp"])
     model.train()
     params = [p for p in model.parameters() if p.requires_grad]
-    # LoRA A is replicated and comes first: DTensor's own found_inf reduction reads only the first
-    # gradient's placements, so it does not reduce over tp and the overflow stays on one rank.
+    # found_inf reads only the first grad's placements, so replicated LoRA A must come first.
     assert tuple(params[0].placements) == (Replicate(),), params[0].placements
     sharded = next(p for p in params if any(isinstance(x, Shard) for x in p.placements))
     opt = torch.optim.AdamW(params, lr = 1e-2, fused = fused, foreach = None if fused else False)

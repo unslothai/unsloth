@@ -36,8 +36,7 @@ def test_a_mask_replaces_the_interval_at_its_own_step_count():
     plan = ss.static_schedule(30, masks = {30: MASK_30})
     assert plan == tuple(c == "1" for c in MASK_30)
     assert plan != ss.static_schedule(30)
-    # Another step count keeps the interval; a mask is its own measurement, so it also stands below the
-    # interval's min_steps floor, while another step count under that floor still computes every step.
+    # Masks ignore min_steps for their own count; other counts below it compute every step.
     assert ss.static_schedule(31, masks = {30: MASK_30}) == ss.static_schedule(31)
     assert ss.static_schedule(30, min_steps = 40, masks = {30: MASK_30}) == plan
     assert ss.static_schedule(31, min_steps = 40, masks = {30: MASK_30}) == ()

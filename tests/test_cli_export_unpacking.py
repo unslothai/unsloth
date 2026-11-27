@@ -114,7 +114,6 @@ def test_an_export_run_leaves_sys_path_as_it_found_it(runner: CliRunner, tmp_pat
             app, ["export", str(ckpt), str(tmp_path / "out"), "--format", "lora"]
         )
         assert result.exit_code == 0, result.output
-        # Non-vacuous: the run did put studio/backend on sys.path, which the restore has to undo.
         assert backend_dir in sys.path and backend_dir not in clean
     assert sys.path == before
 

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Maps an OpenAI model string to a downloaded GGUF or non-GGUF model; unknown names fall through to
-the loaded model; never triggers a download."""
+"""Maps OpenAI names to downloaded models; unknown names use the loaded one; never downloads."""
 
 from __future__ import annotations
 
@@ -332,9 +331,7 @@ def _local_gguf_entry(
     *,
     exact_snapshot: bool = False,
 ) -> Optional[_LocalGgufEntry]:
-    """Build an entry only when GGUF quants are on disk (not Transformers/
-    safetensors), listing only on-disk quants. ``load_path`` is a concrete local
-    path so /load resolves the variant locally and never fetches a remote one."""
+    """Only on-disk GGUF quants; load_path must be local so /load never fetches remotely."""
     from pathlib import Path
 
     # The lister every stored per-model setting is keyed by, so one file has one identity.
@@ -372,8 +369,7 @@ def _local_gguf_entry(
             else:
                 selected_variants, _has_vision, complete, load_dir = selected
                 variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
-                # Filter even when nothing is complete: the selector can fall back to a snapshot
-                # with no whole quant, and its torn split shards must not be offered.
+                # Filter even when nothing is complete: torn split shards must not be offered.
                 complete_keys = {str(quant).casefold() for quant in complete}
                 complete_files = {
                     str(variant.filename).casefold()
@@ -794,8 +790,7 @@ def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
 
 
 def _advertises_this_ollama_row(info) -> bool:
-    """Whether an Ollama row's catalog id is the one the resolver loads for it: two roots can hold
-    one tag. Asks the index, so it cannot be called from inside a scan."""
+    """Whether a row is loaded for its tag (roots can share a tag); index-based, not in scans."""
     from hub.services.models.ollama import is_ollama_manifest_ref
 
     raw_id = getattr(info, "id", None)
@@ -961,8 +956,7 @@ def _snapshot_is_trusted(
     *,
     duty_window: Optional[float] = None,
 ) -> bool:
-    """Negative stamps are trusted only while a rebuild may still run, so a failing rebuild cannot
-    linger."""
+    """Negative stamps are trusted only while a rebuild may run; a failed one cannot linger."""
     if timestamp > 0.0:
         return now - timestamp < _CACHE_TTL_S
     if timestamp < 0.0:
@@ -1217,8 +1211,7 @@ def _resolve_from_index(
         # a listed build that cannot be served misses, never answered by a sibling or alias
         if wanted in entry.withheld:
             return None
-        # ahead of both branches below: one refuses a retired spelling, the other answers it
-        # with a different quant
+        # Must precede both branches, or a withheld build gets an alias or another quant.
         for legacy, current in (*entry.aliases, *entry.build_aliases):
             if legacy == wanted:
                 return _result(entry, current)

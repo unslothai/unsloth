@@ -35,7 +35,6 @@ _FORBIDDEN_CHARS = frozenset(" \t\r\n\f\v;,'\"\\")
 
 
 def _split(candidate: str):
-    """``urlsplit`` that answers None instead of raising on a malformed host."""
     try:
         return urlsplit(candidate)
     except ValueError:
@@ -177,8 +176,7 @@ def client_reachable_endpoint(client_host: str | None) -> str:
 
 
 def _canonical(parts, folded: str) -> str:
-    """Compresses IPv6 literals: CSP host-sources match as strings, and browsers send the compressed
-    form."""
+    """Compress IPv6 hosts: CSP host-sources match as strings; browsers send compressed form."""
     host = parts.hostname
     if not host or ":" not in host:
         return folded
@@ -241,8 +239,7 @@ def get_hf_endpoint() -> str:
 
 
 def browser_hf_endpoint() -> str:
-    """The endpoint the browser uses. The ModelScope adapter's loopback listener is for
-    this process only; the browser reaches ModelScope through its authenticated mount."""
+    """Browser reaches ModelScope via its authenticated mount, not this process's loopback."""
     from utils.hub_settings import MODELSCOPE, active_source
     return _DEFAULT_HF_ENDPOINT if active_source() == MODELSCOPE else get_hf_endpoint()
 

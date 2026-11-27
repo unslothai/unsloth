@@ -3009,6 +3009,33 @@ def test_auto_skips_dflash_under_tensor_split_when_mtp_is_available(
     assert seen["dflash_promoted"] is False
 
 
+def test_auto_picks_the_layer_drafter_once_the_architecture_refused_tensor(monkeypatch):
+    """A cache-hit tensor request launches the layer split the first load's route retry ran,
+    so Auto must pick the same drafter that retry picked (DFlash), not keep MTP for tensor."""
+    import utils.models.gguf_metadata as gguf_metadata
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(gguf_metadata, "read_gguf_architecture", lambda _path: "nemotron_h_moe")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_tensor_split_arch_unsupported",
+        classmethod(lambda _cls, _binary, arch: arch == "nemotron_h_moe"),
+    )
+    kwargs = dict(
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        mtp_draft_path = _MTP,
+    )
+    layer_retry = _dflash_fetch_during_auto_load(monkeypatch, tensor_parallel = False, **kwargs)
+    cache_hit = _dflash_fetch_during_auto_load(monkeypatch, tensor_parallel = True, **kwargs)
+
+    assert layer_retry["dflash_fetched"] is True and layer_retry["dflash_promoted"] is True
+    assert cache_hit["dflash_fetched"] is True
+    assert cache_hit["dflash_promoted"] is True
+    assert not any("keeping tensor split" in m for m in cache_hit["log"])
+
+
 def test_auto_skips_dflash_under_tensor_split_from_env(monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
     seen = _dflash_fetch_during_auto_load(

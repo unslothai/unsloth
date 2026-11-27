@@ -655,7 +655,7 @@ function markHole(): boolean {
   const layers = chain
     .filter((node) => node.hasAttribute?.("data-wallpaper-workspace") || node.hasAttribute?.("data-chat-content-root"))
     .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
-  layers.push(...floatingUnderlay(chain));
+  layers.push(...floatingUnderlay(chain), ...modalUnderlay(chain));
   const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
   // A node can start painting later with no class change (just floated): uncut, the page stayed white.
   const missed = chain.some((node) => !node.hasAttribute?.(HOLE_ATTRIBUTE) && paints(getComputedStyle(node)));
@@ -693,6 +693,35 @@ function floatingUnderlay(chain: HTMLElement[]): HTMLElement[] {
     }
   }
   return under;
+}
+
+function modalUnderlay(chain: HTMLElement[]): HTMLElement[] {
+  const modal = chain.findIndex((node) => node.getAttribute?.("aria-modal") === "true");
+  if (modal < 0) return [];
+  const under: HTMLElement[] = [];
+  let level = 0;
+  for (const node of chain.slice(modal)) {
+    level = stackLevel(getComputedStyle(node)) ?? level;
+    // Earlier siblings paint below it unless raised over it (rail, monitor); later ones draw over the page.
+    for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+      if (zIndex(getComputedStyle(sibling)) <= level) under.push(sibling as HTMLElement);
+    }
+  }
+  return under;
+}
+
+function zIndex(computed: CSSStyleDeclaration): number {
+  const z = Number.parseInt(computed.zIndex, 10);
+  return computed.position && computed.position !== "static" && Number.isFinite(z) ? z : 0;
+}
+
+// null: the node starts no stacking context.
+function stackLevel(computed: CSSStyleDeclaration): number | null {
+  if (computed.position && computed.position !== "static" && computed.zIndex !== "auto") return zIndex(computed);
+  if (computed.position === "fixed" || computed.position === "sticky") return 0;
+  if (computed.isolation === "isolate" || (computed.transform && computed.transform !== "none")) return 0;
+  if (computed.opacity && Number.parseFloat(computed.opacity) < 1) return 0;
+  return null;
 }
 
 function unmarkHole(): void {

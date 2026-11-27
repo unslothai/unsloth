@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FastFlowLM run settings passed to Lemonade as the flm_args recipe option; bounds mirror
-flm_arg_resolver.cpp at pinned v2026.44.1, which refuses anything else."""
+"""FastFlowLM flm_args; bounds mirror flm_arg_resolver.cpp at v2026.44.1, which refuses others."""
 
 from __future__ import annotations
 
@@ -24,8 +23,7 @@ def _int(value: Any) -> Optional[int]:
 def build_flm_args(
     *, power_mode: Optional[str], prefill_chunk_len: Optional[int], img_pre_resize: Optional[int]
 ) -> Optional[str]:
-    """The ``flm_args`` string, or None when every setting is the default. Raises ValueError.
-    The prefill chunk is held to the context by the load (clamp_prefill_chunk)."""
+    """flm_args string, or None if all default; raises ValueError; prefill is clamped on load."""
     args: list[str] = []
     if power_mode not in (None, "", "default"):
         if power_mode not in NPU_POWER_MODES:
@@ -70,8 +68,7 @@ def _flag_groups(args: str) -> list[tuple[str, list[str]]]:
 
 
 def merge_flm_args(saved: Optional[str], studio: Optional[str]) -> Optional[str]:
-    """``studio`` on top of the model's saved ``flm_args``. A request's ``flm_args`` replaces the saved
-    and architecture ones in Lemonade, so each saved flag Unsloth Studio does not set is carried over."""
+    """Adds studio flags to saved flm_args; Lemonade replaces it, so unset saved flags stay."""
     if not studio:
         return None
     ours = {flag for flag, _ in _flag_groups(studio)}
@@ -80,7 +77,6 @@ def merge_flm_args(saved: Optional[str], studio: Optional[str]) -> Optional[str]
 
 
 def flm_args_status(flm_args: Optional[str]) -> dict[str, Any]:
-    """The status fields for a resident load's ``flm_args``."""
     tokens = (flm_args or "").split()
     values = dict(zip(tokens[::2], tokens[1::2]))
     status: dict[str, Any] = {}

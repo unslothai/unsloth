@@ -19,8 +19,7 @@ type Props = {
 type State = { failed: boolean };
 
 /**
- * Inner boundary around the renderer only, so the block's copy/download controls survive.
- * The fallback element is built by the caller: React does not catch throws in a boundary's own render.
+ * Inner boundary keeps copy/download alive; caller builds fallback (React can't catch own render).
  */
 export class MarkdownRendererBoundary extends Component<
   { fallback: ReactNode; children: ReactNode },

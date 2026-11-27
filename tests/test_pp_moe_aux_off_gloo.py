@@ -59,9 +59,17 @@ def build(
             layer_types = ["sliding_attention", "full_attention"] * 2,
             **common,
         )
-    elif family == "mixtral":
-        config = transformers.MixtralConfig(
-            intermediate_size = 96, num_local_experts = 8, num_experts_per_tok = 2, **common
+    elif family == "phimoe":
+        # Not carried: PhiMoE's sparsemixer routing samples in training, so no exact one-process aux reference.
+        config = transformers.PhimoeConfig(
+            intermediate_size = 96,
+            num_local_experts = 8,
+            num_experts_per_tok = 2,
+            input_jitter_noise = 0.0,
+            pad_token_id = 0,
+            bos_token_id = 1,
+            eos_token_id = 2,
+            **common,
         )
     else:
         raise ValueError(family)
@@ -175,7 +183,7 @@ def _case_refusals(rank, world):
     out = {}
     for key, kw in (
         ("gpt_oss_aux_on", dict(aux = True)),
-        ("mixtral_aux_on", dict(family = "mixtral", aux = True)),
+        ("phimoe_aux_on", dict(family = "phimoe", aux = True)),
     ):
         try:
             ppn.apply_pipeline_parallel(build(**kw), mesh)
@@ -251,7 +259,6 @@ CELLS = {
     "gpt_oss_lora_experts_logits_off_1f1b_gc_reentrant": dict(
         lora = True, experts = True, schedule = "1f1b", gc = "reentrant"
     ),
-    "mixtral_full_logits_off_gpipe": dict(family = "mixtral"),
 }
 
 
@@ -278,7 +285,7 @@ def test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation(cell):
 
 def test_pp2_uncarried_moe_with_aux_on_stays_refused():
     out = _spawn("refusals", 2)[0]
-    for key in ("gpt_oss_aux_on", "mixtral_aux_on"):
+    for key in ("gpt_oss_aux_on", "phimoe_aux_on"):
         assert "mixture-of-experts" in (out[key] or ""), (key, out[key])
         assert "is not proven" in out[key], (key, out[key])
 
@@ -330,8 +337,8 @@ def test_split_time_rule():
         (dict(), True),
         (dict(aux = True), False),
         (dict(aux = True, coef = 0.0), True),
-        (dict(family = "mixtral"), True),
-        (dict(family = "mixtral", aux = True), False),
+        (dict(family = "phimoe"), True),
+        (dict(family = "phimoe", aux = True), False),
     ):
         model = build(**kw)
         parts = ppn._find_parts(model)

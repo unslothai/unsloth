@@ -16,8 +16,7 @@ blockA="$(awk '
     /_STUDIO_HOME_IS_CUSTOM=true/ {seen=1}
     seen && /^fi$/ {exit}
 ' "$SETUP")"
-# Block B: the whole _NODE_PARENT conditional, anchored on NODE_DIR and walked back to its
-# top-level `if`, so branches can be added or reordered without breaking extraction.
+# Block B: the _NODE_PARENT if-block anchored on NODE_DIR; branches can be added or reordered.
 blockB="$(awk '
     /^if / {start = NR}
     {buf[NR] = $0}

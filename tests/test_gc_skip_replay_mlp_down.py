@@ -303,9 +303,8 @@ def test_traced_layer_has_no_graph_break():
 
 
 def test_only_the_post_norm_free_layer_arms():
-    # Llama and Gemma feed the MLP output only into the layer output and arm. Gemma 2 / 3 (post-FFN norm
-    # reads it), Cohere / Granite (loaded through FastModel), Falcon-H1 (no fused LoRA MLP) and the MoE
-    # layers never arm.
+    # Llama and Gemma arm the skip: their MLP output feeds only the layer output; Gemma 2 / 3
+    # (post-FFN norm reads it), Cohere / Granite, Falcon-H1 (no fused LoRA MLP) and MoE never arm.
     import inspect
     import unsloth.models as models
 

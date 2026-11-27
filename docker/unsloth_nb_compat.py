@@ -17,8 +17,7 @@ import os, sys, glob, json, re, shlex
 SIDECAR_ROOT = os.environ.get("UNSLOTH_TF_SIDECAR_ROOT", "/opt/unsloth-venv/tf-sidecars")
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
 
-# Lowest transformers the baked vLLM can import. Written by the Dockerfile's sidecar
-# verification step, so it tracks the vLLM the image bakes rather than a literal.
+# The baked vLLM's lowest importable transformers, written by the Dockerfile, not a literal.
 FLOOR_FILE = os.path.join(SIDECAR_ROOT, ".vllm_min_transformers")
 
 
@@ -107,9 +106,8 @@ def tier_for_model(model_name: str):
 
 
 def sidecar_for(version: str):
-    """Sidecars the baked vLLM cannot import are never eligible and a request below the floor clamps
-    up; the smallest eligible one >= the request wins (a model added in X needs at least X), else
-    None."""
+    """Sidecars the baked vLLM cannot import are never eligible; requests below the floor clamp up;
+    the smallest eligible sidecar >= request wins (a model added in X needs X), else None."""
     if not version:
         return None
     rows = _eligible()
@@ -143,8 +141,7 @@ def requested_version():
         return None
 
 
-# Install-cell pin scanning lives here because this is the module copied into
-# site-packages; unsloth_run imports it, so both paths agree.
+# Pin scanning lives here (copied to site-packages) and unsloth_run imports it, so both agree.
 
 # The name is matched loosely and normalised (PEP 503), like unsloth_pip_shim, or
 # `Transformers[torch]==X` pins go unseen while the install is still suppressed.
@@ -232,14 +229,12 @@ def _strip_comment(line):
     return line
 
 
-# A triple-quoted body is data, not code. Blanked keeping newlines, so the
-# continuation logic below is unaffected.
+# Blank triple-quoted data keeping newlines, so the continuation logic below is unaffected.
 _TRIPLE_RE = re.compile(r'("""|\'\'\')(?:.|\n)*?\1')
 
 
 def _live_source(src):
-    """Triple-quoted bodies and comments blanked out. Single-quoted strings stay
-    intact: the model name unsloth_run scans for lives inside one."""
+    """Blank triple-quoted bodies and comments; single-quoted strings stay for the model name."""
     blanked = _TRIPLE_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), src)
     return "\n".join(_strip_comment(line) for line in blanked.splitlines())
 

@@ -2463,6 +2463,7 @@ class ResearchSupervisor:
         document_sources: list[dict] = []
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
+        failed_fetches: set[str] = set()
         completed_steps = 0
         step_error = ""
         question, conversation_context = await asyncio.to_thread(
@@ -2895,6 +2896,9 @@ class ResearchSupervisor:
                 await self._check_worker_write(run["id"], written)
             tool_failed = is_tool_error(result)
             step_failed = _research_step_failed(result, rag_sources)
+            if action["action"] == "fetch" and step_failed and argument not in failed_fetches:
+                failed_fetches.add(argument)
+                fetched_urls.discard(argument)
             scraped_section = ""
             if (
                 action["action"] == "search"

@@ -126,8 +126,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     for (const name of PAGE_CLASSES) for (const el of doc.getElementsByClassName(name)) page.push(el);
     return page;
   };
-  /** Pause `el` (a surface that moves) for `ms` and, unless it is a tooltip, the page's standing glass for
-   *  `pageMs` with it; the standing glass is only ever held longer, since other motion may be holding it too. */
+  /** Pauses el for ms, and page glass for pageMs unless a tooltip; page glass is only extended. */
   const holdMotion = (el: Element | null, ms: number, pageMs = ms) => {
     if (el) hold(el, ms);
     if (el && el.matches(LOCAL_ONLY)) return;
@@ -140,8 +139,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     const out: Element[] = [];
     const own = scroller.closest(GLASS_MOTION_SURFACES);
     if (own) out.push(own);
-    // The glass floating over the chat (the composer dock, the scroll-to-bottom button) sits beside the
-    // thread viewport. Only those siblings' own subtrees are searched, never the viewport's.
+    // Chat glass sits beside the thread viewport; only those siblings' subtrees are searched.
     const parent = scroller.parentElement;
     if (parent && !own && scroller.matches(THREAD_SCROLLER)) {
       for (const sibling of parent.children) {

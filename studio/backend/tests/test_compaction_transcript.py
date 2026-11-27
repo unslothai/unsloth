@@ -190,3 +190,14 @@ def test_a_second_compaction_still_writes_the_whole_branch(conn, sandbox):
     )
 
     assert "Noted, 2024 it is." in (sandbox / f"transcript-{THREAD}.md").read_text()
+
+
+def test_temporary_chat_compaction_keeps_transcript_in_memory(conn, sandbox):
+    from core.inference.llama_cpp import _archive_and_recall
+
+    before = _branch()
+    fitted = _with_block([before[0], before[-1]])
+    result = _archive_and_recall(fitted, before, thread_id = THREAD, style = "inline", recall_done = True)
+
+    assert result["conversation"] == fitted
+    assert not list(sandbox.glob("transcript-*.md"))

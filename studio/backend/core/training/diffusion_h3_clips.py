@@ -10,6 +10,11 @@ import math
 import os
 from pathlib import Path
 from typing import Any, Callable, Optional
+from core.training.diffusion_caption_files import (
+    caption_sidecar_index,
+    find_caption_sidecar,
+    metadata_caption_files,
+)
 from utils.paths.path_utils import drop_appledouble_metadata
 
 # Mirrored from diffusers.modular_pipelines.minimax_h3 because the trainer cannot import it; asserted against the live components so a move is caught.
@@ -18,7 +23,6 @@ H3_FPS = 24
 H3_FRAMES_PER_CHUNK = 17
 H3_LATENTS_PER_CHUNK = 5
 H3_SPATIAL_COMPRESSION = 16
-# The transformer's (t, h, w) patch. Only the spatial half is > 1.
 H3_PATCH_T, H3_PATCH_H, H3_PATCH_W = 1, 2, 2
 # Canvas must be whole 2x2 patches after 16x VAE compression, so the multiple is 16 * patch width.
 H3_CANVAS_MULTIPLE = H3_SPATIAL_COMPRESSION * H3_PATCH_W
@@ -46,7 +50,6 @@ H3_PIXEL_STD = (0.229, 0.224, 0.225)
 H3_TRAIN_NUM_FRAMES = H3_FRAMES_PER_CHUNK + H3_LATENTS_PER_CHUNK
 
 _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
-_CAPTION_EXTS = (".txt", ".caption")
 
 
 def h3_align_num_frames(num_frames: int) -> int:
@@ -144,10 +147,7 @@ def discover_clip_caption_pairs(
     )
 
     meta_caption: dict[str, str] = {}
-    for meta_name in ("metadata.jsonl", "captions.jsonl"):
-        meta_path = root / meta_name
-        if not meta_path.is_file():
-            continue
+    for meta_path in metadata_caption_files(root):
         try:
             meta_lines = meta_path.read_text(encoding = "utf-8").split("\n")
         except (OSError, UnicodeError):
@@ -167,19 +167,18 @@ def discover_clip_caption_pairs(
             if key and value is not None:
                 meta_caption[str(key)] = str(value)
 
+    sidecars = caption_sidecar_index(root)
     pairs: list[tuple[str, str]] = []
     for clip in clips:
         caption: Optional[str] = None
         sidecar_present = False
-        for ext in _CAPTION_EXTS:
-            sidecar = clip.with_suffix(ext)
-            if sidecar.is_file():
-                sidecar_present = True
-                try:
-                    caption = sidecar.read_text(encoding = "utf-8").strip()
-                except (OSError, UnicodeError):
-                    caption = ""
-                break
+        sidecar = find_caption_sidecar(clip, sidecars)
+        if sidecar is not None:
+            sidecar_present = True
+            try:
+                caption = sidecar.read_text(encoding = "utf-8").strip()
+            except (OSError, UnicodeError):
+                caption = ""
         if not sidecar_present:
             caption = meta_caption.get(clip.name) or meta_caption.get(
                 clip.relative_to(root).as_posix()

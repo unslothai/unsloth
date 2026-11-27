@@ -8,8 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_harness.sh"
 ENTRYPOINT_SH="$SCRIPT_DIR/../../docker/entrypoint.sh"
-# Assert through readlink: git-bash copies instead of symlinking unless elevated with
-# MSYS=winsymlinks:nativestrict.
+# Use readlink: git-bash copies, symlinks only if elevated with MSYS=winsymlinks:nativestrict.
 _probe=$(mktemp -d)
 : > "$_probe/target"
 if ! ln -s target "$_probe/link" 2>/dev/null || [ "$(readlink "$_probe/link")" != "target" ]; then

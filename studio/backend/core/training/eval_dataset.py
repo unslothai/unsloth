@@ -15,7 +15,6 @@ STREAMING_EVAL_MAX_SAMPLES = 500
 
 
 def evaluation_enabled(value: Any) -> bool:
-    """Return whether a configured eval interval is finite and positive."""
     if isinstance(value, bool):
         return False
     try:

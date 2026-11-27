@@ -26,8 +26,7 @@ def windows_roots(
     pathmod = _os.path,
     isdir = None,
 ):
-    """Real Windows directories only: candidates from SystemRoot, WINDIR and the default folder
-    count only if they hold System32, since an aimed WINDIR could disarm the guard."""
+    """Only dirs holding System32 count, so an aimed WINDIR cannot disarm the guard."""
     if isdir is None:
         isdir = pathmod.isdir
     system_root = environ.get("SystemRoot")
@@ -62,7 +61,6 @@ def _normalize(path, pathmod):
 
 
 def system_dirs(windir, pathmod = _os.path):
-    """The Windows folders Unsloth refuses to run from."""
     # SysWOW64 too: a 32-bit elevated shell opens there, same unwritable folder.
     return [_normalize(pathmod.join(windir, name), pathmod) for name in ("System32", "SysWOW64")]
 
@@ -166,8 +164,7 @@ def safe_user_dir(
     return None
 
 
-# Desktop commands that take no user path (`update` lets an older desktop upgrade). Matched
-# whole, since `studio update --local <path>` resolves against the working directory.
+# Path-free desktop commands, matched whole; `studio update --local <path>` is cwd-relative.
 _STUDIO_COMMANDS = (
     ("provision-desktop-auth",),
     ("desktop-capabilities",),
@@ -201,7 +198,6 @@ _PATH_TAKING_STUDIO_COMMANDS = ("run", "update")
 
 
 def _carries_a_value(arg):
-    """Whether this token can hold a value, attached or not."""
     if not arg.startswith("-"):
         return True
     if arg.startswith("--"):
@@ -211,8 +207,7 @@ def _carries_a_value(arg):
 
 
 def _takes_a_path(rest):
-    """Whether this studio invocation can carry a caller's path; blunt on purpose, since the bare
-    forms the desktop runs carry none and anything else might."""
+    """Can this studio call carry a caller path? Blunt: only bare desktop forms are path-free."""
     if not rest:
         return False
     if rest[0] in _PATH_TAKING_STUDIO_COMMANDS:
@@ -223,8 +218,7 @@ def _takes_a_path(rest):
 
 
 def is_relocatable_invocation(argv, environ):
-    """True when desktop-managed or provably cwd-independent; the argv arm alone fixes desktop
-    builds that predate the Rust-side fix and set no marker."""
+    """True when desktop-managed or provably cwd-independent; argv alone covers old desktops."""
     args = [arg for arg in argv if arg]
     if not args:
         return False
@@ -351,8 +345,7 @@ def pin_relative_overrides(
     expandvars = None,
     expanduser = None,
 ):
-    """Rewrite relative path overrides to keep naming the same folder, returning the names pinned; a
-    leading ~ is written out since only some readers expand it."""
+    """Pin relative overrides, return names; ~ is written out as only some readers expand it."""
     pinned = []
     for name in _RELATIVE_PATH_ENV:
         value = (environ.get(name) or "").strip()
@@ -417,7 +410,6 @@ _TOGGLE_TOKENS = frozenset(("1", "true", "yes", "on", "0", "false", "no", "off")
 
 
 def _names_a_path(name, value):
-    """Whether the working directory is what resolves this variable's value."""
     if name in _INLINE_JSON_ENV and value.startswith(("[", "{")):
         return False
     if name in _TOGGLE_ENV and value.lower() in _TOGGLE_TOKENS:
@@ -433,9 +425,8 @@ def pin_relative_sys_path(
     exists = None,
     expanduser = None,
 ):
-    """Anchor relative PYTHONPATH entries that name something on disk (an empty entry means the
-    working directory; a leading ~ is never expanded there); setuptools editable sentinels match
-    exactly and stay untouched."""
+    """Anchor relative PYTHONPATH entries that exist (an empty entry is the working directory; ~ is
+    never expanded there); setuptools editable sentinels match exactly and stay untouched."""
     if syspath is None:
         import sys as _sys
         syspath = _sys.path
@@ -486,8 +477,7 @@ def _anchor_list_entry(
 
 
 def _expand_settled(value, expandvars):
-    """Expands once, returning None unless a second pass changes nothing: readers re-expand what is
-    written back, so nested or self-referencing values stay as written."""
+    """Expand once; None if a second pass changes it, since readers re-expand what is written."""
     expanded = expandvars(value)
     return expanded if expandvars(expanded) == expanded else None
 
@@ -501,8 +491,7 @@ def _anchor(
     expandvars = None,
     expanduser = None,
 ):
-    """The value rewritten to name the same folder from anywhere; None when empty or already fully
-    qualified."""
+    """Value rewritten to name the same folder from anywhere; None if empty or fully qualified."""
     original = value = (value or "").strip()
     if value.startswith("~"):
         # llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to Path(), so expand ~ now.
@@ -540,7 +529,6 @@ def relocation_target(
     makedirs = _os.makedirs,
     home_isdir = None,
 ):
-    """Where a desktop-managed command should run instead, or None."""
     home = safe_user_dir(environ, windir, pathmod, sep, expanduser)
     if not home:
         return None
@@ -613,8 +601,7 @@ def check_working_directory(
     expandvars = None,
     relocate = True,
 ):
-    """Decide what to do about the cwd, returning (message, colour, fatal); fatal means exit 1,
-    while a non-fatal message is a warning printed after a successful move."""
+    """Return (message, colour, fatal) for the cwd; fatal exits 1, else a post-move warning."""
     if platform != "win32":
         return None, None, False
 

@@ -69,8 +69,7 @@ def test_untracked_reused_quantized_sibling_is_rebuilt_in_a_fresh_folder(tmp_pat
 
     backend, calls, seen, output_path = _push(tmp_path, monkeypatch, spy)
 
-    # Rebuilt in a fresh staging folder and uploaded from there, so the Studio sidecars
-    # (drafter, REAP report) go up with it; the reused sibling's own files never do.
+    # Rebuilt in a fresh folder so Studio sidecars go up; a reused sibling's files never do.
     assert backend.current_model.merges == ["torchao_fp8", "torchao_fp8"]
     assert "upload_folder" in calls
     assert seen["folder"] != output_path

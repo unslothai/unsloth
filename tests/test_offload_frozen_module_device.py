@@ -190,8 +190,7 @@ def test_on_real_hardware_a_module_on_the_current_card_is_unchanged():
     assert not w.original_module.weight.requires_grad
 
 
-# "unsloth" checkpointing offloads embeddings to disk before PEFT, so the copy is built on CPU
-# and llama.py passes the recorded device instead.
+# unsloth" disk offload makes the copy on CPU, so llama.py passes the recorded device.
 def test_a_copy_rebuilt_on_cpu_by_the_disk_offload_uses_the_recorded_device():
     """The default-path regression: without this the copy lands on cuda:0."""
     w = _Wrapper("cpu")

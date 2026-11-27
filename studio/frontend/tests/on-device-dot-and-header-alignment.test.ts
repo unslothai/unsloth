@@ -96,7 +96,7 @@ test("a row's leading dot starts where its section label does", () => {
 });
 
 test("the parameter and size columns are sized to the ink they hold", () => {
-  // formatBytes writes no space, so the widest size ("128GB") is 29.5px.
+  // compactBytes writes no space, so the widest size ("128GB") is 29.5px.
   assert.ok(PICKERS.includes('size: "min-w-min min-[560px]:w-[3.2em]"'));
   assert.match(
     PICKERS,

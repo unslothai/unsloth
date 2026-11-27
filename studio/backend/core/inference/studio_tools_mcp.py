@@ -149,8 +149,7 @@ _FOLLOWED = {"generate_video": "video", "load_model": "load"}
 
 
 async def _follow(caller: Any, kind: str, created: Any, follow_until: float) -> Any:
-    """Follows a chat's video or model load to the end inside its call, so Stop reaches it and no job
-    outlives the call's key; read directly (Settings can turn get_job off)."""
+    """Follows a load in-call so Stop reaches it; no job outlives its key; reads skip get_job."""
     from studio_mcp import jobs
     from studio_mcp.loading import WAIT_S_LIMIT
 

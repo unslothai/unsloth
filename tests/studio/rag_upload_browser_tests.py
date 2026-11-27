@@ -303,7 +303,15 @@ def main():
     (ROOT / ("browser-results-" + "-".join(engines) + ".json")).write_text(
         json.dumps(records, indent = 2), encoding = "utf-8"
     )
-    raise SystemExit(any(r["status"] == "failed" for r in records))
+    failed = [r for r in records if r["status"] == "failed"]
+    # rag_upload_ci.py echoes only the tail of this log, which a long passing run pushes an
+    # early failure out of, so the failures are repeated last where the tail keeps them. The
+    # snapshot stays in the results file: it is large enough to push the summary out too.
+    for record in failed:
+        brief = {k: v for k, v in record.items() if k != "snapshot"}
+        print("FAILED " + json.dumps(brief), flush = True)
+    print(f"{len(records) - len(failed)} passed, {len(failed)} failed", flush = True)
+    raise SystemExit(bool(failed))
 
 
 if __name__ == "__main__":

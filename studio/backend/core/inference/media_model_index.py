@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Maps downloaded media model names to load specs and flags the resident build; unresolved names
-are refused by the caller, never answered by the resident model."""
+"""Maps media models to load specs; unknown names are refused, never answered by the resident."""
 
 from __future__ import annotations
 
