@@ -677,7 +677,6 @@ def _plan(trainer, model, ddp, samples, mode):
         trainer._unsloth_layer_major_target = (id(model), layers, swapper)
     if swapper is None:
         return None, None, None
-    # Every step: hooks, compilation and optimizer settings can change after the first.
     why = layer_major_ineligible(trainer, model, layers, swapper, ddp = ddp)
     if why is not None:
         return None, "why", f"Unsloth: offload_layers runs micro-batches one after another: {why}."
@@ -740,8 +739,7 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         not getattr(model, "training", True) and not getattr(trainer, "is_in_train", False)
     ):
         return None
-    # Everything above is the same on every rank (trainer code, configuration, environment); everything below is
-    # this rank's decision, which the ranks then agree on.
+    # Above: identical on every rank. Below: this rank's decision, then agreed on.
     ddp = _ddp_of(model) if _world_size() > 1 else None
     if _world_size() > 1 and ddp is None:
         _say_once(
@@ -775,8 +773,7 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
 
         def agree(ok, stage):
             if stage == "commit" and ok:
-                # A forward that changed a buffer (BatchNorm, dynamic RoPE) would have had it broadcast again
-                # before the next micro-batch under standard DDP.
+                # A changed buffer (BatchNorm, dynamic RoPE) would be re-broadcast before the next micro-batch under DDP.
                 ok = all(b._version == v for b, v in buffers)
             return _all_ranks_agree(ok, group, device)
 

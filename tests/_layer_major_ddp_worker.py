@@ -371,8 +371,7 @@ def main(out_dir, zoo_dir):
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         s0 = run("sft_plain", "0", sft = True)
         s1 = run("sft_layer_major", "1", sft = True)
-        # Rank 1 stops in its forward while rank 0's loss parts would gather metrics: the forward vote keeps
-        # rank 0 from entering them.
+        # Rank 1 stops in its forward; the forward vote keeps rank 0 out of the loss parts' gathers.
         s2 = run("sft_rank1_forward_abort", "1", sft = True, inject = rank1(forward_abort))
         report["sft"] = {
             "windows": s1["windows"],
