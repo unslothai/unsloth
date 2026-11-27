@@ -37,8 +37,8 @@ _INT32_MAX = 2**31 - 1
 
 
 def _is_rocm_torch(torch):
-    # Inlined, not imported: tests load this file standalone. AMD SDK / Radeon wheels leave torch.version.hip
-    # unset and carry the ROCm tag only in torch.__version__.
+    # Inlined, not imported: tests load this file standalone. The +rocm version tag backs up a build that leaves
+    # torch.version.hip unset (the AMD SDK gfx1151 wheels checked so far set it).
     return (
         bool(getattr(torch.version, "hip", None))
         or "rocm" in str(getattr(torch, "__version__", "")).lower()

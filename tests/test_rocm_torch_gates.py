@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""ROCm gates in these files go through is_rocm_torch: AMD SDK / Radeon wheels leave torch.version.hip unset."""
+"""ROCm gates in these files go through is_rocm_torch (torch.version.hip, with the +rocm version tag as a fallback)."""
 
 import ast
 import importlib.util
