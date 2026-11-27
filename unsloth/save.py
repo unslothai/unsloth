@@ -13,7 +13,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -7818,29 +7818,42 @@ def unsloth_generic_save(
                 "Update via `pip install --upgrade --no-cache-dir unsloth_zoo`, or save "
                 "locally with `save_pretrained_merged` and upload that folder."
             )
-        _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
+        from .models.gguf_packed import gguf_dense_base_for_merge
 
-        # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
-        # its GPU first, so the merge below only unloads those layers.
-        streamed = []
-        if in_place and getattr(model.config, "quantization_config", None):
-            from .models.fsdp2_save import merge_4bit_lora_layer_by_layer
-            streamed = merge_4bit_lora_layer_by_layer(model)
-        relative = nullcontext() if in_place else lora_relative_to_original_base(model)
-        with relative, _unmerge_flags_on_error(streamed):
-            merge_and_overwrite_lora(
-                _merge_base_resolver(in_place),
-                model = model,
-                tokenizer = tokenizer,
-                save_directory = save_directory,
-                push_to_hub = push_to_hub,
-                private = private,
-                token = token,
-                save_method = save_method,
-                output_dtype = dtype,
-                low_disk_space_usage = True,
-                use_temp_file = False,
+        # A packed GGUF base has no 16-bit checkpoint to read: merge onto its dequantized copy.
+        _merge_stack = ExitStack()
+        try:
+            _gguf_resolver = (
+                None
+                if in_place
+                else _merge_stack.enter_context(gguf_dense_base_for_merge(model, save_directory))
             )
+            if _gguf_resolver is None:
+                _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
+
+            # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
+            # its GPU first, so the merge below only unloads those layers.
+            streamed = []
+            if in_place and getattr(model.config, "quantization_config", None):
+                from .models.fsdp2_save import merge_4bit_lora_layer_by_layer
+                streamed = merge_4bit_lora_layer_by_layer(model)
+            relative = nullcontext() if in_place else lora_relative_to_original_base(model)
+            with relative, _unmerge_flags_on_error(streamed):
+                merge_and_overwrite_lora(
+                    _gguf_resolver or _merge_base_resolver(in_place),
+                    model = model,
+                    tokenizer = tokenizer,
+                    save_directory = save_directory,
+                    push_to_hub = push_to_hub,
+                    private = private,
+                    token = token,
+                    save_method = save_method,
+                    output_dtype = dtype,
+                    low_disk_space_usage = True,
+                    use_temp_file = False,
+                )
+        finally:
+            _merge_stack.close()
         # Pushes with an attached head were rerouted to a local save above.
         if not push_to_hub:
             if _trained_rope_factor is not None and _is_main_rank():

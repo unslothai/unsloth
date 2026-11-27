@@ -214,7 +214,11 @@ _LLAMA_TYPES = {
 }
 
 
-def _write_llama_gguf(path, arch = "llama"):
+def _write_llama_gguf(
+    path,
+    arch = "llama",
+    rename = None,
+):
     gguf = pytest.importorskip("gguf")
     writer = gguf.GGUFWriter(str(path), arch)
     writer.add_uint32(f"{arch}.context_length", 256)
@@ -253,8 +257,9 @@ def _write_llama_gguf(path, arch = "llama"):
     }
     for layer in range(_LAYERS):
         for leaf, (rows, cols) in shapes.items():
+            name = (rename or {}).get(leaf, leaf)
             quantized(
-                f"blk.{layer}.{leaf}.weight", rows, cols, _LLAMA_TYPES[leaf], 10 * layer + len(leaf)
+                f"blk.{layer}.{name}.weight", rows, cols, _LLAMA_TYPES[leaf], 10 * layer + len(leaf)
             )
         for norm in ("attn_norm", "ffn_norm"):
             writer.add_tensor(
@@ -327,12 +332,56 @@ def test_packed_llama_gguf_matches_transformers_dense_load(tmp_path):
         torch.testing.assert_close(grads[0][key], grads[1][key], rtol = 1e-4, atol = 1e-5, msg = key)
 
 
+def test_dense_base_for_merges_round_trips(tmp_path):
+    # merged_16bit / GGUF exports read the base checkpoint: for a packed GGUF it is the dequantized base.
+    _new_gguf_path()
+    peft = pytest.importorskip("peft")
+    from transformers import AutoModelForCausalLM
+
+    _write_llama_gguf(tmp_path / "tiny.gguf")
+    dense = AutoModelForCausalLM.from_pretrained(
+        tmp_path, gguf_file = "tiny.gguf", dtype = torch.float32
+    )
+    with gp.gguf_packed_load():
+        packed = AutoModelForCausalLM.from_pretrained(
+            tmp_path,
+            gguf_file = "tiny.gguf",
+            dtype = torch.float32,
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+    packed = peft.get_peft_model(packed, peft.LoraConfig(r = 4, target_modules = "all-linear"))
+    assert gp.is_gguf_packed_model(packed)
+    with gp.gguf_dense_base_for_merge(packed, tmp_path / "merged") as resolver:
+        base_dir = resolver("anything")
+        reloaded = AutoModelForCausalLM.from_pretrained(base_dir, dtype = torch.float32)
+        reference = dense.state_dict()
+        for key, value in reloaded.state_dict().items():
+            assert torch.equal(value, reference[key]), key
+    assert not os.path.exists(base_dir)
+    with gp.gguf_dense_base_for_merge(dense, tmp_path / "merged") as resolver:
+        assert resolver is None
+
+
 def test_unknown_architecture_is_named(tmp_path):
     _new_gguf_path()
     from transformers import AutoModelForCausalLM
 
     _write_llama_gguf(tmp_path / "tiny.gguf", arch = "starcoder2")
     with gp.gguf_packed_load(), pytest.raises(NotImplementedError, match = "starcoder2"):
+        AutoModelForCausalLM.from_pretrained(
+            tmp_path,
+            gguf_file = "tiny.gguf",
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+
+
+def test_layout_the_map_does_not_know_is_refused(tmp_path):
+    # As a converter that fuses tensors under a new name: those parameters would be randomly initialised.
+    _new_gguf_path()
+    from transformers import AutoModelForCausalLM
+
+    _write_llama_gguf(tmp_path / "tiny.gguf", rename = {"attn_q": "attn_q_fused"})
+    with gp.gguf_packed_load(), pytest.raises(NotImplementedError, match = "q_proj"):
         AutoModelForCausalLM.from_pretrained(
             tmp_path,
             gguf_file = "tiny.gguf",

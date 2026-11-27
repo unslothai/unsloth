@@ -634,6 +634,36 @@ def _gguf_architecture(path):
     return metadata.get("general.architecture")
 
 
+def _check_every_parameter_fed(quantizer, model):
+    """Refuse a load that would leave parameters randomly initialised: a GGUF layout the tensor map does not know
+    (for example Qwen3.5 files from a converter that fuses attn_qkv_gate / ssm_beta_alpha) loads with MISSING keys
+    otherwise."""
+    header, mapping = getattr(quantizer, "header", None), getattr(quantizer, "mapping", None)
+    if header is None or not mapping:
+        return
+    import copy
+
+    from transformers.core_model_loading import WeightConverter, WeightRenaming, rename_source_key
+
+    mapping = copy.deepcopy(mapping)
+    renamings = [entry for entry in mapping if isinstance(entry, WeightRenaming)]
+    converters = [entry for entry in mapping if isinstance(entry, WeightConverter)]
+    fed = {rename_source_key(info.name, renamings, converters)[0] for info in header.tensors}
+    params = dict(model.named_parameters())
+    missing = [name for name in params if name not in fed]
+    if missing:
+        unknown = [
+            info.name
+            for info in header.tensors
+            if rename_source_key(info.name, renamings, converters)[0] not in params
+        ]
+        raise NotImplementedError(
+            f"Unsloth: `gguf_packed = True` cannot map this {header.architecture} GGUF: {len(missing)} model "
+            f"parameters have no tensor in the file (first: {missing[:4]}), and the file holds tensors the map does "
+            f"not place (first: {unknown[:4]}). Load without `gguf_packed` to use transformers' dense loader."
+        )
+
+
 def _check_architecture(arch, known):
     if arch not in known:
         raise NotImplementedError(
@@ -745,6 +775,7 @@ def gguf_packed_load(gguf_path = None):
             return saved_read_header(self, gguf_file)
 
         def after_weight_loading(self, model, **kwargs):
+            _check_every_parameter_fed(self, model)
             model = saved_after(self, model, **kwargs)
             convert_gguf_packed_model(model, self.dtype)
             return model
@@ -926,9 +957,12 @@ def _drop_gguf_quantizer(model):
 
 
 def is_gguf_packed_model(model):
-    model = getattr(model, "base_model", model)
-    model = getattr(model, "model", model) if not hasattr(model, "_unsloth_gguf_packed") else model
-    return any(getattr(type(m), "_unsloth_gguf_packed_linear", False) for m in model.modules())
+    """Whether any Linear or expert stack of `model` (PEFT-wrapped or not) still holds GGUF blocks."""
+    return any(
+        isinstance(module, UnslothGGUFLinear)
+        or any(getattr(p, "packed_format", None) == "gguf" for p in module._parameters.values())
+        for module in model.modules()
+    )
 
 
 def densify_gguf_packed_model(model, dtype = None):
@@ -1045,3 +1079,124 @@ def patch_peft_for_gguf_packed_linears():
 
 
 patch_peft_for_gguf_packed_linears()
+
+
+# ----------------------------------------------------------------------------------------------------------
+# Merged exports: the zoo merge reads the base checkpoint, which for a GGUF is its dequantized value.
+# ----------------------------------------------------------------------------------------------------------
+
+
+def _base_state_items(model, dtype):
+    """(checkpoint name, 16-bit tensor) of every base weight: LoRA wrappers stripped, GGUF blocks dequantized."""
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    modules = dict(base.named_modules())
+    seen = set()
+    for key, tensor in base.state_dict(keep_vars = True).items():
+        if "lora_" in key or "lora_magnitude_vector" in key:
+            continue
+        name = key.replace(".base_layer", "")
+        owner_name, _, leaf = key.rpartition(".")
+        owner = modules.get(owner_name)
+        if leaf == "weight_packed" and isinstance(owner, UnslothGGUFLinear):
+            name, value = name[: -len("_packed")], owner.dequantize_weight(dtype)
+        elif getattr(tensor, "packed_format", None) == "gguf":
+            value = tensor.dequantize(dtype = dtype)
+        else:
+            value = tensor.detach()
+            if value.is_floating_point() and value.dtype != dtype:
+                value = value.to(dtype)
+        if name in seen:
+            continue
+        seen.add(name)
+        yield name, value
+
+
+def write_gguf_dense_base(
+    model,
+    directory,
+    dtype = None,
+    max_shard_bytes = 4 << 30,
+):
+    """Write the dequantized 16-bit base of a packed GGUF model (safetensors shards + index + config.json), one
+    tensor on the GPU at a time. Returns `directory`."""
+    import json
+
+    from safetensors.torch import save_file
+
+    os.makedirs(directory, exist_ok = True)
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if dtype is None:
+        dtype = next(
+            (m.compute_dtype for m in base.modules() if isinstance(m, UnslothGGUFLinear)),
+            torch.bfloat16,
+        )
+    tied = bool(getattr(base.config.get_text_config(), "tie_word_embeddings", False))
+    shards, shard, size, weight_map, total = [], {}, 0, {}, 0
+
+    def flush():
+        nonlocal shard, size
+        if shard:
+            shards.append(shard)
+            file = f"model-{len(shards):05d}.safetensors"
+            save_file(shard, os.path.join(directory, file), metadata = {"format": "pt"})
+            for name in shard:
+                weight_map[name] = file
+        shard, size = {}, 0
+
+    for name, value in _base_state_items(model, dtype):
+        if tied and name == "lm_head.weight":
+            continue
+        value = value.contiguous().cpu()
+        nbytes = value.numel() * value.element_size()
+        if size and size + nbytes > max_shard_bytes:
+            flush()
+        shard[name] = value
+        size += nbytes
+        total += nbytes
+    flush()
+    count = len(shards)
+    renamed = {}
+    for index, _ in enumerate(shards, start = 1):
+        old = os.path.join(directory, f"model-{index:05d}.safetensors")
+        new = f"model-{index:05d}-of-{count:05d}.safetensors"
+        os.replace(old, os.path.join(directory, new))
+        renamed[f"model-{index:05d}.safetensors"] = new
+    weight_map = {name: renamed[file] for name, file in weight_map.items()}
+    with open(os.path.join(directory, "model.safetensors.index.json"), "w") as f:
+        json.dump({"metadata": {"total_size": total}, "weight_map": weight_map}, f, indent = 2)
+    config = base.config.to_dict()
+    config.pop("quantization_config", None)
+    config.pop("unsloth_gguf_packed", None)
+    config["torch_dtype"] = config["dtype"] = str(dtype).replace("torch.", "")
+    with open(os.path.join(directory, "config.json"), "w") as f:
+        json.dump(config, f, indent = 2, default = str)
+    return directory
+
+
+@contextlib.contextmanager
+def gguf_dense_base_for_merge(model, save_directory):
+    """Yields a merge-base resolver pointing at a temporary dequantized copy of the base, or None when the model
+    is not a packed GGUF model. The copy sits beside `save_directory` and is removed afterwards."""
+    if not is_gguf_packed_model(model):
+        yield None
+        return
+    import shutil
+    import tempfile
+
+    parent = os.path.dirname(os.path.abspath(os.fspath(save_directory))) or "."
+    os.makedirs(parent, exist_ok = True)
+    directory = tempfile.mkdtemp(prefix = ".unsloth_gguf_dense_base_", dir = parent)
+    try:
+        print("Unsloth: dequantizing the packed GGUF base to 16-bit for the merge...")
+        write_gguf_dense_base(model, directory)
+
+        def resolver(
+            model_name = None,
+            *args,
+            **kwargs,
+        ):
+            return directory
+
+        yield resolver
+    finally:
+        shutil.rmtree(directory, ignore_errors = True)
