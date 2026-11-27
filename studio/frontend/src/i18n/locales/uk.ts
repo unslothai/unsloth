@@ -4805,6 +4805,8 @@ export const uk = {
       unsupportedFileType: "Непідтримуваний тип файлу",
       uploadOneFileType: "Вивантажте один файл такого типу: {types}.",
       datasetUploaded: "Набір даних вивантажено",
+      importPandasJson: "Імпортувати .json як стовпці pandas",
+      importSemicolonCsv: "Використовувати крапку з комою як роздільник для .csv",
       evalDatasetUploaded: "Набір даних для оцінювання вивантажено",
       uploadOneFileAtATime: "Вивантажуйте по одному файлу",
       uploadSingleFileDescription:

@@ -49,8 +49,7 @@ IMPL_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL"
 # ``0`` keeps the sink path's clipped keys in a launch of their own after the kernel (unsloth_i8resid); unset, the
 # kernel adds them back before its store (RFOLD): one launch and one pass over the output less per sink-path call.
 RESID_FOLD_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_RESID_FOLD"
-# Head dims whose folded kernel keeps the tile loop's register spills at or below the sink kernel's on every config
-# card (64: the NQ 2 configs spill inside the loop once the fold is compiled in, so they keep the separate launch).
+# Head dims: fold adds no spills on any card; 64 keeps a separate launch (NQ 2 configs spill).
 RESID_FOLD_HEAD_DIMS = (128,)
 BACKEND = "unsloth_int8"
 _OP = "unsloth_studio::int8_attention_nhd"
@@ -289,8 +288,6 @@ def native_p_enabled() -> bool:
 
 
 def kernel_variant(config: dict, sinks: bool) -> dict:
-    """The plain config one compiled kernel is named by: ``select_config(config, 0)`` without the ``sinks`` entry,
-    with its orderings applied for the sink-path kernel."""
     chosen = select_config(config, 0)
     override = chosen.pop("sinks", None)
     if not native_p_enabled():
@@ -376,7 +373,6 @@ def resolve_policy(override: Any = None) -> Int8Policy:
 
 
 def mode(override: Any = None) -> str:
-    """``off`` | ``auto`` | ``force`` from the load's policy, else the env switch."""
     if override is None:
         return _env_mode()
     return resolve_policy(override).mode
@@ -394,7 +390,6 @@ def impl_setting() -> str:
 
 
 def requested(value: Any) -> bool:
-    """Whether a load's attention request names this backend."""
     return isinstance(value, str) and value.strip().lower() == BACKEND
 
 
@@ -641,8 +636,7 @@ def kernel_defines(head_dim: int, config: dict) -> dict:
 
 
 def select_config(config: dict, keys: int) -> dict:
-    """The kernel config of a call with ``keys`` keys: ``config`` with its ``long`` overrides applied from
-    ``long_keys`` keys on, and without those two entries (what is left names one compiled kernel)."""
+    """Long overrides apply from long_keys keys on; without those entries it names one kernel."""
     long_keys = config.get("long_keys")
     chosen = (
         {**config, **config.get("long", {})} if long_keys and keys >= int(long_keys) else config
@@ -733,8 +727,7 @@ def _functions(
     the clipped keys back itself, default ``resid_fold_enabled()``); compiled on first use."""
     # a config with long overrides names its kernel for short sequences; the sink-path kernel takes its orderings
     config = kernel_variant(config, sinks)
-    # default = the plan's own choice (_plan): folded only for RESID_FOLD_HEAD_DIMS, so kernel_function and the
-    # config-fit tests see the kernel a sink-path call of this head dim actually launches
+    # Plan default: folded only for RESID_FOLD_HEAD_DIMS, so tests see the launched kernel.
     if fold is None:
         fold = resid_fold_enabled() and head_dim in RESID_FOLD_HEAD_DIMS
     fold = bool(sinks) and bool(fold)
@@ -778,8 +771,7 @@ def _raw_stream(index: int) -> int:
     return torch.cuda.current_stream(index).cuda_stream
 
 
-# A call's launch arithmetic (padded lengths, operand layout, grids, every argument that is not a pointer), keyed
-# by everything it depends on: a short call is mostly this glue, so it is done once per call signature.
+# Launch arithmetic keyed by all its inputs, cached per signature; short calls are mostly glue.
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
@@ -793,8 +785,7 @@ SINK_DECIDE_AT = 48
 DECIDE_BUCKET = 256
 # Plain path wins only if its error vs torch is <= this x the sink path's (Qwen-Image-2.1 ~1.03, Z-Image-Turbo ~1.6).
 PLAIN_ERROR_SLACK = 1.15
-# MODE_MAIN: no sink path (non-SINK_DITS, probes). MODE_RACE: sink path raced vs torch (auto SINK_DITS route).
-# MODE_KERNELS: forced SINK_DITS request, races only the INT8 paths, never torch.
+# MODE_MAIN: no sink path; MODE_RACE: sink path raced vs torch; MODE_KERNELS: INT8 paths only.
 MODE_MAIN, MODE_RACE, MODE_KERNELS = 0, 1, 2
 SINK_DITS = frozenset(
     {
@@ -898,9 +889,8 @@ def _weak(obj: Any) -> Callable:
 
 
 def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
-    """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
-    its calls compile as they did before the install; any other raises its token floor. Held weakly: a
-    strong ref in ``_ROUTES`` kept unloaded attention weights (1.7 GB on FLUX.3 klein INT8) on the card."""
+    """Gives back the stock processor (_unsloth_stock) so calls compile as before the install, else
+    raises the token floor; weak refs, since a strong ref in _ROUTES kept 1.7 GB alive."""
     proc_ref, module_ref = _weak(proc), _weak(module) if module is not None else None
 
     def raise_floor(tokens: int) -> bool:
@@ -1290,9 +1280,8 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                         # moving the routes would put another plan's used INT8 calls on torch's attention next render
                         verdict = True
                     if verdict is not True and plan.get("live_seen") and key not in _sink_unsafe():
-                        # a render already used this plan's sink-path outputs where V clipped: keep the path for the
-                        # load (the next render repeats the seed); the bucket keeps the verdict for later plans. Not
-                        # where the race rejected the sink path on accuracy: numerical safety wins over repeating
+                        # A used render clipped V on this plan: keep the path for the load (the next
+                        # render repeats the seed), unless accuracy rejected it.
                         verdict = True
                     plan["sinks"] = verdict
                     if verdict == "native" and fresh:
@@ -1315,8 +1304,7 @@ def _sink_race(
     index: int,
     forced: bool = False,
 ) -> Any:
-    """Timed on this call: faster of sink or plain INT8 if it beats torch by RACE_MARGIN, else
-    native; forced: INT8 paths only, torch's attention neither timed nor taken."""
+    """Faster of sink/plain INT8 beating torch by RACE_MARGIN, else native; forced: INT8 only."""
     import torch
 
     stream = _raw_stream(index)
@@ -1399,9 +1387,8 @@ def _pick_path(
 
 
 def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
-    """For each undecided call before SINK_DECIDE_AT (every one runs the sink path, and a render may use it): its
-    clipped-key counts (rcnt) copied to pinned host memory behind the quantisers, read when the plan decides
-    (_choose_path); no wait here."""
+    """Each undecided call before SINK_DECIDE_AT (all run the sink path) copies its clipped-key
+    counts (rcnt) to pinned host memory behind the quantisers; read by _choose_path, no wait."""
     import torch
 
     if n is None or n >= SINK_DECIDE_AT or plan["sinks"] is not None:
@@ -1503,10 +1490,9 @@ def _cuda_attention(
     index: int,
     mode: int = MODE_MAIN,
 ) -> Any:
-    """``attend(quantise(q, k, v, config, scale))`` in one pass, on the path the plan takes (_choose_path, with the
-    sink race): one plan lookup, one stream lookup, no operand views. The scratch buffer and any aligned copies are
-    freed on return; the caching allocator hands their memory out again only in stream order, after the launches that
-    read it."""
+    """``attend(quantise(q, k, v, config, scale))`` in one pass on the path the plan takes
+    (_choose_path, with the sink race); scratch and aligned copies are freed on return, and the
+    caching allocator reuses their memory only in stream order, after the launches that read it."""
     import torch
 
     plan, q, k, v = _find_plan(q, k, v, config, scale, index, mode)
@@ -1547,7 +1533,6 @@ def kernel_function(
     config: dict,
     sinks: bool = False,
 ) -> Any:
-    """The loaded CUDA kernel, with or without the sink path."""
     import torch
     return _functions(_device_index(torch.device(device)), head_dim, config, sinks)[0]
 
@@ -1772,9 +1757,7 @@ def native_attention(
     v: Any,
     scale: Optional[float] = None,
 ) -> Any:
-    """torch's attention on the same ``[B, S, H, D]`` views."""
     import torch.nn.functional as F
-
     out = F.scaled_dot_product_attention(
         q.to(v.dtype).permute(0, 2, 1, 3),
         k.to(v.dtype).permute(0, 2, 1, 3),
@@ -1858,9 +1841,7 @@ def int8_attention_impl(
 
 
 def _tracing() -> bool:
-    """Whether a dispatch mode (make_fx, FlopCounterMode), a functorch transform (vmap, grad) or the TorchScript
-    tracer is active: their tensors look plain, and they must see the op, not raw launches (a trace would record the
-    allocations but not the ctypes launches that fill them)."""
+    """Dispatch modes or tracing: tensors look plain, so calls must use the op, not raw ctypes."""
     import torch
 
     if torch.jit.is_tracing():
@@ -1876,11 +1857,10 @@ def int8_attention_call(
     v: Any,
     mode: int = MODE_MAIN,
 ) -> Any:
-    """What a processor calls: the custom op while torch.compile traces (opaque, with a fake), and in eager the op's
-    body directly, which skips the dispatcher's per-call cost (about a fifth of a short call's CPU time). Tensor
-    subclasses, dispatch modes and functorch transforms always go through the op. ``mode`` (the route's): MODE_MAIN
-    the kernels as before the attention-sink path, else the sink path with its race (a constant of the graph: another
-    op)."""
+    """What a processor calls: the custom op under torch.compile (opaque, with a fake), else the op
+    body directly in eager, skipping dispatcher cost; tensor subclasses, dispatch modes and
+    functorch transforms always use the op; mode: MODE_MAIN runs the kernels as before the
+    attention-sink path, else the sink path with its race (a graph constant: another op)."""
     import torch
 
     if (
@@ -1911,9 +1891,8 @@ def int8_attention_op() -> Any:
         _OP, mutates_args = (), schema = "(Tensor q, Tensor k, Tensor v) -> Tensor"
     )
     def int8_attention_nhd(q, k, v):
-        # The fake's strides are part of the op contract: Inductor asserts them on the real output. The kernels
-        # write a fresh contiguous [B, S, H, D]; native attention can hand back the permuted [B, H, S, D] layout
-        # (math SDPA does), so it is copied to the fake's layout here (a no-op when it already is).
+        # Fake strides are part of the op contract (Inductor asserts them); native attention can
+        # return permuted [B, H, S, D], so output is made contiguous [B, S, H, D].
         return int8_attention_impl(q, k, v).contiguous()
 
     @int8_attention_nhd.register_fake
@@ -1979,9 +1958,7 @@ def accuracy(got: Any, ref: Any) -> dict:
 
 
 def _median_ms(fns: dict, rounds: int = 5) -> dict:
-    """Median milliseconds per callable, timed with CUDA events in interleaved rounds after two warm calls each. The
-    races time on probe inputs, which have no attention sinks: the kernel calls in here take the path a plan without
-    sinks runs (_choose_path), and count toward no plan's decision."""
+    """Median CUDA-event ms per callable, interleaved; sinkless probes count toward no plan."""
     import torch
 
     _RACE.path = False
@@ -2428,8 +2405,7 @@ def _secondary_races(
 
 
 def sink_mode(dit_name: str, forced: bool) -> int:
-    """The ``mode`` a route of DiT class ``dit_name`` runs the kernel in: the attention-sink path only for SINK_DITS,
-    the families it was measured on."""
+    """Mode for ``dit_name``: the sink path only for SINK_DITS, the measured families."""
     if dit_name not in SINK_DITS:
         return MODE_MAIN
     return MODE_KERNELS if forced else MODE_RACE
@@ -2901,9 +2877,8 @@ def annotate_resolved(resolved: Any, policy: Any, pipe: Any) -> Any:
 
 
 def _give_back_unengaged(transformer: Any) -> None:
-    """A strided processor ``install_auto`` put in for the race (``_unsloth_stock``) that did not engage gives the
-    module the processor it replaced, so a lost race leaves the module as base had it (FLUX.3: its fused Q/K swap
-    follows). That processor is marked raced: the dispatch route does not race it again."""
+    """Gives back the stock processor (``_unsloth_stock``) when a strided race did not engage, so
+    the module matches base (FLUX.3's fused Q/K swap follows); it is not raced again."""
     for m in int8_processors(transformer):
         proc = m.processor
         stock = getattr(proc, "_unsloth_stock", None)

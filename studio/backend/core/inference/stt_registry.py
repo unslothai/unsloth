@@ -72,8 +72,7 @@ def load(
         options["context_length"] = context_length
     others = [name for name in STT_ENGINES if name != engine]
     with _load_lock:
-        # Release other engines before allocating only once the checkpoint is on disk, so a switch
-        # does not OOM but a 409 never costs the current engine.
+        # Unload others once the checkpoint is on disk: no OOM; a 409 keeps the current engine.
         if _model_is_downloaded(engine, model):
             unload(others, wait = False)
             sidecar_for(engine).load(

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Adds to store-settings-resolver: intercepts the thread row's relative import, and
-// re-instantiates SCENARIO_SCOPED modules per "?scenario=N" so each ordering gets a fresh store.
+// Re-instantiates SCENARIO_SCOPED modules per ?scenario=N so each ordering gets a fresh store.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

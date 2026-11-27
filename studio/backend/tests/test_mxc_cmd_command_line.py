@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from pathlib import Path
 import subprocess
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -149,6 +151,130 @@ def test_workdir_alias_is_only_the_workload_cwd(monkeypatch, tmp_path, system_cm
     assert request["cwd"] == canonical
     assert request["cwdAlias"] == "Z:\\"
     assert request["policyHash"] == mxc_policy.compute_policy_hash(request["config"])
+
+
+def _download_plan(tmp_path):
+    return replace(_cmd_plan(_workdir(tmp_path), "curl https://example.com"), egress_proxy = True)
+
+
+def _accepts_egress_rules(monkeypatch, accepted):
+    asked = []
+
+    def probe(executable, *, execution_kind, cancel_event, egress_rules):
+        asked.append((execution_kind, egress_rules))
+        return accepted, ""
+
+    monkeypatch.setattr(mxc_probe, "probe", probe)
+    return asked
+
+
+def test_a_sandbox_that_refuses_egress_rules_gets_none(tmp_path, system_cmd, monkeypatch):
+    asked = _accepts_egress_rules(monkeypatch, False)
+    request = mxc_policy.build_launch_request(_download_plan(tmp_path))
+    assert asked == [("terminal", True)]
+    assert request["egressRules"] is False
+    assert request["config"]["network"]["egress"] == {"default": "allow"}
+    assert not any(e.startswith("CURL_HOME=") for e in request["config"]["process"]["env"])
+
+
+def test_download_egress_qualification_respects_cancellation(tmp_path, system_cmd, monkeypatch):
+    stop = Event()
+
+    def probe(executable, *, execution_kind, cancel_event, egress_rules):
+        assert cancel_event is stop
+        cancel_event.set()
+        return False, "MXC capability probe was cancelled"
+
+    monkeypatch.setattr(mxc_probe, "probe", probe)
+    plan = replace(_download_plan(tmp_path), cancel_event = stop)
+    with pytest.raises(
+        mxc_policy.MxcPolicyError, match = "cancelled during MXC egress qualification"
+    ):
+        mxc_policy.build_launch_request(plan)
+
+
+def test_a_launch_that_is_not_a_download_never_asks(tmp_path, system_cmd, monkeypatch):
+    asked = _accepts_egress_rules(monkeypatch, True)
+    request = mxc_policy.build_launch_request(_cmd_plan(_workdir(tmp_path), "dir"))
+    assert asked == []
+    assert request["egressRules"] is False
+    assert request["config"]["network"]["egress"] == {"default": "allow"}
+
+
+def test_the_egress_probe_does_not_probe_itself(tmp_path, system_cmd, monkeypatch):
+    asked = _accepts_egress_rules(monkeypatch, False)
+    plan = replace(_cmd_plan(_workdir(tmp_path), "dir"), egress_proxy = True)
+    probing = SimpleNamespace(**vars(plan), egress_rules_probe = True)
+    assert mxc_policy.build_launch_request(probing)["egressRules"] is True
+    assert asked == []
+
+
+def test_a_download_launch_denies_what_the_egress_proxy_refuses(tmp_path, system_cmd, monkeypatch):
+    import ipaddress
+
+    from core.inference import providers, sandbox_egress
+
+    _accepts_egress_rules(monkeypatch, True)
+    plan = _download_plan(tmp_path)
+    request = mxc_policy.build_launch_request(plan)
+    assert request["egressRules"] is True
+    config = request["config"]
+    egress = config["network"]["egress"]
+    assert egress["default"] == "allow"
+    env = dict(entry.split("=", 1) for entry in config["process"]["env"])
+    assert env["PATH"] == plan.env["PATH"]
+    rc_dir = env["CURL_HOME"]
+    assert any(
+        os.path.commonpath([rc_dir, root]) == root for root in config["filesystem"]["readonlyPaths"]
+    )
+    assert os.path.commonpath([rc_dir, plan.workdir]) != plan.workdir
+    assert Path(rc_dir, ".curlrc").read_text(encoding = "utf-8") == (
+        'proto = "=http,https"\nproto-redir = "=http,https"\n'
+    )
+    assert env["WGETRC"] == env["SYSTEM_WGETRC"] == os.path.join(rc_dir, "wgetrc")
+    assert Path(env["WGETRC"]).read_text(encoding = "utf-8") == "netrc = off\nmax_redirect = 0\n"
+    assert env["NoDefaultCurrentDirectoryInExePath"] == "1"
+    denied = [ipaddress.ip_network(peer["cidr"]) for peer in egress["deny"][0]["to"]]
+
+    def is_denied(address):
+        ip = ipaddress.ip_address(address)
+        return any(ip in network for network in denied if network.version == ip.version)
+
+    refused = ["0.0.0.0", "0.1.2.3", "169.254.0.1", "224.0.0.1", "239.255.255.250", "240.0.0.1"]
+    refused += ["255.255.255.255", "::", "fe80::1", "ff02::1", "64:ff9b:1::1"]
+    refused += [str(ip) for ip in providers._METADATA_IPS]
+    for address in list(refused):
+        ip = ipaddress.ip_address(address)
+        if ip.version == 4:
+            refused.append(str(ipaddress.IPv6Address((0x64FF9B << 96) | int(ip))))
+            refused.append(str(ipaddress.IPv6Address((0x2002 << 112) | (int(ip) << 80))))
+    for address in refused:
+        assert sandbox_egress.refused_address(address), address
+        assert is_denied(address), address
+    for address in ("93.184.216.34", "192.168.1.10", "10.0.0.5", "100.64.0.1", "168.63.129.17"):
+        assert not sandbox_egress.refused_address(address), address
+        assert not is_denied(address), address
+        nat64 = str(ipaddress.IPv6Address((0x64FF9B << 96) | int(ipaddress.ip_address(address))))
+        assert not is_denied(nat64), nat64
+    assert not is_denied("2606:4700::6810:84e5")
+
+
+def test_the_download_rc_files_are_not_rewritten_once_right(tmp_path, system_cmd, monkeypatch):
+    _accepts_egress_rules(monkeypatch, True)
+    plan = _download_plan(tmp_path)
+    request = mxc_policy.build_launch_request(plan)
+    env = dict(entry.split("=", 1) for entry in request["config"]["process"]["env"])
+    rc = os.path.join(env["CURL_HOME"], ".curlrc")
+    wgetrc = env["WGETRC"]
+    before = (os.stat(rc).st_ino, os.stat(wgetrc).st_ino)
+    with open(wgetrc, "w", encoding = "utf-8") as f:
+        f.write("post_file = secret\n")
+    tampered = os.stat(wgetrc).st_ino
+    mxc_policy.build_launch_request(plan)
+    assert os.stat(rc).st_ino == before[0]
+    assert Path(wgetrc).read_text(encoding = "utf-8") == "netrc = off\nmax_redirect = 0\n"
+    assert os.stat(wgetrc).st_ino != tampered
+    assert sorted(os.listdir(env["CURL_HOME"])) == [".curlrc", "wgetrc"]
 
 
 def test_no_alias_keeps_the_canonical_cwd(tmp_path, system_cmd):

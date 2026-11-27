@@ -907,7 +907,6 @@ def _format_sse(
     event: str,
     event_id: Optional[int] = None,
 ) -> str:
-    """Format a single SSE message with id/event/data fields."""
     lines = []
     if event_id is not None:
         lines.append(f"id: {event_id}")

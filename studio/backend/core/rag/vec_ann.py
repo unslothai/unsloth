@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HNSW (usearch) over a scope's unit rows, keyed by ``chunks.rowid``, plus an exact delta for rows added after the
-build. Pure numpy + usearch: no SQLite here; ``vec_cache`` decides when an index may answer."""
+"""HNSW (usearch) keyed by chunks.rowid plus exact delta; no SQLite; vec_cache gates answers."""
 
 from __future__ import annotations
 
@@ -64,8 +63,7 @@ def _install_in_progress() -> bool:
 def usearch():
     """The usearch.index module, or None when the wheel is missing or does not load on this machine."""
     if "usearch.index" in sys.modules:
-        # Already loaded in process (the probe gate passed then): go through the import system, which
-        # waits on the module lock while another thread is still running the module's body.
+        # Already loaded: import waits on module lock while another thread runs module body.
         try:
             return importlib.import_module("usearch.index")
         except Exception:  # noqa: BLE001

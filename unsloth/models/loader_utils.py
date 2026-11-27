@@ -4676,6 +4676,15 @@ def check_and_disable_bitsandbytes_loading(
     if inkling2_owns_modelopt_quantization(model_config):
         drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
         register_inkling2_expert_dequantization()
+        from .inkling2_packed import (
+            inkling2_packed_experts_enabled,
+            install_inkling2_packed_expert_loading,
+        )
+
+        if (
+            inkling2_packed_experts_enabled()
+        ):  # opt-in: the released NVFP4 / MXFP8 experts stay packed
+            install_inkling2_packed_expert_loading()
         return load_in_4bit, load_in_8bit, None
     quant_method = get_quant_type(model_config)
     if quant_method is None:

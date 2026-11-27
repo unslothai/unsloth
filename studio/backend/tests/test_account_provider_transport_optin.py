@@ -53,8 +53,7 @@ def client_as(account):
 
 
 def is_pinned(client) -> bool:
-    """Public-only. Exact type: the allowed-private screen subclasses this, so isinstance would
-    call that pinned too and every assertion below would stop meaning anything."""
+    """Public-only: exact type, since isinstance would also match the allowed-private screen."""
     return type(getattr(client, "_transport", None)) is external_provider._PinnedPublicTransport
 
 
@@ -92,8 +91,7 @@ def test_the_pinning_client_is_reused_not_rebuilt(switch):
 
 
 def test_two_managed_accounts_never_share_a_client(switch):
-    """httpx persists cookies per client, so one shared by two accounts carries a gateway
-    session from one to the other. https://www.python-httpx.org/advanced/clients/"""
+    """httpx keeps cookies per client, so sharing one across accounts leaks a gateway session."""
     for allowed in (False, True):
         switch["allowed"] = allowed
         alice, bob = client_as(ALICE), client_as(BOB)
@@ -107,8 +105,7 @@ def test_two_managed_accounts_never_share_a_client(switch):
 
 
 def test_an_unbound_thread_defaults_to_owner(switch):
-    """The account ContextVar fails open: a worker thread that forgot run_as reads as the owner.
-    Unchanged by the switch, and load-bearing for any _client() caller off the request path."""
+    """ContextVar fails open to owner (unchanged by switch); off-path _client() relies on it."""
     import threading
 
     seen = []
@@ -162,8 +159,7 @@ def test_the_allowed_client_still_screens_every_connection(switch):
 
 
 def test_a_retired_account_stops_being_held(switch):
-    """Deleting an account has to drop its clients, or the cache is bounded by accounts ever
-    created rather than accounts that exist, and a deleted one's cookie jar outlives it."""
+    """Deleted accounts must drop their clients: cookie jars outlive them and the cache grows."""
     for allowed in (False, True):
         switch["allowed"] = allowed
         client_as(ALICE)
@@ -187,8 +183,7 @@ def test_account_retirement_calls_it(switch):
 
 
 def test_a_request_after_retirement_is_served_but_not_cached(switch):
-    """A request that authenticated before deletion can reach _client() after the sweep; it
-    gets a working client, and nothing is left behind for an account nothing sweeps again."""
+    """Late requests get a working client but it is not cached; no later sweep would drop it."""
     client_as(ALICE)
     external_provider.retire_account_clients(ALICE.account_id)
 
@@ -199,8 +194,7 @@ def test_a_request_after_retirement_is_served_but_not_cached(switch):
 
 
 def test_retirement_from_a_worker_thread_closes_on_the_owning_loop(switch):
-    """Deletion is a synchronous route, so it runs with no loop of its own. Dropping the last
-    reference does not close an httpx pool; the close has to reach the loop that opened it."""
+    """Dropping the last reference won't close an httpx pool; close it on its owning loop."""
     import asyncio
     import threading
 

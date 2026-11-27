@@ -307,6 +307,26 @@ def test_fast_upload_matches_a_plain_to_byte_for_byte(monkeypatch):
 
 
 @torch_cuda
+def test_the_ring_waits_for_work_queued_on_the_current_stream(monkeypatch):
+    """A target block the allocator hands back while the current stream still has a queued write into it must not be
+    written by the side stream first: the queued write would land on top of the uploaded bytes."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(fl, "_UPLOAD_CHUNK_BYTES", 1 << 20)
+    src = torch.arange(1 << 20, dtype = torch.int32)  # 4 MiB, four ring chunks
+    torch.cuda.synchronize()
+    stale = torch.empty_like(src, device = "cuda")
+    torch.cuda._sleep(1 << 28)  # the current stream is busy well past the upload
+    stale.fill_(7)
+    ptr = stale.data_ptr()
+    del stale  # back to the current stream's pool, fill still queued
+    (got,) = fl._ring_copy([src], "cuda")
+    reused = got.data_ptr() == ptr
+    torch.cuda.synchronize()
+    assert reused, "the allocator did not reuse the block; the check would not exercise the hazard"
+    assert torch.equal(got.cpu(), src)
+
+
+@torch_cuda
 def test_fast_upload_leaves_other_to_calls_alone(monkeypatch):
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(fl, "_UPLOAD_MIN_TOTAL_BYTES", 0)

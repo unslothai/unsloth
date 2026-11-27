@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { InferenceStatusResponse } from "@/features/chat";
+import type { LoadModelRequest } from "@/features/chat/types/api";
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
 import {
@@ -828,4 +829,45 @@ export function audioModelToReplace(
   if (!status?.is_audio || !status.active_model) return null;
   const current = status.model_identifier || status.active_model;
   return current !== target && status.active_model !== target ? current : null;
+}
+
+export function audioRestoreRequest(
+  status: InferenceStatusResponse,
+  modelPath: string,
+  lastLoad: LoadModelRequest | null,
+  defaults: Pick<
+    LoadModelRequest,
+    "hf_token" | "max_seq_length" | "audio_device"
+  >,
+): LoadModelRequest {
+  const ids = [modelPath, status.model_identifier, status.active_model];
+  const base =
+    lastLoad && ids.includes(lastLoad.model_path)
+      ? lastLoad
+      : {
+          ...defaults,
+          max_seq_length:
+            status.requested_context_length || defaults.max_seq_length,
+          model_path: modelPath,
+          load_in_4bit: false,
+          is_lora: false,
+          gguf_variant: status.gguf_variant ?? null,
+          trust_remote_code: status.inference?.trust_remote_code === true,
+          alongside: true,
+          // GGUF ignores audio_device: RAM placement is manual zero layers, as the ordinary load sends.
+          ...(status.is_gguf &&
+          (defaults.audio_device === "cpu" || status.resident_on_gpu === false)
+            ? // biome-ignore lint/style/useNamingConvention: API schema
+              {
+                gpu_memory_mode: "manual" as const,
+                gpu_layers: 0,
+                speculative_type: "off" as const,
+              }
+            : {}),
+        };
+  return {
+    ...base,
+    load_request_id: crypto.randomUUID(),
+    force_cancel_active: false,
+  };
 }

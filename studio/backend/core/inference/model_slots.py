@@ -67,7 +67,6 @@ def busy() -> bool:
 
 
 def resident() -> list[ExtraSlot]:
-    """Every kept slot that may still hold a model: the routed ones and the stuck ones."""
     return [*slots, *stuck]
 
 
@@ -103,8 +102,7 @@ def visible_loading() -> Optional[tuple[ExtraSlot, str]]:
 
 
 def serving_slot(requested: str, candidates: list[ExtraSlot], satisfies) -> Optional[ExtraSlot]:
-    """The slot among ``candidates`` serving ``requested``; None when the primary does. Two quants of
-    one repo both answer to its bare id: the one used last serves, the primary on a tie."""
+    """Slot serving ``requested`` (None: primary); one repo's quants: last used, primary ties."""
     serving = [slot for slot in (None, *candidates) if in_slot(slot, lambda: satisfies(requested))]
     return max(serving, key = lambda s: s.last_used if s else primary_last_used, default = None)
 
@@ -122,8 +120,7 @@ async def route(
     satisfies,
     touch: bool = True,
 ) -> Optional[ExtraSlot]:
-    """Route this task to the slot serving ``requested``, if any, and hold it until the task ends.
-    ``touch=False`` for reads (status polls), which must not reorder eviction."""
+    """Route to the ``requested`` slot until the task ends; ``touch=False`` keeps LRU order."""
     routed_slot.set(None)
     if not (slots and isinstance(requested, str) and requested):
         return None
@@ -308,7 +305,6 @@ def unload_extra_models(
 
 
 def unload_idle() -> int:
-    """Drop every kept model no request is using or loading."""
     filling = loading[0] if loading else None
     idle = [s for s in list(slots) if s is not filling and not s.generations and not s.refs]
     return len(evict_these(idle))

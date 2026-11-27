@@ -48,9 +48,8 @@ def compile_enabled() -> bool:
 
 
 def image_qk_rope_enabled(resident: bool = False) -> bool:
-    """The fused q/k norm + rope for H3-Image: on for every tier (``resident`` no longer matters: the op is bit-exact
-    and falls back to the stock math wherever its device check did not pass); UNSLOTH_H3_IMAGE_QK_ROPE=0 turns it
-    off."""
+    """Fused q/k norm + rope on every tier (resident is ignored: the op is bit-exact and falls back
+    to stock math where its device check fails); UNSLOTH_H3_IMAGE_QK_ROPE=0 disables it."""
     value = (os.environ.get(QK_ROPE_ENV) or "").strip().lower()
     return value not in ("0", "off", "false", "no")
 

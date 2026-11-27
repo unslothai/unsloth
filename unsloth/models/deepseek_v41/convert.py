@@ -169,8 +169,7 @@ def _transformers_major():
 
 
 def _checked_shard(name):
-    """An index shard name must be a plain relative path inside the checkpoint directory (lexical check, so the
-    symlinked blobs of a Hub snapshot keep working)."""
+    """Shard must be relative and inside the dir; lexical check so symlinked Hub blobs work."""
     bad = not isinstance(name, str) or not name
     if not bad:
         for pure in (PurePosixPath(name), PureWindowsPath(name)):
@@ -297,8 +296,7 @@ def _dst_lock(dst):
 
 
 def _drop_lock_file(dst):
-    """Remove ``dst``.lock once ``dst`` is published. Safe while held: every later critical section, even one that
-    still waits on the unlinked inode, only re-reads the completion marker, which is never removed again."""
+    """Unlink dst.lock after publish; waiters re-read only the never-removed completion marker."""
     try:
         os.unlink(dst + ".lock")
     except OSError:
@@ -321,8 +319,7 @@ def convert_released_checkpoint(path, **hub_kwargs):
         if os.path.isfile(done) and not os.path.islink(dst):
             _drop_lock_file(dst)
             return dst
-        # A private staging dir per call (never a predictable path another user could pre-plant), published with
-        # one atomic rename while the lock is held.
+        # Private unpredictable staging dir, published by one atomic rename under the lock.
         tmp = tempfile.mkdtemp(prefix = os.path.basename(dst) + ".partial-", dir = parent)
         published = False
         try:

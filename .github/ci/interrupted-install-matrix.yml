@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# `pr: true` legs run on pull_request. Every leg is a hard gate.
-# Counts and keys are pinned by tests/studio/test_install_matrix_selection.py.
+# pr: true legs run on pull_request; every leg is a hard gate; a test pins counts and keys.
 
 interrupt:
   # Kill on a printed marker, never a delay: timed waits landed in the wrong phase.

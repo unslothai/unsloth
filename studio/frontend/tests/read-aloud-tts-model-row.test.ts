@@ -32,8 +32,7 @@ test("the row lands on the TTS selector, not the mode Audio was left in", () => 
     audioSource,
     /const urlWorkflow = audioRouteIntent\(routeSearch\);[\s\S]*?audioWorkflowUrlAction\(\{\s*urlWorkflow,/,
   );
-  // A refused switch returns before navigating and keeps the parameter, so the retry rides the
-  // effect's busy dep; a successful one leaves only the page (the task is dropped).
+  // Refused switch keeps the parameter so the retry rides busy dep; a success drops the task.
   assert.match(
     audioSource,
     /if \(!transitionWorkflow\(action\.workflow\)\) return;\s*lastSyncedWorkflow\.current = action\.workflow;[\s\S]{0,120}?void navigateSelf\(\{\s*to: "\/audio",\s*search: \{ workflow: action\.workflow \},\s*replace: true,\s*\}\);/,

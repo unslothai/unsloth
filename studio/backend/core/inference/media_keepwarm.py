@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in idle unload for image/video backends, off by default; the tick returns before resolving a
-backend so torch stays out; calls the arbiter's unload()."""
+"""Opt-in idle unload for image/video backends, off by default; torch stays out while off."""
 
 from __future__ import annotations
 
@@ -140,9 +139,8 @@ def other_request_count(
     return max(0, total - 1) if current_request_counted else total
 
 
-# Exact mounted paths only (unauthenticated 404s must not count); progress/cancel polls excluded.
-# Load routes count since a load registers with the backend only part way through its POST.
-# test_media_keepwarm asserts each is a real mounted route.
+# Exact mounted paths only (unauthenticated 404s must not count); progress/cancel polls excluded;
+# loads count since they register mid-POST; test_media_keepwarm checks each is mounted.
 _TRACKED_PATHS = {
     # studio_router, mounted at /api/inference only.
     "/api/inference/images/generate": DIFFUSION,
@@ -158,7 +156,6 @@ _TRACKED_PATHS = {
 
 
 def owner_for_path(path: str) -> Optional[str]:
-    """Which media backend a tracked inference path generates or loads on, if any."""
     return _TRACKED_PATHS.get(path)
 
 
@@ -283,8 +280,7 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
             tracker.note_activity()
             return
         if identity != tracker.seen:
-            # A (re)loaded model counts as activity so it survives at least one TTL before its first generation: loads
-            # never pass through the request middleware.
+            # Loads count as activity (one TTL of grace); they bypass the request middleware.
             tracker.seen = identity
             if identity is not None:
                 tracker.note_activity()

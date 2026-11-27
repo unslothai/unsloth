@@ -33,7 +33,6 @@ export function forgetChatSearchHasRows(): void {
   try {
     store.removeItem(CHAT_SEARCH_HAS_ROWS_KEY);
   } catch {
-    // As above.
   }
 }
 

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Desktop mounts the root before the backend port exists, and authFetch resolves its URL once,
-// so the startup pin and override sync must wait for the Desktop shell.
+// Desktop mounts before the port exists; authFetch caches the URL, so sync waits for Desktop.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

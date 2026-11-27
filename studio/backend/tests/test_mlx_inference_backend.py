@@ -8423,6 +8423,92 @@ def test_media_is_prepared_only_under_a_budget_and_only_once(monkeypatch):
     assert calls == [1]
 
 
+@pytest.mark.parametrize("spliced", [0, 255])
+def test_pre_generation_counts_take_the_columns_a_spliced_image_fills(monkeypatch, spliced):
+    """FastVLM fills an image's features in place of its one placeholder id; its ids undercount."""
+    from core.inference import context_refusal
+
+    utils = _stub_prepare_inputs(monkeypatch, per_medium = 1)
+    calls = []
+    real = utils.prepare_inputs
+    utils.prepare_inputs = lambda *a, **k: calls.append(1) or {**real(*a, **k), "pixel_values": 1}
+    prompt = "placeholder describe this picture"
+    columns = 5 + spliced
+    embedded = []
+    # Without pixels FastVLM embeds the text alone.
+    embed = lambda ids, pixels = None, **_k: embedded.append(1) or SimpleNamespace(  # noqa: E731
+        inputs_embeds = SimpleNamespace(shape = (1, ids.size + spliced * (pixels == 1), 8))
+    )
+    for budget in (None, 1024):
+        backend = _vision_backend(budget = budget, window = 1024)
+        backend._model.get_input_embeddings = embed
+        backend.count_chat_tokens = lambda _t, images: backend._count_prompt_tokens(prompt, images)
+        assert backend._measure_media_splice() is bool(spliced)
+        backend._media_splices = backend._measure_media_splice()
+        embedded.clear()
+        assert backend._count_prompt_tokens(prompt, [object()]) == columns
+        assert bool(embedded) is bool(spliced), "an expanding model is never embedded again"
+        calls.clear()
+        # Unspliced and unbudgeted, the media stays unprepared and the placeholder count sizes it.
+        expected = columns if budget or spliced else 4
+        assert backend._generation_limit(prompt, None, images = [object()]) == 1024 - expected
+        assert bool(calls) is bool(budget or spliced)
+        backend._served_context = columns
+        backend._kv_context_budget = budget and columns
+        if budget or spliced:
+            with pytest.raises(context_refusal.ContextBudgetExceeded):
+                backend._generation_limit(prompt, 4, images = [object()])
+        else:
+            assert backend._generation_limit(prompt, 4, images = [object()]) == 4
+
+
+def test_a_spliced_count_is_the_embedding_even_truncated_and_a_dead_queue_fails_the_load(
+    monkeypatch,
+):
+    utils = _stub_prepare_inputs(monkeypatch, per_medium = 1)
+    backend = _vision_backend()
+    backend._media_splices = True
+    backend._model.get_input_embeddings = lambda *_a, **_k: SimpleNamespace(
+        inputs_embeds = SimpleNamespace(shape = (1, 3, 8))
+    )
+    assert backend._count_prompt_tokens("placeholder describe this picture", [object()]) == 3
+
+    def _dead(*_a, **_k):
+        raise RuntimeError("[METAL] Command buffer execution failed: Caused GPU Timeout Error.")
+
+    backend._model.get_input_embeddings = _dead
+    backend.count_chat_tokens = lambda _t, images: backend._count_prompt_tokens("p", images)
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        backend._measure_media_splice()
+    # A processor that evaluates on the GPU (Kimi-VL) loses the queue before any embedding.
+    utils.prepare_inputs = _dead
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        backend._measure_media_splice()
+    backend._media_splices = True
+    for budget in (None, 1024):
+        backend._kv_context_budget = budget
+        with pytest.raises(RuntimeError, match = "GPU Timeout"):
+            backend._generation_limit("p", 4, images = [object()])
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        backend._check_context_budget("p", 4, images = [object()])
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        backend._prompt_within_window("p", None, [object()])
+
+
+@pytest.mark.parametrize("splices", [False, True])
+def test_a_vision_load_records_whether_the_model_splices_images(monkeypatch, splices):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    monkeypatch.setattr(MLXInferenceBackend, "_measure_media_splice", lambda _self: splices)
+    backend = MLXInferenceBackend()
+    backend._media_splices = not splices
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(config)
+    assert backend._media_splices is splices
+
+
 def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch):
     """Max Tokens at the window means "as much as fits", not a request for that many."""
     from core.inference import context_refusal
@@ -8893,6 +8979,141 @@ def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeyp
         _count_route(monkeypatch, backend, messages = [{"role": "user", "content": "hi"}])
     assert excinfo.value.status_code == 503
     assert "changed while counting" in str(excinfo.value.detail)
+
+
+class _NeedsUserTurnBackend(_RenderRecordingBackend):
+    """Qwen3.5's template: raises 'No user query found' for a chat with no user turn."""
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        if not any(m.get("role") == "user" for m in messages):
+            raise RuntimeError("No user query found in messages.")
+        super().count_chat_tokens(messages, system_prompt, **kwargs)
+        return 10 + len(messages), "mlx/model"
+
+
+@pytest.mark.parametrize("backend_type", [_NeedsUserTurnBackend, _RenderRecordingBackend])
+def test_an_mlx_count_prices_a_chat_of_instructions_alone_as_its_next_send(
+    monkeypatch, backend_type
+):
+    """Whether or not the template renders it without a user turn, so no template flips the rule."""
+    backend = backend_type()
+    served = _count_route(
+        monkeypatch,
+        backend,
+        messages = [{"role": "system", "content": "Be brief."}],
+        enable_tools = False,
+    )
+    assert served.status_code == 200
+    assert backend.messages == [{"role": "user", "content": ""}]
+    assert backend.system == "Be brief."
+
+
+def test_an_mlx_count_prices_an_assistant_only_chat_as_sent(monkeypatch):
+    """The completion serves it, so the count must price the prompt generation reports."""
+    from fastapi import HTTPException
+
+    chat = [{"role": "system", "content": "Be brief."}, {"role": "assistant", "content": "Hi."}]
+    backend = _RenderRecordingBackend()
+    _count_route(monkeypatch, backend, messages = chat, enable_tools = False)
+    assert backend.messages == [{"role": "assistant", "content": "Hi."}]
+    with pytest.raises(HTTPException) as excinfo:
+        _count_route(monkeypatch, _NeedsUserTurnBackend(), messages = chat, enable_tools = False)
+    assert excinfo.value.status_code == 503, "generation fails on it too"
+
+
+class _PricedPartsBackend(_RenderRecordingBackend):
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        super().count_chat_tokens(messages, system_prompt, **kwargs)
+        self.seen = [*getattr(self, "seen", []), (messages, bool(kwargs.get("tools")))]
+        return len(system_prompt) + 100 * len(kwargs.get("tools") or ()) + 3 * len(messages), "m"
+
+
+def test_an_mlx_breakdown_of_instructions_alone_prices_the_same_conversation_in_every_part(
+    monkeypatch,
+):
+    backend = _PricedPartsBackend()
+    tool = {"type": "function", "function": {"name": "mine", "parameters": {}}}
+    served = _count_route(
+        monkeypatch,
+        backend,
+        messages = [{"role": "system", "content": "Be brief."}],
+        tools = [tool],
+        enable_tools = False,
+        breakdown = True,
+    )
+    body = json.loads(served.body)
+    assert body["breakdown"]["tools"] == 100
+    assert body["breakdown"]["messages"] == 0, "no history of its own to price"
+    assert body["breakdown"]["system"] == body["input_tokens"] - 100
+    assert [tools for _, tools in backend.seen] == [True, False]
+    assert all(messages[-1] == {"role": "user", "content": ""} for messages, _ in backend.seen)
+
+
+def test_an_mlx_count_that_fails_is_not_retried_on_another_conversation(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _NeedsUserTurnBackend()
+    calls = []
+
+    def _broken(
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        calls.append(messages)
+        raise RuntimeError("worker timed out")
+
+    backend.count_chat_tokens = _broken
+    with pytest.raises(HTTPException) as excinfo:
+        _count_route(
+            monkeypatch,
+            backend,
+            messages = [{"role": "system", "content": "Be brief."}],
+            enable_tools = False,
+        )
+    assert excinfo.value.status_code == 503
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "entry, detail",
+    [
+        (
+            {"is_mlx": True, "is_audio": True, "audio_type": "csm"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        (
+            {"is_mlx": True, "is_audio": True, "audio_type": "whisper"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        (
+            {"is_mlx": False, "is_audio": True, "audio_type": "snac"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        ({"is_mlx": False}, "Token counting is not available on the transformers backend."),
+    ],
+    ids = ["mlx_tts", "mlx_whisper", "transformers_tts", "transformers_chat"],
+)
+def test_a_resident_model_that_cannot_count_is_named_not_reported_unloaded(
+    monkeypatch, entry, detail
+):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        _count_hi(monkeypatch, _RenderRecordingBackend(), models = {"mlx/model": entry})
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == detail
+    assert not excinfo.value.headers, "no not_loaded problem code for a loaded model"
 
 
 def test_an_mlx_count_yields_to_a_generation_that_started_while_it_prepared(monkeypatch):
@@ -9787,7 +10008,7 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
     ),
 )
 def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
-    """Replayed tool images and a clip live only on the single path."""
+    """No batch takes replayed tool images, or a clip on a load that reads no video."""
     from core.inference.mlx_inference import MLXInferenceBackend
 
     engine = _batch_engine(monkeypatch)
@@ -9895,24 +10116,38 @@ def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "gap", (None, "drafted", "drafted and quantized", "old zoo", "no decoder", "no vision")
+    "gap",
+    (
+        *(None, "drafted", "quantized", "drafted and quantized", "old zoo", "no decoder"),
+        *("no vision", "windowed", "windowed, no snapshots", "windowed, old zoo"),
+        "drafted, windowed, no snapshots",
+    ),
 )
-def test_a_video_reply_batches_only_as_a_fixed_command_of_a_load_that_reads_it(monkeypatch, gap):
+def test_a_video_reply_batches_or_joins_a_resident_batch_of_a_load_that_reads_it(monkeypatch, gap):
     from core.inference import mlx_inference
 
     engine, backend = _batch_engine(monkeypatch), _vlm_backend(monkeypatch, markers = None)
-    backend._speculative_draft = gap in ("drafted", "drafted and quantized") or None
-    backend._kv_quant = {"kv_bits": 8 if gap == "drafted and quantized" else None}
+    backend._speculative_draft = str(gap).startswith("drafted") or None
+    backend._kv_quant = {"kv_bits": 8 if "quantized" in str(gap) else None}
     backend._reads_vision, available = gap != "no vision", lambda request: None
     backend._vlm_batch_unavailable_reason = backend._vlm_resident_unavailable_reason = available
     monkeypatch.setattr(mlx_inference, "_speculative_quantized_row_gap", lambda: None)
+    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
     monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: gap != "no decoder")
+    # Only a row's own cache keeps a window, so only a load whose rows get one joins it with a clip.
+    backend._kv_cache_window = 8 if "windowed" in str(gap) else None
+    backend._vlm_prompt_cache_store = lambda: None if "no snapshots" in str(gap) else object()
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda _model: False)
+    rows_gap = "old zoo" if gap == "windowed, old zoo" else None
+    monkeypatch.setattr(mlx_inference, "_row_prompt_cache_gap", lambda: rows_gap)
     fields = SimpleNamespace(__dataclass_fields__ = ("image", "videos")[: 1 + (gap != "old zoo")])
     monkeypatch.setattr(engine, "GenerationRequest", fields, raising = False)
     clip, sent = {"videos": [_CLIP_B64]}, {"videos_base64": [_CLIP_B64]}
+    batches = gap in (None, "drafted") or "windowed" in gap
+    joins = gap in (None, "drafted", "windowed")
     for row in (clip, sent):
-        assert (backend.batch_unavailable_reason([{}, row]) is None) == (gap in (None, "drafted"))
-    assert backend.resident_unavailable_reason(sent) == "a reply carries a video clip"
+        assert (backend.batch_unavailable_reason([{}, row]) is None) == batches
+        assert (backend.resident_unavailable_reason(row) is None) == joins
     assert backend.resident_unavailable_reason({}) is None
 
 
@@ -11867,7 +12102,7 @@ def test_a_quantized_speculative_load_batches_unless_its_caches_are_turboquant(m
     assert backend._kv_policy_batch_reason(resident = True) == "no rows"
 
 
-def test_a_drafted_batch_row_decodes_its_own_clip_and_resumes_no_cache(monkeypatch):
+def test_a_drafted_batch_row_decodes_its_own_clip_on_a_cold_cache_and_frees_its_files(monkeypatch):
     from contextlib import ExitStack
 
     from core.inference import mlx_inference
@@ -11877,8 +12112,13 @@ def test_a_drafted_batch_row_decodes_its_own_clip_and_resumes_no_cache(monkeypat
     monkeypatch.setattr(engine, "SamplingParams", lambda **k: k, raising = False)
     monkeypatch.setattr(engine, "BatchRowRefused", ValueError, raising = False)
     clips = {"videos": ["clip.mp4"], "fps": 2.0}
-    monkeypatch.setattr(mlx_inference, "_batch_clips", lambda stack, plans, _p: [clips])
-    added, released = [], []
+    added, released, discarded, rows = [], [], [], []
+
+    def batch_clips(stack, plans, _processor):
+        stack.callback(discarded.append, "clip.mp4")
+        return [clips]
+
+    monkeypatch.setattr(mlx_inference, "_batch_clips", batch_clips)
     plan = SimpleNamespace(
         videos = ("a",),
         images = None,
@@ -11891,20 +12131,47 @@ def test_a_drafted_batch_row_decodes_its_own_clip_and_resumes_no_cache(monkeypat
     session = mlx_inference._VisionBatchSession.__new__(mlx_inference._VisionBatchSession)
     session.backend = SimpleNamespace(
         _plan_vlm_request = lambda *_a, **_k: plan,
-        _vlm_batch_row_cache = lambda *_a, **_k: pytest.fail("a clip's row resumes no cache"),
+        _vlm_batch_row_cache = lambda *_a, **kwargs: rows.append(kwargs) or "cold",
         _kv_quant_bits = lambda: None,
         _release_vlm_snapshots = lambda: released.append(True),
         _vlm_batch_prompt = lambda prompt: {"prompt": prompt},
         _processor = None,
         _model = None,
     )
-    session.stream = SimpleNamespace(add = lambda request: added.append(request) or 0)
+    session.stream = SimpleNamespace(add = lambda request: added.append(request) or len(discarded))
     session._adapter_state, session._decodes_ids, session._resumes_rows = None, False, True
     session._retires_rows, session._speculative, session._held = False, object(), ExitStack()
     session._rows, session._by_row, session._watching = {}, {}, {}
     session.admit({}, 0)
+    # add() saw the file; the row, still decoding, no longer holds it.
+    assert session._by_row.keys() == {0} and discarded == ["clip.mp4"]
     assert added[0]["videos"] == ["clip.mp4"] and added[0]["fps"] == 2.0
-    assert "prompt_cache_state" not in added[0] and released == [True]
+    assert added[0]["prompt_cache_state"] == "cold" and rows[0]["has_video"] is True
+    assert released == [True]
+    session.stream.add = lambda _request: (_ for _ in ()).throw(ValueError("prepares unlike"))
+    with pytest.raises(mlx_inference.RowRefused):
+        session.admit({}, 1)
+    assert discarded == ["clip.mp4"] * 2
+    # The fixed speculative batch admits through here; only the resident gate keeps a window.
+    session.stream.add = lambda request: added.append(request) or 2
+    session.backend._vlm_batch_row_cache = lambda *_a, **_k: None
+    session.backend._kv_cache_window = 8
+    session.admit({}, 2)
+    assert "prompt_cache_state" not in added[-1] and discarded == ["clip.mp4"] * 3
+
+
+def test_a_clip_rows_cache_prefills_cold_on_the_loads_cache_layout(monkeypatch):
+    from core.inference import mlx_inference
+
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+    store = mlx_inference.VLMPromptSnapshotStore(10**6)
+    backend._vlm_prompt_cache_store, backend._kv_quant_bits = lambda: store, lambda: None
+    backend._model, backend._grid_step = SimpleNamespace(config = SimpleNamespace()), lambda: 512
+    backend._vlm_snapshot_scope = lambda *_a: (None, "key", lambda: "windowed")
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda _model: False)
+    clip = backend._vlm_batch_row_cache("base", None, has_video = True)
+    assert clip.open([1, 2, 3]) == ("windowed", ()) and clip._store is None
+    assert backend._vlm_batch_row_cache("base", None)._store is store
 
 
 def test_a_speculative_load_drafts_a_video_reply_on_its_expanded_prompt(monkeypatch):

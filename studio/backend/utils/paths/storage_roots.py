@@ -143,8 +143,7 @@ def forget_recorded_master_root() -> None:
 
 
 def unsloth_home() -> Path | None:
-    """The master root, or None. STUDIO_HOME is its studio/ child; llama.cpp, node and
-    whisper.cpp are SIBLINGS of studio/, the layout setup.sh already gives UNSLOTH_HOME."""
+    """Master root or None; studio/ is STUDIO_HOME; llama.cpp, node, whisper.cpp are siblings."""
     override = (os.environ.get("UNSLOTH_HOME") or "").strip()
     if override:
         return _resolved(override)
@@ -476,8 +475,7 @@ def ensure_dir(path: Path) -> Path:
 
 
 def ensure_account_dir(path: Path) -> Path:
-    """``ensure_dir`` inside the acting account's workspace: refuse once the tombstone is set, or a
-    finalizer outliving deletion recreates the renamed-aside roots. Locked against the rename."""
+    """Refuses once retired (locked against rename): late finalizers would recreate the roots."""
     with root_retirement_lock:
         if not is_owner_context():
             from core.training.account_jobs import account_is_retired
@@ -899,8 +897,7 @@ def _torch_runtime_tag() -> str:
     return tag
 
 
-# Inductor's cpp_builder shlex-splits the g++ command, so paths with spaces/quotes break builds.
-# toolchain_path_unparseable has the full character list.
+# shlex-splits g++ args: spaces/quotes in paths break builds (see toolchain_path_unparseable).
 _TOOLCHAIN_PATH_KEYS = frozenset(
     {
         "TORCHINDUCTOR_CACHE_DIR",
@@ -1076,9 +1073,8 @@ def _path_with_first(path: str, first: str) -> str:
 
 
 def _setup_cache_env() -> None:
-    """Sets cache env vars for Hugging Face, uv and vLLM; explicit Hugging Face env vars override
-    Unsloth's stored location, and import-time variables are seeded once while each later worker
-    gets its own captured location."""
+    """Sets cache env vars for Hugging Face, uv and vLLM; explicit HF vars override Unsloth's stored
+    location; import-time vars are seeded once, later workers capture their own location."""
     _use_studio_uv_tools()
     root = cache_root()
     from utils.hf_cache_settings import initialize_hf_cache_environment
@@ -1087,8 +1083,7 @@ def _setup_cache_env() -> None:
     defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
-        # unsloth_zoo defaults to a cwd-relative name (user home on Windows). Set before
-        # unsloth_zoo.compiler imports: it reads the value at import time.
+        # cwd-relative by default (home on Windows); set before unsloth_zoo.compiler imports.
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
         # Regenerable and process-scoped; shared user data stays put except in portable mode.
         "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
@@ -1412,7 +1407,7 @@ def resolve_dataset_path(path_value: str) -> Path:
                 continue
         raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
 
-    parts = [part for part in Path(path_value).parts if part not in ("", ".")]
+    parts = [part for part in Path(raw).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:
         parts = parts[2:]
     if parts and parts[0] == "uploads":

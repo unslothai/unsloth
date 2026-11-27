@@ -41,6 +41,7 @@ from core.inference.chat_template_helpers import (
     count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
+    with_thought_spans,
     messages_have_tool_history as _vlm_messages_have_tool_history,
     messages_with_attached_image,
     neutralize_for_render,
@@ -5163,6 +5164,27 @@ def _spliced_columns(model):
             model.get_input_embeddings = own
 
 
+def _embedded_columns(model, inputs):
+    """Embedding width of prepared inputs, read off the unevaluated graph; None if unbuildable."""
+    rest = {
+        k: v for k, v in inputs.items() if k not in ("input_ids", "pixel_values", "attention_mask")
+    }
+    try:
+        out = model.get_input_embeddings(
+            inputs["input_ids"],
+            inputs.get("pixel_values"),
+            mask = inputs.get("attention_mask"),
+            **rest,
+        )
+        shape = getattr(getattr(out, "inputs_embeds", None), "shape", None)
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.debug("MLX prompt embedding width unavailable: %s", exc)
+        return None
+    return int(shape[1]) if shape and len(shape) > 1 else None
+
+
 class _VLMMediaBlock:
     """A prompt's rows through its last vision token, prefilled by Studio: models whose vision
     tokens attend to each other prefill in one forward that lands off the grid, and this is that
@@ -5301,7 +5323,7 @@ class _RowStream:
         if not delta:
             return []
         self._output += delta
-        return [self._output]
+        return [with_thought_spans(self._output, self._normalizer, self._prefix)]
 
 
 def _messages_with_system_prompt(messages, system_prompt):
@@ -6025,16 +6047,17 @@ class _VisionBatchSession:
         if sink is not None:
             row.live = _LiveProgress(sink)
         alone = self._alone(handle) if self._retires_rows else None
-        # A clip's row resumes nothing: token ids do not vary with the clip.
         state = (
-            backend._vlm_batch_row_cache(self._adapter_state, plan.images, alone = alone)
-            if self._resumes_rows and not plan.videos
+            backend._vlm_batch_row_cache(
+                self._adapter_state, plan.images, alone = alone, has_video = bool(plan.videos)
+            )
+            if self._resumes_rows
             else None
         )
         if state is None and backend._kv_quant_bits() is not None:
             # mlx-vlm's own batch cache would be float.
             raise RowRefused("this row cannot carry the load's quantized KV cache")
-        if state is None and (plan.images or plan.videos):
+        if plan.videos or (state is None and plan.images):
             backend._release_vlm_snapshots()
         elif state is None:
             backend._release_held_vlm_snapshots()
@@ -6046,9 +6069,11 @@ class _VisionBatchSession:
             and "prompt_progress" in getattr(GenerationRequest, "__dataclass_fields__", ())
         ):
             options["prompt_progress"] = functools.partial(self._prefilled, row)
-        clips = _batch_clips(self._held, [plan], backend._processor)[0] if plan.videos else {}
-        admitted_at = time.perf_counter()
+        # add() decodes the frames, so the clip files go when it returns.
+        clip_files = ExitStack()
         try:
+            clips = _batch_clips(clip_files, [plan], backend._processor)[0] if plan.videos else {}
+            admitted_at = time.perf_counter()
             row_number = self.stream.add(
                 GenerationRequest(
                     **backend._vlm_batch_prompt(plan.prompt),
@@ -6062,6 +6087,8 @@ class _VisionBatchSession:
             )
         except BatchRowRefused as refusal:
             raise RowRefused(str(refusal)) from refusal
+        finally:
+            clip_files.close()
         row.row = row_number
         # A speculative batch prefills the row inside add(), so its clock starts before it.
         row.admitted_at = admitted_at if self._speculative is not None else time.perf_counter()
@@ -6240,6 +6267,7 @@ class MLXInferenceBackend:
         self._reasoning_budget = -1
         self._reasoning_budget_message = ""
         self._multi_image_marker = None
+        self._media_splices = False
         self._config = {}
         self._distributed_group = None
         self._distributed_rank = 0
@@ -6559,19 +6587,23 @@ class MLXInferenceBackend:
         )
         return language_model, key, make_cache
 
+    def _vlm_row_cache_available(self):
+        if _vlm_generation_is_diffusion(self._model):
+            return False
+        return self._vlm_prompt_cache_store() is not None or self._kv_quant_bits() is not None
+
     def _vlm_batch_row_cache(
         self,
         adapter_state,
         images = None,
         alone = None,
+        has_video = False,
     ):
         """A batched row's ``prompt_cache_state``, or None while the store is off on an unquantized
         load. Otherwise every row gets one, so all rows' caches share the factory's layout."""
-        store = self._vlm_prompt_cache_store()
-        if (store is None and self._kv_quant_bits() is None) or _vlm_generation_is_diffusion(
-            self._model
-        ):
+        if not self._vlm_row_cache_available():
             return None
+        store = self._vlm_prompt_cache_store()
         media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
         try:
             _language_model, key, make_cache = self._vlm_snapshot_scope(adapter_state, images)
@@ -6580,6 +6612,9 @@ class MLXInferenceBackend:
             return None
         if store is None:
             pass
+        elif has_video:
+            # The store keys on token ids, which a clip does not vary: prefill cold on the same layout.
+            store = None
         elif images and (not media_ids or self._vlm_bidirectional_vision(self._model)):
             # Unplaceable, or prefilled by the single path as a media block: nothing serves it.
             store.clear()
@@ -6668,6 +6703,8 @@ class MLXInferenceBackend:
                 else self._count_prompt_tokens(prompt, images, audio, videos)
             )
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             logger.debug("MLX prompt count failed: %s", exc)
             return None
         window = self._served_context
@@ -6689,8 +6726,16 @@ class MLXInferenceBackend:
         if prompt_tokens is None and isinstance(prompt, list):
             prompt_tokens = prompt
         budget = getattr(self, "_kv_context_budget", None)
+        # Without a budget, media is prepared only where its placeholder count misses spliced columns.
+        splices = bool(images) and getattr(self, "_media_splices", False)
+        if prompt_tokens is None and (budget or splices):
+            try:
+                prompt_tokens = range(self._count_prompt_tokens(prompt, images, audio, videos))
+            except Exception as exc:
+                if is_metal_queue_dead(exc):
+                    raise
+                logger.debug("MLX prompt count for the context budget failed: %s", exc)
         if not budget:
-            # No budget: size from the placeholder count as before, never preparing the media.
             if max_new_tokens is None:
                 max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
                 if cap is not None:
@@ -6701,11 +6746,6 @@ class MLXInferenceBackend:
         # Max Tokens == window is the UI's "no cap"; admitting it as-is would refuse every prompt.
         if max_new_tokens is not None and int(max_new_tokens) == int(budget):
             max_new_tokens = None
-        if prompt_tokens is None:
-            try:
-                prompt_tokens = range(self._count_prompt_tokens(prompt, images, audio, videos))
-            except Exception as exc:
-                logger.debug("MLX prompt count for the context budget failed: %s", exc)
         if max_new_tokens is None:
             max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
             if cap is not None:
@@ -6852,6 +6892,8 @@ class MLXInferenceBackend:
                 else self._count_prompt_tokens(prompt, images, audio, videos)
             )
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             logger.debug("MLX prompt count for the context budget failed: %s", exc)
             return
         needed = prompt_n + max(0, int(max_new_tokens or 0))
@@ -6890,7 +6932,7 @@ class MLXInferenceBackend:
         audio = None,
         videos = None,
     ):
-        """Prompt length as the processor expands media (as mlx-vlm's server does), else None."""
+        """Prompt length with media expanded or images spliced, else None."""
         if not (images or audio or videos):
             return None
         try:
@@ -6919,10 +6961,34 @@ class MLXInferenceBackend:
                 **kwargs,
             )
             ids = inputs["input_ids"]
-            return int(getattr(ids, "size", 0)) or len(ids)
+            counted = int(getattr(ids, "size", 0)) or len(ids)
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             logger.debug("MLX media prompt count failed: %s", exc)
             return None
+        splices = getattr(self, "_media_splices", False)
+        if not images or splices is False:
+            return counted
+        columns = _embedded_columns(self._model, inputs)
+        if splices is None:
+            self._media_splices = bool(columns) and columns > counted
+        # FastVLM truncates its embedding at tokenizer_model_max_length, below the ids.
+        return columns or counted
+
+    def _measure_media_splice(self):
+        """Whether images splice wider than their ids (FastVLM); probed once per load."""
+        from PIL import Image
+
+        self._media_splices = None
+        try:
+            blank = Image.new("RGB", (224, 224), "white")
+            self.count_chat_tokens([{"role": "user", "content": "."}], images = [blank])
+        except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
+            logger.debug("MLX media splice probe failed: %s", exc)
+        return bool(self._media_splices)
 
     def _count_prompt_tokens(
         self,
@@ -7664,6 +7730,9 @@ class MLXInferenceBackend:
                     mlx_ane_prefill = self._ane_prefill["active"],
                     mlx_ane_prefill_reason = self._ane_prefill["reason"],
                 )
+        self._media_splices = bool(use_vlm and is_vision and not is_distributed) and (
+            self._measure_media_splice()
+        )
         logger.info("Model %s loaded successfully", model_name)
         return True
 
@@ -8607,7 +8676,7 @@ class MLXInferenceBackend:
                         released = cut
                         if delta:
                             normalized_output += delta
-                            yield normalized_output
+                            yield with_thought_spans(normalized_output, normalizer, think_prefix)
                     else:
                         # Re-decoding every id rebuilds rather than extends, so an invalid byte sequence can revise
                         # characters already shown. Predates stop handling and affects plain replies too.
@@ -8678,14 +8747,14 @@ class MLXInferenceBackend:
                 delta = normalizer.feed(sampled[released:cut])
                 if delta:
                     normalized_output += delta
-                    yield normalized_output
+                    yield with_thought_spans(normalized_output, normalizer, think_prefix)
         if normalizer is not None:
             # A sequence ends the turn like a stop token, so a reasoning block it cut inside is closed; only a cancelled turn drains, since more was coming
             cancelled = not stopped and cancel_event is not None and cancel_event.is_set()
             tail = normalizer.drain() if cancelled else normalizer.finish()
             if tail:
                 normalized_output += tail
-                yield normalized_output
+                yield with_thought_spans(normalized_output, normalizer, think_prefix)
         if stopped:
             self._mark_stopped()
 
@@ -9685,6 +9754,7 @@ class MLXInferenceBackend:
                 prompt = prompt,
                 continued = vlm_continued,
                 ended = lambda: stopped,
+                prefix = prefill,
             )
         if stopped:
             self._mark_stopped()
@@ -9732,10 +9802,12 @@ class MLXInferenceBackend:
     def resident_unavailable_reason(self, request):
         if self._model is None:
             return "no model is loaded"
-        reason = _request_batch_gap(request)
-        if reason is None and _carries_video(request):
-            # Whether a clip's row fits the open batch is known only once its frames are decoded.
-            reason = "a reply carries a video clip"
+        # A clip that does not fit the open batch is refused on admission, once its frames are decoded.
+        reason = _request_batch_gap(request) or self._video_batch_gap([request])
+        if reason is None and _carries_video(request) and getattr(self, "_kv_cache_window", None):
+            # mlx-vlm's batch cache ignores the window, which only a row's own cache keeps.
+            if _row_prompt_cache_gap() is not None or not self._vlm_row_cache_available():
+                reason = "a clip's row would not keep the load's KV window"
         if reason is not None:
             return reason
         reason = self._kv_policy_batch_reason(resident = True)
@@ -9751,9 +9823,8 @@ class MLXInferenceBackend:
         # The one-at-a-time decode refuses these clips by name.
         if not self._is_vlm or not self._reads_vision_input() or not _mlx_vlm_decodes_video():
             return "a reply carries a video clip this load does not read"
-        if self._speculative_draft is not None and self._kv_quant_bits() is not None:
-            # A clip's row resumes no cache, and only a resumed row carries the quantization.
-            return "a quantized speculative batch does not decode a video clip"
+        if self._kv_quant_bits() is not None:
+            return "a quantized batch does not decode a video clip"
         try:
             from unsloth_zoo.mlx import generate as engine
         except ImportError:

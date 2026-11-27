@@ -4445,6 +4445,8 @@ export const ko = {
       unsupportedFileType: "지원되지 않는 파일 형식",
       uploadOneFileType: "{types} 파일 하나를 업로드하세요.",
       datasetUploaded: "데이터셋이 업로드되었습니다",
+      importPandasJson: ".json을 pandas 열 형식으로 가져오기",
+      importSemicolonCsv: ".csv 구분 기호로 세미콜론 사용",
       evalDatasetUploaded: "평가 데이터셋이 업로드되었습니다",
       uploadOneFileAtATime: "한 번에 하나의 파일만 업로드하세요",
       uploadSingleFileDescription:

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Search index over evicted turns in a per-thread RAG scope; transcript untouched; cumulative,
-never reset per compaction; entry points no-op on failure."""
+"""Per-thread index of evicted turns; transcript untouched; never reset; no-op on failure."""
 
 from __future__ import annotations
 
@@ -99,7 +98,6 @@ _session: contextvars.ContextVar[Optional[_RecallSession]] = contextvars.Context
 
 @contextmanager
 def recall_session():
-    """Recalls inside share one session; a nested entry joins the outer one."""
     if _session.get() is not None:
         yield
         return
@@ -235,7 +233,22 @@ def _is_injected(message: dict) -> bool:
 
 def render_turn(group: list[dict]) -> str:
     """One indexed document per evicted turn group, question and answer together for retrieval."""
+    return _render_turn(group)[0]
+
+
+def _is_direct_web_read(raw_args) -> bool:
+    from core.inference.tools import _resolve_web_search_args
+    try:
+        arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    except ValueError:
+        return False
+    return bool(_resolve_web_search_args(arguments)[1])
+
+
+def _render_turn(group: list[dict]) -> tuple[str, str | None]:
     lines: list[str] = []
+    url_reads: set[str] = set()
+    clipped: dict[int, str] = {}
     for message in group:
         role = str(message.get("role") or "")
         if role in _SKIP_ROLES:
@@ -247,7 +260,11 @@ def render_turn(group: list[dict]) -> str:
             for call in calls:
                 function = (call or {}).get("function") or {}
                 name = str(function.get("name") or "tool")
-                arguments = str(function.get("arguments") or "").strip()
+                raw_args = function.get("arguments")
+                call_id = (call or {}).get("id")
+                if name == "web_search" and call_id and _is_direct_web_read(raw_args):
+                    url_reads.add(call_id)
+                arguments = str(raw_args or "").strip()
                 if len(arguments) > _MAX_TOOL_ARGS_CHARS:
                     arguments = arguments[:_MAX_TOOL_ARGS_CHARS] + _TRUNCATION_MARKER
                 lines.append(
@@ -261,13 +278,40 @@ def render_turn(group: list[dict]) -> str:
         if not text:
             continue
         if role == "tool":
-            # Tool results are too large to quote whole; keep a bounded prefix so the index stays small.
+            # Bounded prefix keeps the index small; a direct web read is kept whole (the tool already capped it).
             if len(text) > _MAX_TOOL_RESULT_CHARS:
-                text = text[:_MAX_TOOL_RESULT_CHARS] + _TRUNCATION_MARKER
+                prefix = text[:_MAX_TOOL_RESULT_CHARS] + _TRUNCATION_MARKER
+                if message.get("tool_call_id") in url_reads:
+                    # Older builds clipped it; that copy's hash lets the full one replace it.
+                    clipped[len(lines)] = f"tool result: {prefix}"
+                else:
+                    text = prefix
             lines.append(f"tool result: {text}")
         else:
             lines.append(f"{role or 'message'}: {text}")
-    return "\n".join(lines).strip()
+    full = "\n".join(lines).strip()
+    legacy = "\n".join(clipped.get(index, line) for index, line in enumerate(lines)).strip()
+    # A read ending in the marker can clip to itself; retiring that "legacy" copy would drop the new one.
+    if not clipped or legacy == full:
+        return full, None
+    return full, hashlib.sha256(legacy.encode("utf-8", "ignore")).hexdigest()
+
+
+def _retire_clipped_web_read(
+    conn, scope: str, digest: str, legacy_hash: str | None, seats: list[int]
+) -> bool:
+    """Retire truncated copies only at a transcript seat a full copy of the turn already holds."""
+    if legacy_hash is None or not seats:
+        return False
+    held = {copy.get("archive_ordinal") for copy in store.documents_by_hash(conn, scope, digest)}
+    stale = [
+        copy["id"]
+        for copy in store.documents_by_hash(conn, scope, legacy_hash)
+        if copy.get("archive_ordinal") in held.intersection(seats)
+    ]
+    if stale:
+        store.delete_documents(conn, stale, commit = False)
+    return bool(stale)
 
 
 def _archivable(group: list[dict]) -> list[dict]:
@@ -304,7 +348,6 @@ def _without_retrieval(group: list[dict]) -> list[dict]:
                     keep_calls.append(call)
             if len(keep_calls) != len(calls):
                 if not keep_calls and not _text_of(message.get("content")).strip():
-                    # Nothing left of it but the search.
                     continue
                 message = {**message, "tool_calls": keep_calls}
         if str(message.get("role") or "") == "tool":
@@ -573,8 +616,7 @@ def hold_inference() -> Callable[[], None]:
 
 
 def _pause_prewarm() -> None:
-    """Stop the gap worker and wait out its batch in flight; it restarts at the next stream's end. Bounded, so a
-    wedged embedder can never hold a generation back."""
+    """Stops gap worker; bounded wait for its batch so wedged embedder cannot hold generation."""
     _prewarm_stop.set()
     worker = _prewarm_worker
     if worker is not None and worker is not threading.current_thread():
@@ -666,8 +708,7 @@ def _prewarm_thread(
     messages: list[dict],
     stopped: Callable[[], bool] = lambda: False,
 ) -> None:
-    """Embed this thread's not-yet-archived turns into the vector cache, oldest first (the next to be
-    evicted). Writes nothing to the archive, so an edit or rewind cannot strand a stale row."""
+    """Embeds unarchived turns oldest first; writes nothing to the archive, so none goes stale."""
     if not can_archive(thread_id):
         return
     from core.inference.context_window import group_turns
@@ -724,8 +765,7 @@ def _yielding(count: Callable[[str], int]) -> Callable[[str], int]:
 
 
 def _embedder_busy() -> bool:
-    """Whether another caller holds a lock the encode path would wait on: model load / backend build, the ST
-    compute lock, or the llama-server backend's serve lock. Probed without blocking."""
+    """Probes non-blockingly whether another caller holds a lock the encode path would wait on."""
     locks = [embeddings._backend_lock, embeddings._lock, embeddings._compute_lock]
     serve = getattr(embeddings._backend, "_serve_lock", None)
     if serve is not None:
@@ -738,8 +778,7 @@ def _embedder_busy() -> bool:
 
 
 def _embedder_free() -> bool:
-    """Wait for the embedder without queueing on its locks: a queued worker cannot see a stop, so a generation
-    would wait behind another caller's (e.g. ingestion's) whole batch."""
+    """Waits for the embedder without queueing on its locks; a queued worker cannot see a stop."""
     while _embedder_busy():
         if _gap_closed():
             return False
@@ -803,7 +842,7 @@ def _archive_turns(
     model = config.effective_embedding_model()
     scope = store.conversation_archive_scope(thread_id)
     # Conversation order from the persisted thread, not arrival order (`_transcript_positions`).
-    positions = _transcript_positions(thread_id, branch or live)
+    positions, replace_clipped = _transcript_positions(thread_id, branch or live)
     live_positions = _live_positions(live)
     written = 0
     # Only an embedder failure falls back to keyword copies; a failing store would refuse those too.
@@ -828,9 +867,10 @@ def _archive_turns(
         for group, span in groups:
             if cancel_check is not None and cancel_check():
                 return 0
-            text = render_turn(group)
+            text, legacy_hash = _render_turn(group)
             if not text:
                 continue
+            legacy_hash = legacy_hash if replace_clipped else None
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             seats = _occurrences(positions, group)
             budget = _write_budget(positions, seats, live_positions, group)
@@ -844,6 +884,8 @@ def _archive_turns(
                     seats[: max(1, budget)] if seats else seats,
                     commit = True,
                 )
+                if _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats):
+                    conn.commit()
                 _widen_span(conn, scope, digest, span)
                 continue
             if collected >= max_chunks:
@@ -856,7 +898,17 @@ def _archive_turns(
                 # The cap counts what must be encoded now; chunks pre-embedded in an idle gap are free.
                 hits = _cached_vectors(expected_identity, [chunk.text for chunk in chunks])
                 need = sum(v is None for v in hits)
-                pending.append((group, span, digest, chunks, seats, budget))
+                pending.append(
+                    (
+                        group,
+                        span,
+                        digest,
+                        chunks,
+                        seats,
+                        budget,
+                        legacy_hash,
+                    )
+                )
                 needs.append(need)
                 snapshots.append(hits)
                 collected += need
@@ -947,7 +999,7 @@ def _archive_turns(
                 len(pending),
             )
 
-        for (group, span, digest, chunks, seats, budget), group_vectors in complete:
+        for (group, span, digest, chunks, seats, budget, legacy_hash), group_vectors in complete:
             roles = " + ".join(
                 dict.fromkeys(str(message.get("role") or "message") for message in group)
             )
@@ -1006,12 +1058,12 @@ def _archive_turns(
             )
             try:
                 store.add_chunks(conn, scope, document_id, chunks, group_vectors)
+                _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats)
             except Exception:
                 conn.rollback()
                 raise
             # Surplus only, not a restamp (restamping would renumber a pre-column row). Runs after the new row exists, so the count is what the scope holds.
             _retire_surplus(conn, scope, digest, seats)
-            # Restamp ordinals against the remaining seats once a copy is retired, skipping NULLs.
             if stale is not None:
                 _restamp(conn, scope, digest, seats, skip_null = True)
             conn.commit()
@@ -1034,6 +1086,7 @@ def _archive_turns(
                     chunks = chunks,
                     vectors = group_vectors,
                     seats = seats,
+                    legacy_hash = legacy_hash,
                 ):
                     break
                 _retire_surplus(conn, scope, digest, seats)
@@ -1063,7 +1116,13 @@ def _archive_turns(
         # Without any copy there is no archive, so search_conversation is never offered (#16706).
         # degraded() stays set: dense recall is still down.
         written += _archive_turns_lexically(
-            thread_id, scope, groups, positions, live_positions, cancel_check
+            thread_id,
+            scope,
+            groups,
+            positions,
+            live_positions,
+            cancel_check,
+            replace_clipped = replace_clipped,
         )
 
     # Re-check after commit: a concurrent delete sweep could strand deleted content. Delete drops rows first, sweeps archives last, so either order converges.
@@ -1090,6 +1149,8 @@ def _archive_turns_lexically(
     positions: Optional[list[list[str]]],
     live_positions: Optional[list[list[str]]],
     cancel_check: Optional[Callable[[], bool]],
+    *,
+    replace_clipped: bool,
 ) -> int:
     """Keyword-only copies of evicted turns, one per evicted occurrence (``_write_budget``); returns how many were written."""
     written = 0
@@ -1099,15 +1160,18 @@ def _archive_turns_lexically(
         for group, span in groups:
             if cancel_check is not None and cancel_check():
                 break
-            text = render_turn(group)
+            text, legacy_hash = _render_turn(group)
             if not text:
                 continue
+            legacy_hash = legacy_hash if replace_clipped else None
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             seats = _occurrences(positions, group)
             budget = _write_budget(positions, seats, live_positions, group)
             if len(store.documents_by_hash(conn, scope, digest)) >= budget:
                 # As the dense pre-check: re-seat, retire surplus copies after a rewind, widen the span.
                 _restamp(conn, scope, digest, seats[:budget], commit = True)
+                if _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats):
+                    conn.commit()
                 _widen_span(conn, scope, digest, span)
                 continue
             chunks = _turn_chunks(text, max(1, int(config.CHUNK_TOKENS)), _rough_token_count)
@@ -1130,6 +1194,7 @@ def _archive_turns_lexically(
                 continue
             try:
                 for n in range(have, budget):
+                    ordinal = seats[n] if n < len(seats) else None
                     document_id = store.create_document(
                         conn,
                         scope = scope,
@@ -1139,12 +1204,13 @@ def _archive_turns_lexically(
                         status = "completed",
                         embedding_model = LEXICAL_ONLY_IDENTITY,
                         archive_messages = span,
-                        archive_ordinal = seats[n]
-                        if n < len(seats)
+                        archive_ordinal = ordinal
+                        if ordinal is not None
                         else _fallback_ordinal(conn, scope, positions),
                         commit = False,
                     )
                     store.add_lexical_chunks(conn, scope, document_id, chunks)
+                    _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats)
             except Exception:
                 conn.rollback()
                 raise
@@ -1482,8 +1548,7 @@ def _strip_search_image_tokens(text: str) -> str:
 
 
 def _sanitised_assistant_text(text: str) -> str:
-    """Strips image tokens and audio data URIs, as the serializer does, so replies match their
-    transcript."""
+    """Strips image tokens and audio data URIs as the serializer does, to match the transcript."""
     return _REPLAY_AUDIO_DATA_URI.sub("[audio]", _strip_search_image_tokens(text))
 
 
@@ -1704,19 +1769,25 @@ def _fallback_ordinal(conn, scope: str, positions: Optional[list[list[str]]]) ->
     return max(store.next_archive_ordinal(conn, scope), len(positions or []))
 
 
-def _transcript_positions(thread_id: str, branch = None) -> Optional[list[str]]:
-    """Numbers come from the saved transcript, not archive time (eviction is not oldest-first); read it, not the request, whose indices shift as groups drop out."""
+def _transcript_positions(thread_id: str, branch = None) -> tuple[Optional[list[list[str]]], bool]:
+    """Return turn positions from the saved transcript and whether it has a single explicit chain."""
     try:
         from core.inference.context_window import group_turns
         from storage import studio_db
         messages = studio_db.list_chat_messages(thread_id)
     except Exception:
-        return None
+        return None, False
     if not messages:
-        return None
+        return None, False
     # Grouped like the evictor, so a position is a TURN index, matching what ordinals compare against.
-    wire = _as_wire(_active_chain(messages, branch))
-    return [[_seat_text(message) for message in group] for group in group_turns(wire) if group]
+    chain = _active_chain(messages, branch)
+    # Retry siblings can share a position and a clipped hash while their tails differ.
+    single_chain = len(chain) == len(messages) and all(
+        (message.get("parentId") or message.get("parent_id")) == previous.get("id")
+        for previous, message in zip(chain, chain[1:])
+    )
+    groups = group_turns(_as_wire(chain))
+    return [[_seat_text(message) for message in group] for group in groups if group], single_chain
 
 
 def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> list[int]:
@@ -1729,8 +1800,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     calls = [bool(message.get("tool_calls")) for message in group]
 
     def _same(stored: str, live: str, is_call: bool) -> bool:
-        # Tool calls are matched as a needle in a haystack, never by equality; other messages
-        # compare exactly; one split point is tolerated.
+        # Tool calls match as a substring, not equality; others exactly; one split is allowed.
         if not is_call:
             return stored == live
 
@@ -1761,7 +1831,6 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         if prefix_stop == 0:
             return False
 
-        # Within that range, find the first split whose tail occurs in stored.
         left, right = 0, prefix_stop
         while left < right:
             mid = (left + right) // 2
@@ -1805,11 +1874,13 @@ def _write_copy(
     chunks,
     vectors,
     seats: list[int],
+    legacy_hash: str | None = None,
 ) -> bool:
     """One more copy at the next unfilled seat; False when none is left. span is the transcript size, not len(group), since archiving strips retrieval parts."""
     copies = store.documents_by_hash(conn, scope, digest)
     if not seats or len(copies) >= len(seats):
         return False
+    ordinal = seats[len(copies)]
     document_id = store.create_document(
         conn,
         scope = scope,
@@ -1819,11 +1890,12 @@ def _write_copy(
         status = "completed",
         embedding_model = identity,
         archive_messages = span,
-        archive_ordinal = seats[len(copies)],
+        archive_ordinal = ordinal,
         commit = False,
     )
     try:
         store.add_chunks(conn, scope, document_id, chunks, vectors)
+        _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats)
     except Exception:
         conn.rollback()
         raise
@@ -1831,8 +1903,7 @@ def _write_copy(
 
 
 def _live_positions(live: Optional[list[dict]]) -> Optional[list[list[str]]]:
-    """The fitted conversation grouped exactly as ``_transcript_positions`` groups the stored one,
-    so a live turn can be matched by the same rules a stored seat is."""
+    """Groups live turns exactly as _transcript_positions groups stored ones, for matching."""
     if live is None:
         return None
     try:
@@ -1960,7 +2031,6 @@ def _widen_span(conn, scope: str, digest: str, span: int) -> None:
 
 
 def has_archive(thread_id: str) -> bool:
-    """Whether anything has ever been archived for this thread."""
     if not thread_id or not enabled():
         return False
     conn = None
@@ -2008,8 +2078,7 @@ def _live_transcript(thread_id: str) -> Optional[list[str]]:
 def branch_message_texts(
     messages: Optional[list[dict]], roles: Optional[tuple[str, ...]] = None
 ) -> Optional[list[str]]:
-    """Taken from the request, not the stored DAG, which keeps abandoned siblings; one string per
-    message."""
+    """From the request, since the stored DAG keeps abandoned siblings; one string per message."""
     if roles:
         messages = [
             message for message in (messages or []) if str(message.get("role") or "") in roles
@@ -2092,7 +2161,6 @@ def _probe_entries(text: str) -> list[tuple[str, bool]]:
 
 
 def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
-    """Whether one archived chunk still exists in the saved thread."""
     probes = _probes_for(text)
     if not probes or not transcript:
         return False
@@ -2129,7 +2197,6 @@ def _scan_probes(
                 ):
                     return None
                 if opened_at is None:
-                    # Same exemption at the front of the run as inside it.
                     opened_at = 0 if partial_ok else found
                     opened_index = index
                 cursor = found + len(probe)
@@ -2179,6 +2246,45 @@ def _rendered_message_count(rows) -> int:
     return total
 
 
+def _join_web_read_chunks(rows) -> str | None:
+    """Rejoin web search exchanges so repeated text matches in the original order."""
+    if len(rows) < 2:
+        return None
+    if rows[0]["page_char_start"] != 0 or not (rows[0]["text"] or "").startswith(
+        "assistant called "
+    ):
+        return None
+    parts = []
+    previous_start = previous_end = 0
+    previous_text = ""
+    for row in rows:
+        text = row["text"]
+        start, end = row["page_char_start"], row["page_char_end"]
+        if (
+            not text
+            or start is None
+            or end is None
+            or not previous_start <= start < end
+            or end <= previous_end
+            or len(text) != end - start
+        ):
+            return None
+        overlap = max(0, previous_end - start)
+        if overlap and previous_text[-overlap:] != text[:overlap]:
+            return None
+        if start > previous_end:
+            # The chunker strips separator whitespace at chunk boundaries.
+            parts.append("\n")
+        parts.append(text[overlap:])
+        previous_start, previous_end, previous_text = start, end, text
+    joined = "".join(parts)
+    call_headers = joined.split("\ntool result: ", 1)[0]
+    # Display arguments can be truncated, and a batch can contain several calls.
+    if any(line.startswith("assistant called web_search: ") for line in call_headers.splitlines()):
+        return joined
+    return None
+
+
 def _document_on_live_branch(
     conn,
     document_id: str,
@@ -2191,7 +2297,8 @@ def _document_on_live_branch(
         return cache[document_id]
     try:
         rows = conn.execute(
-            "SELECT text FROM chunks WHERE document_id = ? ORDER BY chunk_index ASC",
+            "SELECT text, page_char_start, page_char_end FROM chunks "
+            "WHERE document_id = ? ORDER BY chunk_index ASC",
             (document_id,),
         ).fetchall()
         # NULL for archives predating the column, which fall back to counting labels.
@@ -2207,7 +2314,10 @@ def _document_on_live_branch(
         # Never fail a recall on the strictness pass: fall back to what the candidate chunk itself said.
         cache[document_id] = True
         return True
-    cache[document_id] = _document_matches_one_run(rows, transcript, message_count, index)
+    # A rejoined web read decides alone: chunks matched one by one can skip a paragraph inserted between them.
+    full_read = _join_web_read_chunks(rows)
+    candidate = rows if full_read is None else [{"text": full_read}]
+    cache[document_id] = _document_matches_one_run(candidate, transcript, message_count, index)
     return cache[document_id]
 
 
@@ -2300,8 +2410,7 @@ def _above_floor(hits: list, min_dense_score: float) -> list:
 
 
 def _ends_first_within_ties(conn, hits: list) -> list:
-    """Alternates newest and oldest within tied scores, since newest-first alone loses the original
-    value."""
+    """Alternates newest and oldest within ties; newest-first alone loses the original value."""
     if not config.CONVERSATION_QUERY_FOCUS:
         # Reordering is selection, so it stays behind the rollback knob.
         return hits
@@ -2415,7 +2524,6 @@ def _lexical_pass_uncached(
 
 
 def _both_ends(oldest: list, newest: list) -> list:
-    """One candidate list from a run fetched from each end, oldest side first, no repeats."""
     seen = {hit.chunk_id for hit in oldest}
     return oldest + [hit for hit in newest if hit.chunk_id not in seen]
 
@@ -2719,7 +2827,6 @@ def _recall(
 
 
 def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
-    """The scope's documents, optionally cut at ``created_before`` (see `delete_for_thread`)."""
     if not created_before:
         return ("SELECT id, stored_path FROM documents WHERE scope=?", (scope,))
     return (
@@ -2825,8 +2932,7 @@ def copy_thread_documents(
 
 
 def thread_has_documents(thread_id: str) -> bool:
-    """Whether the thread has uploads that did not fail. Read over a metadata connection so a fork
-    can still report them when vec0 cannot load and nothing can be copied."""
+    """Whether the thread has non-failed uploads; reads metadata only, so vec0 need not load."""
     if not rag_db.rag_db_path().is_file():
         return False
     conn = rag_db.get_metadata_connection()

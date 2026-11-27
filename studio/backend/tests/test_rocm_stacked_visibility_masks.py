@@ -112,8 +112,7 @@ class TestStackedMasksAreNotResolvable:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_the_load_still_gets_torchs_figures(self, three_identical_cards, monkeypatch):
-        """Deferring must not drop the GPU; the torch branch reports the device HIP opened, in HIP
-        indices."""
+        """Deferring must not drop the GPU; torch reports devices HIP opened, in HIP indices."""
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1,2")
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         _hip_sees(monkeypatch, 1, {0: 24576})
@@ -155,8 +154,7 @@ class TestOneMaskIsStillAnswerable:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
 
     def test_hip_and_cuda_together_are_one_layer(self, three_identical_cards, monkeypatch):
-        """Both name the HIP layer and clr reads whichever of them is set FIRST,
-        never both, so they do not compose and the HIP value is the whole mask."""
+        """HIP and CUDA masks: one layer, first set wins, so the HIP value is the whole mask."""
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
         _hip_sees(monkeypatch, 1, {0: 24576})

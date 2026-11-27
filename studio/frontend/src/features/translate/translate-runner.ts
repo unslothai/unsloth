@@ -63,7 +63,9 @@ import {
   translateTextList,
 } from "./translate-subtitles";
 import {
+  type TranslateChunk,
   type TranslatePromptOptions,
+  joinPassage,
   restoreChunkWhitespace,
   splitForTranslation,
   stripLeadingReasoning,
@@ -530,6 +532,7 @@ export async function runTranslation(
     const spellings = new Map<string, string | null>();
     const annotated = new Set<string>();
     let part = 0;
+    let previous: TranslateChunk | undefined;
     for (const chunk of chunks) {
       signal.throwIfAborted();
       if (!chunk.text) {
@@ -542,15 +545,22 @@ export async function runTranslation(
       const names = keepNames
         ? await spellNames(chunk.text, complete, spellings, signal)
         : [];
-      const translated = await complete(
-        chunk.text,
-        (partial) => onOutput(output + partial),
+      const translated = annotateNames(
+        await complete(
+          chunk.text,
+          (partial) => onOutput(joinPassage(output, partial, previous, chunk)),
+          names,
+        ),
         names,
+        annotated,
       );
-      output += restoreChunkWhitespace(
+      output = joinPassage(
+        output,
+        restoreChunkWhitespace(chunk, translated),
+        previous,
         chunk,
-        annotateNames(translated, names, annotated),
       );
+      previous = chunk;
       onOutput(output);
     }
   }

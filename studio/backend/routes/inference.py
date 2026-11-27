@@ -4700,12 +4700,16 @@ def _sf_parse_think_markers(
     features: dict,
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
+    inkling_channel: bool = False,
 ) -> bool:
     """A hybrid template reads enable_thinking before reasoning_effort when both are sent (Kimi-K3)."""
     if features.get("reasoning_always_on"):
         return True
     if not features.get("supports_reasoning"):
         return False
+    # Inkling still reasons at effort none, so its thought is split as at any other effort.
+    if inkling_channel:
+        return True
     style = features.get("reasoning_style")
     resolved: dict = {}
     if style == "reasoning_effort":
@@ -4717,6 +4721,32 @@ def _sf_parse_think_markers(
         resolved["reasoning_effort"] = reasoning_effort
     # No launch default on this backend: an empty dict leaves the template's own.
     return _resolved_kwargs_think(None, resolved)
+
+
+def _sf_thought_ledger(
+    ledger: Optional[dict],
+    snapshot,
+    offset: int = 0,
+) -> Optional[dict]:
+    """Mirror a snapshot's thought spans into an extractor ledger, growing lengths in place; None until spans arrive."""
+    spans = getattr(snapshot, "thought_spans", None)
+    if spans is None:
+        return ledger
+    if ledger is None:
+        ledger = {"split": True}
+    seen = ledger.setdefault("spans", [])
+    for index, (at, length) in enumerate(spans):
+        if index < len(seen):
+            seen[index]["len"] = length
+            continue
+        entry = {"len": length}
+        if at + offset:
+            entry["at"] = at + offset
+            ledger.setdefault("later", []).append(entry)
+        else:
+            ledger.setdefault("wraps", []).append(entry)
+        seen.append(entry)
+    return ledger
 
 
 def _memory_tool_requested(payload) -> bool:
@@ -5224,12 +5254,22 @@ def _resolved_kwargs_think(llama_backend, resolved) -> bool:
     return bool(getattr(llama_backend, "reasoning_default", True))
 
 
+def _llama_inkling_channel(llama_backend) -> bool:
+    from core.inference.chat_template_helpers import replays_reasoning_content
+    from core.inference.llama_cpp import _rendered_chat_template
+
+    template = _rendered_chat_template(llama_backend)
+    return isinstance(template, str) and replays_reasoning_content(None, template = template)
+
+
 def _think_parsing_expected(llama_backend, payload) -> bool:
     """Literal think tags in prose stay text unless the model can reason, so the splitter runs only then."""
     if getattr(llama_backend, "reasoning_always_on", False):
         return True
     if not getattr(llama_backend, "supports_reasoning", True):
         return False
+    if _llama_inkling_channel(llama_backend):
+        return True
     # Use the effective template kwargs: effort-dial templates map enable_thinking=False to low.
     args = _anthropic_reasoning_args(payload)
     resolved = (
@@ -30612,12 +30652,10 @@ def _extends_turn(old: Any, new: Any) -> bool:
     return isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old
 
 
-def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
-    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
-    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+def _active_turn_start(messages: list[dict], branch: Optional[list[dict]]) -> Optional[int]:
     asked = next((m for m in reversed(branch or ()) if m.get("role") == "user"), None)
     # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
-    start = next(
+    return next(
         (
             i
             for i in range(len(messages) - 1, -1, -1)
@@ -30627,6 +30665,12 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
         ),
         None,
     )
+
+
+def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
+    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
+    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+    start = _active_turn_start(messages, branch)
     if start is None:
         return None
     latest = next(
@@ -30634,6 +30678,46 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
         len(messages),
     )
     return {id(messages[start])} | {id(m) for m in messages[latest:]}
+
+
+def _shorten_turn_tool_results(
+    messages: list[dict],
+    branch: Optional[list[dict]],
+    target: int,
+    count: Callable[[list[dict]], int],
+) -> set[int]:
+    anchors = (
+        _active_turn_anchors(messages, branch) or _active_turn_anchors(messages, messages) or set()
+    )
+    start = next((i for i, m in enumerate(messages) if id(m) in anchors), len(messages))
+    # The newest call's results stay whole even under a trailing assistant prefill.
+    newest = next(
+        (
+            i
+            for i in range(len(messages) - 1, start, -1)
+            if messages[i].get("role") == "assistant" and messages[i].get("tool_calls")
+        ),
+        len(messages),
+    )
+    for message in messages[start + 1 : newest]:
+        if message.get("role") != "tool" or id(message) in anchors:
+            continue
+        if count(messages) <= target:
+            break
+        content = message.get("content")
+        # In place: the loop's later passes must send the results cut too.
+        if isinstance(content, str):
+            message["content"] = _shorten_tool_result(content)
+        elif isinstance(content, list):
+            message["content"] = [
+                {**part, "text": _shorten_tool_result(part["text"])}
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+                else part
+                for part in content
+            ]
+    return {id(message) for message in messages[start:]}
 
 
 def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
@@ -30732,6 +30816,74 @@ def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -
     return [max(1, refused_tokens * eighths // 8) for eighths in (4, 5, 6, 7)] + [low]
 
 
+_CLIPPED_RESULT_MIN_CHARS = 400
+_CLIP_NOTICE_CHARS = 128
+
+
+def _clip_text(text: str, keep: int) -> str:
+    half = keep // 2
+    return (
+        f"{text[:half]}\n\n[... {len(text) - 2 * half:,} characters of this result were cut to fit "
+        f"the context window ...]\n\n{text[len(text) - half :]}"
+    )
+
+
+_OVERFLOW_TOOL_RESULT_CHARS = 200
+
+
+def _shorten_tool_result(text: str) -> str:
+    if len(text) <= 2 * _OVERFLOW_TOOL_RESULT_CHARS:
+        return text
+    return (
+        text[:_OVERFLOW_TOOL_RESULT_CHARS]
+        + f"\n\n... (truncated to fit the context window, {len(text)} chars total)"
+    )
+
+
+def _clip_turn_tool_results(
+    messages: list[dict],
+    start: int,
+    kept_ids: set[int],
+    target: int,
+    count_tokens: Callable[[list[dict]], int],
+) -> bool:
+    # Shortens only when that fits the turn, in place: eviction and the archive match by identity.
+    turn = [dict(m) for m in messages[start:]]
+    floor = [
+        m for m in messages[:start] if m.get("role") in ("system", "developer") or id(m) in kept_ids
+    ] + turn
+    over = count_tokens(floor) - target
+    for message in turn:
+        if over <= 0:
+            break
+        text = message.get("content")
+        if message.get("role") != "tool" or not isinstance(text, str):
+            continue
+        if len(text) - _CLIPPED_RESULT_MIN_CHARS <= _CLIP_NOTICE_CHARS:
+            continue
+        # The caller's counter: chars per token differ by script (CJK vs Latin).
+        low, high = _CLIPPED_RESULT_MIN_CHARS, len(text) - _CLIP_NOTICE_CHARS
+        message["content"] = _clip_text(text, low)
+        over = count_tokens(floor) - target
+        if over > 0:
+            continue
+        while high - low > 64:
+            middle = (low + high) // 2
+            message["content"] = _clip_text(text, middle)
+            if count_tokens(floor) <= target:
+                low = middle
+            else:
+                high = middle
+        message["content"] = _clip_text(text, low)
+        over = count_tokens(floor) - target
+    if over > 0:
+        return False
+    for original, clipped in zip(messages[start:], turn):
+        if clipped.get("content") is not original.get("content"):
+            original["content"] = clipped["content"]
+    return True
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -30750,7 +30902,9 @@ def _fit_external_context(
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
     replays a /compact epoch on a request that may not start one."""
     from core.inference.context_window import (
+        _ATTACHMENT_FIT_MARGIN,
         estimate_message_tokens_without_unpriced_media,
+        fit_oversized_attachments,
         prompt_budget,
         retrieval_budget,
     )
@@ -30803,17 +30957,29 @@ def _fit_external_context(
             can_reset = False,
             compaction_headroom_ratio = ratio,
         )
+    anchors = (
+        (_active_turn_anchors(messages, branch) or set()) if can_reset or replays_manual else set()
+    ) | (keep_ids or set())
+    turn = _active_turn_start(messages, branch) if tool_loop else None
+    if turn is not None:
+        messages = fit_oversized_attachments(
+            messages, context_length = context_length, max_tokens = max_tokens, count_tokens = _count
+        )
+        # The request always stays; the rest of the turn too, unless clipping cannot fit it.
+        if _clip_turn_tool_results(
+            messages,
+            turn,
+            keep_ids or set(),
+            int(prompt_budget(context_length, max_tokens) * (1 - _ATTACHMENT_FIT_MARGIN)),
+            _count,
+        ):
+            anchors |= {id(m) for m in messages[turn:]}
+        anchors.add(id(messages[turn]))
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = (
-            (_active_turn_anchors(messages, branch) or set())
-            if can_reset or replays_manual
-            else set()
-        )
-        | (keep_ids or set())
-        or None,
+        anchor_ids = anchors or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -30881,6 +31047,7 @@ class _ExternalCompactionPlan:
         "summarise",
         "summary_failed",
         "summary_error",
+        "record",
     )
 
 
@@ -30892,6 +31059,8 @@ def _plan_external_compaction(
     auto: bool = True,
     force: Optional[str] = None,
     summarise: bool = True,
+    branch: Optional[list[dict]] = None,
+    written: tuple[dict, ...] = (),
 ) -> _ExternalCompactionPlan:
     """``auto`` fits to the request's compaction_threshold; without it only a saved summary is
     replayed. ``force`` summarises everything before the newest user turn whether or not the
@@ -30909,6 +31078,7 @@ def _plan_external_compaction(
     plan.summarise = summarise
     plan.summary_failed = None
     plan.summary_error = None
+    plan.record = None
     plan.to_summarise = []
     plan.body = cloud_compaction.body_messages(messages)
     count = _external_token_counter(payload, tools)
@@ -30926,7 +31096,7 @@ def _plan_external_compaction(
         plan.pins = set()
 
     thread_id = str(payload.thread_id) if payload.thread_id else None
-    record = cloud_compaction.stored_summary(thread_id, plan.body) if summarise else None
+    record = cloud_compaction.stored_summary(thread_id, plan.body, written) if summarise else None
     plan.covered = int(record["covered_messages"]) if record else 0
     plan.summary = record["summary"] if record else None
     plan.current = (
@@ -30943,14 +31113,16 @@ def _plan_external_compaction(
         plan.summary_failed = True
     elif summarise and (force or over):
         tail_tokens = 0 if force else cloud_compaction.tail_token_budget(plan.budget)
+        # A tool loop's re-prompts are user turns too: the reply in progress is never summarised.
+        turn = _active_turn_start(plan.body, branch)
         cut = cloud_compaction.tail_start(
-            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens
+            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens, turn
         )
         if cut <= plan.covered and tail_tokens:
             # The tail is within its share and the prompt still does not fit (a large tool
             # catalogue, a long system prompt): summarise up to the newest turn before evicting.
             cut = cloud_compaction.tail_start(
-                plan.body, estimate_message_tokens_without_unpriced_media, 0
+                plan.body, estimate_message_tokens_without_unpriced_media, 0, turn
             )
         if cut > plan.covered:
             plan.cut = cut
@@ -30976,6 +31148,7 @@ async def _finish_external_compaction(
     from core.inference import cloud_compaction
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
         retrieval_budget,
     )
     from core.inference.llama_cpp import _archive_and_recall
@@ -31056,7 +31229,7 @@ async def _finish_external_compaction(
             if isinstance(exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)):
                 cloud_compaction.remember_cut_off(thread_id, model)
         else:
-            await asyncio.to_thread(
+            plan.record = await asyncio.to_thread(
                 cloud_compaction.save_summary,
                 thread_id,
                 covered = plan.body[: plan.cut],
@@ -31074,11 +31247,19 @@ async def _finish_external_compaction(
     refusal = None
     max_tokens = plan.max_tokens
     fit_payload = payload if plan.auto else None
-    if plan.force == "overflow" and not summarised_now:
-        # The provider counted more than the estimate allowed for: evict down to half of it.
-        fit_payload = payload.model_copy(
-            update = {"compaction_threshold": max(1, count(current) // 2), "context_window": None}
-        )
+    turn_ids: set[int] = set()
+    if plan.force == "overflow":
+        # Provider counted more than estimated: aim for half, shortening this turn's tool results.
+        half = max(1, count(current) // 2)
+        target = prompt_budget(half, _effective_max_tokens(payload))
+        turn_ids = _shorten_turn_tool_results(current, branch, target, count)
+        if count(current) > target:
+            # Shortening fell short: leave the turn's older exchanges evictable.
+            turn_ids = set()
+        if not summarised_now:
+            fit_payload = payload.model_copy(
+                update = {"compaction_threshold": half, "context_window": None}
+            )
     if fit_payload is not None:
         fitted, evicted, max_tokens = await asyncio.to_thread(
             _fit_external_context,
@@ -31087,7 +31268,7 @@ async def _finish_external_compaction(
             tools = tools,
             branch = branch,
             tool_loop = tool_loop,
-            keep_ids = cloud_compaction.summary_turn_ids(current),
+            keep_ids = cloud_compaction.summary_turn_ids(current) | turn_ids,
         )
         current = fitted
         if evicted and not plan.summarise:
@@ -32088,6 +32269,8 @@ async def _proxy_to_external_provider(
     _first_payload = _evicting_payload
     # The prompt last sent, so an overflow refit evicts below what the provider refused.
     _last_fit = None
+    _overflow_shrunk = False
+    _written_summaries: list[dict] = []
 
     # As the plain fit decides it: a cloud model that never gets Studio tools cannot search an epoch.
     _model_can_reset = managed is not None or provider_model_runs_local_tools(
@@ -32154,18 +32337,22 @@ async def _proxy_to_external_provider(
         """Yields a progress line when a summary has to be written first, then
         ``(messages, max_tokens, truncation_line)``."""
         nonlocal _external_truncation, _manual_summary_pending
-        nonlocal _evicting_payload, _first_payload, _last_fit
+        nonlocal _evicting_payload, _first_payload, _last_fit, _overflow_shrunk
         from core.inference import cloud_compaction
 
         if force is None and _manual_summary_pending:
             force = "manual"
         _manual_summary_pending = False
+        if force == "overflow":
+            # Unfitted rounds send the live conversation; _last_fit is then a stale earlier fit.
+            refused = _last_fit if _fit_active and _last_fit is not None else messages
+            refused_tokens = _external_token_counter(payload, tools)(refused)
         if _evict_only and force == "overflow":
             # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
             # the loop's later passes. The window stays: the fit clamps the reply cap against it.
-            refused = _last_fit if _last_fit is not None else messages
-            refused_tokens = _external_token_counter(payload, tools)(refused)
             unbounded, first_unbounded = _evicting_payload, _first_payload
+            # The tightest probe that fit by shortening alone, used when no probe can drop a turn.
+            clipped = None
             for threshold in _overflow_retry_thresholds(
                 refused_tokens, _effective_max_tokens(unbounded)
             ):
@@ -32179,6 +32366,12 @@ async def _proxy_to_external_provider(
                 )
                 if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
                     break
+                if clipped is None and truncation is None:
+                    clipped = (fitted, fallback_max_tokens, _evicting_payload, _first_payload)
+            else:
+                if clipped is not None:
+                    fitted, fallback_max_tokens, _evicting_payload, _first_payload = clipped
+                    truncation = None
         elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
@@ -32190,6 +32383,8 @@ async def _proxy_to_external_provider(
                     tools = tools,
                     auto = _auto_summary if auto is None else auto,
                     force = force,
+                    branch = _request_branch,
+                    written = tuple(_written_summaries),
                 )
             if plan.to_summarise and not _non_stream_custom_responses:
                 yield cloud_compaction.COMPACTING_SSE_LINE
@@ -32202,10 +32397,16 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            if plan.record is not None:
+                _written_summaries.append(plan.record)
             if plan.force == "manual" and plan.summary_error and not _non_stream_custom_responses:
                 yield cloud_compaction.compaction_failed_sse_line(plan.summary_error)
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        # Measured, not read off truncation: a replayed summary reports drops on every fit.
+        _overflow_shrunk = (
+            force == "overflow" and _external_token_counter(payload, tools)(fitted) < refused_tokens
+        )
         _last_fit = fitted
         if truncation and truncation.get("dropped_messages"):
             _external_truncation = truncation
@@ -32229,18 +32430,15 @@ async def _proxy_to_external_provider(
 
     async def _external_overflow_refit(messages, tools = _external_fit_tools):
         """The provider refused the prompt as too long: summarise everything before the newest
-        turn. ``(None, None, None)`` when that changes nothing, so the refusal stands."""
+        turn. ``(None, None, None)`` when the refit is no smaller, so the refusal stands."""
         nonlocal _external_truncation
         earlier, _external_truncation = _external_truncation, None
         async for step in _external_fit_steps(messages, tools, force = "overflow"):
             if isinstance(step, str):
                 yield step
                 continue
-            truncation = _external_truncation or {}
-            changed = truncation.get("checkpoint_started") or (
-                truncation.get("dropped_messages") and not truncation.get("summarized")
-            )
-            if not changed:
+            changed = _overflow_shrunk
+            if not changed or _external_truncation is None:
                 _external_truncation = earlier
             yield step if changed else (None, None, None)
 
@@ -35171,19 +35369,21 @@ async def produce_openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        _gguf_inkling = _llama_inkling_channel(llama_backend)
         _gguf_think_prov: dict = {"wrapped": 0}
-        if _continue_final_message(payload) and getattr(
-            payload.messages[-1], "reasoning_content", None
+        if _gguf_inkling or (
+            _continue_final_message(payload)
+            and getattr(payload.messages[-1], "reasoning_content", None)
         ):
-            # Resuming the answer of a turn whose reasoning was split out: tags that follow are literal.
+            # The server splits the reasoning out (always, for Inkling): tags that follow are literal.
             _gguf_think_prov["split"] = True
+        _gguf_parse_think = _gguf_inkling or _responses_should_parse_think_markers(
+            payload, llama_backend
+        )
 
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
-                parse_think_markers = _responses_should_parse_think_markers(
-                    payload,
-                    llama_backend,
-                ),
+                parse_think_markers = _gguf_parse_think,
                 think_provenance = _gguf_think_prov,
             )
 
@@ -36215,9 +36415,7 @@ async def produce_openai_chat_completions(
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
-                    parse_think_markers = _responses_should_parse_think_markers(
-                        payload, llama_backend
-                    ),
+                    parse_think_markers = _gguf_parse_think,
                     think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
@@ -36876,10 +37074,7 @@ async def produce_openai_chat_completions(
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
                             full_text,
-                            parse_think_markers = _responses_should_parse_think_markers(
-                                payload,
-                                llama_backend,
-                            ),
+                            parse_think_markers = _gguf_parse_think,
                             think_provenance = {**_gguf_think_prov, **_choice_mark},
                         )
                         message_kwargs = {"content": visible_text}
@@ -37258,10 +37453,14 @@ async def produce_openai_chat_completions(
                 body = _selected[0]
         except Exception:
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
+        from core.inference.chat_template_helpers import replays_reasoning_content
+
         parse_think = _sf_parse_think_markers(
             features,
             payload.enable_thinking,
             payload.reasoning_effort,
+            inkling_channel = body is not None
+            and replays_reasoning_content(None, template = body, tools = tools),
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
@@ -37314,7 +37513,7 @@ async def produce_openai_chat_completions(
 
     _sf_single_block = _response_format_constrains_decoding(payload)
 
-    def _new_sf_reasoning_extractor():
+    def _new_sf_reasoning_extractor(think_provenance = None):
         prefilled = _sf_reasoning_prefilled
         if _sf_continued_turn[0]:
             _sf_continued_turn[0] = False
@@ -37323,6 +37522,7 @@ async def produce_openai_chat_completions(
             parse_think_markers = _sf_parse_think,
             reasoning_prefilled = prefilled,
             single_block = _sf_single_block,
+            think_provenance = think_provenance,
         )
 
     cancel_event = _chat_cancel_event(request)
@@ -38378,6 +38578,7 @@ async def produce_openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
+                _sf_thoughts = None
                 # Worker thread: a blocking _gen_lock in compare mode would otherwise freeze the loop.
                 _DONE = object()  # sentinel for generator exhaustion
                 gen = generate()
@@ -38434,6 +38635,10 @@ async def produce_openai_chat_completions(
                         mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
+                    _ledger = _sf_thought_ledger(_sf_thoughts, cumulative, len(_sf_call_prefix))
+                    if _sf_thoughts is None and _ledger is not None and not prev_text:
+                        reasoning_extractor = _new_sf_reasoning_extractor(think_provenance = _ledger)
+                        _sf_thoughts = _ledger
                     if cumulative:
                         cumulative = _sf_call_prefix + cumulative
                     new_text = cumulative[len(prev_text) :]
@@ -38714,6 +38919,7 @@ async def produce_openai_chat_completions(
                             ),
                         )
                     raise HTTPException(status_code = 500, detail = _msg)
+                _thoughts = _sf_thought_ledger(None, full_text, len(_sf_call_prefix))
                 if full_text:
                     # The prefill alone is no call: an empty or cancelled reply stays empty.
                     full_text = _sf_call_prefix + full_text
@@ -38726,6 +38932,7 @@ async def produce_openai_chat_completions(
                         _sf_resumes_thought if _sf_continue else _sf_reasoning_prefilled
                     ),
                     single_block = _sf_single_block,
+                    think_provenance = _thoughts,
                 )
                 # Promotes text-form calls; an opt-in single nudge retry handles unparseable tool markup.
                 _msg = {"role": "assistant", "content": _visible_text}
@@ -38796,6 +39003,7 @@ async def produce_openai_chat_completions(
                                     retry_text,
                                     parse_think_markers = _sf_parse_think,
                                     reasoning_prefilled = _sf_reasoning_prefilled,
+                                    think_provenance = _sf_thought_ledger(None, retry_text),
                                 )
                                 retry_msg = {"role": "assistant", "content": _retry_visible}
                                 if _retry_reasoning:
@@ -45550,6 +45758,21 @@ async def _resident_model_reads_images() -> bool:
     return bool(entry.get("is_vision"))
 
 
+def _refuse_resident_count(entry: dict, *, messages_api: bool = False) -> None:
+    """A resident model a count cannot serve is named, never reported as unloaded."""
+    if entry.get("is_audio"):
+        detail = "Token counting is not available for speech or transcription models."
+    elif entry.get("is_mlx"):
+        return
+    elif entry.get("engine") in ("vllm", "sglang"):
+        if not messages_api:
+            return
+        detail = "Token counting on the Messages API is not available for this engine profile."
+    else:
+        detail = "Token counting is not available on the transformers backend."
+    raise HTTPException(status_code = 503, detail = detail)
+
+
 async def _mlx_count_chat_tokens(
     payload,
     request = None,
@@ -45572,10 +45795,10 @@ async def _mlx_count_chat_tokens(
     if not active:
         return None
     entry = getattr(backend, "models", {}).get(active) or {}
-    # Audio skips the chat render; vision does not, as it serves text turns through the same render.
-    managed = entry.get("engine") in ("vllm", "sglang")
-    if not (entry.get("is_mlx") or managed) or entry.get("is_audio"):
+    if not entry:
         return None
+    _refuse_resident_count(entry)
+    managed = entry.get("engine") in ("vllm", "sglang")
     if entry.get("engine") == "sglang":
         raise HTTPException(
             status_code = 503,
@@ -45853,6 +46076,9 @@ async def _mlx_count_chat_tokens(
         instructions = system_prompt if include_system else ""
         if instructions and _tools_to_use and not tools:
             instructions = _without_tool_nudge(instructions, _nudge)
+        # The completion refuses instructions alone, so price the next send minus the user's text.
+        if not any(m.get("role") not in ("system", "developer") for m in count_messages):
+            count_messages = [*count_messages, {"role": "user", "content": ""}]
         count, _counted = backend.count_chat_tokens(
             count_messages,
             instructions or "",
@@ -46412,6 +46638,7 @@ def _anthropic_chat_fields(
             # Kept for the template to decide, as for a chat caller replaying reasoning_content.
             preserve_thinking = payload.preserve_thinking is not False,
             tool_result_images = reads_images,
+            tools = payload.tools,
         )
     )
     studio_tools = _anthropic_requested_studio_tools(payload.tools)
@@ -46492,8 +46719,9 @@ async def _anthropic_in_process_count(
     backend = await asyncio.to_thread(get_inference_backend)
     active = getattr(backend, "active_model_name", None)
     entry = (getattr(backend, "models", {}) or {}).get(active) or {}
-    if not active or not entry.get("is_mlx"):
+    if not active or not entry:
         return None
+    _refuse_resident_count(entry, messages_api = True)
     fields = _anthropic_chat_fields(
         payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
     )
@@ -46827,7 +47055,10 @@ async def _anthropic_messages_via_connection(
     # Keep every turn's thinking: _build_external_messages drops it for providers that must not get it,
     # and DeepSeek answers 400 when tools ride on a history without it.
     messages = anthropic_messages_to_openai(
-        [m.model_dump() for m in payload.messages], payload.system, preserve_thinking = True
+        [m.model_dump() for m in payload.messages],
+        payload.system,
+        preserve_thinking = True,
+        tools = payload.tools,
     )
     _restore_connection_tool_extras(current_subject, messages)
     fields = {
@@ -46985,6 +47216,7 @@ async def anthropic_count_tokens(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
@@ -47765,6 +47997,7 @@ async def anthropic_messages(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.

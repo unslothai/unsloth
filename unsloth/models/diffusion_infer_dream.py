@@ -10,8 +10,7 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Dream greedy diffusion_generate with precomputed transfer schedule; returns None (caller falls
-back) if the model proposes the mask token."""
+"""Greedy Dream diffusion_generate on precomputed schedule; None if it proposes the mask token."""
 
 import math
 

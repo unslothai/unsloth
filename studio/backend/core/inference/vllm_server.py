@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Launches the pinned vLLM server, run by the isolated engine Python, with the API key guarding '/'
-(every route): vLLM's middleware only covers /v1, /v2, /inference (and /cohere in 0.30), not
-/invocations or /tokenize; key comes from VLLM_API_KEY, never on the command line."""
+"""Runs pinned vLLM server with API key guarding all routes: vLLM middleware covers only /v1, /v2,
+/inference (/cohere in 0.30), not /invocations or /tokenize; key via VLLM_API_KEY, not argv."""
 
 import importlib
 import runpy

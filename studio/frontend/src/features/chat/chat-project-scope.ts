@@ -3,8 +3,7 @@
 
 import { createContext, useContext } from "react";
 
-/** The project this provider shows. From context, not the store, so the composer's claim and
- *  the adapter's filing agree. */
+/** Read from context, not the store, so the composer's claim and the adapter's filing agree. */
 export const ChatProjectScopeContext = createContext<string | null>(null);
 
 export function useChatProjectScope(): string | null {

@@ -44,8 +44,7 @@ class _Record:
 
 
 def _weak(state: Any) -> Callable[[], Any]:
-    """Holds state weakly so a torn-down model is freed once its engine drops it; states that cannot
-    be weakly referenced are held strongly; call it for the state, or None once gone"""
+    """Holds state weakly so a torn-down model is freed; unweakrefable state is held strongly."""
     if state is None:
         return lambda: None
     try:
@@ -96,12 +95,10 @@ def _media_lock():
 
 
 def refuse_cancelled(modality: str, load_token: Optional[str]) -> None:
-    """Raise LoadCancelledError when an unload already cancelled ``load_token``."""
     if load_token:
         with _lock:
             tokens = _cancelled.get((modality, _account()), {})
             expiry = tokens.pop(load_token, None)
-            # Consumed: its one load has now arrived, and is refused.
             if expiry is not None and expiry > _now():
                 raise LoadCancelledError()
 
@@ -128,7 +125,6 @@ def admitting(modality: str, engine: Any, load_token: Optional[str]) -> Any:
 
 
 def admitted(modality: str, engine: Any, load_token: Optional[str], prior: Any) -> None:
-    """The engine accepted the load: record it as the one in the slot (a load without a token gets one)."""
     global _generation
     with _lock:
         _generation += 1
@@ -168,8 +164,7 @@ def _slot_token(modality: str, engine: Any) -> Optional[str]:
 
 
 def _resident_token(modality: str, engine: Any) -> Optional[str]:
-    # The token of the state resident in ``engine`` (under _lock). Unlike _slot_token, a load in
-    # flight over it does not hide it: a replacement that fails leaves this model loaded.
+    # Resident token under _lock; in-flight loads don't hide it, as a failed load keeps it.
     state = getattr(engine, "_state", None)
     if state is None:
         return None
@@ -187,9 +182,8 @@ def _resident_token(modality: str, engine: Any) -> Optional[str]:
 def snapshot(
     modality: str, engine: Any, read_status: Callable[[], Any]
 ) -> tuple[Any, Optional[str]]:
-    """Status and load_id pair only if no admission or token unload landed during the read; the read
-    runs outside all locks, must not block admissions, is retried, and after _SNAPSHOT_TRIES
-    gives no id"""
+    """Pairs status with load_id only if no admission or token unload landed during the read
+    (lock-free, retried up to _SNAPSHOT_TRIES); else load_id is None."""
     status, load_id, _ = snapshot_ids(modality, engine, read_status)
     return status, load_id
 
@@ -211,7 +205,6 @@ def snapshot_ids(
 
 
 def current_id(modality: str, engine: Any) -> Optional[str]:
-    """The ``load_id`` the status routes report: the token of the load in the slot, or None."""
     with _lock:
         return _slot_token(modality, engine)
 
@@ -227,8 +220,7 @@ def _in_flight_unlocked(engine: Any) -> bool:
 
 
 def _still_named(record: Optional[_Record], published: Any, engine: Any) -> Callable[[], bool]:
-    """What the engine's unload rechecks under the lock its load worker settles under: the load the
-    token named is still the one in flight or resident (no load ended or began since the check)."""
+    """Recheck under the load worker's lock: the named load is still in flight or resident."""
     if record is not None:
 
         def guard() -> bool:

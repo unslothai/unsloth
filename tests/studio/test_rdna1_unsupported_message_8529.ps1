@@ -171,7 +171,8 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
             ($window.Contains("install time"))
     }
 
-    # First true clause of the if/elseif chain is the unsupported arm; offsets miss dead code.
+    # Evaluate the real if/elseif chain on the reported host and assert the FIRST true clause
+    # is the unsupported arm; offsets cannot see unreachable branches.
     $chainAst = [System.Management.Automation.Language.Parser]::ParseFile(
         $path, [ref]$null, [ref]$null)
     $chains = @($chainAst.FindAll({ param($n)
@@ -202,9 +203,11 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
             ($winner -eq $unsupIdx)
     }
 
+    # The unsupported lookup must never assign the arch the installers route on.
     $tableSrc = Get-AssignmentSource $path '$unsupportedNameArchTable'
     Check "the table assigns no routable arch" (-not ($tableSrc -match 'gfx1(0[3-9]|1|2)'))
 
+    # The table has to be READ by the message arms, not just declared.
     $consumer = if ($file -eq "install.ps1") {
         'foreach ($row in $unsupportedNameArchTable) {'
     } else {
@@ -236,7 +239,8 @@ $unconditional = @($assignments | Where-Object {
 })
 Check "the unsupported-arch state is initialised outside every conditional" ($unconditional.Count -gt 0)
 
-# WMI takes adapter [0], so a host pairing RX 5700 with RX 7900 must keep the arch-unknown arm.
+# The WMI fallback takes adapter [0], so a host pairing RX 5700 with RX 7900 must keep the
+# arch-unknown arm. Runs the REAL block via AST.
 Write-Host ""
 Write-Host "=== install.ps1 mixed-adapter guard ==="
 $installPath = Join-Path $root "install.ps1"

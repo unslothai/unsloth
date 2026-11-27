@@ -44,8 +44,7 @@ class _Reading(NamedTuple):
 
 
 def _read_line(raw: bytes, codepage: str) -> _Reading:
-    """Codepage reading is never authoritative, it only recovers ASCII dedup keys; first valid parse
-    wins."""
+    """Codepage reads only recover ASCII dedup keys, and never decide; first valid parse wins."""
     as_utf8 = _parse(raw, "utf-8")
     # A record that reads as UTF-8 needs no second reading: re-parsing cost 2.8x on a 76 MB shard, and these reach gigabytes.
     if isinstance(as_utf8, dict):

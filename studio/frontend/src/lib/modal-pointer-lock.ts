@@ -104,8 +104,7 @@ function syncStructure(doc: Document, watcher: LockWatcher): void {
 function lock(doc: Document, watcher: LockWatcher): void {
   watcher.locked = true;
   syncStructure(doc, watcher);
-  // A layer that was already open (a non-modal menu under the new dialog) turned lower in the same
-  // commit. Layers are never inside a thread, so only the regions are searched.
+  // Layers open before the dialog turned lower in the same commit; only regions are searched.
   for (const [element, attr] of watcher.marks) {
     if (attr !== MODAL_LOCK_REGION_ATTR) continue;
     markLower(watcher, element);

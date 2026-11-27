@@ -68,9 +68,9 @@ import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
   COMPOSER_CLEARANCE_VAR,
-  cornerInsetScope,
   getToastOffsets,
   insetPastChatSettings,
+  overlayRailScope,
 } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
@@ -555,7 +555,7 @@ function TauriUpdateLayer({
     />
   ) : (
     <div
-      ref={cornerInsetScope}
+      ref={overlayRailScope}
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
       className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       data-testid="overlay-rail"
@@ -974,7 +974,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         {/* Capped to the viewport: a long download list plus expanded notes would
             push the top of the stack off screen. */}
         <div
-          ref={cornerInsetScope}
+          ref={overlayRailScope}
           // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
           className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
           data-testid="overlay-rail"

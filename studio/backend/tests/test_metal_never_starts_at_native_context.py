@@ -379,8 +379,7 @@ class TestAutoLayersWithTheFitterTurnedOff:
     def test_the_users_fit_off_is_not_taken_back_to_keep_the_higher_floor(
         self, tmp_path, monkeypatch
     ):
-        """Overriding an explicit --fit off would keep the 8192 floor, but also re-arm a fitter the
-        user turned off because it aborts on their host."""
+        """Overriding --fit off for the 8192 floor re-arms a fitter that aborts on their host."""
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "off"], **self.AUTO_LAYERS)
         assert cmd[-2:] == ["--fit", "off"]
 

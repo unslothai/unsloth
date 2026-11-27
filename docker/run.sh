@@ -59,7 +59,6 @@
 #   UNSLOTH_ROCM_GFX_ARCH                   gfx arch override (e.g. gfx1151)
 set -euo pipefail
 
-# --rocm is ours only as the FIRST argument.
 ROCM=0
 [[ "${UNSLOTH_ROCM:-}" == "1" ]] && ROCM=1
 if [[ $# -gt 0 && "$1" == "--rocm" ]]; then
@@ -67,7 +66,7 @@ if [[ $# -gt 0 && "$1" == "--rocm" ]]; then
     shift
 fi
 
-# UNSLOTH_DEV_ROOT prefixes /dev probes for the regression tests; unset in normal use.
+# UNSLOTH_DEV_ROOT prefixes host probes for the regression tests; unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 
 # WSL2 has no /dev/kfd: the card is reached over /dev/dxg and librocdxg, with no groups.
@@ -197,8 +196,7 @@ if [ "$HF_HUB" != "$HF_CACHE/hub" ]; then
 fi
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
-# The image relinks its code into the volume at every start. `-`, not `:-`: an explicitly
-# empty value disables the mount.
+# Image relinks code into the volume each start; use - not :-, so an empty value disables it.
 STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
 STUDIO_MOUNT=()
 if [ -n "$STUDIO_VOLUME" ]; then
@@ -250,9 +248,15 @@ hermes_dir() {
     first_dir "$root/models" "$native/models"
 }
 
-ollama_dir() {
-    first_dir "$(host_path "${OLLAMA_MODELS:-}")" "$HOME/.ollama/models" \
-        /usr/share/ollama/.ollama/models /var/lib/ollama/.ollama/models
+# As in Ollama, OLLAMA_MODELS replaces ~/.ollama/models; mounting both lets a stale copy shadow its tags.
+ollama_dirs() {
+    local dir store
+    store="$(host_path "${OLLAMA_MODELS:-}")"
+    [[ -n "$store" && -d "$store" ]] || store="$HOME/.ollama/models"
+    for dir in "$store" "$DEV_ROOT"/usr/share/ollama/.ollama/models "$DEV_ROOT"/var/lib/ollama/.ollama/models; do
+        [[ -n "$dir" && -d "$dir" ]] && printf '%s\n' "$dir"
+    done
+    return 0
 }
 
 declare -a MODEL_MOUNTS=()
@@ -269,12 +273,26 @@ mount_models() {
 }
 
 mount_models "LM Studio" "${UNSLOTH_LMSTUDIO_DIR:-$(lmstudio_dir)}" /root/.lmstudio/models
-mount_models Ollama "${UNSLOTH_OLLAMA_DIR:-$(ollama_dir)}" /root/.ollama/models
+# Studio scans every Ollama store; the first keeps /root/.ollama/models so saved model paths still match.
+if [[ -n "${UNSLOTH_OLLAMA_DIR:-}" ]]; then
+    mount_models Ollama "$UNSLOTH_OLLAMA_DIR" /root/.ollama/models
+else
+    ollama_seen=""
+    while IFS= read -r dir; do
+        real="$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P)" || real="$dir"
+        [[ "$ollama_seen" == *$'\n'"$real"$'\n'* ]] && continue
+        if [[ -z "$ollama_seen" ]]; then
+            mount_models Ollama "$dir" /root/.ollama/models
+        else
+            mount_models Ollama "$dir" "${dir#"$DEV_ROOT"}"
+        fi
+        ollama_seen+=$'\n'"$real"$'\n'
+    done < <(ollama_dirs)
+fi
 mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(hermes_dir)}" /root/.hermes/models
 mount_models local "${UNSLOTH_MODELS_DIR:-}" /workspace/models
 
-# --gpus fails in the daemon (exit 125) on a host without NVIDIA, before the entrypoint can
-# explain; drop the flag instead.
+# Without NVIDIA, --gpus fails in the daemon (exit 125) before entrypoint can explain; drop it.
 host_has_nvidia() {
     local listing
     [[ -e "$DEV_ROOT/dev/nvidiactl" ]] && return 0
@@ -334,7 +352,6 @@ elif [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
         read -r -p "      Install it now with sudo (bash $INSTALLER)? [Y/n] " answer </dev/tty || answer=n
         answer="${answer:-y}"
     fi
-    # Without an installer on disk, never take the install branch.
     [[ -n "$INSTALLER" ]] || answer=n
     case "$answer" in
         1|[Yy]*)
@@ -348,8 +365,7 @@ elif [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
     esac
 fi
 
-# Only if set, else an empty string shadows the image's. The dash-only `-e VAR` form
-# makes Docker read the value from the parent shell, so it never lands in argv.
+# Forward only if set (empty would shadow the image's); bare -e VAR keeps secrets out of argv.
 declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${HF_TOKEN:-}"          ]] && ENV_FORWARD+=(-e HF_TOKEN)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)

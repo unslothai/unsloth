@@ -41,6 +41,7 @@ from .float8_training import (
     mark_fp8_lora,
     resolve_float8_training,
     resolve_fp8_lora,
+    int8_lora_from_env,
 )
 from .mistral_format import (
     MistralFormatRedirect,
@@ -198,6 +199,7 @@ from ._utils import (
     _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
     block_swap_shaped,
+    snapshot_residual_lora_load,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -2270,6 +2272,7 @@ class FastLanguageModel(FastLlamaModel):
                     lora_config = load_config,
                     loading_adapter = True,
                 ),
+                snapshot_residual_lora_load(load_config),
             ):
                 model = PeftModel.from_pretrained(
                     model,
@@ -2316,6 +2319,8 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        if fp8_lora is None and fp8_request in (None, False):
+            fp8_lora = int8_lora_from_env(model, qat_scheme = qat_scheme)
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
@@ -3099,16 +3104,21 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             elif not (load_in_4bit and _bnb_compatible_quant):
-                # Only upcast MoE biases for MXFP4, not BnB.
+                # Only upcast MoE biases for MXFP4, not BnB. In place: a bias expert parallel loading already cut to
+                # this rank keeps its Parameter and the cut's mark (a new Parameter would leave the block unshardable).
                 register_custom_dtype(
                     "all;None;None;"
                     "x = 'gate_up_proj_bias'\n"
-                    "if hasattr(module, x): "
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    "if hasattr(module, x) and isinstance(getattr(module, x), torch.nn.Parameter): "
+                    "getattr(module, x).data = getattr(module, x).data.to(torch.float32)\n"
+                    "elif hasattr(module, x): "
+                    "setattr(module, x, getattr(module, x).to(torch.float32))\n"
                     ""
                     "x = 'down_proj_bias'\n"
-                    "if hasattr(module, x): "
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    "if hasattr(module, x) and isinstance(getattr(module, x), torch.nn.Parameter): "
+                    "getattr(module, x).data = getattr(module, x).data.to(torch.float32)\n"
+                    "elif hasattr(module, x): "
+                    "setattr(module, x, getattr(module, x).to(torch.float32))\n"
                     ""
                     ";"
                 )
@@ -3847,6 +3857,7 @@ class FastModel(FastBaseModel):
                         lora_config = load_config,
                         loading_adapter = True,
                     ),
+                    snapshot_residual_lora_load(load_config),
                 ):
                     model = PeftModel.from_pretrained(
                         model,
@@ -3906,6 +3917,10 @@ class FastModel(FastBaseModel):
             print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if fp8_lora is None and float8_training is None:
+            fp8_lora = int8_lora_from_env(
+                model, full_finetuning = full_finetuning, qat_scheme = qat_scheme
+            )
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 

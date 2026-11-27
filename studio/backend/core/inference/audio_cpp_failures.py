@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Known audio.cpp failures, named so clients can offer a fix; raw runtime text is only classified,
-never returned, and details go through sanitize_runtime_tail."""
+"""Known audio.cpp failures; raw text is classified, never returned; see sanitize_runtime_tail."""
 
 from __future__ import annotations
 
@@ -134,8 +133,7 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-# GiB; resident = weights * per_weight + fixed. The generic lines are per-backend fallbacks for
-# unmeasured families; a lower CUDA line would run a held-out measured family out of memory.
+# Generic lines serve unmeasured families; a lower CUDA line would OOM a held-out measured one.
 _GENERIC_PROFILE = (2.5, 1.5)
 _VULKAN_GENERIC_PROFILE = (1.85, 4.5)
 # Peak keeps growing with the input, so no line fit to peaks holds: the CUDA fallback everywhere.
@@ -206,7 +204,6 @@ def _may_have_pre_ampere_nvidia_card() -> bool:
 
 
 def gpu_estimate_applies(audio_type: Optional[str]) -> bool:
-    """Whether the placement check sizes an Auto load of ``audio_type`` with its estimate."""
     import utils.hardware as hardware
     from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
     from core.inference.audio_device import audio_load_runs_on_cpu
@@ -248,8 +245,7 @@ def smaller_variants(
     free_gb: Optional[float] = None,
     limit: int = 3,
 ) -> list[dict]:
-    """Variants with a lower estimate than the loaded one, largest first; only those that fit
-    ``free_gb``. Byte size alone is not enough: ACE-Step base is a few bytes under turbo."""
+    """Lower-estimate variants fitting free_gb, largest first; byte size misorders (ACE-Step)."""
     if model is None:
         return []
     from core.inference.audio_cpp_models import quant_label, resolve
