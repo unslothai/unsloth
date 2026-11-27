@@ -190,6 +190,7 @@ def saving(monkeypatch, tmp_path):
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
         _unmerge_flags_on_error = lambda streamed: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
+        ExitStack = contextlib.ExitStack,
         logger = SimpleNamespace(warning_once = lambda *args: None),
         # save_method="lora" hands off to the adapter save; record the handover.
         unsloth_save_model = lambda *args, **kwargs: (
