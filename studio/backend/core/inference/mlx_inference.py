@@ -3147,7 +3147,6 @@ def _build_generation_stats(
     }
 
 
-# Bounds per-token traffic to the parent process, which throttles the frames it sends again.
 _LIVE_DECODE_SAMPLE_INTERVAL_S = 0.25
 
 
@@ -6192,7 +6191,7 @@ class MLXInferenceBackend:
         # usage, timings and terminal reason of the latest generation, shipped on gen_done.
         self.last_generation_stats = None
         self.last_batch_generation_stats = []
-        # Set by the worker for one request that asked for live progress; see _LiveProgress.
+        # Set by the worker for one request only.
         self.generation_progress_sink = None
 
         self._model = None

@@ -1686,7 +1686,6 @@ class _ResidentBatch:
         shared.pop("cancel_event", None)
         watched = bool(cmd.get("generation_progress")) and not rows
         if watched:
-            # A vision row has to ask for its prefill chunks as it is admitted.
             shared["generation_progress"] = True
         requests = [{**shared, **row} for row in rows] if rows else [shared]
 

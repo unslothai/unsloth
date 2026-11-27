@@ -38124,7 +38124,6 @@ async def produce_openai_chat_completions(
         and _accepts_keyword(backend.generate_chat_response, "diffusion_frames")
         else {}
     )
-    # Prompt progress and decode figures, sent as the GGUF stream sends them.
     _sf_progress = _PrefillProgressSignal(
         None,
         live = bool(
