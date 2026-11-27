@@ -236,18 +236,18 @@ def render_turn(group: list[dict]) -> str:
     return _render_turn(group)[0]
 
 
-def _direct_web_read_limit(raw_args) -> int | None:
-    from core.inference.tools import _MAX_PAGE_CHARS, _resolve_web_search_args
+def _is_direct_web_read(raw_args) -> bool:
+    from core.inference.tools import _resolve_web_search_args
     try:
         arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
     except ValueError:
-        return None
-    return _MAX_PAGE_CHARS if _resolve_web_search_args(arguments)[1] else None
+        return False
+    return bool(_resolve_web_search_args(arguments)[1])
 
 
 def _render_turn(group: list[dict]) -> tuple[str, str | None]:
     lines: list[str] = []
-    url_reads: dict[str, int] = {}
+    url_reads: set[str] = set()
     clipped: dict[int, str] = {}
     for message in group:
         role = str(message.get("role") or "")
@@ -261,9 +261,9 @@ def _render_turn(group: list[dict]) -> tuple[str, str | None]:
                 function = (call or {}).get("function") or {}
                 name = str(function.get("name") or "tool")
                 raw_args = function.get("arguments")
-                if name == "web_search" and (call_id := (call or {}).get("id")):
-                    if (limit := _direct_web_read_limit(raw_args)) is not None:
-                        url_reads[call_id] = limit
+                call_id = (call or {}).get("id")
+                if name == "web_search" and call_id and _is_direct_web_read(raw_args):
+                    url_reads.add(call_id)
                 arguments = str(raw_args or "").strip()
                 if len(arguments) > _MAX_TOOL_ARGS_CHARS:
                     arguments = arguments[:_MAX_TOOL_ARGS_CHARS] + _TRUNCATION_MARKER
@@ -278,14 +278,14 @@ def _render_turn(group: list[dict]) -> tuple[str, str | None]:
         if not text:
             continue
         if role == "tool":
-            # Tool results are too large to quote whole; keep a bounded prefix so the index stays small.
-            limit = url_reads.get(message.get("tool_call_id"), _MAX_TOOL_RESULT_CHARS)
-            if limit > _MAX_TOOL_RESULT_CHARS and len(text) > _MAX_TOOL_RESULT_CHARS:
-                clipped[len(lines)] = (
-                    f"tool result: {text[:_MAX_TOOL_RESULT_CHARS]}{_TRUNCATION_MARKER}"
-                )
-            if len(text) > limit:
-                text = text[:limit] + _TRUNCATION_MARKER
+            # Bounded prefix keeps the index small; a direct web read is kept whole (the tool already capped it).
+            if len(text) > _MAX_TOOL_RESULT_CHARS:
+                prefix = text[:_MAX_TOOL_RESULT_CHARS] + _TRUNCATION_MARKER
+                if message.get("tool_call_id") in url_reads:
+                    # Older builds clipped it; that copy's hash lets the full one replace it.
+                    clipped[len(lines)] = f"tool result: {prefix}"
+                else:
+                    text = prefix
             lines.append(f"tool result: {text}")
         else:
             lines.append(f"{role or 'message'}: {text}")

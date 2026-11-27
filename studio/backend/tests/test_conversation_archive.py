@@ -5350,7 +5350,7 @@ def test_direct_web_read_tail_is_searchable_after_rearchiving(
         _fail_embedder(monkeypatch)
 
     with monkeypatch.context() as old_archive:
-        old_archive.setattr(tools, "_MAX_PAGE_CHARS", 4000)
+        old_archive.setattr(conversation_archive, "_is_direct_web_read", lambda _args: False)
         assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
     assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
     assert conversation_archive.archive_turns(THREAD, group, branch = group) == 0
@@ -5424,7 +5424,7 @@ def test_expanding_a_web_read_preserves_the_clipped_copy_on_a_retry_sibling(
         _fail_embedder(monkeypatch)
     first, retry = branches
     with monkeypatch.context() as old_archive:
-        old_archive.setattr(tools, "_MAX_PAGE_CHARS", 4000)
+        old_archive.setattr(conversation_archive, "_is_direct_web_read", lambda _args: False)
         assert conversation_archive.archive_turns(THREAD, first[1:], branch = first) == 1
     assert marker in conversation_archive.recall(THREAD, marker, branch_messages = first)[0]
     assert conversation_archive.archive_turns(THREAD, retry[1:], branch = retry) == 1
@@ -5442,3 +5442,17 @@ def test_non_url_tool_output_keeps_the_generic_archive_cap(tool_name):
     archived = conversation_archive.render_turn(group)
     assert archived.endswith(" ...")
     assert "keyword tail" not in archived
+
+
+def test_a_capped_web_read_is_archived_exactly_as_delivered(monkeypatch):
+    from core.inference import tools
+
+    url = "https://example.com/long"
+    monkeypatch.setattr(tools, "_download_page", lambda *_a, **_kw: ("text", url, "word " * 40000))
+    delivered = tools.execute_tool("web_search", {"url": url}, context_tokens = 131072)
+    assert len(delivered) > tools._MAX_PAGE_CHARS
+    group = [
+        _assistant_call("web_search", json.dumps({"url": url})),
+        {"role": "tool", "tool_call_id": "c1", "content": delivered},
+    ]
+    assert conversation_archive.render_turn(group).endswith(f"tool result: {delivered.strip()}")
