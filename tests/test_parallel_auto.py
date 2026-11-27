@@ -962,3 +962,81 @@ def test_hub_adapter_network_share_base_is_refused_before_any_probe(clean, base)
     got = auto.resolve_for_load(from_pretrained, ("someone/adapter",), {"load_in_4bit": False})
     assert base not in fetched and all(name != base for name, _ in calls), (fetched, calls)
     assert got == "fsdp2" and "network share" in auto._STATE["reason"], auto._STATE["reason"]
+
+
+_MOE_TINY = (
+    "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
+    "hf-internal-testing/tiny-random-OlmoeForCausalLM",
+    "hf-internal-testing/tiny-random-MixtralForCausalLM",
+    "trl-internal-testing/tiny-GptOssForCausalLM",
+)
+
+
+def _meta_checkpoint(repo):
+    """(name, "BF16", shape) for every tensor of `repo`'s config built on the meta device: the layout a
+    checkpoint saved by this transformers has (3-D expert stacks on 5.x, and gpt-oss on 4.x too)."""
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from tests._tiny_fixture_revisions import revision
+
+    config = AutoConfig.from_pretrained(repo, revision = revision(repo))
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(config, torch_dtype = torch.bfloat16)
+    return [(k, "BF16", tuple(v.shape)) for k, v in model.state_dict().items()]
+
+
+@pytest.mark.parametrize("repo", _MOE_TINY, ids = lambda r: r.split("tiny-")[-1])
+def test_fused_expert_stacks_size_like_per_expert_linears(clean, repo):
+    """A 3-D expert stack [E, a, b] is E linears: it quantizes on a 4-bit load and its expert LoRA is
+    r * E * (a + b), exactly what the same checkpoint saved as E 2-D weights is sized at. It was priced at
+    2 bytes per element in 4-bit (about 3.6x a Qwen3-30B-A3B-like checkpoint) with no LoRA."""
+    _, _, auto = clean
+    fused = _meta_checkpoint(repo)
+    stacks = {k for k, _, s in fused if len(s) == 3 and "expert" in k.lower()}
+    if not stacks:
+        pytest.skip(f"{repo} has per-expert 2-D weights under this transformers")
+    split = []
+    for key, dt, shape in fused:
+        if key in stacks:
+            stem = key[: -len(".weight")] if key.endswith(".weight") else key
+            split += [(f"{stem}.{e}.weight", dt, shape[1:]) for e in range(shape[0])]
+        else:
+            split.append((key, dt, shape))
+    for kwargs in (
+        {},
+        {"load_in_4bit": True, "skip_modules": []},
+        {"load_in_8bit": True, "skip_modules": []},
+    ):
+        w_fused, lora_fused = auto.checkpoint_estimate(fused, **kwargs)
+        w_split, lora_split = auto.checkpoint_estimate(split, **kwargs)
+        assert lora_fused == lora_split > 0, kwargs
+        # int() per tensor: at most one byte per expert apart.
+        assert abs(w_fused - w_split) <= sum(1 for k, _, _ in split if k not in dict.fromkeys(
+            k for k, _, _ in fused)), (kwargs, w_fused, w_split)  # fmt: skip
+
+
+def test_fp8_and_int8_checkpoints_count_their_stored_bytes(clean):
+    """F8_* weights load as FP8 (1 byte) and keep their own quantization on a 4-bit request; an explicit
+    16-bit or full finetuning load dequantizes them. I8 (bitsandbytes 8-bit) holds one code per byte."""
+    _, _, auto = clean
+    n = 4096 * 4096
+    fp8 = [
+        ("model.layers.0.mlp.down_proj.weight", "F8_E4M3", (4096, 4096)),
+        ("model.layers.0.mlp.down_proj.weight_scale_inv", "F32", (32, 32)),
+        ("model.layers.0.self_attn.q_proj.weight", "BF16", (4096, 4096)),
+    ]
+    scale = 2 * 32 * 32  # float quant scales load in the model dtype
+    w16, lora = auto.checkpoint_estimate(fp8)
+    assert w16 == n + scale + 2 * n
+    assert lora == 2 * 16 * (4096 + 4096)
+    # bitsandbytes is off for an FP8 checkpoint: the BF16 linear is not quantized either.
+    assert auto.checkpoint_estimate(fp8, load_in_4bit = True, skip_modules = [])[0] == w16
+    assert auto.checkpoint_estimate(fp8, dequantize_fp8 = True)[0] == 2 * n + scale + 2 * n
+    int8 = [
+        ("model.layers.0.mlp.up_proj.weight", "I8", (4096, 4096)),
+        ("model.layers.0.mlp.up_proj.SCB", "F32", (4096,)),
+    ]
+    w8, lora8 = auto.checkpoint_estimate(int8, hidden_size = 4096)
+    assert w8 == n + 4 * 4096
+    assert lora8 == 16 * (4096 + 4096)
+    assert auto.checkpoint_estimate(int8, full_finetuning = True)[1] == n + 4096

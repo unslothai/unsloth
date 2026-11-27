@@ -306,12 +306,17 @@ def _is_quantizable(key, shape):
 
 def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, full_finetuning = False,
                         dtype_bytes = 2, lora_rank = _LORA_RANK, skip_modules = None,
-                        hidden_size = None):  # fmt: skip
+                        hidden_size = None, dequantize_fp8 = False):  # fmt: skip
     """(weights bytes once loaded, trainable parameter count) for safetensors header entries. Quantizing on
     load needs `skip_modules`, the loader's llm_int8_skip_modules: a linear whose name contains one stays
-    dense (a substring match keeps at least what the loader keeps)."""
+    dense (a substring match keeps at least what the loader keeps). FP8 weights stay 1 byte unless
+    `dequantize_fp8` (an explicit 16bit or full finetuning load dequantizes them to the model dtype)."""
     packed = any(dt in _PACKED for _, dt, _ in tensors)
-    quantize = not packed and not full_finetuning and (load_in_4bit or load_in_8bit)
+    # An FP8 checkpoint keeps its own quantization: the loader turns bitsandbytes off for it.
+    fp8_checkpoint = not dequantize_fp8 and any(dt.startswith("F8") for _, dt, _ in tensors)
+    quantize = (
+        not packed and not fp8_checkpoint and not full_finetuning and (load_in_4bit or load_in_8bit)
+    )
     if quantize and skip_modules is None:
         raise ValueError("quantizing on load is not sized without the loader's skip modules")
     per_quant = 0.53 if load_in_4bit else 1.03  # packed codes + absmax / scales
@@ -321,10 +326,13 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
         stored = _DTYPE_BYTES.get(dt, 2)
         if dt in _PACKED:
             weights += numel * stored
-            numel_total += 2 * numel  # two 4-bit codes per byte
+            codes = (
+                2 if dt == "U8" else 1
+            )  # bnb 4-bit packs two codes per U8 byte, 8-bit one per I8
+            numel_total += codes * numel
             if key.lower().endswith(".weight") and len(shape) >= 1:
                 # packed [n / 2, 1] = 2n params; one side is hidden_size (square undercounts MLP / GQA).
-                params = 2 * numel
+                params = codes * numel
                 if hidden_size and params % hidden_size == 0:
                     lora += lora_rank * (hidden_size + params // hidden_size)
                 else:
@@ -332,14 +340,23 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
             continue
         # Float weights load in the model dtype; bnb quant state beside packed weights keeps its stored dtype.
         quant_state = packed and any(
-            t in key for t in ("absmax", "quant_map", "quant_state", "nested_")
+            t in key for t in ("absmax", "quant_map", "quant_state", "nested_", ".SCB")
         )
-        loaded = dtype_bytes if dt.startswith(("F", "BF")) and not quant_state else stored
+        # FP8 weights stay FP8 on load (1 byte, never re-quantized), as the fsdp2 / pp load estimators count them.
+        fp8 = dt.startswith("F8") and not dequantize_fp8
+        loaded = (
+            dtype_bytes if dt.startswith(("F", "BF")) and not quant_state and not fp8 else stored
+        )
         numel_total += numel
-        if _is_quantizable(key, shape):
-            lora += lora_rank * (shape[0] + shape[1])
-            module = key[: -len(".weight")]
-            if quantize and not any(m in module for m in skip_modules):
+        # A 3-D expert stack [E, in, out] is one tensor: E linears that quantize, and get_peft_model's
+        # target_parameters LoRA is r * E * (in + out).
+        stacked = len(shape) == 3 and "expert" in key.lower()
+        if _is_quantizable(key, shape) or stacked:
+            lora += lora_rank * (
+                shape[0] * (shape[1] + shape[2]) if stacked else shape[0] + shape[1]
+            )
+            module = key[: -len(".weight")] if key.endswith(".weight") else key
+            if quantize and not fp8 and not any(m in module for m in skip_modules):
                 weights += int(numel * per_quant)
                 continue
         weights += numel * loaded
@@ -529,6 +546,7 @@ def resolve_for_load(loader, args, kwargs):
             dtype_bytes = dtype_bytes,
             skip_modules = _quant_skip_modules(model_types) if quantize else None,
             hidden_size = _hidden_size(name, call, revision),
+            dequantize_fp8 = load_in_16bit or full,
         )
         if adapter:
             # The adapter's own weights (float32 trainable copies) replace the r = 16 guess.
