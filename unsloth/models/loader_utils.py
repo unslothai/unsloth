@@ -3279,7 +3279,66 @@ def _routed_dense_weight(module):
             module.weight_scale,
             getattr(module, "_unsloth_ct_compute_dtype", torch.bfloat16),
         )
-    return None
+    return _native_fp8_dense_weight(module)
+
+
+def _native_fp8_dense_weight(module):
+    """Dense weight of a native fp8 linear (transformers FineGrainedFP8 / ModelOpt FP8Linear: float8 weight with
+    `weight_scale_inv`, FbgemmFP8Linear: `weight_scale`), else None. PEFT's DoRA would read the raw float8."""
+    weight = getattr(module, "weight", None)
+    if not isinstance(weight, torch.Tensor) or weight.dtype not in _FP8_DTYPES or weight.ndim != 2:
+        return None
+    scale = None
+    for name in ("weight_scale_inv", "weight_scale"):
+        candidate = getattr(module, name, None)
+        if isinstance(candidate, torch.Tensor):
+            scale = candidate
+            break
+    if scale is None:
+        return None
+    bias = getattr(module, "bias", None)
+    dtype = getattr(module, "_unsloth_ct_compute_dtype", None) or (
+        bias.dtype
+        if isinstance(bias, torch.Tensor) and bias.dtype in (torch.float16, torch.bfloat16)
+        else torch.bfloat16
+    )
+    from unsloth.kernels.fp8 import (
+        _blockwise_weight_dequant_any_shape,
+        _torch_blockwise_dequant,
+        weight_dequant,
+    )
+
+    block_size = getattr(module, "block_size", None)
+    # Block scales by the module's block_size, also a single block column ((256, 128) with 128x128 blocks).
+    if block_size is not None and scale.ndim == 2 and scale.numel() > 1:
+        block_size = [int(block_size[0]), int(block_size[1])]
+        # The Triton kernel is CUDA / ROCm only; a CPU-resident (offloaded) weight takes the torch expansion.
+        dequant = (
+            _blockwise_weight_dequant_any_shape if weight.is_cuda else _torch_blockwise_dequant
+        )
+        return dequant(weight, scale, block_size, dtype)
+    return weight_dequant(weight, scale, dtype)
+
+
+def _patch_peft_for_native_fp8(model):
+    """Before get_peft_model on a model with native fp8 linears: DoRA reads the dense weight (see above)."""
+    try:
+        modules = model.modules()
+    except Exception:
+        return False
+    for module in modules:
+        weight = getattr(module, "weight", None)
+        if (
+            isinstance(weight, torch.Tensor)
+            and weight.dtype in _FP8_DTYPES
+            and any(
+                isinstance(getattr(module, name, None), torch.Tensor)
+                for name in ("weight_scale_inv", "weight_scale")
+            )
+        ):
+            _patch_peft_for_routed_compressed_tensors()
+            return True
+    return False
 
 
 def _dequantize_routed_linear_(module):

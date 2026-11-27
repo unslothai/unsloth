@@ -5734,7 +5734,9 @@ class FastLlamaModel:
 
         from .lora_init import fast_lora_init, record_fast_pissa
         from ._utils import block_swap_shaped
+        from .loader_utils import _patch_peft_for_native_fp8
 
+        _patch_peft_for_native_fp8(model)  # DoRA on native fp8 linears reads the dense weight
         with (
             fast_lora_init() as fast,
             block_swap_shaped(
