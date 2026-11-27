@@ -628,24 +628,16 @@ def _save_pretrained_gguf(
         repo_id = save_directory
 
         print(f"Unsloth: Uploading to {repo_id}...")
-        try:
-            api.create_repo(repo_id = repo_id, exist_ok = True, private = kwargs.get("private", False))
-        except Exception as e:
-            print(f"Unsloth: Upload failed: {e}")
-            return result
+        api.create_repo(repo_id = repo_id, exist_ok = True, private = kwargs.get("private", False))
         from ..save import _refuse_private_push_to_public_repo
 
-        # Outside the try below: a refusal must stop the upload, not print as a failed one.
         _refuse_private_push_to_public_repo(repo_id, kwargs.get("private", False), api = api)
-        try:
-            api.upload_folder(
-                folder_path = save_directory,
-                repo_id = repo_id,
-                commit_message = "Upload GGUF and SentenceTransformer model",
-            )
-            print(f"Unsloth: Uploaded to https://huggingface.co/{repo_id}")
-        except Exception as e:
-            print(f"Unsloth: Upload failed: {e}")
+        api.upload_folder(
+            folder_path = save_directory,
+            repo_id = repo_id,
+            commit_message = "Upload GGUF and SentenceTransformer model",
+        )
+        print(f"Unsloth: Uploaded to https://huggingface.co/{repo_id}")
 
     return result
 
