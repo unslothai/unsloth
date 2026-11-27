@@ -707,6 +707,7 @@ test("a chat settings keepalive body shares the budget with recipe saves", async
       },
     },
     "@/lib/keepalive-budget": keepaliveBudget,
+    "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
     "../utils/settings-retry": {
       ChatSettingsRequestError: Error,
       asBodyTransportFailure: (e: unknown) => e,
