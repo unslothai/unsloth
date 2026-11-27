@@ -54,6 +54,7 @@ import {
   translateTextList,
 } from "./translate-subtitles";
 import {
+  type TranslateChunk,
   type TranslatePromptOptions,
   joinPassage,
   restoreChunkWhitespace,
@@ -477,6 +478,7 @@ export async function runTranslation(
     const chunks = splitForTranslation(text);
     const parts = chunks.filter((chunk) => chunk.text).length;
     let part = 0;
+    let previous: TranslateChunk | undefined;
     for (const chunk of chunks) {
       signal.throwIfAborted();
       if (!chunk.text) {
@@ -487,9 +489,14 @@ export async function runTranslation(
       part += 1;
       onPhase({ kind: "translating", part, parts });
       const translated = await complete(chunk.text, (partial) =>
-        onOutput(joinPassage(output, partial)),
+        onOutput(joinPassage(output, partial, previous)),
       );
-      output = joinPassage(output, restoreChunkWhitespace(chunk, translated));
+      output = joinPassage(
+        output,
+        restoreChunkWhitespace(chunk, translated),
+        previous,
+      );
+      previous = chunk;
       onOutput(output);
     }
   }

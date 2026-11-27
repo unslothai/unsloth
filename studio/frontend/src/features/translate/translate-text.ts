@@ -239,14 +239,31 @@ export function restoreChunkWhitespace(
 }
 
 const UNSPACED = String.raw`[\p{Script=Han}\u3000-\u30ff\uff00-\uffef]`;
-const UNSPACED_END = new RegExp(`${UNSPACED}["'”’)\\]]*$`, "u");
-const UNSPACED_GAP = new RegExp(`(${UNSPACED}["'”’)\\]]*)[^\\S\\n]+$`, "u");
+const CLOSERS = String.raw`["'”’)\]…—]*`;
+const UNSPACED_END = new RegExp(`${UNSPACED}${CLOSERS}$`, "u");
+const UNSPACED_GAP = new RegExp(`(${UNSPACED}${CLOSERS})[^\\S\\n]+$`, "u");
 const UNSPACED_START = new RegExp(`^${UNSPACED}`, "u");
+// `$`-anchored regexes scan the whole string, and this runs per streamed token.
+const TAIL = 64;
 
-export function joinPassage(output: string, piece: string): string {
+/**
+ * Joins a translated passage the way the target writes: no space before Chinese or Japanese,
+ * and one where the source ran on with no space after Chinese or Japanese text (`previous`).
+ */
+export function joinPassage(
+  output: string,
+  piece: string,
+  previous: TranslateChunk | undefined,
+): string {
+  const head = output.slice(0, Math.max(0, output.length - TAIL));
+  const tail = output.slice(head.length);
   if (UNSPACED_START.test(piece))
-    return output.replace(UNSPACED_GAP, "$1") + piece;
+    return head + tail.replace(UNSPACED_GAP, "$1") + piece;
   const gap =
-    /\S$/.test(output) && /^\S/.test(piece) && !UNSPACED_END.test(output);
+    previous !== undefined &&
+    UNSPACED_END.test((previous.text + previous.after).slice(-TAIL)) &&
+    /\S$/.test(tail) &&
+    /^\S/.test(piece) &&
+    !UNSPACED_END.test(tail);
   return output + (gap ? " " : "") + piece;
 }
