@@ -2783,10 +2783,12 @@ def test_media_repo_prefers_active_cache_across_formats(catalog, tmp_path):
     )
     active = _gguf_image_info(repo, active_repo)
     active.active_cache = True
-    catalog.extend([
-        _info(repo, inactive_repo, task = mas.IMAGE_TASK, source = "hf_cache"),
-        active,
-    ])
+    catalog.extend(
+        [
+            _info(repo, inactive_repo, task = mas.IMAGE_TASK, source = "hf_cache"),
+            active,
+        ]
+    )
     pick = mas.resolve_local_media_model(repo, task = mas.IMAGE_TASK)
     assert pick is not None and pick.gguf_filename == "z-image-turbo-Q4_K_M.gguf"
 

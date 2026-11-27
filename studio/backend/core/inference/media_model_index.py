@@ -299,6 +299,7 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
     except Exception as exc:  # noqa: BLE001 -- a failed scan must not 500 the generation
         logger.debug("media auto-switch: local model scan failed: %s", exc)
         return index
+
     def is_active_cache(info) -> bool:
         return info.source == "hf_cache" and getattr(info, "active_cache", None) is True
 
