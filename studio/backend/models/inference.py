@@ -3243,6 +3243,9 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
     )
+    image_generator: Optional[str] = Field(
+        None, min_length = 1, description = "Downloaded image generator for this local chat request."
+    )
     enabled_tools: Optional[list[str]] = Field(
         None,
         description = (
@@ -6520,6 +6523,8 @@ class DiffusionDownloadPlanResponse(BaseModel):
 
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
+
+    chat_swap_available: bool = False
 
     load_id: Optional[str] = Field(
         None,
