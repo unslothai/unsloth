@@ -4569,6 +4569,7 @@ export const th = {
       unsupportedFileType: "ประเภทไฟล์ที่ไม่รองรับ",
       uploadOneFileType: "อัปโหลดไฟล์ {types} หนึ่งไฟล์",
       datasetUploaded: "อัปโหลดชุดข้อมูลแล้ว",
+      importPandasJson: "นำเข้า .json เป็นคอลัมน์ pandas",
       importSemicolonCsv: "ใช้เครื่องหมายอัฒภาคเป็นตัวคั่นสำหรับ .csv",
       evalDatasetUploaded: "อัปโหลดชุดข้อมูลประเมินผลแล้ว",
       uploadOneFileAtATime: "อัปโหลดครั้งละหนึ่งไฟล์",

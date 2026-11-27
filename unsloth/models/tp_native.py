@@ -4787,6 +4787,16 @@ class _SliceReader:
         return self.handles[path]
 
     def shape(self, key):
+        if isinstance(key, tuple):
+            parts = [self.shape(source) for source in key[0]]
+            tail = parts[0][1:]
+            if any(len(s) < 1 or s[1:] != tail for s in parts) or any(
+                [self.shape(source) for source in sources] != parts for sources in key[1:]
+            ):
+                raise _TensorByTensorUnsupported(
+                    f"Unsloth: the checkpoint experts stacked into one tensor ({key[0][0]} ...) differ in shape."
+                )
+            return (len(key), sum(s[0] for s in parts)) + tail
         return tuple(self._open(key).get_slice(key).get_shape())
 
     def full(self, key):
@@ -4821,7 +4831,17 @@ class _SliceReader:
         device,
         sliced = True,
     ):
-        """Rows [start, stop) as `dtype` on `device`, read in ~_READ_SLICE_BYTES slices (no whole-table host copy)."""
+        """Rows [start, stop) as `dtype` on `device`, read in ~_READ_SLICE_BYTES slices (no whole-table host copy).
+        A tuple key: row i is expert i's checkpoint tensors concatenated on dim 0."""
+        if isinstance(key, tuple):
+            out = torch.empty((stop - start,) + self.shape(key)[1:], dtype = dtype, device = device)
+            for row, sources in enumerate(key[start:stop]):
+                offset = 0
+                for source in sources:
+                    part = self.full_to(source, dtype, device, sliced)
+                    out[row, offset : offset + part.shape[0]].copy_(part)
+                    offset += part.shape[0]
+            return out
         view = self._open(key).get_slice(key)
         shape = tuple(view.get_shape())
         tail = shape[1:]
@@ -4849,11 +4869,17 @@ class _SliceReader:
             self.full_bytes += rows * row_bytes
         return out
 
-    def full_to(self, key, dtype, device):
+    def full_to(
+        self,
+        key,
+        dtype,
+        device,
+        sliced = False,
+    ):
         shape = self.shape(key)
         if len(shape) == 0:
             return self.full(key).to(device = device, dtype = dtype)
-        return self.rows_to(key, 0, shape[0], dtype, device, sliced = False)
+        return self.rows_to(key, 0, shape[0], dtype, device, sliced = sliced)
 
 
 _READ_SLICE_BYTES = 64 << 20
@@ -4877,12 +4903,15 @@ def _checkpoint_aliases(
     model,
     index,
     key_mapping = None,
+    stacked_experts = False,
 ):
     """{model key: checkpoint key} for a checkpoint saved under another naming: transformers 5's conversion
     mapping renames (VLMs save `model.layers.*` for `model.language_model.layers.*`) and 4.x
     `_checkpoint_conversion_mapping`. A model key a WeightConverter builds (merged experts, fused or permuted
     weights) maps to None: it is not one checkpoint tensor, so it cannot be read sliced. `key_mapping` is the
-    load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads)."""
+    load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads).
+    stacked_experts: a per-expert stack (see _expert_stack_sources) with experts 0..E-1 maps to a tuple of, per
+    expert, its checkpoint keys in source order."""
     legacy = getattr(model, "_checkpoint_conversion_mapping", None) or {}
     renamings = converters = None
     try:
@@ -4907,6 +4936,10 @@ def _checkpoint_aliases(
     meta = dict.fromkeys(model.state_dict().keys(), True)
     prefix = getattr(model, "base_model_prefix", None) or None
     out = {}
+    stacks = {}
+    stack_sources = {}
+    if stacked_experts and converters:
+        stack_sources = _expert_stack_sources(converters)
     for key in index:
         new = key
         for pattern, replacement in legacy.items():
@@ -4915,15 +4948,71 @@ def _checkpoint_aliases(
                 break
         converted = None
         if renamings is not None:
+            source = new
             try:
                 new, converted = rename_source_key(new, renamings, converters, prefix, meta)
             except Exception:
                 converted = None
         if converted is not None:
             out[new] = None
+            if converted in stack_sources:
+                part, count = stack_sources[converted]
+                # The converter's pattern matches the key after the renamings (e.g. Mistral-format names).
+                try:
+                    renamed = rename_source_key(source, renamings, [], prefix, meta)[0]
+                except Exception:
+                    renamed = source
+                expert = _expert_number(converted, renamed)
+                parts = stacks.setdefault(new, [{} for _ in range(count)])
+                if parts is not None:
+                    if expert is None or len(parts) != count or expert in parts[part]:
+                        stacks[new] = None  # keep the refusal
+                    else:
+                        parts[part][expert] = key
         elif new != key:
             out.setdefault(new, key)
+    for name, parts in stacks.items():
+        experts = len(parts[0]) if parts else 0
+        if experts and all(sorted(p) == list(range(experts)) for p in parts):
+            out[name] = tuple(tuple(p[e] for p in parts) for e in range(experts))
     return out
+
+
+def _expert_stack_sources(converters):
+    """{source pattern: (position, source count)} for MergeModulelist(dim=0) of one source, or of several then
+    Concatenate(dim=1) (gate + up)."""
+    try:
+        from transformers.core_model_loading import Concatenate, MergeModulelist
+    except ImportError:
+        return {}
+    out = {}
+    for t in converters:
+        ops, sources = list(getattr(t, "operations", ()) or ()), list(t.source_patterns)
+        if len(t.target_patterns) != 1 or not ops or not sources:
+            continue
+        if type(ops[0]) is not MergeModulelist or ops[0].dim != 0:
+            continue
+        if len(ops) == 1 and len(sources) == 1:
+            pass
+        elif len(ops) == 2 and len(sources) > 1 and type(ops[1]) is Concatenate and ops[1].dim == 1:
+            pass
+        else:
+            continue
+        if any(source.count("*") != 1 or source.count("*.") != 1 for source in sources):
+            continue
+        for position, source in enumerate(sources):
+            out[source] = (position, len(sources))
+    return out
+
+
+def _expert_number(pattern, key):
+    """The expert index `*` matches in `key`, or None. `pattern` is a regex, as transformers compiles it."""
+    try:
+        regex = re.compile(pattern.replace("*.", r"(?P<_unsloth_expert>\d+)\.") + r"(?!\w)")
+    except re.error:
+        return None
+    match = regex.search(key)
+    return int(match.group("_unsloth_expert")) if match else None
 
 
 def _buffer_skeleton(model):
@@ -4967,6 +5056,7 @@ def _fill_from_checkpoint(
     label = "tensor parallel",
     fallback = "full load, then apply_tensor_parallel",
     host = (),
+    stacked_experts = False,
 ):
     """Fill a meta model from its safetensors checkpoint. `read_local(old, reader, key)` returns this rank's
     Parameter for a sharded tensor (reading only its bytes) or None, and then the tensor is read whole.
@@ -4990,7 +5080,9 @@ def _fill_from_checkpoint(
         if key is not None:
             return key
         if aliases is None:
-            aliases = _checkpoint_aliases(model, index, (kwargs or {}).get("key_mapping"))
+            aliases = _checkpoint_aliases(
+                model, index, (kwargs or {}).get("key_mapping"), stacked_experts = stacked_experts
+            )
         for n in names:
             if n in aliases:
                 if aliases[n] is None:
@@ -5022,6 +5114,12 @@ def _fill_from_checkpoint(
                     f"4-bit form of a {shape} weight; load this model without sharded loading ({fallback})."
                 )
         elif stored != tuple(old.shape):
+            if isinstance(key, tuple):
+                raise _TensorByTensorUnsupported(
+                    f"Unsloth: {label} sharded loading cannot read '{names[0]}' {tuple(old.shape)}: its "
+                    f"per-expert checkpoint tensors stack to {stored} (a quantized or reshaped expert layout); "
+                    f"load this model without sharded loading ({fallback})."
+                )
             if len(stored) == 2 and stored[1] == 1 and f"{key}.absmax" in index:
                 raise _TensorByTensorUnsupported(
                     f"Unsloth: {label} sharded loading cannot read '{names[0]}' {tuple(old.shape)}: the "
