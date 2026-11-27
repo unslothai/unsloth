@@ -203,7 +203,6 @@ def test_new_tokens_list_indices_keep_fully_trained_head(monkeypatch, entry):
 
 @pytest.mark.parametrize("entry", [_lora_config_for, _base_lora_config_for])
 def test_new_tokens_list_indices_skip_lora_head(monkeypatch, entry):
-    # PEFT refuses a TrainableTokensWrapper on a module that is already a LoRA layer.
     import torch
 
     monkeypatch.setenv("UNSLOTH_USE_NEW_MODEL", "0")
