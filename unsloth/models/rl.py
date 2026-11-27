@@ -677,6 +677,21 @@ def prepare_for_training_mode(f):
     return wrapper
 pass
 
+def _unsloth_train_to_wrap(self):
+    # The train() prepare_for_training_mode wraps. An instance-level train is kept: the context parallel
+    # wrapper (bound with MethodType) or a closure an __init__ hook set over it (optimizers/auto_fit.py),
+    # which still calls the context parallel one. Falling back to the class method would drop both.
+    train = self.__dict__.get('train')
+    if train is None:
+        return self.__class__.train
+    if getattr(train, '__self__', None) is self and hasattr(train, '__func__'):
+        return train.__func__
+    @functools.wraps(train)
+    def instance_train(self, *args, **kwargs):
+        return train(*args, **kwargs)
+    return instance_train
+pass
+
 torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : False,
@@ -3661,7 +3676,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         training_check = (
             "if hasattr(self, 'train'):\n"
             # A context parallel trainer binds its train wrapper on the instance (context_parallel.py).
-            "    self.train = MethodType(prepare_for_training_mode(getattr(self.__dict__.get('train'), '__func__', None) or self.__class__.train), self)\n"
+            "    self.train = MethodType(prepare_for_training_mode(_unsloth_train_to_wrap(self)), self)\n"
             "pass\n"
         )
         RLTrainer_post += training_check
