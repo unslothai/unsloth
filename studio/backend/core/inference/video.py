@@ -7666,6 +7666,16 @@ class VideoBackend:
                 kwargs["transformer_quant"] = video_lora.dense_transformer_quant(
                     fam, kwargs.get("transformer_quant"), kwargs.get("loras")
                 )
+                # An H3 side-branch LoRA on the modulation / time embedder needs the released denoiser: decided
+                # here, from the resolved adapters, so the plan and skip_transformer_weights stage its shards.
+                kwargs["transformer_quant"] = video_lora.planned_side_branch_quant(
+                    fam,
+                    kwargs.get("transformer_quant"),
+                    kwargs.get("loras"),
+                    hf_token = kwargs.get("hf_token"),
+                    local_files_only = local_files_only,
+                    cancel_event = cancel_event,
+                )
             else:
                 kwargs.pop("loras", None)
             ltx25_dev = _ltx25_dev_load(
@@ -10202,6 +10212,10 @@ class VideoBackend:
             if lora_refusal:
                 raise ValueError(lora_refusal)
             transformer_quant = video_lora.dense_transformer_quant(fam, transformer_quant, loras)
+            # Cache only (a plan downloads nothing); an adapter not cached yet plans the released denoiser.
+            transformer_quant = video_lora.planned_side_branch_quant(
+                fam, transformer_quant, loras, hf_token = hf_token
+            )
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -11204,6 +11218,9 @@ class VideoBackend:
                 cancel_event = self._cancel_event if _load_token is not None else None,
                 local_files_only = local_files_only,
                 expert_pair = bool(getattr(fam, "is_moe", False)),
+            )
+            transformer_quant = video_lora.side_branch_transformer_quant(
+                fam, transformer_quant, baked_loras
             )
         from .video_minimax_h3 import is_h3_native
 
@@ -14368,7 +14385,23 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
-        if baked_loras:
+        if baked_loras and video_lora.side_branch_enabled(fam):
+            # Unmerged: the denoiser's weights (bf16 or hosted int8 codes) stay as released and every adapted Linear
+            # adds its low-rank branch, so the update is never rounded into a 16-bit or 8-bit weight.
+            adapted = video_lora.attach_side_branch_(
+                getattr(pipe, denoiser_component),
+                [(e[1], e[2]) for e in baked_loras],
+                label = f"{fam.label} denoiser",
+                family = getattr(fam, "name", None),
+            )
+            video_lora.mark_baked(pipe, tuple(e[:3] for e in baked_loras), lora_specs)
+            logger.info(
+                "video.lora_side_branch: %d adapter(s) on %d layer(s) of the %s denoiser, weights unmerged",
+                len(baked_loras),
+                adapted,
+                transformer_quant_engaged or "bf16",
+            )
+        elif baked_loras:
             # Into the released bf16 denoiser, before the forward patch, placement, streaming or compile.
             if transformer_quant_engaged is not None:
                 raise ValueError(
