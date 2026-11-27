@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
+import copy
 import json
 import os
 import shutil
@@ -123,13 +124,29 @@ def test_empty_adapter_selection_saves_nothing(trained, tmp_path):
     assert not (tmp_path / "adapter_config.json").exists()
 
 
+def _target_weights(model):
+    merged = copy.deepcopy(model).merge_and_unload().state_dict()
+    return {
+        k: v
+        for k, v in merged.items()
+        if k.endswith(("q_proj.weight", "v_proj.weight", "down_proj.weight"))
+    }
+
+
 def test_native_save_is_the_bug(trained, tmp_path):
-    model, reference = trained
-    model.save_pretrained.__wrapped__(tmp_path)
-    reloaded = PeftModel.from_pretrained(_base(), tmp_path, torch_device = "cpu")
-    assert (
-        _logits(reloaded) - reference
-    ).abs().max() > 1e-3  # 30x the tolerance the converted save meets
+    # Weights, not logits: the tiny model's logits barely move, the merged weights carry the missing s0 * B0 @ A0.
+    model, _ = trained
+    want = _target_weights(model)
+    errors = {}
+    for kind, save in (
+        ("native", model.save_pretrained.__wrapped__),
+        ("converted", model.save_pretrained),
+    ):
+        save(tmp_path / kind)
+        reloaded = PeftModel.from_pretrained(_base(), tmp_path / kind, torch_device = "cpu")
+        got = _target_weights(reloaded)
+        errors[kind] = max((got[k] - w).abs().max().item() for k, w in want.items())
+    assert errors["converted"] < 1e-6 and errors["native"] > 1e-4, errors
 
 
 def test_trainer_state_dict_save_is_converted(trained, tmp_path):
