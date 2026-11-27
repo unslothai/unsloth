@@ -5589,6 +5589,7 @@ export const pl = {
       modelEmpty:
         "Pobierz model w Centrum modeli lub dodaj połączenie, aby wybrać inny.",
       modelMissing: "{model} (brak na tym urządzeniu)",
+      modelIncompatible: "{model} (nie obsługuje wyjścia tekstowego)",
       allowLoad: "Przełączaj automatycznie podczas mojej nieobecności",
       allowLoadHint:
         "Gdy nadejdzie termin zadania, a Unsloth nie był używany przez 5 minut, zadanie wczytuje ten model bez pytania, wykonuje się, a następnie przełącza z powrotem na poprzedni model. Jeśli w tym czasie korzystasz z Unsloth lub trwa trenowanie, uruchomienie jest pomijane, a Twój model pozostaje nietknięty. Po wyłączeniu Unsloth pyta przed wczytaniem.",

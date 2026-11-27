@@ -5537,6 +5537,7 @@ export const tr = {
       modelEmpty:
         "Başka bir model seçmek için Model merkezinden bir model indirin veya bir bağlantı ekleyin.",
       modelMissing: "{model} (bu cihazda değil)",
+      modelIncompatible: "{model} (metin çıktısını desteklemiyor)",
       allowLoad: "Uzaktayken otomatik olarak geçiş yap",
       allowLoadHint:
         "Bu görevin zamanı geldiğinde ve Unsloth'u 5 dakikadır kullanmadıysanız, bu modeli sormadan yükler, görevi çalıştırır ve ardından önceki modelinize geri döner. O sırada Unsloth'u kullanıyor veya eğitim yapıyorsanız çalıştırma atlanır ve modelinize dokunulmaz. Kapalıyken Unsloth yüklemeden önce sorar.",

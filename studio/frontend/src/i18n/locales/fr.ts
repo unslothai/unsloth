@@ -5276,6 +5276,7 @@ export const fr = {
       modelNoteAllowed: "Passe à ce modèle uniquement quand vous n’utilisez pas Unsloth, puis revient au vôtre.",
       modelEmpty: "Téléchargez un modèle dans Model Hub ou ajoutez une connexion pour en choisir un autre.",
       modelMissing: "{model} (absent de cet appareil)",
+      modelIncompatible: "{model} (ne prend pas en charge la sortie texte)",
       allowLoad: "Changer automatiquement en mon absence",
       allowLoadHint:
         "Quand cette tâche arrive à échéance et que vous n'avez pas utilisé Unsloth depuis 5 minutes, elle charge ce modèle sans demander, exécute la tâche, puis revient au modèle que vous aviez. Si vous utilisez Unsloth ou qu'un entraînement est en cours, l'exécution est ignorée et votre modèle n'est pas touché. Désactivé, Unsloth demande avant de charger.",

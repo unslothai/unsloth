@@ -5589,6 +5589,7 @@ export const nl = {
       modelEmpty:
         "Download een model in Modelhub of voeg een verbinding toe om een ander model te kiezen.",
       modelMissing: "{model} (niet op dit apparaat)",
+      modelIncompatible: "{model} (ondersteunt geen tekstuitvoer)",
       allowLoad: "Automatisch wisselen als ik weg ben",
       allowLoadHint:
         "Wanneer deze taak aan de beurt is en je Unsloth 5 minuten niet hebt gebruikt, wordt dit model zonder te vragen geladen, wordt de taak uitgevoerd en wordt daarna teruggeschakeld naar het model dat je had. Als je op dat moment Unsloth gebruikt of aan het trainen bent, wordt de uitvoering overgeslagen en blijft je model ongemoeid. Als dit uit staat, vraagt Unsloth het voordat er wordt geladen.",

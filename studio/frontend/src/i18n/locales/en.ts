@@ -5229,6 +5229,7 @@ export const en = {
       modelNoteAllowed: "Loads this model only while you're away from Unsloth, then puts back what you had.",
       modelEmpty: "Download a model in Model hub or add a connection to choose another.",
       modelMissing: "{model} (not on this device)",
+      modelIncompatible: "{model} requires a text-capable replacement",
       allowLoad: "Switch automatically when I'm away",
       allowLoadHint:
         "When this task is due and you haven't used Unsloth for 5 minutes, it loads this model without asking, runs the task, then switches back to the model you had. If you're using Unsloth or training at that time, the run is skipped and your model is left alone. Off, Unsloth asks before loading.",

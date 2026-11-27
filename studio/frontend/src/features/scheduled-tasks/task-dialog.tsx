@@ -31,7 +31,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   buildExternalModelId,
-  chatLocalModelOptions,
   type ExternalProviderConfig,
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
@@ -70,6 +69,7 @@ import {
   zoneLabel,
 } from "./schedule";
 import { useScheduledTasksStore } from "./store";
+import { taskLocalModelChoices } from "./task-model-options";
 
 const REPEAT_LABELS: Record<RepeatKind, TranslationKey> = {
   once: "scheduledTasks.form.once",
@@ -177,13 +177,10 @@ function useModelChoices(current: string | null) {
   const providers = useExternalProvidersStore((state) => state.providers);
   const connectionsEnabled = useExternalProvidersStore((state) => state.connectionsEnabled);
   return useMemo(() => {
-    const local = chatLocalModelOptions(inventory.localModels.rows).map(({ id, name }) => ({ id, name }));
-    // GGUF only: a run switches back afterwards only to a GGUF.
-    for (const repo of inventory.cachedGguf.rows) {
-      if (!local.some((option) => option.id === repo.repo_id)) {
-        local.push({ id: repo.repo_id, name: repo.repo_id });
-      }
-    }
+    const { local, incompatible } = taskLocalModelChoices(
+      inventory.localModels.rows,
+      inventory.cachedGguf.rows,
+    );
     const connections = (connectionsEnabled ? providers : []).map((provider) => ({
       provider,
       models: provider.models.map(
@@ -197,7 +194,7 @@ function useModelChoices(current: string | null) {
     // A saved choice that is gone (deleted, disconnected) stays visible rather than silently changing.
     const missing = known ? null : current;
     const connection = connections.flatMap((group) => group.models).find((option) => option.id === current);
-    return { local, connections, missing, connection };
+    return { local, connections, missing, connection, incompatible: current !== null && incompatible.has(current) };
   }, [inventory.localModels.rows, inventory.cachedGguf.rows, providers, connectionsEnabled, current]);
 }
 
@@ -317,7 +314,7 @@ export function TaskDialog({
   }, [advanced]);
   const [busy, setBusy] = useState(false);
   const timezone = task?.timezone ?? browserTimeZone();
-  const valid = prompt.trim() !== "" && scheduleFormComplete(form);
+  const valid = prompt.trim() !== "" && scheduleFormComplete(form) && !models.incompatible;
   const named = title.trim() !== "";
   const finalTitle = named ? title.trim() : titleFromPrompt(prompt);
 
@@ -462,8 +459,10 @@ export function TaskDialog({
               <SelectContent align="end" className={cn(LONG_LIST, "max-w-80")}>
                 <SelectItem value={LOADED_MODEL}>{t("scheduledTasks.form.modelLoaded")}</SelectItem>
                 {models.missing && (
-                  <SelectItem value={models.missing}>
-                    {t("scheduledTasks.form.modelMissing", { model: models.missing })}
+                  <SelectItem value={models.missing} disabled={models.incompatible}>
+                    {models.incompatible
+                      ? t("scheduledTasks.form.modelIncompatible", { model: models.missing })
+                      : t("scheduledTasks.form.modelMissing", { model: models.missing })}
                   </SelectItem>
                 )}
                 {models.local.length > 0 && (

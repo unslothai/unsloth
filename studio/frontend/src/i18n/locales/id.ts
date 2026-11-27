@@ -5541,6 +5541,7 @@ export const id = {
       modelEmpty:
         "Unduh model di Hub model atau tambahkan koneksi untuk memilih model lain.",
       modelMissing: "{model} (tidak ada di perangkat ini)",
+      modelIncompatible: "{model} (tidak mendukung keluaran teks)",
       allowLoad: "Beralih otomatis saat saya tidak ada",
       allowLoadHint:
         "Saat tugas ini jatuh tempo dan Anda belum menggunakan Unsloth selama 5 menit, Unsloth memuat model ini tanpa bertanya, menjalankan tugas, lalu beralih kembali ke model yang sebelumnya Anda gunakan. Jika Anda sedang menggunakan Unsloth atau melatih model pada saat itu, proses dilewati dan model Anda tidak diubah. Jika nonaktif, Unsloth bertanya sebelum memuat.",
