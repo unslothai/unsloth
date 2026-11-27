@@ -150,9 +150,8 @@ def _scales_key(
     absmax2 = None,
     offset = None,
 ):
-    """Address and version of every scale tensor W decodes with (absmax; nested quantization's absmax2 and
-    offset): a replaced quant state or an in-place write to one of them changes it. Host reads only. Each
-    tensor's version is read on its own, so an inference tensor among them does not hide the others' writes."""
+    """Address and version of scale tensors (absmax, absmax2, offset): replacing or in-place writes
+    change it; host reads only; versions read alone so inference tensors don't hide writes."""
     if absmax2 is None and offset is None:
         return (absmax.data_ptr(), _version(absmax))
     return (
@@ -200,8 +199,7 @@ def cached_count():
 
 
 def clear_dequant_cache(oom = False, release = False):
-    """Drop every cached weight (and the budgets: they are recomputed at the next optimizer step).
-    release=True also returns the freed blocks to the driver, for other processes."""
+    """Drop cached weights and budgets; release=True also returns freed blocks to the driver."""
     with _lock:
         held = bool(_CACHE)
         shrunk = [index for index, size in _HELD.items() if size > 0]
@@ -281,9 +279,8 @@ _SHRINK_UNSAFE = set()  # device indices whose last shrink was a size drop or me
 
 
 def _note_shrink(index, kind):
-    """Until the peak rises, peak - current counts freed cache; after a plain clear (evaluation,
-    inference, saving, end of training, smaller budget) the last transient still holds; size
-    drops or pressure stay conservative."""
+    """Until the peak rises, peak - current counts freed cache; after a plain clear the last
+    transient still holds; size drops or pressure stay conservative"""
     measured = _usable(index)
     peak = measured[2].get("allocated_bytes.all.peak", 0) if measured is not None else float("inf")
     _SHRINK_PEAK[index] = peak
@@ -292,9 +289,7 @@ def _note_shrink(index, kind):
 
 
 def _mark_growth(index):
-    """Growth past the last measurement (more tokens, longer sequence, more matmul rows, or another
-    run); with a stale peak after a shrink use the conservative bound; without a pending shrink
-    the next safe point measures the step."""
+    """Growth past the last measurement marks a stale post-shrink peak unsafe until remeasured."""
     if index in _SHRINK_PEAK and index not in _SHRINK_UNSAFE:
         _SHRINK_UNSAFE.add(index)
         STATS["growth_marks"] += 1
@@ -310,8 +305,7 @@ def _usable(index):
         usable = free + max(unused, 0)
         fraction = _fraction(index)
         if fraction < 1.0:
-            # The allocator refuses to reserve past fraction * total whatever the driver has free; the margin
-            # is then a share of that capped card.
+            # Allocator caps at fraction of total, free or not; margin is a share of that cap.
             total = int(fraction * total)
             usable = min(usable, total - allocated)
         return usable, total, stats
@@ -346,7 +340,6 @@ def _evict(
     stat = "evictions",
     kind = "pressure",
 ):
-    """Drop the oldest entries of `index` until it holds at most target_bytes."""
     held = _cached_bytes(index)
     shrunk = False
     for key in [k for k, e in _CACHE.items() if e[4].device.index == index]:
@@ -391,8 +384,7 @@ def _on_optimizer_step(optimizer, args, kwargs):
             STATS["stale"] += 1
         _CHECKED.clear()
         if _HOOKS and not _PRE_RAN[0]:
-            # The model forward ran compiled as a whole, so its pre-forward shape guard never ran: a longer batch
-            # would allocate its masks and embeddings before any LoRA op could drop the cache. Cache nothing.
+            # Forward compiled as a whole skips the pre-forward hook, so nothing is cached.
             for index in list(_SEEN):
                 if _cached_bytes(index):
                     _evict(index, 0, kind = "budget")
@@ -438,8 +430,7 @@ def _on_optimizer_step(optimizer, args, kwargs):
                 _SHRINK_PEAK.pop(index, None)
                 _SHRINK_UNSAFE.discard(index)
             elif index in _SHRINK_UNSAFE:
-                # Stale peak after a size drop or memory pressure: the larger step's own transient is unknown
-                # and may exceed the last measurement, so use the bound the stale peak gives (no refill).
+                # Stale peak after size drop or pressure bounds unknown transient; no refill.
                 transient = max(_TRANSIENT.get(index, 0), peak - allocated)
                 STATS["stale_peak_bound"] += 1
             else:
@@ -552,8 +543,7 @@ def _lookup(
     scales = _scales_key(absmax, absmax2, offset)
     if entry is not None:
         _guard(index)
-        # Same packed storage and version, but a replaced quant state (new absmax) or scales written in place
-        # (absmax, or the nested absmax2 / offset) is a different weight.
+        # New quant state or in-place scales (absmax, absmax2, offset) mean another weight.
         if (
             entry[1] == W._version
             and entry[2] == scales
@@ -583,9 +573,8 @@ def _miss(W, scales, decode, dtype, index):
         if budget <= 0 or (entry is not None and key in _CACHE):
             return decode(False)  # no budget, or cached for another stream
         if index not in _CHECKED:
-            # Once per optimizer step, at its first admission: memory taken since the safe point (a callback's
-            # tensor, a second model) shrinks this step's budget, so the cache still leaves the reserve
-            # (2 x transient + margin) usable for the rest of the step. One reading per step, not per weight.
+            # Once per step, at first admission, not per weight: memory taken since the safe point
+            # shrinks the budget, so the reserve (2 x transient + margin) stays usable.
             _CHECKED.add(index)
             measured = _usable(index)
             if measured is None:
@@ -627,8 +616,7 @@ def _is_bnb_nf4(quant_state):
 
 
 def rows_of(X):
-    """Rows of the matmul X @ W.t() (tokens): what the activations of the step scale with. 0 while tracing:
-    traced callers never read the cache here, and a shape test on a SymInt would add a guard."""
+    """Matmul rows (tokens) of X; 0 while tracing, since a shape test on a SymInt adds a guard."""
     if torch.compiler.is_compiling():
         return 0
     return X.numel() // X.shape[-1] if X.dim() > 1 and X.shape[-1] else X.numel()
@@ -672,8 +660,7 @@ def dequantize(
 
 
 # ----------------------------------------------------------------------------------------------------------
-# Opaque so the dense tensor never enters the graph and Inductor cannot reuse cached weight buffers;
-# plain CUDA kernels with no autograd wrapper, only called with grad off; cheaper than custom_op.
+# Opaque so Inductor cannot reuse dense weight buffers; grad-off CUDA, cheaper than custom_op.
 
 
 def _parts(quant_state):
@@ -855,9 +842,8 @@ def nf4_lora_first(X, W, quant_state, XA, Bt, alpha):
 
 
 # ----------------------------------------------------------------------------------------------------------
-# Budget set only from on_train_begin to the end of Trainer.train(); eval and predict run uncached
-# (never measured); training end returns cache memory to the driver; a default callback carries the
-# scope so wrappers cannot bypass it; train() wrapper also ends it if training raises.
+# Budget only from on_train_begin to training end (cache freed); eval and predict run uncached; a
+# default callback keeps wrappers from bypassing it; train() also ends it on raise.
 
 
 def _end_train():
@@ -904,20 +890,17 @@ def _padded(kwargs):
 
 
 def _model_pre_hook(module, args, kwargs):
-    # Runs before the model allocates anything for this call (embeddings, attention masks that grow with the
-    # square of the sequence): a call larger than every step the budget was measured on drops the cache now.
+    # Runs before the call allocates; a call bigger than any measured step drops the cache.
     if torch.compiler.is_compiling():
-        # A whole-model torch.compile would trace this host bookkeeping (graph breaks, guards on module state);
-        # the LoRA ops' own row check still runs eagerly inside the opaque op at run time. The next safe point
-        # sees that this hook never ran eagerly and gives no budget.
+        # A whole-model torch.compile would trace this bookkeeping (graph breaks, guards); LoRA ops
+        # check rows eagerly, and the safe point gives no budget as this never ran eagerly.
         return
     _PRE_RAN[0] += 1
     shape = _input_shape(args, kwargs)
     if shape is None:
         return
     tokens, length = shape
-    # Only training calls are measured by the safe point budget: an evaluation or generation call (module in
-    # eval mode) never widens what a later training step may run cached.
+    # Only training calls widen the budget; eval or generation (module in eval mode) does not.
     if module is None or getattr(module, "training", True):
         if tokens > _SHAPE_NEW[0]:
             _SHAPE_NEW[0] = tokens
@@ -931,8 +914,7 @@ def _model_pre_hook(module, args, kwargs):
             for index in list(_BUDGET):
                 _drop_device(index, "shape_drops")
         if module is None or getattr(module, "training", True):
-            # Also while the cache is empty (evaluation or a clear just emptied it): until a new peak is measured
-            # the stale peak, not the smaller transient measured before, sizes the next budget.
+            # Cache empty: stale peak, not a smaller transient, sizes budget until remeasured.
             for index in list(_SHRINK_PEAK):
                 _mark_growth(index)
 
@@ -951,8 +933,7 @@ def _user_callbacks(callbacks):
 
 
 def _has_nf4_weights(model):
-    """True when model holds a bitsandbytes NF4 weight the cache could serve: a parameter's quant state, or a
-    Linear4bit's own copy (FSDP2 all-gathers the packed bytes into a Parameter without it). Once per train()."""
+    """True if a module keeps an NF4 quant_state (FSDP2 Parameters lack it); once per train()."""
     try:
         for module in model.modules():
             if _is_bnb_nf4(module.__dict__.get("quant_state")):

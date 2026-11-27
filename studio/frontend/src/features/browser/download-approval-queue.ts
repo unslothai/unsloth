@@ -35,8 +35,7 @@ export function downloadSiteOf(site: string): string {
   }
 }
 
-/** Remembered answer for `site` (default: the file's address), else ask. Only web origins count: one answer for "" would cover blob:/data: everywhere.
- *  `agentRule`: the download came from the browser agent's tab, under the user's Agent permissions. */
+/** Remembered answer for site, else ask; web origins only (blank would cover blob: and data:). */
 export function approveDownload(
   url: string,
   name: string,

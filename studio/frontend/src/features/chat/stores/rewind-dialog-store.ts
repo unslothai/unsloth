@@ -4,9 +4,8 @@
 import { create } from "zustand";
 
 /**
- * The open Rewind dialog, if any. `threadKey` is the assistant-ui thread list item id, so only
- * the Thread that asked opens it when compare panes mount several. A null `messageId` is the
- * `/rewind` picker; a message id skips straight to the choices.
+ * The open Rewind dialog, if any: threadKey is the assistant-ui thread id, so only the asking
+ * Thread opens it. A null messageId opens the /rewind picker; a message id goes to the choices.
  */
 export interface RewindDialogRequest {
   threadKey: string;

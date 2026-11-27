@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The executor without a DOM: the page answers through globalThis.__frameAgent, the panel is shown,
-// and the native view, capture and history modules are inert.
+// Without a DOM, globalThis.__frameAgent answers; native view, capture and history are inert.
 import { resolve as browserStoreResolve } from "./browser-store-resolver.mjs";
 
 const stub = (source) => ({ url: `data:text/javascript,${encodeURIComponent(source)}`, shortCircuit: true });

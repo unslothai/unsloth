@@ -38,8 +38,7 @@ export const WONT_FIT: FitVerdict = {
   hint: "Estimated memory exceeds this device's usable capacity. Try a smaller model or free memory.",
 };
 
-/** Fit verdict marks keyed by the Hub's classes; `tight`/`exceeds` come only from torch or
- *  QLoRA estimates, which never offload. */
+/** tight/exceeds come only from torch or QLoRA estimates, which never offload. */
 export const VRAM_VERDICT: Record<PickerFitStatus, FitVerdict | null> = {
   fits: null,
   offload: {

@@ -4,6 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { AUDIO_CPP_REPO } from "../src/features/audio/audio-cpp-catalog.ts";
+import {
+  getHfEndpoint,
+  getHubWebEndpoint,
+  resetHfEndpoints,
+  setHfEndpoints,
+  setHubPageLinks,
+} from "../src/lib/hf-endpoint.ts";
 import { hubAudioTaskSearch, matchesHubAudioTask } from "../src/lib/hub-audio-task.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -55,11 +63,36 @@ test("a typed Hub search still keeps only the linked audio tasks", () => {
   );
 });
 
-test("Separate's Search Hub link narrows to audio-to-audio, not the speak picker's tasks", () => {
-  // The speak tasks (text-to-speech, text-to-audio) filtered out every separation model.
+test("Separate's Search Hub opens the audio.cpp repo page", () => {
   const audioPage = readSrc("features/audio/audio-page.tsx");
   const selector = readSrc("features/model-picker/components/model-selector.tsx");
-  assert.match(audioPage, /hubTask=\{pageWorkflow === "separate" \? "audio-to-audio" : undefined\}/);
-  assert.match(selector, /const linkedTask = hubTask \?\? task;[\s\S]{0,200}?audioTask:\s*hubCapability === "audio" && linkedTask \? \[linkedTask\]\.flat\(\)/);
-  assert.deepEqual(hubAudioTaskSearch("audio-to-audio", "audio"), ["audio-to-audio"]);
+  assert.match(audioPage, /hubRepo=\{pageWorkflow === "separate" \? AUDIO_CPP_REPO : undefined\}/);
+  assert.doesNotMatch(audioPage, /"audio-to-audio"|https:\/\/huggingface\.co\/\$\{AUDIO_CPP_REPO\}/);
+  assert.match(selector, /setOpen\(false\);\s*if \(hubRepo\) \{\s*openLink\(`\$\{getHubWebEndpoint\(\)\}\/\$\{hubRepo\}`\);\s*return;\s*\}/);
+  assert.match(selector, /audioTask:\s*hubCapability === "audio" && task \? \[task\]\.flat\(\)/);
+  assert.match(selector, /browseHubHint=\{hubRepo \? `Open \$\{hubRepo\} in a new tab` : undefined\}/);
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  assert.match(pickers, /aria-label="Search more models on the Hub"/);
+  assert.match(pickers, /<TooltipContent>\{browseHubHint \?\? "Search all models"\}<\/TooltipContent>/);
+});
+
+test("Separate's repo link opens a page this browser can load, never the relay", () => {
+  const link = () => `${getHubWebEndpoint()}/${AUDIO_CPP_REPO}`;
+  try {
+    assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
+    // A reachable mirror: /api/health names it and the relay carries the API calls.
+    setHfEndpoints("http://studio.local/api/hub/proxy/abc123", null, "huggingface", { endpoint: true });
+    setHubPageLinks("https://hf-mirror.example/");
+    assert.equal(getHfEndpoint(), "http://studio.local/api/hub/proxy/abc123");
+    assert.equal(link(), "https://hf-mirror.example/audio-cpp/audio.cpp-gguf");
+    // A different relay has no known browser origin yet.
+    setHfEndpoints("http://studio.local/api/hub/proxy/def456", null, "huggingface", { endpoint: true });
+    assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
+    setHfEndpoints("http://studio.local/api/hub/modelscope", null, "modelscope");
+    assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
+    setHfEndpoints("https://direct-mirror.example", null, "huggingface");
+    assert.equal(link(), "https://direct-mirror.example/audio-cpp/audio.cpp-gguf");
+  } finally {
+    resetHfEndpoints();
+  }
 });

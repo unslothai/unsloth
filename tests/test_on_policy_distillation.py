@@ -973,3 +973,192 @@ def test_grpo_distillation_runs_equal_forward_counts_across_ranks(scenario, tmp_
         assert code == 0, result
         assert result["equal"], result
         assert result["counts"][0] == result["counts"][1], result
+
+
+# Opt-in terminal set (unsloth_distillation_terminal_tokens): stop tokens scored as one action.
+
+TERMINAL = (9, 10)
+
+
+def _terminal_batch():
+    prompt_ids, prompt_mask, completion_ids, completion_mask = _left_padded_batch()
+    # Every row ends on a stop: rows 0 and 2 on 9, row 1 on 10; row 1 also has a 9 mid-row.
+    completion_ids = completion_ids.clone()
+    completion_ids[0, 1] = 9
+    completion_ids[1, 1] = 9
+    completion_ids[1, 3] = 10
+    completion_ids[2, 2] = 9
+    return prompt_ids, prompt_mask, completion_ids, completion_mask
+
+
+def _oracle_terminal_logps(
+    model,
+    prompt_ids,
+    prompt_mask,
+    completion_ids,
+    completion_mask,
+    temperature = 1.0,
+):
+    out = torch.zeros(completion_ids.shape, dtype = torch.float64)
+    for b in range(completion_ids.shape[0]):
+        p = prompt_ids[b][prompt_mask[b].bool()]
+        c = completion_ids[b][completion_mask[b].bool()]
+        with torch.no_grad():
+            logits = model(torch.cat([p, c]).unsqueeze(0)).logits[0].double()
+        lp = torch.log_softmax(logits[p.numel() - 1 : p.numel() - 1 + c.numel()] / temperature, -1)
+        for j, t in enumerate(c.tolist()):
+            out[b, j] = torch.logsumexp(lp[j, list(TERMINAL)], 0) if t in TERMINAL else lp[j, t]
+    return out
+
+
+@pytest.mark.parametrize("temperature", (1.0, 0.7))
+@pytest.mark.parametrize("columns_per_chunk", (None, 1))
+def test_score_completion_logps_terminal_set_matches_oracle(temperature, columns_per_chunk):
+    model = ToyCausalLM().double()
+    batch = _terminal_batch()
+    ids = torch.tensor(TERMINAL)
+    got = opd.score_completion_logps(
+        model,
+        *batch,
+        temperature = temperature,
+        columns_per_chunk = columns_per_chunk,
+        terminal_ids = ids,
+    )
+    want = _oracle_terminal_logps(model, *batch, temperature = temperature)
+    torch.testing.assert_close(got.double(), want, rtol = 1e-6, atol = 1e-6)
+    plain = opd.score_completion_logps(model, *batch, temperature = temperature)
+    gap = opd.score_completion_logps(
+        model, *batch, temperature = temperature, terminal_ids = ids, terminal_gap = True
+    )
+    torch.testing.assert_close(
+        gap.double(), (want - plain.double()) * batch[3], rtol = 1e-6, atol = 1e-6
+    )
+    stops = torch.isin(batch[2], ids) & batch[3].bool()
+    assert torch.all(gap[~stops] == 0) and torch.all(gap[stops] > 0)
+
+
+def test_grpo_terminal_set_scores_the_stop_as_one_action(monkeypatch):
+    # The teacher (adapter-off base) and the student split stop mass differently over 9 / 10: with the terminal set,
+    # the stop's advantage is -coef * (log q(set) - log p(set)) on both the rescoring and the sampling-logprob path.
+    monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
+    trainer = _grpo_trainer(
+        unsloth_distillation_coef = 0.5, temperature = 1.0, unsloth_distillation_terminal_tokens = "9, 10"
+    )
+    trainer.processing_class = types.SimpleNamespace(convert_tokens_to_ids = int, unk_token_id = None)
+    opd.grpo_setup_distillation(trainer)
+    assert trainer._unsloth_distillation_terminal_ids.tolist() == list(TERMINAL)
+    batch = _terminal_batch()
+    prompt_ids, prompt_mask, completion_ids, completion_mask = batch
+    output = dict(
+        prompt_ids = prompt_ids,
+        prompt_mask = prompt_mask,
+        completion_ids = completion_ids,
+        completion_mask = completion_mask,
+        advantages = torch.zeros(3),
+    )
+    opd.grpo_add_distillation_advantages(trainer, output)
+    student = _oracle_terminal_logps(trainer.model, *batch)
+    teacher = _oracle_terminal_logps(trainer.model.inner, *batch)
+    want = -0.5 * (student - teacher) * completion_mask
+    torch.testing.assert_close(
+        output["unsloth_distillation_advantages"].double(), want, rtol = 1e-5, atol = 1e-5
+    )
+    exact = -0.5 * (
+        _oracle_logps(trainer.model, *batch) - _oracle_logps(trainer.model.inner, *batch)
+    )
+    stops = torch.isin(completion_ids, torch.tensor(TERMINAL)) & completion_mask.bool()
+    assert not torch.allclose(exact[stops], want[stops], atol = 1e-3)
+    torch.testing.assert_close(
+        exact[~stops] * completion_mask[~stops], want[~stops], rtol = 1e-5, atol = 1e-5
+    )
+    # Sampling logprobs: q stays the sampler's, plus the student's own mass on the set's other tokens at the stops.
+    sampled = -torch.rand(completion_ids.shape, dtype = torch.float32)
+    output["sampling_per_token_logps"] = sampled
+    opd.grpo_add_distillation_advantages(trainer, output)
+    plain = _oracle_logps(trainer.model, *batch)
+    want = -0.5 * (sampled.double() + (student - plain) - teacher) * completion_mask
+    torch.testing.assert_close(
+        output["unsloth_distillation_advantages"].double(), want, rtol = 1e-5, atol = 1e-5
+    )
+
+
+def test_grpo_terminal_set_validates(monkeypatch):
+    monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
+
+    class Tok:
+        unk_token, unk_token_id = "<unk>", 0
+
+        def convert_tokens_to_ids(self, token):
+            return {"<|im_end|>": 9, "<|endoftext|>": 10}.get(token, 0)
+
+    def make(value, **args):
+        trainer = _grpo_trainer(
+            unsloth_distillation_coef = args.pop("coef", 1.0),
+            unsloth_distillation_terminal_tokens = value,
+            **args,
+        )
+        trainer.processing_class = types.SimpleNamespace(
+            tokenizer = Tok()
+        )  # a processor wrapping the tokenizer
+        return trainer
+
+    trainer = make("<|im_end|>,<|endoftext|>")
+    opd.grpo_setup_distillation(trainer)
+    assert trainer._unsloth_distillation_terminal_ids.tolist() == [9, 10]
+    trainer = make([10, "<|im_end|>", 10])
+    opd.grpo_setup_distillation(trainer)
+    assert trainer._unsloth_distillation_terminal_ids.tolist() == [10, 9]
+    for value, match in (
+        ("<|im_end|>", "at least two"),
+        ("<|im_end|>,<|nope|>", "not a single token"),
+        ([9, 11], "not a token id"),
+        ([9, -1], "not a token id"),
+        ([9, True], "not a token id"),
+    ):
+        with pytest.raises(ValueError, match = match):
+            opd.grpo_setup_distillation(make(value))
+    with pytest.raises(ValueError, match = "coef is 0"):
+        opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", coef = 0.0))
+    with pytest.raises(ValueError, match = "top_p"):
+        opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", top_p = 0.9, use_vllm = True))
+    for extra, match in (
+        (
+            dict(vllm_sampling_params = types.SimpleNamespace(presence_penalty = 0.5)),
+            "presence_penalty",
+        ),
+        (dict(generation_kwargs = {"frequency_penalty": 0.3}), "frequency_penalty"),
+        (dict(generation_kwargs = {"logit_bias": {9: 2.0}}), "logit_bias"),
+        (
+            dict(vllm_sampling_params = types.SimpleNamespace(allowed_token_ids = [9])),
+            "allowed_token_ids",
+        ),
+    ):
+        with pytest.raises(ValueError, match = match):
+            opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", use_vllm = True, **extra))
+    # Neutral values pass, and without the terminal set the penalties stay vLLM's business as before.
+    opd.grpo_setup_distillation(
+        make(
+            "<|im_end|>,<|endoftext|>",
+            use_vllm = True,
+            generation_kwargs = {"presence_penalty": 0.0, "logit_bias": {}},
+        )
+    )
+    plain = _grpo_trainer(
+        unsloth_distillation_coef = 1.0, use_vllm = True, generation_kwargs = {"presence_penalty": 0.5}
+    )
+    opd.grpo_setup_distillation(plain)
+    off = _grpo_trainer(unsloth_distillation_coef = 1.0)
+    opd.grpo_setup_distillation(off)
+    assert off._unsloth_distillation_terminal_ids is None
+
+
+def test_grpo_config_declares_the_terminal_set_off_by_default():
+    source = open(RL_SOURCE_PATH, encoding = "utf-8").read()
+    assert (
+        "unsloth_distillation_terminal_tokens : Optional[str] = field(\n        default = None,"
+        in source
+    )
+    assert "unsloth_distillation_terminal_tokens = None," in source
+    assert (
+        "self.unsloth_distillation_terminal_tokens = unsloth_distillation_terminal_tokens" in source
+    )

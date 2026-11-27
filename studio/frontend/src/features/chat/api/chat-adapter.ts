@@ -398,6 +398,7 @@ import {
 } from "../utils/context-truncation";
 import {
   createThinkTagTracker,
+  deltaReasoningText,
   extractDeltaText,
   markLiteralThinkTags,
   parseAssistantContent,
@@ -8349,29 +8350,7 @@ export function createOpenAIStreamAdapter(
                 codexRoundToolCallIds = [];
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content; wrap it inline as <think>.
-              const rawReasoning = (
-                chunk.choices?.[0]?.delta as
-                  | { reasoning_content?: unknown }
-                  | undefined
-              )?.reasoning_content;
-              // OpenRouter ships reasoning as delta.reasoning_details[] whatever the provider; same wrap.
-              const rawReasoningDetails = (
-                chunk.choices?.[0]?.delta as
-                  | { reasoning_details?: unknown }
-                  | undefined
-              )?.reasoning_details;
-              const reasoningFromDetails = Array.isArray(rawReasoningDetails)
-                ? rawReasoningDetails
-                    .map((part) => {
-                      if (!part || typeof part !== "object") return "";
-                      const text = (part as { text?: unknown }).text;
-                      return typeof text === "string" ? text : "";
-                    })
-                    .join("")
-                : "";
-              const reasoning =
-                (typeof rawReasoning === "string" ? rawReasoning : "") +
-                reasoningFromDetails;
+              const reasoning = deltaReasoningText(chunk.choices?.[0]?.delta);
               if (
                 !capturedGeminiThoughtPart &&
                 isGeminiApiProviderType(externalProvider?.providerType) &&

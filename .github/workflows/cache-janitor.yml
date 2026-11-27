@@ -133,9 +133,7 @@ permissions:
 jobs:
   prune:
     name: Prune superseded caches
-    # Arm label, not ubuntu-latest, since merge bursts fill that queue and stalled this sweep for
-    # hours; the sweep is API-only (gh, GNU date, awk, sed, sort), and the account job cap still
-    # applies.
+    # Arm, not ubuntu-latest: merge bursts stall that queue; API-only tools; job cap applies.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
@@ -266,9 +264,8 @@ jobs:
           : > "$grouped"
           while IFS=$'\t' read -r id created size ref ver key accessed; do
             [ -z "${id:-}" ] && continue
-            # The keep input applies only where an older generation can answer a restore that
-            # nothing newer can; prefix-restored CodeQL, pip-v2, uv and rust-cache keep one copy,
-            # since a second copy answers only an exact revert.
+            # Keep applies only where older generations answer restores nothing newer can; CodeQL,
+            # pip-v2, uv, rust-cache keep one copy, since a second answers only exact reverts.
             fkeep="$KEEP"
             case "$key" in
               codeql-overlay-base-database-*)
@@ -276,22 +273,18 @@ jobs:
               codeql-trap-*)
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}$//'); fkeep=1 ;;
               v0-rust-*)
-                # rust-cache restore-key is the key minus its trailing lockfile hash, exactly this
-                # prefix, so a lockfile bump still starts from the surviving generation.
+                # Restore-key drops the lockfile hash, so a bump still hits an old generation.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//'); fkeep=1 ;;
               zoo-inductor-*)
-                # Core zoo's Inductor cache, keyed by leg, compiler stack and CPU target, pyproject hash
-                # and the zoo SHA it was built for; PRs restore by prefix, so only the newest generation
-                # per prefix is ever read.
+                # Core zoo's Inductor cache keyed by leg, compiler stack, CPU target, pyproject hash
+                # and zoo SHA; PRs restore by prefix, so only the newest generation is read.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}$//'); fkeep=1 ;;
               pip-v2-*|uv-*|fe-dist-*)
-                # Strip only the trailing dependency hash, so the job name (pip-v2) or OS (uv,
-                # fe-dist) stays in the prefix and separate keys are not ranked as generations; a
-                # retired notebooks-colab prefix is drained to one entry by keep=1, then aged out by
-                # the 7-day idle timer.
+                # Strip only the trailing hash so job name (pip-v2) or OS (uv, fe-dist) stays in the
+                # prefix and separate keys are not ranked as generations; retired notebooks-colab
+                # prefix drains to one entry via keep=1, then ages out after 7 idle days.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{64}$//')
-                # fe-dist has no restore-keys: an older generation is the only
-                # thing an exact revert of the frontend can hit, so it keeps `keep`.
+                # fe-dist has no restore-keys, so exact reverts need keep older generations.
                 case "$key" in fe-dist-*) ;; *) fkeep=1 ;; esac ;;
               *) continue ;;
             esac

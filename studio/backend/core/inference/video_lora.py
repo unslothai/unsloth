@@ -189,8 +189,7 @@ def load_refusal(
     transformer_quant: Optional[str],
     loras: Any = None,
 ) -> Optional[str]:
-    """Why this video load cannot bake LoRAs, or None when it can. Network-free. With ``loras``, a two-expert
-    family also refuses any pick that is not a catalog high / low-noise pair."""
+    """Refusal reason or None, network-free; two-expert plus loras needs catalog high/low pair."""
     if fam is None:
         return None
     label = getattr(fam, "label", None) or getattr(fam, "name", None) or "this model"
@@ -336,8 +335,7 @@ def planned_side_branch_quant(
 
 
 def check_families(specs: Iterable[tuple[str, float]], family: Optional[str]) -> None:
-    """Network-free family gate for catalog ids, so a mismatched pick is a 400 before anything is evicted.
-    Ids the catalog does not know (public HF repo ids) are resolved, and gated, by the load itself."""
+    """Network-free: wrong-family catalog ids 400 before eviction; unknown ids gated by load."""
     from core.inference import diffusion_lora
 
     req = (family or "").strip().lower()
@@ -636,9 +634,8 @@ def bake_into_module_(
     label: str = "denoiser",
     family: Optional[str] = None,
 ) -> int:
-    """Add every LoRA delta in ``files`` to ``module``'s dense Linear weights in place (parameter identity kept);
-    returns the number of layers merged. Every adapted layer must exist and hold a plain float weight, else nothing
-    is merged and ValueError says why: a partial bake would be a silently different model."""
+    """Merges LoRA deltas into dense Linear weights in place and returns the layer count; a missing
+    or non-float layer raises ValueError with nothing merged (no silent partial bake)."""
     import torch
 
     deltas = read_deltas(files, family = family)

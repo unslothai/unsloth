@@ -62,7 +62,6 @@ def resolve_batch_jobs(
 
 
 def chunk_jobs(jobs: list[tuple[str, int]], batch_size: int) -> list[list[tuple[str, int]]]:
-    """An explicit batch_size above 1 caps each forward; the default runs the whole list as one forward."""
     if not jobs:
         return []
     per_forward = len(jobs) if batch_size <= 1 else min(int(batch_size), len(jobs))

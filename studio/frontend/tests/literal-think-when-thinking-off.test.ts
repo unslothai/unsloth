@@ -215,6 +215,10 @@ test("the adapter and recovery follow the turn's think parse state", () => {
   );
   assert.match(
     recovery,
-    /if \(!parseThink && \(reasoning \|\| hasStructuredReasoning\)\) \{\s*parseThink = true;\s*currentMetadata = \{ \.\.\.currentMetadata, parseThinkTags: true \};/,
+    /if \(parseThink && !wasParsing\) \{\s*currentMetadata = \{ \.\.\.currentMetadata, parseThinkTags: true \};/,
+  );
+  assert.match(
+    readSrc("features/chat/utils/chat-generation-recovery.ts"),
+    /if \(reasoning \|\| hasStructuredReasoning\) parseThink = true;/,
   );
 });

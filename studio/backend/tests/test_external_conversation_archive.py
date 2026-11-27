@@ -273,9 +273,8 @@ def test_no_compaction_nudge_when_tool_calls_are_disabled(monkeypatch):
     assert "call search_conversation" not in system
 
 
-def test_a_tool_result_this_turn_evicted_is_recalled_for_the_users_question(archive_ready):
-    """The recall filters on the loop's turns and queries the client's, so the model keeps what it
-    found this turn after a fit evicts it (#16187)."""
+def test_a_tool_result_found_this_turn_stays_in_the_prompt(archive_ready):
+    """The fit shortens this turn's results rather than evicting them (#16187)."""
     finding = "The ZEBRA-4471 valve opens at 37 bar"
     request = _chat()[:3] + [
         {"role": "user", "content": "What pressure does the ZEBRA-4471 valve open at?"}
@@ -305,5 +304,6 @@ def test_a_tool_result_this_turn_evicted_is_recalled_for_the_users_question(arch
         loop, _payload(THREAD), branch = request, tool_loop = True
     )
 
-    assert truncation["recalled_chunks"] > 0
-    assert finding in str(fitted)
+    assert truncation is None
+    assert any(m["role"] == "tool" and finding in m["content"] for m in fitted)
+    assert fitted[3] is loop[3]

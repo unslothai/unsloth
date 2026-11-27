@@ -219,8 +219,7 @@ def test_the_memory_probe_pays_for_the_classification_up_front(monkeypatch):
 
 
 def test_a_different_mask_is_a_different_question(monkeypatch):
-    """The cache is keyed by the visibility mask, which decides which devices it is
-    about. A cached answer for one mask must not be read as an answer for another."""
+    """Cache is keyed by the visibility mask: one mask's answer must not be read as another's."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
@@ -362,8 +361,7 @@ def test_an_unconstrained_row_keeps_its_total(monkeypatch):
 
 
 def test_the_preflight_needs_every_credited_device_to_share_the_pool(monkeypatch):
-    """The guard charges the whole model to system RAM, so every credited device must share the
-    pool, or a mixed selection looks oversized."""
+    """Credited devices must share one RAM pool: the guard charges the whole model to it."""
     import sys as _sys
 
     from core.inference.llama_cpp import LlamaCppBackend

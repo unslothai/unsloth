@@ -164,7 +164,6 @@ def _manifest_components(root: Path) -> Optional[list]:
     return None
 
 
-# Manifest classes that never hold weights (a scheduler / tokenizer folder is config only).
 _WEIGHTLESS_CLASS_SUFFIXES = (
     "Scheduler",
     "Tokenizer",
@@ -179,9 +178,7 @@ def _weightless(class_name: Any) -> bool:
 
 
 def local_pipeline_safetensors_complete(root: Any, passed: Iterable[str] = ()) -> bool:
-    """True when ``root`` is a local diffusers pipeline folder whose every manifest component that holds weights
-    (and is not supplied pre-built in ``passed``) has a ``.safetensors`` weight. False when unknown (a weight-bearing
-    component missing or without weights, e.g. a partly cached snapshot) or any component is pickle-only."""
+    """True when local pipeline root's non-passed weight components all have .safetensors."""
     try:
         base = Path(str(root)).expanduser()
         if not base.is_dir():
@@ -266,8 +263,7 @@ def pipeline_safetensors_kwargs(
             revision = (_snapshot_identity(root) or (None, None))[1]
         else:
             root = None
-            # The snapshot the load reads: a pinned ``revision`` among the load's kwargs, else the cached main (whose
-            # .bin files are then checked against the Hub's current main, what an unpinned load resolves to).
+            # Pinned kwargs revision, else cached main (.bin checked vs Hub's current main).
             revision = passed.get("revision") if isinstance(passed, dict) else None
             for manifest in _MANIFESTS:
                 root = _cached_snapshot_dir(text, manifest, cache_dir, revision)
@@ -333,8 +329,7 @@ def component_safetensors_kwargs(
 
 
 def pipeline_pickle_files(filenames: Iterable[str]) -> list:
-    """Pipeline repo files to skip: pickles in a component folder or beside a same-stem root ``.safetensors``, and
-    ``.bin`` beside the component's own safetensors. A pickle with no twin is the only copy and stays."""
+    """Skip pickles/.bin with a safetensors twin; a lone pickle is the only copy and stays."""
     names = [n for n in filenames if isinstance(n, str)]
     if not any(n in _MANIFESTS for n in names):
         return []

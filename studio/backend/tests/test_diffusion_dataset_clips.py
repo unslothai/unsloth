@@ -399,6 +399,26 @@ def test_the_summary_reads_a_video_keyed_metadata_caption(tmp_path):
     assert len(discover_clip_caption_pairs(folder)) == 2
 
 
+def test_a_clip_reads_caption_files_in_any_case(tmp_path):
+    folder = tmp_path / "clipset"
+    folder.mkdir()
+    (folder / "CLIP.mp4").write_bytes(_MP4_BYTES)
+    (folder / "CLIP.TXT").write_text("a waterfall", encoding = "utf-8")
+    (folder / "meta.MOV").write_bytes(_MP4_BYTES)
+    (folder / "CAPTIONS.jsonl").write_text(
+        json.dumps({"file_name": "meta.MOV", "text": "a train"}) + "\n", encoding = "utf-8"
+    )
+
+    assert _diffusion_dataset_summary(folder).caption_count == 2
+
+    from core.training.diffusion_h3_clips import discover_clip_caption_pairs
+
+    assert discover_clip_caption_pairs(folder) == [
+        (str(folder / "CLIP.mp4"), "a waterfall"),
+        (str(folder / "meta.MOV"), "a train"),
+    ]
+
+
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
 def test_a_caption_holding_a_unicode_line_separator_is_not_dropped(tmp_path, separator):
     """splitlines() cut these raw in-string separators mid-row, silently dropping the caption."""

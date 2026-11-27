@@ -115,8 +115,7 @@ export function slotsSettingsRequest(
     : null;
 }
 
-/** The picker's residency test on the target the request opens. A file-picked GGUF (path vs the
- *  monitor's stem) or a quant Chat has not caught up with fails it and would open on stored settings. */
+/** Residency test; a file-picked GGUF or a stale quant fails it and opens on stored settings. */
 export function residentMatchesMonitor(
   resident: ResidentRunTarget | null,
   monitor: { id: string; ggufVariant: string | null },

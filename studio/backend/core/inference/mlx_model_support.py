@@ -92,6 +92,5 @@ def unsupported_model_type_message(model_type: str, model_name: Optional[str] = 
 
 
 def upstream_unsupported_message(msg: str) -> Optional[str]:
-    """The readable refusal for mlx-vlm's / mlx-lm's own "Model type X not supported" error, or None."""
     match = _UPSTREAM_UNSUPPORTED.search(msg or "")
     return unsupported_model_type_message(match.group(1)) if match else None

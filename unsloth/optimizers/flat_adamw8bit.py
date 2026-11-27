@@ -101,9 +101,8 @@ def _is_profile_step(fn):
 
 
 def _stock_step_for(base):
-    """The class step minus torch's profiling wrapper when that is the outermost layer (the fused step
-    is wrapped by its own, so hooks fire once). None when a profiling wrapper sits under another
-    decorator: peeling it would drop that decorator, keeping it would fire the hooks twice."""
+    """Step without torch's profiling wrapper when it is outermost, so hooks fire once; None if
+    another decorator wraps it (peeling would drop it, keeping would fire hooks twice)."""
     step = base.step
     if _is_profile_step(step):
         return step.__wrapped__
@@ -238,8 +237,7 @@ def _state_ok(p, state, step):
 
 
 def _live_plans(optimizer):
-    """Read-only check of the whole optimizer, every step, before anything is allocated. Returns
-    [(gindex, group, plan, fresh)] for the fused update, or None when every group must run stock."""
+    """Read-only, per step, before any allocation: fused-update plans, or None to run stock."""
     if not flat_adamw8bit_enabled() or _unsupported_args(optimizer) or _wrapped_instance(optimizer):
         return None
     mng = optimizer.mng
@@ -290,8 +288,7 @@ def _live_plans(optimizer):
                 "packed": {},
             }
         ready.append((gindex, group, plan, fresh))
-    # Stock updates parameter by parameter, so a gradient sharing a parameter's storage (its own or
-    # another's) is read after that parameter changed; the gather would read it before.
+    # Stock reads an aliased grad after its storage changed; a gather would read it before.
     if any(g.untyped_storage().data_ptr() in storages for g in grads):
         return None
     return ready or None
@@ -310,8 +307,7 @@ def _segment_current(optimizer, plan, si):
 
 
 def _pack_segment(optimizer, plan, si):
-    """One buffer per state key for the chunk, every parameter's state rebound as views into it.
-    All four buffers are allocated before anything is rebound: on OOM nothing changes."""
+    """Four buffers, one per state key, are allocated before rebinding, so OOM changes nothing."""
     start, end = plan["segments"][si]
     seg = plan["params"][start:end]
     states = [optimizer.state[p] for p in seg]
@@ -372,9 +368,8 @@ def _materialize(optimizer, ready):
 
 
 def _scratch(ready):
-    """The gather buffers (parameter values and gradients) for the largest packed chunk of each dtype,
-    allocated before any parameter or state is updated so an OOM leaves the step untouched (the
-    caller then runs it stock). None on OOM."""
+    """Gather buffers (values and grads) for the largest packed chunk of each dtype, allocated
+    before any update so OOM leaves the step untouched; caller runs stock; None on OOM."""
     sizes = {}
     for _, group, plan, _ in ready:
         dtype = plan["params"][0].dtype
@@ -580,9 +575,8 @@ def _distributed_wrapper(trainer):
 
 
 def install_flat_adamw8bit_hook(trainer):
-    """Switch the trainer's optimizer right after create_optimizer builds it: before
-    Accelerator.prepare (which, with an fp16 GradScaler, captures and later restores the bound step)
-    and before the LR scheduler wraps it. Not under FSDP / DeepSpeed or optimizer state offload."""
+    """Switch right after create_optimizer, before Accelerator.prepare (fp16 GradScaler captures and
+    restores the bound step) and the LR scheduler; not under FSDP, DeepSpeed or offload."""
     if not flat_adamw8bit_enabled() or _distributed_wrapper(trainer) or _offload_requested():
         return False
     create_optimizer = getattr(trainer, "create_optimizer", None)

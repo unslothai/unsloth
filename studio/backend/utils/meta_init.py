@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Make accelerate's ``init_on_device`` / ``init_empty_weights`` per-thread.
-
-accelerate swaps ``nn.Module.register_parameter`` process-wide for the block and restores what it saved on exit, so
-concurrent skeleton builds (a load plus Images ``download-plan`` fit checks) leak meta parameters into other threads
-and, when blocks exit out of order, leave the patch installed for the life of the process.
-
-Behaviour change: a thread started inside a block no longer inherits it (no Studio block starts a thread)."""
+"""Per-thread accelerate init_on_device/init_empty_weights: the process-wide register_parameter swap
+leaked meta params across threads and stuck on out-of-order exits; child threads lack it."""
 
 from __future__ import annotations
 
@@ -31,7 +26,6 @@ def _device_stack() -> list:
 
 
 def install() -> bool:
-    """Patch once; True when the per-thread version is in place."""
     global _installed
     with _install_lock:
         if _installed:
@@ -116,7 +110,6 @@ class _PatchOnImport(importlib.abc.MetaPathFinder):
 
 
 def install_on_import() -> None:
-    """``install()`` now when accelerate is already loaded, else as soon as it is imported."""
     if "accelerate.big_modeling" in sys.modules:
         install()
         return

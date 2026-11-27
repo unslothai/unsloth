@@ -21,7 +21,7 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { useAuiState } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import {
   BrowserIcon,
   Download01Icon,
@@ -32,13 +32,14 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { useChatProjectScope } from "../chat-project-scope";
 import {
   type ChatFile,
   type ChatFolder,
   scheduleChatFiles,
+  settledMessageCount,
 } from "../lib/chat-files";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { CHAT_MENU_TRIGGER } from "./chat-header-menu";
@@ -59,6 +60,9 @@ export function ChatFilesBridge() {
   const settled = useAuiState(({ thread }) =>
     thread.isRunning ? null : thread.messages,
   );
+  // Changes when a turn is added, not per token: a chat opened mid-stream still lists its earlier files.
+  const settledCount = useAuiState(({ thread }) => settledMessageCount(thread));
+  const aui = useAui();
   const running = useAuiState(({ thread }) => thread.isRunning);
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
@@ -75,6 +79,7 @@ export function ChatFilesBridge() {
     folders: ChatFolder[];
   } | null>(null);
   const [uploads, setUploads] = useState(0);
+  const listedKey = useRef<string | null>(null);
 
   useEffect(() => {
     const sessions = sessionKey.split("\u0000");
@@ -92,7 +97,7 @@ export function ChatFilesBridge() {
   // Re-read after each run and upload: tools write to the folder without always naming the file.
   // biome-ignore lint/correctness/useExhaustiveDependencies: uploads only triggers a re-list.
   useEffect(() => {
-    if (!sessionKey || running) {
+    if (!sessionKey || (running && listedKey.current === sessionKey)) {
       return;
     }
     let live = true;
@@ -105,6 +110,7 @@ export function ChatFilesBridge() {
       ),
     ).then((folders) => {
       if (live) {
+        listedKey.current = sessionKey;
         setListed({ key: sessionKey, folders });
       }
     });
@@ -120,12 +126,14 @@ export function ChatFilesBridge() {
     useChatFiles.setState({ files: [] });
   }, [sessionKey]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another chat cancels this one's scan, even mid-stream at the same length.
   useEffect(() => {
-    if (!settled) return;
-    return scheduleChatFiles(settled, folders, (files) =>
+    const messages =
+      settled ?? aui.thread().getState().messages.slice(0, settledCount);
+    return scheduleChatFiles(messages, folders, (files) =>
       useChatFiles.setState({ files }),
     );
-  }, [settled, folders]);
+  }, [aui, sessionKey, settled, settledCount, folders]);
   useEffect(() => () => useChatFiles.setState({ files: [] }), []);
 
   return null;

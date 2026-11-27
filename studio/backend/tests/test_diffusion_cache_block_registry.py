@@ -33,8 +33,7 @@ def test_the_qwen_image_21_block_is_registered_for_step_caching():
 
 
 def test_registration_is_idempotent_and_never_overwrites_diffusers_own():
-    """Upstream's metadata is authoritative; ours fills a gap until it lands, so a class diffusers
-    registers itself must be left exactly as it is, however many times this runs."""
+    """Idempotent: our fill-in never overwrites a block class that diffusers registers itself."""
     registry, _ = _registry_and_block()
     from diffusers.models.transformers.transformer_qwenimage import QwenImageTransformerBlock
 

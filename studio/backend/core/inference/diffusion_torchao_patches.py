@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""torchao int8 GEMM repr calls .item() (breaks CUDA graphs); Studio's own copy, not an import:
-diffusion must not execute unsloth/__init__; installed at import time via meta path finder"""
+"""torchao int8 GEMM copy; avoids .item() (breaks CUDA graphs); never runs unsloth/__init__."""
 
 from __future__ import annotations
 

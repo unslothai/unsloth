@@ -109,10 +109,8 @@ export function reapSummaryLabel(
   return `${removed}% of experts removed (${kept} of ${moe.num_experts} kept)`;
 }
 
-/** REAP is on and the probe for the current source has not answered yet: an export started now
- *  would go out unpruned, so the page blocks it until the answer arrives. */
-/** REAP is on but this source's MoE probe failed (network / server error, not a dense answer): the
- * export waits for a retry or for REAP to be turned off, instead of going out unpruned. */
+/** REAP on, probe still unanswered: an export started now would go out unpruned, so it waits. */
+/** REAP on, MoE probe failed (network or server error): export waits for a retry or REAP off. */
 export function reapProbeFailed(
   settings: ReapSettings,
   probeKey: string,

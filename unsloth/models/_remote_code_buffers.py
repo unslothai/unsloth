@@ -23,7 +23,6 @@ import torch
 __all__ = ["restore_remote_code_non_persistent_buffers"]
 
 _SCALAR_TYPES = (bool, int, float, str, type(None))
-# Arguments that only choose where buffers are built, not their values.
 _PLACEMENT_ARGUMENTS = ("device",)
 
 
@@ -74,8 +73,7 @@ def _constructor_kwargs(module):
 
 
 def _modules_with_init_weights(model):
-    """Each module of ``model`` once, with the ``_init_weights`` transformers 5 runs on it:
-    that of the nearest enclosing PreTrainedModel, as `initialize_weights` dispatches it."""
+    """Each module once, with _init_weights of its nearest PreTrainedModel (transformers 5)."""
     try:
         from transformers import PreTrainedModel
     except Exception:
@@ -108,8 +106,7 @@ def _cache_key(module, kwargs, init_weights):
 
 
 def _written_by_init_weights(fresh, buffers, init_weights):
-    """Buffers ``init_weights`` writes on ``fresh``, probed with sentinels (NaN for floats, 0
-    then 1 otherwise); None when it raises, since its live writes then cannot be told apart."""
+    """Buffers init_weights writes on fresh, via sentinels; None if it raises (not separable)."""
     if init_weights is None or not buffers:
         return set()
     others = [name for name, buffer in buffers.items() if not buffer.is_floating_point()]
@@ -141,8 +138,7 @@ def _fresh_non_persistent_buffers(
     dtype,
     init_weights = None,
 ):
-    """Rebuild ``module`` on CPU with meta parameters; return its non-persistent buffers,
-    the attributes aliasing them, and the ones ``init_weights`` fills itself."""
+    """Rebuild on CPU, meta params; return non-persistent buffers, aliases, init-filled ones."""
     from accelerate import init_empty_weights
 
     previous_dtype = torch.get_default_dtype()

@@ -8,8 +8,7 @@ import {
 } from '@jupyterlab/application';
 
 /**
- * Hide the right activity bar by default. There is no settings key for it, so the
- * strip is hidden with CSS and the panel collapsed once on startup.
+ * Right activity bar hidden by default via CSS (no settings key); panel collapses once on startup.
  */
 
 const STYLE_ID = 'unsloth-ui-chrome-style';

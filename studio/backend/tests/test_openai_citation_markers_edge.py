@@ -60,8 +60,7 @@ def _simulate_delta_stream(
 
 
 def test_multi_source_marker_all_resolve():
-    """\\ue200cite\\ue202id1\\ue202id2\\ue202id3\\ue201 expands to three links
-    when every id is known. Earlier regex captured only id1."""
+    """Multi-source marker gives a link per id when all resolve; old regex captured only id1."""
     text = f"All three: {_marker('id1', 'id2', 'id3')}"
     citations = [
         {"source_id": "id1", "url": "https://example.com/1"},
@@ -234,8 +233,7 @@ def test_rewriter_idempotent_on_marker_free_text():
 
 
 def test_only_marker_no_surrounding_text():
-    """A delta that is JUST a marker (no prose) renders correctly; it leaked
-    before the empty-string short-circuit in the split helper."""
+    """Marker-only delta renders correctly; it leaked before the empty-string short-circuit."""
     text = _marker("solo")
     citations = [{"source_id": "solo", "url": "https://solo.example"}]
     out = _replace_openai_citation_markers(text, citations)

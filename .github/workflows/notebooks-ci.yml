@@ -25,8 +25,7 @@ on:
       - 'tests/_shared/**'
       - 'studio/install_manifest.py'
       - 'pyproject.toml'
-      # Every job here `uses:` the pip cache pair, so an edit to either action changes
-      # what it runs.
+      # Every job here uses the pip cache pair, so editing either action changes what it runs.
       - '.github/actions/pip-cache-restore/**'
       - '.github/actions/pip-cache-save/**'
   schedule:
@@ -104,13 +103,11 @@ jobs:
             pytest 'pyyaml>=6'
 
       - name: Smoke-install contract
-        # Run here too: the auto-discovering test jobs do not trigger on this workflow's path.
-        # Path is prefixed because this job checks the repo out under `unsloth/`.
+        # Auto test jobs skip this workflow's path; the repo is checked out under unsloth/.
         run: python -m pytest unsloth/tests/notebooks/test_smoke_install_contract.py -q
 
       - name: Diff Colab oracle vs committed snapshots (advisory)
-        # Non-blocking on PRs; the cron job runs it with --strict.
-        # MUST stay above the refresh below, which overwrites the committed pip snapshot in place.
+        # Non-blocking on PRs; --strict on cron. Must stay above refresh, which overwrites it.
         continue-on-error: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -187,14 +184,12 @@ jobs:
         # Without packaging, _requirement_applies treats every marked requirement as applying.
         run: pip install -U pip packaging
       - name: Diff Colab oracle vs committed snapshots (--strict on cron)
-        # Cron-only: fail on pip-freeze drift (apt/os drift only printed).
-        # MUST stay above the refresh below, which overwrites the committed pip snapshot in place.
+        # Cron fails on pip-freeze drift (apt/os only printed); must precede snapshot refresh.
         run: |
           python unsloth/scripts/notebook_validator.py colab-diff \
               --snapshot-dir unsloth/scripts/data --strict
       - name: Refresh Colab oracle
-        # always(): a strict-drift failure must not skip the refresh and lint; the strict step
-        # still decides the verdict.
+        # always(): strict-drift failure must not skip refresh and lint; strict step decides.
         if: always()
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
@@ -239,7 +234,6 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        # Prefixed: this job checks the repo out under `unsloth/`.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
           name: notebooks-api
@@ -302,7 +296,6 @@ jobs:
 
       - name: Save the pip cache
         if: always()
-        # Prefixed: this job checks the repo out under `unsloth/`.
         uses: ./unsloth/.github/actions/pip-cache-save
         with:
           dir: ${{ steps.pip-cache.outputs.dir }}
@@ -313,8 +306,7 @@ jobs:
     name: smoke install (Colab-shaped venv, opt-in)
     if: ${{ github.event.inputs.include_smoke == 'true' || github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
-    # Above the sum of the per-step caps (~68 min). Step timeouts report `failure` with the
-    # step named; a job timeout reports `cancelled`, which hides failures in the rollup.
+    # Above the sum of step caps (~68 min); a job timeout shows cancelled and hides failures.
     timeout-minutes: 70
     strategy:
       fail-fast: false
@@ -355,12 +347,10 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        # Prefixed: this job checks the repo out under `unsloth/`.
         uses: ./unsloth/.github/actions/pip-cache-restore
         timeout-minutes: 8
         with:
-          # `-cpu` suffix is load-bearing: a new prefix drops the old cumulative pip cache (pip never
-          # evicts and restore-keys re-save it). Do not bump the shared `v2` (cache-janitor glob).
+          # Keep -cpu and v2 (cache-janitor glob); a new prefix drops the cumulative pip cache.
           name: notebooks-colab-cpu
           # Everything the seed step reads, or the key cannot represent what the job installs.
           key-files: |
@@ -442,8 +432,7 @@ jobs:
           wc -l /tmp/seed_pins.txt
 
       - name: Install Colab-shaped venv
-        # Step-level backstop above the sum of phase timeouts plus their --kill-after graces
-        # (~29m25). A job timeout would report `cancelled` and hide real failures.
+        # Above phase timeouts + --kill-after graces (~29m25); a job timeout hides failures.
         #                             ------
         timeout-minutes: 30
         run: |
@@ -462,8 +451,7 @@ jobs:
             exit "$rc"
           fi
 
-          # One resolve for the whole pin set; the per-line fallback is best effort and a defect if
-          # reached. no_binary pins (sdist-only) override --only-binary per package.
+          # One resolve; no_binary overrides --only-binary; per-line fallback should never run.
           NO_BINARY="$(cat /tmp/seed_no_binary.txt)"
           BUILDABLE=()
           [ -n "$NO_BINARY" ] && BUILDABLE=(--no-binary="$NO_BINARY")
@@ -530,8 +518,7 @@ jobs:
           UV_SYSTEM_PYTHON: 'true'
         run: |
           set -euo pipefail
-          # Convert only this notebook and take whatever file the converter produced, rather than
-          # rebuilding the converter's filename rule here.
+          # Take the converter's output as-is rather than re-deriving its filename rule.
           rm -rf _converted && mkdir -p _converted
           python unsloth/scripts/notebook_to_python.py -o _converted "notebooks/$NOTEBOOK"
           mapfile -t converted < <(find _converted -maxdepth 1 -type f -name '*.py' | sort)

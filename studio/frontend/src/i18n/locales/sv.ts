@@ -4648,6 +4648,8 @@ export const sv = {
       unsupportedFileType: "Filtypen stöds inte",
       uploadOneFileType: "Ladda upp en {types}-fil.",
       datasetUploaded: "Datauppsättningen har laddats upp",
+      importPandasJson: "Importera .json som pandas-kolumner",
+      importSemicolonCsv: "Använd semikolon som avgränsare för .csv",
       evalDatasetUploaded: "Eval-datauppsättningen har laddats upp",
       uploadOneFileAtATime: "Ladda upp en fil i taget",
       uploadSingleFileDescription:

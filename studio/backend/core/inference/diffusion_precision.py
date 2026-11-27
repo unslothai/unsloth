@@ -30,7 +30,6 @@ TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4, TE_QUANT_INT8, TE_QUANT_FP8_DYNA
 # The modes that go through torchao; plain fp8 is a layerwise torch cast and needs none.
 _TE_TORCHAO_MODES = frozenset({TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4})
 
-# Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
 # int8 TE needs decoder blocks kept bf16; families without a te_int8_skip schedule fall back to fp8.
@@ -114,8 +113,7 @@ def te_bf16_auto_wanted(
     auto_scheme: Optional[str],
     kind: Optional[str],
 ) -> bool:
-    """Whether an unset / auto text-encoder request may be upgraded to the bf16 encoder (room still to be proven).
-    An explicit pick (none, off, fp8, int8, ...) always wins, as does the kill switch."""
+    """Unset/auto may upgrade to bf16 if room is proven; explicit picks and kill switch win."""
     if not te_bf16_auto_enabled() or not te_quant_is_auto(raw_request):
         return False
     if kind != "pipeline" or (family or "").lower() not in TE_BF16_AUTO_FAMILIES:
@@ -397,8 +395,7 @@ def _quantize_text_encoders(
         and hosted_int8
         and _hosts_te_int8_for_all_but_small(family, hosted_int8, present)
     ):
-        # FLUX.1's CLIP-L, HunyuanImage's ByT5: the hosted file covers the big encoder, and casting a sub-GB pooled /
-        # glyph encoder in place would be a runtime-only conversion the file does not carry. Leave them bf16.
+        # Hosted file covers only the big encoder; FLUX.1 CLIP-L, HunyuanImage ByT5 stay bf16.
         dense = [a for a in present if a not in hosted_int8]
         return TEQuantOutcome(
             TE_QUANT_INT8,
@@ -408,8 +405,7 @@ def _quantize_text_encoders(
     if picked_automatically and not any(
         _hosted_te_scheme(getattr(pipe, a)) == mode for a in present
     ):
-        # The automatic default is the measured hosted file and nothing else: a runtime cast (fp8, torchao int8) has a
-        # dense bf16 peak and is not what was measured, so without the file the released bf16 encoder stays.
+        # Auto is only the measured hosted file; runtime casts peak at dense bf16; bf16 stays.
         label = "int8 ConvRot" if mode == TE_QUANT_INT8 else mode
         why = "is not available (not published yet, offline, or refused, see the server log)"
         if mode == TE_QUANT_INT8 and _family_hosts_te_int8(family):
@@ -423,8 +419,7 @@ def _quantize_text_encoders(
             RESOLVED_FELL_BACK,
         )
     if picked_automatically:
-        # The automatic default is the hosted file and nothing more: a sibling it does not replace (Kontext's CLIP-L)
-        # stays bf16 rather than taking a runtime cast nobody measured. The hosted encoders arrive with their hooks.
+        # Auto is the hosted file; Kontext's CLIP-L stays bf16 as runtime casts are unmeasured.
         hosted = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == mode]
         dense = [a for a in present if a not in hosted]
         return TEQuantOutcome(
@@ -443,8 +438,7 @@ def _quantize_text_encoders(
             and _family_hosts_te_int8(family)
             and (pre_cast or not torchao_quantize_importable())
         ):
-            # The hosted int8 file did not engage. The on-the-fly torchao int8 (the path before the file existed) is
-            # the fallback only over a dense encoder and with torchao present; otherwise fp8.
+            # Hosted int8 miss: torchao int8 only for dense encoders with torchao; else fp8.
             skip = None
         if skip is None:
             _note(
@@ -544,8 +538,7 @@ def _hosted_te_scheme(encoder: Any) -> Optional[str]:
 
 
 def _hosts_te_int8_for_all_but_small(family: Optional[str], hosted: list, present: list) -> bool:
-    """Whether every encoder the family hosts an int8 ConvRot file for loaded from it, so the rest are the small
-    companions the family deliberately leaves dense."""
+    """Whether each int8 ConvRot encoder the family hosts loaded from it; the rest stay dense."""
     try:
         from .diffusion_te_prequant import TE_INT8_CONVROT_FILES
 
@@ -748,9 +741,8 @@ def _slot_version(value: Any) -> Any:
 
 
 def _restoring_hooks(hook: Any, stock_pre: Any, stock_post: Any) -> tuple:
-    """Put the kept fp8 tensors back after the forward instead of downcasting the compute copies (exact: every fp8
-    value is representable in bf16 / fp16 / fp32). A slot replaced or written in place during the forward takes the
-    stock downcast, and so does any traced forward: pointers and version counters are eager-only."""
+    """Restores kept fp8 tensors after the forward, not downcast (exact: fp8 fits bf16/fp16/fp32);
+    replaced or in-place slots and traced forwards get stock downcast (pointers eager-only)."""
     import torch
 
     kept: dict = {}
@@ -872,7 +864,6 @@ def _install_dtype_override(cls: type) -> None:
 
 
 def _has_layerwise_hooks(encoder: Any) -> bool:
-    """True when any submodule already carries the diffusers layerwise-casting hook."""
     modules = getattr(encoder, "modules", None)
     if not callable(modules):
         return False

@@ -33,8 +33,7 @@ def reduction_config_filter_available() -> bool:
 
 
 def family_filters_reductions(family: Any) -> bool:
-    """``filter_reduction_configs`` on every arch, or the current device listed in ``filter_reduction_configs_archs``:
-    a CUDA (major, minor) capability, or a ROCm gfx name such as ``"gfx1151"``."""
+    """True if filter_reduction_configs is set, or device is in filter_reduction_configs_archs."""
     if family is None:
         return False
     if bool(getattr(family, "filter_reduction_configs", False)):

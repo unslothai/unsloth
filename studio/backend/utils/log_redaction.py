@@ -106,7 +106,6 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         "sk-" + REDACTED,
     ),
-    # Other vendor prefixes
     (
         re.compile(
             # Any GitHub token prefix is masked, even one cut short.
@@ -119,7 +118,6 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), REDACTED),
     # JWTs, including the desktop access token
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"), REDACTED),
-    # user:password@host in a URL
     (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://" + REDACTED + "@"),
     # Presigned URL parameters. Bare "key" is deliberately absent: in an object storage URL it names the object, and blanking it hides WHICH download failed. Google's ?key=AIza... is caught by the AIza rule above.
     (
@@ -196,7 +194,6 @@ def _redact_shaped(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(2)}{REDACTED}"
 
 
-# A cookie header is name=value pairs.
 _COOKIE_PAIR_RE = re.compile(r"^[A-Za-z0-9_.\-]+=\S")
 
 
