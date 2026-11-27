@@ -73,7 +73,6 @@ def test_marker_for_the_probed_commit_gives_peft_error_without_a_request(hub_cac
     _mark_missing(hub_cache)
     error = _probe(SimpleNamespace(_commit_hash = SHA))
     assert isinstance(error, ValueError)
-    # Same type and text peft raises when it cannot find the file.
     with pytest.raises(ValueError) as real:
         peft.PeftConfig.from_pretrained(REPO, local_files_only = True)
     assert str(error) == str(real.value)

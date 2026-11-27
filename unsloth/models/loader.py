@@ -1743,7 +1743,6 @@ class FastLanguageModel(FastLlamaModel):
                 )
             is_model = False
         try:
-            # A base repo the cache already knows has no adapter_config.json at this commit skips the HEAD.
             _missing = _cached_missing_adapter_error(
                 model_name,
                 model_config if adapter_revision is base_revision else None,
@@ -2779,7 +2778,6 @@ class FastModel(FastBaseModel):
                 )
             is_model = False
         try:
-            # A base repo the cache already knows has no adapter_config.json at this commit skips the HEAD.
             _missing = _cached_missing_adapter_error(
                 model_name,
                 model_config if user_config is None and adapter_revision is base_revision else None,

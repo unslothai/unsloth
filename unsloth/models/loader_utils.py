@@ -2052,8 +2052,7 @@ def _cached_missing_adapter_error(
     token = None,
     local_files_only = False,
 ):
-    """The PeftConfig probe's error, without its Hub HEAD, when the cache records no adapter_config.json at the
-    commit the config probe loaded (transformers' own cached_file shortcut). None means: run the probe."""
+    """PeftConfig's error without a Hub HEAD if the cache records no adapter_config.json at this commit, else None."""
     if (
         model_config is None
         or local_files_only
@@ -2064,7 +2063,7 @@ def _cached_missing_adapter_error(
     ):
         return None
     try:
-        # A resolve the config probe already ran (memo hit); transformers < 5.18 stamps the config instead.
+        # Memo hit from the config probe; transformers < 5.18 stamps _commit_hash instead.
         resolved = _resolved_revision(model_name, revision, token, local_files_only)
         if _ResolvedRevision is not None and isinstance(resolved, _ResolvedRevision):
             commit = resolved.resolved
@@ -2081,7 +2080,7 @@ def _cached_missing_adapter_error(
             return None
     except Exception:
         return None
-    # peft's own wording, so callers matching on it behave the same.
+    # peft's exact wording; callers match on it.
     return ValueError(f"Can't find '{CONFIG_NAME}' at '{model_name}'")
 
 
