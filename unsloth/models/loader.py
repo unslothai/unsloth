@@ -1409,8 +1409,8 @@ class FastLanguageModel(FastLlamaModel):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
         from .._gguf_load import require_gguf_package
 
-        require_gguf_package(kwargs.get("gguf_file"))
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
             kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
@@ -2421,8 +2421,8 @@ class FastModel(FastBaseModel):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
         from .._gguf_load import require_gguf_package
 
-        require_gguf_package(kwargs.get("gguf_file"))
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
             kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
