@@ -7,7 +7,9 @@ Two uses. sm_89 precise accumulate, where it beats torchao row-wise (fast accumu
 And any card whose torch build has no row-wise _scaled_mm (the Windows wheels: "Rowwise scaling is not currently
 supported on your device"): a one-off per-card probe finds it, and every fp8 GEMM on that card then runs here, fast
 accumulate included and at every row count. UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=0 off, =fallback acts as if no card had
-the row-wise kernel. Installed only where it can engage: installing tags the process-wide compile cache key."""
+the row-wise kernel. Installed only where it can engage: installing tags the process-wide compile cache key.
+On those fallback cards, sm_89 / sm_12x run the GEMM and epilogue as one fused Triton kernel instead
+(diffusion_fp8_triton_gemm; UNSLOTH_DIFFUSION_FP8_TRITON_GEMM=0 off)."""
 
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ _ADA_CAPS = ((8, 9),)
 # The tensorwise / row-wise fp8 GEMMs need sm_89+; older cards have no fp8 path to rescue.
 _FP8_MIN_CAP = (8, 9)
 
-_COUNTS = {"unit_scale": 0, "rowwise": 0}
+_COUNTS = {"unit_scale": 0, "rowwise": 0, "triton_gemm": 0}
 _STATE: dict = {
     "installed": False,
     "orig": None,
@@ -37,6 +39,8 @@ _STATE: dict = {
     "fp32_acc": frozenset(),
     "acc_deferred": frozenset(),
     "forced_fallback": False,
+    "triton_eager": frozenset(),
+    "triton_compiled": frozenset(),
 }
 # device index -> True (row-wise kernel runs), False (only tensorwise runs), None (neither / unknown); per process.
 _ROWWISE: dict = {}
@@ -345,6 +349,14 @@ def gemm_path(device_index: Optional[int] = None) -> dict:
                 else None
             ),
             "calls": dict(_COUNTS),
+            "triton_gemm": (
+                {
+                    "eager": index in _STATE["triton_eager"],
+                    "compiled": index in _STATE["triton_compiled"],
+                }
+                if path == "unit_scale_fallback"
+                else None
+            ),
         }
     except Exception:  # noqa: BLE001 - status must never fail
         return {"path": None}
@@ -381,6 +393,51 @@ def _device_caps() -> dict:
     except Exception:  # noqa: BLE001 - no CUDA runtime: nothing qualifies
         return {}
     return caps
+
+
+def _triton_cards(
+    in_use: frozenset,
+    caps: dict,
+    logger: Any = None,
+) -> tuple:
+    """(eager cards, compiled cards, module) for the fused Triton GEMM among the fallback cards in use: measured arches
+    only (sm_89 eager, sm_12x eager + compiled), CUDA (never ROCm), Triton importable, kill switch unset, and each card
+    passing the bf16 self-check now. Cards used later rejoin on the next install, like the accumulator check."""
+    none = (frozenset(), frozenset(), None)
+    if not in_use:
+        return none
+    try:
+        from core._torchao_stub import torch_is_rocm
+        if torch_is_rocm():
+            return none
+        from . import diffusion_fp8_triton_gemm as tg
+    except Exception:  # noqa: BLE001 - cannot tell / no module: the tensorwise fallback
+        return none
+    if not tg.enabled() or not tg.available():
+        return none
+    import torch
+
+    eager, compiled = set(), set()
+    for index in sorted(in_use):
+        run_eager, run_compiled = tg.card_paths(caps.get(index, ()))
+        if not run_eager or not tg.verify(index, torch.bfloat16):
+            continue
+        eager.add(index)
+        if run_compiled and tg.traced_available():
+            compiled.add(index)
+    failed = tg.describe()["failed"]
+    if logger is not None and (eager or failed):
+        try:
+            logger.info(
+                "fp8: fused Triton row-wise GEMM on cuda:%s (compiled: %s; %s=0 disables)%s",
+                ",".join(str(i) for i in sorted(eager)) or "-",
+                ",".join(str(i) for i in sorted(compiled)) or "-",
+                tg.ENV,
+                f"; kept the tensorwise fallback: {failed}" if failed else "",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return frozenset(eager), frozenset(compiled), tg
 
 
 def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
@@ -442,6 +499,10 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
         in_use = fallback & {_current_device()}
     fp32_acc = frozenset(i for i in sorted(in_use) if _fp32_out_runs(i))
     acc_deferred = fallback - in_use
+    try:
+        triton_eager, triton_compiled, tg = _triton_cards(in_use, caps, logger)
+    except Exception:  # noqa: BLE001 - the fused kernel is optional: the tensorwise route stays
+        triton_eager, triton_compiled, tg = frozenset(), frozenset(), None
 
     def addmm_float8_unwrapped_inference(
         a_data: Any,
@@ -455,6 +516,26 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
     ) -> Any:
         # No row-wise kernel on this card: every row count and accumulate mode, as torchao would fail.
         missing = a_data.device.type == "cuda" and a_data.device.index in fallback
+        if (
+            missing
+            and use_fast_accum
+            and output_scale is None
+            and a_data.device.index in triton_eager
+            and tg.eligible(a_data, a_scale, b_data, b_scale, bias, output_dtype)
+        ):
+            # The fused kernel: GEMM + the same fp32 epilogue, one launch, no fp32 [M, N] round trip. Fast accumulate
+            # only (Studio's Auto; the oracle matched it bit for bit): a precise-accumulate request keeps cuBLAS's.
+            if _traced(a_data):
+                # Traced: only a dtype already self-checked here (no launch can run inside a trace).
+                if a_data.device.index in triton_compiled and tg.verified(
+                    a_data.device.index, output_dtype
+                ):
+                    return tg.traced_gemm(a_data, a_scale, b_data, b_scale, bias, output_dtype)
+            else:
+                out = tg.eager_gemm(a_data, a_scale, b_data, b_scale, bias, output_dtype)
+                if out is not None:
+                    _COUNTS["triton_gemm"] += 1
+                    return out
         if (
             (missing or force or not use_fast_accum)
             and output_scale is None
@@ -510,6 +591,8 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
         fp32_acc = fp32_acc,
         acc_deferred = acc_deferred,
         forced_fallback = forced_fallback,
+        triton_eager = triton_eager,
+        triton_compiled = triton_compiled,
     )
     # Only a fallback install changes the tag: an sm_89 / force install keys exactly as before.
     # "+" between cards: "," and ";" separate whole tags in cache_key_tag.
@@ -519,6 +602,11 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
         if fallback
         else ""
     )
+    # The compiled graphs of a card on the fused kernel hold a triton_op the FX / AOT caches key without its source.
+    if triton_compiled:
+        missing_tag += (
+            f":gemm=triton-{'+'.join(str(i) for i in sorted(triton_compiled))}-{tg.source_digest()}"
+        )
     _set_compile_cache_tag(f"{min_rows}{':force' if force else ''}{missing_tag}")
     if logger is not None:
         try:
@@ -558,5 +646,7 @@ def uninstall() -> None:
             fp32_acc = frozenset(),
             acc_deferred = frozenset(),
             forced_fallback = False,
+            triton_eager = frozenset(),
+            triton_compiled = frozenset(),
         )
         _set_compile_cache_tag(None)
