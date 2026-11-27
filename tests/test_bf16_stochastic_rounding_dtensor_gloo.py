@@ -124,6 +124,13 @@ def _dtensor_worker(rank, world, port, out, root, device, fused, sr_env):
         exact_opt = torch.optim.AdamW(list(exact.values()), lr = LR, weight_decay = 0.0)
 
         result = {"covered": covered, "rank": rank}
+        # Seed index = position in the param groups (resume-stable), plus where this rank's shard starts.
+        order = [opt.__dict__.get("_unsloth_sr_index", {}).get(id(p)) for p in params.values()]
+        result["index_order"] = order
+        result["seeds"] = [sr._seed_for(opt, p, 7, 1) for p in params.values()] if covered else []
+        result["single_seeds"] = (
+            [sr._seed_for(single_opt, p, 7, 1) for p in single.values()] if covered else []
+        )
         # A graph saved before the step must refuse to backpropagate through the stepped weight.
         stale = (params["row"] * params["row"]).sum()
         for step in range(STEPS):
@@ -307,6 +314,15 @@ def test_dtensor_shards_round_stochastically(device, fused):
     if device == "cpu" or fused == "0":
         if device == "cpu":
             assert r0["first"]["row_rank0_equals_single"], r0["first"]
+    # Indices follow the param groups on every rank. The shard starting at element 0 and the replicated
+    # weight seed exactly as one process does; rank 1's shards of `row` / `col` seed differently.
+    assert r0["index_order"] == r1["index_order"] == [0, 1, 2], (
+        r0["index_order"],
+        r1["index_order"],
+    )
+    assert r0["seeds"] == r0["single_seeds"], r0["seeds"]
+    assert r1["seeds"][2] == r1["single_seeds"][2]
+    assert r1["seeds"][0] != r0["seeds"][0] and r1["seeds"][1] != r0["seeds"][1]
     # Two shards with identical inputs draw different noise; replicas stay bitwise equal.
     assert r0["row_local_digest"] != r1["row_local_digest"]
     assert r0["rep_digest"] == r1["rep_digest"]

@@ -445,9 +445,21 @@ def _grouped_mm_candidates(weight):
     return candidates
 
 
+# _grouped_mm_for ran out of memory: no verdict, so nothing is cached and the next call probes again.
+_NO_VERDICT = object()
+
+
+def _probe_out_of_memory(error):
+    oom = getattr(torch, "OutOfMemoryError", None)
+    return (isinstance(oom, type) and isinstance(error, oom)) or "out of memory" in str(
+        error
+    ).lower()
+
+
 def _grouped_mm_for(weights):
     """The first grouped GEMM that reproduces a plain matmul on these weights' device / dtype / layout (a tiny
-    call each), or None, logged once, so a refusal keeps the original loop instead of failing generation."""
+    call each), or None, logged once, so a refusal keeps the original loop instead of failing generation.
+    _NO_VERDICT when a probe ran out of memory (the next candidate is not tried: it would be cached instead)."""
     first = weights[0]
     if not first.is_cuda:
         return None
@@ -470,6 +482,8 @@ def _grouped_mm_for(weights):
                     raise RuntimeError("mismatch against a plain matmul")
             return grouped_mm
         except Exception as error:
+            if _probe_out_of_memory(error):
+                return _NO_VERDICT
             errors.append(
                 f"{grouped_mm.__name__.strip('_')}: {type(error).__name__}: {error}"[:200]
             )
@@ -530,6 +544,8 @@ def _stack_experts(block):
         and all(_plain_expert(expert, first.gate_proj.weight.dtype) for expert in experts)
     ):
         grouped_mm = _grouped_mm_for((first.gate_proj.weight, first.down_proj.weight))
+        if grouped_mm is _NO_VERDICT:
+            return None  # the loop for this call; not cached, so the next call probes again
     elif first is not None and any(p.is_cuda for p in first.parameters()):
         _log_fallback("experts are not plain bias-free nn.Linear layers (quantized or adapters)")
     if grouped_mm is not None:

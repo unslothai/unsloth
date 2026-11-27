@@ -7879,7 +7879,7 @@ class _PrefillProgressSignal:
 
 
 async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_timeout: float):
-    """Wait for a GGUF generator step, yielding keep-alives on stall and, when live, progress frames.
+    """Wait for a local generator step, yielding keep-alives on stall and, when live, progress frames.
     Never cancels ``next_task``: the caller's finally drains it."""
     timeout = first_timeout
     waited = 0.0
@@ -13177,13 +13177,19 @@ async def _maybe_auto_switch_model(
                             async def _switch_load(load_request: LoadRequest) -> None:
                                 nonlocal target_backend
                                 if not beside:
-                                    await _load_model_impl(
+                                    response = await _load_model_impl(
                                         load_request,
                                         fastapi_request,
                                         current_subject,
                                         current_request_counted = True,
                                         **load_internal_kw,
                                     )
+                                    if isinstance(response, LoadResponse) and not target_is_gguf:
+                                        from core.inference.chat_media_swap import (
+                                            remember_transformers_load,
+                                        )
+                                        load_request._advertised_id = override_id
+                                        remember_transformers_load(load_request, response, False)
                                     model_slots.mark_used(None)
                                     return
                                 await load_model_gated(
@@ -13519,13 +13525,16 @@ def _chat_fit_kwargs(
     credit_gb: Optional[dict] = None,
     mlx_need_mib: Optional[int] = None,
     mlx_credit_mib: int = 0,
+    *,
+    restoring_chat_swap: bool = False,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
     audio.cpp and native audio are priced from the placement estimate, an MLX load on Apple Silicon from
     ``mlx_need_mib``. A GGUF launch prices itself (it refuses a partial fit and load_model_gated makes room).
     Anything else has no estimate before launch: When they fit evicts first, Always tries the load and turns an
-    out-of-memory failure into its refusal. ``credit_gb`` is what the outgoing primary frees per GPU when this
+    out-of-memory failure into its refusal. A discrete GPU chat restored during an image swap tries its previous
+    placement beside the remaining media first. ``credit_gb`` is what the outgoing primary frees per GPU when this
     load replaces it.
     """
     if policy is None:
@@ -13552,7 +13561,8 @@ def _chat_fit_kwargs(
         from core.inference.gpu_residency import ChatNeed
         kwargs["need_mib"] = ChatNeed({0: int(mlx_need_mib)}, credit_mib = mlx_credit_mib)
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
-        policy == "fit" or (not config.is_gguf and _unified_metal_host())
+        (policy == "fit" and not restoring_chat_swap)
+        or (not config.is_gguf and _unified_metal_host())
     ):
         # Unified memory pages past the budget: Always gets no OOM to refuse on.
         kwargs["evict_first"] = True
@@ -13862,7 +13872,7 @@ async def load_model_for_preview(
                 prior_marker = _get_preview_resident()
                 loaded_ok = False
                 try:
-                    await _load_model_impl(
+                    response = await _load_model_impl(
                         request,
                         fastapi_request,
                         current_subject,
@@ -13877,6 +13887,9 @@ async def load_model_for_preview(
                         allow_gpu_owner_eviction = False,
                     )
                     loaded_ok = True
+                    if isinstance(response, LoadResponse):
+                        from core.inference.chat_media_swap import remember_transformers_load
+                        remember_transformers_load(request, response, False)
                 except (GpuOwnerBusyError, MultiModelAlwaysRefusal) as exc:
                     untrack_current_request(scope)
                     raise HTTPException(
@@ -19283,13 +19296,15 @@ async def load_model_gated(
     current_request_counted: bool = False,
     impl_kwargs: Optional[dict] = None,
     background: bool = False,
+    swap_gates_held: bool = False,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
     In-process callers (preview) must await THIS, not the route: the route's slow
     path returns a StreamingResponse nobody in-process drains, so awaiting it would
     return mid-load and hide a late failure in an unread body. This blocks until the
-    model is resident and raises the real exception.
+    model is resident and raises the real exception. A chat-image restore already
+    holds the model load, lifecycle and media admission gates.
     """
     if is_decision_api_model(request.model_path):
         raise HTTPException(
@@ -19337,7 +19352,7 @@ async def load_model_gated(
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the gate so idle auto-unload can't unload mid-load; auto-switch already holds it.
-        async with model_load_gate():
+        async with nullcontext() if swap_gates_held else model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
             replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
@@ -19351,7 +19366,7 @@ async def load_model_gated(
                 extra.llama._llama_update_in_progress = getattr(
                     _llama_cpp_backend, "_llama_update_in_progress", False
                 )
-            async with nullcontext() if new_slot else inference_lifecycle_gate():
+            async with nullcontext() if new_slot or swap_gates_held else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 if not new_slot:
                     # An auto-switch beside checked before this gate: this load replaces a loaded model.
@@ -19404,6 +19419,15 @@ async def load_model_gated(
                         measured = isinstance(exc, GpuMemoryShortError)
                         if not measured:
                             if extra is None and _ran_out_of_memory(exc):
+                                if (impl_kwargs or {}).get("restoring_chat_swap"):
+                                    from core.inference.gpu_residency import current_policy
+                                    if (
+                                        await asyncio.to_thread(current_policy) == "fit"
+                                        and not _unified_metal_host()
+                                    ):
+                                        # Retry the layout that already fit; real memory pressure still falls back to Fit.
+                                        impl_kwargs = {**impl_kwargs, "restoring_chat_swap": False}
+                                        continue
                                 await asyncio.to_thread(_refuse_oom_beside_media_under_always)
                             # A non-GGUF load reports no fit up front: its out-of-memory failure
                             # makes room the same way, one idle kept model at a time.
@@ -19452,7 +19476,11 @@ async def load_model_gated(
                         if await _free_for_chat(exc, evicted, media_only = True):
                             continue
                         # No chat may start on a victim between its pick and teardown.
-                        async with inference_lifecycle_gate() if new_slot else nullcontext():
+                        async with (
+                            inference_lifecycle_gate()
+                            if new_slot and not swap_gates_held
+                            else nullcontext()
+                        ):
                             _check_switch_precondition(fastapi_request)
                             _require_load_keeps_chat(fastapi_request, request)
                             victims = await asyncio.to_thread(
@@ -19498,7 +19526,11 @@ async def load_model_gated(
                             request = request.model_copy(
                                 update = {"alongside": False, "force_alongside": False}
                             )
-                            async with inference_lifecycle_gate() if new_slot else nullcontext():
+                            async with (
+                                inference_lifecycle_gate()
+                                if new_slot and not swap_gates_held
+                                else nullcontext()
+                            ):
                                 if background:
                                     await _wait_for_model_switch_idle(
                                         current_request_counted = current_request_counted
@@ -19551,6 +19583,9 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
+            if extra is None and isinstance(response, LoadResponse):
+                from core.inference.chat_media_swap import remember_transformers_load
+                remember_transformers_load(request, response, user_initiated)
             twin, survivor = (
                 await asyncio.to_thread(_served_twice, extra)
                 if new_slot and extra is not None
@@ -19628,6 +19663,7 @@ async def load_model_gated(
             current_request_counted = current_request_counted,
             impl_kwargs = impl_kwargs,
             background = background,
+            swap_gates_held = swap_gates_held,
         )
     finally:
         _replaces_its_repo.reset(token)
@@ -20352,6 +20388,7 @@ async def _load_model_impl(
     cache_environment: Optional[dict[str, str]] = None,
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
+    restoring_chat_swap: bool = False,
 ):
     from core.inference.npu_backend import is_npu_model_path
 
@@ -21138,6 +21175,7 @@ async def _load_model_impl(
                         outgoing_chat_gb,
                         mlx_need_mib = None if mlx_chat_need is None else mlx_chat_need[0],
                         mlx_credit_mib = mlx_credit_mib,
+                        restoring_chat_swap = restoring_chat_swap,
                     )
                 )
                 await asyncio.to_thread(
@@ -33901,6 +33939,17 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
+    from core.inference.chat_media_swap import request_image_model
+
+    if payload.image_generator and (
+        current_account().via_api_key
+        or account_access.account_scope() is not None
+        or not _loads_anything()
+        or payload.provider_id
+        or payload.provider_type
+    ):
+        raise HTTPException(status_code = 403, detail = "An image generator requires local owner chat.")
+    request_image_model.set(payload.image_generator)
     # Opt-in per request via UI_STREAM_EVENTS_HEADER; read once so every stream generator shares it.
     _ui_events = _ui_stream_events_enabled(request)
     # Seeded at stream start, so a tool already chatty past the window still gets a keepalive.
@@ -37463,6 +37512,18 @@ async def produce_openai_chat_completions(
 
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
+        _sf_tool_progress = _PrefillProgressSignal(
+            None,
+            live = bool(
+                payload.stream
+                and _ui_events
+                and not _wants_multiple_choices(payload)
+                and _accepts_keyword(backend.generate_chat_completion_with_tools, "perf_callback")
+            ),
+        )
+        _sf_tool_progress_kwargs = (
+            {"perf_callback": _sf_tool_progress} if _sf_tool_progress.live else {}
+        )
 
         from core.inference.tools import mcp_match_exchange
 
@@ -37524,6 +37585,7 @@ async def produce_openai_chat_completions(
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 compact_context = getattr(payload, "compact_context", None) is True,
                 **_sf_website_policy_kwargs,
+                **_sf_tool_progress_kwargs,
             )
 
         _sf_tool_sentinel = object()
@@ -37616,16 +37678,10 @@ async def produce_openai_chat_completions(
                         if approval_flush_pending
                         else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                     )
-                    while True:
-                        _sf_done, _ = await asyncio.wait(
-                            {_sf_next_task},
-                            timeout = wait_timeout,
-                        )
-                        if _sf_done:
-                            break
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                        approval_flush_pending = False
-                        wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    async for stall_line in _stall_wait_frames(
+                        _sf_next_task, _sf_tool_progress, wait_timeout
+                    ):
+                        yield stall_line
                     event = _sf_next_task.result()
                     approval_flush_pending = False
                     # Done; drop the reference so the finally-block drain no-ops.
@@ -37685,6 +37741,8 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if event["type"] in ("tool_start", "tool_end"):
+                        if event["type"] == "tool_end":
+                            _sf_tool_progress.round_ended()
                         if event["type"] == "tool_start":
                             # Gated with the card: the stamp is set once.
                             if _ui_events:
@@ -38177,6 +38235,16 @@ async def produce_openai_chat_completions(
         and _accepts_keyword(backend.generate_chat_response, "diffusion_frames")
         else {}
     )
+    _sf_progress = _PrefillProgressSignal(
+        None,
+        live = bool(
+            payload.stream
+            and _sf_ui_events
+            and not _wants_multiple_choices(payload)
+            and _accepts_keyword(backend.generate_chat_response, "perf_callback")
+        ),
+    )
+    _sf_progress_kwargs = {"perf_callback": _sf_progress} if _sf_progress.live else {}
 
     if payload.use_adapter is not None:
 
@@ -38186,6 +38254,7 @@ async def produce_openai_chat_completions(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **_sf_frame_kwargs,
+                **_sf_progress_kwargs,
                 **kw,
             )
     else:
@@ -38195,6 +38264,7 @@ async def produce_openai_chat_completions(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **_sf_frame_kwargs,
+                **_sf_progress_kwargs,
                 **kw,
             )
 
@@ -38242,6 +38312,7 @@ async def produce_openai_chat_completions(
                 continue_final_message = bool(gen_kwargs.get("continue_final_message", False)),
                 recall_reachable = _sf_recall_reachable,
                 images = [image] if image is not None else None,
+                on_compacting = _sf_progress.compacting,
             )
             fitted_kwargs = {
                 **gen_kwargs,
@@ -38318,14 +38389,10 @@ async def produce_openai_chat_completions(
                         break
                     # next(gen, _DONE) avoids StopIteration, which can't cross asyncio futures.
                     _next_task = asyncio.create_task(gen_step(_DONE))
-                    while True:
-                        _done_tasks, _ = await asyncio.wait(
-                            {_next_task},
-                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                        )
-                        if _done_tasks:
-                            break
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    async for stall_line in _stall_wait_frames(
+                        _next_task, _sf_progress, _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    ):
+                        yield stall_line
                     cumulative = _next_task.result()
                     # Done; drop the reference so the finally-block drain no-ops.
                     _next_task = None
@@ -41410,6 +41477,54 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     return items
 
 
+_OPENAI_EMBEDDING_MODELS = frozenset(
+    {
+        "text-embedding-ada-002",
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+    }
+)
+
+
+def _decode_openai_embedding_tokens(body: dict, value: list) -> dict:
+    # Mixed or multimodal inputs pass through: a resident llama-server reads them natively.
+    if all(type(token) is int for token in value):
+        rows = [value]
+    elif all(
+        isinstance(row, list) and row and all(type(token) is int for token in row) for row in value
+    ):
+        rows = value
+    else:
+        return body
+
+    try:
+        from core.inference.openai_embedding_tokenizer import decode_tokens
+    except (OSError, ValueError) as exc:
+        logger.warning("OpenAI embedding tokenizer unavailable: %s", exc)
+        raise HTTPException(
+            status_code = 503, detail = "OpenAI embedding tokenizer unavailable; send text input."
+        ) from None
+
+    try:
+        return {**body, "input": [decode_tokens(row) for row in rows]}
+    except KeyError:
+        raise HTTPException(status_code = 400, detail = "Invalid OpenAI embedding token IDs.") from None
+
+
+async def _with_decoded_openai_embedding_inputs(body: dict) -> dict:
+    model = _raw_body_model(body)
+    value = body.get("input")
+    if (
+        isinstance(model, str)
+        and model in _OPENAI_EMBEDDING_MODELS
+        and isinstance(value, list)
+        and value
+        and (type(value[0]) is int or isinstance(value[0], list))
+    ):
+        return await asyncio.to_thread(_decode_openai_embedding_tokens, body, value)
+    return body
+
+
 def _embeddings_truncate(body: dict) -> bool:
     """``truncate`` (Ollama / TEI spelling), default on (#14309)."""
     truncate = body.get("truncate", True)
@@ -41632,6 +41747,7 @@ async def _studio_embeddings(
     # The auto-switch hook admitted this before the route knew it lands here, so untrack the admitted tally; the preview busy guard reads that tally
     untrack_admitted_inference(_scope)
 
+    body = await _with_decoded_openai_embedding_inputs(body)
     texts = _embeddings_texts(body)
     encoding_format = body.get("encoding_format")
     if encoding_format is None:
@@ -41965,7 +42081,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         return await _studio_embeddings(request, body, current_subject)
 
     # No claim here: middleware claims on 2xx, and llama-server can still non-2xx a valid body, stranding a preview model; it ignores dimensions.
-    body = dict(body)
+    body = dict(await _with_decoded_openai_embedding_inputs(body))
     if account_access.managed_account():
         # llama-server fetches media URLs inside multimodal items; a managed account sends text or tokens only.
         _embeddings_items(body, tokens_ok = True)
@@ -54968,7 +55084,18 @@ async def diffusion_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
-    status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
+    from core.inference.chat_media_swap import chat_can_swap
+
+    status_dict = {
+        **status_dict,
+        "load_id": load_id,
+        "resident_load_id": resident_load_id,
+        "chat_swap_available": not raw_status.get("loaded")
+        and not load_id
+        and _loads_anything()
+        and not account_access.resident_hidden("chat")
+        and chat_can_swap(),
+    }
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 
@@ -56391,6 +56518,8 @@ async def _batched_openai_images(
             expected_load = expected_load,
             **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
             **({"loras": loras} if loras else {}),
+            # Headless: no client polls generate-progress, so skip the per-step previewer.
+            **_live_preview_kwarg(backend.generate, False),
         ),
     )
 
@@ -56509,6 +56638,7 @@ async def _generate_openai_images(
                         **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                         # Only when set, so engines without the parameter keep their call shape.
                         **({"loras": loras} if loras else {}),
+                        **_live_preview_kwarg(backend.generate, False),
                     )
             break
         except DiffusionModelReplacedError:

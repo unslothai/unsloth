@@ -69,8 +69,7 @@ def test_a_loaded_model_still_opens_the_picker_collapsed():
         assert re.search(
             r"pickerExpandLoaded: loadBool\(\s*PICKER_EXPAND_LOADED_KEY,\s*false,?\s*\)", STORE
         ), "the full-list setting no longer defaults to off, so a fresh browser opens the picker expanded"
-    # Collapsed unless the user expanded it or nothing is chosen; more reasons to open expanded (a model with no
-    # thinking toggle, #18128) are fine, since expand_collapsed_model_picker clicks nothing on an expanded picker.
+    # Collapsed unless expanded or nothing chosen; other reasons to expand (#18128) are safe.
     assert re.search(r"const isExpanded = expanded \|\| !chosenName(?: \|\| \w+)*;", PICKER)
 
 

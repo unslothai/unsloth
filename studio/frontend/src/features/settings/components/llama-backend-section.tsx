@@ -12,10 +12,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatBytes } from "@/features/hub";
-import {
-  FolderBrowser,
-  invalidateLlamaFlagCatalog,
-} from "@/features/model-picker";
+import { FolderBrowser } from "@/features/model-picker";
+import { afterLlamaFolderChanged } from "@/hooks/use-llama-update-check";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect, useState } from "react";
@@ -344,7 +342,7 @@ export function LlamaBackendSection() {
 
       <LlamaCppPathRow
         onChanged={() => {
-          invalidateLlamaFlagCatalog();
+          afterLlamaFolderChanged();
           void refresh(true);
         }}
       />

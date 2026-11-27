@@ -573,8 +573,7 @@ def test_scorer_restores_the_callers_forward_mode(monkeypatch, prior):
 
 
 def test_vllm_importance_sampling_correction_stays_live_for_subclass_objectives():
-    """Finding 4: Unsloth disables TRL's vLLM importance-sampling block (its own loss corrects), which left a
-    subclass objective without importance_sampling_ratio (stock GRPO's _compute_loss raised KeyError)."""
+    """Keep vllm_importance_sampling_correction on, or subclass objectives hit KeyError."""
     grpo = _grpo_module()
     source = _class_method_source(grpo.__file__, "GRPOTrainer", "_generate_and_score_completions")
     if source is None or "vllm_importance_sampling_correction" not in source:
@@ -639,8 +638,7 @@ def test_subclass_scoring_methods_and_descriptors_are_honoured():
 
 @pytest.mark.parametrize("honours_flag", [True, False], ids = ["fused_capable", "logits_only"])
 def test_sampling_candidates_are_scored_like_stock_trl(honours_flag):
-    """Finding 6: TRL >= 1.18 passes vLLM's sampling candidates (sampling_mask) to every scoring pass and
-    normalises the log-probs over them. They were refused with NotImplementedError."""
+    """TRL >= 1.18 sends vLLM sampling_mask to all scoring passes, normalises over candidates."""
     model = _Model(honours_flag = honours_flag)
     inputs = _inputs()
     ids, mask, k = _ids_and_mask(inputs)
@@ -674,8 +672,7 @@ def test_sampling_candidates_are_scored_like_stock_trl(honours_flag):
 
 
 def test_kept_set_reconstruction_is_refused_for_subclass_objectives(monkeypatch):
-    """Finding 7: with no recorded candidates, Unsloth's kept-set scoring rebuilds top_k / top_p / min_p sets from
-    its own scorer, which a subclass objective's current pass never uses. The gate must refuse it."""
+    """No recorded candidates: subclasses never use rebuilt top_k/top_p/min_p sets; refuse it."""
     _needs_modern_scorer()
     Fused, Sub, _ = _classes(_user_compute_loss)
     model = _Model()
@@ -725,8 +722,7 @@ def test_legacy_scorer_serves_subclass_objectives():
 
 
 def test_sample_weighting_stands_down_for_subclass_objectives(monkeypatch):
-    """Finding 11: the fused-loss sample weights were computed (and exclusions logged) for a subclass objective
-    that never applies them."""
+    """Subclass objectives never apply fused sample weights, so they must not be computed."""
     _needs_modern_scorer()
     Fused, Sub, _ = _classes(_user_compute_loss)
     monkeypatch.setattr(rl, "_unsloth_grpo_sample_weight_mode", lambda: (True, False))
@@ -751,9 +747,8 @@ def test_sample_weighting_stands_down_for_subclass_objectives(monkeypatch):
 
 @pytest.mark.parametrize("honours_flag", [True, False], ids = ["fused_route", "logits_route"])
 def test_scorer_matches_trl_contract(honours_flag):
-    """Arity, float64 values, completion-pad zeros and entropy gradient as the installed TRL defines them
-    (findings 9, 10, 13): TRL >= 1.15 zeroes completion-pad scores and keeps the entropy differentiable; older
-    TRL computes the entropy under no_grad."""
+    """Arity, float64, completion-pad zeros and entropy gradient follow installed TRL; TRL >= 1.15
+    zeroes pad scores and keeps entropy differentiable, older computes it under no_grad."""
     inputs = _inputs()
     ids, mask, k = _ids_and_mask(inputs)
     model = _Model(honours_flag = honours_flag)
@@ -820,8 +815,7 @@ def test_trl_stock_scorer_parity_where_it_reads_logits():
 
 
 def test_head_projection_and_forward_run_in_scope(monkeypatch):
-    """Findings 14 / 15: the fused head projection ran outside the forward's autocast, and the forward lacked the
-    left-padding mask scope PPO and distillation use (GPT-OSS drops the mask otherwise)."""
+    """Head projection needs autocast; forward needs the left-padding mask (GPT-OSS drops it)."""
     import unsloth.models._fused_rl_logprobs as fused
 
     seen = []

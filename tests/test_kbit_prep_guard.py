@@ -70,8 +70,7 @@ def trl_modules(monkeypatch):
     utils.PeftModel = FakePeftModel
     utils.prepare_model_for_kbit_training = lambda m, **kw: m
     utils.CALLS = calls
-    # inspect.getsource reads through linecache; seed it or the guard bails and every
-    # assertion below passes vacuously.
+    # getsource reads linecache; unseeded, the guard bails and assertions pass vacuously.
     _seed_linecache(utils.__file__, TRL_0_22_2_SOURCE)
     exec(compile(TRL_0_22_2_SOURCE, utils.__file__, "exec"), vars(utils))
 
@@ -111,16 +110,14 @@ def test_an_already_peft_model_skips_the_upcast(trl_modules):
 
 
 def test_a_plain_quantized_model_still_gets_prepared(trl_modules):
-    """The guard must be narrow: a model that has NOT been through PEFT still
-    needs the preparation TRL does for it."""
+    """The guard skips only PEFT models; a plain quantized model still gets TRL's preparation."""
     assert _guard_kbit_prep_against_peft_models() is True
     trl_modules.utils.prepare_peft_model(PlainModel(), None, Args())
     assert "kbit_prep" in trl_modules.calls
 
 
 def test_every_module_that_re_exports_the_name_is_rebound(trl_modules):
-    """sft_trainer is the one GKD inherits, but rebinding only the definition
-    would leave six other trainers on the original."""
+    """Rebinding only the definition leaves six other trainers that re-export the original."""
     original = trl_modules.utils.prepare_peft_model
     assert _guard_kbit_prep_against_peft_models() is True
     for name, module in trl_modules.trainers.items():
@@ -134,8 +131,7 @@ def test_it_is_idempotent(trl_modules):
 
 
 def test_trl_at_or_above_0_24_is_left_alone(trl_modules):
-    """Upstream already carries the clause; patching it again would mean
-    maintaining a copy of a function we no longer need to correct."""
+    """TRL 0.24.0 and above already carries the clause, so the function needs no patch."""
     trl_modules.trl.__version__ = "0.24.0"
     original = trl_modules.utils.prepare_peft_model
     assert _guard_kbit_prep_against_peft_models() is False
@@ -166,8 +162,7 @@ def test_a_source_checkout_with_no_metadata_is_still_guarded(trl_modules):
 
 
 def test_an_unparseable_version_does_not_patch_an_already_guarded_trl(trl_modules):
-    """Falling through on an unparseable version is safe only because the source check self-guards:
-    0.24.0 and above already include the clause, so nothing matches."""
+    """Unparseable versions fall through safely: the source check self-guards from trl 0.24.0."""
     trl_modules.trl.__version__ = "unknown"
     src = TRL_0_22_2_SOURCE.replace(
         "if is_qlora and not is_sharded_qlora:",

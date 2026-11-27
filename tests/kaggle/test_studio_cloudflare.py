@@ -45,8 +45,7 @@ def test_it_binds_a_wildcard_or_there_is_nothing_to_publish():
 
 
 def test_the_url_matcher_rejects_cloudflareds_own_failure_host():
-    """Executed, not eyeballed. The failure line contains a trycloudflare URL
-    and means the opposite of a tunnel."""
+    """The failure line contains a trycloudflare URL, so the URL matcher must reject it."""
     body = _body()
     literal = re.search(r"re\.search\((r\"[^\"]+\")", body)
     assert literal, "no URL matcher found"
@@ -67,8 +66,7 @@ def test_the_tunnel_must_actually_serve():
 
 
 def test_an_unauthenticated_request_through_the_tunnel_must_be_refused():
-    """The rule that makes opening the URL defensible. Asserted structurally so
-    a message rewrite cannot satisfy it."""
+    """Unauthenticated tunnel requests must be refused; that makes opening the URL defensible."""
     func = _func("assert_cloudflare")
     unauth = [
         n
@@ -86,8 +84,7 @@ def test_an_unauthenticated_request_through_the_tunnel_must_be_refused():
 
 
 def test_the_no_tunnel_excuse_is_narrow():
-    """The no-tunnel excuse, reported rather than failed, applies only when no URL was published;
-    once a URL exists, every cloudflare rule above is live."""
+    """The no-tunnel excuse is reported, not failed, only while no URL was published."""
     func = _func("assert_cloudflare")
     excuses = [
         n for n in ast.walk(func) if isinstance(n, ast.If) and ast.unparse(n.test) == "url is None"
@@ -111,8 +108,7 @@ def test_the_no_tunnel_excuse_is_narrow():
 
 
 def test_the_public_url_is_registered_as_a_secret():
-    """It is a live public route to this machine and the artifact is read by
-    people who are not running it."""
+    """The public URL is a live route into this machine and the artifact is read by others."""
     body = _body()
     assert "self.secrets.add(url)" in body
     assert '"unsloth_cloudflare.log",' in _body(
@@ -131,7 +127,6 @@ def test_the_child_is_always_torn_down():
 
 
 def test_it_can_be_switched_off():
-    """The only assertion here that reaches the public internet should be
-    refusable without editing the payload."""
+    """The only public-internet check should be switchable via --no-cloudflare-check."""
     assert '"--no-cloudflare-check"' in SRC
     assert "self.args.cloudflare_check" in _body("execute")

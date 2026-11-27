@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import http.client
 import json
 import threading
@@ -214,6 +216,37 @@ def _fetch_newest_published_release_blocking(
     return max(published, key = lambda r: r.get("published_at") or "")
 
 
+# Release objects fetched inside one shared_release_fetches() pass, by repo; None outside a pass.
+_pass_releases: contextvars.ContextVar[Optional[dict[str, dict]]] = contextvars.ContextVar(
+    "prebuilt_freshness_pass_releases", default = None
+)
+
+
+@contextlib.contextmanager
+def shared_release_fetches():
+    """Share each repo's release fetch within one status pass. Failures are not shared; nested passes join the outer one."""
+    if _pass_releases.get() is not None:
+        yield
+        return
+    token = _pass_releases.set({})
+    try:
+        yield
+    finally:
+        _pass_releases.reset(token)
+
+
+def _newest_published_release_in_pass(
+    repo: str, timeout: float, *, log_message: str
+) -> Optional[dict]:
+    shared = _pass_releases.get()
+    if shared is not None and repo in shared:
+        return shared[repo]
+    newest = _fetch_newest_published_release(repo, timeout, log_message = log_message)
+    if shared is not None and newest is not None:
+        shared[repo] = newest
+    return newest
+
+
 def fetch_latest_release_tag(
     repo: str,
     timeout: float = 5.0,
@@ -221,7 +254,7 @@ def fetch_latest_release_tag(
     log_message: str,
 ) -> Optional[str]:
     """Newest published release tag for `repo`, by publish time. None on failure."""
-    newest = _fetch_newest_published_release(repo, timeout, log_message = log_message)
+    newest = _newest_published_release_in_pass(repo, timeout, log_message = log_message)
     return newest["tag_name"] if newest else None
 
 
@@ -232,7 +265,7 @@ def fetch_latest_release_assets(
     log_message: str,
 ) -> Optional[dict[str, int]]:
     """Asset name -> size (bytes) for the newest published release of `repo`, selected exactly like fetch_latest_release_tag. None on any failure."""
-    newest = _fetch_newest_published_release(repo, timeout, log_message = log_message)
+    newest = _newest_published_release_in_pass(repo, timeout, log_message = log_message)
     if newest is None:
         return None
     assets: dict[str, int] = {}

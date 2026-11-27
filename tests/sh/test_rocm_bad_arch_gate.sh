@@ -8,8 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-# The gate is inline on purpose: an extracted function missing a helper would send every
-# ROCm case to cpu. So exercise the real case block.
+# Inline on purpose: an extracted function missing a helper would send every ROCm case to cpu.
 _FN_FILE=$(mktemp)
 trap 'rm -f "$_FN_FILE"' EXIT
 # An explicit end marker, not `fi`: a second `if` at the same indent would truncate.
@@ -73,8 +72,7 @@ assert_eq "mixed case gfx1033 -> cpu" \
 GFX1033')"
 
 echo "=== The runtime-less reroute honours the same gate ==="
-# The reroute below the gate reads UNSLOTH_ROCM_GFX_ARCH and would rewrite */cpu back to
-# a family index. The escape hatch is UNSLOTH_TORCH_INDEX_URL.
+# Reroute reads UNSLOTH_ROCM_GFX_ARCH, undoes cpu routing; escape is UNSLOTH_TORCH_INDEX_URL.
 _REROUTE_FILE=$(mktemp)
 trap 'rm -f "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE"' EXIT
 {
@@ -104,8 +102,7 @@ assert_eq "gfx1030 override still reroutes"    "gfx103X-all"  "$(_reroute_family
 assert_eq "gfx1151 override still reroutes"    "gfx1151"      "$(_reroute_family gfx1151)"
 
 echo "=== The rejected override is not forwarded to llama.cpp either ==="
-# A rejected arch must not stay exported: setup.sh forwards it as --rocm-gfx, which skips
-# the faster Vulkan branch.
+# A rejected arch must not stay exported: setup.sh forwards it as --rocm-gfx, skipping Vulkan.
 _forwarded_gfx() {  # UNSLOTH_ROCM_GFX_ARCH -> what survives for setup.sh, or <unset>
     "$_SH" -c "
         UNSLOTH_ROCM_GFX_ARCH='$1'; export UNSLOTH_ROCM_GFX_ARCH
@@ -156,7 +153,6 @@ done
 
 _make_rocminfo_host() {  # $1 = gfx arch -> a dir holding rocminfo + hipconfig mocks
     _mk_dir=$(mktemp -d)
-    # Real single-GPU APU shape: a CPU agent with no ISA, then a GPU agent named twice.
     cat > "$_mk_dir/rocminfo" <<ROCMINFO
 #!/bin/sh
 cat <<'OUT'
@@ -307,8 +303,7 @@ assert_eq "spoofed gfx1030 host keeps rocm" \
     "$(export HSA_OVERRIDE_GFX_VERSION=10.3.0; _index_for_rocminfo_host gfx1030)"
 
 echo "=== KFD answers when the probe cannot, so a spoof cannot fill the gap ==="
-# _amd_gfx_probe is collected with the override in force; amdkfd is the kernel's own table
-# and no runtime variable reaches it.
+# _amd_gfx_probe runs under the override; amdkfd is kernel-side, so no env var reaches it.
 _make_kfd_only_host() {  # rocminfo that answers ONLY while the override is set
     _ko_dir=$(mktemp -d)
     _ko_spoof=$(_make_rocminfo_host gfx1030)
@@ -346,8 +341,7 @@ assert_eq "KFD names gfx1033 behind the spoof -> cpu" \
 assert_eq "KFD names gfx1030 -> rocm" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_kfd_host gfx1030)"
 
-# _has_amd_rocm_gpu and _kfd_gfx_targets read /dev/kfd by absolute path, so stub presence and
-# silence KFD to make the simulated host the subject, not the runner's silicon.
+# _has_amd_rocm_gpu and _kfd_gfx_targets read /dev/kfd by absolute path, so tests stub them.
 _amd_host_no_kfd_stub() {  # -> a file to source AFTER funcs.sh
     _ahs_dir=$(mktemp -d)
     {
@@ -377,8 +371,7 @@ _index_unverifiable_override() {  # $1 = the env assignment to apply
 assert_eq "HSA override with no verifiable source -> cpu" \
     "https://download.pytorch.org/whl/cpu" \
     "$(_index_unverifiable_override HSA_OVERRIDE_GFX_VERSION=10.3.0)"
-# UNSLOTH_ROCM_GFX_ARCH is a declared arch, not a spoof. Both reach the cpu index, so assert
-# on which branch spoke.
+# UNSLOTH_ROCM_GFX_ARCH is a declared arch, not a spoof; both reach cpu, so check which branch.
 _stderr_unverifiable_override() {  # $1 = env assignment -> stderr only
     _suo_dir=$(_make_kfd_only_host)
     _suo_stub=$(_amd_host_no_kfd_stub)

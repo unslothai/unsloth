@@ -1363,3 +1363,15 @@ def test_a_first_frame_without_the_i2v_class_is_refused_before_the_model_switch(
     assert resp.status_code == 400, resp.json()
     assert "WanImageToVideoPipeline" in str(resp.json())
     assert switched["completed"] is False
+
+
+def test_headless_video_jobs_never_build_the_live_previewer(client, backend, monkeypatch):
+    # /v1/videos, the chat tool and MCP all start here, and none of them shows a preview.
+    from core.inference.diffusion_preview import preview_wanted
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PREVIEW", raising = False)
+    resp = client.post("/v1/videos", json = {"prompt": "a cat", "seconds": 5})
+    assert resp.status_code == 200, resp.json()
+    assert _wait_terminal(client, resp.json()["id"])["status"] == "completed"
+    assert backend.last_generate_kwargs["live_preview"] is False
+    assert preview_wanted(backend.last_generate_kwargs["live_preview"]) is False

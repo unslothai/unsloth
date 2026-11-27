@@ -65,38 +65,24 @@ SURFACES = [
     "thread_scroll",
 ]
 
-# Known WebKit long-chat costs on main, pinned so the gate holds today's level. Keys: engine:mode:surface:
-# metric (open / close = long/short ratio of the time; frame = the long chat's longest frame, ms).
-# Set from main readings with margin; lower each when its fix lands.
+# engine:mode:surface:metric; open/close: long/short ratio; frame: longest ms; lower on fix.
 KNOWN_DEFAULT = {
     # Browser pane: opening or closing it narrows / widens the thread and WebKit re-lays out and repaints
-    # the rows still inside the #16986 content-visibility window (macos-15 Safari engine, Round 11:
-    # 460-562 ms at 150 turns vs 144-165 at 1). GitHub ubuntu runners, 6 readings: macOS UA open 1.5-3.0x
-    # (frame 267-335 ms), close 3.6-7.2x / 3.6x over the 100 ms floor (frame 235-300); Linux UA open up
-    # to 3.9x (Glass 6.4x, frame 327-453), close 2.9x (Glass 4.8x, frame 191-297). Fix work: branch
-    # studio-browser-pane-open.
-    "webkit_mac:default:browser_pane:open": 4.0,
-    "webkit_mac:default:browser_pane:close": 5.0,
-    "webkit_mac:default:browser_pane:open_frame": 450,
-    "webkit_mac:default:browser_pane:close_frame": 400,
-    "webkit_mac:liquid-3d:browser_pane:close": 7.0,
-    "webkit_mac:liquid-3d:browser_pane:close_frame": 520,
-    "webkit_linux:default:browser_pane:open": 5.0,
+    # the rows still inside the #16986 content-visibility window. Round 11 measured 1.5-7.2x on GitHub
+    # runners; 8 Frontend CI readings on 2026-11-26/27 (upstream-main and PR runs): every macOS UA cell
+    # under the default limits (open <= 1.7x, frames <= 302 ms against a 287 ms short chat), Linux UA
+    # open up to 2.2x (Glass 3.3x, frame 226 ms), close up to 3.3x (Glass 2.4x). Only those Linux cells
+    # keep a ceiling. Fix work: branch studio-browser-pane-open.
+    "webkit_linux:default:browser_pane:open": 3.5,
     "webkit_linux:default:browser_pane:close": 4.0,
-    "webkit_linux:liquid-3d:browser_pane:open": 8.0,
-    "webkit_linux:liquid-3d:browser_pane:close": 6.5,
-    "webkit_linux:liquid-3d:browser_pane:open_frame": 600,
-    "webkit_linux:liquid-3d:browser_pane:close_frame": 400,
-    # Thread scroll: 20 scroll steps take 3.0-3.3x as long at 150 turns (macOS UA solid; Linux UA with
-    # Glass, the WebKitGTK Glass scroll of Round 11: 12-38 of 67-132 frames over 50 ms on Linux).
-    # Fix work: Linux WebKitGTK Glass scroll (GOAL_DETAILS open todo); macOS thread scroll paint.
-    "webkit_mac:default:thread_scroll:open": 4.5,
-    "webkit_linux:liquid-3d:thread_scroll:open": 4.5,
-    # Composer menu and command palette (macOS UA, solid): a 237-297 / 182-268 ms frame opening them at
-    # 150 turns: the paint behind the overlay grows with the thread (Round 11's Chromium probe: composer
-    # menu paint 10 -> 80 ms, Settings 15 -> 104). Fix work: Settings / overlay paint (GOAL_DETAILS todo).
-    "webkit_mac:default:composer_menu:open_frame": 400,
-    "webkit_mac:default:command_palette:open_frame": 350,
+    "webkit_linux:liquid-3d:browser_pane:open": 4.5,
+    "webkit_linux:liquid-3d:browser_pane:close": 3.5,
+    "webkit_linux:liquid-3d:browser_pane:open_frame": 350,
+    # Thread scroll: 20 scroll steps take longer at 150 turns (same 8 readings: macOS UA solid 1.1-2.4x,
+    # Linux UA with Glass 1.4-2.2x; Round 11 had 3.0-3.3x). Fix work: Linux WebKitGTK Glass scroll
+    # (GOAL_DETAILS open todo); macOS thread scroll paint.
+    "webkit_mac:default:thread_scroll:open": 3.5,
+    "webkit_linux:liquid-3d:thread_scroll:open": 3.5,
 }
 KNOWN = {
     **KNOWN_DEFAULT,
@@ -113,8 +99,7 @@ KNOWN = {
 
 @dataclass
 class Leg:
-    """One browser engine family's leg: what it runs, its limits and how its failures read. The WebKit
-    leg is WEBKIT below; _firefox_leg.py builds FIREFOX the same way."""
+    """One browser engine's leg; WEBKIT is here, _firefox_leg.py builds FIREFOX the same way."""
 
     name: str  # in reports: "WebKit"
     browser: str  # Playwright browser type: "webkit", "firefox"
@@ -163,8 +148,7 @@ ARM = """() => {
   const tick = (t) => { w.frames.push([t, t - w.last]); w.last = t; if (!w.stop) requestAnimationFrame(tick); };
   requestAnimationFrame(tick);
 }"""
-# Wait (in rAF steps) until `pred` holds, then one more frame: the time is that frame's, so it
-# includes painting the surface. Returns [ms since ARM, longest frame in the window] or null.
+# Waits (rAF steps) for pred, then one frame that paints; returns [ms, longest frame] or null.
 UNTIL = """async ([pred, timeoutMs]) => {
   const w = window.__wk; const test = (0, eval)(pred);
   const frame = () => new Promise((r) => requestAnimationFrame(r));
@@ -173,9 +157,8 @@ UNTIL = """async ([pred, timeoutMs]) => {
   const long = w.frames.filter(([ts]) => ts <= t + 1).reduce((m, [, d]) => Math.max(m, d), 0);
   return [t - w.t0, long];
 }"""
-# Surfaces judged on "settle" (typing): the frame clock plus a MutationObserver armed before the action,
-# ignoring the autoscroll follow flag and the Glass motion hold flags (state, not content). The time
-# is the last content mutation, once the page has been quiet for QUIET_MS.
+# Settle-judged: frame clock plus a MutationObserver armed pre-action, ignoring autoscroll and Glass
+# motion flags (state, not content); time is the last content change once quiet for QUIET_MS.
 QUIET_MS = 300
 SETTLE_IGNORED = ["data-aui-following", "data-glass-moving", "data-glass-settling"]
 ARM_SETTLE = """(ignored) => {

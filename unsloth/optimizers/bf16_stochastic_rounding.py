@@ -551,18 +551,14 @@ def _generator(optimizer, device, seed):
     return generators[key]
 
 
-def _index(optimizer, p):
-    index = optimizer.__dict__.setdefault("_unsloth_sr_index", {})
-    return index.setdefault(id(p), len(index))
-
-
 def _seed_for(optimizer, p, seed, step):
     """Seeded by (param index, optimizer step): a resumed run draws what an uninterrupted one would.
     A DTensor shard also mixes in where it starts (0 for plain weights, so their draws are unchanged)."""
+    index = optimizer._unsloth_sr_index[id(p)]
     return (
         int(seed)
         + 0x5EED
-        + _index(optimizer, p) * 1000003
+        + index * 1000003
         + int(step) * 2654435761
         + _shard_offset(optimizer, p) * 0x9E3779B97F4A7C15
     ) & (0x7FFFFFFFFFFFFFFF)
@@ -759,8 +755,6 @@ def _wrap_torch(optimizer, tracked, seed):
                 if rest:
                     self.param_groups = [dict(group, params = rest)]
                     original()
-                for p in mine:  # indices in parameter order, whichever route steps them
-                    _index(self, p)
                 # Step hooks fire per weight when the optimizer has its own (state offload, idle experts,
                 # DP sync), as torch's per-weight steps did before; else once for the group.
                 batches = [[p] for p in mine] if _step_hooks(self) else ([mine] if mine else [])
@@ -996,7 +990,9 @@ def enable_bf16_stochastic_rounding(
     ]
     if not params:
         return 0
-    tracked = {id(p) for p in params}
+    # A routed weight may first receive a gradient on either side of a checkpoint.
+    tracked = {id(p): index for index, p in enumerate(params)}
+    optimizer._unsloth_sr_index = tracked
     if kind == "bitsandbytes":
         _wrap_bitsandbytes(optimizer, tracked, seed)
     else:
