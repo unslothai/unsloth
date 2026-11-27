@@ -140,14 +140,15 @@ test("pickers render folder rows through the label, group, link and menu helpers
     PICKERS,
     /huggingface\.co\/\$\{audioCppHubPath\(trimmed\) \?\? trimmed\}/,
   );
-  for (const fn of [
-    "const renderSoleQuantGgufRow",
-    "const renderDownloadedGgufRow",
-    "const renderAdditionalOnDeviceModelRow",
+  // The cached GGUF rows are memoized components; the others are render functions.
+  for (const [fn, end] of [
+    ["const SoleQuantGgufDeviceRow", "\n});\n"],
+    ["const DownloadedGgufDeviceRow", "\n});\n"],
+    ["const renderAdditionalOnDeviceModelRow", "\n  };\n"],
   ]) {
     const start = PICKERS.indexOf(fn);
     assert.ok(start > 0, fn);
-    const body = PICKERS.slice(start, PICKERS.indexOf("\n  };\n", start));
+    const body = PICKERS.slice(start, PICKERS.indexOf(end, start));
     assert.match(body, /label=\{[^}]*onDeviceRepoLabel\(/, fn);
   }
   const start = PICKERS.indexOf("const renderAdditionalOnDeviceModelRow");

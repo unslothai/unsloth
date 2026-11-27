@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The DOM half of find-in-page: offsets back into `Range`s, painting them, and moving the reader
-// to one. The arithmetic and the flatten live in find-text-index.ts, which is pure.
-
 import {
   FIND_PORTAL_ATTRIBUTE,
   FIND_SCOPE_ATTRIBUTE,
@@ -16,22 +13,13 @@ import {
   startPositionAt,
 } from "./find-text-index.ts";
 
-/**
- * Registry names for the two highlights: every match with the first, the active one on top.
- *
- * The Custom Highlight API keeps highlighting off the document: a `Highlight` is a set of `Range`s
- * painted over text already laid out, so nothing is inserted and nothing reflows. `<mark>` would
- * mutate the thread on every keystroke, splitting nodes that streaming markdown, `thread-fast-copy`
- * and the export path read back.
- */
+/** Custom Highlight API paints without mutating the DOM, unlike `<mark>`. */
 export const FIND_HIGHLIGHT = "unsloth-find";
 export const FIND_HIGHLIGHT_ACTIVE = "unsloth-find-active";
 
-/** How many matches are painted at once. The window travels with the active match, so what is on
- *  screen is always painted; the rest are counted and reachable, just not tinted. */
+/** The paint window travels with the active match; the rest are counted, not tinted. */
 export const MAX_PAINTED_RANGES = 400;
 
-/** Distance kept from a scroller's edge before a match counts as needing to be scrolled to. */
 const REVEAL_INSET_PX = 24;
 
 type HighlightLike = { priority: number; clear(): void };
@@ -42,9 +30,7 @@ type HighlightRegistry = {
   delete(name: string): void;
 };
 
-/** The registry and constructor, or null on an engine without them. Read through `globalThis`
- *  because the app's `lib` is ES2022 + DOM, which has no `Highlight`. WebKitGTK lands here, and
- *  `selectRangeFallback` covers it. */
+/** Via globalThis since lib has no `Highlight`. Null on WebKitGTK; see selectRangeFallback. */
 function highlightApi(): {
   registry: HighlightRegistry;
   Highlight: HighlightConstructor;
@@ -59,13 +45,10 @@ function highlightApi(): {
   return { registry, Highlight };
 }
 
-/** True when this engine can paint highlights without touching the document. */
 export function supportsHighlightApi(): boolean {
   return highlightApi() !== null;
 }
 
-/** The subtree the bar searches: the shell's content region, which leaves out the sidebar and the
- *  bar itself. `document.body` is the fallback for a route that renders no shell. */
 export function resolveFindScope(): Element | null {
   if (typeof document === "undefined") return null;
   return (
@@ -73,7 +56,6 @@ export function resolveFindScope(): Element | null {
   );
 }
 
-/** Searchable surfaces outside the scope; persistent portals are additive. */
 const DISMISSIBLE_PORTAL_SURFACE_SELECTOR =
   '[data-slot="popover-content"], [role="menu"], [role="listbox"]';
 const SEARCHABLE_PORTAL_SURFACE_SELECTOR = `[${FIND_PORTAL_ATTRIBUTE}], ${DISMISSIBLE_PORTAL_SURFACE_SELECTOR}`;
@@ -82,7 +64,6 @@ function resolveSurfaces(scope: Element | null, selector: string): Element[] {
   if (typeof document === "undefined" || scope === null) return [];
   const found: Element[] = [];
   for (const element of document.querySelectorAll(selector)) {
-    // Inside the scope already, or nested in a surface already taken.
     if (scope.contains(element)) continue;
     if (found.some((taken) => taken.contains(element))) continue;
     // Dismissible surfaces animate closed and keep a box until that finishes.
@@ -92,25 +73,17 @@ function resolveSurfaces(scope: Element | null, selector: string): Element[] {
   return found;
 }
 
-/** Every visible out-of-scope surface whose text belongs in the index. */
 export function resolvePortalSurfaces(scope: Element | null): Element[] {
   return resolveSurfaces(scope, SEARCHABLE_PORTAL_SURFACE_SELECTOR);
 }
 
-/** Transient surfaces that own Escape before the find bar does. */
 export function resolveDismissiblePortalSurfaces(
   scope: Element | null,
 ): Element[] {
   return resolveSurfaces(scope, DISMISSIBLE_PORTAL_SURFACE_SELECTOR);
 }
 
-/**
- * The index offset nearest the top of the reader's viewport, or 0 when nothing can be measured.
- *
- * Binary search over the segments: a dozen or so rect reads whatever the document's size. Only
- * asked when a query is common enough to hit the match cap, which is what needs to know where the
- * reader is.
- */
+/** Index offset nearest the viewport top, by binary search; only needed at the cap. */
 export function viewportOffset(index: FindTextIndex): number {
   const segments = index.segments;
   if (segments.length === 0) return 0;
@@ -134,22 +107,13 @@ export function viewportOffset(index: FindTextIndex): number {
       lo = mid + 1;
     }
   }
-  // Everything is above the fold, so the reader is at the end of it.
   return found === -1 ? index.text.length : segments[found].start;
 }
 
-/**
- * What the walk turns back at, as a selector.
- *
- * The shell keeps every workspace mounted and parks off-route ones under `hidden` and `inert` so a
- * long generation survives navigation, and Radix marks the page `aria-hidden` behind a modal. Being
- * in the document is not the same as being searchable. Attributes only: a region hidden by a CLASS
- * is skipped through resolved style, which no selector can see.
- */
+/** Off-route workspaces are parked under `hidden`/`inert`, and Radix aria-hides behind
+ *  modals. Class-hidden regions are caught via resolved style instead. */
 const SKIPPED_REGION_SELECTOR = `[aria-hidden="true"]:not(.katex-html), [inert], [hidden], [${FIND_SKIP_ATTRIBUTE}]`;
 
-/** What the walk will actually read, asked of one element: inside the scope, and under nothing the
- *  walk turns back at. */
 export function indexReaches(
   scope: Element | null,
   element: Element | null,
@@ -159,7 +123,6 @@ export function indexReaches(
   return element.closest(SKIPPED_REGION_SELECTOR) === null;
 }
 
-/** True when a mutation affects indexed text rather than the bar's own chrome. */
 export function mutatesSearchableText(record: {
   target: { nodeType: number; parentElement: Element | null };
   type: string;
@@ -174,17 +137,10 @@ export function mutatesSearchableText(record: {
   // Attribute changes are checked from the parent so parked or newly indexed regions reindex.
   const from = record.type === "attributes" ? element.parentElement : element;
   if (!from) return true;
-  // Streaming updates in skipped workspaces still need one throttled observer pass.
   return from.closest(SKIPPED_REGION_SELECTOR) === null;
 }
 
-/**
- * A live `Range` over one match, or null when the index has drifted from the document.
- *
- * Drift is expected, not exceptional: a streaming reply rewrites text nodes under the index. A
- * stale offset past the end of a shortened node throws, so a null drops that match until the next
- * rebuild.
- */
+/** Null when the index drifted from the document (streaming rewrites text nodes). */
 export function rangeForMatch(
   index: FindTextIndex,
   match: FindMatch,
@@ -202,8 +158,6 @@ export function rangeForMatch(
   }
 }
 
-/** The slice of `matches` to paint, centred on `active`. Pure so the window can be tested without
- *  a document: the active match is always inside it, and it is never wider than the cap. */
 export function paintWindow(
   total: number,
   active: number,
@@ -221,23 +175,16 @@ function removeRegisteredHighlight(
 ): boolean {
   const highlight = registry.get(name);
   if (!highlight) return false;
-  // WebKit versions shipped by Tauri can remove the registry entry without invalidating its
-  // painted ranges. Emptying the registered set first takes the range-removal repaint path.
+  // Tauri's WebKit may drop the registry entry but keep painted ranges; clear the set first.
   highlight.clear();
   registry.delete(name);
   return true;
 }
 
-/** Flush the last stale WebKit pixels after a highlight set becomes empty.
- *
- * WebKitGTK can update the registry and counter but leave highlight edges painted until scrolling
- * invalidates the layer. A transient, imperceptible opacity change plus a layout read gives that
- * layer a synchronous reason to repaint. This only runs when registered ranges were actually
- * removed, not for every character in an unsettled typing burst. */
+/** WebKitGTK can leave stale highlight pixels; a tiny opacity change forces a repaint. */
 function forceHighlightRepaint(): void {
   if (typeof document === "undefined") return;
-  // The index also includes body-level portals outside the workspace scope, so repaint their shared
-  // document root rather than only the conversation container.
+  // The index includes body-level portals, so repaint the document root.
   const root = document.documentElement ?? resolveFindScope();
   if (
     root === null ||
@@ -251,8 +198,6 @@ function forceHighlightRepaint(): void {
   root.style.opacity = previous;
 }
 
-/** Paint `ranges`, with `activeRange` on top. Both registries are replaced wholesale, which is one
- *  write per navigation rather than one per match. */
 export function paintHighlights(
   ranges: Range[],
   activeRange: Range | null,
@@ -275,12 +220,11 @@ export function paintHighlights(
   }
   removeRegisteredHighlight(registry, FIND_HIGHLIGHT_ACTIVE);
   const active = new Highlight(activeRange);
-  // The same text is in both sets, and registration order is not a guarantee the spec makes.
+  // Both sets hold the same text and registration order is not guaranteed by the spec.
   active.priority = 1;
   registry.set(FIND_HIGHLIGHT_ACTIVE, active);
 }
 
-/** Take both highlights back down. Safe to call on an engine that never had them. */
 export function clearHighlights(): void {
   const api = highlightApi();
   if (!api) return;
@@ -292,24 +236,15 @@ export function clearHighlights(): void {
   if (removedActive || removedAll) forceHighlightRepaint();
 }
 
-/** The caret inside a focused text field, so moving the document selection can give it back. */
 type CaretHold = {
   field: HTMLInputElement | HTMLTextAreaElement;
   start: number | null;
   end: number | null;
 };
 
-/**
- * The find field's caret, captured before the selection is moved out from under it.
- *
- * On WebKit and Blink, moving the selection into ordinary text while a field is focused takes the
- * caret with it: `activeElement` still reports the field, but every keystroke is swallowed, so the
- * query freezes at one character. Gecko keeps the two apart. WebKit is the case that matters: an
- * engine with no highlight registry is Firefox below 140 or the desktop build's WebKitGTK.
- */
+/** On WebKit and Blink, moving the selection steals the focused field's caret, so save it. */
 function holdCaret(): CaretHold | null {
-  // Through `globalThis`: the node suite drives this with a hand-rolled window, no document and
-  // none of the constructors below.
+  // Via globalThis: the node suite uses a hand-rolled window without these constructors.
   const scope = globalThis as {
     document?: { activeElement?: unknown };
     HTMLInputElement?: unknown;
@@ -335,7 +270,6 @@ function holdCaret(): CaretHold | null {
   return null;
 }
 
-/** Put the caret back where it was, so the next keystroke reaches the field. */
 function releaseCaret(held: CaretHold | null): void {
   if (!held) return;
   const { field, start, end } = held;
@@ -348,23 +282,13 @@ function releaseCaret(held: CaretHold | null): void {
   }
 }
 
-/**
- * Show the active match by selecting it, for an engine with no highlight registry, which is what a
- * browser's own find does. A selection is one range, so there the bar counts every match and tints
- * one.
- *
- * The caret is handed back afterwards, which keeps the field typable. Whether the selection
- * survives is the engine's call: Gecko keeps both, WebKit and Blink drop it. Losing the tint is a
- * worse look; losing the field is a broken feature.
- */
+/** Fallback without a highlight registry: select the active match, then restore the caret. */
 export function selectRangeFallback(range: Range | null): void {
   if (typeof window === "undefined") return;
   const selection = window.getSelection();
   if (!selection) return;
   if (range === null) {
-    // Only clear the selection this put there, and only while it is still the one on screen:
-    // opening paints before a query is typed, and dragging replaces the match, and neither has a
-    // way back.
+    // Only clear a selection this put there that is still on screen.
     const owned = ownedSelection;
     ownedSelection = null;
     if (owned === null || !sameBoundaries(owned, currentRange(selection)))
@@ -379,14 +303,13 @@ export function selectRangeFallback(range: Range | null): void {
   releaseCaret(held);
 }
 
-/** The range this put on screen, or null when the selection is the reader's own. */
 let ownedSelection: Range | null = null;
 
 function currentRange(selection: Selection): Range | null {
   return selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
 }
 
-/** Boundary points, not identity: engines differ on whether `getRangeAt` hands back what was added. */
+/** Compare boundaries: engines differ on whether `getRangeAt` returns the added range. */
 function sameBoundaries(a: Range, b: Range | null): boolean {
   return (
     b !== null &&
@@ -397,7 +320,6 @@ function sameBoundaries(a: Range, b: Range | null): boolean {
   );
 }
 
-/** True when this element scrolls its own overflow on the given axis. */
 function scrollsAxis(element: Element, axis: "x" | "y"): boolean {
   const overflowing =
     axis === "y"
@@ -409,9 +331,7 @@ function scrollsAxis(element: Element, axis: "x" | "y"): boolean {
   return overflow === "auto" || overflow === "scroll" || overflow === "overlay";
 }
 
-/** Scroll one container so `rect` sits comfortably inside it, or leave it alone when it already
- *  does: a match on screen must not move the page, or stepping through one paragraph would jerk
- *  the conversation on every press. */
+/** Leave the scroller alone when the match is already comfortably visible. */
 function revealWithin(scroller: Element, rect: DOMRect): boolean {
   const view = scroller.getBoundingClientRect();
   let top = scroller.scrollTop;
@@ -436,7 +356,7 @@ function revealWithin(scroller: Element, rect: DOMRect): boolean {
     }
   }
   if (!moved) return false;
-  // `instant`, not the viewport's own `scroll-smooth`: holding Enter outruns a smooth scroll.
+  // `instant`, not smooth: holding Enter outruns a smooth scroll.
   scroller.scrollTo({ top, left, behavior: "instant" });
   return true;
 }
@@ -448,13 +368,7 @@ function elementFor(range: Range): Element | null {
     : (start.parentElement ?? null);
 }
 
-/**
- * A rect to aim at for `range`, or null when nothing about it is laid out.
- *
- * A skipped `content-visibility: auto` subtree gives a range inside it a collapsed rect at the
- * origin, while the subtree's own box keeps its placeholder geometry. Aiming at the nearest laid
- * out ancestor gets the reader there, and the subtree renders on the way.
- */
+/** Skipped `content-visibility: auto` ranges give a collapsed rect, so aim at an ancestor. */
 export function revealRect(range: Range): DOMRect | null {
   const rect = range.getBoundingClientRect();
   if (rect.width !== 0 || rect.height !== 0) return rect;
@@ -467,14 +381,11 @@ export function revealRect(range: Range): DOMRect | null {
   return null;
 }
 
-/** Where `range` sits vertically, through the same fallback. */
 export function rangeTop(range: Range): number | null {
   return revealRect(range)?.top ?? null;
 }
 
-/** The top edge of the scroll container `range` sits in, in window coordinates. Not zero: the
- *  thread viewport starts below the navbar and header, so a match clipped just off its top still
- *  has a positive `top`, and treating that as visible sends a query backwards out of sight. */
+/** Not zero: the thread viewport starts below the navbar and header. */
 export function scrollViewportTop(range: Range): number {
   let element = elementFor(range);
   while (element) {
@@ -484,15 +395,12 @@ export function scrollViewportTop(range: Range): number {
   return 0;
 }
 
-/** Bring `range` into view, innermost scroller first. Nested scrollers are real (a wide code fence
- *  in the thread viewport), so the rect is re-read after each. The window is never scrolled: the
- *  shell is a fixed-height `100dvh` grid with `overflow-hidden`. */
+/** Innermost scroller first, re-reading the rect after each; the window never scrolls. */
 export function scrollRangeIntoView(range: Range): boolean {
   let element = elementFor(range);
   let moved = false;
   while (element) {
     if (scrollsAxis(element, "y") || scrollsAxis(element, "x")) {
-      // Re-read each time: scrolling the inner container decides what the outer one still owes.
       const rect = revealRect(range);
       if (!rect) return moved;
       if (revealWithin(element, rect)) moved = true;
@@ -502,30 +410,16 @@ export function scrollRangeIntoView(range: Range): boolean {
   return moved;
 }
 
-/**
- * Bring `range` into view, and again for as long as the view keeps moving.
- *
- * A scroll reaches only the scrollHeight the engine knows, and a `content-visibility: auto` subtree
- * contributes its placeholder until it renders: a Hub README block can stand at 140px for a 2904px
- * reality. Reaching toward it is what makes it render, so the next frame has more to scroll and the
- * match has moved. Without this the reader was left 3415px below an 800px viewport on all three
- * engines. Typing hides it, since every keystroke reveals again; one reveal from a paste or an
- * Enter stays wrong.
- *
- * "Still moving" rather than asking whether the subtree was skipped, because the engines that most
- * need this are the ones that do not answer `checkVisibility`. Ends when a pass moves nothing: 2
- * frames on webkit, 3 on chromium and firefox. The bound stops anything spinning.
- */
+/** Re-reveal while the view keeps moving: `content-visibility: auto` placeholders grow once
+ *  rendered. Ends when a pass moves nothing; `tries` bounds it. */
 export function revealRangeWhenPainted(range: Range, tries = 8): void {
   cancelRevealPasses();
   revealPass(range, tries, revealGeneration);
 }
 
-/** The chain in flight. A new reveal or a closing bar supersedes the last one. */
 let revealGeneration = 0;
 
-/** Abandon any queued reveal. The workspace stays mounted after the bar closes, so `isConnected`
- *  alone would let the old chain keep scrolling the reader toward a match nobody asked for. */
+/** The workspace stays mounted after close, so `isConnected` alone cannot stop a chain. */
 export function cancelRevealPasses(): void {
   revealGeneration += 1;
 }
@@ -535,7 +429,6 @@ function revealPass(range: Range, tries: number, generation: number): void {
   if (typeof requestAnimationFrame !== "function") return;
   requestAnimationFrame(() => {
     if (generation !== revealGeneration) return;
-    // A streaming reply rewrites the nodes under the index, so the range can be gone by now.
     if (!range.startContainer.isConnected) return;
     revealPass(range, tries - 1, generation);
   });

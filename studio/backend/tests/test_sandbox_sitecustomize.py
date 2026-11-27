@@ -64,6 +64,64 @@ def test_always_remap_prefixes_map_into_cwd(monkeypatch, tmp_path):
     assert mod._remap("relative.txt") == "relative.txt"
 
 
+def test_windows_backslash_spelling_of_a_prefix_maps_into_cwd(monkeypatch):
+    """On Windows str(Path("/mnt/data/x")) is "\\mnt\\data\\x"; the forward-slash prefix match alone missed it, so a
+    write fell back to the basename heal and the matching read failed (staging Windows leg, #16210)."""
+    import ntpath
+    import types
+
+    mod = _load_shim()
+    cwd = "C:\\sandbox\\work"
+    fake_os = types.SimpleNamespace(
+        **{name: getattr(os, name) for name in dir(os) if not name.startswith("__")}
+    )
+    fake_os.sep = "\\"
+    fake_os.path = types.SimpleNamespace(
+        **{name: getattr(ntpath, name) for name in dir(ntpath) if not name.startswith("__")}
+    )
+    fake_os.path.exists = lambda p: False
+    fake_os.getcwd = lambda: cwd
+    monkeypatch.setattr(mod, "os", fake_os)
+    assert mod._remap("\\mnt\\data\\out.txt") == ntpath.join(cwd, "out.txt")
+    assert mod._remap("/mnt/data/sub\\out.txt") == ntpath.join(cwd, "sub", "out.txt")
+    assert mod._remap("\\mnt\\data") == cwd
+    assert mod._remap("\\mnt\\data\\..\\..\\escape.txt") == ntpath.join(cwd, "escape.txt")
+    # A drive-qualified path is a real host location, never a code-interpreter convention.
+    assert mod._remap("D:\\mnt\\data\\out.txt") == "D:\\mnt\\data\\out.txt"
+    assert mod._remap("\\\\server\\share\\mnt\\data\\x") == "\\\\server\\share\\mnt\\data\\x"
+    assert mod._remap("data\\out.txt") == "data\\out.txt"
+
+
+@pytest.mark.skipif(
+    os.path.exists("/mnt/data"),
+    reason = "the host has a real /mnt/data, which the shim never shadows",
+)
+def test_a_pathlib_write_then_read_of_mnt_data_round_trips_in_a_child(tmp_path):
+    """End to end in a real interpreter with the shim on PYTHONPATH, on whatever OS runs the suite. Windows spells the
+    path with backslashes, which the prefix remap must still catch on the read as well as the write."""
+    import subprocess
+    import sys
+
+    code = (
+        "from pathlib import Path\n"
+        "p = Path('/mnt/data/round_trip.txt')\n"
+        "p.write_text('round trip')\n"
+        "print(p.read_text())\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(_SHIM.parent)}
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd = tmp_path,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "round trip"
+    assert (tmp_path / "round_trip.txt").read_text(encoding = "utf-8") == "round trip"
+
+
 def test_prefix_remap_contains_parent_traversal_inside_cwd(monkeypatch, tmp_path):
     # '..' components are dropped so the remap never escapes the per-conversation CWD.
     mod = _load_shim()
@@ -404,3 +462,308 @@ def test_os_open_trunc_without_creat_missing_stays_truthful(monkeypatch, tmp_pat
         assert not os.path.exists(os.path.join(os.getcwd(), "missing_xyz.bin"))
     finally:
         _restore_patch_targets(saved)
+
+
+@pytest.mark.parametrize(
+    "init, namespace",
+    [
+        ("__path__ = __import__('pkgutil').extend_path(__path__, __name__)\n", True),
+        ("from pkgutil import extend_path\n__path__ = extend_path(__path__, __name__)\n", True),
+        ("__import__('pkg_resources').declare_namespace(__name__)\n", True),
+        (
+            "try:\n    __import__('pkg_resources').declare_namespace(__name__)\n"
+            "except ImportError:\n    import pkgutil\n"
+            "    __path__ = pkgutil.extend_path(__path__, __name__)\n",
+            True,
+        ),
+        ("# extend_path and declare_namespace are not used here\n", False),
+        ("from pkgutil import extend_path\n", False),
+        ("DOC = '__path__ = extend_path(__path__, __name__)'\n", False),
+        ("if False:\n    __import__('pkg_resources').declare_namespace(__name__)\n", False),
+        ("def setup():\n    __path__ = extend_path(__path__, __name__)\n", False),
+        ("paths = extend_path(['x'], 'other')\n", False),
+        ("this is not python(\n", False),
+        (
+            "try:\n    import _no_such_module\n"
+            "except ImportError:\n    __path__ = __import__('pkgutil').extend_path(__path__, __name__)\n",
+            False,
+        ),
+        (
+            "try:\n    import os\n"
+            "except ImportError:\n    pass\n"
+            "else:\n    __path__ = __import__('pkgutil').extend_path(__path__, __name__)\n",
+            True,
+        ),
+    ],
+)
+def test_host_packages_finder_only_treats_declared_namespaces_as_open(tmp_path, init, namespace):
+    """Only a real extend_path / declare_namespace declaration opens a regular-looking package to
+    the chat folder's portion; text that merely mentions them does not."""
+    finder = _load_shim()._HostPackagesFinder
+    origin = tmp_path / "__init__.py"
+    origin.write_text(init, encoding = "utf-8")
+    assert finder._extends_path(str(origin)) is namespace
+
+
+def _run_with_host_packages(tmp_path, folder, code):
+    """Run ``code`` in a fresh interpreter with the shim installed for ``folder``."""
+    import subprocess
+    import sys
+
+    script = f"import runpy; runpy.run_path({str(_SHIM)!r})\n" + code
+    env = {**os.environ, "_UNSLOTH_HOST_SESSION_PACKAGES": str(folder)}
+    env.pop("PYTHONPATH", None)
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", script],
+        cwd = tmp_path,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    return done.stdout + done.stderr
+
+
+def test_host_packages_metadata_honours_an_explicit_search_path(tmp_path):
+    """An exact-name lookup scoped to explicit paths never answers from the chat folder."""
+    folder = tmp_path / "packages"
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    info = folder / "chatmeta-1.0.dist-info"
+    info.mkdir(parents = True)
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: chatmeta\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    out = _run_with_host_packages(
+        tmp_path,
+        folder,
+        "import importlib.metadata as m\n"
+        "print('DEFAULT', m.version('chatmeta'))\n"
+        f"print('TRUSTED', len(list(m.distributions(name = 'chatmeta', path = [{str(trusted)!r}]))))\n"
+        f"print('LISTED', len(list(m.distributions(name = 'chatmeta', path = [{str(folder)!r}]))))\n",
+    )
+    assert "DEFAULT 1.0" in out, out
+    assert "TRUSTED 0" in out, out
+    assert "LISTED 1" in out, out
+
+
+def test_host_packages_pep420_portion_joins_the_namespace_path(tmp_path):
+    """A submodule served from the chat folder's PEP 420 portion sees that portion through the
+    namespace's __path__ (importlib.resources, pkgutil.iter_modules); the host portion stays first."""
+    folder = tmp_path / "packages"
+    host = tmp_path / "host"
+    (host / "chatns").mkdir(parents = True)
+    (host / "chatns" / "host_mod.py").write_text("V = 'host'\n", encoding = "utf-8")
+    (folder / "chatns").mkdir(parents = True)
+    (folder / "chatns" / "data.txt").write_text("chat-data", encoding = "utf-8")
+    (folder / "chatns" / "chat_mod.py").write_text(
+        "import importlib.resources\n"
+        "V = importlib.resources.files('chatns').joinpath('data.txt').read_text()\n",
+        encoding = "utf-8",
+    )
+    out = _run_with_host_packages(
+        tmp_path,
+        folder,
+        f"import sys; sys.path.insert(0, {str(host)!r})\n"
+        "import os, pkgutil, chatns.host_mod, chatns.chat_mod\n"
+        "print('NS', chatns.chat_mod.V,"
+        " [os.path.basename(os.path.dirname(p)) for p in chatns.__path__],"
+        " sorted(i.name for i in pkgutil.iter_modules(chatns.__path__)))\n",
+    )
+    assert "NS chat-data ['host', 'packages'] ['chat_mod', 'host_mod']" in out, out
+
+
+def test_a_raw_connect_to_a_name_resolving_to_a_metadata_host_is_refused(monkeypatch):
+    import socket
+
+    mod = _load_shim()
+    answer = {"alias.test": "169.254.169.254", "plain.test": "93.184.215.14"}
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *a, **k: [(socket.AF_INET, 1, 6, "", (answer[host], 0))],
+    )
+    with pytest.raises(PermissionError, match = "cloud-metadata host"):
+        mod._metadata_connect_hook("socket.connect", (None, ("alias.test", 80)))
+    assert mod._metadata_connect_hook("socket.connect", (None, ("plain.test", 80))) is None
+    assert mod._metadata_connect_hook("socket.connect", (None, ("127.0.0.1", 80))) is None
+
+
+def _child(
+    code,
+    cwd,
+    *,
+    shim = True,
+    flags = (),
+):
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    if shim:
+        env["PYTHONPATH"] = str(_SHIM.parent)
+    proc = subprocess.run(
+        [sys.executable, *flags, "-c", code],
+        cwd = cwd,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def test_the_shim_imports_neither_json_nor_pathlib_at_startup(tmp_path):
+    """They pull re, enum, functools and more: most of every sandboxed Python launch. Loaded on first use instead.
+    Run with -S and the shim imported directly, so no .pth file (an editable install's finder) preloads them."""
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(_SHIM.parent)!r})\n"
+        "before = set(sys.modules)\n"
+        "import sitecustomize\n"
+        "print(' '.join(sorted(set(sys.modules) - before)))\n"
+    )
+    added = set(_child(code, tmp_path, shim = False, flags = ("-S",)).split())
+    assert "sitecustomize" in added
+    assert not added & {"json", "pathlib", "re", "enum"}, sorted(added)
+
+
+def test_the_shim_resolves_the_stdlib_paths_once_at_startup(tmp_path):
+    """realpath of every sys.path entry is slow on Windows (more inside the container): one pass per launch."""
+    code = (
+        "import os, sys\n"
+        f"sys.path.insert(0, {str(_SHIM.parent)!r})\n"
+        "real = os.path.realpath\n"
+        "calls = []\n"
+        "os.path.realpath = lambda *a, **k: calls.append(a) or real(*a, **k)\n"
+        "entries = len(sys.path)\n"
+        "import sitecustomize\n"
+        "os.path.realpath = real\n"
+        "print(len(calls), entries)\n"
+    )
+    calls, entries = map(int, _child(code, tmp_path, shim = False, flags = ("-S",)).split())
+    assert calls <= entries + 1, (calls, entries)
+
+
+@pytest.mark.skipif(
+    os.path.exists("/mnt/data"),
+    reason = "the host has a real /mnt/data, which the shim never shadows",
+)
+@pytest.mark.parametrize(
+    "spelling", ["import pathlib\nP = pathlib.Path", "from pathlib import Path as P"]
+)
+def test_path_mkdir_is_remapped_when_pathlib_is_imported_after_startup(tmp_path, spelling):
+    code = (
+        f"{spelling}\n"
+        "import os, sys\n"
+        "P('/mnt/data/made/inner').mkdir(parents = True, exist_ok = True)\n"
+        "print(os.path.isdir('made/inner'), 'pathlib._local' in sys.modules or True)\n"
+    )
+    assert _child(code, tmp_path).split()[0] == "True"
+    assert (tmp_path / "made" / "inner").is_dir()
+
+
+@pytest.mark.parametrize("name", ["pathlib", "json"])
+def test_a_find_spec_probe_does_not_use_up_the_lazy_stdlib_import(tmp_path, name):
+    """importlib.util.find_spec only probes: the import after it must still be answered (and pathlib patched)."""
+    code = (
+        "import importlib.util, sys, sysconfig, os\n"
+        f"assert importlib.util.find_spec({name!r}) is not None\n"
+        f"import {name}\n"
+        "stdlib = os.path.realpath(sysconfig.get_paths()['stdlib'])\n"
+        f"patched = {name!r} != 'pathlib' or '_path_mkdir' in {name}.Path.mkdir.__qualname__\n"
+        f"print(os.path.realpath({name}.__file__).startswith(stdlib), patched)\n"
+    )
+    (tmp_path / f"{name}.py").write_text("raise SystemExit('planted copy ran')\n")
+    assert _child(code, tmp_path).split() == ["True", "True"]
+
+
+def test_modules_that_import_pathlib_get_the_patched_one(tmp_path):
+    code = "import zipfile, pathlib\nprint(pathlib.Path.mkdir.__qualname__)\n"
+    assert "_path_mkdir" in _child(code, tmp_path)
+
+
+@pytest.mark.parametrize("name", ["json", "pathlib"])
+def test_a_planted_copy_in_the_cwd_does_not_replace_the_stdlib_module(tmp_path, name):
+    (tmp_path / f"{name}.py").write_text("raise SystemExit('planted copy ran')\n")
+    code = (
+        f"import {name}, sys, sysconfig, os\n"
+        f"stdlib = os.path.realpath(sysconfig.get_paths()['stdlib'])\n"
+        f"print(os.path.realpath({name}.__file__).startswith(stdlib))\n"
+    )
+    assert _child(code, tmp_path) == "True"
+
+
+def test_the_lazy_finder_resolves_from_the_stdlib_and_hands_back_the_real_loader(tmp_path):
+    code = (
+        "import sys\n"
+        "finder = sys.meta_path[0]\n"
+        "print(type(finder).__name__)\n"
+        "import pathlib, json\n"
+        "print(type(pathlib.__loader__).__name__, type(json.__spec__.loader).__name__)\n"
+        "print(any(type(f).__name__ == '_StdlibLazyFinder' for f in sys.meta_path))\n"
+        "import helper_mod\n"
+        "print(helper_mod.VALUE)\n"
+    )
+    (tmp_path / "helper_mod.py").write_text("VALUE = 'cwd-module'\n")
+    first, loaders, still_there, helper = _child(code, tmp_path).splitlines()
+    assert first == "_StdlibLazyFinder"
+    assert "_StdlibLoader" not in loaders
+    # Never removed (importlib walks the live meta_path), and inert after: cwd modules import as usual.
+    assert still_there == "True"
+    assert helper == "cwd-module"
+
+
+def test_imports_on_other_threads_never_miss_a_module_while_the_lazy_import_runs(tmp_path):
+    """meta_path is not edited after startup, so a thread importing during the first json/pathlib import still
+    finds every finder (an insert/remove there could make importlib skip one)."""
+    for i in range(20):
+        (tmp_path / f"cwd_mod_{i}.py").write_text(f"V = {i}\n")
+    code = (
+        "import sys, threading, importlib\n"
+        "errors = []\n"
+        "go = threading.Event()\n"
+        "def worker(i):\n"
+        "    go.wait()\n"
+        "    try:\n"
+        "        assert importlib.import_module(f'cwd_mod_{i}').V == i\n"
+        "    except Exception as exc:\n"
+        "        errors.append(repr(exc))\n"
+        "threads = [threading.Thread(target = worker, args = (i,)) for i in range(20)]\n"
+        "[t.start() for t in threads]\n"
+        "go.set()\n"
+        "import pathlib, json\n"
+        "[t.join() for t in threads]\n"
+        "print(len(errors), '_path_mkdir' in pathlib.Path.mkdir.__qualname__)\n"
+    )
+    assert _child(code, tmp_path).split() == ["0", "True"]
+
+
+def test_the_sidecar_round_trips_in_a_child_without_json_preloaded(tmp_path):
+    code = (
+        "with open('/no/such/dir/healed.txt', 'w') as fh: fh.write('x')\n"
+        "import json\n"
+        "print(json.load(open('.unsloth_sandbox_remap.json')))\n"
+    )
+    out = _child(code, tmp_path)
+    assert "/no/such/dir/healed.txt" in out and "healed.txt" in out
+    assert (tmp_path / "healed.txt").read_text() == "x"
+
+
+def test_the_sidecar_is_skipped_when_a_planted_json_is_already_loaded(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    planted = types.ModuleType("json")
+    planted.__file__ = str(tmp_path / "json.py")
+    planted.load = planted.dump = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("planted json used")
+    )
+    monkeypatch.setitem(sys.modules, "json", planted)
+    assert mod._stdlib_json() is None
+    assert mod._load_sidecar(str(tmp_path)) == {}
+    mod._record_sidecar(str(tmp_path), "/a/b.txt", str(tmp_path / "b.txt"))
+    assert not (tmp_path / ".unsloth_sandbox_remap.json").exists()

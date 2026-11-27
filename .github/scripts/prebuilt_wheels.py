@@ -41,20 +41,12 @@ import os
 import sys
 import zipfile
 
-# The CUDA major that every wheel here is built against, and the only one. It is the local
-# version segment upstream writes (cu13), not the toolkit patch level: upstream normalises
-# 13.x to "13" in get_wheel_url(), and a wheel built with 13.0 and one built with 13.2 are
-# interchangeable for the purpose the tag serves, which is "do not install this on cu12".
+# Local version segment (cu13), not the toolkit patch level.
 CUDA_TAG = "13"
 
-# The toolkit actually installed on the runner. Separate from CUDA_TAG because this one is a
-# real apt package version and is reported in the notes, where "cu13" alone would be vague.
 CUDA_TOOLKIT = "13.0"
 
-# torch 2.7 and newer ship pip wheels built with _GLIBCXX_USE_CXX11_ABI=1, so there is no
-# abiFALSE variant to build for 2.13 or 2.14 -- upstream's own matrix excludes it from 2.7 on.
-# The tag is still in the filename because it is in every upstream filename, and a resolver
-# that pattern-matches upstream names has to find it here too.
+# torch 2.7+ wheels are cxx11 ABI only; the tag stays to match upstream filenames.
 CXX11_ABI = "TRUE"
 
 # Device code is most of every wheel. Upstream flash-attn 2.8.1 compressed all of it; the commit
@@ -94,17 +86,14 @@ def cuda_archs(package: str, platform: str) -> str:
     return SSM_SASS_BY_PLATFORM.get(platform, SSM_SASS)
 
 
-# The Linux tag. The wheel is tagged linux_x86_64 rather than manylinux_*, exactly as upstream
-# tags its own, so pip installs it on any glibc without a floor check; the practical floor is the
-# runner's glibc, which is why the build runs on ubuntu-22.04 (glibc 2.35) and not on
-# ubuntu-latest.
+# Wheel tagged linux_x86_64 rather than manylinux like upstream, so pip accepts any glibc; the
+# practical floor is the runner glibc, hence ubuntu-22.04 (glibc 2.35), not ubuntu-latest.
 PLATFORM_TAG = "linux_x86_64"
 
-# Keyed by the wheel's pip platform tag. No upstream release has ever shipped a Windows wheel.
-# `abi` is torch._C._GLIBCXX_USE_CXX11_ABI, which upstream setup.py copies into the name; the
-# Windows cu130 torch reports True too, and the build asserts it. `pytorch_nvcc` goes into
-# build.ninja unquoted and is the only way to cache nvcc on Windows (_wrap_compiler is a no-op
-# there), hence the space-free paths.
+# Keyed by pip platform tag, and no upstream release ships a Windows wheel; abi is
+# torch._C._GLIBCXX_USE_CXX11_ABI (asserted, Windows cu130 torch reports True too); pytorch_nvcc
+# goes unquoted into build.ninja, the only way to cache nvcc on Windows, so its paths must have no
+# spaces.
 PLATFORMS = {
     "linux_x86_64": {
         "os": "linux",
@@ -205,23 +194,16 @@ SPECS = {
         "repo": "Dao-AILab/flash-attention",
         "ref": "edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d",
         "submodules": True,
-        # The build is one nvcc invocation per (kernel, arch) and the kernels are large. On a
-        # 4-core, 16 GB hosted runner nvcc 13 goes OOM above one job; this is upstream's own
-        # value for the cu13 legs of its publish matrix, arrived at the same way.
+        # nvcc 13 OOMs above one job on a 16 GB hosted runner.
         "max_jobs": "1",
         "nvcc_threads": "2",
         "env": {
             "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
             "FLASH_ATTENTION_FORCE_CXX11_ABI": CXX11_ABI,
-            # Upstream's default is "80;90;100;110;120". 110 (Thor) is dropped because nothing
-            # Unsloth targets runs it and each arch is a full pass over every kernel. 86 and 89
-            # are absent for a different reason: they are not needed. A cubin is compatible
-            # forward across the minor versions of its major, so sm_80 code runs on sm_86 and
-            # sm_89 hardware, and setup.py additionally emits PTX for the newest arch so an
-            # unlisted future card JITs rather than failing.
+            # sm_86/89 run sm_80 cubins and PTX covers future cards; 110 is not targeted.
             "FLASH_ATTN_CUDA_ARCHS": "80;90;100;120",
         },
-        # Split the 6-8 hour compile across jobs to stay below GitHub's 6-hour limit.
+        # Shard the compile to stay below GitHub's 6-hour job limit.
         "shards": 8,
         # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
@@ -256,13 +238,10 @@ SPECS = {
         "nvcc_threads": "2",
         "env": {
             "MAMBA_FORCE_BUILD": "TRUE",
-            # Mamba-1's selective-scan CUDA kernels are opt-in upstream. They are the reason
-            # this wheel is worth building: without them mamba_ssm falls back to the reference
-            # path, and selective_scan_cuda -- the extension whose missing symbols are the
-            # whole ABI problem -- is not in the wheel at all.
+            # Mamba-1's selective-scan kernels are opt-in upstream and are the reason for this wheel.
             "MAMBA_KEEP_CUDA_BUILD": "TRUE",
         },
-        # The one source edit in this workflow. See patch_mamba_cxx20.py.
+        # See patch_mamba_cxx20.py.
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
@@ -272,8 +251,6 @@ SPECS = {
     },
 }
 
-# torch minors, not patch levels, are what the ABI is keyed on, but the build needs an exact
-# version to pip install, so the table is keyed by the full version and the minor is derived.
 TORCH_VERSIONS = ("2.13.0", "2.14.0")
 
 
@@ -302,10 +279,9 @@ ALLOWED_TORCH = tuple(
     )
 )
 
-# cp313 is the default and the only one the dispatch defaults to, because each extra
-# interpreter is a whole extra flash-attn build. 3.11 and 3.12 are here so a run can add them
-# as separate cells when the queue can afford it. 3.14 is deliberately absent: torch publishes
-# a cu130 wheel for it, but nothing in the Unsloth stack is tested on 3.14 yet.
+# cp313 is the default because each extra interpreter is a whole flash-attn build; 3.11 and 3.12 can
+# be added as separate cells; 3.14 is absent since torch has a cu130 wheel for it but nothing in the
+# Unsloth stack is tested on 3.14 yet.
 PYTHON_VERSIONS = ("3.11", "3.12", "3.13")
 
 DEFAULT_PACKAGES = tuple(SPECS)
@@ -731,8 +707,7 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
     pure = pure_matrix(os.environ.get("UW_PACKAGES", ""))
     print(matrix)
 
-    # Writing the step output here rather than echoing it in YAML keeps the JSON -- which is
-    # full of quotes and braces -- out of a shell round trip entirely.
+    # Written here to keep quote-heavy JSON out of a shell round trip.
     if args.github:
         output = os.environ.get("GITHUB_OUTPUT")
         if output:
@@ -819,11 +794,9 @@ def _cmd_size_gate(args: argparse.Namespace) -> int:
     return 0
 
 
-# A fatbin container: magic, version 1, a 16-byte header and the size of the entries after it.
-# Each entry's header starts with kind (1 PTX, 2 ELF), its own header size, the payload size,
-# and the target arch at byte 28. Read straight from the file rather than through cuobjdump,
-# which only reads its host's object format (a Linux cuobjdump says a Windows .pyd "does not
-# contain device code") and names PTX entries sm_XX.ptx, easy to miss with a pattern.
+# Fatbin container: magic, version 1, a 16-byte header, then entries with kind (1 PTX, 2 ELF) and
+# target arch at byte 28; read directly because cuobjdump only reads its host object format and
+# names PTX entries sm_XX.ptx.
 _FATBIN_MAGIC = (0xBA55ED50).to_bytes(4, "little")
 _FATBIN_PTX, _FATBIN_ELF = 1, 2
 

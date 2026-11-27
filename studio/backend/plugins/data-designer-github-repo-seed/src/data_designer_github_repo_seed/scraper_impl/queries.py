@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GraphQL queries for GitHub data scraping.
-
-GitHub's GraphQL rejects queries with unused fragments, so each query includes
-only the fragments it references.
-"""
+"""GitHub GraphQL queries; include only referenced fragments, since GitHub rejects unused ones."""
 
 F_ACTOR = """
 fragment ActorFields on Actor {

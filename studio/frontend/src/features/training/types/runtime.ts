@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { RunParallelInfo } from "./parallel";
+
 export type TrainingPhase =
   | "idle"
   | "downloading_model"
@@ -27,6 +29,8 @@ export interface TrainingStatusResponse {
   message: string;
   error: string | null;
   warnings?: string[];
+  /** Multi-GPU layout of the run; null for legacy and single-process runs. */
+  parallel?: unknown;
   details?: {
     epoch?: number;
     step?: number;
@@ -89,6 +93,7 @@ export interface TrainingRuntimeState {
   message: string;
   error: string | null;
   warnings: string[];
+  parallel: RunParallelInfo | null;
   isHydrating: boolean;
   hasHydrated: boolean;
   isStarting: boolean;
@@ -124,7 +129,6 @@ export interface TrainingRuntimeState {
   stopRequested: boolean;
   configureRequest: number;
   selectedHistoryRunId: string | null;
-  // True while the studio "Current Run" tab is the active view, so the sidebar can highlight it.
   currentRunViewActive: boolean;
 }
 
@@ -171,8 +175,10 @@ export interface TrainingViewData {
   currentEpoch: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
-  // True when a newer run reused this run's output_dir (resume), so its on-disk contents differ.
+  // A newer run reused this output_dir (resume), so its on-disk contents differ.
   resumedLater?: boolean;
+  // False once a past run's output folder is gone. Unset for the live run.
+  artifactsAvailable?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
@@ -182,6 +188,7 @@ export interface TrainingViewData {
   error: string | null;
   warnings: string[];
   isTrainingRunning: boolean;
+  parallel?: RunParallelInfo | null;
 
   modelName: string;
   projectName: string | null;

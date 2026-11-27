@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage, userActionGate } from "./frame-message";
 import { pageRequests } from "./page-requests";
@@ -20,6 +20,15 @@ export type { FrameMessage };
 let loadCounter = 0;
 
 const frames = new Map<string, HTMLIFrameElement>();
+const frameListeners = new Set<() => void>();
+const subscribeFrames = (listener: () => void) => {
+  frameListeners.add(listener);
+  return () => { frameListeners.delete(listener); };
+};
+
+export function useFrameAvailable(tabId: string | null): boolean {
+  return useSyncExternalStore(subscribeFrames, () => !!tabId && frames.has(tabId), () => false);
+}
 
 export type FrameCommand =
   | { command: "find"; query: string }
@@ -80,6 +89,32 @@ export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) 
   };
 }
 
+/** Register an artifact's opaque-origin frame for annotation and browser agent commands only. */
+export function registerArtifactFrame(tabId: string, frame: HTMLIFrameElement): () => void {
+  frames.set(tabId, frame);
+  for (const notify of frameListeners) notify();
+  const listener = (event: MessageEvent) => {
+    if (event.source !== frame.contentWindow || event.origin !== "null") return;
+    const message = parseFrameMessage(event.data);
+    if (message?.type === "annotate") annotateListeners.get(tabId)?.(message.event);
+    else if (message?.type === "agent") agentRequests.get(message.id)?.({ installed: message.installed, result: message.result });
+  };
+  window.addEventListener("message", listener);
+  return () => {
+    window.removeEventListener("message", listener);
+    if (frames.get(tabId) === frame) {
+      frames.delete(tabId);
+      for (const notify of frameListeners) notify();
+    }
+  };
+}
+
+/** CSS zoom on a file preview scales the frame as well as its annotation coordinates. */
+export function frameScale(tabId: string): number {
+  const frame = frames.get(tabId);
+  return frame?.offsetWidth ? frame.getBoundingClientRect().width / frame.offsetWidth : 1;
+}
+
 const snapshotRequests = new Map<string, (html: string | null) => void>();
 
 /** The page's markup as it is now (see `snapshot` in routes/browser.py); null if it can't say. */
@@ -122,6 +157,7 @@ export function PageFrame({
   base,
   ownBase = false,
   anyOrigin = false,
+  siteCookies = false,
   refresh,
   title,
   tabId,
@@ -139,6 +175,7 @@ export function PageFrame({
   base: string | null;
   ownBase?: boolean;
   anyOrigin?: boolean;
+  siteCookies?: boolean;
   refresh?: { delay: number; url: string } | null;
   title: string;
   onMessage: (message: FrameMessage) => void;
@@ -206,6 +243,7 @@ export function PageFrame({
             frame,
             message.url,
             message.seq,
+            message.sameSite,
           );
         return;
       }
@@ -261,8 +299,12 @@ export function PageFrame({
     const frame = frameRef.current;
     if (!frame) return;
     frames.set(tabId, frame);
+    for (const notify of frameListeners) notify();
     return () => {
-      if (frames.get(tabId) === frame) frames.delete(tabId);
+      if (frames.get(tabId) === frame) {
+        frames.delete(tabId);
+        for (const notify of frameListeners) notify();
+      }
     };
   }, [tabId]);
 
@@ -303,6 +345,7 @@ export function PageFrame({
             base,
             ownBase,
             anyOrigin,
+            siteCookies,
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,

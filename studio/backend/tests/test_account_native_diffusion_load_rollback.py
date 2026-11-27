@@ -90,3 +90,36 @@ def test_failed_native_cpu_load_leaves_a_released_arbiter_alone(monkeypatch):
     )
     assert gpu_arbiter.current_owner() is None
     assert gpu_arbiter.owner_account() is None
+
+
+def test_failed_native_replacement_keeps_the_resident_priced_as_itself(monkeypatch):
+    backend = _failing_backend(monkeypatch)
+    old, new = {0: 8000}, {0: 1000}
+    monkeypatch.setattr(gpu_arbiter, "_residents", {"diffusion": frozenset({0})})
+    monkeypatch.setattr(gpu_arbiter, "_media_needs", {"diffusion": old})
+    monkeypatch.setattr(gpu_arbiter, "_media_need_rollback", {}, raising = False)
+    monkeypatch.setattr(gpu_arbiter, "physical_gpu_ids", lambda ids: None)
+    run_as(
+        BOB,
+        gpu_arbiter.acquire_for,
+        "diffusion",
+        lambda: None,
+        policy = "fit",
+        need_mib = new,
+    )
+    assert gpu_arbiter._media_needs["diffusion"] == new
+
+    run_as(
+        BOB,
+        lambda: backend._run_load(
+            repo_id = "org/bob-model",
+            gguf_filename = "flux1-dev-Q4_K_M.gguf",
+            base = "",
+            fam = None,
+            hf_token = None,
+            _load_token = backend._load_token,
+        ),
+    )
+
+    assert backend._loading.error and backend._state is not None
+    assert gpu_arbiter._media_needs["diffusion"] == old

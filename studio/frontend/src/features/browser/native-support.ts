@@ -3,10 +3,10 @@
 
 import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
+import { watchCaptureRules } from "./capture-sites-store";
 import { currentEntry, setNativeWebHistory, useBrowserStore } from "./store";
 
-/** Whether pages open in native views: in the desktop app where they can use its checking proxy
- *  (not macOS 13 and earlier), the proxied frame otherwise. */
+/** Native views need the desktop app's checking proxy (not macOS 13 and earlier). */
 export const useNativeBrowser = create(() => ({ enabled: false }));
 
 export async function callNative<T = void>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -68,6 +68,7 @@ if (isTauri) {
       useNativeBrowser.setState({ enabled: true });
     })
     .catch(() => undefined);
+  watchCaptureRules((rules) => callNative("browser_capture_rules_set", { rules }));
 }
 
 import { onNativeViewsClosed } from "@/lib/native-browser-clear";

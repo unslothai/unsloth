@@ -7,7 +7,6 @@ import * as RechartsPrimitive from "recharts";
 import { roundIfSingleLine } from "@/lib/tooltip-pill";
 import { cn } from "@/lib/utils";
 
-// Format: { THEME_NAME: CSS_SELECTOR }
 const THEMES = { light: "", dark: ".dark" } as const;
 
 export type ChartConfig = {

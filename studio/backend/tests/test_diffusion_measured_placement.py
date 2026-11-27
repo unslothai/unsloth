@@ -11,6 +11,13 @@ import pytest
 
 import core.inference.diffusion_memory as dm
 
+
+@pytest.fixture(autouse = True)
+def _trusted_free_reading(monkeypatch):
+    """The wider encoder room reads free memory as a measurement; a Windows ROCm host (a ceiling) keeps the flat room."""
+    monkeypatch.setattr(dm, "_free_reading_untrusted", lambda: False, raising = False)
+
+
 # Loaded storage of Qwen-Image-2.1 auto (int8 DiT, fp8 text encoder, bf16 VAE), MiB.
 Q21_LOADED = {
     "transformer": (6922, "dit"),
@@ -114,20 +121,38 @@ def test_16gb_keeps_transformer_resident_streams_encoder(q21_pipe):
     assert new.resident_transformer_mib == 6922
 
 
-def test_l4_class_card_keeps_most_of_the_encoder_resident(q21_pipe):
-    """An L4 reports 23034 MiB: its 10% reserve leaves the whole encoder ~900 MiB short, so the DiT stays resident
-    and only the encoder layers past the budget stream."""
+def _wide_te_room(plan, total):
+    """Encoder MiB beside the whole int8 DiT: free less the resident slack, the measured peak and the components."""
+    slack = max(1024, total // 10)
+    return min(8959, plan.device_memory.free_mib - slack - 2304 - 644 - 6922)
+
+
+def test_l4_class_card_keeps_most_of_the_encoder_resident(q21_pipe, monkeypatch):
+    """An L4 (23034 MiB): the flat room is ~900 MiB short of the encoder; the wider room keeps most of it resident."""
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV, raising = False)
     budget = 20000
-    new = _refine(q21_pipe, _flat_plan(budget, 23034))
+    plan = _flat_plan(budget, 23034)
+    new = _refine(q21_pipe, plan)
     assert new.offload_policy == dm.OFFLOAD_GROUP and new.stream_text_encoders
     room = budget - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
-    assert new.resident_text_encoder_mib == room and 0 < room < 8959
-    assert new.as_public_dict()["resident_text_encoder_mib"] == room
+    assert 0 < room < 8959 and new.estimates["flat_resident_text_encoder_mib"] == room
+    wide = _wide_te_room(plan, 23034)
+    assert new.resident_text_encoder_mib == wide > room
+    assert new.as_public_dict()["resident_text_encoder_mib"] == wide
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    assert _refine(q21_pipe, _flat_plan(budget, 23034)).resident_text_encoder_mib == room
 
 
 def test_16gb_encoder_room_and_kill_switch(q21_pipe, monkeypatch):
-    new = _refine(q21_pipe, _flat_plan(13638, 16376))
-    assert new.resident_text_encoder_mib == 13638 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV, raising = False)
+    plan = _flat_plan(13638, 16376)
+    new = _refine(q21_pipe, plan)
+    room = 13638 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
+    assert new.estimates["flat_resident_text_encoder_mib"] == room
+    assert new.resident_text_encoder_mib == _wide_te_room(plan, 16376) > room
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    assert _refine(q21_pipe, _flat_plan(13638, 16376)).resident_text_encoder_mib == room
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", "0")
     plan = _flat_plan(13638, 16376)
     assert _refine(q21_pipe, plan) is plan
@@ -142,14 +167,19 @@ def test_12gb_keeps_the_whole_transformer_resident_encoders_streamed(q21_pipe, m
     new = _refine(q21_pipe, plan)
     assert new.offload_policy == dm.OFFLOAD_STREAMING and new.stream_transformer
     assert new.resident_transformer_mib == 6922
-    assert new.resident_text_encoder_mib is None
+    # the encoders keep what free memory leaves beside the whole DiT, the measured peak and the slack
+    assert new.resident_text_encoder_mib == min(8959, free - 1228 - 644 - 2304 - 6922)
+    assert new.estimates["flat_resident_text_encoder_mib"] == 0
     assert new.estimates["resident_dit_slack_mib"] == 1228
+    assert new.estimates["resident_te_slack_mib"] == 1228
     assert (
         new.estimates["encode_resident_transformer_mib"]
         == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
     )
-    assert 6922 + 644 + 2304 + 1228 <= free
+    assert 6922 + 644 + 2304 + 1228 + new.resident_text_encoder_mib <= free
     assert new.as_public_dict()["resident_transformer_mib"] == 6922
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    assert _refine(q21_pipe, _flat_plan(9550, 12288)).resident_text_encoder_mib is None
 
 
 def test_12gb_partial_residency_when_the_whole_transformer_does_not_fit(q21_pipe, monkeypatch):
@@ -170,14 +200,16 @@ def test_whole_transformer_tier_kill_switch(q21_pipe, monkeypatch):
     assert new.resident_transformer_mib == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
 
 
-def test_whole_transformer_tier_needs_streamed_encoders(q21_pipe, monkeypatch):
-    """A group plan whose encoders stay resident cannot trade them for the DiT: the tier leaves it alone."""
+def test_whole_transformer_tier_streams_resident_encoders(q21_pipe, monkeypatch):
+    """Resident encoders stream when that keeps more of the DiT resident (it runs every step, they once per prompt)."""
     monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
     plan = dm.replace(
         _flat_plan(9550, 12288), offload_policy = dm.OFFLOAD_GROUP, stream_text_encoders = False
     )
     new = _refine(q21_pipe, plan)
-    assert int(new.resident_transformer_mib or 0) < 6922
+    assert new.resident_transformer_mib == 6922
+    assert new.stream_text_encoders
+    assert new.estimates["denoiser_first_resident_te_dit_mib"] < 6922
 
 
 def test_no_room_keeps_flat_plan(q21_pipe):
@@ -234,6 +266,19 @@ def test_never_moves_away_from_residency(q21_pipe):
 
 
 @pytest.mark.parametrize("budget", list(range(3000, 30001, 250)))
+def test_a_held_text_encoder_never_streams_the_transformer(q21_pipe, budget):
+    """Encoder residency shrinks first: while any part of the 8.7 GiB encoder stays resident, the whole transformer
+    does too (it runs every step; the encoder once per prompt)."""
+    total = max(8188, budget + 3000)
+    new = _refine(q21_pipe, _flat_plan(budget, total))
+    te_resident = (
+        not new.stream_text_encoders and new.offload_policy != dm.OFFLOAD_STREAMING
+    ) or int(new.resident_text_encoder_mib or 0) > 0
+    dit_whole = not new.stream_transformer or int(new.resident_transformer_mib or 0) >= 6922
+    assert dit_whole or not te_resident, (budget, new.offload_policy, new.resident_transformer_mib)
+
+
+@pytest.mark.parametrize("budget", list(range(3000, 30001, 250)))
 def test_every_tier_fits_measured_need(q21_pipe, budget):
     """Whatever the refinement picks, the bytes it keeps on the device plus the measured peak x margin plus the base
     overhead fit the safe budget (the reserve below it is untouched), and it is never slower than the flat pick."""
@@ -256,11 +301,21 @@ def test_every_tier_fits_measured_need(q21_pipe, budget):
     )
     assert int(new.resident_transformer_mib or 0) <= 6922
     if "resident_dit_slack_mib" in new.estimates:
-        assert new.resident_transformer_mib == 6922 and not new.resident_text_encoder_mib
+        # whole DiT on the streaming tier: encoders only in what the whole-DiT fit leaves (resident_te_slack_mib)
+        assert new.resident_transformer_mib == 6922
+        assert not new.resident_text_encoder_mib or "resident_te_slack_mib" in new.estimates
         slack = new.estimates["resident_dit_slack_mib"]
         assert slack >= max(1024, total // 10)
         assert kept + 2304 + slack <= plan.device_memory.free_mib
         return
+    if "resident_te_slack_mib" in new.estimates:
+        # the encoders past the flat room: the whole-DiT fit (free less the resident slack), DiT held whole
+        slack = new.estimates["resident_te_slack_mib"]
+        assert slack >= max(1024, total // 10)
+        assert int(new.resident_transformer_mib or 6922) == 6922
+        assert new.estimates["flat_resident_text_encoder_mib"] < new.resident_text_encoder_mib
+        assert kept + 2304 + slack <= plan.device_memory.free_mib
+        kept -= new.resident_text_encoder_mib - new.estimates["flat_resident_text_encoder_mib"]
     assert kept + head <= budget
 
 
@@ -388,9 +443,8 @@ def test_only_measured_family_moves(q21_pipe, speed, budget, total):
 
 
 def test_resident_group_keeps_copy_stream_wait(monkeypatch):
-    """A streamed group that prefetched its successor skips its own wait and relies on the successor's onload_ to
-    synchronize the copy stream. A resident successor must still do that wait (else the streamed group computes on
-    weights in flight), and its offload must free nothing."""
+    """A resident successor must still wait for the copy stream, or the streamed group computes on
+    weights in flight; and its offload must free nothing"""
     pytest.importorskip("torch")
     pytest.importorskip("diffusers.hooks")
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
@@ -608,7 +662,9 @@ def test_generate_hooks_the_resident_transformer_only_when_the_release_falls_sho
         encoding = "utf-8"
     )
     at = src.index("releasable_mib = resident_group_mib(state.pipe)")
-    assert "if guard_condition_pixels > 0 and extra_mib > releasable_mib:" in src[at : at + 200]
+    # conditioned requests: priced condition pixels, or a reference the guard cannot price (FLUX.2 Klein's source image)
+    assert "guard_condition_pixels > 0 or guard_unpriced_refs" in src[at : at + 200]
+    assert ") and extra_mib > releasable_mib:" in src[at : at + 250]
     assert "hook_resident_denoiser(state.pipe," in src[at : at + 600]
     assert (
         src.index("restore_resident = release_resident_groups(state.pipe, extra_mib, logger)") > at
@@ -790,9 +846,8 @@ def _whole_plan(whole_mib, encode_mib):
 
 
 def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkeypatch):
-    """12 GB whole-resident tier: while the text encoder runs, the denoiser groups past the flat room stream again
-    (the device state the partial placement had during the encode); the denoiser is whole again before step 0 and
-    stays bit-identical."""
+    """During encode, denoiser groups past the flat room stream; whole again before step 0,
+    bit-identical."""
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     block_mib = 4  # each 1024x1024 fp32 block is 4 MiB + bias
     whole = 1024
@@ -803,6 +858,28 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
         assert on_device() == ["cuda"] * 6
         assert dm.denoisers_pinned_resident(types.SimpleNamespace(transformer = net))
         assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
+    """Freed blocks stay cached: an empty_cache per prompt would force device syncs and fresh
+    cudaMallocs."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 1
+    flushes = {"n": 0}
+    real = torch.cuda.empty_cache
+
+    def counted():
+        flushes["n"] += 1
+        real()
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", counted)
+    for _ in range(3):
+        enc(torch.randn(2, 8, device = "cuda"))
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2  # the release still ran
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert flushes["n"] == 0
 
 
 def test_encode_release_restores_after_a_failed_encode(monkeypatch):
@@ -833,6 +910,217 @@ def test_encode_release_keeps_an_oversized_release_streamed(monkeypatch):
     outer()
     assert on_device() == ["cuda"] * 6
     assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def _two_encoder_pipe(monkeypatch):
+    """FLUX.1-shaped: encode_prompt runs a small and a large encoder back to back (CLIP, then T5)."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    enc2 = type(enc)()
+    pipe.components["text_encoder_2"] = enc2
+    calls = {"release": 0, "restore": 0}
+    real = dm.release_resident_groups
+
+    def counted(*args, **kwargs):
+        restore = real(*args, **kwargs)
+        if restore is None:
+            return None
+        calls["release"] += 1
+
+        def counted_restore(*a, **k):
+            calls["restore"] += 1
+            return restore(*a, **k)
+
+        return counted_restore
+
+    monkeypatch.setattr(dm, "release_resident_groups", counted)
+
+    def encode_prompt(prompt, fail = False):
+        enc(torch.randn(2, 8, device = "cuda"))
+        enc2.fail = fail
+        return enc2(torch.randn(2, 8, device = "cuda"))
+
+    pipe.encode_prompt = encode_prompt
+    return torch, net, enc, enc2, pipe, x, ref, on_device, calls
+
+
+def test_encode_release_streams_the_denoiser_once_per_prompt_with_two_encoders(monkeypatch):
+    """Two encoders in one encode_prompt: the denoiser moves out and back once, not once per encoder."""
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 2
+    for prompt in range(3):
+        pipe.encode_prompt(f"p{prompt}")
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert enc2.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert calls == {"release": 3, "restore": 3}
+    # outside encode_prompt: pins back on its own return
+    enc2(torch.randn(2, 8, device = "cuda"))
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 4, "restore": 4}
+
+
+def test_encode_release_once_restores_after_a_failed_second_encoder(monkeypatch):
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    with pytest.raises(RuntimeError):
+        pipe.encode_prompt("p", fail = True)
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 1, "restore": 1}
+    pipe.encode_prompt("p")
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_once_kill_switch(monkeypatch):
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    monkeypatch.setenv(dm.ENCODE_RELEASE_ONCE_ENV, "0")
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    pipe.encode_prompt("p")
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 2, "restore": 2}  # once per encoder
+
+
+def _token_encoder_pipe(monkeypatch, available_mib):
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+
+    class TokenEncoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = torch.nn.Embedding(16, 8).cuda()
+            self.config = types.SimpleNamespace(
+                text_config = types.SimpleNamespace(
+                    hidden_size = 8, num_attention_heads = 1, num_hidden_layers = 1
+                )
+            )
+            self.seen: list = []
+
+        def forward(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            pixel_values = None,
+        ):
+            self.seen.append(on_device())
+            return self.embed(input_ids)
+
+    tok = TokenEncoder()
+    pipe.components["text_encoder"] = tok
+    monkeypatch.setattr(
+        dm, "encode_available_mib", lambda device = None: available_mib, raising = False
+    )
+    ids = torch.zeros(1, 4, dtype = torch.long, device = "cuda")
+    return torch, net, tok, pipe, x, ref, on_device, ids
+
+
+def test_encode_keeps_the_denoiser_whole_when_free_memory_holds_the_encoder(monkeypatch):
+    """Qwen-Image-2.1 at 12 GB: main streamed the whole surplus out and back on every new prompt."""
+    torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 1 << 20)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 1
+    for _ in range(3):
+        tok(input_ids = ids)
+        assert tok.seen[-1] == ["cuda"] * 6
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_streams_only_the_shortfall(monkeypatch):
+    torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 0)
+    need = dm.encode_need_mib(tok, (), {"input_ids": ids})
+    assert need is not None and need > 0
+    monkeypatch.setattr(dm, "encode_available_mib", lambda device = None: need - 3)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 1
+    tok(input_ids = ids)
+    assert tok.seen[-1] == ["cuda"] * 5 + ["cpu"]
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_shortfall_prices_each_encoder_of_a_prompt(monkeypatch):
+    torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 0)
+    big = type(tok)()
+    big.config = types.SimpleNamespace(
+        hidden_size = 1 << 20, num_attention_heads = 1, num_hidden_layers = 1
+    )
+    pipe.components["text_encoder_2"] = big
+    small_need = dm.encode_need_mib(tok, (), {"input_ids": ids})
+    big_need = dm.encode_need_mib(big, (), {"input_ids": ids})
+    assert small_need < big_need - 3
+    monkeypatch.setattr(dm, "encode_available_mib", lambda device = None: big_need - 3)
+
+    def encode_prompt(prompt):
+        tok(input_ids = ids)
+        return big(input_ids = ids)
+
+    pipe.encode_prompt = encode_prompt
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    for prompt in range(2):
+        pipe.encode_prompt(f"p{prompt}")
+        assert tok.seen[-1] == ["cuda"] * 6
+        assert big.seen[-1] == ["cuda"] * 5 + ["cpu"]
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+@pytest.mark.parametrize("why", ["kill_switch", "visual_input", "unreadable"])
+def test_encode_streams_the_whole_surplus_when_unpriced(monkeypatch, why):
+    torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 1 << 20)
+    kwargs = {"input_ids": ids}
+    if why == "kill_switch":
+        monkeypatch.setenv(dm.ENCODE_SHORTFALL_ENV, "0")
+    elif why == "visual_input":
+        kwargs["pixel_values"] = torch.zeros(4, 3, device = "cuda")
+    else:
+        monkeypatch.setattr(dm, "encode_available_mib", lambda device = None: None)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 1
+    tok(**kwargs)
+    assert tok.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_need_prices_the_largest_streamed_groups_and_the_tokens(monkeypatch):
+    from core.inference import diffusion_offload_prefetch as pf
+
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(pf, "prefetch_depth", lambda: 1)
+    mib = 1 << 20
+    groups = [
+        types.SimpleNamespace(_unsloth_resident = False, n = 100 * mib),
+        types.SimpleNamespace(_unsloth_resident = True, n = 900 * mib),
+        types.SimpleNamespace(_unsloth_resident = False, n = 300 * mib),
+        types.SimpleNamespace(_unsloth_resident = False, n = 200 * mib),
+    ]
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: groups)
+    monkeypatch.setattr(dm, "_group_nbytes", lambda g: g.n)
+    enc = types.SimpleNamespace(
+        config = types.SimpleNamespace(hidden_size = 1024, num_attention_heads = 8, num_hidden_layers = 4)
+    )
+    ids = torch.zeros(2, 64, dtype = torch.long)
+    acts = 2 * 64 * (1024 * 2 * (dm._ENCODE_TOKEN_HIDDEN_FACTOR + 4) + 8 * 64 * 4)
+    want = (
+        int(__import__("math").ceil((500 * mib + acts) / float(mib) * dm._MEASURED_PEAK_MARGIN))
+        + dm._ENCODE_SLACK_MIB
+    )
+    assert dm.encode_need_mib(enc, (ids,), {}) == want
+    assert dm.encode_need_mib(enc, (), {"input_ids": ids}) == want
+    assert dm.encode_need_mib(enc, (), {"input_ids": ids, "image_grid_thw": ids}) is None
+    assert dm.encode_need_mib(types.SimpleNamespace(), (), {"input_ids": ids}) is None
+
+
+def test_encode_available_keeps_a_reserve_larger_than_driver_free(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mib = 1 << 20
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev: (500 * mib, 8000 * mib))
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda dev, total: 2000 * mib)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev: 3000 * mib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda dev: 1000 * mib)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda index: 0)
+    # 500 free + 2000 reusable cache - 2000 reserve: the reserve still claims the cache
+    assert dm.encode_available_mib(torch.device("cuda", 0)) == 500
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda dev, total: 3000 * mib)
+    assert dm.encode_available_mib(torch.device("cuda", 0)) == 0
 
 
 def test_encode_release_only_for_the_whole_tier(monkeypatch):
@@ -969,3 +1257,69 @@ def test_compiled_blocks_under_group_offload_skip_hook_tracing():
         torch.testing.assert_close(out, expected, rtol = 0, atol = 1e-6)
     # Traced hooks add a graph per hook variant; eager hooks leave only the block graph.
     assert counters["stats"]["unique_graphs"] <= 1
+
+
+# Qwen-Image-Edit-2511 auto on a 16 / 12 GiB card: int8 DiT (20.4 GB), int8 ConvRot encoder, bf16 VAE; MiB as loaded.
+QEDIT_LOADED = {
+    "transformer": (19932, "dit"),
+    "text_encoder": (8560, "text_encoder"),
+    "vae": (242, "other"),
+}
+QEDIT_FLAT = dict(model_dense_mib = 38956, companion_dense_mib = 16062, text_encoder_dense_mib = 15820)
+
+
+@pytest.fixture
+def qedit_pipe(monkeypatch):
+    for env in (
+        "MEASURED_ACTIVATION_ENV",
+        "PARTIAL_RESIDENT_ENV",
+        "MEASURED_ACTIVATION_QWEN_EDIT_ENV",
+    ):
+        monkeypatch.delenv(getattr(dm, env, "UNSET_" + env), raising = False)
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(QEDIT_LOADED), raising = False)
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    return object()
+
+
+def _qedit_flat_plan(budget_mib: int, total_mib: int):
+    plan = dm.plan_diffusion_memory(
+        target = types.SimpleNamespace(supports_model_cpu_offload = True),
+        device_memory = _memory(budget_mib, total_mib),
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "qwen-image-edit"
+        ),
+        requested_mode = None,
+        **QEDIT_FLAT,
+    )
+    if plan.offload_policy == dm.OFFLOAD_MODEL:
+        plan = dm.torchao_streaming_plan(plan)
+    return plan
+
+
+def test_qwen_edit_seed_value():
+    # 6046 MiB whole edit render x 1.15, rounded up to 256 MiB
+    assert dm.measured_image_runtime_mib("qwen-image-edit", "default") == 7168
+    assert dm.measured_image_runtime_mib("qwen-image-edit", "off") is None
+
+
+@pytest.mark.parametrize("budget,total", [(13638, 16376), (9550, 12288)])
+def test_qwen_edit_fresh_home_keeps_part_of_the_int8_dit_resident(qedit_pipe, budget, total):
+    """A fresh home streamed every one of the 60 int8 DiT groups at 16 / 12 GiB (no seed, no learned peak)."""
+    plan = _qedit_flat_plan(budget, total)
+    assert (
+        plan.offload_policy in (dm.OFFLOAD_GROUP, dm.OFFLOAD_STREAMING) and plan.stream_transformer
+    )
+    new = _refine(qedit_pipe, plan, family = "qwen-image-edit")
+    assert new is not plan
+    resident = new.resident_transformer_mib
+    assert resident and 0 < resident < 19932
+    assert new.estimates["measured_runtime_headroom_mib"] == 7168
+    assert resident + 7168 + dm.DEFAULT_BASE_OVERHEAD_MIB + 242 <= budget
+
+
+def test_qwen_edit_seed_kill_switch(qedit_pipe, monkeypatch):
+    monkeypatch.setenv(dm.MEASURED_ACTIVATION_QWEN_EDIT_ENV, "0")
+    assert dm.measured_image_runtime_mib("qwen-image-edit", "default") is None
+    plan = _qedit_flat_plan(13638, 16376)
+    assert _refine(qedit_pipe, plan, family = "qwen-image-edit") is plan
+    assert dm.measured_image_runtime_mib("qwen-image-2.1", "default") == 2304

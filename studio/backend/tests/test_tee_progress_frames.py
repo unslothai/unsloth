@@ -127,8 +127,7 @@ def test_a_bar_signing_off_with_a_bare_cr_keeps_its_last_frame():
 
 
 def test_an_all_blank_line_never_writes_a_carriage_return():
-    # The handle appends the platform terminator itself, so a surviving "\r" lands as
-    # "\r\r\n" on Windows.
+    # The handle adds the platform newline, so a surviving \r would become \r\r\n on Windows.
     for chunk in ("\r\n", "\r\r\r\n", "   \r   \n"):
         log, _console = _tee([chunk])
         assert "\r" not in log, repr(chunk)

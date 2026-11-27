@@ -45,17 +45,14 @@ import {
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Download01Icon,
-  FolderAddIcon,
-  FolderExportIcon,
-  FolderOpenIcon,
-  FolderSearchIcon,
   InformationCircleIcon,
   PlusSignIcon,
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderExportIcon, FolderOpenIcon, FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { setDownloadDir, useDownloadDir } from "../download-manager";
@@ -135,8 +132,7 @@ export function OnDeviceFoldersDialog({
     if (!open) return;
     setInputError(null);
     let cancelled = false;
-    // The dialog stays mounted between opens, so re-arm the flag or a reopen
-    // shows the previous answer as if it were fresh.
+    // The dialog stays mounted, so re-arm the flag or a reopen shows stale data.
     setDownloadCacheLoaded(false);
     loadHuggingFaceCacheSettings()
       // Null drops the stale path rather than offer Change against a location we could not confirm.
@@ -307,7 +303,7 @@ export function OnDeviceFoldersDialog({
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
             <section
               aria-labelledby="models-folder-heading"
-              className="rounded-[14px] border border-border/70 bg-muted/20 p-3"
+              className="rounded-lg border border-border/70 bg-muted/20 p-3"
             >
               <div
                 id="models-folder-heading"
@@ -333,7 +329,7 @@ export function OnDeviceFoldersDialog({
                     (downloadCacheLoaded ? "Unavailable" : "Loading...")
                   }
                   title={downloadCache?.cacheHome}
-                  className="field-soft h-9 min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12"
+                  className="field-soft h-control min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12"
                 />
                 <div className="flex shrink-0 items-center gap-2">
                   <Button
@@ -342,7 +338,6 @@ export function OnDeviceFoldersDialog({
                     size="sm"
                     onClick={() => void changeDownloadLocation()}
                     disabled={!downloadCache?.editable || downloadSaving}
-                    className="h-9 rounded-full px-3 text-ui-12p5"
                   >
                     {downloadSaving ? (
                       <Spinner className="size-3.5" />
@@ -407,7 +402,7 @@ export function OnDeviceFoldersDialog({
 
             <section
               aria-labelledby="custom-folders-heading"
-              className="overflow-hidden rounded-[14px] border border-border/70"
+              className="overflow-hidden rounded-xl border border-border/70"
             >
               <div className="flex h-10 items-center justify-between gap-2 border-b border-border/60 px-3">
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -493,7 +488,7 @@ export function OnDeviceFoldersDialog({
                     placeholder="Paste a folder path"
                     spellCheck={false}
                     autoComplete="off"
-                    className="field-soft h-9 min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12 placeholder:font-sans"
+                    className="field-soft h-control min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12 placeholder:font-sans"
                   />
                   <div className="flex shrink-0 items-center gap-2">
                     <Button
@@ -502,7 +497,6 @@ export function OnDeviceFoldersDialog({
                       size="sm"
                       onClick={() => void browseLocations()}
                       disabled={pending !== null}
-                      className="h-9 rounded-full px-3 text-ui-12p5"
                     >
                       <HugeiconsIcon
                         icon={FolderSearchIcon}
@@ -516,7 +510,6 @@ export function OnDeviceFoldersDialog({
                       type="submit"
                       size="sm"
                       disabled={!path.trim() || pending !== null}
-                      className="h-9 rounded-full px-3 text-ui-12p5"
                     >
                       {pending === "add" ? (
                         <Spinner className="size-3.5" />
@@ -630,7 +623,7 @@ function FolderRow({
   const switchId = `scan-folder-recursive-${folder.id}`;
   return (
     <li className="flex min-h-14 items-center gap-3 border-b border-border/50 px-3 py-2.5 last:border-b-0">
-      <div className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-muted text-muted-foreground">
+      <div className="flex size-8 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
         <HugeiconsIcon
           icon={FolderOpenIcon}
           strokeWidth={1.75}
@@ -726,7 +719,7 @@ function FolderRow({
                 <Spinner className="size-3.5" />
               ) : (
                 <HugeiconsIcon
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   strokeWidth={1.75}
                   className="size-4"
                 />

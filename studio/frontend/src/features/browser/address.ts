@@ -55,7 +55,8 @@ function redirectTarget(url: string): string | null {
     if ((host === "duckduckgo.com" || host.endsWith(".duckduckgo.com")) && parsed.pathname === "/l/") {
       return parsed.searchParams.get("uddg");
     }
-    if (/^google\.[a-z.]+$/.test(host) && parsed.pathname === "/url") {
+    // Google's own country domains, not google.com.evil.example (core/inference/browser_agent.py agrees).
+    if (/^google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})$/.test(host) && parsed.pathname === "/url") {
       return parsed.searchParams.get("q") ?? parsed.searchParams.get("url");
     }
   } catch {
@@ -84,7 +85,12 @@ export function isWebUrl(url: string): boolean {
 export function fileNameFromUrl(url: string): string {
   try {
     const { pathname, hostname } = new URL(url);
-    const last = decodeURIComponent(pathname.split("/").filter(Boolean).pop() ?? "");
+    const raw = pathname.split("/").filter(Boolean).pop() ?? "";
+    let last = raw;
+    try {
+      last = decodeURIComponent(raw);
+    } catch {
+    }
     return last || hostname;
   } catch {
     return url;

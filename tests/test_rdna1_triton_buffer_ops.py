@@ -30,8 +30,7 @@ from unsloth import device_type
     ],
 )
 def test_only_gfx101x_loses_buffer_ops(arch, lacks):
-    """The prefix has to be exactly ``gfx101``. ``gfx10`` would also switch RDNA2 to global
-    loads, which is slower for no reason; ``gfx1`` would reach RDNA3 and RDNA4."""
+    """Exactly gfx101: gfx10 would switch RDNA2 to slower global loads; gfx1 reaches RDNA3/4."""
     assert device_type.arch_lacks_buffer_ops(arch) is lacks
 
 
@@ -41,8 +40,7 @@ def test_an_unreadable_arch_does_not_narrow_anything():
 
 
 def test_bf16_gate_and_buffer_ops_gate_disagree_on_rdna2():
-    """Both gates exist because the two problems have different scopes: all of gfx10 lacks
-    bf16, only gfx10.1 mishandles the descriptor. A refactor that merges them breaks RDNA2."""
+    """Gates differ: gfx10 lacks bf16; gfx10.1 mishandles descriptors; merging breaks RDNA2."""
     assert device_type.arch_lacks_bf16("gfx1034") is True
     assert device_type.arch_lacks_buffer_ops("gfx1034") is False
     assert device_type.arch_lacks_bf16("gfx1010") is True

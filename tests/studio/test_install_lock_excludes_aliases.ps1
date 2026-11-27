@@ -439,8 +439,7 @@ try {
     if ($ownedLock) { Exit-StudioInstallLock -Lock $ownedLock }
     $script:StudioEnvRootPath = $null
 
-    # The lock must go through the helper, not an inline copy. @() is needed: [0] on a bare
-    # string is its first character.
+    # Lock via the helper, not an inline copy; @() needed since [0] on a bare string is a char.
     $lockFn = @(Get-HelperSources $installPs1 @("Enter-StudioInstallLock"))[0]
     Check "the lock claims a fresh root through Write-StudioRootOwnerMarker" (
         $lockFn -match 'Write-StudioRootOwnerMarker -Root \$Path')

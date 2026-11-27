@@ -36,8 +36,7 @@ def test_drain_before_close_avoids_generator_already_executing():
             gen.close()
         assert not finally_ran.is_set()
 
-        # Draining sets the cancel flag so the worker returns; then close is
-        # clean and the generator's finally runs.
+        # Drain sets the cancel flag so the worker returns and the generator's finally runs.
         await _drain_pending_worker(next_task, cancel_event)
         gen.close()
         return

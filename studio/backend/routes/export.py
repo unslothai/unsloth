@@ -64,11 +64,7 @@ logger = get_logger(__name__)
 
 
 async def _ensure_export_supported() -> None:
-    """Reject a mutating export request up front (HTTP 400) when the host can't export. Keeps the
-    backend authoritative even if a client bypasses the UI gate. Read-only endpoints
-    (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
-    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an export
-    worker spawned mid-swap could activate a half-replaced sidecar."""
+    """Reject mutating exports server-side (400 if unsupported; 409 during a .venv_t5_latest install, else half-swapped sidecar). Read-only endpoints stay ungated."""
     from utils.transformers_latest import is_install_in_progress
 
     if is_install_in_progress():
@@ -123,6 +119,8 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     for name in dict.fromkeys([base, *bases]):
         if name:
             account_access.require_model_access(name)
+            account_access.require_adapter_chain_access(name)
+    account_access.require_listed_adapters_access(checkpoint_path)
     return base or None
 
 
@@ -147,12 +145,13 @@ async def load_checkpoint(
         # Unset lets the backend pick 16-bit for a full fine-tune.
         load_in_4bit = request.load_in_4bit if "load_in_4bit" in request.model_fields_set else None
         backend = get_export_backend()
-        # Run in a worker thread (spawns and waits on a subprocess, can take
-        # minutes) so the event loop stays free to serve the live log SSE stream.
+        # Worker thread: it waits on a subprocess that can take minutes, so the loop stays free for SSE.
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
             base_model = base_model,
+            # Checked with no adapter config: one written later must not pick a base unchecked.
+            adapter_free = base_model is None and account_access.managed_account(),
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             offload_layers = request.offload_layers,
@@ -255,8 +254,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
     try:
         backend = get_export_backend()
         last_op = backend.get_last_op()
-        # Relativise the recovered output path the same way the per-op POST response
-        # does, so the success banner shows an identical path on either route.
+        # Relativise the recovered path like the per-op POST response, so both routes show the same path.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
             if getattr(backend, "decision", None):
@@ -271,6 +269,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
             is_export_active = bool(backend.is_export_active()),
             active_op_kind = backend.get_active_op_kind(),
             last_op_seq = int(last_op["seq"]) if last_op else 0,
+            last_op_id = last_op.get("id") if last_op else None,
             last_op_kind = last_op.get("kind") if last_op else None,
             last_op_status = last_op.get("status") if last_op else None,
             last_op_output_path = last_op_output_path,
@@ -307,8 +306,7 @@ async def get_export_logs(
     """
     try:
         backend = get_export_backend()
-        # No cursor on the first poll of a run: start from the run-start snapshot so the client gets every line since
-        # the run began (matches the SSE default), not the entire historical ring buffer.
+        # First poll starts at the run-start snapshot, not the whole ring buffer.
         if since is None:
             cursor = backend.get_run_start_seq()
         else:
@@ -499,6 +497,15 @@ async def get_moe_info(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+            from utils.datasets.remote_images import is_network_share
+
+            if isinstance(base, str) and is_network_share(base):
+                # The Hub repo picked this path; probing it on Windows authenticates to that host (NTLM).
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"The adapter '{model}' names a base model on a network share. "
+                    "Download the base model and export from a local folder instead.",
+                )
             if hub_adapter and not base:
                 # A confirmed adapter whose base could not be read (a failed download after its
                 # retries): unknown, not dense.
@@ -661,6 +668,11 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     validate_job_paths(request.model_dump())
+    if request.npu_q4nx:
+        from starlette.concurrency import run_in_threadpool
+        from utils.q4nx_export_gate import Q4NX_EXPORT_UNAVAILABLE_DETAIL, q4nx_export_allowed
+        if not await run_in_threadpool(q4nx_export_allowed):
+            raise HTTPException(status_code = 403, detail = Q4NX_EXPORT_UNAVAILABLE_DETAIL)
     if request.reap and request.reap.dataset:
         validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
@@ -690,6 +702,12 @@ async def export_gguf(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
+        if request.npu_q4nx and output_path:
+            from core.inference.npu_local_models import EXPORT_SUBFOLDER, hidden_in_exports
+
+            # The NPU picker finds <save>/npu-q4nx only once the save folder is registered.
+            if hidden_in_exports(Path(output_path) / EXPORT_SUBFOLDER):
+                await asyncio.to_thread(_try_register_external_export, Path(output_path))
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
@@ -723,6 +741,11 @@ async def convert_q4nx(
     Needs no loaded checkpoint or GPU, so it runs here rather than in the export worker.
     """
     validate_job_paths(request.model_dump())
+    from starlette.concurrency import run_in_threadpool
+    from utils.q4nx_export_gate import Q4NX_EXPORT_UNAVAILABLE_DETAIL, q4nx_export_allowed
+
+    if not await run_in_threadpool(q4nx_export_allowed):
+        raise HTTPException(status_code = 403, detail = Q4NX_EXPORT_UNAVAILABLE_DETAIL)
     # A managed account may only read a GGUF inside its own workspace.
     account_path(request.gguf_path)
     if bool(request.gguf_path) == bool(request.repo_id and request.filename):
@@ -764,6 +787,11 @@ async def convert_q4nx(
     except Exception as e:
         logger.error(f"Q4NX conversion failed: {e}", exc_info = True)
         raise HTTPException(status_code = 400, detail = f"Q4NX conversion failed: {e}")
+    from core.inference.npu_local_models import hidden_in_exports
+
+    # The NPU picker lists registered folders too; _export_details registers one outside exports.
+    if hidden_in_exports(Path(output_path)):
+        await asyncio.to_thread(_try_register_external_export, Path(output_path))
     return ExportOperationResponse(
         success = True,
         message = "Converted to Q4NX for the AMD NPU",
@@ -873,9 +901,7 @@ async def export_lora_adapter(
         )
 
 
-# Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and
-# Last-Event-ID honoured on reconnect. Worker stdout/stderr reaches the orchestrator as log entries
-# (core/export/worker.py, orchestrator.py); shape follows routes/training.py.
+# SSE shape mirrors routes/training.py: id/event/data, leading retry:, Last-Event-ID.
 def _format_sse(
     data: str,
     event: str,
@@ -919,8 +945,7 @@ async def stream_export_logs(
     """
     backend = get_export_backend()
 
-    # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect, else the run-start snapshot so the
-    # client sees every line since the run began even if the SSE connection opened after the export-kickoff POST.
+    # Cursor: since, then Last-Event-ID, else the run-start snapshot, so a late SSE misses nothing.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:
@@ -972,8 +997,7 @@ async def stream_export_logs(
                         yield _format_sse("{}", event = "heartbeat")
                         last_yield = now
                     if not backend.is_export_active():
-                        # Let the reader thread drain trailing lines printed just
-                        # before the worker signalled done.
+                        # Reader drains lines printed just before the worker signalled done.
                         if idle_since is None:
                             idle_since = now
                         elif now - idle_since > 1.0:

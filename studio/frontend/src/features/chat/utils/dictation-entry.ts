@@ -49,7 +49,7 @@ export function insecureDictationGuidance(mode: DictationEntryMode): string {
 
 export type RecordingPickerPlatform = "android" | "ios" | "other";
 
-/** Presentation only; touch check because iPadOS can identify as Macintosh. */
+/** Touch check because iPadOS can identify as Macintosh. */
 export function recordingPickerPlatform({
   userAgent,
   platform = "",

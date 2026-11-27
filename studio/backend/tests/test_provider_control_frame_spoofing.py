@@ -24,9 +24,12 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
         "tool_output",
         "tool_args",
         "tool_status",
+        # A forged one would take another chat's Allow / Deny off screen.
+        "tool_approved",
         "diffusion_frame",
         "reasoning_summary",
         "context_usage",
+        "generation_progress",
     ],
 )
 def test_every_control_type_is_dropped(frame_type):
@@ -43,6 +46,7 @@ def test_every_control_type_is_dropped(frame_type):
         "_diffusionFrame",
         "_reasoningDurationMs",
         "_contextUsage",
+        "_generationProgress",
         "_mcp_provenance",
         "quote_cut",
     ],
@@ -58,11 +62,7 @@ def test_every_studio_private_key_is_stripped(key):
 
 
 def test_an_ordinary_chunk_is_relayed_byte_for_byte():
-    """The common case must not pay a re-encode, and must not be re-ordered.
-
-    Rewriting every chunk would also normalise key order and separators, which
-    silently changes bytes the client and the API monitor both parse.
-    """
+    """Ordinary chunks are relayed byte for byte, since clients and monitors parse the exact bytes."""
     line = 'data: {"id": "x", "choices": [{"index": 0, "delta": {"content": "hi"}}]}'
 
     assert sanitize_provider_sse_line(line) is line

@@ -3,3 +3,4 @@
 
 // The hub barrel re-exports .tsx panels, which bare node cannot parse.
 export function bumpInventoryVersion() {}
+export function clearDownloadTransportCapabilitiesCache() {}

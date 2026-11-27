@@ -258,6 +258,18 @@ LLAMA2_TEMPLATE = (
 )
 
 
+# Llama 3 adds bos_token to the first turn through a set statement, not a `{{ }}` expression.
+LLAMA3_TEMPLATE = (
+    "{% set loop_messages = messages %}"
+    "{% for message in loop_messages %}"
+    "{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\\n\\n'"
+    " + message['content'] | trim + '<|eot_id|>' %}"
+    "{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}"
+    "{{ content }}"
+    "{% endfor %}"
+)
+
+
 def _render(template, **kwargs):
     jinja2 = pytest.importorskip("jinja2")
     return jinja2.Template(template).render(
@@ -287,6 +299,19 @@ def test_dedupe_leaves_a_renderable_template_for_an_expression_bos():
     tu._dedupe_bos_chat_template(tok)
     assert "bos_token" not in tok.chat_template
     assert _render(tok.chat_template) == "[INST] hi [/INST]"
+
+
+def test_stripping_bos_from_a_set_statement_removes_it():
+    stripped = tu._strip_bos_from_chat_template_text(LLAMA3_TEMPLATE)
+    assert "bos_token" not in stripped
+    assert _render(stripped) == "<|start_header_id|>user<|end_header_id|>\n\nhi<|eot_id|>"
+
+
+def test_dedupe_removes_bos_set_in_a_statement():
+    tok = _gemma4_base(add_bos_token = True, chat_template = LLAMA3_TEMPLATE)
+    tu._dedupe_bos_chat_template(tok)
+    assert tu._chat_template_emits_bos(tok) is False
+    assert _render(tok.chat_template).startswith("<|start_header_id|>")
 
 
 def test_export_helper_strips_dict_chat_template_without_crash():

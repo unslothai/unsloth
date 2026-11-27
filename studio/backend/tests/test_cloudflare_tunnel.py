@@ -1646,8 +1646,7 @@ def test_download_does_not_retry_a_timeout(monkeypatch, tmp_path):
 
 
 def test_download_does_not_retry_a_permanent_4xx(monkeypatch, tmp_path):
-    """A 404 for this platform's asset is the same 404 on the next attempt. Retrying
-    it three times with pauses only delays the launch banner for nothing."""
+    """A 404 for this platform's asset repeats on retry, so retrying only delays the launch."""
     import urllib.error
     import urllib.request
 
@@ -1753,8 +1752,7 @@ def test_download_retries_a_temporary_resolver_failure(monkeypatch, tmp_path):
 
 
 def test_download_does_not_retry_a_chain_it_cannot_verify(monkeypatch, tmp_path):
-    """A stale CA bundle, a wrong clock and a TLS-intercepting proxy are configuration, not
-    a transfer that can go better."""
+    """A stale CA bundle, wrong clock or TLS proxy is configuration that retrying cannot fix."""
     import urllib.error
     import urllib.request
 
@@ -1777,8 +1775,7 @@ def test_download_does_not_retry_a_chain_it_cannot_verify(monkeypatch, tmp_path)
 
 
 def test_download_retries_a_tls_stream_that_broke_mid_body(monkeypatch, tmp_path):
-    """A bad record after some bytes is a transfer that died partway, so the half already
-    written must not be published."""
+    """A TLS stream broken mid-body is a dead transfer; its partial file must not be published."""
     import io
     import urllib.request
 
@@ -1892,8 +1889,7 @@ def test_download_retries_an_empty_body(monkeypatch, tmp_path):
 
 
 def test_download_does_not_retry_when_a_reset_unwinds_into_a_full_disk(monkeypatch, tmp_path):
-    """The caller sees the full disk the reset unwound into, and it is just as full next
-    time. Identity picks the error that replaced the transfer's."""
+    """The disk is still full on retry, so the full-disk error must not be retried."""
     import pathlib
     import tempfile
     import urllib.request

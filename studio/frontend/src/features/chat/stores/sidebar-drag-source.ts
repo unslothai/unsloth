@@ -5,8 +5,7 @@ import type { SidebarDragItem } from "../lib/sidebar-drag.ts";
 
 export type { SidebarDragItem as SidebarDragSource } from "../lib/sidebar-drag.ts";
 
-// A dragover can fire in the same frame as its dragstart, before React state commits, so the
-// dragged row is held here and read synchronously. State holds a copy for painting only.
+// dragover can fire before React state commits, so the dragged row is held here synchronously.
 let source: SidebarDragItem | null = null;
 
 export function setSidebarDragSource(next: SidebarDragItem | null): void {

@@ -114,8 +114,7 @@ class TestFunctionStyleTrailingText:
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_closed_zero_param_attribute_call_is_accepted_in_strict_mode(self):
-        # A closed call with no parameters is a valid zero-argument call; strict
-        # mode must not treat the empty parameter list as a truncated call.
+        # Closed zero-arg call is valid; strict mode must not treat it as truncated.
         assert _only('<function name="ping"></function>') == {"name": "ping", "arguments": {}}
         assert parse_tool_calls_from_text('<function name="ping">', allow_incomplete = False) == []
 
@@ -350,8 +349,7 @@ class TestBracketCallSpans:
 
 
 class TestMistralArrayHealing:
-    """Draining the whole [TOOL_CALLS] array for the shapes the repo's own
-    Mistral/Ollama templates emit."""
+    """Whole [TOOL_CALLS] array is drained for the shapes Mistral/Ollama templates emit."""
 
     def test_comma_less_multi_call_array_parses_all_calls(self):
         # ollama_template_mappers.py renders multi-call turns with no comma separator.
@@ -833,8 +831,7 @@ class TestGemmaWrapperlessLiteralMarkers:
     def test_real_wrapped_call_still_deferred_to_tool_healing(self):
         from core.inference.tool_call_parser import _parse_gemma_tool_calls
 
-        # An actual wrapped opener present: the Gemma fallback must keep
-        # deferring to the shared tool_healing parser that owns that form.
+        # Wrapped Gemma opener is deferred to the shared tool_healing parser that owns it.
         text = '<|tool_call>call:web_search{query:<|"|>cats<|"|>}<tool_call|>'
         assert _parse_gemma_tool_calls(text, id_offset = 0) == []
 
@@ -884,8 +881,7 @@ class TestGlmEmbeddedClosePair:
         assert stripped.strip() == "Done."
 
     def test_unbalanced_apostrophe_falls_back_to_first_candidate(self):
-        # Prose-like value with an apostrophe: no candidate reaches balanced
-        # quote state, so the first token-valid close wins (prior behavior).
+        # No candidate reaches balanced quotes, so the first token-valid close wins.
         text = (
             "<tool_call>web_search\n"
             "<arg_key>query</arg_key>\n"
@@ -1039,9 +1035,7 @@ class TestMagistralThinkRehearsal:
 
 
 class TestGemmaUnquotedApostrophes:
-    """Quotes open strings only at value-start context: an apostrophe inside
-    an unquoted wrapper-less value (contractions, possessives) is prose, and
-    treating it as an opener swallowed the closing brace and lost the call."""
+    """Apostrophes in unquoted values are prose, not openers; treating them as openers lost the call."""
 
     def test_contraction_in_unquoted_query_parses(self):
         text = "call:web_search{query:what's the weather}"
@@ -1076,9 +1070,8 @@ class TestGemmaUnquotedApostrophes:
 
 
 class TestGlmKeyWithoutValue:
-    """A GLM <arg_key> with no <arg_value> tag: strict mode rejects the call
-    (same contract as an unclosed value) instead of executing it with the
-    argument silently dropped; Auto-Heal keeps the lenient skip."""
+    """Strict mode rejects the whole call when a GLM arg_key has no arg_value, instead of running it
+    with the argument dropped; Auto-Heal skips it."""
 
     def test_strict_rejects_key_without_value(self):
         text = "<tool_call>web_search\n<arg_key>query</arg_key>\n</tool_call>"
@@ -1116,9 +1109,7 @@ class TestDisabledBareJsonLiteralNotPromoted:
 
 
 class TestDeepSeekMarkerInsideLeadingEnvelopes:
-    """A DeepSeek/Kimi marker quoted inside a leading bare-JSON or Mistral
-    call's argument strings is data: the pre-pass must not promote the
-    embedded no-arg literal and drop the real outer call."""
+    """DeepSeek/Kimi markers quoted in a leading JSON or Mistral call's arguments are data, not calls."""
 
     def test_marker_inside_leading_json_call_stays_data(self):
         text = (
@@ -1260,9 +1251,8 @@ class TestGemmaDottedKeyAfterBareValue:
 
 
 class TestJsonAnswersAreDataForMarkerlessScans:
-    """A whole-content JSON value is a structured answer: a quoted example of
-    an enabled tool's syntax inside it must not execute the tool, and the
-    display strip must not mutilate the answer."""
+    """A whole-content JSON answer is data: a quoted tool example inside it must not execute the
+    tool, and the display strip must not mutilate the answer."""
 
     def test_gemma_example_inside_json_answer_not_promoted(self):
         text = '{"answer":"Gemma syntax is call:web_search{query:hi}"}'
@@ -1291,9 +1281,7 @@ class TestGemmaNestedQuotedLeaves:
 
 
 class TestEarliestEnvelopeWinsAcrossDeepSeekKimi:
-    """The DeepSeek/Kimi pre-pass dispatches by earliest envelope opener: a
-    leading real call wins over a trailing example of the sibling format in
-    either direction (document order, like the other leading guards)."""
+    """DeepSeek/Kimi pre-pass dispatches by earliest envelope opener, so a leading call wins either way."""
 
     _DS = (
         "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>evil\n"
@@ -1333,9 +1321,7 @@ class TestNamelessLeadingJsonAnswerIsData:
 
 
 class TestClosedCallPrecedesMarkerPrePass:
-    """A closed non-DeepSeek/Kimi call that precedes the first DS/Kimi marker
-    owns the turn: a trailing example (or an example quoted inside a wrapped
-    Gemma argument) must not be promoted by the pre-pass."""
+    """A closed call before the first DeepSeek/Kimi marker owns the turn; trailing examples stay inert."""
 
     _KIMI_EVIL = (
         "<|tool_calls_section_begin|><|tool_call_begin|>functions.evil:0"
@@ -1405,9 +1391,8 @@ class TestGemmaMidValueQuotedPhrase:
 
 
 class TestGlmStrictRefusesInQuoteFallback:
-    """A truncated GLM value whose only close candidates sit inside a string
-    literal must reject in strict mode instead of executing truncated
-    arguments; Auto-Heal keeps the lenient partial value."""
+    """Strict mode must reject a truncated GLM value whose only closers sit inside a string literal,
+    not execute truncated arguments; Auto-Heal keeps the lenient partial value."""
 
     _TRUNC = (
         '<tool_call>python\n<arg_key>code</arg_key>\n<arg_value>print("</arg_value></tool_call>")'
@@ -1467,8 +1452,7 @@ class TestLeadingJsonArrayAnswerIsData:
 
 
 class TestLeadingBareJsonOwnsTurnOverTrailingXml:
-    """Document order: a leading closed bare-JSON call owns the turn even when
-    tool XML appears AFTER it (inside-or-after, mirroring the Mistral rule)."""
+    """A leading closed bare-JSON call owns the turn even when tool XML appears after it."""
 
     def test_leading_call_wins_over_trailing_xml(self):
         text = (
@@ -1504,9 +1488,7 @@ class TestLeadingBareJsonOwnsTurnOverTrailingXml:
 
 
 class TestProseCloseTagAfterClosedFunctionCall:
-    """A literal </function> in prose after a closed call is data: the call
-    ends at its first close that is not parameter data, so arguments never
-    swallow the prose between the real close and the literal."""
+    """A literal </function> in prose after a closed call is data; the call ends at its first real close."""
 
     @pytest.mark.parametrize(
         "text, enabled_name, expected_name, expected_key, expected_value",
@@ -1563,9 +1545,7 @@ class TestProseCloseTagAfterClosedFunctionCall:
 
 
 class TestEnabledNameJsonAnswerIsContent:
-    """A JSON answer whose top-level name matches an enabled tool but has no
-    call shape is content: the parser rejects it, so the strip and the drain
-    gate must keep it visible too."""
+    """A JSON answer naming an enabled tool but lacking call shape is content; keep it visible."""
 
     def test_answer_survives_strip(self):
         from core.inference.tool_call_parser import strip_leading_bare_json_call
@@ -1593,8 +1573,7 @@ class TestEnabledNameJsonAnswerIsContent:
 
 
 class TestAttributeFormLeadingContainment:
-    """A leading attribute-form call owns the turn: markup quoted inside its
-    parameter is data, not a call for the shared XML parser to promote."""
+    """Leading attribute-form call owns the turn; markup quoted in its parameter stays data."""
 
     def test_quoted_tool_call_inside_param_stays_data(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
@@ -1619,9 +1598,7 @@ class TestAttributeFormLeadingContainment:
 
 
 class TestParameterKeepsMultipleLiteralCloses:
-    """A parameter that provably closes with its own tag keeps every literal
-    function close inside it as data (regression: the first literal close was
-    treated as ending the parameter, truncating the value)."""
+    """A parameter closed by its own tag keeps every literal function close inside it as data."""
 
     def test_two_literal_closes_in_one_parameter(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
@@ -1714,8 +1691,7 @@ class TestBareJsonStripRequiresTopLevelName:
 
 
 class TestGemmaAwareClosedBlockPrePass:
-    """The closed JSON/function strip pre-pass must not delete across a complete
-    Gemma span (a quoted <function=...> plus a later real </function>)."""
+    """The closed JSON/function strip pre-pass must not delete across a complete Gemma span."""
 
     @pytest.mark.parametrize(
         "text, expected",

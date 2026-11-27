@@ -215,6 +215,24 @@ def test_nonfloat_guard_restores_parameter_new():
         torch.nn.Parameter(torch.zeros(4, dtype = torch.uint8))
 
 
+class _Py39StaticMethod(staticmethod):
+    def __call__(self, *args, **kwargs):
+        raise TypeError("'staticmethod' object is not callable")
+
+
+def test_nonfloat_guard_works_when_staticmethod_is_not_callable(monkeypatch):
+    m = _load_module()
+    original = torch.nn.Parameter.__dict__["__new__"]
+    assert isinstance(original, staticmethod)
+    py39_new = _Py39StaticMethod(original.__func__)
+    monkeypatch.setattr(torch.nn.Parameter, "__new__", py39_new)
+    with m.nonfloat_param_guard():
+        p = torch.nn.Parameter(torch.zeros(4, dtype = torch.uint8))
+        assert p.requires_grad is False
+        assert torch.nn.Parameter(torch.zeros(4)).requires_grad is True
+    assert torch.nn.Parameter.__dict__["__new__"] is py39_new
+
+
 def _free_port():
     from tests._rendezvous_port import free_port
     return free_port()

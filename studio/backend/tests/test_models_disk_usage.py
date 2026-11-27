@@ -22,9 +22,8 @@ _Usage = namedtuple("_Usage", "total used free")
 
 @pytest.fixture
 def second_drive(tmp_path, monkeypatch):
-    """Everything under tmp_path/second is drive 2; the rest, `/` included, is drive 1.
-
-    Matched on the literal path, so only a caller that resolved the symlink lands on drive 2."""
+    """Paths under tmp_path/second are drive 2 and everything else, / included, is drive 1; matching
+    is on the literal path, so only resolved callers reach drive 2."""
     second = (tmp_path / "second").resolve()
     (second / "hf" / "hub").mkdir(parents = True)
 

@@ -34,9 +34,8 @@ from run_ruff_format import (  # noqa: E402
 # Windows' CreateProcess lpCommandLine cap in characters; the binding constraint across OSes.
 _WINDOWS_COMMAND_LINE_LIMIT = 32767
 
-# Length budget per formatter invocation. All tracked paths together are ~10x the Windows cap
-# (WinError 206). A length, not a file count, so it self-adjusts; 8000 leaves 4x headroom.
-# Batching is safe because the hook formats each path independently.
+# Length budget, not file count: all tracked paths total ~10x the Windows cap (WinError 206); 8000
+# leaves 4x headroom; batching is safe as the hook formats each path independently.
 _FORMAT_ARGV_BUDGET = 8000
 
 _HOOK_ID = "ruff-format-with-kwargs"
@@ -341,7 +340,7 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
         pytest.fail(
             f"this guard cannot run in CI: {_RUFF_REASON}.\n"
             "  The runner installs the pinned ruff in its own step (see the "
-            "'Install the pinned ruff (formatter fixed-point guard)' step in "
+            "'Install the pinned ruff-unsloth (formatter fixed-point guard)' step in "
             ".github/workflows/studio-backend-ci.yml).\n"
             "  Skipping here would report a green formatting guard that checked no files."
         )
@@ -376,8 +375,7 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
 
 
 def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, monkeypatch):
-    """pytest-timeout raises in the thread that polls, so whatever it interrupts must not leave
-    a formatter running (the job would then wait on it until its own, much longer, timeout)."""
+    """pytest-timeout raises in the polling thread, so no formatter may be left running."""
     started = []
     real_popen = subprocess.Popen
 
@@ -422,11 +420,7 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
 
 @pytest.mark.skipif(not _HAS_PROC, reason = "reads Linux /proc")
 def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
-    """The signal probe can see a zombie that is reaped before /proc/<pid>/stat is opened.
-
-    That window used to read as alive, so the timeout test above failed on a process that had
-    already been killed and reaped (Repo tests (CPU, rest) on #12097).
-    """
+    """Reaped pids must not read as alive; zombies still pass the signal probe (issue 12097)."""
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()
     assert not Path(f"/proc/{child.pid}").exists(), "the child was not reaped"
@@ -436,11 +430,7 @@ def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX signal probe")
 def test_without_proc_a_pid_the_signal_probe_finds_is_alive(monkeypatch):
-    """Where /proc is not mounted (macOS), a missing /proc entry proves nothing.
-
-    Reading it as death would pass the timeout test above even if the group kill missed.
-    """
-    # A pid with no /proc entry, as on macOS, that the signal probe still finds.
+    """Without /proc (macOS) a missing entry proves nothing; a missed group kill would pass."""
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()
     monkeypatch.setattr(sys.modules[__name__], "_HAS_PROC", False)
@@ -486,8 +476,7 @@ def test_side_by_side_results_come_back_in_order(tmp_path):
 
 @pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason = "pytest-timeout raises no signal here")
 def test_a_timeout_during_launch_still_kills_the_new_formatter(tmp_path, monkeypatch):
-    """The window between Popen returning and the process being recorded: a timeout landing
-    there must still leave the finally something to kill."""
+    """A timeout between Popen and recording must still leave the finally something to kill."""
     started = []
     real_popen = subprocess.Popen
 

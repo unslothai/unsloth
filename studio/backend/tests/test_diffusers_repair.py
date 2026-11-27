@@ -454,14 +454,37 @@ def _release_mode(monkeypatch, installed):
     _installed_diffusers(monkeypatch, None)  # an index install, whatever the host has
 
 
-def test_the_shipped_main_pin_is_active():
-    # FLUX.3 Klein needs the pinned build (huggingface/diffusers#15046 merged but is unreleased).
-    assert _REAL_MAIN_PIN_ACTIVE() is True
+def test_the_shipped_main_pin_is_inactive():
+    # 0.42.1 carries FLUX.3 Klein (huggingface/diffusers#15046), so no main build is pinned.
+    assert _REAL_MAIN_PIN_ACTIVE() is False
 
 
-@pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.post1"])
+@pytest.mark.skipif(sys.version_info < (3, 11), reason = "diffusers-pin.txt names 0.42.1 from 3.11")
+@pytest.mark.parametrize("installed", ["0.42.1", "0.42.1.post1"])
 def test_a_current_release_starts_nothing(monkeypatch, installed):
     _release_mode(monkeypatch, installed)
+    monkeypatch.setattr(dr, "_run_installer", lambda *a, **k: pytest.fail("started a repair"))
+    lines = []
+    assert dr.repair_diffusers_before_imports(lines.append) is False and lines == []
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason = "diffusers-pin.txt names 0.42.1 from 3.11")
+def test_the_release_behind_is_0_41_on_python_311(monkeypatch):
+    _release_mode(monkeypatch, "0.41.0")
+    assert dr._release_behind() is True
+
+
+def test_the_retired_main_build_is_left_for_the_update(monkeypatch):
+    """The d42ebf9c git build reports 0.41.0.dev0; startup repair touches index installs only, and the build still
+    has FLUX.3, so it stays until an update's dependency pass replaces it with the release."""
+    _release_mode(monkeypatch, "0.41.0.dev0")
+    _installed_diffusers(
+        monkeypatch,
+        {
+            "url": "https://github.com/huggingface/diffusers.git",
+            "vcs_info": {"vcs": "git", "commit_id": "d42ebf9c6e0b46103b74283f5324357a67acaa04"},
+        },
+    )
     monkeypatch.setattr(dr, "_run_installer", lambda *a, **k: pytest.fail("started a repair"))
     lines = []
     assert dr.repair_diffusers_before_imports(lines.append) is False and lines == []

@@ -102,9 +102,13 @@ class _FakePrefetcher(sh._EncoderPrefetcher):
             ):
                 raise RuntimeError("copy failed")
             self.copies.append((group.name, threading.current_thread() is threading.main_thread()))
-        with self.cond:
-            self.peak_inflight = max(self.peak_inflight, self.inflight + group.nbytes)
+        if threading.current_thread() is not threading.main_thread():
+            with self.cond:
+                self.peak_inflight = max(self.peak_inflight, self.inflight + group.nbytes)
         return [group.name], None, group.nbytes
+
+    def _group_bytes(self, group):
+        return group.nbytes
 
     def _attach(self, group, moved, done):
         self.attached.append(moved[0])
@@ -154,8 +158,164 @@ def test_prefetch_stays_within_the_byte_budget():
     assert pf.peak_inflight <= pf.budget + sh._PREFETCH_MIN_BYTES // 4
 
 
+def test_prefetch_with_no_budgeted_room_starts_no_worker(monkeypatch):
+    """#14816 r9: a zero budget copies every group synchronously instead of one group ahead."""
+    monkeypatch.setattr(sh, "_prefetch_budget_bytes", lambda device: 0)
+    groups = [_FakeGroup(f"g{i}", 10) for i in range(6)]
+    pf = _FakePrefetcher(groups)
+    _forward(pf, groups)
+    pf.copies.clear()
+    pf.begin()
+    try:
+        assert pf.worker is None
+        for g in groups:
+            pf.onload(g)
+    finally:
+        pf.end()
+    assert pf.stats["prefetched"] == 0 and pf.stats["sync"] == 12
+    assert all(main for _n, main in pf.copies) and pf.inflight == 0 and not pf.ready
+    assert pf.order == [id(g) for g in groups]
+
+
 def test_prefetch_one_oversized_group_still_progresses():
     groups = [_FakeGroup("big", sh._PREFETCH_MAX_BYTES * 4), _FakeGroup("small", 1)]
+    pf = _FakePrefetcher(groups)
+    _forward(pf, groups)
+    _forward(pf, groups)
+    assert pf.stats["prefetched"] == 2
+
+
+def test_lowered_budget_copies_a_group_over_the_window_synchronously(monkeypatch):
+    """Codex #14816 r10: under a lowered Budget a whole next group larger than the window would eat the reserve."""
+    monkeypatch.setattr(sh, "_prefetch_budget_bytes", lambda device: 256 * sh._MIB)
+    monkeypatch.setattr(sh, "_prefetch_budget_lowered", lambda device: True, raising = False)
+    big = 1536 * sh._MIB
+    groups = [
+        _FakeGroup("a", big),
+        _FakeGroup("s0", 100 * sh._MIB),
+        _FakeGroup("b", big),
+        _FakeGroup("s1", 100 * sh._MIB),
+        _FakeGroup("s2", 100 * sh._MIB),
+    ]
+    pf = _FakePrefetcher(groups)
+    _forward(pf, groups)
+    pf.copies.clear()
+    _forward(pf, groups)
+    on_worker = [n for n, main in pf.copies if not main]
+    assert "a" not in on_worker and "b" not in on_worker
+    assert sorted(on_worker) == ["s0", "s1", "s2"]
+    assert pf.peak_inflight <= 256 * sh._MIB
+    assert pf.attached[-5:] == [g.name for g in groups]
+    assert pf.stats["prefetched"] == 3 and not pf.skipped and pf.inflight == 0
+
+
+def test_lowered_budget_sync_copy_and_worker_never_share_a_staging_slot(monkeypatch):
+    """#14816: a skipped group copies on the forward thread while the worker stages the next one. Without one copy
+    lock the worker wraps the ring and overwrites a staging slot the forward thread wrote but has not enqueued."""
+    import contextlib
+
+    class Event:
+        def record(self, stream):
+            pass
+
+        def synchronize(self):
+            pass
+
+    class Stream:
+        def wait_event(self, event):
+            pass
+
+        def wait_stream(self, stream):
+            pass
+
+    stream = Stream()
+    main = threading.main_thread()
+    wrote = threading.Event()  # forward thread wrote slot 0 and has not enqueued it
+    progressed = threading.Event()  # worker finished its copy, or is blocked on the copy lock
+    big, small = types.SimpleNamespace(), types.SimpleNamespace()
+    big.source = torch.full((40,), 1, dtype = torch.uint8)
+    small.source = torch.full((32,), 2, dtype = torch.uint8)
+
+    class Lock:
+        def __init__(self):
+            self.inner = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread() is not main:
+                progressed.set()
+            self.inner.acquire()
+
+        def __exit__(self, *exc):
+            self.inner.release()
+
+    class Prefetcher(sh._EncoderPrefetcher):
+        def __init__(self):
+            super().__init__(None, [big, small], "cpu")
+            self.stage = [torch.empty(8, dtype = torch.uint8) for _ in range(4)]
+            self.stage_events = [None] * 4
+            self.stream = stream
+            self.copy_lock = Lock()
+            self.result = {}
+
+        def _group_bytes(self, group):
+            if group is small:
+                assert wrote.wait(10)
+            return super()._group_bytes(group)
+
+        def _copy_group(self, group):
+            out = super()._copy_group(group)
+            if group is small:
+                progressed.set()
+            return out
+
+        def _attach(self, group, moved, done):
+            self.result[id(group)] = moved[0].clone()
+
+    pf = Prefetcher()
+    pf.order = [id(big), id(small)]
+    copy = torch.Tensor.copy_
+    paused = []
+
+    def copy_(dst, src, *args, **kwargs):
+        out = copy(dst, src, *args, **kwargs)
+        if (
+            not paused
+            and threading.current_thread() is main
+            and dst.data_ptr() == pf.stage[0].data_ptr()
+        ):
+            paused.append(True)
+            wrote.set()
+            assert progressed.wait(10)
+        return out
+
+    for obj, name, value in [
+        (sh, "_STAGE_SLOT_BYTES", 8),
+        (sh, "_STAGE_SLOTS", 4),
+        (sh, "_group_tensors", lambda g: [(g.source, g.source)]),
+        (sh, "_prefetch_budget_bytes", lambda dev: 32),
+        (sh, "_prefetch_budget_lowered", lambda dev: True),
+        (torch.cuda, "current_stream", lambda *a: stream),
+        (torch.cuda, "stream", lambda *a: contextlib.nullcontext()),
+        (torch.cuda, "Event", Event),
+        (torch.Tensor, "record_stream", lambda *a: None),
+        (torch.Tensor, "copy_", copy_),
+    ]:
+        monkeypatch.setattr(obj, name, value, raising = False)
+    pf.begin()
+    try:
+        pf.onload(big)
+        pf.onload(small)
+    finally:
+        pf.end()
+    assert paused and pf.stats == {"prefetched": 1, "sync": 1, "passes": 1}
+    assert torch.equal(pf.result[id(big)], big.source)
+    assert torch.equal(pf.result[id(small)], small.source)
+
+
+def test_default_budget_still_prefetches_an_oversized_group(monkeypatch):
+    monkeypatch.setattr(sh, "_prefetch_budget_bytes", lambda device: 256 * sh._MIB)
+    monkeypatch.setattr(sh, "_prefetch_budget_lowered", lambda device: False, raising = False)
+    groups = [_FakeGroup("a", 1536 * sh._MIB), _FakeGroup("s0", 1)]
     pf = _FakePrefetcher(groups)
     _forward(pf, groups)
     _forward(pf, groups)

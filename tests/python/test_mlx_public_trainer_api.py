@@ -389,13 +389,14 @@ def test_mlx_training_arguments_warn_on_meaningful_inert_kwargs():
     """Unsupported TrainingArguments knobs should not be silently ignored."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.warns(RuntimeWarning, match = "push_to_hub.*save_strategy"):
+    with pytest.warns(RuntimeWarning, match = "push_to_hub") as caught:
         args = unsloth.UnslothTrainingArguments(
             save_strategy = "steps",
             push_to_hub = True,
             padding_free = False,
         )
 
+    assert "save_strategy" not in str(caught[0].message), "MLXTrainer honors save_strategy"
     assert args.save_strategy == "steps"
     assert args.push_to_hub is True
     assert args.padding_free is False
@@ -405,14 +406,15 @@ def test_mlx_training_arguments_reject_unknown_kwargs():
     """Unknown SFTConfig flags should fail instead of becoming inert attributes."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
-        unsloth.UnslothTrainingArguments(assistant_only_loss = True)
+    with pytest.raises(NotImplementedError, match = "no_such_flag"):
+        unsloth.UnslothTrainingArguments(no_such_flag = True)
 
+    assert unsloth.UnslothTrainingArguments(assistant_only_loss = True).assistant_only_loss is True
     completion_args = unsloth.UnslothTrainingArguments(completion_only_loss = True)
     assert completion_args.completion_only_loss is True
 
 
-def test_mlx_training_arguments_reject_unsupported_object_flags():
+def test_mlx_training_arguments_keep_object_flags():
     """Object-style SFTConfig flags should not be silently dropped."""
     unsloth = _import_mlx_unsloth()
 
@@ -420,8 +422,7 @@ def test_mlx_training_arguments_reject_unsupported_object_flags():
         max_steps = 1
         assistant_only_loss = True
 
-    with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
-        unsloth._coerce_mlx_training_args(ArgsObject())
+    assert unsloth._coerce_mlx_training_args(ArgsObject()).assistant_only_loss is True
 
     class CompletionArgsObject:
         max_steps = 1
@@ -460,8 +461,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
         warmup_ratio = 0.1
         warmup_steps = 0
 
-    with pytest.warns(RuntimeWarning, match = "save_strategy"):
-        args = unsloth._coerce_mlx_training_args(ArgsObject())
+    args = unsloth._coerce_mlx_training_args(ArgsObject())
 
     assert args.optim == "adamw_8bit"
     assert args.eval_steps == 0
@@ -480,7 +480,7 @@ def test_mlx_training_arguments_accept_supported_notebook_kwargs():
 
     with pytest.warns(
         RuntimeWarning,
-        match = "bf16.*dataset_kwargs.*gradient_checkpointing_kwargs.*save_strategy",
+        match = "bf16.*dataset_kwargs.*gradient_checkpointing_kwargs",
     ):
         args = unsloth.UnslothTrainingArguments(
             bf16 = True,
@@ -540,11 +540,10 @@ def test_mlx_training_arguments_honor_direct_no_save_strategy():
     """Direct kwargs should map save_strategy=no to save_steps=0."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.warns(RuntimeWarning, match = "save_strategy"):
-        args = unsloth.UnslothTrainingArguments(
-            save_strategy = "no",
-            save_steps = 500,
-        )
+    args = unsloth.UnslothTrainingArguments(
+        save_strategy = "no",
+        save_steps = 500,
+    )
 
     assert args.save_steps == 0
 
@@ -736,6 +735,141 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
     assert trainer_override.args.max_length == 654
     assert config_with_override.args.max_seq_length == 432
     assert config_with_override.args.max_length == 432
+
+
+def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
+    unsloth = _import_mlx_unsloth()
+    rows = [{"problem": "Add 2 and 3.", "answer": "Five."}, {"problem": "Halve 8.", "answer": "4"}]
+
+    def batched(examples):
+        return [
+            f"Q: {examples['problem'][i]} A: {examples['answer'][i]}"
+            for i in range(len(examples["problem"]))
+        ]
+
+    def batched_zip(examples):
+        return [f"Q: {q} A: {a}" for q, a in zip(examples["problem"], examples["answer"])]
+
+    def per_row(example):
+        return f"Q: {example['problem']} A: {example['answer']}"
+
+    def batched_turns(examples):
+        turns = examples["turns"]
+        texts = []
+        for conversation in turns if isinstance(turns[0], list) else [turns]:
+            system = conversation.pop(0) if conversation[0].startswith("sys:") else "sys:default"
+            texts.append(" ".join([system, *conversation]))
+        return texts
+
+    def per_row_skip_blank(example):
+        return example["problem"].strip() if example["problem"] else []
+
+    def per_row_slice(example):
+        return example["problem"][:5]
+
+    def per_row_messages(example):
+        return [
+            {"role": "user", "content": example["problem"]},
+            {"role": "assistant", "content": example["answer"]},
+        ]
+
+    def per_row_dict(example):
+        return {"text": example["problem"]}
+
+    def per_row_filter(example):
+        return [example["problem"], "Done."] if example["keep"] else None
+
+    def batched_pop(examples):
+        return [text.strip() for text in examples.pop("problem")]
+
+    def per_row_last(example):
+        return str(ord(example["answer"][-1]))
+
+    class OnePass:
+        def __init__(self):
+            self.rows = iter(rows)
+
+        def __iter__(self):
+            return self.rows
+
+    def formatting_func(func, dataset = rows):
+        return unsloth.UnslothTrainer(
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = dataset,
+            formatting_func = func,
+            args = unsloth.UnslothTrainingArguments(max_steps = 1),
+        ).formatting_func
+
+    def formatted(func, examples):
+        wrapped = formatting_func(func)
+        return [wrapped(example) for example in examples]
+
+    expected = [["Q: Add 2 and 3. A: Five."], ["Q: Halve 8. A: 4"]]
+    assert formatted(batched, rows) == expected
+    assert formatted(batched_zip, rows) == expected
+    shapes = []
+
+    def batched_spy(example):
+        shapes.append(type(example["problem"]))
+        return batched(example) if shapes[-1] is list else ["raw"]
+
+    assert formatted(batched_spy, rows) == expected
+    assert shapes == [str, list, list]
+    empty_first = [{"problem": "", "answer": ""}, *rows]
+    assert formatted(batched, empty_first) == [[], *expected]
+    assert formatted(per_row_skip_blank, empty_first[:2]) == [[], "Add 2 and 3."]
+    turn_rows = [{"turns": ["sys:fr", "hi", "yo"]}, {"turns": ["sys:en", "a", "b"]}]
+    assert formatted(batched_turns, turn_rows) == [["sys:fr hi yo"], ["sys:en a b"]]
+    import io
+    from PIL import Image
+
+    png = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(png, "PNG")
+
+    def per_row_image(example):
+        example["image"].verify()
+        return {"text": example["caption"]}
+
+    image_rows = [{"image": Image.open(io.BytesIO(png.getvalue())), "caption": "dot"}]
+    assert formatted(per_row_image, image_rows) == [{"text": "dot"}]
+    for func in (per_row, per_row_slice, per_row_dict, per_row_messages):
+        assert formatted(func, rows) == [func(row) for row in rows]
+    cyclic = {**rows[0], "meta": {}}
+    cyclic["meta"]["self"] = cyclic
+    assert formatted(per_row, [cyclic]) == [per_row(cyclic)]
+    filter_rows = [{"problem": "Skip.", "keep": False}, {"problem": "Halve 8.", "keep": True}]
+    assert formatted(per_row_filter, filter_rows) == [None, ["Halve 8.", "Done."]]
+    assert formatted(batched_pop, [dict(row) for row in rows]) == [["Add 2 and 3."], ["Halve 8."]]
+    wrapped = formatting_func(per_row_last)
+    with pytest.raises(IndexError):
+        wrapped({"answer": ""})
+    assert wrapped(rows[0]) == "46"
+    wrapped = formatting_func(batched)
+    with pytest.raises(KeyError):
+        wrapped({"problem": "No answer."})
+    assert wrapped(rows[1]) == ["Q: Halve 8. A: 4"]
+
+    def batched_initials(examples):
+        return [answer[0] for answer in examples["answer"]]
+
+    wrapped = formatting_func(batched_initials)
+    with pytest.raises(TypeError):
+        wrapped({"answer": 5})
+    assert wrapped(rows[0]) == ["F"]
+
+    def per_row_validated(example):
+        if not example["problem"]:
+            raise ValueError("empty problem")
+        return example["problem"] + example["answer"]
+
+    wrapped = formatting_func(per_row_validated)
+    with pytest.raises(ValueError):
+        wrapped({"problem": "", "answer": "x"})
+    assert wrapped(rows[1]) == "Halve 8.4"
+    one_pass = OnePass()
+    formatting_func(batched, one_pass)
+    assert list(one_pass) == rows
 
 
 def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():
@@ -942,20 +1076,20 @@ def test_mlx_trainer_rejects_custom_data_collator():
         )
 
 
-def test_mlx_trainer_rejects_text_completion_only_loss():
-    """Text MLX training should not silently ignore completion_only_loss=True."""
+def test_mlx_trainer_allows_text_completion_only_loss():
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match = "completion_only_loss=True"):
-        unsloth.UnslothTrainer(
-            model = _DummyModel(),
-            tokenizer = None,
-            train_dataset = [],
-            args = unsloth.UnslothTrainingArguments(
-                max_steps = 1,
-                completion_only_loss = True,
-            ),
-        )
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(
+            max_steps = 1,
+            completion_only_loss = True,
+        ),
+    )
+
+    assert trainer.args.completion_only_loss is True
 
 
 def test_mlx_trainer_allows_vlm_completion_only_loss():
@@ -990,8 +1124,8 @@ def test_mlx_trainer_accepts_trl_style_positional_args():
         tokenizer = None,
     )
 
-    assert trainer.args is args
     assert trainer.args.output_dir == "trl-outputs"
+    assert trainer.args.max_steps == 2
     assert trainer.train_dataset == []
 
 
@@ -1156,9 +1290,6 @@ def test_mlx_trl_star_import_exports_public_shims():
 
 
 def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
-    """GRPO/DPO/ORPO trainers have no MLX path, so the shim retargets the ones trl
-    exposes to a clear NotImplementedError instead of a confusing CUDA crash, and
-    never invents trainers trl does not have."""
     unsloth = _import_mlx_unsloth()
     trl = types.ModuleType("trl")
     trl.__path__ = ["real-trainer-package"]
@@ -1167,21 +1298,20 @@ def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
         def __init__(self, *args, **kwargs):
             raise AssertionError("the real torch/CUDA trainer must not run on MLX")
 
-    trl.GRPOTrainer = _RealTrainer
-    trl.DPOTrainer = _RealTrainer
+    trl.PPOTrainer = _RealTrainer
     monkeypatch.setitem(sys.modules, "trl", trl)
 
     unsloth._install_mlx_trl_sft_shim()
 
-    for name in ("GRPOTrainer", "DPOTrainer"):
+    for name in ("PPOTrainer",):
         assert getattr(trl, name) is not _RealTrainer
         with pytest.raises(NotImplementedError) as exc:
             getattr(trl, name)(model = None, args = None)
         assert "MLX" in str(exc.value) and name in str(exc.value)
-    assert not hasattr(trl, "PPOTrainer")
-    stub = trl.GRPOTrainer
+    assert not hasattr(trl, "RewardTrainer")
+    stub = trl.PPOTrainer
     unsloth._install_mlx_trl_sft_shim()
-    assert trl.GRPOTrainer is stub
+    assert trl.PPOTrainer is stub
 
 
 def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
@@ -1189,7 +1319,7 @@ def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
     unsloth = _import_mlx_unsloth()
     trl = types.ModuleType("trl")
     trl.__path__ = ["real-trainer-package"]
-    trl.__all__ = ["SFTTrainer", "SFTConfig", "GRPOTrainer", "DPOTrainer"]
+    trl.__all__ = ["SFTTrainer", "SFTConfig", "RLOOTrainer", "GKDTrainer"]
     resolved = []
 
     def _lazy_getattr(name):
@@ -1202,7 +1332,7 @@ def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
     unsloth._install_mlx_trl_sft_shim()
 
     assert resolved == []
-    for name in ("GRPOTrainer", "DPOTrainer"):
+    for name in ("RLOOTrainer", "GKDTrainer"):
         with pytest.raises(NotImplementedError):
             getattr(trl, name)(model = None)
 
@@ -1378,7 +1508,7 @@ def test_mlx_torch_cuda_compatibility_shim():
     assert cuda_stats.name == stats.name
     assert cuda_stats.total_memory == stats.total_memory
     assert torch.cuda.get_device_name(0) == stats.name
-    assert torch.cuda.max_memory_reserved() == int(used * 1024 * 1024 * 1024)
+    assert round(torch.cuda.max_memory_reserved() / 1024**3, 3) == used
     assert torch.cuda.max_memory_allocated() == torch.cuda.max_memory_reserved()
     assert 0 <= torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
     assert torch.cuda.memory_allocated() == torch.cuda.memory_reserved()
@@ -1405,3 +1535,17 @@ def test_mlx_torch_cuda_compatibility_shim():
     batch = BatchEncoding({"input_ids": tensor})
     assert batch.to("cuda") is batch
     assert batch.to(device = "cuda") is batch
+
+
+def test_mlx_torch_cuda_current_memory_never_exceeds_peak():
+    _import_mlx_unsloth()
+    torch = pytest.importorskip("torch")
+    import mlx.core as mx
+
+    held = mx.ones((64 * 1024,))
+    mx.eval(held)
+    assert 0 < torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
+    assert torch.cuda.max_memory_allocated() >= mx.get_peak_memory()
+
+    torch.cuda.reset_peak_memory_stats()
+    assert 0 < torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()

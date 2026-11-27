@@ -166,8 +166,7 @@ def test_summary_counts_a_mixed_folder_by_kind(tmp_path):
 
 
 def test_info_lists_a_clip_only_dataset(client, ds_root):
-    """The bug this change exists to fix: a folder of clips was never offered in the picker,
-    so the video trainer could not be pointed at anything."""
+    """Clip-only folders were missing from the picker, so video training had no dataset."""
     folder = ds_root / "clipset"
     folder.mkdir()
     (folder / "one.mp4").write_bytes(_MP4_BYTES)
@@ -275,8 +274,7 @@ def test_upload_still_refuses_an_extension_of_neither_kind(client, ds_root):
 
 
 def test_upload_refuses_an_image_and_a_clip_sharing_a_stem(client, ds_root):
-    """cat.png and cat.mp4 both resolve to cat.txt, exactly as two images do, so the same
-    refusal has to cover the cross-kind pair."""
+    """cat.png and cat.mp4 share cat.txt, as two images do, so the refusal must cover both."""
     r = client.post(
         "/api/train/diffusion/dataset",
         data = {"name": "mixed"},
@@ -306,8 +304,7 @@ def test_upload_refuses_a_clip_whose_stem_is_already_in_the_folder(client, ds_ro
 
 
 def test_upload_does_not_decode_a_clip_as_an_image(client, ds_root):
-    """The decompression-bomb check is about pixels and stays on images. A clip whose bytes
-    Pillow cannot open must not be turned into a 400 by it."""
+    """Decompression-bomb check is about pixels; a clip Pillow cannot open must not be a 400."""
     r = client.post(
         "/api/train/diffusion/dataset",
         data = {"name": "clipset"},
@@ -402,6 +399,31 @@ def test_the_summary_reads_a_video_keyed_metadata_caption(tmp_path):
     assert len(discover_clip_caption_pairs(folder)) == 2
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
+def test_a_caption_holding_a_unicode_line_separator_is_not_dropped(tmp_path, separator):
+    """splitlines() cut these raw in-string separators mid-row, silently dropping the caption."""
+    from core.training.diffusion_h3_clips import discover_clip_caption_pairs
+    from core.training.diffusion_train_common import discover_image_caption_pairs
+    from routes.training import _load_metadata_captions
+
+    folder = tmp_path / "separators"
+    folder.mkdir()
+    _write_png(folder / "a.png")
+    (folder / "b.mp4").write_bytes(_MP4_BYTES)
+    caption = f"line one{separator}line two"
+    rows = [
+        {"file_name": "a.png", "text": caption},
+        {"file_name": "b.mp4", "text": caption},
+    ]
+    (folder / "metadata.jsonl").write_text(
+        "\n".join(json.dumps(row, ensure_ascii = False) for row in rows) + "\n", encoding = "utf-8"
+    )
+
+    assert _load_metadata_captions(folder) == {"a.png": caption, "b.mp4": caption}
+    assert [c for _, c in discover_image_caption_pairs(folder)] == [caption]
+    assert [c for _, c in discover_clip_caption_pairs(folder)] == [caption]
+
+
 def test_start_leaves_an_image_only_folder_alone(tmp_path):
     """No clips, no refusal: the ordinary uncaptioned-folder error still speaks for itself."""
     from routes.training import _clip_dataset_refusal
@@ -415,9 +437,8 @@ def test_start_leaves_an_image_only_folder_alone(tmp_path):
 
 
 def test_deleting_an_image_keeps_a_case_folded_clips_caption(client, ds_root, monkeypatch):
-    """Where the filesystem folds case, CAT.mp4's sidecar IS cat.txt, so an exact stem compare
-    would delete the caption the clip still reads. The upload refuses to create such a pair,
-    but an externally populated folder can hold one."""
+    """Case-folding filesystems: CAT.mp4's sidecar is cat.txt, so an exact stem compare would delete
+    the caption the clip reads; uploads refuse such pairs, but folders can hold one."""
     import routes.training as tr
 
     monkeypatch.setattr(tr, "_dataset_folder_is_case_insensitive", lambda folder: True)
@@ -434,14 +455,19 @@ def test_deleting_an_image_keeps_a_case_folded_clips_caption(client, ds_root, mo
 
 
 def test_deleting_an_image_still_drops_its_sidecar_where_case_is_kept(client, ds_root, monkeypatch):
-    """The other half of the same probe. Here CAT.mp4 reads CAT.txt, a different file, so
-    cat.txt belongs to the image alone and must go with it: left behind, the next cat.png
-    uploaded into this folder would silently inherit a caption written for something else."""
+    """Here CAT.mp4 reads CAT.txt, so cat.txt belongs to the image alone and goes with it, or the
+    next cat.png inherits a caption written for something else."""
     import routes.training as tr
 
-    monkeypatch.setattr(tr, "_dataset_folder_is_case_insensitive", lambda folder: False)
     folder = ds_root / "sensitive-case"
     folder.mkdir()
+    # cat.txt and CAT.txt must be two files; on a case-insensitive filesystem (the macOS and
+    # Windows defaults) they are one, so the case-kept layout cannot be built there.
+    (folder / "probe.txt").write_text("", encoding = "utf-8")
+    if (folder / "PROBE.txt").exists():
+        pytest.skip("needs a case-sensitive filesystem to hold cat.txt and CAT.txt apart")
+    (folder / "probe.txt").unlink()
+    monkeypatch.setattr(tr, "_dataset_folder_is_case_insensitive", lambda folder: False)
     _write_png(folder / "cat.png")
     (folder / "CAT.mp4").write_bytes(_MP4_BYTES)
     (folder / "cat.txt").write_text("a cat", encoding = "utf-8")

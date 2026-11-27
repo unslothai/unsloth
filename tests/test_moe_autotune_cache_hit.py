@@ -46,6 +46,9 @@ def ac(monkeypatch, tmp_path):
     module = importlib.import_module("unsloth.kernels.moe.autotune_cache")
     # Ample SMEM so the load-time refit keeps tuned tiles as saved.
     monkeypatch.setattr(module, "_device_smem_per_block", lambda: 1 << 20)
+    # One mocked H100: the cache key carries the GPU model, so pin it rather than read the host's card.
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(module, "_device_model", lambda index: H100_MODEL)
     module.clear_cache()
     yield module
     module.clear_cache()
@@ -54,6 +57,7 @@ def ac(monkeypatch, tmp_path):
             sys.modules.pop(name, None)
 
 
+H100_MODEL = ("NVIDIA H100 80GB HBM3", 9, 0, 132)
 DIMS = dict(num_experts = 128, hidden_dim = 2048, intermediate_dim = 768, top_k = 8)
 
 
@@ -79,7 +83,9 @@ def _tuned_configs():
 
 
 def _key(ac, capability = (9, 0)):
-    return ac._get_cache_key(dtype = torch.bfloat16, device_capability = capability, **DIMS)
+    return ac._get_cache_key(
+        dtype = torch.bfloat16, device_capability = capability, device_model = H100_MODEL, **DIMS
+    )
 
 
 def _no_autotune(*args, **kwargs):

@@ -97,6 +97,38 @@ def test_a_slow_failure_travels_in_the_body(route):
     assert body["_deferred_error"] == {"status_code": 500, "detail": "llama-server died"}
 
 
+@pytest.mark.parametrize("wait", [False, True])
+def test_managed_engine_log_target_survives_load_failure(route, wait):
+    detail = {
+        "code": "managed_engine_load_failed",
+        "message": "Engine failed to start. CUDA out of memory",
+        "log_family": "sglang",
+        "log_path": "/home/test/logs/sglang/sglang-attempt.log",
+    }
+    failure = HTTPException(status_code = 500, detail = detail)
+    assert route._ran_out_of_memory(failure)
+
+    async def fail():
+        if wait:
+            await asyncio.sleep(0.2)
+        raise failure
+
+    async def run():
+        return await route._tunnel_safe_json(fail(), label = "Model load")
+
+    if not wait:
+        with pytest.raises(HTTPException) as immediate:
+            asyncio.run(run())
+        assert immediate.value.detail == detail
+    else:
+
+        async def collect():
+            return b"".join(await _collect(await run()))
+
+        response = json.loads(asyncio.run(collect()))
+        assert response[route._DEFERRED_ERROR_KEY] == {"status_code": 500, "detail": detail}
+
+
 def test_an_unexpected_slow_failure_becomes_a_500(route):
     async def slow_boom():
         await asyncio.sleep(0.2)
@@ -152,8 +184,7 @@ def _load_request(model_path = "unsloth/Kimi-K3-GGUF"):
 
 
 def test_an_in_process_caller_gets_the_real_result(route, slow_load):
-    """preview awaits load_model_gated, so a slow load blocks until the model is
-    resident; awaiting the route would hand back an undrained StreamingResponse."""
+    """Awaiting load_model_gated blocks until resident; the route returns an undrained stream."""
     result = asyncio.run(route.load_model_gated(_load_request(), None, "admin"))
 
     assert not isinstance(result, StreamingResponse)
@@ -242,8 +273,7 @@ def test_preview_chat_waits_for_a_slow_checkpoint_load(route, slow_load, monkeyp
     assert not preview._preview_lock.locked()
 
 
-# unload_model is sync and a 600 GB teardown takes ~160s; called bare it blocks the pad
-# generator and the proxy 524s.
+# Sync unload_model blocks the pad generator during a 600 GB teardown, so the proxy 524s.
 
 
 class _SlowSyncTeardown:
@@ -529,11 +559,8 @@ def test_both_clients_reject_a_truncated_padded_body():
 
 
 def test_the_pad_interval_stays_inside_the_proxy_window():
-    """The tunnel kills a connection ~100s after the last byte, so leave margin.
-
-    Reads the source, not the module, so the fixture's fast values cannot mask a
-    bad default.
-    """
+    """The tunnel kills a connection ~100s after the last byte, so the pad interval must stay well
+    inside that; the test reads the source so fixture values cannot mask a bad default."""
     src = (_backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
     after = float(src.split("_TUNNEL_KEEPALIVE_AFTER_S = ")[1].split("\n")[0])
     every = float(src.split("_TUNNEL_KEEPALIVE_EVERY_S = ")[1].split("\n")[0])

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HTTPS served by Studio itself from a user-supplied certificate and key (``--ssl-certfile`` / ``--ssl-keyfile``).
-
-Studio still calls its own ``/v1`` (data recipes, research runs) from children that cannot be told to trust a
-private certificate, so a TLS launch also serves plain HTTP on an ephemeral ``127.0.0.1`` port for those
-self-calls; :func:`loopback_http_port` names it.
-"""
+"""HTTPS from user-supplied --ssl-certfile/--ssl-keyfile; a TLS launch also serves plain HTTP on an
+ephemeral 127.0.0.1 port (loopback_http_port) for Studio's own /v1 self-calls from children that
+cannot trust the cert."""
 
 from __future__ import annotations
 

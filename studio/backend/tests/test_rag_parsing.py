@@ -81,9 +81,7 @@ def test_pdf_markdown_keeps_text_drawn_over_a_picture(tmp_path, monkeypatch):
 
 
 def test_pdf_markdown_does_not_render_scanned_pages(tmp_path, monkeypatch):
-    # pymupdf4llm's background-colour probe renders page corners; under a full-page scan that
-    # decodes the whole image while holding the GIL, which starved the event loop until the
-    # desktop watchdog killed the backend (#13094). Text pages keep the probe.
+    # Scanned pages skip pymupdf4llm's background probe, which starved the event loop (issue 13094).
     pytest.importorskip("pymupdf4llm")
     import pymupdf
 
@@ -163,6 +161,134 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
     assert "Q2" in text and "$1.5M" in text
     assert "#" not in text and "|" not in text
+
+
+@pytest.mark.parametrize("markdown", [True, False])
+def test_pdf_form_keeps_which_boxes_are_ticked(tmp_path, monkeypatch, markdown):
+    if markdown:
+        pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", markdown)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((40, 60), "Smoker:")
+    for x, answer, ticked in ((120, "Yes", False), (180, "No", True)):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        widget.field_name = f"smoker_{answer.lower()}"
+        widget.field_label = f"Smoker {answer}"
+        widget.rect = pymupdf.Rect(x, 50, x + 12, 62)
+        widget.field_value = ticked
+        page.add_widget(widget)
+        page.insert_text((x + 16, 60), answer)
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "Smoker No: Yes" in text
+    assert "Smoker Yes" not in text
+
+
+@pytest.mark.parametrize("shared_field", [True, False])
+def test_pdf_form_names_the_ticked_box_when_boxes_share_a_name_or_tooltip(tmp_path, shared_field):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    refs = []
+    for x, answer in ((120, "Yes"), (210, "No")):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        widget.field_name = f"smoker_{answer.lower()}"
+        widget.field_label = f"Smoker {answer}" if shared_field else "Smoker"
+        widget.field_value = answer == ("Yes" if shared_field else "No")
+        widget.rect = pymupdf.Rect(x, 50, x + 12, 62)
+        refs.append(page.add_widget(widget).xref)
+    if shared_field:
+        # One /Btn field, two kids with export values Yes / No; both inherit /V /Yes.
+        parent = doc.get_new_xref()
+        doc.update_object(
+            parent, f"<< /FT /Btn /T (smoker) /V /Yes /Kids [{refs[0]} 0 R {refs[1]} 0 R] >>"
+        )
+        for ref in refs:
+            doc.xref_set_key(ref, "Parent", f"{parent} 0 R")
+            for key in ("T", "FT", "V"):
+                doc.xref_set_key(ref, key, "null")
+        _, on = doc.xref_get_key(refs[1], "AP/N/Yes")
+        _, off = doc.xref_get_key(refs[1], "AP/N/Off")
+        doc.xref_set_key(refs[1], "AP/N", f"<< /Off {off} /No {on} >>")
+        doc.xref_set_key(doc.pdf_catalog(), "AcroForm/Fields", f"[{parent} 0 R]")
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    with pymupdf.open(str(pdf)) as reopened:
+        lines = parsers._pdf_form_field_lines(reopened[0])
+    if shared_field:
+        # pymupdf 2.x labels the kid with its parent field ("smoker: Yes").
+        assert len(lines) == 1 and lines[0].endswith(": Yes") and "No" not in lines[0]
+    else:
+        assert lines == ["Smoker (smoker_no): Yes"]
+
+
+@pytest.mark.parametrize("flag", [1, 2, 32])
+def test_pdf_form_skips_invisible_hidden_and_noview_fields(tmp_path, flag):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for name, y in (("shown", 80), ("masked", 120)):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+        widget.field_name = name
+        widget.field_value = f"{name} value"
+        widget.rect = pymupdf.Rect(40, y, 240, y + 20)
+        xref = page.add_widget(widget).xref
+    doc.xref_set_key(xref, "F", str(flag))
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    with pymupdf.open(str(pdf)) as reopened:
+        assert parsers._pdf_form_field_lines(reopened[0]) == ["shown: shown value"]
+
+
+# PyMuPDF raises while loading either widget; main never read widgets, so it parsed these.
+@pytest.mark.parametrize("key, value", [("DA", "(garbage Tf)"), ("Parent", "self")])
+@pytest.mark.parametrize("markdown", [True, False])
+def test_pdf_with_a_malformed_form_field_still_reads_its_text(
+    tmp_path, monkeypatch, markdown, key, value
+):
+    if markdown:
+        pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", markdown)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((40, 60), "Budget: 4200")
+    widget = pymupdf.Widget()
+    widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+    widget.field_name = "notes"
+    widget.field_value = "x"
+    widget.rect = pymupdf.Rect(40, 80, 240, 100)
+    xref = page.add_widget(widget).xref
+    doc.xref_set_key(xref, key, f"{xref} 0 R" if value == "self" else value)
+    pdf = tmp_path / "damaged.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    assert "Budget: 4200" in "\n".join(p.text for p in parsers.parse(str(pdf)))
 
 
 def test_pdf_bytes_use_same_extraction_path(tmp_path, monkeypatch):
@@ -872,6 +998,27 @@ def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
     )
 
 
+def _sup(text):
+    return f'<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+def test_docx_keeps_superscript_exponents(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('The tank holds 2.5 × 10')}{_sup('6')}{_r(' litres over 40 km')}{_sup('2')}{_r('.')}</w:p>",
+        f"<w:p>{_r('Tolerance is 10')}{_sup('-')}{_sup('3')}{_r(' m')}</w:p>",
+        f"<w:p>{_r('Due on the 1')}{_sup('st')}{_r(', as noted.')}{_sup('4')}{_r(' H')}"
+        f'<w:r><w:rPr><w:vertAlign w:val="subscript"/></w:rPr><w:t>2</w:t></w:r>{_r("O")}</w:p>',
+        f"<w:p>{_r('As the clai')}{_r('m')}{_sup('1,2')}{_r(' states.')}</w:p>",
+        f'<w:p>{_r("Line 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:br/><w:t>6</w:t></w:r>'
+        f'{_r(" 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:tab/><w:t>6</w:t></w:r></w:p>',
+    )
+    assert text == (
+        "The tank holds 2.5 × 10^6 litres over 40 km^2.\nTolerance is 10^-3 m\nDue on the 1st, as noted.4 H2O\n"
+        "As the claim1,2 states.\nLine 10\n6 10\t6"
+    )
+
+
 def test_docx_keeps_list_numbers(tmp_path):
     document, docx, parsers = _shared_setup_1()
     document.add_paragraph("Lease terms")
@@ -1079,6 +1226,32 @@ def test_html_keeps_inline_elements_in_their_line(tmp_path):
     assert text == "The quick brown fox jumps over the lazy dog.\nIt is unbelievable."
 
 
+def test_html_keeps_superscript_exponents(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<p>Mass is 1.898×10<sup>27</sup> kg; MAX is 2<sup>53</sup> - 1.</p>"
+        "<p>Tolerance is 10<sup>-3</sup> m over 40 km<sup>2</sup>.</p>"
+        '<p>Held on the 21<sup>st</sup> of June.<sup>4</sup> See Smith<sup class="reference">[2]</sup>'
+        ' and Jones<sup class="footnote-ref">3</sup>.</p>'
+        "<p>As the clai<span>m</span><sup>1,2</sup> states.</p>",
+    )
+    assert text == (
+        "Mass is 1.898×10^27 kg; MAX is 2^53 - 1.\nTolerance is 10^-3 m over 40 km^2.\n"
+        "Held on the 21st of June.4 See Smith[2] and Jones3.\nAs the claim1,2 states."
+    )
+
+
+def test_html_footnote_links_stay_references(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<p>Smith<sup id="fnref:1"><a class="footnote-ref" href="#fn:1">1</a></sup>,'
+        ' Jones<sup><a href="#user-content-fn-2" data-footnote-ref>2</a></sup> and'
+        ' Lee<a href="#fn3" class="footnote-ref"><sup>3</sup></a> cover'
+        ' <a href="/area">40 km<sup>2</sup></a>.</p>',
+    )
+    assert text == "Smith1, Jones2 and Lee3 cover 40 km^2."
+
+
 def test_html_adjacent_buttons_stay_separate_words(tmp_path):
     text = _parse_html(
         tmp_path, "<p>Click <button>Accept</button><button>Decline</button> to go on.</p>"
@@ -1104,6 +1277,16 @@ def test_html_ordered_lists_keep_their_numbers(tmp_path):
     assert text == (
         "1. Unplug\n2. Wait\nNote\n4. Plug in\na. Left\ne. Right\n3. Three\n2. Two\n1. One"
     )
+
+
+def test_html_check_boxes_keep_their_ticked_state(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<ul><li><input type="checkbox" checked> Ship</li><li><input type="checkbox"> Docs</li></ul>'
+        '<ol><li><input type="checkbox" checked disabled />Test</ol>'
+        '<p>Smoker:<input type="radio" checked> Yes <input type="radio"> No <input type="text"> Age</p>',
+    )
+    assert text == "☒ Ship\n☐ Docs\n1. ☒ Test\nSmoker: ☒ Yes ☐ No Age"
 
 
 def test_html_list_numbers_stay_in_their_cell(tmp_path):
@@ -1269,3 +1452,90 @@ def test_html_keeps_declarative_shadow_root_text(tmp_path):
 def test_html_template_blocks_do_not_split_visible_text(tmp_path):
     text = _parse_html(tmp_path, "<p>Hello <template><div>hidden</div></template>world</p>")
     assert text == "Hello world"
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ("<p>Current</p><div hidden><p>Obsolete</p></div><p>After</p>", "Current\nAfter"),
+        ('<p>A<span hidden="">obsolete<b>nested</b></span>B</p>', "AB"),
+        ('<p>Current</p><div hidden="false">Obsolete</div>', "Current"),
+        ('<p>Current</p><div hidden=" until-found ">Obsolete</div>', "Current"),
+        ('<div hidden><span style="display:block">Obsolete</span></div><p>After</p>', "After"),
+        ('<p>Before<input hidden type="checkbox" checked>After</p>', "BeforeAfter"),
+        ('<p>Before<br hidden/><img hidden src="x">After</p>', "BeforeAfter"),
+        ("<p>Before<span hidden/>After</p>", "BeforeAfter"),
+    ],
+)
+def test_html_skips_native_hidden_subtrees(tmp_path, body, expected):
+    assert _parse_html(tmp_path, body) == expected
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ("<p hidden>Obsolete<p>Current", "Current"),
+        ("<p>Before<div hidden>Obsolete</div>After", "Before\nAfter"),
+        ("<ul><li hidden>Obsolete<li>Current</ul>", "Current"),
+        ("<ul><li hidden>Obsolete<ul><li>Nested</li></ul></li><li>Current</li></ul>", "Current"),
+        ("<table><tr><td hidden>Obsolete<td>Current</tr></table>", "Current"),
+        ("<table><tr hidden><td>Obsolete<tr><td>Current</table>", "Current"),
+        (
+            "<table><tr><td>Before<span hidden>Obsolete</td><td>After</td></tr></table>",
+            "Before | After",
+        ),
+        ("<ol><li>Before<span hidden>Obsolete</li><li>After</li></ol>", "1. Before\n2. After"),
+        ("<table><caption><p hidden>Obsolete<tr><td>Current</table>", "Current"),
+        ("<p>A<textarea hidden><p>Obsolete</p></textarea>B</p>", "AB"),
+        ("<p>A<textarea hidden/>B</p>", "AB"),
+        (
+            "<p>A<span hidden><svg><foreignObject><div>Obsolete</div></foreignObject></svg></span>B</p>",
+            "AB",
+        ),
+    ],
+)
+def test_html_hidden_scope_releases_visible_siblings(tmp_path, body, expected):
+    assert _parse_html(tmp_path, body) == expected
+
+
+@pytest.mark.parametrize("value", ["until-found", "UNTIL-FOUND"])
+def test_html_hidden_until_found_remains_searchable(tmp_path, value):
+    text = _parse_html(tmp_path, f'<p>Before</p><div hidden="{value}">Findable</div><p>After</p>')
+    assert text == "Before\nFindable\nAfter"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<head hidden><title>Title</title><body>Current",
+        "<table><caption hidden>Caption<tr><td>Current</td></tr></table>",
+        "<select><optgroup hidden><option>Option<hr><option>Current</select>",
+        "<ruby><rt hidden>Ruby<rp>Current</ruby>",
+    ],
+)
+def test_html_hidden_without_tracked_end_keeps_following_text(tmp_path, body):
+    assert _parse_html(tmp_path, body).endswith("Current")
+
+
+@pytest.mark.parametrize("role", ["tabpanel", "TabPanel", "region tabpanel"])
+def test_html_hidden_tab_panels_keep_their_text(tmp_path, role):
+    body = (
+        '<div role="tablist"><button role="tab">Debian</button><button role="tab">Arch</button></div>'
+        f'<div role="{role}"><pre>sudo apt install libwebkit2gtk-4.1-dev</pre></div>'
+        f'<div role="{role}" hidden><pre>sudo pacman -S webkit2gtk-4.1</pre></div>'
+        "<p>After</p>"
+    )
+    text = _parse_html(tmp_path, body)
+    assert "sudo apt install libwebkit2gtk-4.1-dev" in text
+    assert "sudo pacman -S webkit2gtk-4.1" in text
+    assert text.endswith("After")
+
+
+def test_html_hidden_non_tab_panels_stay_hidden(tmp_path):
+    body = '<div role="tab" hidden>Obsolete</div><div role="dialog" hidden>Gone</div><p>Current</p>'
+    assert _parse_html(tmp_path, body) == "Current"
+
+
+def test_html_hidden_markup_inside_visible_raw_text_stays_text(tmp_path):
+    text = _parse_html(tmp_path, "<textarea><span hidden>Current</span></textarea><p>After</p>")
+    assert "Current" in text and text.endswith("After")

@@ -13,7 +13,7 @@ const ProjectsPage = lazyRouteComponent(
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/projects",
-  staticData: { title: "Projects" },
+  staticData: { titleKey: "shell.navigation.projects" },
   beforeLoad: () => requireAuth(),
   component: ProjectsPage,
 });

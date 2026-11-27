@@ -43,8 +43,7 @@ def _renders_catalog(template, **context):
     [
         # Aliases the catalog and renders the alias; no marker matched. The bug.
         ("granite-3.3", True),
-        # Fills a namespace field inside the guard, renders it outside, so nothing
-        # is emitted where the walk sees the guard. The marker scan said yes.
+        # Namespace field filled inside the guard, rendered outside; the marker scan said yes.
         ("lfm2-tool", True),
         # Names a `tools` variable but never renders anything derived from it.
         ("phi-4-mini", False),
@@ -68,8 +67,7 @@ def test_lfm2_really_does_render_its_catalog():
 
 
 def test_granite_really_does_render_its_catalog():
-    """Pins the ground truth rather than the detector, so this test still means
-    something if the detector changes."""
+    """Pins Jinja's real rendering, not the detector, so it outlives detector changes."""
     environment = Environment(extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"])
     rendered = environment.from_string(_published("granite-3.3")).render(
         tools = list(TOOLS),
@@ -111,13 +109,11 @@ def test_guard_spellings(template, detected):
         ("{% set a = tools %}{% set b = a %}{{ b|tojson }}", True),
         ("{% if tools %}{% set c = tools %}{% endif %}{{ c|tojson }}", True),
         ("{% set catalog = tools %}{{ catalog|length }}", False),
-        # glm-4-9b-chat reads `tools` off a message inside the branch that renders
-        # it, so it never consumes what Studio passes in.
+        # glm-4-9b-chat reads tools off a message, never the catalog Studio passes in.
         ("{% set tools = item['tools'] %}{{ tools|tojson }}", False),
         ("{% set tools = none %}{{ tools }}", False),
         ("{% set catalog = tools %}{% set catalog = [] %}{{ catalog|tojson }}", False),
-        # LFM2 builds its whole tool block this way: loop variable to namespace
-        # field, rendered outside any guard the walk can see.
+        # LFM2 copies a loop variable into a namespace field, rendered outside any guard.
         (
             "{% set ns = namespace(p='') %}{% for t in tools %}"
             "{% set ns.p = ns.p + (t|tojson) %}{% endfor %}{{ ns.p }}",
@@ -126,8 +122,7 @@ def test_guard_spellings(template, detected):
         ("{% set ns = namespace(c=none) %}{% set ns.c = tools %}{{ ns.c|tojson }}", True),
         ("{% set ns = namespace(c=none) %}{% set ns.c = messages %}{{ ns.c|tojson }}", False),
         ("{% set a, b = tools, none %}{{ a|tojson }}", True),
-        # Skip the branch and the catalog is still bound, so a rebinding inside one
-        # must not follow the walk out. The unconditional cases above still kill.
+        # Skipping the branch leaves the catalog bound, so a rebinding inside must not leak.
         ("{% if legacy %}{% set tools = none %}{% endif %}{{ tools|tojson }}", True),
         ("{% if legacy %}{% set tools = none %}{% else %}{{ tools|tojson }}{% endif %}", True),
         (
@@ -282,15 +277,13 @@ def test_a_guarded_branch_counts_even_without_naming_the_catalog():
     ],
 )
 def test_hostile_templates_never_raise(template):
-    """This runs on the GGUF metadata read and the llama-server launch, so it must
-    return a verdict rather than stop a model from loading."""
+    """Runs on the GGUF metadata read and llama-server launch, so it must never raise."""
     assert template_supports_tools(template) in (True, False)
 
 
 @pytest.mark.parametrize("template", [None, 123, b"bytes", {"default": "x"}, [{"name": "x"}]])
 def test_non_string_templates_are_turned_away(template):
-    """Hugging Face ships named-template maps and Hermes-style lists. These reach the
-    detector unhashable, so the type check has to sit outside the cache."""
+    """Unhashable template maps and lists: the type check must sit outside the cache."""
     assert template_supports_tools(template) is False
 
 
@@ -318,8 +311,7 @@ def test_a_string_subclass_cannot_escape_the_fail_closed_branch():
     ],
 )
 def test_line_endings_and_byte_order_marks_do_not_change_the_verdict(template):
-    """A Windows checkout and a file saved with a BOM have to agree with everyone
-    else, which is the whole point of reading syntax rather than bytes."""
+    """Line endings and a BOM must not change the verdict; detection reads syntax, not bytes."""
     base = template_supports_tools(template)
     assert template_supports_tools(template.replace("\n", "\r\n")) is base
     assert template_supports_tools("﻿" + template) is base
@@ -337,9 +329,7 @@ def test_the_generation_tag_still_parses():
 
 
 def test_unrelated_conditions_do_not_degrade():
-    """Nothing here forks a state per condition, so a template with many unrelated
-    guards costs no more than a linear walk. Qwen3-Coder-30B is the reason to keep
-    checking: it is long enough that any per-branch blow-up would reach it."""
+    """Unrelated guards must not fork state per condition; Qwen3-Coder-30B catches any blow-up."""
     template = (
         "".join("{%% if flag%d %%}plain{%% endif %%}" % index for index in range(300))
         + "{% if tools %}{{ tools|tojson }}{% endif %}"

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Single-frame fast path for the Qwen-Image causal 3D VAE: one frame with no cache only meets the last
-temporal kernel slice, so each conv is exactly ``conv2d(x[:, :, 0], weight[:, :, -1], bias)``, and the
-first chunk of the cached walk equals ``decoder(x, feat_cache=None)``. Gated to single-frame untiled
-calls (tiled / multi-frame keep 3D convs). PSNR ~60 dB vs 3D (different cuDNN algo), so non-``off``
-tiers only. Kill switch, read at install: ``UNSLOTH_DIFFUSION_VAE_SINGLE_FRAME=0``."""
+"""Qwen-Image VAE single-frame untiled path, non-off tiers only; UNSLOTH_DIFFUSION_VAE_SINGLE_FRAME=0"""
 
 from __future__ import annotations
 
@@ -62,6 +58,10 @@ def _conv_forward(
             dilation = self.dilation[1:],
         )
         return out.unsqueeze(2)
+    # Keep a previously bound forward (MPS zero-buffer pad) for other calls.
+    inner = self.__dict__.get("_unsloth_sf_inner")
+    if inner is not None:
+        return inner(x, cache_x)
     return type(self).forward(self, x, cache_x)
 
 
@@ -132,6 +132,7 @@ def install(vae: Any, logger: Any = None) -> bool:
         gate = _Gate()
         for m in convs:
             m._unsloth_sf_gate = gate
+            m._unsloth_sf_inner = m.__dict__.get("forward")
             m.forward = types.MethodType(_conv_forward, m)
         vae._unsloth_sf_gate = gate
         vae._unsloth_stock_decode = vae._decode

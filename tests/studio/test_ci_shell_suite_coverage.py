@@ -55,9 +55,8 @@ def _skip_list(source: str) -> set[str]:
 
 class TestBackendCiRunsEveryShellTest:
     def test_step_discovers_the_directory_instead_of_listing_files(self):
-        """Matched against the parsed step script, and on the glob rather than a
-        verbatim line, so reformatting the loop does not turn CI red -- only
-        going back to a hardcoded list does."""
+        """Matches the glob in the parsed step script rather than a verbatim line, so reformatting
+        the loop keeps CI green; only a hardcoded list turns it red."""
         script = _shell_step_script()
         assert re.search(r"for\s+\w+\s+in\s+tests/sh/test_\*\.sh", script), (
             "Backend CI must glob tests/sh; a hardcoded list is how the ROCm WSL "
@@ -210,8 +209,7 @@ def _workflows_running_powershell_tests():
 
 
 class TestGithubPathMatcher:
-    """The guard below is only as good as this matcher; a wrong one would pass
-    everything silently."""
+    """The guard below is only as good as this matcher, since a wrong one would pass everything silently."""
 
     @pytest.mark.parametrize(
         "pattern,path,expected",

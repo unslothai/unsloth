@@ -15,6 +15,7 @@ const {
   mmprojLoadNotice,
   loadFallbackNotice,
   CPU_FALLBACK_MESSAGE,
+  cpuFallbackMessage,
 } = await import("../src/features/chat/utils/mmproj-fallback.ts");
 
 const IMAGE_INPUT_AVAILABLE = /Image input remains available/;
@@ -155,6 +156,23 @@ test("a CPU-offloaded projector under a CPU fallback does not claim vision is ac
   assert.equal(notice.degraded, true);
 });
 
+test("every CPU fallback reason says why the model is on the CPU", () => {
+  const noDevice = loadFallbackNotice("X loaded", "vulkan_no_device", null);
+  assert.equal(noDevice.title, "X loaded on CPU");
+  assert.equal(noDevice.description, cpuFallbackMessage("vulkan_no_device"));
+  assert.match(noDevice.description ?? "", /No usable Vulkan GPU was found/);
+  assert.equal(noDevice.degraded, true);
+
+  const stall = loadFallbackNotice("X loaded", "vulkan_startup_stall", "cpu_offload");
+  assert.equal(stall.title, "X loaded on CPU");
+  assert.match(stall.description ?? "", /stopped responding during startup/);
+  assert.match(stall.description ?? "", /Image input remains available/);
+
+  assert.equal(cpuFallbackMessage("vulkan_startup_crash"), CPU_FALLBACK_MESSAGE);
+  assert.equal(cpuFallbackMessage("something"), null);
+  assert.equal(cpuFallbackMessage(null), null);
+});
+
 test("each fallback alone still reads exactly as it did before", () => {
   const cpuOnly = loadFallbackNotice("X loaded", "vulkan_startup_crash", null);
   assert.equal(cpuOnly.title, "X loaded on CPU");
@@ -182,4 +200,28 @@ test("a clean load is not degraded and carries no description", () => {
   assert.equal(notice.title, "X loaded");
   assert.equal(notice.description, undefined);
   assert.equal(notice.degraded, false);
+});
+
+test("a placement note is said on a success toast and gives way to any warning", () => {
+  const note = "All 31 layers are on the GPU. The expert weights of 7 layers are on the CPU.";
+  const informed = loadFallbackNotice("X loaded", null, null, null, note);
+  assert.equal(informed.title, "X loaded");
+  assert.equal(informed.description, note);
+  assert.equal(informed.degraded, false);
+  // With a projector on the CPU the note still leads, and the load is a warning for the projector's sake.
+  const withProjector = loadFallbackNotice("X loaded", null, "cpu_offload", null, note);
+  assert.equal(
+    withProjector.description,
+    `${note} ${mmprojFallbackMessage("cpu_offload")}`,
+  );
+  assert.equal(withProjector.degraded, true);
+  const split = { titleSuffix: ", partly on CPU", description: "38 of 60 layers are on the GPU." };
+  assert.equal(
+    loadFallbackNotice("X loaded", null, null, split, note).description,
+    split.description,
+  );
+  assert.doesNotMatch(
+    loadFallbackNotice("X loaded", "vulkan_startup_crash", null, null, note).description ?? "",
+    /expert weights/,
+  );
 });

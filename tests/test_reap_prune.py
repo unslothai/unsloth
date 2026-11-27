@@ -300,12 +300,39 @@ def test_rejects_bad_requests():
     with pytest.raises(ValueError, match = "extra state to the next layer"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
     del layer0.forward
-    model.peft_config = {}
+    peft = pytest.importorskip("peft")
+    lora = peft.get_peft_model(model, peft.LoraConfig(r = 2, target_modules = ["q_proj"]))
+    with pytest.raises(RuntimeError, match = "get_peft_model"):
+        reap.reap_prune(lora, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    with pytest.raises(RuntimeError, match = "get_peft_model"):
+        reap.reap_prune(lora.base_model.model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    # Adapters that are not tuner layers (adaption prompt wraps attention in its own module).
+    wrapper = type(
+        "AdaptedAttention", (torch.nn.Module,), {"__module__": "peft.tuners.adaption_prompt.layer"}
+    )
+    lora.unload()
+    model.model.layers[0].adapted = wrapper()
     with pytest.raises(RuntimeError, match = "get_peft_model"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    del model.model.layers[0].adapted
+    # Custom LoRA layers registered from user code subclass PEFT's layer classes.
+    custom = type("CustomLoraLayer", (wrapper,), {"__module__": "my_package.layers"})
+    model.model.layers[0].adapted = custom()
+    with pytest.raises(RuntimeError, match = "get_peft_model"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    del model.model.layers[0].adapted
     # Nothing was touched by the refused calls.
-    del model.peft_config
     assert model.model.layers[1].mlp.experts.gate_up_proj.shape[0] == 16
+
+
+def test_merged_lora_with_leftover_peft_config_prunes():
+    peft = pytest.importorskip("peft")
+    samples = _samples(n = 4, seed = 5)
+    lora = peft.get_peft_model(_qwen3_moe(), peft.LoraConfig(r = 2, target_modules = ["q_proj"]))
+    merged = lora.merge_and_unload()
+    merged.peft_config = lora.peft_config  # PEFT 0.18 keeps it after merge_and_unload
+    reap.reap_prune(merged, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    assert merged.model.layers[1].mlp.experts.gate_up_proj.shape[0] == 12
 
 
 def test_full_layer_rerun_matches_residual_shortcut(monkeypatch):
@@ -1051,3 +1078,24 @@ def test_provenance_names_a_local_source_without_its_path(tmp_path):
     )
     data = json.loads((out / reap.REAP_PROVENANCE_FILE).read_text(encoding = "utf-8"))
     assert data["source_model"] == "my-moe"
+
+
+class _SyncsOnTrain(torch.nn.Module):
+    """A train() override that keeps its own copy of the mode, as Int4PackedLinear does."""
+
+    def __init__(self):
+        super().__init__()
+        self.synced = self.training
+
+    def train(self, mode = True):
+        self.synced = bool(mode)
+        return super().train(mode)
+
+
+def test_restores_mode_through_train_overrides():
+    model = _qwen3_moe()
+    model.probe = _SyncsOnTrain()
+    model.train()
+    reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
+    assert model.training and model.probe.training
+    assert model.probe.synced is True  # reap_prune's model.eval() ran it with False

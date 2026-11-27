@@ -56,16 +56,8 @@ class DeepSeekOCRDataCollator:
     ignore_index: int = -100
 
     def __call__(self, batch: List[dict]) -> dict:
-        """
-        Collate a batch of samples.
-
-        Args:
-            batch: List of dicts, each with 'messages' containing
-                   [{'role': 'user', 'content': [...]}, {'role': 'assistant', 'content': [...]}]
-
-        Returns:
-            dict with input_ids, attention_mask, labels, pixel_values, etc.
-        """
+        """Each sample holds 'messages': a user turn and an assistant turn, with content as lists of
+        parts."""
         from PIL import Image
 
         all_messages = []

@@ -41,9 +41,8 @@ def _comfy_model_sampling_flux_shift(max_shift, base_shift, width, height):
     return (width * height / (8 * 8 * 2 * 2)) * mm + b
 
 
-# The node a ComfyUI workflow for each family sets shift with: the model's native model_sampling (comfy/model_base.py
-# ModelType.FLUX -> ModelSamplingFlux, ModelType.FLOW -> ModelSamplingDiscreteFlow), except Qwen-Image / Edit /
-# Layered whose templates patch ModelSamplingAuraFlow over the FLUX-type QwenImage.
+# Node each ComfyUI workflow uses for shift: native ModelSampling per model type, but
+# Qwen-Image/Edit/Layered patch ModelSamplingAuraFlow.
 EXPECTED_NODES = {
     "flux.1": SHIFT_NODE_FLUX,
     "flux.1-kontext": SHIFT_NODE_FLUX,
@@ -60,7 +59,12 @@ EXPECTED_NODES = {
     "lumina-2": SHIFT_NODE_SD3,
     "hunyuanimage-2.1": SHIFT_NODE_SD3,
     "hidream-i1": SHIFT_NODE_SD3,
-    # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching.
+    "moss-image": SHIFT_NODE_SD3,
+    # Fixed PDD sigma grid (one output head per step): nothing to shift.
+    "minimax-h3-image": None,
+    "chroma": SHIFT_NODE_SD3,  # the template's ModelSamplingAuraFlow is the same time_snr_shift
+    # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching, Anima keeps its shift 3.
+    "anima": None,
     "ideogram-4": None,
     "sdxl": None,
 }
@@ -142,11 +146,40 @@ def test_flux_node_resolves_mu_at_the_output_size():
         (SHIFT_NODE_SD3, {"shift": float("nan")}, "above 0"),
         (SHIFT_NODE_FLUX, {"shift": 3.0}, "base / max"),
         (SHIFT_NODE_FLUX, {"max_shift": -1.0}, "between 0"),
+        (SHIFT_NODE_FLUX, {"base_shift": 89.0, "max_shift": 89.0}, "no usable"),
+        (SHIFT_NODE_FLUX, {"base_shift": 0.0, "max_shift": 100.0}, "no usable"),
     ],
 )
 def test_invalid_requests_are_refused(node, kwargs, needle):
     with pytest.raises(ValueError, match = needle):
         requested_flow_shift(node, width = 1024, height = 1024, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "hi, lo, w, h",
+    [
+        (80.0, 80.0, 1024, 1024),
+        (100.0, 0.0, 4096, 4096),
+        (100.0, 0.0, 512, 512),
+        (100.0, 0.0, 128, 128),
+        (0.0, 100.0, 1024, 1216),
+        (0.0, 100.0, 1024, 1056),
+    ],
+)
+def test_extreme_flux_shift_is_refused_or_builds_a_sane_schedule(hi, lo, w, h):
+    resident = _flow_euler(shift = 3.0, use_dynamic_shifting = True, base_shift = 0.5, max_shift = 1.15)
+    try:
+        shift = requested_flow_shift(
+            SHIFT_NODE_FLUX, base_shift = lo, max_shift = hi, width = w, height = h
+        )
+    except ValueError as exc:
+        assert "no usable" in str(exc)
+        return
+    built = scheduler_with_flow_shift(resident, shift)
+    built.set_timesteps(8, device = "cpu")
+    sigmas = built.sigmas.tolist()
+    assert all(0.0 <= x <= 1.0 + 1e-4 for x in sigmas), sigmas
+    assert all(a >= b for a, b in zip(sigmas, sigmas[1:])), sigmas
 
 
 def _flow_euler(**config):

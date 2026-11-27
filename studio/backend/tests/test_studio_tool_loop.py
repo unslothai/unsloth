@@ -508,8 +508,7 @@ def test_partial_marker_split_across_deltas_is_not_broken(executed):
 
 
 def test_unterminated_envelope_is_released_as_prose_and_terminates(executed):
-    """An unclosed tool envelope must be released as visible prose, never swallowed or turned into a
-    call."""
+    """An unclosed tool envelope must surface as prose, never be swallowed or run as a call."""
     transport = FakeTransport(
         [
             [
@@ -682,6 +681,48 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
 
     assert [call["name"] for call in executed] == ["python"]
     assert executed[0]["arguments"] == {"query": "2"}
+
+
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_an_allowed_call_tells_every_follower_before_tool_end(executed, monkeypatch, verdict):
+    """Only the client that answered clears its own prompt; other tabs learn it from tool_approved."""
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: object())
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: verdict
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
+    call = {"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport, tools = [PY], permission_mode = "ask", confirm_calls = True)
+
+    gated = [e for e in _events(lines, "tool_start") if e.get("awaiting_confirmation")]
+    approved = _events(lines, "tool_approved")
+    assert len(gated) == 1 and len(_events(lines, "tool_end")) == 1, lines
+    if verdict == "deny":
+        assert approved == []
+        return
+    assert approved == [
+        {
+            "type": "tool_approved",
+            "tool_name": "python",
+            "tool_call_id": gated[0]["tool_call_id"],
+            "approval_id": "ap1",
+        }
+    ]
+    kinds = [
+        json.loads(line[6:]).get("type")
+        for line in lines
+        if line.startswith("data: ") and line[6:] != "[DONE]"
+    ]
+    assert kinds.index("tool_start") < kinds.index("tool_approved") < kinds.index("tool_end")
+    # Same order as the GGUF loop: the approval before the running status.
+    assert "tool_status" not in kinds[kinds.index("tool_start") + 1 : kinds.index("tool_approved")]
 
 
 def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
@@ -1432,8 +1473,7 @@ def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
 
 
 def test_an_omitted_flag_still_follows_a_process_default_of_on(executed, monkeypatch):
-    """The contract the explicit false works around: if omission ever stops
-    following the process default, this fails and the false can be reconsidered."""
+    """Omission still follows the process default; if not, reconsider the explicit false."""
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
     transport = FakeTransport(
         [
@@ -1708,9 +1748,7 @@ def _call_delta(index, call_id, name, arguments):
 
 
 def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
-    """A string-only accumulator ran the tool with ``{}``, and the backend's authoritative
-    tool_start then overwrote the payload the frontend had recovered, so both ends are pinned.
-    """
+    """Object-valued argument deltas must reach the tool; a string-only accumulator ran it with {}."""
     transport = FakeTransport(
         [
             [
@@ -1807,8 +1845,7 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     result_ids = {message["tool_call_id"] for message in replayed if message.get("role") == "tool"}
     assert result_ids == {"call_a", "call_b"}
     assert not result_ids - called_ids
-    # The refused call is replayed in OpenAI shape only: the parsed arguments
-    # dict the loop keeps for itself must not reach the provider.
+    # Refused calls replay in OpenAI shape only; the parsed arguments dict stays in the loop.
     exhausted = [
         call
         for message in replayed
@@ -1888,8 +1925,7 @@ def test_unlimited_budget_runs_past_the_old_fixed_turn_cap(executed):
 
 
 def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(executed):
-    """A skipped duplicate call must still emit its provider id, so the client closes the card it
-    painted."""
+    """A skipped duplicate must still emit its provider id, so the client can close its card."""
     repeat = [
         _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":"a"}')]}),
         _sse(finish = "tool_calls"),
@@ -1916,8 +1952,7 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
 
 
 def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
-    """Providers restart tool_calls index at 0 each round, so route fragments by call id, not index
-    alone."""
+    """Providers restart tool_calls index each round; route fragments by call id, not index."""
     transport = FakeTransport(
         [
             [
@@ -2121,3 +2156,73 @@ def test_a_trailing_image_turn_takes_the_notice_as_a_text_part():
             ],
         }
     ]
+
+
+def test_deferred_mcp_schema_reaches_external_transports(monkeypatch, executed):
+    from core.inference import tool_loop_controller as controller_mod
+
+    search = _tool("mcp_tool_search")
+    ping = _tool("mcp__srv1__ping")
+    monkeypatch.setattr(controller_mod, "_mcp_tool_search_specs", lambda args: [ping])
+    monkeypatch.setattr(
+        controller_mod, "_mcp_tool_specs", lambda names: {name: ping for name in names}
+    )
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "search",
+                                "function": {
+                                    "name": "mcp_tool_search",
+                                    "arguments": '{"query":"ping"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ready"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, tools = [search])
+    assert transport.requests[1]["tools"] == [search, ping]
+
+
+def test_each_python_call_runs_with_the_analysis_its_own_classification_made(executed, monkeypatch):
+    """Auto mode screens the code once: each run gets the handoff its own approval check used."""
+    from core.inference import tools as tools_mod
+
+    classified: list = []
+
+    def _is_high_risk(name, arguments):
+        classified.append((arguments.get("code"), tools_mod._python_call_analyses.get()))
+        return False
+
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", _is_high_risk)
+    calls = [
+        {
+            "index": i,
+            "id": f"c{i}",
+            "function": {"name": "python", "arguments": json.dumps({"code": f"print({i})"})},
+        }
+        for i in range(2)
+    ]
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": calls}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, tools = [PY], permission_mode = "auto", confirm_calls = True)
+
+    assert [call["arguments"]["code"] for call in executed] == ["print(0)", "print(1)"]
+    handed = [call["python_analyses"] for call in executed]
+    assert all(isinstance(a, tools_mod.PythonCallAnalyses) for a in handed)
+    assert handed[0] is not handed[1]
+    assert [a for _code, a in classified] == handed

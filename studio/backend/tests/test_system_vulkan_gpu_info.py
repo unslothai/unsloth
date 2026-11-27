@@ -12,6 +12,48 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(main, "_system_gpu_cache", None)
 
 
+def test_system_monitor_ignores_spark_npu_telemetry(monkeypatch):
+    import utils.hardware as hardware
+    from utils.hardware import nvidia
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda *a, **k: SimpleNamespace(
+            returncode = 0,
+            stdout = "0, NVIDIA RTX Spark N1X, 46477\n1, NVIDIA NPU, [N/A]\n",
+        ),
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_backend_visible_gpu_info",
+        lambda: {**nvidia.get_backend_visible_gpu_info([0, 1], None), "backend": "cuda"},
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_visible_gpu_utilization",
+        lambda: {
+            "backend": "cuda",
+            "devices": [
+                {"index": 0, "vram_total_gb": 45.39, "vram_used_gb": 20.5},
+                {"index": 1, "vram_total_gb": None, "vram_used_gb": None},
+            ],
+        },
+    )
+    monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(hardware, "get_cross_vendor_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *a: None))
+    # Both monitor views read this inventory and sum its per-device usage.
+    assert len(gpu["devices"]) == 1
+    assert gpu["devices"][0]["index"] == 0
+    assert sum(d["vram_used_gb"] for d in gpu["devices"]) == 20.5
+    assert inference_gpu["devices"] == gpu["devices"]
+
+
 def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     import utils.hardware as hardware
 
@@ -59,8 +101,7 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     assert gpu["available"] is False
     assert gpu["backend"] == "cpu"
     assert gpu["index_kind"] == "relative"
-    # The training inventory must not advertise physical pins for a Vulkan
-    # llama.cpp build. Its ordinals live in inference_gpu below.
+    # Training must not advertise physical pins for Vulkan; its ordinals live in inference_gpu.
     assert gpu["gguf_gpu_ids_supported"] is False
     assert gpu["devices"] == []
     assert inference_gpu["backend"] == "vulkan"
@@ -80,9 +121,7 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
 
 
 def test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_nothing(monkeypatch):
-    """A Vulkan build whose probe returns no ordinals has nothing valid to pin,
-    so the picker must be told pins are unsupported rather than offered an empty
-    namespace it would 400 on."""
+    """With no Vulkan ordinals nothing is valid to pin; say pins are unsupported, not an empty namespace."""
     import utils.hardware as hardware
 
     monkeypatch.setattr(
@@ -292,9 +331,7 @@ def test_vulkan_inference_gpu_uses_inventory_fallback_names(monkeypatch):
 
 
 def test_system_gpu_info_keeps_a_reported_free_over_total_minus_used(monkeypatch):
-    """Apple unified memory reports free directly because it is not total - used.
-    Recomputing it here put the overstated figure back on the Resources tab while
-    /api/system/hardware served the honest one."""
+    """Apple unified memory reports free directly; total minus used overstates it on the Resources tab."""
     import utils.hardware as hardware
 
     monkeypatch.setattr(

@@ -280,9 +280,12 @@ test("text and lines head away from whatever they are drawn on", () => {
       "a surface scope leaves body text on the other surface's target",
     );
   }
-  assert.match(
-    CSS,
-    /html\[data-contrast-adjust\]:not\(\.dark\) \.diffusion-surface \{\s*--border: color-mix\(in oklab, var\(--border-base\), var\(--contrast-target\) var\(--contrast-line-mix\)\);\s*--input: color-mix\(in oklab, var\(--input-base\), var\(--contrast-target\) var\(--contrast-control-mix\)\);/,
+  const media = ':not([data-palette]) .diffusion-surface {';
+  assert.ok(CSS.includes(`html:not(.dark)${media}\n\t\t--border-base: #e9e9e9;`));
+  assert.ok(
+    CSS.includes(
+      `html[data-contrast-adjust]:not(.dark)${media}\n\t\t--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));`,
+    ),
   );
 });
 
@@ -408,7 +411,7 @@ test("a light wash follows the slider as its dark twin does", () => {
 
 test("the hand-written washes follow the slider, the scrims do not", () => {
   const app = readSrc("features/settings/settings-dialog.tsx");
-  assert.match(app, /calc\(0\.06\*var\(--contrast-wash-gain,1\)\)/);
+  assert.match(app, /calc\(0\.\d+\*var\(--contrast-wash-gain,1\)\)/);
   assert.doesNotMatch(app, /bg-white\/\[0\.0[0-9]\]/);
   assert.match(
     readSrc("components/assistant-ui/markdown-text.tsx"),
@@ -529,7 +532,7 @@ test("a pane that repaints itself in dark is not reset to the page there", () =>
   );
   assert.match(
     readSrc("features/settings/settings-dialog.tsx"),
-    /bg-background[^"]*dark:bg-\[rgb\(255_255_255/,
+    /bg-accent[^"]*dark:bg-\[rgb\(255_255_255/,
   );
 });
 

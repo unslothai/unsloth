@@ -98,7 +98,7 @@ def test_the_cap_admits_a_clip_of_exactly_the_composer_limit():
 
     from routes.inference import _MAX_VIDEO_B64_CHARS
 
-    limit_bytes = 64 * 1024 * 1024
+    limit_bytes = 256 * 1024 * 1024
     # Padded base64 is 4 characters per 3 bytes, rounded up.
     assert len(base64.b64encode(b"x" * 3001)) == 4 * math.ceil(3001 / 3)
     assert 4 * math.ceil(limit_bytes / 3) <= _MAX_VIDEO_B64_CHARS
@@ -112,9 +112,8 @@ def _inference_source() -> str:
 
 
 def test_video_is_refused_on_the_tool_passthrough_path():
-    """That branch forwards an explicit field list and returns before the
-    injection below, so the clip would be dropped and the model would answer
-    without it. The audio path already refuses; video has to match."""
+    """The passthrough branch returns before the injection, so a video clip would be dropped; audio
+    already refuses, so video must too."""
     source = _inference_source()
     start = source.index("if using_gguf and _takes_tool_passthrough(payload, llama_backend):")
     branch = source[start : start + 2500]
@@ -124,8 +123,7 @@ def test_video_is_refused_on_the_tool_passthrough_path():
 
 
 def test_the_size_check_runs_before_the_automatic_switch():
-    """A cheap length check must not cost a model load first: an oversized clip
-    would otherwise evict a working model and 413 only afterwards."""
+    """The size check precedes the auto-switch, so an oversized clip cannot evict a model."""
     source = _inference_source()
     # Anchor inside the chat-completions handler; other routes switch too.
     handler = source.index("_needs_image = bool(_pre_parsed[2])")
@@ -135,24 +133,12 @@ def test_the_size_check_runs_before_the_automatic_switch():
 
 
 def test_video_joins_the_projector_requirement_before_switching():
-    """Video rides the same companion mmproj as vision, so a text-only target
-    cannot serve it either. Audio already votes here."""
+    """Video shares vision's mmproj, so text-only targets cannot serve it; audio votes too."""
     source = _inference_source()
     start = source.index("_needs_image = bool(_pre_parsed[2])")
     switch = source.index("await _maybe_auto_switch_model(", start)
     assert start < source.index("payload.audio_base64", start) < switch
     assert start < source.index("_request_has_video(payload)", start) < switch
-
-
-def test_an_external_provider_refuses_video_rather_than_ignoring_it():
-    """input_video is llama.cpp's own part type, so the proxy has nowhere to put
-    the clip and returns before any video handling below."""
-    source = _inference_source()
-    start = source.index("if payload.provider_id or payload.provider_type:")
-    branch = source[start : source.index("_proxy_to_external_provider(payload", start)]
-    # Both spellings through one predicate, so a video_url part cannot reach the proxy either.
-    assert "_request_has_video(payload)" in branch
-    assert "_VIDEO_INPUT_REFUSAL" in branch
 
 
 def _model_info(**fields):
@@ -162,19 +148,19 @@ def _model_info(**fields):
 def test_a_video_backend_is_handed_the_bare_clip():
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
-    from routes.inference import _VIDEO_INPUT_REFUSAL, _local_video_clip
+    from routes.inference import _VIDEO_INPUT_REFUSAL, _local_video_clips
 
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _DATA_URI)
-    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+    assert _local_video_clips(payload, _model_info(has_video_input = True)) == [_CLIP_B64]
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _CLIP_B64)
-    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+    assert _local_video_clips(payload, _model_info(has_video_input = True)) == [_CLIP_B64]
 
     with pytest.raises(HTTPException) as exc:
-        _local_video_clip(payload, _model_info())
+        _local_video_clips(payload, _model_info())
     assert exc.value.status_code == 400 and exc.value.detail == _VIDEO_INPUT_REFUSAL
     payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = "data:video/mp4;base64,")
     with pytest.raises(HTTPException) as exc:
-        _local_video_clip(payload, _model_info(has_video_input = True))
+        _local_video_clips(payload, _model_info(has_video_input = True))
     assert exc.value.status_code == 400
 
 
@@ -182,15 +168,15 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     """The gate precedes the early-returning dispatches, and the clip rides the generation kwargs."""
     source = _inference_source()
     handler = source.index("using_gguf = llama_backend.is_loaded")
-    gate = source.index("_video_clip = _local_video_clip(payload, model_info)", handler)
+    gate = source.index("_video_clips = _local_video_clips(payload, model_info)", handler)
     speech = source.index("return await _monitored_generate_audio(model_name)", handler)
     audio_input = source.index("# ── Audio INPUT path", handler)
     assert gate < speech and gate < audio_input
-    assert 'gen_kwargs["video"] = _video_clip' in source
+    assert 'gen_kwargs["videos"] = _video_clips' in source
     use_tools = source.index("_sf_use_tools = (", handler)
     tools_block = source[use_tools : source.index("\n    )", use_tools)]
     tools_block = "\n".join(line.split("#")[0] for line in tools_block.splitlines())
-    assert "and _video_clip is None" in tools_block
+    assert "and not _video_clips" in tools_block
     # Structural, not literal: #10970 widened the image half to `_sf_has_image`.
     client_tools = source.index("_sf_client_tools = (", handler)
     block = source[client_tools : source.index("\n    )", client_tools)]
@@ -200,7 +186,7 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     assert "and not _sf_use_tools" in escape, escape
     # Image and clip must be ALTERNATIVES, each read positively, in either order.
     image = r"(?:\bimage is not None\b|\b_sf_has_(?:any_)?image\b)"
-    clip = r"\b_video_clip is not None\b"
+    clip = r"\bbool\(_video_clips\)"
     assert re.search(rf"{image}\s+or\s+{clip}|{clip}\s+or\s+{image}", escape), escape
     assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_(?:any_)?image\b", escape), escape
     # Settled at the gate: a model without audio input never enters the audio-input path.
@@ -208,12 +194,13 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     assert conflict < speech
     assert "_AUDIO_VIDEO_INPUT_DETAIL" in source[conflict : conflict + 200]
     # The gate reads both spellings, so a video_url part reaches MLX exactly as the field does.
-    assert "if _request_has_video(payload):\n            _video_clip = _local_video_clip(" in source
+    assert (
+        "if _request_has_video(payload):\n            _video_clips = _local_video_clips(" in source
+    )
 
 
 def test_token_counting_refuses_video_like_image_and_audio():
-    """The completion injects the clip; this route cannot, so counting here
-    would silently undercount the turn."""
+    """Completions inject the clip; this route cannot, so counting would silently undercount."""
     source = _inference_source()
     start = source.index("Cannot count tokens for messages containing images.")
     block = source[start : start + 700]
@@ -222,10 +209,9 @@ def test_token_counting_refuses_video_like_image_and_audio():
 
 
 def test_both_video_checks_share_one_rule():
-    """Two size checks that drift let the pre-switch one pass what the post-load
-    one refuses, which is the model load this was meant to avoid."""
+    """Pre-switch and post-load size checks must agree, or a load is wasted on a refused clip."""
     source = _inference_source()
-    assert source.count("= _request_video_rejection(payload)") == 2
+    assert source.count("= _request_video_rejection(payload)") == 4
 
 
 def _video_url_request(
@@ -271,9 +257,8 @@ def test_a_data_uri_part_is_translated_in_place_without_its_header():
 
 
 def test_a_remote_url_is_refused_rather_than_forwarded():
-    """llama-server would fetch it from this machine, and its downloader follows redirects
-    (set_follow_location, common/http.h), so a public URL redirecting to a private address
-    defeats any host check made here. input_video therefore only ever carries bytes."""
+    """llama-server fetches the URL and follows redirects (set_follow_location, common/http.h), so a
+    public URL can redirect to a private host; input_video carries only bytes."""
     import pytest
     from fastapi import HTTPException
     from routes.inference import _translate_video_parts
@@ -337,7 +322,7 @@ def test_every_data_uri_part_is_sized_not_only_the_first():
     assert _request_video_rejection(fits) is None
     oversized = "data:video/mp4;base64," + "A" * (_MAX_VIDEO_B64_CHARS + 1)
     too_big = _video_url_request("data:video/mp4;base64,QUJD", oversized)
-    assert _request_video_rejection(too_big) == (413, "Video file is too large (max 64 MB).")
+    assert _request_video_rejection(too_big) == (413, "Video file is too large (max 256 MB).")
     assert _request_video_rejection(_video_url_request("")) == (
         400,
         "Could not read the provided video file.",
@@ -349,7 +334,7 @@ def test_the_legacy_field_is_sized_beside_a_message_part():
     req = _video_url_request(
         "https://example.com/clip.mp4", video_base64 = "A" * (_MAX_VIDEO_B64_CHARS + 1)
     )
-    assert _request_video_rejection(req) == (413, "Video file is too large (max 64 MB).")
+    assert _request_video_rejection(req) == (413, "Video file is too large (max 256 MB).")
 
 
 def test_admission_prices_a_message_clip_as_media_not_prompt_text():

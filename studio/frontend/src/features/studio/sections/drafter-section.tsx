@@ -31,6 +31,7 @@ import { ParamsRow } from "./params-section-controls";
 export function DrafterSection(): ReactElement | null {
   const t = useT();
   const deviceType = usePlatformStore((state) => state.deviceType);
+  const trainsOnCpu = usePlatformStore((state) => state.isCpuTrainingHost());
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       selectedModel: state.selectedModel,
@@ -53,8 +54,8 @@ export function DrafterSection(): ReactElement | null {
   const [open, setOpen] = useState(false);
   useDrafterCapability(open || store.enabled);
 
-  // MLX trains through its own worker, which has no drafter phase.
-  if (!store.eligible || deviceType === "mac") {
+  // MLX trains through its own worker, which has no drafter phase; the CPU backend has none either.
+  if (!store.eligible || deviceType === "mac" || trainsOnCpu) {
     return null;
   }
 

@@ -37,6 +37,7 @@ EXPECTED = {
         12: ("model", _W8),
         16: ("model", _W8),
         24: ("dit", _AO),
+        # bf16 where it stays resident: INT8 failed the 0.05 video bar (0.213 LPIPS vs bf16, see video_families).
         32: ("dit", _BF),
         48: ("none", _BF),
         80: ("none", _BF),
@@ -48,7 +49,8 @@ EXPECTED = {
         24: ("model", _W8),
         32: ("model", _W8),
         48: ("dit", _AO),
-        80: ("dit", _BF),
+        # Hosted INT8 even where bf16 stays resident; the 29 GB pair leaves room for the text encoder.
+        80: ("none", _AO),
     },
     "hv15-480p": {
         8: ("model", _W8),
@@ -122,12 +124,13 @@ def _spoof(
     monkeypatch.setattr(tq, "native_quant_host", lambda t: False)
     monkeypatch.setattr(tq, "native_offload_host", lambda t: True)
     monkeypatch.setattr(V, "stored_denoiser_precision", lambda *a, **k: None)
-    spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [])
+    spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [], seed_kw = [])
 
     import core.inference.video_denoiser_prequant as vdp
 
     def _seed(fam, base, *, scheme, **kw):
         spy.seeded.append(scheme)
+        spy.seed_kw.append(kw)
         return {"transformer": object()}
 
     monkeypatch.setattr(vdp, "denoiser_prequant_pipe_kwargs", _seed)
@@ -197,7 +200,7 @@ def test_auto_planner_table(fake_runtime, monkeypatch, family, tier_gib, cap_nam
         assert spy.quant[0]["mode"] == "int8"
 
 
-@pytest.mark.parametrize("family", ["wan2.2-t2v-a14b", "ltx-2"])
+@pytest.mark.parametrize("family", ["ltx-2"])
 def test_auto_keeps_bf16_where_the_dit_stays_resident_at_80(fake_runtime, monkeypatch, family):
     """80 GiB: bf16 DiT stays resident with the text encoder streamed, so auto keeps bf16."""
     spy = _spoof(monkeypatch, tier_gib = 80)
@@ -245,10 +248,52 @@ def test_auto_seeds_the_hosted_artifact_only_where_it_would_quantise(
         assert status["transformer_quant"] == "int8"
 
 
+def _streaming_supported(monkeypatch):
+    """torchao / diffusers versions and host RAM decide streaming; pin them so the host's install does not."""
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "torchao_scheme_streams", lambda scheme, **kw: True)
+    monkeypatch.setattr(dm, "_torchao_stream_pinnable", lambda plan, reclaimable_host_mib = 0: True)
+
+
 def test_explicit_fp8_refused_with_reason_when_the_dit_must_move(fake_runtime, monkeypatch):
+    """UNSLOTH_VIDEO_FP8_STREAM=0 restores the refusal of an fp8 DiT the plan moves."""
+    _streaming_supported(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_VIDEO_FP8_STREAM", "0")
     _spoof(monkeypatch, tier_gib = 16)
     with pytest.raises(RuntimeError, match = r"moves the DiT .*int8 runs torchao-free"):
         VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+
+
+def test_explicit_fp8_refused_where_the_card_has_no_fp8_gemm(fake_runtime, monkeypatch):
+    """Without Studio's fp8 GEMM (sm_80) a moved DiT cannot stream torchao fp8 weights: still refused."""
+    _streaming_supported(monkeypatch)
+    monkeypatch.setitem(SUPPORTED, (8, 0), {"int8"})
+    _spoof(monkeypatch, tier_gib = 16, cap = (8, 0))
+    with pytest.raises(RuntimeError):
+        VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+
+
+def test_explicit_fp8_streams_the_hosted_torchao_dit_when_the_dit_must_move(
+    fake_runtime, monkeypatch
+):
+    """sm_89+: the hosted fp8 checkpoint is seeded and streamed (torchao_offload_plan), not refused, and the dense
+    shards are not quantised at load."""
+    _streaming_supported(monkeypatch)
+    spy = _spoof(monkeypatch, tier_gib = 16, cap = (8, 9))
+    status = VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+    assert status["transformer_quant"] == "fp8"
+    assert spy.seeded == ["fp8"]
+    assert not spy.quant
+    assert spy.plans[-1].offload_policy in ("group", "streaming")
+    # built on the host: the offload hooks move it block by block (on the card first it OOMed a 16 GiB budget)
+    assert spy.seed_kw[0]["placement_device"] == "cpu"
+
+
+def test_resident_fp8_seed_is_built_on_the_card(fake_runtime, monkeypatch):
+    spy = _spoof(monkeypatch, tier_gib = 24)
+    VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
+    assert spy.seed_kw[0]["placement_device"] is None
 
 
 def test_explicit_int8_under_streamed_dit_is_torchao_free(fake_runtime, monkeypatch):
@@ -267,9 +312,36 @@ def test_speed_off_keeps_bf16_under_offload(fake_runtime, monkeypatch):
     assert not spy.quant
 
 
+def test_explicit_nvfp4_is_refused_on_the_wan_5b_that_failed_the_gate(fake_runtime, monkeypatch):
+    """Wan2.2-TI2V-5B's hosted NVFP4 build measured above the accuracy-gate bar, so an explicit pick is refused."""
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    spy = _spoof(monkeypatch, tier_gib = 32)
+    with pytest.raises(RuntimeError, match = "measured deny list"):
+        VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "nvfp4")
+    assert not spy.seeded
+
+
+def _lift_wan5b_nvfp4_deny(monkeypatch):
+    """The placement tests below exercise a hosted NVFP4 seed, which only Wan2.2-5B's size class shows; lift its
+    measured nvfp4 deny (both the selection table and the profile the hosted-scheme list filters on)."""
+    import core.inference.diffusion_transformer_quant as tq
+    from core.inference import video_families as vf
+
+    deny = {k: v for k, v in tq._FAMILY_SCHEME_DENY.items() if k != "wan2.2-ti2v-5b"}
+    monkeypatch.setattr(tq, "_FAMILY_SCHEME_DENY", deny)
+    families = tuple(
+        dataclasses.replace(fam, profile = dataclasses.replace(fam.profile, scheme_deny = frozenset()))
+        if fam.name == "wan2.2-ti2v-5b"
+        else fam
+        for fam in vf._FAMILIES
+    )
+    monkeypatch.setattr(vf, "_FAMILIES", families)
+
+
 def test_hosted_nvfp4_seeds_beside_streamed_text_encoder(fake_runtime, monkeypatch):
     """Wan2.2-5B NVFP4 on 32 GiB: the split keeps the DiT resident and streams the 11.4 GB encoder."""
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    _lift_wan5b_nvfp4_deny(monkeypatch)
     spy = _spoof(monkeypatch, tier_gib = 32)
     status = VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "nvfp4")
     assert spy.seeded == ["nvfp4"]
@@ -279,6 +351,7 @@ def test_hosted_nvfp4_seeds_beside_streamed_text_encoder(fake_runtime, monkeypat
 
 def test_hosted_nvfp4_refused_where_the_dit_must_stream(fake_runtime, monkeypatch):
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    _lift_wan5b_nvfp4_deny(monkeypatch)
     spy = _spoof(monkeypatch, tier_gib = 16)
     with pytest.raises(RuntimeError, match = "moves the DiT"):
         VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "nvfp4")
@@ -544,6 +617,68 @@ def test_generate_refuses_below_the_offload_floor(fake_runtime, monkeypatch, tmp
     backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
     with pytest.raises(RuntimeError, match = "at 121 frames"):
         backend.generate(prompt = "a sloth", width = 1280, height = 720, num_frames = 121, fps = 8)
+
+
+@pytest.fixture
+def fraction(monkeypatch):
+    from utils import vram_budget_settings
+
+    state = {"value": vram_budget_settings.VRAM_FRACTION_DEFAULT}
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: state["value"])
+    return state
+
+
+def test_conventional_video_generate_guard_charges_the_reserve(
+    fraction, fake_runtime, monkeypatch, tmp_path
+):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        torch,
+        "device",
+        lambda kind, index = None: types.SimpleNamespace(type = kind, index = index),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        torch,
+        "cuda",
+        types.SimpleNamespace(
+            is_available = lambda: False,
+            mem_get_info = lambda device = None: (40 * GIB << 20, 80 * GIB << 20),
+            memory_reserved = lambda device = None: 0,
+        ),
+    )
+
+    def _as_on_cuda():
+        backend._state = dataclasses.replace(
+            backend._state, device = "cuda", offload_policy = "model", vram_floor_mib = 27300
+        )
+
+    _as_on_cuda()
+    backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+    fraction["value"] = 0.80  # 40 GIB free less a 16 GIB reserve cannot hold the 27.3 GIB floor
+    backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+    _load_gguf(backend, tmp_path)
+    _as_on_cuda()
+    with pytest.raises(RuntimeError, match = "needs about"):
+        backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+
+
+def test_video_load_refuses_a_tier_only_the_reserve_rules_out(fraction, fake_runtime, monkeypatch):
+    import core.inference.video as V
+
+    spy = _spoof(monkeypatch, tier_gib = 24)  # 24 GiB card, 600 MiB in use
+    monkeypatch.setattr(V, "_video_offload_vram_floor_mib", lambda pipe, plan, **k: 18000)
+    VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"])
+    assert spy.plans
+    spy.plans.clear()
+    fraction["value"] = (
+        0.70  # 7.2 GiB kept free: 16.2 GiB cannot hold 18000 MiB plus its activations
+    )
+    with pytest.raises(RuntimeError, match = "needs about"):
+        VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"])
+    assert not spy.plans
 
 
 def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):
@@ -889,3 +1024,19 @@ def test_a_cancel_during_the_background_pin_wait_ends_the_render_promptly(
         )
     assert time.perf_counter() - began < 10
     assert not rendered
+
+
+def test_refine_prices_the_denoise_phase_not_the_decoded_clip():
+    """The whole-module refine charges the DiT the denoise share only: a plan _video_prefer_whole_module kept (10000 MiB
+    DiT at 17000 MiB, 1280x704x121) stays whole-module; the LTX-2.5 Q4 DiT at a 16 GiB budget (OOM on main) streams."""
+    import types
+
+    import core.inference.video as V
+
+    runtime = V.estimate_video_runtime_mib(width = 1280, height = 704, num_frames = 121)
+    plan = types.SimpleNamespace(estimates = {"runtime_headroom_mib": runtime})
+    headroom = V._video_denoise_phase_headroom_mib(plan)
+    assert headroom == V._VIDEO_DENOISE_ACTIVATION_MIB + 2048 < runtime + 2048
+    assert 10000 + headroom <= 17000
+    assert 11642 + headroom > 13396
+    assert V._video_denoise_phase_headroom_mib(types.SimpleNamespace(estimates = {})) == 2048

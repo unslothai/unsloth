@@ -268,9 +268,10 @@ def test_krea2_family_wiring():
 
     fam = detect_family("krea/Krea-2-Turbo")
     assert fam is not None and fam.name == KREA2_FAMILY_NAME
+    # Both vendor repos are non-GGUF allowlisted (Turbo for inference, Raw for training).
     assert _is_trusted_diffusion_repo("krea/Krea-2-Turbo")
     assert _is_trusted_diffusion_repo("krea/Krea-2-Raw")
-    assert not family_sd_cpp_supported(fam)
+    assert family_sd_cpp_supported(fam)
     # Krea2TimestepEmbedding runs at M = batch; int8 _int_mm needs M above 16.
     assert "time_embed" in exclude_tokens_for_scheme(TQ_INT8)
     # Adapters train on Raw but run on Turbo.
@@ -327,7 +328,8 @@ def test_krea2_collate_and_forward_roundtrip():
     ]
     pe_b, mask_b = spec.collate(entries, "cpu", torch.float32)
     assert pe_b.shape == (2, 8, 12, 16)
-    assert mask_b.shape == (2, 8)
+    # Nothing padded: no mask, so attention runs unmasked.
+    assert mask_b is None
 
     captured = {}
 

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inpaint mask settings: AUTOMATIC1111's "Mask blur" and "Inpaint area: Only masked" (diffusers padding_mask_crop).
-
-Unset / 0 / False leave the request exactly as before."""
+"""Inpaint mask blur and only-masked crop (padding_mask_crop); unset, 0 or False is a no-op."""
 
 from __future__ import annotations
 
@@ -33,10 +31,9 @@ def mask_is_empty(mask: Any) -> bool:
 
 
 def overlay_with_mask(image: Any, source: Any, mask: Any) -> Any:
-    """``image`` pasted over ``source`` through the (blurred) ``mask``, as A1111's apply_overlay does.
-
-    Inpaint pipelines binarize the mask they are handed, so without this a blur only moves the hard edge.
-    A non-PIL output (a latent or tensor return) is returned unchanged."""
+    """Paste image over source through the blurred mask as A1111's apply_overlay does; inpaint
+    pipelines binarize the mask, so without this a blur only moves the hard edge; non-PIL output
+    is returned unchanged."""
     from PIL import Image
 
     if not isinstance(image, Image.Image):

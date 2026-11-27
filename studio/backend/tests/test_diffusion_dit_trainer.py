@@ -49,22 +49,31 @@ def test_specs_cover_the_dit_families():
     assert set(_SPECS) == {
         "flux.1",
         "qwen-image",
+        "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
+        "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
     }
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
     assert "add_q_proj" in _SPECS["qwen-image"].lora_targets
     assert "add_q_proj" not in _SPECS["z-image"].lora_targets
+    # Qwen-Image-2.1 is single-stream: no added-kv projections to adapt.
+    assert "add_q_proj" not in _SPECS["qwen-image-2.1"].lora_targets
     assert "add_q_proj" not in _SPECS["krea-2"].lora_targets
     assert _SPECS["z-image"].force_bf16 is True
     assert _SPECS["qwen-image"].force_bf16 is True
     assert _SPECS["krea-2"].force_bf16 is True
     assert _SPECS["flux.2-klein"].force_bf16 is True
     assert _SPECS["flux.2-dev"].force_bf16 is True
+    # FLUX.3 has no added-kv projections either; the distilled Klein is a deploy target, never a trainer.
+    assert "add_q_proj" not in _SPECS["flux.3-klein-base"].lora_targets
+    assert _SPECS["flux.3-klein-base"].force_bf16 is True
 
 
 def test_flux2_specs_share_targets_and_split_conditioners():
@@ -253,7 +262,8 @@ def test_the_gate_reads_the_repo_the_run_will_fetch(monkeypatch, tmp_path):
     assert seen == ["black-forest-labs/FLUX.1-dev"]
 
 
-def test_family_train_infos_lists_dit_families(dit_train_host):
+def test_family_train_infos_lists_dit_families(dit_train_host, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
     infos = {i["name"]: i for i in family_train_infos()}
     for fam in ("sdxl", "flux.1", "qwen-image", "z-image", "flux.2-klein", "flux.2-dev"):
         assert fam in infos, f"{fam} missing from family_train_infos"
@@ -261,9 +271,11 @@ def test_family_train_infos_lists_dit_families(dit_train_host):
         assert infos[fam]["base_repos"]
         assert "resolution" in infos[fam]["defaults"]
     assert infos["flux.1"]["default_base"] == "black-forest-labs/FLUX.1-dev"
-    assert "gated" in infos["flux.1"]["vram_note"].lower()
+    assert infos["flux.1"]["gated"] is False
+    assert "Downloads from unsloth/FLUX.1-dev" in infos["flux.1"]["vram_note"]
     assert infos["flux.2-dev"]["default_base"] == "black-forest-labs/FLUX.2-dev"
-    assert "gated" in infos["flux.2-dev"]["vram_note"].lower()
+    assert infos["flux.2-dev"]["gated"] is False
+    assert "Downloads from unsloth/FLUX.2-dev" in infos["flux.2-dev"]["vram_note"]
     klein = infos["flux.2-klein"]
     assert klein["default_base"] == "black-forest-labs/FLUX.2-klein-base-4B"
     assert klein["base_repos"] == [
@@ -277,14 +289,12 @@ def test_family_train_infos_lists_dit_families(dit_train_host):
         "black-forest-labs/FLUX.2-klein-9B"
     )
     assert klein["deploy_bases"]["unsloth/FLUX.2-klein-base-9B"] == ("unsloth/FLUX.2-klein-9B")
-    assert klein["base_specs"]["black-forest-labs/FLUX.2-klein-base-9B"] == {
-        "params": "9B",
-        "qlora_vram_gb": 18,
-    }
-    assert klein["base_specs"]["unsloth/FLUX.2-klein-base-9B"] == {
-        "params": "9B",
-        "qlora_vram_gb": 18,
-    }
+    for repo in ("black-forest-labs/FLUX.2-klein-base-9B", "unsloth/FLUX.2-klein-base-9B"):
+        facts = klein["base_specs"][repo]
+        assert facts["params"] == "9B"
+        assert facts["qlora_vram_gb"] == 18
+        assert facts["gated"] is False
+        assert "Downloads from unsloth/FLUX.2-klein-base-9B" in facts["note"]
     assert "black-forest-labs/FLUX.2-klein-base-4B" not in klein["base_specs"]
     assert "gated" not in infos["flux.2-klein"]["vram_note"].lower()
     assert "4bit" in infos["z-image"]["default_base"].lower()
@@ -363,9 +373,13 @@ def test_mx_module_filter_rejects_non_linear():
     assert _mx_module_filter(nn.LayerNorm(3072), "blocks.0.norm") is False
 
 
-def test_should_compile_auto_mxfp8_on_cuda():
+def test_should_compile_auto_mxfp8_on_cuda(monkeypatch):
     cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o")
     assert _should_compile(cfg, False, "cuda", base_precision = "mxfp8") is True
+    # int8 compiles as the default W8A8 base; the torchao weight-only opt-out cannot trace.
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    assert _should_compile(cfg, False, "cuda", base_precision = "int8") is True
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "weight-only")
     assert _should_compile(cfg, False, "cuda", base_precision = "int8") is False
     off = DiffusionLoraConfig(
         base_model = "b", data_dir = "d", output_dir = "o", compile_transformer = "off"
@@ -458,10 +472,26 @@ def test_train_precision_modes_ada_has_fp8_without_mxfp8(monkeypatch):
     assert "mxfp8" not in modes
 
 
-def test_train_precision_modes_newer_blackwell_has_mxfp8(monkeypatch):
-    _patch_capability(monkeypatch, (12, 0))
+def test_train_precision_modes_sm103_has_mxfp8(monkeypatch):
+    _patch_capability(monkeypatch, (10, 3))
     modes, _ = train_precision_modes()
     assert "mxfp8" in modes
+
+
+@pytest.mark.parametrize("capability", [(12, 0), (12, 1)])
+def test_train_precision_modes_sm120_offers_fp8_not_mxfp8(monkeypatch, capability):
+    # Measured on a G4 (sm120): mxfp8 engages but trails frozen fp8 in speed and memory, so only fp8 is offered.
+    _patch_capability(monkeypatch, capability)
+    modes, _ = train_precision_modes()
+    assert "fp8" in modes
+    assert "mxfp8" not in modes
+
+
+def test_explicit_mxfp8_still_preflights_on_sm120(monkeypatch):
+    # Not advertised there, but an explicit request (API, saved preset) is not refused: it runs.
+    from core.training.diffusion_train_common import training_precision_preflight_error
+    _patch_capability(monkeypatch, (12, 0))
+    assert training_precision_preflight_error("flux.2-klein", "mxfp8") is None
 
 
 def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
@@ -479,18 +509,19 @@ def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "capability, lowp",
+    "capability, lowp, offered",
     [
-        ((7, 5), set()),
-        ((8, 0), set()),
-        ((8, 6), set()),
-        ((8, 9), {"fp8"}),
-        ((9, 0), {"fp8"}),
-        ((10, 0), {"fp8", "mxfp8"}),
-        ((12, 0), {"fp8", "mxfp8"}),
+        ((7, 5), set(), set()),
+        ((8, 0), set(), set()),
+        ((8, 6), set(), set()),
+        ((8, 9), {"fp8"}, {"fp8"}),
+        ((9, 0), {"fp8"}, {"fp8"}),
+        ((10, 0), {"fp8", "mxfp8"}, {"fp8", "mxfp8"}),
+        # sm120 runs an explicit mxfp8, but only fp8 is offered (mxfp8 trails it there).
+        ((12, 0), {"fp8", "mxfp8"}, {"fp8"}),
     ],
 )
-def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp):
+def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp, offered):
     # fp8 only on sm89+, mxfp8 only on sm100+, refused by the child and the pre-eviction preflight alike.
     import core.training.diffusion_train_common as dtc
     from core.training.diffusion_train_common import training_precision_preflight_error
@@ -499,7 +530,8 @@ def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp):
     monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda _f: None)
     monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda _f: None)
     modes, _ = train_precision_modes()
-    assert {m for m in modes if m in ("fp8", "mxfp8")} == (lowp if capability >= (8, 0) else set())
+    assert {m for m in modes if m in ("fp8", "mxfp8")} == offered
+    assert offered <= lowp
     for mode, floor in (("fp8", "sm89"), ("mxfp8", "Blackwell")):
         cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
         reason = training_precision_preflight_error("flux.1", mode)
@@ -575,3 +607,41 @@ def test_compile_engagement_reads_real_dynamo_counters():
     assert out.tolist() == [5.0, 5.0]
     assert "fell back to eager" in _compile_engagement_warning(before, _dynamo_compile_counters())
     torch._dynamo.reset()
+
+
+@pytest.mark.parametrize(
+    "family, vendor",
+    [
+        ("flux.1", "black-forest-labs/FLUX.1-dev"),
+        ("flux.2-dev", "black-forest-labs/FLUX.2-dev"),
+        ("flux.2-klein", "black-forest-labs/FLUX.2-klein-base-9B"),
+    ],
+)
+def test_training_mirror_access_names_the_download_without_a_token_requirement(
+    dit_train_host, monkeypatch, family, vendor
+):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    info = next(row for row in family_train_infos() if row["name"] == family)
+    mirror = f"unsloth/{vendor.split('/')[-1]}"
+    for repo in (vendor, mirror):
+        facts = info["base_specs"][repo]
+        assert facts["gated"] is False
+        assert f"Downloads from {mirror}." in facts["note"]
+        assert "original model license still applies" in facts["note"]
+        assert "HF token" not in facts["note"]
+    assert "HF token" not in info["vram_note"]
+
+
+def test_training_access_keeps_the_gate_when_mirrors_are_disabled(dit_train_host, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    info = next(row for row in family_train_infos() if row["name"] == "flux.1")
+    assert info["gated"] is True
+    assert "HF token" in info["vram_note"]
+    assert info["base_specs"]["black-forest-labs/FLUX.1-dev"]["gated"] is True
+    assert info["base_specs"]["unsloth/FLUX.1-dev"]["gated"] is True
+
+
+def test_ungated_training_bases_do_not_inherit_a_gated_family(monkeypatch):
+    from core.training.diffusion_train_common import _training_mirror_access_specs
+    assert _training_mirror_access_specs("Tongyi-MAI/Z-Image-Turbo") == {}
+    assert _training_mirror_access_specs("custom/private-model") == {}

@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pinned models for the model selector's On Device list, persisted in localStorage. GGUF quants
-// pin individually (repoId + quant); non-GGUF repos pin as a whole. Pinned entries surface in
-// a "Pinned" section above the Unsloth/Downloaded group.
-
 import { create } from "zustand";
 
+import { looksLikeLocalPath } from "../../../../lib/local-path.ts";
 import { mirrorPins, onPinsRestored } from "../../../../lib/pins-mirror.ts";
 
 const KEY = "unsloth_pinned_models";
 
-// Entries are stored as strings: "repoId" pins a whole (non-GGUF) repo, "repoId::quant" pins
-// one GGUF quant. Neither part contains "::".
+// "repoId" pins a whole non-GGUF repo, "repoId::quant" one GGUF quant.
 export function pinKey(repoId: string, quant?: string): string {
   return quant ? `${repoId}::${quant}` : repoId;
 }
@@ -29,10 +25,36 @@ export function makePinRank(
   return (key) => pinIndex.get(key) ?? Number.MAX_SAFE_INTEGER;
 }
 
-/**
- * The key to `movePinned` onto so `fromKey` lands on `edge` of `targetKey`, or null if nothing
- * moves. `movePinned` takes the target's slot, so the other edge aims at the neighbour.
- */
+export function pinCoversId(pinned: readonly string[], id: string): boolean {
+  const base = id.trim().toLowerCase();
+  return pinned.some((key) => {
+    const k = key.trim().toLowerCase();
+    return k === base || k.startsWith(`${base}::`);
+  });
+}
+
+/** Ranks a repo by its own pin, the one a drag moves, else by the first pin that covers it. */
+export function makeRepoPinRank(
+  pinned: readonly string[],
+): (repoId: string) => number {
+  const own = makePinRank(pinned);
+  const covering = new Map<string, number>();
+  pinned.forEach((key, index) => {
+    const k = key.trim().toLowerCase();
+    for (let at = k.indexOf("::"); at >= 0; at = k.indexOf("::", at + 1)) {
+      if (!covering.has(k.slice(0, at))) covering.set(k.slice(0, at), index);
+    }
+    if (!covering.has(k)) covering.set(k, index);
+  });
+  return (repoId) => {
+    const rank = own(repoId);
+    return rank < Number.MAX_SAFE_INTEGER
+      ? rank
+      : (covering.get(repoId.trim().toLowerCase()) ?? Number.MAX_SAFE_INTEGER);
+  };
+}
+
+/** Key to `movePinned` onto so `fromKey` lands on `edge` of `targetKey`, or null if nothing moves. */
 export function pinDropAnchor(
   pinned: readonly string[],
   fromKey: string,
@@ -53,7 +75,6 @@ export function pinDropAnchor(
   return slot === from ? null : (pinned[slot] ?? null);
 }
 
-/** The pinned GGUF quants, in pin order. Plain repo pins are excluded. */
 export function pinnedQuantEntries(pinned: string[]): PinnedQuantEntry[] {
   const out: PinnedQuantEntry[] = [];
   for (const key of pinned) {
@@ -86,18 +107,11 @@ function writePinned(pinned: string[]): void {
   }
 }
 
-// A drag reorders live under the cursor, so `movePinned` runs on every dragenter. Persisting
-// each would write localStorage dozens of times per drag and would make a drag the user
-// cancels permanent, since dragend can clear the marker but cannot undo writes. So a drag
-// session snapshots the order up front, keeps intermediate moves in memory only, and either
-// commits once on drop or restores the snapshot.
+// movePinned runs on every dragenter: a drag snapshots, moves in memory, and commits once on drop
+// or restores the snapshot, so a cancelled drag writes nothing.
 let dragSnapshot: string[] | null = null;
 
-// Another window can rewrite the whole list mid-drag through the storage listener below, which
-// makes the snapshot stale. Rolling back to it would leave this window silently disagreeing
-// with the record, and the next write would persist that stale order over the other window's
-// change. So the listener records the order it installed and the session falls back to that.
-// Null unless a storage event landed inside the session.
+// Order a storage event installed mid-drag; cancelling falls back to it instead of the stale snapshot.
 let dragExternalOrder: string[] | null = null;
 
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
@@ -107,32 +121,22 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
 interface PinnedModelsState {
   pinned: string[];
   togglePinned: (repoId: string, quant?: string) => void;
-  /** Drop a repo's own pin and every per-quant pin under it. A whole-repo delete takes the quants
-   *  with it, and a `repoId::quant` pin outlives the row that showed it: nothing lists it, so
-   *  nothing can unpin it, and it reappears the day that quant is downloaded again. */
+  /** Also drops per-quant pins, which would otherwise outlive the row and be impossible to unpin. */
   unpinRepo: (repoId: string) => void;
-  /** Move a pin to a new key in the same slot, or drop it if the new key is already pinned. */
+  toggleRepoPinned: (repoId: string) => void;
   replacePinned: (fromKey: string, toKey: string) => void;
-  /**
-   * Move `fromKey` into `toKey`'s slot. Both keys must already be pinned;
-   * anything else is a no-op. Outside a drag session the new order is
-   * persisted immediately, inside one it is held until `endPinnedDrag`.
-   */
+  /** Both keys must be pinned. Persisted immediately outside a drag, else held until endPinnedDrag. */
   movePinned: (fromKey: string, toKey: string) => void;
-  /** Snapshot the current order so a cancelled drag can be undone. */
   beginPinnedDrag: () => void;
-  /** End a drag session. `commit` persists the reordered list; otherwise the snapshot taken by
-   *  `beginPinnedDrag` is restored. Idempotent, because drop is followed by dragend and only the
-   *  first of the two may decide. */
+  /** Idempotent: drop is followed by dragend and only the first may decide. */
   endPinnedDrag: (commit: boolean) => void;
 }
 
-export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
+export const usePinnedModelsStore = create<PinnedModelsState>((set, get) => ({
   pinned: readPinned(),
   togglePinned: (repoId, quant) =>
     set((state) => {
       const key = pinKey(repoId, quant);
-      // Newest pin first, so a new pin lands on top of the pinned group rather than under earlier pins.
       const next = state.pinned.includes(key)
         ? state.pinned.filter((id) => id !== key)
         : [key, ...state.pinned];
@@ -149,6 +153,15 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       writePinned(next);
       return { pinned: next };
     }),
+  toggleRepoPinned: (repoId) => {
+    const { pinned } = get();
+    if (!pinCoversId(pinned, repoId)) return get().togglePinned(repoId);
+    // A local path keeps its letter case; a Hub id clears every pin it was counted by.
+    if (looksLikeLocalPath(repoId)) return get().unpinRepo(repoId);
+    const next = pinned.filter((key) => !pinCoversId([key], repoId));
+    writePinned(next);
+    set({ pinned: next });
+  },
   replacePinned: (fromKey, toKey) =>
     set((state) => {
       if (!state.pinned.includes(fromKey) || fromKey === toKey) return state;
@@ -181,18 +194,13 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       dragSnapshot = null;
       dragExternalOrder = null;
       if (snapshot === null) return state;
-      // What this window and localStorage last agreed on: the order another window installed mid-drag
-      // if there was one, else the pre-drag snapshot.
       const base = external ?? snapshot;
       if (commit) {
-        // Nothing moved on top of that, so there is nothing to persist.
         if (sameOrder(base, state.pinned)) return state;
         writePinned(state.pinned);
         return state;
       }
-      // A cancel writes nothing, so it has to land on the order already in localStorage. That is the
-      // snapshot for an ordinary drag and the other window's list when one landed mid-drag; the
-      // moves this drag previewed on top of it are dropped either way.
+      // A cancel writes nothing, so it must land on the order already in localStorage.
       if (sameOrder(base, state.pinned)) return state;
       return { pinned: base };
     }),
@@ -206,7 +214,6 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === KEY || event.key === null) {
       const next = readPinned();
-      // A drag in flight rolls back to this instead of its own snapshot.
       if (dragSnapshot !== null) dragExternalOrder = next;
       usePinnedModelsStore.setState({ pinned: next });
     }

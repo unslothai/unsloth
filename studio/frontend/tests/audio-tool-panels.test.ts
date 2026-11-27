@@ -119,6 +119,7 @@ test("instruction panels claim no spec option; clone panels claim theirs", async
       CLONE_PANEL_LOGIC.map((panel) => [panel.id, [...panel.claims]]),
     ),
     {
+      "clone-description": [],
       "qwen3-timbre": ["x_vector_only_mode"],
       "index-emotion": [
         "emotion_vector",

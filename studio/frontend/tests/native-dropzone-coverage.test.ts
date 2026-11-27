@@ -65,7 +65,7 @@ test("the project sources panel shows a drag-over state", async () => {
   assert.match(source, /useNativeFileDrop\(\{/);
   assert.match(source, /ref=\{dropRef\}/);
   assert.match(source, /\{\.\.\.dragHandlers\}/);
-  assert.match(source, /dragging && "border-primary\/60/);
+  assert.match(source, /dragging &&\s*"border-wash-30 bg-wash-3 dark:border-wash-60/);
   // The native reader only serves media inline, so documents upload by lease.
   assert.match(source, /onNativeIntents: handleNativeIntents/);
 });

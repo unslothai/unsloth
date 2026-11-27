@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Fails when npm's `latest` MXC is not Studio's primary pin (studio/backend/core/inference/mxc_runtime.py):
+# that needs a reviewed pin bump, not a re-run. Schedule + manual only, so an npm outage never fails a PR.
+
+name: MXC pin network check
+
+on:
+  schedule:
+    - cron: '27 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mxc-pin:
+    name: MXC pins match npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            registry.npmjs.org:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      - name: MXC pins must match the npm registry
+        working-directory: studio/backend
+        env:
+          PYTHONPATH: .
+          UNSLOTH_MXC_PIN_NETWORK: '1'
+        run: python -m pytest -q --noconftest -p no:cacheprovider -o addopts= tests/test_mxc_pin.py

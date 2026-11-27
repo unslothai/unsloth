@@ -254,6 +254,24 @@ def test_zimage_split_runs_its_halves_as_one_parallel_pair(_zs):
     assert status["split"] == 8 and status["batched"] == 0 and status["parallel"] == 4
 
 
+def test_zimage_compiled_only_eager_split_still_runs_the_parallel_pair(_zs):
+    # Studio arms compiled_only; on an eager denoiser the batched fast path must not bypass an active router.
+    model = _zimage()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert _zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True) is None
+    reference = _zimage_steps(model, pipe, 4)
+    eager = _zs.zimage_cfg_split_status(pipe)
+    assert eager["split"] == 0 and eager.get("parallel", 0) == 0
+    router, replicas = _router(model)
+    out = _zimage_steps(model, pipe, 4)
+    for a, b in zip(out, reference):
+        assert torch.allclose(a, b, atol = 1e-4, rtol = 1e-4)
+    assert len(replicas) == 1 and router.disabled_reason is None
+    assert router.stats["pairs_parallel"] == 4 and router.stats["replica_calls"] == 4
+    status = _zs.zimage_cfg_split_status(pipe)
+    assert status["parallel"] == 4
+
+
 def test_zimage_pair_falls_back_to_the_source_when_the_replica_fails(_zs):
     model = _zimage()
     pipe = types.SimpleNamespace(transformer = model)
@@ -904,3 +922,91 @@ def test_a_prediction_new_to_the_replica_is_not_launched_beside_the_primary_bran
     assert torch.equal(out, reference)
     assert _FX[0].errors == [] and router.disabled_reason is None
     assert router.stats["replica_calls"] == 4 and router.stats["predicted_hits"] == 3
+
+
+class _ProtectedDit(_TracedDit):
+    """A compiled forward that guards on the NVFP4 protect schedule: a step that flips it recompiles."""
+
+    def __init__(self, ctl):
+        super().__init__()
+        self.protect = ctl
+
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
+        side = (
+            "replica"
+            if threading.current_thread().name.startswith("unsloth-cfg-replica")
+            else "primary"
+        )
+        protected = bool(self.protect.armed and self.protect.protected)
+        key = (side, tuple(hidden_states.shape), tuple(encoder_hidden_states.shape), protected)
+        _FX[0].enter(side, key)
+        return _Dit.forward(self, hidden_states, timestep, encoder_hidden_states, return_dict)
+
+
+def _protect_controller():
+    from core.inference.diffusion_nvfp4_protect import NVFP4StepController
+
+    ctl = NVFP4StepController("2")
+    ctl.begin(4)
+    return ctl
+
+
+def test_a_pair_whose_protect_state_flips_never_overlaps_its_recompile():
+    torch.manual_seed(0)
+    ctl = _protect_controller()
+    dit = _ProtectedDit(ctl)
+    x, cond, uncond = torch.randn(2, 4), torch.randn(3, 4), torch.randn(5, 4)
+    _FX[0] = _FxTrace(waiter = "primary")
+    router, replicas = _router(dit)
+    with torch.no_grad():
+        for i in range(4):
+            t = torch.tensor(1.0 - i / 4)
+            kw = dict(hidden_states = x, timestep = t, encoder_hidden_states = uncond)
+            pair = router.run_pair(
+                lambda: dit(hidden_states = x, timestep = t, encoder_hidden_states = cond), (), kw
+            )
+            assert pair is not None and pair[1] is not None, router.disabled_reason
+            ctl.advance()
+    assert replicas and replicas[0].protect is ctl
+    # step 2 is protected: both sides compile that state, one after the other
+    assert ("primary", (2, 4), (3, 4), True) in _FX[0].compiled
+    assert ("replica", (2, 4), (5, 4), True) in _FX[0].compiled
+    assert _FX[0].errors == [] and router.disabled_reason is None
+    assert router.stats["pairs_parallel"] == 4
+
+
+def test_a_prediction_is_not_launched_into_a_protect_state_flip():
+    torch.manual_seed(0)
+    ctl = _protect_controller()
+    dit = _ProtectedDit(ctl)
+    latents = torch.randn(2, 4)
+    cond = torch.randn(3, 4, generator = torch.Generator().manual_seed(1))
+    uncond = torch.randn(3, 4, generator = torch.Generator().manual_seed(2))
+
+    def loop(lat):
+        ctl.begin(4)
+        with torch.no_grad():
+            for i in range(4):
+                t = torch.tensor(1.0 - i / 4)
+                a = dit(hidden_states = lat, timestep = t, encoder_hidden_states = cond)[0]
+                b = dit(hidden_states = lat, timestep = t, encoder_hidden_states = uncond)[0]
+                lat = lat - 0.1 * (b + 4.0 * (a - b))
+                ctl.advance()
+        return lat
+
+    _FX[0] = _FxTrace(compiled = {("primary", (2, 4), (3, 4), False)})
+    reference = loop(latents.clone())
+    _FX[0].compiled = {("primary", (2, 4), (3, 4), False)}
+    _FX[0].waiter = "primary"
+    router, _replicas = _router(dit)
+    out = loop(latents.clone())
+    assert torch.equal(out, reference)
+    assert _FX[0].errors == [] and router.disabled_reason is None
+    # step 0 builds the replica; steps 1-3 run their odd branch there, step 3 from a prediction
+    assert router.stats["replica_calls"] == 3 and router.stats["predicted_hits"] == 1

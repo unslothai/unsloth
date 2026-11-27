@@ -69,7 +69,34 @@ test("message JSONL records form one importable conversation", () => {
     isOpenAIMessageRecord({ role: "developer", content: "Follow policy" }),
     true,
   );
+  assert.equal(
+    isOpenAIMessageRecord({ role: "function", name: "f", content: "x" }),
+    true,
+  );
+  assert.equal(
+    isOpenAIMessageRecord({
+      role: "assistant",
+      function_call: { name: "f", arguments: "{}" },
+    }),
+    true,
+  );
   assert.equal(isOpenAIMessageRecord({ messages }), false);
+  assert.equal(
+    isOpenAIMessageRecord({
+      role: "assistant",
+      function_call: { name: "f" },
+      messages,
+    }),
+    false,
+  );
+  assert.equal(
+    isOpenAIMessageRecord({ role: "function", content: "x", conversations: [] }),
+    false,
+  );
+  assert.equal(
+    isOpenAIMessageRecord({ role: "user", content: "hi", messages: null }),
+    true,
+  );
   assert.deepEqual(messageJsonlConversationRecord(messages), { messages });
 });
 

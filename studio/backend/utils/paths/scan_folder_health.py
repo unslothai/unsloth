@@ -99,8 +99,7 @@ _WINDOWS_MISSING = frozenset((2, 3, 15, 20, 21, 53, 55, 67, 161, 206, 267))
 
 
 def classify_scan_error(error: OSError) -> str:
-    """Map an error the scan already raised onto a status the UI can render."""
-    # Absent on POSIX, and None unless CPython set it, so this never shadows errno.
+    """winerror is absent on POSIX and None unless CPython set it, so this never shadows errno."""
     winerror = getattr(error, "winerror", None)
     if winerror is not None:
         if winerror in _WINDOWS_PERMISSION:

@@ -100,6 +100,7 @@ function realLoadModel(auth: AuthApi): ChatApi {
       new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
       {},
     ),
+    "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
     "@/features/auth": { authFetch: auth.authFetch },
     "./padded-response": paddedResponse,
     "@/lib/format-fastapi-error": {
@@ -112,7 +113,12 @@ function realLoadModel(auth: AuthApi): ChatApi {
       notifyChatHistoryUpdated: () => {},
       isCoalescedHistoryEvent: () => false,
     },
+    "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
     "../utils/load-warning-toast": { showLoadWarning: () => {} },
+    "../lib/load-request": loadWithStubs(
+      new URL("../src/features/chat/lib/load-request.ts", import.meta.url),
+      { "./server-tuning-fields": {} },
+    ),
     "./generation-length.ts": {},
     "./gguf-variants-request": {},
     "@/features/hf-auth": { prepareHfTokenForUse: async () => ({ proceed: true }) },

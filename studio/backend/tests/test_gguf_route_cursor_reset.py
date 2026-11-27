@@ -96,8 +96,7 @@ def _replay_route_cursor(events: list[dict]) -> dict:
 
 
 def _replay_route_cursor_without_status_reset(events: list[dict]) -> dict:
-    """Pre-fix control: identical to the route loop but never resets the
-    cursor on an empty status (only on ``tool_start``)."""
+    """Pre-fix control: resets the cursor only on tool_start, never on an empty status."""
     prev_text = ""
     visible_deltas: list[str] = []
     for event in events:

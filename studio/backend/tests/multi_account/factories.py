@@ -140,6 +140,12 @@ CORE_FACTORIES = {
         "chat", {"messages": [MESSAGE]}, fragment = SENTINEL
     ),
     "routes.chat_history:GET:/projects/{project_id}": Factory("project", fragment = SENTINEL),
+    # #17849: the project's folder browser and git status, read through the project's own lookup.
+    "routes.chat_history:GET:/projects/{project_id}/files": Factory("project"),
+    "routes.chat_history:GET:/projects/{project_id}/files/search": Factory(
+        "project", query = {"q": "notes"}
+    ),
+    "routes.chat_history:GET:/projects/{project_id}/changes": Factory("project"),
     "routes.chat_history:PATCH:/projects/{project_id}": Factory(
         "project", {"name": EDITED}, fragment = EDITED
     ),
@@ -161,6 +167,9 @@ CORE_FACTORIES = {
         "training", {"display_name": EDITED}, fragment = EDITED
     ),
     "routes.auth:DELETE:/api-keys/{key_id}": Factory("api-key"),
+    "routes.auth:PATCH:/api-keys/{key_id}": Factory(
+        "api-key", {"access": "inference"}, fragment = "inference"
+    ),
     "routes.mcp_servers:PUT:/{server_id}": Factory(
         "mcp", {"display_name": EDITED}, fragment = EDITED
     ),
@@ -176,6 +185,7 @@ CORE_FACTORIES = {
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),
     "routes.skills:GET:/{name}": Factory("skill", fragment = SENTINEL, absent = SENTINEL),
+    "routes.skills:GET:/{name}/export": Factory("skill", fragment = SKILL_NAME),
     "routes.skills:PUT:/{name}": Factory(
         "skill",
         {"description": EDITED, "instructions": "Instructions"},
@@ -193,6 +203,7 @@ from . import (  # noqa: E402  domain tables import Factory and register their s
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 
@@ -203,6 +214,7 @@ DOMAINS = (
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 

@@ -128,8 +128,7 @@ def _case_train(native, tmp):
     trainer = _unsloth_trainer_class()(model = _mixed_model(native), args = args, train_dataset = ds)
     trainer.train()
     groups = trainer.optimizer.param_groups
-    # Linear decay to 0 over 3 steps: after the last step every group sits at lr 0; a group the
-    # scheduler never saw keeps its initial LR.
+    # Scheduled groups end at lr 0 after 3 decay steps; unseen groups keep their initial LR.
     return {
         "mixed_left": native._mixed_param_groups(trainer.optimizer),
         "lrs": [float(g["lr"]) for g in groups],

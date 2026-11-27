@@ -116,7 +116,7 @@ function harness(
     setError: (error: string) => errors.push(error),
     setInstallDiskFull: noop,
     setApiBase: noop,
-    setIsExternalServer: noop,
+    setExternalServerPort: noop,
     stopExternalServerPoll: noop,
     startExternalServerPoll: noop,
     setRunningStatus: noop,

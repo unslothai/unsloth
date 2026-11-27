@@ -100,8 +100,7 @@ def test_the_uninstall_phase_runs_last(steps: list[dict]) -> None:
 
 
 def test_no_two_phases_bind_the_same_port(steps: list[dict]) -> None:
-    """A shared port is harmless only in step order; a leftover server makes a phase test the wrong
-    model."""
+    """A shared port is harmless only in step order; a leftover server tests the wrong model."""
     # Group by phase: one phase names its port in several steps.
     starts = _phase_starts(steps)
     by_phase: dict[str, set[int]] = defaultdict(set)
@@ -131,8 +130,7 @@ def test_no_two_phases_write_the_same_server_log(steps: list[dict]) -> None:
         for pattern in (r"--log (logs/[\w.\-]+)", r"> (?:\")?(logs/[\w.\-]+)"):
             for found in re.findall(pattern, script):
                 logs[found].add(_phase_of(starts, i))
-        # An invocation with no --log writes the default file; checked over the whole step since
-        # calls are backslash-continued.
+        # No --log writes the default file; calls span backslash lines, so scan the whole step.
         if "boot-studio-api-only.sh" in script and "--log" not in script:
             logs[default_log].add(_phase_of(starts, i))
 
@@ -166,3 +164,53 @@ def test_the_absorbed_phases_keep_the_host_offload_opt_out(job: dict) -> None:
         "GitHub's macOS runners have a paravirtual Metal device, so every phase here "
         "runs the whole model from host RAM and the guard declines the load."
     )
+
+
+def test_every_background_step_is_collected_before_the_uninstall(steps: list[dict]) -> None:
+    """A background suite still running when the uninstall phase starts loses its venv mid-run."""
+    names = [str(s.get("name") or "") for s in steps]
+    uninstall = names.index("Uninstall and verify clean")
+    # In step order: a wait-all collects only the background steps already started.
+    running: set[str] = set()
+    started = 0
+    for step in steps[:uninstall]:
+        if step.get("background"):
+            name = step.get("name")
+            assert step.get("id"), f"background step {name!r} has no id, so no wait can name it"
+            running.add(step["id"])
+            started += 1
+        if "wait-all" in step:
+            running.clear()
+        waits = step.get("wait")
+        running -= set([waits] if isinstance(waits, str) else waits or [])
+    assert started, "no background steps found; this scan would be vacuous"
+    missing = sorted(running)
+    assert not missing, (
+        f"background steps {missing} have no `wait` or `wait-all` before the uninstall phase, "
+        f"so they can still be running when it deletes the install they use"
+    )
+
+
+def test_a_background_studio_boot_gets_its_own_studio_home(steps: list[dict]) -> None:
+    """The boot scripts wipe $studio_home/auth, so the default home races the foreground phase's login."""
+    boots = (
+        "run-studio-permission-browser.sh",
+        "run-studio-indicator-browser.sh",
+        "boot-studio-api-only.sh",
+    )
+    lanes = [s for s in steps if s.get("background") and any(b in _script(s) for b in boots)]
+    assert lanes, "no background step boots a server; this scan would be vacuous"
+    for lane in lanes:
+        text = _script(lane) + "\n" + yaml.safe_dump(lane.get("env") or {})
+        assigned = dict(re.findall(r'(?m)^\s*(?:export\s+)?(\w+)[=:]\s*"?([^"\n]+)', text))
+        # Follows one shell hop, e.g. UNSLOTH_STUDIO_HOME="$home".
+        home = re.sub(
+            r"\$\{?(\w+)\}?",
+            lambda m: assigned.get(m.group(1), m.group(0)),
+            assigned.get("UNSLOTH_STUDIO_HOME", ""),
+        )
+        assert "github.workspace" in home, (
+            f"{lane.get('name')!r} boots Unsloth in the background with UNSLOTH_STUDIO_HOME="
+            f"{home!r}, not a home of its own under the workspace, so it shares the auth dir "
+            f"the foreground phase wipes and re-mints"
+        )

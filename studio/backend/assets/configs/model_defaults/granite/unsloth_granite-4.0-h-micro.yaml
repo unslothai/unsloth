@@ -1,11 +1,7 @@
-# Model defaults for unsloth/granite-4.0-h-micro
-# Based on Granite4.0.ipynb
 # Also applies to: ibm-granite/granite-4.0-h-micro, unsloth/granite-4.0-h-micro-bnb-4bit, unsloth/granite-4.0-h-micro-unsloth-bnb-4bit
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

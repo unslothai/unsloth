@@ -11,13 +11,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""`UNSLOTH_FORCE_CUSTOM_DTYPE` carries executable code in two of its five fields.
-
-Every value unsloth ships is a literal in `models/loader.py` and both readers run in
-the process that set it, so a value this process did not set has no legitimate source
-and its code fields are dropped rather than executed. The wire format is unchanged,
-since `unsloth_zoo` parses the same five fields on its own release schedule.
-"""
+"""UNSLOTH_FORCE_CUSTOM_DTYPE code fields run only if this process set the value, else dropped; wire
+format unchanged, unsloth_zoo parses the same five fields."""
 
 __all__ = [
     "register_custom_dtype",
@@ -115,8 +110,7 @@ def neutralize_inherited_custom_dtype():
 
 
 def trusted_custom_dtype():
-    """Returns (value, code_is_trusted); False means honour the dtype fields and drop
-    the two code fields."""
+    """Returns (value, code_is_trusted); when False, drop the two code fields."""
     value = os.environ.get(_ENV_KEY, "")
     if value == "":
         return "", False
@@ -146,6 +140,9 @@ def _cast_input_to_weight_dtype(module, args):
     return (x.to(weight.dtype),) + tuple(args[1:])
 
 
+_INPUT_CAST_DTYPES = frozenset((torch.float16, torch.bfloat16, torch.float32))
+
+
 def cast_mixed_linear_inputs(model, load_dtype):
     """Outside autocast, cast inputs of Linears moved off load_dtype (Falcon-H1 / Nemotron-H fp16) to the weight dtype."""
     hooked = 0
@@ -155,9 +152,10 @@ def cast_mixed_linear_inputs(model, load_dtype):
         ):
             continue
         weight = getattr(module, "weight", None)
+        # Not is_floating_point(): FP8Linear / FbgemmFp8Linear keep float8 weights and quantize their own input.
         if (
             not isinstance(weight, torch.Tensor)
-            or not weight.is_floating_point()
+            or weight.dtype not in _INPUT_CAST_DTYPES
             or weight.dtype == load_dtype
         ):
             continue

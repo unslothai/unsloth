@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import diffusion_eager_patches as ep  # noqa: E402
 from core.inference import diffusion_rocm_fused as rf  # noqa: E402
@@ -20,6 +22,10 @@ from core.inference import diffusion_rocm_fused as rf  # noqa: E402
 fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux")
 from diffusers.models import normalization as nm  # noqa: E402
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 # another test file may leave Studio's eager AdaLN patch on the classes: start from stock
 ep.uninstall_patches()
@@ -57,15 +63,35 @@ def fake_kernels(monkeypatch):
 
 def _nvidia(monkeypatch, platform = "linux"):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch.version, "cuda", "13.0", raising = False)
     monkeypatch.setattr(rf.sys, "platform", platform)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-def test_auto_engages_rope_only_on_nvidia_linux(fake_kernels, monkeypatch, dtype):
+def test_auto_engages_rope_and_adaln_on_nvidia_linux(fake_kernels, monkeypatch, dtype):
     _nvidia(monkeypatch)
-    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda") == {"rope": True, "adaln": 0}
+    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda") == {"rope": True, "adaln": 3}
     assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
+    assert nm.AdaLayerNormZero.forward is rf._adaln_zero_forward
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_the_exact_tier_keeps_stock_adaln_on_nvidia(fake_kernels, monkeypatch, dtype):
+    _nvidia(monkeypatch)
+    rf.install_for_pipe(_PipeLike(), dtype, "cuda")
+    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda", adaln = False) == {
+        "rope": True,
+        "adaln": 0,
+    }
+    assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
+    assert nm.AdaLayerNormZero.forward is _STOCK_FWD["AdaLayerNormZero"]
+
+
+def test_the_adaln_kill_switch_on_nvidia(fake_kernels, monkeypatch):
+    _nvidia(monkeypatch)
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "0")
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": True, "adaln": 0}
     assert nm.AdaLayerNormZero.forward is _STOCK_FWD["AdaLayerNormZero"]
 
 
@@ -79,6 +105,7 @@ def test_auto_is_inert_on_nvidia_outside_linux(fake_kernels, monkeypatch, platfo
 
 def test_auto_is_inert_without_a_gpu_torch(fake_kernels, monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch.version, "cuda", None, raising = False)
     monkeypatch.setattr(rf.sys, "platform", "linux")
     assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
@@ -89,6 +116,7 @@ def test_auto_is_inert_without_a_gpu_torch(fake_kernels, monkeypatch):
 def test_kill_switch_on_nvidia(fake_kernels, monkeypatch, value):
     _nvidia(monkeypatch)
     monkeypatch.setenv(rf.FUSED_ROPE_ENV, value)
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, value)
     assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
     assert fmod.apply_rotary_emb is stock_rope
 
@@ -102,7 +130,7 @@ def test_flux2_fp16_keeps_its_own_patch_on_nvidia(fake_kernels, monkeypatch):
     pipe = _PipeLike("diffusers.models.transformers.transformer_flux2")
     try:
         assert fr.install_for_pipe(pipe, torch.float16, "cuda")
-        assert rf.install_for_pipe(pipe, torch.float16, "cuda") == {"rope": False, "adaln": 0}
+        assert rf.install_for_pipe(pipe, torch.float16, "cuda") == {"rope": False, "adaln": 3}
         assert f2mod.apply_rotary_emb is fr._fused_apply_rotary_emb
     finally:
         fr.uninstall()
@@ -135,6 +163,7 @@ def test_kill_switches_on_rocm(fake_kernels, monkeypatch, value):
 
 def test_force_on_engages_on_cuda(fake_kernels, monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setenv(rf.FUSED_ROPE_ENV, "1")
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     assert rf.install_for_pipe(_PipeLike(), torch.float16, "cuda") == {"rope": True, "adaln": 3}
@@ -221,7 +250,7 @@ def test_load_and_teardown_wiring():
         diffusion_rocm_fused.uninstall,
     )
     try:
-        diffusion_rocm_fused.install_for_pipe = lambda *a: seen.append(("install", a)) or {
+        diffusion_rocm_fused.install_for_pipe = lambda *a, **k: seen.append(("install", a, k)) or {
             "rope": False,
             "adaln": 0,
         }
@@ -232,10 +261,41 @@ def test_load_and_teardown_wiring():
             ap.PatchContext(pipe = pipe, dtype = "bf16", device = "cuda", logger = "log", speed_mode = "off"),
         )
         diffusion._uninstall_fused_dit_patches()
+        for mode in (None, "eager", "default"):
+            ap.install_stage(
+                ap.STAGE_LOAD,
+                ap.PatchContext(
+                    pipe = pipe, dtype = "bf16", device = "cuda", logger = "log", speed_mode = mode
+                ),
+            )
+            diffusion._uninstall_fused_dit_patches()
+        # An unset dense request resolves to "off" but is not an explicit off.
+        ap.install_stage(
+            ap.STAGE_LOAD,
+            ap.PatchContext(
+                pipe = pipe,
+                dtype = "bf16",
+                device = "cuda",
+                logger = "log",
+                speed_mode = "off",
+                explicit_off = False,
+            ),
+        )
+        diffusion._uninstall_fused_dit_patches()
     finally:
         diffusion_rocm_fused.install_for_pipe = orig_install
         diffusion_rocm_fused.uninstall = orig_uninstall
-    assert ("install", (pipe, "bf16", "cuda", "log")) in seen and ("uninstall",) in seen
+    assert ("install", (pipe, "bf16", "cuda", "log"), {"adaln": False}) in seen
+    assert seen.count(("install", (pipe, "bf16", "cuda", "log"), {"adaln": True})) == 4
+    stage_load = next(
+        c
+        for c in ast.walk(load)
+        if isinstance(c, ast.Call)
+        and any(isinstance(a, ast.Attribute) and a.attr == "STAGE_LOAD" for a in c.args)
+    )
+    explicit = next(k.value for k in stage_load.keywords if k.arg == "explicit_off")
+    assert "speed_mode is not None" in ast.unparse(explicit)
+    assert ("uninstall",) in seen
 
 
 def test_stock_lines_still_present_in_diffusers():
@@ -510,3 +570,79 @@ def test_a_failed_adaln_launch_disables_the_fused_path_for_the_load(monkeypatch)
     with torch.no_grad():
         norm(x, cond)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "cls_name, call",
+    [
+        ("AdaLayerNormZero", lambda norm, x, emb: norm(x, emb = emb)[0]),
+        ("AdaLayerNormZeroSingle", lambda norm, x, emb: norm(x, emb = emb)[0]),
+        ("AdaLayerNormContinuous", lambda norm, x, emb: norm(x, emb)),
+    ],
+)
+def test_compiled_adaln_never_recompiles_per_call(fake_kernels, monkeypatch, cls_name, call):
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    assert rf.install_adaln(torch.bfloat16, "cuda") == 3
+    torch.manual_seed(0)
+    if cls_name == "AdaLayerNormContinuous":
+        norm = nm.AdaLayerNormContinuous(16, 16, elementwise_affine = False, eps = 1e-6)
+    else:
+        norm = getattr(nm, cls_name)(16)
+    x, emb = torch.randn(2, 5, 16), torch.randn(2, 16)
+    before = dict(rf.COUNTS)
+    with torch.no_grad():
+        want = call(norm, x, emb)
+    assert rf.COUNTS["adaln_stock"] == before["adaln_stock"] + 1
+    before = dict(rf.COUNTS)
+    torch._dynamo.reset()
+    compiled = torch.compile(call, backend = "eager", fullgraph = True, dynamic = False)
+    try:
+        with torch._dynamo.config.patch(error_on_recompile = True), torch.no_grad():
+            outs = [compiled(norm, x, emb) for _ in range(4)]
+    finally:
+        torch._dynamo.reset()
+    assert all(torch.equal(out, want) for out in outs)
+    assert rf.COUNTS == before
+
+
+def test_tiny_flux1_regional_compile_holds_its_graphs_across_steps(fake_kernels, monkeypatch):
+    from diffusers import FluxTransformer2DModel
+    from torch._dynamo.utils import counters
+
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    rf.install_adaln(torch.bfloat16, "cuda")
+    torch.manual_seed(0)
+    model = FluxTransformer2DModel(
+        patch_size = 1,
+        in_channels = 16,
+        num_layers = 2,
+        num_single_layers = 3,
+        attention_head_dim = 32,
+        num_attention_heads = 4,
+        joint_attention_dim = 64,
+        pooled_projection_dim = 32,
+        axes_dims_rope = (8, 12, 12),
+    ).eval()
+    B, img, txt = 1, 64, 8
+    inputs = dict(
+        hidden_states = torch.randn(B, img, 16),
+        encoder_hidden_states = torch.randn(B, txt, 64),
+        pooled_projections = torch.randn(B, 32),
+        img_ids = torch.randint(0, 8, (img, 3)).float(),
+        txt_ids = torch.zeros(txt, 3),
+        return_dict = False,
+    )
+    torch._dynamo.reset()
+    counters.clear()
+    try:
+        # Studio's FLUX.1 settings (diffusion_speed: fullgraph, static shapes for a stream-merging block).
+        model.compile_repeated_blocks(backend = "eager", fullgraph = True, dynamic = False)
+        graphs = []
+        with torch.no_grad():
+            for t in (0.9, 0.6, 0.3):
+                model(timestep = torch.tensor([t]), **inputs)
+                graphs.append(counters["stats"]["unique_graphs"])
+    finally:
+        torch._dynamo.reset()
+    assert graphs[0] > 0
+    assert graphs[1:] == [graphs[0]] * 2, graphs

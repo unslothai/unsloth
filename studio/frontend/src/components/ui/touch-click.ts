@@ -3,9 +3,7 @@
 
 import type * as React from "react";
 
-/** Tap-to-pin is for touch, which has no hover. The click's own pointerType is the only thing
-* that answers for the pointer actually used: the media query reports the primary device, so on
-* a hybrid it mislabels every event. Keyboard activation reports "", which correctly does not pin. */
+/** The click's own pointerType, not the media query, which mislabels hybrids. Keyboard gives "". */
 export function isTouchClick(event: React.MouseEvent): boolean {
   const pointerType = (event.nativeEvent as Partial<PointerEvent>).pointerType;
   if (typeof pointerType === "string") return pointerType === "touch";
@@ -15,4 +13,10 @@ export function isTouchClick(event: React.MouseEvent): boolean {
     typeof window.matchMedia === "function" &&
     window.matchMedia("(pointer: coarse)").matches
   );
+}
+
+/** Radix popover / menu triggers set aria-haspopup; a tap on one is for its popup, not a tooltip pin. */
+export function opensPopup(element: Pick<Element, "getAttribute"> | null): boolean {
+  const popup = element?.getAttribute("aria-haspopup");
+  return popup != null && popup !== "false";
 }

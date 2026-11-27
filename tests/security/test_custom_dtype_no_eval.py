@@ -116,9 +116,6 @@ def test_an_inherited_value_that_mimics_ours_is_still_not_trusted(monkeypatch):
     assert not trusted
 
 
-# --- vision.py no longer evaluates the fields --------------------------------
-
-
 def test_vision_does_not_eval_the_dtype_fields():
     source = pathlib.Path(__import__("unsloth.models.vision", fromlist = ["x"]).__file__).read_text(
         encoding = "utf-8"

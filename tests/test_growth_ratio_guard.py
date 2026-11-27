@@ -23,9 +23,7 @@ class FakeClock:
         self.now += seconds
 
 
-#: Seconds per unit of cost. Small enough that a quadratic row stays well under the 60s
-#: backstop `assert_linear` applies, so the quadratic rows fail on the RATIO, which is what
-#: they are about, rather than on the backstop, which has its own row.
+# Seconds per unit, small enough that quadratic rows fail on the ratio, not the 60s backstop.
 _UNIT = 0.001
 
 

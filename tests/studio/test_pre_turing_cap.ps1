@@ -80,8 +80,7 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "non-zero exit -> no cap"                   ((Verdict @("7.0")) -eq '')
     $script:FakeSmiRc = 0
 
-    # A driver warning on stderr is ordinary; without -StdoutOnly it corrupts the CSV and a
-    # V100 silently keeps cu130.
+    # Stderr is normal; without -StdoutOnly it corrupts the CSV and V100 silently keeps cu130.
     $script:FakeSmiStdout = "7.0"
     $script:FakeSmiStderr = "WARNING: infoROM is corrupted at gpu 0000:00:04.0"
     Check "stderr noise does not reach the CSV parse" ((Get-NvidiaCu126Verdict "nvidia-smi" 75) -eq 'cu126')

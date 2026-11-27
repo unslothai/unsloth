@@ -22,16 +22,16 @@ import utils.hardware.hardware as hw  # noqa: E402
 def _no_torch(monkeypatch):
     # Force the non-CUDA/XPU path regardless of the test host's real GPUs.
     monkeypatch.setattr(hw, "_has_torch", lambda: False)
-    # The no_torch verdict reads the venv's install manifest; pin it so the answer does
-    # not depend on which venv runs these tests.
+    # no_torch reads the venv's install manifest, so pin it to keep tests venv-independent.
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
     monkeypatch.setattr(hw, "_NO_TORCH_SETTLED_EPOCH", None)
+    monkeypatch.setattr(hw, "_CHAT_ONLY_HINT", None)
     # detect_hardware sets these globals directly; restore them so they do not leak.
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM, hw._CPU_TRAINING_REASON)
     try:
         yield
     finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM, hw._CPU_TRAINING_REASON = saved
 
 
 def test_apple_silicon_without_mlx_is_chat_only_with_reason(monkeypatch):
@@ -67,15 +67,107 @@ def _no_torch_apple_silicon(monkeypatch, *, mlx_on_disk: bool):
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
 
 
-def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypatch):
-    # A chat-only Windows / Linux install on a GPU host: "needs an NVIDIA or AMD GPU" is wrong.
+_NVIDIA_CARD = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 4090"}
+_INTEL_IGPU = {"vendor": "intel", "index": 0, "name": "Intel(R) UHD Graphics 770"}
+_INTEL_ARC = {"vendor": "intel", "index": 1, "name": "Intel(R) Arc(TM) A770 Graphics"}
+
+
+def _no_torch_off_mac(
+    monkeypatch,
+    *,
+    devices,
+    unknown = False,
+):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_: {
+            "available": bool(devices),
+            "devices": devices,
+            "sources": [],
+            "unknown": unknown,
+        },
+    )
+    # Pinned: the test host's own torch and install record must not vouch for an Intel iGPU.
+    monkeypatch.setattr(hw, "_expected_xpu_flavor_was_chosen", lambda: False)
+    monkeypatch.setattr(hw, "_torch_reports_an_xpu_runtime", lambda: False)
+    # An emptied mask on the test host (CUDA_VISIBLE_DEVICES="") would hide the card.
+    for var in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "ZE_AFFINITY_MASK",
+    ):
+        monkeypatch.delenv(var, raising = False)
+
+
+def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypatch):
+    # A chat-only Windows / Linux install on a GPU host: "needs an NVIDIA or AMD GPU" is wrong.
+    _no_torch_off_mac(monkeypatch, devices = [_NVIDIA_CARD])
     assert hw.detect_hardware() == hw.DeviceType.CPU
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_torch"
     assert hw.current_chat_only_verdict() == ("no_torch", None)
+    assert hw.trains_on_cpu("no_torch") is False
+
+
+@pytest.mark.parametrize("devices", [[], [_INTEL_IGPU]], ids = ["no-gpu", "intel-igpu"])
+def test_a_no_torch_install_without_a_trainable_gpu_is_offered_cpu_training(monkeypatch, devices):
+    # The full install trains here on the CPU backend, so the Desktop offers it; it still brings no export.
+    _no_torch_off_mac(monkeypatch, devices = devices)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.current_chat_only_verdict() == ("no_torch", None)
+    assert hw.trains_on_cpu("no_torch") is True
+    export = hw.export_capability()
+    assert export["export_unsupported_reason"] == "no_accelerator"
+    assert "--no-torch" not in export["export_unsupported_message"]
+
+
+def test_a_no_torch_install_whose_inventory_cannot_answer_keeps_no_torch(monkeypatch):
+    # A probe that timed out is not "no GPU".
+    _no_torch_off_mac(monkeypatch, devices = [], unknown = True)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.trains_on_cpu("no_torch") is False
+    assert hw.export_capability()["export_unsupported_reason"] == "no_torch"
+
+
+_AMD_CARD = {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX", "gfx": "gfx1100"}
+
+
+@pytest.mark.parametrize(
+    "devices, nodes_closed, hinted",
+    [
+        ([_AMD_CARD], True, True),
+        ([_AMD_CARD], False, False),
+        ([_AMD_CARD, _NVIDIA_CARD], True, False),
+        ([_AMD_CARD, _INTEL_ARC], True, True),
+    ],
+    ids = ["amd-closed-nodes", "amd-open-nodes", "amd-closed-beside-nvidia", "amd-closed-beside-arc"],
+)
+def test_a_no_torch_amd_host_behind_closed_nodes_gets_no_full_install_offer(
+    monkeypatch, devices, nodes_closed, hinted
+):
+    # The full install would restart into torch_cuda_unavailable: no reinstall opens /dev/kfd (#14067).
+    import utils.hardware.amd as amd
+
+    _no_torch_off_mac(monkeypatch, devices = devices)
+    monkeypatch.setattr(hw, "_amd_device_can_establish_a_mismatch", lambda _device: True)
+    monkeypatch.setattr(amd, "amd_closed_nodes_block_the_runtime", lambda **_: nodes_closed)
+    monkeypatch.setattr(
+        amd, "amd_node_permission_hint", lambda **_: "Add this user to the render group."
+    )
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    expected = "Add this user to the render group." if hinted else None
+    assert hw.chat_only_permission_hint("no_torch", None) == expected
 
 
 def test_a_torch_install_off_mac_without_an_accelerator_stays_no_gpu(monkeypatch):
@@ -85,12 +177,58 @@ def test_a_torch_install_off_mac_without_an_accelerator_stays_no_gpu(monkeypatch
     assert hw.CHAT_ONLY_REASON == "no_gpu"
 
 
-def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatch):
+@pytest.mark.parametrize(
+    "release, reason",
+    [("15.1", "mlx_unavailable"), ("13.6.1", "no_torch")],
+    ids = ["mlx-installable", "mlx-wheels-skip"],
+)
+def test_apple_silicon_no_torch_install_without_mlx(monkeypatch, release, reason):
+    # Chat only serves MLX models too, so a Mac the MLX wheels support waits for the self-heal.
     _no_torch_apple_silicon(monkeypatch, mlx_on_disk = False)
+    monkeypatch.setattr(hw.platform, "mac_ver", lambda: (release, ("", "", ""), ""))
     assert hw.detect_hardware() == hw.DeviceType.CPU
     assert hw.CHAT_ONLY is True
-    assert hw.CHAT_ONLY_REASON == "no_torch"
-    assert hw.CHAT_ONLY_DETAIL is None
+    assert hw.CHAT_ONLY_REASON == reason
+    assert hw.trains_on_cpu("no_torch") is False
+
+
+@pytest.mark.parametrize(
+    "release, min_python, blocker",
+    [
+        ("15.1", (3, 10), None),
+        ("13.6.1", (3, 10), "macOS 14 or later"),
+        # install_python_stack reads it as too old.
+        ("", (3, 10), "macOS 14 or later"),
+        ("14.5", (99, 0), "Python 99.0 or later"),
+    ],
+    ids = ["macos-15", "macos-13", "macos-unreadable", "python-too-old"],
+)
+def test_a_no_torch_mac_the_mlx_wheels_skip_gets_no_full_install_offer(
+    monkeypatch, release, min_python, blocker
+):
+    # The installer skips MLX there. The hint withholds the offer; the reason stays no_torch.
+    _no_torch_apple_silicon(monkeypatch, mlx_on_disk = False)
+    monkeypatch.setattr(hw.platform, "mac_ver", lambda: (release, ("", "", ""), ""))
+    monkeypatch.setattr(hw, "_MLX_MIN_PYTHON", min_python)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_torch", None))
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == ("mlx_unavailable" if blocker is None else "no_torch")
+    hint = hw.chat_only_permission_hint("no_torch", None)
+    message = hw.export_capability()["export_unsupported_message"]
+    if blocker is None:
+        assert hint is None
+        assert "--no-torch" in message
+    else:
+        assert hint == f"Training on this Mac needs MLX, which requires {blocker}."
+        assert message == f"Export on this Mac needs MLX, which requires {blocker}."
+
+
+def test_an_old_macos_hint_is_for_apple_silicon_only(monkeypatch):
+    # Off Mac, mac_ver() is empty, which reads as too old.
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "mac_ver", lambda: ("", ("", "", ""), ""))
+    assert hw.chat_only_permission_hint("no_torch", None) is None
 
 
 def test_apple_silicon_no_torch_install_with_mlx_on_disk_waits_for_the_probe(monkeypatch):
@@ -146,11 +284,23 @@ def test_a_declined_settle_does_not_mark_the_epoch(monkeypatch):
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
 
 
-def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeypatch):
+def test_apple_silicon_no_torch_install_with_usable_mlx_chats_on_mlx_without_training(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
-    hw.detect_hardware()
+    assert hw.detect_hardware() == hw.DeviceType.MLX
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    capability = hw.export_capability()
+    assert capability["export_supported"] is False
+    assert capability["export_unsupported_reason"] == "no_torch"
+
+
+def test_apple_silicon_full_install_with_usable_mlx_enables_training(monkeypatch):
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
+    assert hw.detect_hardware() == hw.DeviceType.MLX
     assert hw.CHAT_ONLY is False
     assert hw.CHAT_ONLY_REASON is None
 
@@ -229,6 +379,7 @@ def test_cpu_only_non_mac_reason(monkeypatch):
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_gpu"
+    assert hw.trains_on_cpu("no_gpu") is False
 
 
 @pytest.mark.parametrize("tegra, chosen", [(True, True), (False, False)])

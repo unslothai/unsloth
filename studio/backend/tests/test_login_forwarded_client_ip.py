@@ -66,3 +66,25 @@ def test_forwarded_header_takes_the_proxy_appended_element():
 def test_a_single_proxy_hop_still_names_the_client():
     request = _Request("127.0.0.1", {"x-forwarded-for": "198.51.100.7"})
     assert auth_routes._client_ip(request) == "198.51.100.7"
+
+
+@pytest.mark.parametrize("name", [b"x-forwarded-for", b"forwarded"])
+def test_a_proxy_appended_header_field_is_the_one_keyed_on(name):
+    def hop(addr):
+        return addr.encode() if name == b"x-forwarded-for" else b"for=" + addr.encode()
+
+    request = _Request("10.0.0.5")
+    for spoofed in ("198.51.100.1", "198.51.100.2"):
+        request.headers = Headers(raw = [(name, hop(spoofed)), (name, hop("203.0.113.9"))])
+        assert auth_routes._client_ip(request) == "203.0.113.9"
+
+
+def test_shared_client_ip_reads_a_proxy_appended_header_field(monkeypatch):
+    from utils import client_ip as client_ip_mod
+
+    monkeypatch.setattr(client_ip_mod, "_trust_forwarded_for", lambda: True)
+    request = _Request("10.0.0.5")
+    request.headers = Headers(
+        raw = [(b"x-forwarded-for", b"198.51.100.1"), (b"x-forwarded-for", b"203.0.113.9")]
+    )
+    assert client_ip_mod.client_ip(request) == "203.0.113.9"

@@ -58,10 +58,14 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
 
 export const SUGGESTED_LIMITS = [20, 40, 80] as const;
 
-export const CARD_COLUMNS: Record<LibrarySettings["cardSize"], { minWidth: number; max: number }> = {
-  small: { minWidth: 140, max: 6 },
-  medium: { minWidth: 170, max: 5 },
-  large: { minWidth: 210, max: 4 },
+/** `max` per row down to `minWidth`; more only once every card can be `wideMinWidth`. */
+export const CARD_COLUMNS: Record<
+  LibrarySettings["cardSize"],
+  { minWidth: number; max: number; wideMinWidth: number }
+> = {
+  small: { minWidth: 140, max: 6, wideMinWidth: 190 },
+  medium: { minWidth: 170, max: 5, wideMinWidth: 225 },
+  large: { minWidth: 210, max: 4, wideMinWidth: 275 },
 };
 
 export type LibraryView = "grid" | "list";
@@ -168,6 +172,15 @@ type Sortable = { name: string; updatedAt: number; sizeBytes?: number | null };
 
 export function lastActivity(item: { updatedAt: number; openedAt?: number | null }): number {
   return Math.max(item.updatedAt, item.openedAt ?? 0);
+}
+
+/** Last activity, with `openedAt` from before this visit for the items in `openedBefore`. */
+export function activityBeforeVisit(
+  item: { id: string; updatedAt: number; openedAt?: number | null },
+  openedBefore: ReadonlyMap<string, number | null>,
+): number {
+  const openedAt = openedBefore.has(item.id) ? openedBefore.get(item.id) : item.openedAt;
+  return lastActivity({ updatedAt: item.updatedAt, openedAt });
 }
 
 export function compareBySort({ key, desc }: LibrarySortState): (a: Sortable, b: Sortable) => number {

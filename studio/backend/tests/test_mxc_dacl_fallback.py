@@ -6,6 +6,7 @@ import base64
 import os
 import shutil
 import sys
+import sysconfig
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -397,7 +398,7 @@ def test_probe_journal_is_forced_and_empty_when_not_replaying(monkeypatch, tmp_p
     seen = {}
 
     @contextlib.contextmanager
-    def lease(package_root = None):
+    def lease(package_root = None, pin = None):
         yield SimpleNamespace(info = SimpleNamespace(path = tmp_path / "wxc-exec.exe"))
 
     def run(argv, **kwargs):
@@ -549,15 +550,38 @@ def test_unconfirmed_restore_fails_only_a_run_that_was_not_forced(
 
 
 def test_mxc_workloads_install_into_and_import_from_the_session_packages(tmp_path):
-    """The interpreter is read-only inside the container, so without PIP_TARGET a pip install fails there."""
+    """The interpreter is read-only inside the container, so without PIP_PREFIX a pip install fails there."""
     packages = str(tmp_path / ".unsloth-packages")
     env = mxc_policy._with_session_packages(
         {"Path": "/windows/system32", "PYTHONPATH": "/shim"}, str(tmp_path)
     )
 
-    assert env["PIP_TARGET"] == packages
+    assert env["PIP_PREFIX"] == packages
+    assert env["PIP_IGNORE_INSTALLED"] == "1"
     assert env["PYTHONNOUSERSITE"] == "1"
-    assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
+    pythonpath = env["PYTHONPATH"].split(os.pathsep)
+    assert pythonpath[0] == "/shim"
+    assert pythonpath[-1] == packages
+    site = sysconfig.get_path("purelib", vars = {"base": packages, "platbase": packages})
+    assert os.path.normcase(site) in map(os.path.normcase, pythonpath)
     assert "PATH" not in env, "a second PATH beside Path is ambiguous on Windows"
     assert env["Path"].split(os.pathsep)[0] == "/windows/system32"
     assert os.path.join(packages, "Scripts") in env["Path"].split(os.pathsep)
+
+
+@pytest.fixture(autouse = True)
+def _dacl_capable_pin(monkeypatch):
+    # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
+    from core.inference import mxc_runtime
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)
+
+
+# Not in test_mxc_pin.py: the daily npm check runs that file with pytest alone, and mxc_policy needs the backend.
+@pytest.mark.parametrize(
+    ("pin", "enabled"), [(mxc_runtime.PRIMARY_PIN, False), (mxc_runtime.LEGACY_PIN, True)]
+)
+def test_a_saved_dacl_choice_applies_only_to_the_legacy_pin(monkeypatch, pin, enabled):
+    monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: pin)
+    monkeypatch.setenv(mxc_policy.DACL_FALLBACK_ENV, "1")
+    # 1.1.0 has no AppContainer + DACL tier: no grants, no leases, no allowDaclMutation.
+    assert mxc_policy.dacl_fallback_enabled() is enabled

@@ -4,7 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import { cn } from "@/lib/utils";
-import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type Ref, useCallback, useEffect, useRef, useState } from "react";
 import { fetchAudioBlob } from "../api";
@@ -18,6 +18,7 @@ import {
 } from "./ab-compare-state";
 import { PlaybackTime, WaveformBarGlyphs } from "./waveform";
 import { computePeaks, formatSeconds } from "./waveform-peaks";
+import { PlayIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 // Decoding holds every sample in memory; past this the bars stay flat.
@@ -57,7 +58,7 @@ async function decodeClipPeaks(
   );
 }
 
-function useClipPeaks(srcs: readonly (string | null)[]) {
+export function useClipPeaks(srcs: readonly (string | null)[]) {
   const [peaks, setPeaks] = useState<Record<string, number[] | null>>({});
   const key = srcs.join("\n");
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` is the srcs, joined.
@@ -183,16 +184,18 @@ export function ABCompare({
           variant="muted"
           size="icon"
           className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0"
+          title={ab.playing ? "Pause" : "Play"}
           aria-label={
             ab.playing ? `Pause ${current.label}` : `Play ${current.label}`
           }
           disabled={!src}
           onClick={toggle}
         >
-          <HugeiconsIcon
-            icon={ab.playing ? PauseIcon : PlayIcon}
-            className="size-3.5"
-          />
+          {ab.playing ? (
+            <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
+          ) : (
+            <PlayIcon className="size-3.5" />
+          )}
         </Button>
         <div
           role="slider"

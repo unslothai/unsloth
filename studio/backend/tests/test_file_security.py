@@ -342,7 +342,7 @@ def test_response_payload_shape():
     status = {"scansDone": True, "filesWithIssues": [{"path": "a.pkl", "level": "malicious"}]}
     with _patch_status(status):
         payload = evaluate_file_security("evil/repo").response_payload()
-    assert set(payload) == {"unsafe_files", "security_blocked", "reason"}
+    assert set(payload) == {"unsafe_files", "security_blocked", "reason", "block_cause"}
     assert payload["security_blocked"] is True
     assert payload["unsafe_files"] == [{"path": "a.pkl", "level": "malicious"}]
 
@@ -663,6 +663,86 @@ def test_modelscope_has_no_scan_so_pickle_weights_fail_closed(monkeypatch, files
         assert "Switch the model source to Hugging Face" in d.reason
 
 
+def _hub_error(cls):
+    response = SimpleNamespace(status_code = 404, headers = {}, url = "http://adapter", request = None)
+    return cls("404", response = response)
+
+
+def test_modelscope_missing_repo_blocks_and_names_the_source(monkeypatch):
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+    with (
+        _patch_status(None),
+        patch(
+            "huggingface_hub.HfApi.list_repo_files",
+            side_effect = _hub_error(RepositoryNotFoundError),
+        ),
+    ):
+        decision = evaluate_file_security("x/y")
+    assert decision.blocked is True
+    assert decision.block_cause == "not_on_source"
+    assert "not on ModelScope" in decision.reason and "Hugging Face" in decision.reason
+
+    # A gated repo exists, so it stays "could not check".
+    with (
+        _patch_status(None),
+        patch("huggingface_hub.HfApi.list_repo_files", side_effect = _hub_error(GatedRepoError)),
+    ):
+        decision = evaluate_file_security("x/y")
+    assert decision.blocked is True
+    assert decision.block_cause == "unscannable"
+
+
+@pytest.mark.parametrize(
+    ("weight", "blocked", "cause"),
+    [("model.safetensors", False, None), ("pytorch_model.bin", True, "unscanned_weights")],
+)
+def test_modelscope_missing_repo_judges_the_cached_snapshot(
+    monkeypatch, tmp_path, weight, blocked, cause
+):
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    (tmp_path / weight).write_bytes(b"x")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+    with (
+        _patch_status(None),
+        patch(
+            "huggingface_hub.HfApi.list_repo_files",
+            side_effect = _hub_error(RepositoryNotFoundError),
+        ),
+        patch("utils.utils.hf_cache_snapshot_dir_for_repo", return_value = tmp_path),
+    ):
+        decision = evaluate_file_security("x/y")
+    assert decision.blocked is blocked
+    assert decision.block_cause == cause
+
+
+def test_each_block_names_its_cause(monkeypatch, tmp_path):
+    with _patch_status({"filesWithIssues": [{"path": "model.pkl", "level": "unsafe"}]}):
+        assert evaluate_file_security("x/y").block_cause == "unsafe_files"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+    with (
+        _patch_status(None),
+        patch("huggingface_hub.HfApi.list_repo_files", return_value = ["pytorch_model.bin"]),
+    ):
+        assert evaluate_file_security("x/y").block_cause == "unscanned_weights"
+    snapshot = tmp_path / "models--x--y" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "pytorch_model.bin").write_bytes(b"x")
+    with _patch_status(None):
+        assert evaluate_file_security(str(snapshot)).block_cause == "unscanned_weights"
+
+
+def test_strongest_block_prefers_a_finding_over_a_failed_check():
+    from utils.security.file_security import strongest_block
+
+    assert strongest_block([]) == (None, None)
+    assert strongest_block([("not_on_source", "a"), ("critical_findings", "b")])[1] == "b"
+    assert strongest_block([("critical_findings", "a"), ("unsafe_files", "b")])[1] == "b"
+    assert strongest_block([(None, "a")]) == ("unscannable", "a")
+
+
 def test_modelscope_listing_failure_blocks(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
     with (
@@ -677,3 +757,48 @@ def test_hugging_face_scan_unavailable_stays_fail_open(monkeypatch):
     with _patch_status(None), patch("huggingface_hub.HfApi.list_repo_files") as listing:
         assert evaluate_file_security("org/repo").blocked is False
     listing.assert_not_called()
+
+
+# The gate reads a flagged pickle's load path the way the loader opens it.
+@pytest.mark.parametrize(
+    "shard", ["weights/./part-1.bin", "weights//part-1.bin", "weights/../weights/part-1.bin"]
+)
+@pytest.mark.parametrize("subdir", ["", "inner"])
+def test_indexed_shard_blocks_however_the_index_spells_it(shard, subdir):
+    prefix = f"{subdir}/" if subdir else ""
+    flagged = prefix + "weights/part-1.bin"
+    status = {"scansDone": False, "filesWithIssues": [{"path": flagged, "level": "unsafe"}]}
+    with (
+        _patch_status(status),
+        _patch_index({"w": shard}, index_filename = prefix + "pytorch_model.bin.index.json"),
+    ):
+        d = evaluate_file_security("evil/sharded", load_subdirs = (subdir,) if subdir else ())
+    assert d.blocked is True
+
+
+@pytest.mark.parametrize("load_subdirs", [("parts/inner", "parts"), ("parts", "parts/inner")])
+def test_flagged_pickle_under_nested_load_subdir_blocks_in_any_order(load_subdirs):
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [{"path": "parts/inner/pytorch_model.bin", "level": "unsafe"}],
+    }
+    with _patch_status(status), _patch_no_index():
+        d = evaluate_file_security("org/nested-modules", load_subdirs = load_subdirs)
+    assert d.blocked is True
+
+
+@pytest.mark.parametrize("subdir", ["inner ", "inner ", " inner"])
+def test_flagged_pickle_under_load_subdir_with_whitespace_in_its_name_blocks(subdir):
+    flagged = f"{subdir}/pytorch_model.bin"
+    status = {"scansDone": True, "filesWithIssues": [{"path": flagged, "level": "unsafe"}]}
+    with _patch_status(status), _patch_no_index():
+        d = evaluate_file_security("org/embedder", load_subdirs = (subdir,))
+    assert d.blocked is True
+
+
+def test_st_module_subdirs_keep_whitespace(monkeypatch):
+    import core.rag.embeddings as embeddings
+    monkeypatch.setattr(
+        embeddings, "_repo_json", lambda *a, **k: [{"path": "inner "}, {"path": "plain/"}]
+    )
+    assert embeddings._st_module_subdirs("org/embedder", None) == ("inner ", "plain")

@@ -72,8 +72,7 @@ def test_an_absent_or_empty_pythonpath_does_not_gain_the_cwd(monkeypatch, tmp_pa
 
 
 def test_it_is_still_idempotent(monkeypatch, tmp_path):
-    """Two calls must not stack the directory, nor eat the empty components
-    the first preserved."""
+    """Two calls must not stack the directory, or eat the empty components the first preserved."""
     before = os.pathsep + "/opt/lib"
     directory, after = _stage(monkeypatch, tmp_path, before)
     assert IF.propagate_torchao_fix_to_subprocesses() == directory

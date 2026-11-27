@@ -59,8 +59,7 @@ RELEASE = {
 
 
 def _host(*, arm64: bool, nvidia: bool, rocm: bool) -> ip.HostInfo:
-    """The interpreter's own view of the machine, which is what the selector reads: an
-    emulated x64 Python on an ARM64 box reports AMD64, and is an x64 host here."""
+    """Emulated x64 Python on ARM64 reports AMD64, so it counts as an x64 host here."""
     return ip.HostInfo(
         system = "Windows",
         machine = "ARM64" if arm64 else "AMD64",

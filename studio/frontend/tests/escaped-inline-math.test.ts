@@ -9,7 +9,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
 import { parseMarkdownIntoRenderableBlocks } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import {
+  type SettledEscapedMath,
   looksLikeEscapedInlineMath,
+  mayHoldEscapedInlineMath,
   normalizeEscapedInlineMath,
 } from "../src/lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
@@ -281,5 +283,109 @@ test("incomplete code spans preserve escaped dollars while streaming", () => {
       assert.deepEqual(annotations(completedHtml), ["y"]);
       assert.ok(completedHtml.includes(String.raw`formula \$x\$`));
     }
+  }
+});
+
+test("escaped currency with no math pair skips the parse, every rewrite still runs it", () => {
+  const currency = String.raw`Revenue grew from \$5.2M to \$7.9M, about \$1,200 a unit and \$3 more.`;
+  for (let end = 0; end <= currency.length; end += 1) {
+    const prefix = currency.slice(0, end);
+    assert.equal(mayHoldEscapedInlineMath(prefix), false, prefix);
+    assert.equal(normalizeEscapedInlineMath(prefix), prefix);
+  }
+  for (const markdown of [
+    String.raw`- \$v_s\$ and \$f(r_s)\$`,
+    String.raw`cost \$5 and \$x + y\$`,
+    String.raw`\${a \$ b}\$`,
+    String.raw`\$5 then \$v_s\$ and \$f(x)\$`,
+  ]) {
+    assert.notEqual(normalizeEscapedInlineMath(markdown), markdown, markdown);
+    assert.equal(mayHoldEscapedInlineMath(markdown), true, markdown);
+  }
+  assert.equal(mayHoldEscapedInlineMath(`\\$${"x_".repeat(101)}\\$`), false);
+  assert.equal(mayHoldEscapedInlineMath("\\$x\n\\$"), false);
+});
+
+test("escaped currency in a long streamed reply stays within the streaming budget", () => {
+  const section =
+    "## Pricing\n\nThe plan has **two** tiers, a [docs](https://example.com) link and `code`.\n\n- first item\n- second item\n\n```python\nprint(1)\n```\n\n";
+  const reply = `The plan costs \\$20 per month, or \\$200 per year.\n\n${section.repeat(200)}`;
+  const started = performance.now();
+  for (let end = 500; end <= reply.length; end += 500) {
+    const chunk = reply.slice(0, end);
+    assert.equal(normalizeEscapedInlineMath(chunk), chunk);
+  }
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 500, `streaming took ${elapsed.toFixed(1)}ms`);
+});
+
+test("real escaped math in a long streamed reply stays within the streaming budget", () => {
+  const section =
+    "## Derivation\n\nThe energy \\$E_k = \\frac{1}{2}mv^2\\$ grows, a [docs](https://example.com) link and `code`.\n\n- first \\$a + b\\$\n- second item\n\n```python\nprint(1)\n```\n\n";
+  const reply = section.repeat(300);
+  const settled: SettledEscapedMath = { prefix: "", ranges: [] };
+  const started = performance.now();
+  for (let end = 500; end <= reply.length; end += 500) {
+    normalizeEscapedInlineMath(reply.slice(0, end), settled);
+  }
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 1500, `streaming took ${elapsed.toFixed(1)}ms`);
+  assert.ok(settled.prefix.length > 0);
+});
+
+test("a streamed reply normalizes the same as the finished text at every length", () => {
+  const reply = [
+    String.raw`Intro \$x\$ costs $5 and \$20.`,
+    "",
+    "```python",
+    String.raw`keep \$y\$ literal`,
+    "",
+    String.raw`and \$z\$ too`,
+    "```",
+    "",
+    String.raw`   indented \$a_1\$ paragraph`,
+    "",
+    String.raw`- list \$b\$`,
+    "",
+    String.raw`  continued \$c\$`,
+    "",
+    String.raw`- next \$d\$`,
+    "",
+    "<pre>",
+    "",
+    String.raw`\$e\$ in html`,
+    "",
+    "</pre>",
+    "",
+    String.raw`Setext \$f\$`,
+    "---",
+    "",
+    String.raw`> quote \$g\$`,
+    "",
+    String.raw`> second \$h\$`,
+    "",
+    "    indented code \\$i\\$",
+    "",
+    "    more code \\$j\\$",
+    "",
+    "| a | b |",
+    "| - | - |",
+    String.raw`| \$k\$ | 1 |`,
+    "",
+    String.raw`Open \(p \$l\$ \) then \`tick \$m\$`,
+    "",
+    String.raw`Last \$n\$ line`,
+  ].join("\n");
+  for (const source of [reply, reply.replaceAll("\n", "\r\n")]) {
+    const settled: SettledEscapedMath = { prefix: "", ranges: [] };
+    for (let end = 0; end <= source.length; end += 1) {
+      const chunk = source.slice(0, end);
+      assert.equal(
+        normalizeEscapedInlineMath(chunk, settled),
+        normalizeEscapedInlineMath(chunk),
+        JSON.stringify(chunk.slice(-40)),
+      );
+    }
+    assert.ok(settled.prefix.length > 0);
   }
 });

@@ -8,25 +8,32 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import itertools
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
+from core.inference import model_identity
 from studio_mcp import job_store
 from studio_mcp import placement as place
+from studio_mcp import problems
 from studio_mcp.caller import Caller
-from studio_mcp.errors import tool_error
+from studio_mcp.errors import raise_for_route, tool_error
+from studio_mcp.forward import forward
 from studio_mcp.outputs import EvictedSlot, LoadResult, SlotModel, UnloadAllResult, UnloadResult
 from studio_mcp.tools import as_dict, number, opt_text, route_json, strings, try_json
 
 POLL_INTERVAL_S = 2.0
 # The longest a load_model or get_job call waits before returning (user decision); clients must allow more.
 MAX_WAIT_S = 240
+# The schema bound for wait_s. Tests shorten MAX_WAIT_S to fractions of a second, and get_job's schema can be
+# built while they do (its annotations are lazy), so the bound must not read the patchable value.
+WAIT_S_LIMIT = 240
 # What a caller still waiting on a job is told to wait before its next get_job without wait_s.
 POLL_AFTER_S = 10
 # Forwarded reads have no HTTP timeout; a status or progress read taking longer counts as failed.
@@ -79,6 +86,10 @@ class LoadJob(job_store.Job):
     posted: bool = False
     # A media load POST, shielded: cancelling the job leaves it running, since the route registers its load from a thread.
     post: Optional[asyncio.Future] = field(default = None, repr = False)
+    # The media load's load_token: an unload naming it ends this load only, even if its POST is still out.
+    load_token: Optional[str] = None
+    # A chat tool call's key fingerprint: only that call follows the job, which stops with it.
+    scoped: Optional[str] = None
 
     def note(self, fraction: Optional[float], phase: str) -> None:
         # A step without a fraction keeps the last one, so progress never drops back.
@@ -108,42 +119,39 @@ def deadline_after(wait_s: Optional[float]) -> float:
     return time.monotonic() + wait
 
 
-def _is_path(name: str) -> bool:
-    if name.startswith(("/", "~", ".")) or "\\" in name or name[1:3] in (":/", ":\\"):
-        return True
-    # A relative path (models/Foo.gguf) reads like a Hub id; one that exists on disk is a path.
-    try:
-        return Path(name).expanduser().exists()
-    except (OSError, ValueError):
-        return False
-
-
 def _same(left: Optional[str], right: Optional[str]) -> bool:
-    # Hub ids match in any case; a local path keeps the file system's case.
-    if not left or not right:
-        return False
-    return left == right if _is_path(left) or _is_path(right) else left.lower() == right.lower()
-
-
-def _repo(name: str) -> str:
-    # A GGUF is listed as repo:variant in one place and the bare repo in another. A local path
-    # (C:\models\a.gguf) has a drive letter there, not a variant, and a ref: handle is one opaque id.
-    if name.startswith("ref:"):
-        return name
-    head, sep, tail = name.partition(":")
-    return head if sep and len(head) > 1 and "/" not in tail and "\\" not in tail else name
+    # A relative path that exists on disk keeps its case, as the loaders read it.
+    return model_identity.same_model(left, right, probe = True)
 
 
 def _same_id(left: str, right: str) -> bool:
-    return _same(left, right) or _same(_repo(left), _repo(right))
+    return model_identity.same_repo(left, right, probe = True)
+
+
+def _fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _scope_of(caller: Caller) -> Optional[str]:
+    return _fingerprint(caller.token) if caller.call_scoped else None
+
+
+async def stop_scoped_loads(token: str) -> int:
+    """Ends the jobs of the loads a call-scoped key started; a media load already posted still finishes."""
+    jobs = [job for job in LOADS.running() if job.scoped == _fingerprint(token)]
+    for job in jobs:
+        job_store.mark_cancelled(job)
+    return len(jobs)
 
 
 def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
     for job in LOADS.running(caller.account_id):
         if (
-            job.slot == asked.slot
+            # Another call's key is revoked when that call ends.
+            job.scoped == asked.scoped
+            and job.slot == asked.slot
             and _same(job.model, asked.model)
-            and (job.variant or "").lower() == (asked.variant or "").lower()
+            and model_identity.same_variant(job.variant, asked.variant)
             and job.options == asked.options
         ):
             return job
@@ -224,6 +232,7 @@ async def start_load(
         model = model,
         variant = variant,
         options = (options, hashlib.sha256(token.encode()).hexdigest()[:16] if token else None),
+        scoped = _scope_of(caller),
     )
 
     async def drive(job: LoadJob) -> LoadResult:
@@ -349,10 +358,13 @@ async def finish_load(
 def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     async def poll() -> Progress:
         loading = await route_json("GET", "/api/inference/load-progress", caller = caller)
+        # Checked before the fraction: the placement search reports 0, which reads as no progress.
+        if isinstance(loading, dict) and loading.get("phase") == "fit":
+            return 0.0, "Finding a GPU layer split that fits in memory"
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
         if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
-        if model.startswith(("/", "\\", "ref:")) or ":" in model[:3]:
+        if model_identity.is_local(model):
             return None
         download = await route_json(
             "GET",
@@ -367,6 +379,22 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     return poll
 
 
+_NOT_LLM_MARKERS = ("autoconfig", "model_type", "unrecognized model")
+
+
+def _wrong_kind_hint(message: str) -> Optional[str]:
+    """A note on kind for a model the llm route could not read; None for any other failure."""
+    if not any(marker in message.lower() for marker in _NOT_LLM_MARKERS):
+        return None
+    tools = problems.caller_tools()
+    if "load_model" not in tools:
+        return None
+    hint = "If this is an image, video or speech-to-text model, pass kind"
+    if "list_models" in tools:
+        hint += "; list_models(source='catalog') shows each catalog model's kind"
+    return hint + "."
+
+
 async def load_llm(
     caller: Caller,
     ctx: Optional[Context],
@@ -374,7 +402,7 @@ async def load_llm(
     model: str,
     variant: Optional[str],
     max_seq_length: Optional[int],
-    load_in_4bit: bool,
+    load_in_4bit: Optional[bool],
     hf_token: Optional[str],
     kind: str = "llm",
     deadline: Optional[float] = None,
@@ -383,12 +411,14 @@ async def load_llm(
     kv_cache_type: Optional[str] = None,
     gpu_layers: Optional[int] = None,
     is_lora: bool = False,
+    precheck: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> LoadResult:
-    body: dict[str, Any] = {
-        "model_path": model,
-        "load_in_4bit": load_in_4bit,
-        "max_seq_length": max_seq_length or 0,
-    }
+    # Unset options come from the model's saved launch settings, as with the CLI.
+    body: dict[str, Any] = {"model_path": model, "use_saved_settings": True}
+    if max_seq_length is not None:
+        body["max_seq_length"] = max_seq_length
+    if load_in_4bit is not None:
+        body["load_in_4bit"] = load_in_4bit
     if variant:
         body["gguf_variant"] = variant
     if is_lora:
@@ -404,6 +434,8 @@ async def load_llm(
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         # The GGUF listing and status reads run inside the job, so a slow one never holds the call
         # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
+        if precheck is not None:
+            await precheck()
         gguf = await place.require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
         body.update(
             place.llm_fields(
@@ -415,12 +447,18 @@ async def load_llm(
                 gpu_layers = gpu_layers,
             )
         )
-        payload = await with_progress(
-            None,
-            route_json("POST", "/api/inference/load", caller = caller, json_body = body),
-            _llm_poll(caller, model),
-            job,
-        )
+        try:
+            payload = await with_progress(
+                None,
+                route_json("POST", "/api/inference/load", caller = caller, json_body = body),
+                _llm_poll(caller, model),
+                job,
+            )
+        except ToolError as error:
+            hint = _wrong_kind_hint(str(error))
+            if hint is None:
+                raise
+            raise tool_error(str(error), hint) from error
         if not isinstance(payload, dict):
             raise ToolError("Unsloth Studio did not confirm the load")
         loaded = opt_text(payload.get("model")) or model
@@ -451,7 +489,7 @@ async def load_llm(
         run = run,
         # A load asked with other placement fields is a different load, not one to follow.
         options = (
-            max_seq_length or 0,
+            max_seq_length,
             load_in_4bit,
             device,
             alongside,
@@ -461,9 +499,10 @@ async def load_llm(
         hub_token = token,
         # A load asked with its own settings is never the one already running; following it would
         # skip them (and the CPU check).
-        attach = not max_seq_length
-        and load_in_4bit
-        and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
+        attach = all(
+            v is None
+            for v in (max_seq_length, load_in_4bit, device, alongside, kv_cache_type, gpu_layers)
+        ),
     )
 
 
@@ -517,15 +556,24 @@ async def unload_llm(
     else:
         # The route unloads by checkpoint id, listed in the same order as serving.
         target = dict(zip(serving, checkpoints)).get(model, model)
+        # Two loaded quants of one repo share its id: the route unloads the one the id reaches.
+        copies = [
+            c for s, c in zip(serving, checkpoints) if s == model and c.startswith(f"{model}:")
+        ]
+        if len(copies) > 1:
+            target = model
     await route_json(
         "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
     )
     # An id that matches nothing still answers success, so compare what is resident before and after.
     _serving, _checkpoints, after = await _llm_resident(caller)
     was_loaded = bool({model, target} & before)
-    return UnloadResult(
-        kind = kind, model = model, unloaded = was_loaded and not ({model, target} & after)
-    )
+    # The other quant of its repo keeps the id resident, so only a copy's own name tells.
+    named = [c for c in checkpoints if model is not None and c.startswith(f"{model}:")]
+    if target in named:
+        named = [target]
+    unloaded = any(c not in after for c in named) if named else not ({model, target} & after)
+    return UnloadResult(kind = kind, model = model, unloaded = was_loaded and unloaded)
 
 
 MEDIA_ROUTES = {
@@ -561,6 +609,7 @@ def _resident_matches(
     if not isinstance(status, dict) or status.get("loaded") is not True:
         return False
     names = {opt_text(status.get("repo_id")), opt_text(status.get("display_repo_id"))}
+    # Any case, paths too: status may spell the resident path differently from the request.
     if model.lower() not in {name.lower() for name in names if name}:
         return False
     # Another file of the same repo is another model: a missing field reads as not loaded yet.
@@ -573,16 +622,13 @@ def _resident_matches(
     resident = opt_text(status.get("gguf_filename"))
     if resident:
         return os.path.normcase(resident) == os.path.normcase(wanted)
-    from hub.utils.gguf import extract_quant_token, quant_token_with_bpw
-
     # Video status names only a GGUF's quant; a plain checkpoint has none to compare.
-    quant = extract_quant_token(wanted) if wanted.lower().endswith(".gguf") else None
-    if not quant:
+    quant = model_identity.resident_quant_matches(
+        opt_text(status.get("gguf_variant")), wanted, settled = settled
+    )
+    if quant is None:
         return True
-    if (opt_text(status.get("gguf_variant")) or "").lower() != quant.lower():
-        return False
-    # Status drops a -3.97bpw style suffix, so until the load reports ready a sibling build matches too.
-    if not settled and quant_token_with_bpw(wanted) != quant:
+    if not quant:
         return False
     # MiniMax-H3 ships its fl2va and ref2va partitions at the same quant; status names the one loaded.
     h3_task = opt_text(status.get("h3_task"))
@@ -653,15 +699,24 @@ async def load_media(
 
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         await prepare()
+        # An unload this process sent for the slot could cancel this load if it ran after it: post after it.
+        while unloading := {u for u in _MEDIA_UNLOADING.get(kind, ()) if not u.done()}:
+            await asyncio.wait(unloading)
+        # Named before it goes out, so an unload can end this load even if the POST's answer never comes.
+        job.load_token = uuid.uuid4().hex
+        _remember_media_token(caller, kind, job.load_token)
         # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
         job.post = asyncio.ensure_future(
-            route_json("POST", routes["load"], caller = caller, json_body = {**body, **knobs})
+            _post_media_load(
+                caller, kind, job.load_token, {**body, **knobs, "load_token": job.load_token}
+            )
         )
         job.post.add_done_callback(lambda post: post.cancelled() or post.exception())
         answer = await with_progress(
             None, asyncio.shield(job.post), _media_poll(caller, routes), job
         )
         status = await _media_ready(caller, kind, model, routes, job, body)
+        _media_token_ready(caller, kind, job.load_token)
         name = _media_name(status) or model
         return await finish_load(
             caller, kind, name, before, answer, placement = place.media_placement(status)
@@ -730,24 +785,177 @@ async def _media_ready(
 
 
 async def unload_media(caller: Caller, kind: str) -> UnloadResult:
+    # Raised before anything is read and held until the unload has answered: a load of the slot this
+    # process starts meanwhile posts after it, so the status read below never names that load.
+    barrier = asyncio.get_running_loop().create_future()
+    unloading = _MEDIA_UNLOADING.setdefault(kind, set())
+    unloading.add(barrier)
+    try:
+        return await _unload_media(caller, kind)
+    finally:
+        unloading.discard(barrier)
+        barrier.set_result(None)
+
+
+async def _unload_media(caller: Caller, kind: str) -> UnloadResult:
     routes = MEDIA_ROUTES[kind]
-    # A load_model still loading runs on in the job store; the unload route cancels its load too.
+    # A load_model still loading runs on in the job store; its load is ended below by its token.
     stopped = _stop_loads(caller, (kind,))
-    # A stopped load whose POST is still out registers its load once that returns: unload after it, so the unload cancels it.
-    posts = {job.post for job in stopped if job.post is not None and not job.post.done()}
-    if posts:
-        await asyncio.wait(posts, timeout = MAX_WAIT_S)
-    before = as_dict(await route_json("GET", routes["status"], caller = caller))
-    if before.get("loaded") is not True and not stopped:
-        return UnloadResult(kind = kind, unloaded = False)
-    after = await route_json("POST", routes["unload"], caller = caller)
+    # Each media load this caller posted ends by its load_token: the backend unloads it only while it is
+    # the load in flight or resident, and refuses it on arrival if its POST has not reached it yet, so
+    # this never waits on a POST and never ends a newer load (this caller's, the UI's or another account's).
+    tokens = list(_MEDIA_TOKENS.get(_media_key(caller, kind), ()))
+    tokens += [job.load_token for job in stopped if job.load_token and job.load_token not in tokens]
+    # What the slot held when this call came, read before any unload goes out: the unload of the
+    # resident below names that load, so one admitted later is never touched.
+    status_read = asyncio.ensure_future(
+        asyncio.wait_for(route_json("GET", routes["status"], caller = caller), READ_S)
+    )
+    try:
+        await asyncio.wait({status_read})
+    finally:
+        # Even if this call is cancelled meanwhile, so a load it stopped still ends.
+        ended = [_unload_media_token(caller, kind, token) for token in tokens]
+    outcomes = await asyncio.shield(asyncio.gather(*ended)) if ended else []
+    try:
+        before = as_dict(status_read.result())
+    except asyncio.TimeoutError:
+        raise ToolError(
+            f"Unsloth Studio did not answer the {kind} status read within {READ_S:.0f} s. Loads this "
+            f"call stopped were ended, but a resident {kind} model may still be loaded; try unload_model again."
+        ) from None
     model = (
         opt_text(before.get("display_repo_id"))
         or opt_text(before.get("repo_id"))
         or (stopped[-1].model if stopped else None)
     )
-    unloaded = isinstance(after, dict) and after.get("loaded") is not True
+    unloaded = "unloaded" in outcomes
+    if before.get("loaded") is not True:
+        return UnloadResult(kind = kind, model = model if unloaded else None, unloaded = unloaded)
+    resident = opt_text(before.get("load_id"))
+    if resident is None and "load_id" in before:
+        # Studio reports load ids but could not name this state (admissions or unloads kept landing
+        # while it read): an unconditional unload could end a load admitted since, so none is sent.
+        if not unloaded:
+            raise ToolError(
+                f"Unsloth Studio could not identify the loaded {kind} model while loads were changing; "
+                "nothing was unloaded. Try unload_model again."
+            )
+    elif resident is None:
+        # No load id at all: another account's model (Studio hides its id) or a Studio without load
+        # tokens, which refuses or unloads it for this caller just as before.
+        after = await _media_unload_post(caller, kind)
+        unloaded = unloaded or (isinstance(after, dict) and after.get("loaded") is not True)
+    elif resident not in tokens:
+        answer = as_dict(await _media_unload_post(caller, kind, {"expected_load_id": resident}))
+        unloaded = unloaded or answer.get("outcome") == "unloaded"
+    # load_id names a load in flight; the model it was replacing is resident_load_id. A replacement
+    # that failed before its unload above left that model loaded, so end it too, by its own id
+    # (a load admitted since is never it), also when it is this caller's own token: its unload above
+    # answered superseded while the replacement was still in flight. Studio without the field:
+    # nothing more to name.
+    held = opt_text(before.get("resident_load_id"))
+    if held is not None and held != resident:
+        answer = as_dict(await _media_unload_post(caller, kind, {"expected_load_id": held}))
+        unloaded = unloaded or answer.get("outcome") == "unloaded"
     return UnloadResult(kind = kind, model = model, unloaded = unloaded)
+
+
+@dataclass
+class _MediaToken:
+    # Order numbers (from _MEDIA_ORDER): when its load POST went out, and when it answered 2xx.
+    sent: int
+    answered: Optional[int] = None
+
+
+# Media load tokens this process posted per (account, slot); each drops only on a definitive
+# outcome.
+_MEDIA_TOKENS: dict[tuple[str, str], dict[str, _MediaToken]] = {}
+_MEDIA_ORDER = itertools.count(1)
+# Unload POSTs this process sent per slot and not answered yet: a load posts only after them.
+_MEDIA_UNLOADING: dict[str, set[asyncio.Future]] = {}
+# Tries a token unload makes on route errors before leaving the token for the next unload_model.
+_TOKEN_UNLOAD_ATTEMPTS = 5
+
+
+def _media_key(caller: Caller, kind: str) -> tuple[str, str]:
+    return (caller.account_id, kind)
+
+
+def _remember_media_token(caller: Caller, kind: str, token: str) -> None:
+    _MEDIA_TOKENS.setdefault(_media_key(caller, kind), {})[token] = _MediaToken(next(_MEDIA_ORDER))
+
+
+async def _post_media_load(caller: Caller, kind: str, token: str, body: dict) -> Any:
+    response = await forward(caller, "POST", MEDIA_ROUTES[kind]["load"], json_body = body)
+    if 400 <= response.status_code < 500:
+        # Refused before it was admitted (busy, invalid, a load already running): nothing to end.
+        _forget_media_token(caller, kind, token)
+    elif response.status_code < 400:
+        state = _MEDIA_TOKENS.get(_media_key(caller, kind), {}).get(token)
+        if state is not None:
+            state.answered = next(_MEDIA_ORDER)
+    return raise_for_route(response)
+
+
+def _media_token_ready(caller: Caller, kind: str, token: Optional[str]) -> None:
+    # ``token``'s load is shown ready: one whose POST answered before ``token``'s went out was admitted
+    # before it, so it is over (Studio admits no load while another is in flight).
+    tokens = _MEDIA_TOKENS.get(_media_key(caller, kind), {})
+    newer = tokens.get(token) if token else None
+    if newer is None:
+        return
+    for old, state in list(tokens.items()):
+        if state.answered is not None and state.answered < newer.sent:
+            del tokens[old]
+
+
+def _forget_media_token(caller: Caller, kind: str, token: str) -> None:
+    key = _media_key(caller, kind)
+    tokens = _MEDIA_TOKENS.get(key, {})
+    tokens.pop(token, None)
+    if not tokens:
+        _MEDIA_TOKENS.pop(key, None)
+
+
+async def _media_unload_post(
+    caller: Caller,
+    kind: str,
+    json_body: Optional[dict] = None,
+) -> Any:
+    # Tracked while out, so a load of the slot posts after it rather than racing it.
+    post = asyncio.ensure_future(
+        route_json("POST", MEDIA_ROUTES[kind]["unload"], caller = caller, json_body = json_body)
+    )
+    unloading = _MEDIA_UNLOADING.setdefault(kind, set())
+    unloading.add(post)
+    post.add_done_callback(unloading.discard)
+    return await asyncio.shield(post)
+
+
+def _unload_media_token(caller: Caller, kind: str, token: str) -> asyncio.Task:
+    """End the load ``token`` names, in the background (held in _LATE_UNLOADS); the task answers its outcome."""
+
+    async def unload() -> Optional[str]:
+        for failures in range(1, _TOKEN_UNLOAD_ATTEMPTS + 1):
+            try:
+                answer = as_dict(
+                    await _media_unload_post(caller, kind, {"expected_load_id": token})
+                )
+            except Exception:
+                # A transient route error: try again; past the last try the token stays for the next unload.
+                if failures < _TOKEN_UNLOAD_ATTEMPTS:
+                    await asyncio.sleep(POLL_INTERVAL_S * failures)
+                continue
+            # unloaded, superseded or cancelled: in each case that load is over, or will never start.
+            _forget_media_token(caller, kind, token)
+            return opt_text(answer.get("outcome"))
+        return None
+
+    task = asyncio.ensure_future(unload())
+    _LATE_UNLOADS.add(task)
+    task.add_done_callback(_LATE_UNLOADS.discard)
+    return task
 
 
 STT_STATUS = "/api/inference/audio/stt/status"
@@ -880,7 +1088,7 @@ async def load_stt(
     return LoadResult(kind = "stt", model = resident)
 
 
-# Unloads waiting on an STT load that outlasted the unload call, held so they are not collected.
+# Unloads waiting on an STT load that outlasted the unload call, and media token unloads, held so they are not collected.
 _LATE_UNLOADS: set[asyncio.Task] = set()
 
 

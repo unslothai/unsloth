@@ -4,27 +4,21 @@
 import {
   Download01Icon,
   FileEmpty02Icon,
-  FolderOpenIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
-import { authFetch, getAuthToken } from "@/features/auth";
-import { apiUrl, isTauri } from "@/lib/api-base";
-import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { formatBytes } from "@/features/hub";
+import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { cn } from "@/lib/utils";
 
 import { FileContextMenu, loadSandboxFile } from "./link-context-menu";
-import { sandboxFilePath, type SandboxFile } from "./sandbox-files";
+import { saveSandboxFile } from "./sandbox-download";
+import type { SandboxFile } from "./sandbox-files";
 import { revealSandbox } from "./sandbox-reveal";
-
-function formatSize(size: number | null): string {
-  if (size === null || size === undefined || Number.isNaN(size)) return "";
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function SandboxFileRow({
   sessionId,
@@ -35,26 +29,10 @@ function SandboxFileRow({
 }) {
   const [busy, setBusy] = useState(false);
 
-  // Streamed to the chosen path rather than buffered: a tool can write a
-  // multi-gigabyte artifact, and a Blob plus its IPC copy would be two more of
-  // it in the renderer. The bearer goes in the query: no headers are sent.
   const save = useCallback(async () => {
     setBusy(true);
     try {
-      const path = sandboxFilePath(sessionId, file.name);
-      // The bearer rides in the URL, so nothing refreshes it: an expired
-      // access token would save a 401 body under the file's name. authFetch
-      // refreshes and retries, and the HEAD settles that the file is there.
-      const probe = await authFetch(apiUrl(path), { method: "HEAD" });
-      if (!probe.ok) throw new Error(`Download refused (${probe.status})`);
-      const token = getAuthToken();
-      const separator = path.includes("?") ? "&" : "?";
-      // Absolute: the native command parses this and rejects a relative URL,
-      // so a bare /api path failed before the request was made.
-      const url = apiUrl(
-        token ? `${path}${separator}token=${encodeURIComponent(token)}` : path,
-      );
-      await downloadUrlStreaming(url, file.name);
+      await saveSandboxFile(sessionId, file.name);
     } catch (error) {
       if (!isDownloadCancelled(error)) {
         toast.error(`Could not save ${file.name}.`);
@@ -78,12 +56,12 @@ function SandboxFileRow({
         onClick={save}
         disabled={busy}
         title={`Save ${file.name}`}
-        className="flex items-center gap-2 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-60"
+        className="btn-fill flex items-center gap-2 rounded-full px-2 py-1 text-xs text-foreground disabled:opacity-60"
       >
         <HugeiconsIcon icon={FileEmpty02Icon} className="size-3.5 shrink-0" />
         <span className="truncate font-mono">{file.name}</span>
-        {file.size !== null && (
-          <span className="text-muted-foreground">{formatSize(file.size)}</span>
+        {file.size != null && (
+          <span className="text-muted-foreground">{formatBytes(file.size)}</span>
         )}
         <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />
       </button>
@@ -91,11 +69,7 @@ function SandboxFileRow({
   );
 }
 
-/**
- * The row's heading, doubling as the way into the folder itself on desktop.
- * The backend opens the file manager, so in a browser it stays plain text and
- * says why.
- */
+/** Opens the folder on desktop only: the backend opens the file manager. */
 function SandboxFolderLabel({
   sessionId,
   label,
@@ -132,10 +106,6 @@ function SandboxFolderLabel({
   );
 }
 
-/**
- * "Files created" row under a tool card. Without it the only trace of a written
- * file was the model mentioning it in prose.
- */
 export function SandboxFiles({
   sessionId,
   files,
@@ -147,8 +117,7 @@ export function SandboxFiles({
 }) {
   if (!sessionId || files.length === 0) return null;
   return (
-    // No divider: the row sits outside the collapsible content, so on a collapsed card a rule
-    // would separate the header from nothing.
+    // No divider: the row is outside the collapsible, so collapsed cards keep no stray rule.
     <div className={cn("mt-2", className)}>
       <SandboxFolderLabel
         sessionId={sessionId}

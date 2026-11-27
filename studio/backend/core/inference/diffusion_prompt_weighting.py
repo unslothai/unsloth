@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AUTOMATIC1111 prompt weighting for the CLIP-conditioned (SD 1.x / SDXL) diffusers pipelines.
-
-Follows stable-diffusion-webui (commit 82a973c) prompt_parser / sd_hijack_clip / sd_emphasis, rewritten not copied.
-Layer selection is diffusers' own, so at weight 1 a single-chunk prompt matches the pipeline bit for bit.
-"""
+"""AUTOMATIC1111 prompt weighting for CLIP SD/SDXL pipelines; single-chunk weight 1 matches diffusers."""
 
 from __future__ import annotations
 
@@ -219,6 +215,24 @@ def tokenize_chunks(
             MAX_CHUNKS,
         )
     return chunks
+
+
+def _clip_chunk_counts(
+    pipe: Any,
+    texts: Sequence[str],
+    *,
+    weighted: bool = True,
+) -> list[int]:
+    """Per text, the max 77-token chunk count over the pipeline's tokenizers."""
+    convert = getattr(pipe, "maybe_convert_prompt", None)
+    pairs = _encoders(pipe)
+    return [
+        max(
+            [1]
+            + [len(tokenize_chunks(t, tok, weighted = weighted, convert = convert)) for tok, _ in pairs]
+        )
+        for t in texts
+    ]
 
 
 def _empty_chunk(tokenizer: Any) -> tuple[list[int], list[float]]:

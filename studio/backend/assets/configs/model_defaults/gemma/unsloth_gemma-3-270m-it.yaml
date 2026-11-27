@@ -1,11 +1,7 @@
-# Model defaults for unsloth/gemma-3-270m-it
-# Based on Gemma3_(270M).ipynb
 # Also applies to: unsloth/gemma-3-270m-it-unsloth-bnb-4bit, google/gemma-3-270m-it, unsloth/gemma-3-270m-it-bnb-4bit
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 5e-5
   batch_size: 4

@@ -274,7 +274,7 @@ test("right-edge action lists reserve the gutter they publish", async () => {
   );
   assert.match(
     apiKeysTab,
-    /"hover-scrollbar[^"]*overflow-y-auto[^"]*\bpr-1\b[^"]*"[\s\S]{0,200}<div className="overlay-scrollbar-gutter">[\s\S]{0,300}<ApiKeyRow/,
+    /"hover-scrollbar[^"]*overflow-y-auto[^"]*\bpr-1\b[^"]*"[\s\S]{0,200}<div className=\{cn\("overlay-scrollbar-gutter", TOKEN_TABLE\)\}>[\s\S]{0,300}<ApiKeyRow/,
   );
 
   const projectSourceDropzone = await readSrcAsync(

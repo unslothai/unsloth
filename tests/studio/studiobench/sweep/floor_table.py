@@ -32,8 +32,7 @@ from tests.studio.studiobench.scoring import payload_rules  # noqa: E402
 
 METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS + STREAM_METRICS
 
-# Compared by difference, not ratio: 0.0 is the clean reading (about half of scored cells), so `t / 0.0`
-# would drop exactly the pairs where a treatment introduces jank.
+# Compared by difference: 0.0 is the clean reading, so `t / 0.0` drops exactly the jank pairs.
 DIFFERENCE_METRICS: frozenset[str] = frozenset({"stream_time_in_jank_pct", "stream_jank_index"})
 
 
@@ -63,8 +62,7 @@ def sessions_in(records: list[dict]) -> set[str]:
 
 
 def refuse_collisions(records: list[dict]) -> None:
-    """Refuse payloads where one cell completed under two sessions; pooling them averages contending
-    runs."""
+    """Refuse cells completed in two sessions: pooling them averages contending runs."""
     collided = collided_cells(records)
     if not collided:
         return
@@ -169,15 +167,12 @@ def concurrent_sessions(
 
 
 def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, dict[str, float]]:
-    """Completed-cell metrics for one session; without one named, refuses cells completed in two
-    sessions."""
+    """Refuses cells completed in two sessions unless a session is named (the escape hatch)."""
     if session is None:
         refuse_collisions(records)
-        # Drop superseded attempts (last attempt that wrote anything wins), except when `session=` is
-        # named, which is the escape hatch for concurrent sessions.
+        # Last attempt that wrote anything wins; `session=` skips it for concurrent sessions.
         records = list(latest_attempt_rows(records))
-    # A cell that failed an invalidating gate is not a reading: those gates are advisory upstream,
-    # so such cells arrive completed with misleadingly cheap timings.
+    # Gate-failed cells are not readings: upstream gates are advisory, so timings mislead.
     gate_failures = failed_invalidating_gates(records)
 
     out: dict[str, dict[str, float]] = {}
@@ -357,8 +352,7 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
         if metric in DIFFERENCE_METRICS:
             # Same gates in the metric's own unit, so delta and spread are percentage points.
             diffs = [t - b for b, t in rows]
-            # A zero difference is a tie, not a disagreement: direction means no pair went the other way
-            # and at least one moved.
+            # Zero difference is a tie: direction needs one moved pair and no reversed pair.
             nonzero = [d for d in diffs if d != 0.0]
             out[metric] = {
                 "n": len(rows),

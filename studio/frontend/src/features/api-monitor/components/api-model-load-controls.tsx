@@ -1,14 +1,11 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-
-// Loads through the Chat runtime's selectModel, so the API board gets the same context, quant,
-// GPU placement, trust and running-chat guards as Chat.
-
-import { Button } from "@/components/ui/button";
+import {
+  type ComposerModelPickerSource,
+  ComposerModelPickerContext,
+} from "@/components/assistant-ui/composer-model-picker/context";
+import { ComposerModelPicker } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
 import {
   chatLocalModelOptions,
   isExternalModelId,
-  readLastLocalModelLoad,
   type useChatModelRuntime,
   useChatRuntimeStore,
   wantsDownloadManagerStaging,
@@ -16,6 +13,7 @@ import {
 import {
   DOWNLOAD_KIND,
   downloadManager,
+  ggufVariantsMatch,
   publicModelId,
   useDeviceInventorySources,
   useRepoDownload,
@@ -24,32 +22,23 @@ import {
   type LoraModelOption,
   type ModelConfigHandoffRequest,
   type ModelOption,
-  ModelSelector,
   type ModelSelectorChangeMeta,
   currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
-import { cn } from "@/lib/utils";
-import { ReloadIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
   type ReactElement,
-  type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
   useMemo,
   useState,
 } from "react";
-import {
-  RELOAD_MISSING_HISTORY_MESSAGE,
-  reloadLastModel,
-} from "../reload-last-model";
 import { monitorSelection } from "../use-resident-run-target";
-import { ToolbarTooltip } from "./toolbar-tooltip";
+import { ModelLoadError } from "./model-load-error";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
 function loadErrorMessage(err: unknown, fallback: string): string | null {
@@ -60,8 +49,7 @@ function loadErrorMessage(err: unknown, fallback: string): string | null {
   return err instanceof Error ? err.message : fallback;
 }
 
-// An uncached Hub pick downloads through the manager first, so the resident model keeps serving
-// the API until the download completes and the pick loads.
+// An uncached Hub pick downloads first, so the resident model keeps serving the API meanwhile.
 async function startStagedDownload(
   id: string,
   meta: ModelSelectorChangeMeta | undefined,
@@ -176,20 +164,8 @@ function useLoadAfterDownload(
   }, [pending, setPending, onStartError]);
 }
 
-function reloadTitle(
-  lastLoadLabel: string | null | undefined,
-  loaded: boolean,
-): string {
-  if (lastLoadLabel === undefined) {
-    return "Checking previously loaded model...";
-  }
-  if (!lastLoadLabel) {
-    return RELOAD_MISSING_HISTORY_MESSAGE;
-  }
-  return loaded
-    ? `Reload ${lastLoadLabel}`
-    : `Reload ${lastLoadLabel} (no model loaded)`;
-}
+const NO_EXTERNAL_MODELS: ComposerModelPickerSource["externalModels"] = [];
+const NO_CONNECTIONS: ComposerModelPickerSource["externalConnections"] = [];
 
 function toModelOptions(
   models: {
@@ -217,7 +193,7 @@ export function ApiModelLoadControls({
   configRequest = null,
   onConfigRequestAdopted,
   onEjectAll,
-  children,
+  onLastLoadChanged,
 }: {
   runtime: ReturnType<typeof useChatModelRuntime>;
   activeModel: string | null | undefined;
@@ -230,52 +206,28 @@ export function ApiModelLoadControls({
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
   onEjectAll?: () => void;
-  children?: ReactNode;
+  onLastLoadChanged?: () => void;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;
-  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
-  const loadedNames = useMemo(
-    () =>
-      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
-    [loadedModels],
-  );
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
+  const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const { checkpoint: runtimeCheckpoint, config: runtimeConfig } =
     useActiveModelConfig();
   const localModelInventory = useDeviceInventorySources(["localModels"]);
   const refreshLocalModels = localModelInventory.refresh;
 
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const [reloading, setReloading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingDownload, setPendingDownload] =
     useState<PendingDownload | null>(null);
-  const [lastLoadLabel, setLastLoadLabel] = useState<string | null | undefined>(
-    undefined,
-  );
-
-  const refreshLastLoadLabel = useCallback(() => {
-    readLastLocalModelLoad()
-      .then((last) => {
-        setLastLoadLabel(
-          last
-            ? last.kind === "gguf" && last.ggufVariant
-              ? `${last.id} · ${last.ggufVariant}`
-              : last.id
-            : null,
-        );
-      })
-      .catch(() => setLastLoadLabel(null));
-  }, []);
-
   useEffect(() => {
     refresh();
     refreshLocalModels();
-    refreshLastLoadLabel();
-  }, [refresh, refreshLocalModels, refreshLastLoadLabel]);
+    onLastLoadChanged?.();
+  }, [refresh, refreshLocalModels, onLastLoadChanged]);
 
   // Opened during render, as the picker adopts the request, so the same pass mounts its page.
   const [openedRequestId, setOpenedRequestId] = useState<string | null>(null);
@@ -291,11 +243,11 @@ export function ApiModelLoadControls({
     if (activeModel === undefined) {
       return;
     }
-    refreshLastLoadLabel();
+    onLastLoadChanged?.();
     if (!useChatRuntimeStore.getState().modelLoading) {
       refresh({ includeLoras: false });
     }
-  }, [activeModel, residencyKey, refresh, refreshLastLoadLabel]);
+  }, [activeModel, residencyKey, refresh, onLastLoadChanged]);
 
   const models = useMemo(
     () => toModelOptions(modelsFromStore),
@@ -345,13 +297,13 @@ export function ApiModelLoadControls({
           forceReload: meta?.forceReload,
           config: meta?.config,
         });
-        refreshLastLoadLabel();
+        onLastLoadChanged?.();
         onSettled();
         return;
       }
       try {
         await selectModel(localSelection(value, meta));
-        refreshLastLoadLabel();
+        onLastLoadChanged?.();
         onSettled();
       } catch (err: unknown) {
         setActionError(loadErrorMessage(err, "Failed to load model"));
@@ -361,7 +313,7 @@ export function ApiModelLoadControls({
       selectModel,
       loadNpuModel,
       onSettled,
-      refreshLastLoadLabel,
+      onLastLoadChanged,
       activeModel,
       unloading,
     ],
@@ -377,42 +329,6 @@ export function ApiModelLoadControls({
     setActionError,
   );
 
-  const handleReload = useCallback(async () => {
-    setPendingDownload(null);
-    setReloading(true);
-    setActionError(null);
-    try {
-      await reloadLastModel({
-        readLastLoad: () => readLastLocalModelLoad(),
-        resolveConfig: (id, variant) => {
-          const resolved = resolveResidentInitialConfig(id, variant);
-          return resolved.remembered ? { config: resolved.config } : null;
-        },
-        loadTarget: async (target) => {
-          await selectModel({
-            id: target.id,
-            isGguf: target.kind === "gguf",
-            ggufVariant: target.ggufVariant ?? undefined,
-            config: target.config ?? undefined,
-            keepSpeculative: target.config != null,
-            forceReload: true,
-            isDownloaded: true,
-            previousConfig: currentRuntimePerModelConfig({
-              includeMaxSeqLength: true,
-            }),
-            throwOnError: true,
-          });
-        },
-      });
-      refreshLastLoadLabel();
-      onSettled();
-    } catch (err: unknown) {
-      setActionError(loadErrorMessage(err, "Failed to reload model"));
-    } finally {
-      setReloading(false);
-    }
-  }, [selectModel, onSettled, refreshLastLoadLabel]);
-
   const handleEject = useCallback(
     (modelId?: string) => {
       setPendingDownload(null);
@@ -426,7 +342,6 @@ export function ApiModelLoadControls({
   );
 
   const busy = modelLoading || unloading;
-  const reloadDisabled = reloading || busy || lastLoadLabel == null;
 
   const { id: effectiveModel, ggufVariant: activeGgufVariant } =
     monitorSelection(activeModel);
@@ -436,73 +351,87 @@ export function ApiModelLoadControls({
   const runtimeIsResident =
     isLoaded &&
     runtimeCheckpoint != null &&
-    publicModelId(runtimeCheckpoint) === effectiveModel;
+    publicModelId(runtimeCheckpoint) === effectiveModel &&
+    (!(runtimeVariant && activeGgufVariant) ||
+      ggufVariantsMatch(runtimeVariant, activeGgufVariant));
+
+  const pickerSource = useMemo<ComposerModelPickerSource>(
+    () => ({
+      models,
+      loraModels,
+      externalModels: NO_EXTERNAL_MODELS,
+      onPick: (value, meta) => {
+        handlePick(value, meta);
+      },
+      // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
+      eject: (modelId) => {
+        if (!busy) {
+          handleEject(modelId);
+        }
+      },
+      ejectAll: () => {
+        if (!busy) {
+          onEjectAll?.();
+        }
+      },
+      externalConnections: NO_CONNECTIONS,
+      open: selectorOpen && !unloading,
+      onOpenChange: setSelectorOpen,
+      configRequest,
+      onConfigRequestAdopted: onConfigRequestAdopted ?? (() => undefined),
+      onFoldersChange: refreshLocalModels,
+      onModelsChange: () => {
+        refresh();
+        refreshLocalModels();
+      },
+      deleteDisabled: modelLoading,
+      activeModelConfig: runtimeIsResident ? runtimeConfig : null,
+      loadedContextLength: runtimeIsResident ? loadedContextLength : null,
+      loaded: isLoaded,
+      connections: false,
+      selection: {
+        id: effectiveModel,
+        ggufVariant: isLoaded ? activeGgufVariant : null,
+        loaded: isLoaded && !busy,
+        loading: busy,
+        placeholder: "Load models",
+      },
+    }),
+    [
+      models,
+      loraModels,
+      handlePick,
+      busy,
+      handleEject,
+      onEjectAll,
+      selectorOpen,
+      unloading,
+      configRequest,
+      onConfigRequestAdopted,
+      refreshLocalModels,
+      refresh,
+      modelLoading,
+      runtimeIsResident,
+      runtimeConfig,
+      loadedContextLength,
+      isLoaded,
+      effectiveModel,
+      activeGgufVariant,
+    ],
+  );
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-      <ModelSelector
-        models={models}
-        loraModels={loraModels}
-        value={effectiveModel}
-        loaded={isLoaded}
-        activeGgufVariant={isLoaded ? activeGgufVariant : null}
-        activeModelConfig={runtimeIsResident ? runtimeConfig : null}
-        activeLoadedContextLength={
-          runtimeIsResident ? loadedContextLength : null
-        }
-        configRequest={configRequest}
-        onConfigRequestAdopted={onConfigRequestAdopted}
-        onValueChange={(value, meta) => {
-          handlePick(value, meta);
-        }}
-        // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
-        onEject={busy ? undefined : handleEject}
-        onEjectAll={busy || !onEjectAll ? undefined : onEjectAll}
-        loadedCount={loadedModels.length}
-        loadedNames={loadedNames}
-        onFoldersChange={() => {
-          refreshLocalModels();
-        }}
-        onModelsChange={() => {
-          refresh();
-          refreshLocalModels();
-        }}
-        deleteDisabled={modelLoading}
-        variant="outline"
-        size="sm"
-        placeholder="Load model"
-        open={selectorOpen && !unloading}
-        onOpenChange={setSelectorOpen}
-        className="h-9 max-w-full rounded-full sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"
-        contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
-      />
-      <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          aria-label={reloading ? "Reloading" : "Reload"}
-          onClick={() => {
-            handleReload();
-          }}
-          disabled={reloadDisabled}
-          className="rounded-full"
-        >
-          <HugeiconsIcon
-            icon={ReloadIcon}
-            strokeWidth={1.75}
-            className={cn("size-4", reloading && "animate-spin")}
-          />
-        </Button>
-      </ToolbarTooltip>
-      {children}
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
+      <div className="ml-1.5 min-w-0 max-w-[62vw] md:max-w-none">
+        <ComposerModelPickerContext.Provider value={pickerSource}>
+          <ComposerModelPicker side="bottom" align="start" />
+        </ComposerModelPickerContext.Provider>
+      </div>
       {actionError ? (
-        <span
-          role="alert"
-          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
-        >
-          {actionError}
-        </span>
+        <ModelLoadError
+          message={actionError}
+          onDismiss={() => setActionError(null)}
+        />
       ) : null}
     </div>
   );

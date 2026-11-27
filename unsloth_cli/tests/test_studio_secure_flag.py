@@ -21,6 +21,12 @@ def _studio():
     return _studio_mod
 
 
+@pytest.fixture(autouse = True)
+def _no_cloudflared_download(monkeypatch):
+    """Avoid --secure's real cloudflared download probe (flaky on uncached runners)."""
+    monkeypatch.setattr(_studio(), "_tunnel_binary_confirmed_unavailable", lambda: False)
+
+
 _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
 
 

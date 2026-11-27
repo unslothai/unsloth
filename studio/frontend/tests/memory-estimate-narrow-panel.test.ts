@@ -3,11 +3,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChevronDown } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import type * as MemoryEstimateModule from "../src/features/model-picker/components/memory-estimate-row.tsx";
+import * as chevronIcons from "../src/lib/chevron-icons.ts";
 import * as memoryFit from "../src/features/model-picker/model-config/memory-fit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -20,7 +21,8 @@ const { MemoryEstimateRow } = loadWithStubs<typeof MemoryEstimateModule>(
   {
     react: React,
     "react/jsx-runtime": jsxRuntime,
-    "lucide-react": { ChevronDown },
+    "@hugeicons/react": { HugeiconsIcon },
+    "@/lib/chevron-icons": chevronIcons,
     "../model-config/memory-fit": memoryFit,
     "@/components/ui/tooltip": {
       Tooltip: ({ children }: { children: React.ReactNode }) => children,
@@ -59,6 +61,9 @@ const props: Props = {
     layerCount: 27,
     gpuLayers: 12,
     moeOffloadUnmodelled: false,
+    mlxPleOffload: null,
+    mlxExpertOffload: null,
+    mlxOffloadable: [],
   },
   loading: false,
   stale: false,
@@ -124,6 +129,12 @@ test("context checkpoints get their own host RAM row instead of inflating the KV
     /Context checkpoints[\s\S]*?5\.84 GiB[\s\S]*?host RAM, filled as conversations grow/,
   );
   assert.doesNotMatch(render({ expanded: true }), /Context checkpoints/);
+});
+
+test("MLX offload is noted on the Weights line", () => {
+  const html = render({ expanded: true, estimate: { ...props.estimate!, mlxExpertOffload: 0.5 } });
+  assert.match(html, /Weights[\s\S]*?experts\u00a050%\u00a0on\u00a0disk/);
+  assert.doesNotMatch(render({ expanded: true }), /on\u00a0disk/);
 });
 
 test("a shared pool shows the total without a duplicate GPU figure", () => {
@@ -221,4 +232,38 @@ test("gluing round-trips the note the row actually builds", () => {
     kvOnGpu: false,
   });
   assert.equal(glueNoteItems(note).replace(new RegExp(NBSP, "g"), " "), note);
+});
+
+test("the first fetch keeps the row's frame instead of rendering nothing", () => {
+  for (const expanded of [false, true]) {
+    const html = render({ estimate: null, loading: true, expanded });
+    assert.match(html, /data-memory-estimate=""/);
+    assert.match(html, /Estimated Memory Usage/);
+    assert.match(html, /data-memory-placeholder=""/);
+    assert.match(html, />GPU<\/span>/);
+    // A split pool loads with GPU and Total, so both lines are held.
+    assert.match(html, />Total<\/span>/);
+    assert.equal(html.match(/data-memory-placeholder=""/g)?.length, 2);
+    assert.match(html, /Weights[\s\S]*KV cache[\s\S]*Compute buffers/);
+    assert.ok(html.includes(`aria-expanded="${expanded}"`));
+  }
+  assert.match(
+    render({ estimate: null, loading: true, singleMemoryPool: true, isUnifiedMemory: true }),
+    />Unified<\/span>/,
+  );
+  const shared = render({ estimate: null, loading: true, singleMemoryPool: true });
+  assert.match(shared, />Shared<\/span>/);
+  assert.equal(shared.match(/data-memory-placeholder=""/g)?.length, 1);
+  // No GPU: the loaded row shows RAM alone, so the placeholder holds one line, not two.
+  const cpu = render({ estimate: null, loading: true, gpuCapacityGb: 0 });
+  assert.match(cpu, />RAM<\/span>/);
+  assert.equal(cpu.match(/data-memory-placeholder=""/g)?.length, 1);
+});
+
+test("no row once the backend has said it cannot size the model", () => {
+  assert.equal(render({ estimate: null, loading: false }), "");
+  assert.equal(
+    render({ estimate: { ...props.estimate!, available: false }, loading: false }),
+    "",
+  );
 });

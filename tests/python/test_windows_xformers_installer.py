@@ -163,9 +163,8 @@ def test_a_full_url_override_naming_a_cuda_leaf_gets_a_direct_url():
 
 
 def test_the_index_fallback_hides_the_machine_level_indexes():
-    """The one path that still resolves rather than fetching a URL: a mirror root whose leaf
-    is not a CUDA family. UV_INDEX / UV_EXTRA_INDEX_URL are cleared around that call so the
-    chosen index really is the only one, and restored afterwards."""
+    """Only a mirror root whose leaf is not a CUDA family still resolves; UV_INDEX and
+    UV_EXTRA_INDEX_URL are cleared so the chosen index is the only one, then restored."""
     block = _extract(
         r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
     )
@@ -178,9 +177,7 @@ def test_the_index_fallback_hides_the_machine_level_indexes():
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_the_url_join_keeps_a_tokenized_mirrors_query():
-    """Executed, not read: a private mirror may authenticate by query string, and appending
-    after the query put the wheel path inside the token value -- request path still /whl,
-    token unusable. Same rule as the Python side's join_wheel_url."""
+    """Run, not read: a query-string token must stay out of the wheel path; see join_wheel_url."""
     joiner = _extract(r"^    function Join-UrlPath \{.*?^    \}", _source())
     out = _run_pwsh(
         f"{joiner}\n"
@@ -196,9 +193,7 @@ def test_the_url_join_keeps_a_tokenized_mirrors_query():
 
 
 def test_installer_never_installs_an_unpinned_xformers():
-    """A bare `xformers` resolves to whatever the index serves newest, which is not
-    necessarily built for the CUDA family the resident torch came from. The installer
-    picks the exact version for (torch, cuda) instead, so every spec must be pinned."""
+    """Bare xformers may pick another CUDA family's build; each spec must pin torch and cuda."""
     source = _source()
     # The WoA drop list names packages to REMOVE, so a bare name must match the requirement line exactly.
     drop_list = re.search(r"\$WoaDropCandidates = @\(.*?\n\s*\)\n", source, re.DOTALL)
@@ -236,8 +231,7 @@ def test_xformers_step_is_skipped_for_no_torch_installs():
 
 
 def test_installed_build_probe_reads_cpp_lib_json():
-    """The version string cannot distinguish cu128 from cu130, so the repair check has to read
-    the build metadata xFormers itself reports in its error message."""
+    """The version string cannot tell cu128 from cu130, so check the build xFormers reports."""
     block = _extract(r"    function Get-InstalledXformersBuild \{.*?^    \}", _source())
     assert "cpp_lib.json" in block
     assert "find_spec" in block
@@ -284,10 +278,8 @@ def test_both_selectors_agree_outside_the_exact_tables(torch_version, cuda_versi
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_the_already_installed_check_uses_the_wheels_own_build_target():
-    """A resident 0.0.35 records the torch it was COMPILED against (the stable-ABI floor),
-    not the torch it is running under. Comparing against the resident torch made every
-    correct install look mismatched, so each run force-reinstalled a good wheel -- and
-    warned about a failed xFormers install whenever the index was unreachable."""
+    """Resident 0.0.35 records the torch it was built against (stable-ABI floor), not the running
+    torch; comparing to it forced reinstalls and false warnings if the index was unreachable."""
     out = _run_pwsh(
         f"{_selector_harness()}\n"
         "Write-Output \"[$(Get-XformersExpectedTorchBuild -Version '0.0.35' "

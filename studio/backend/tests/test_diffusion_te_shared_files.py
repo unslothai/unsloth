@@ -24,6 +24,13 @@ from core.inference.diffusion_families import _FAMILIES, detect_family  # noqa: 
 from core.inference.diffusion_prequant import ALLOW_LOCAL_PREQUANT_PATH_ENV  # noqa: E402
 
 CUDA_BF16 = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+
+
+@pytest.fixture
+def rows_published(monkeypatch):
+    monkeypatch.setattr(tpq, "te_int8_convrot_published", lambda *a, **k: True)
+
+
 GROUP = 256
 
 
@@ -113,7 +120,7 @@ def _fam(name):
     ],
 )
 def test_identical_encoders_resolve_the_shared_file_for_their_base(
-    name, base, component, repo, filename
+    name, base, component, repo, filename, rows_published
 ):
     fam = _fam(name)
     sources = tpq.te_prequant_sources_for_base(
@@ -128,7 +135,7 @@ def test_identical_encoders_resolve_the_shared_file_for_their_base(
         assert sources[component].filename == filename
 
 
-def test_klein_9b_int8_falls_back_to_its_own_fp8_file_never_the_4b_one():
+def test_klein_9b_int8_falls_back_to_its_own_fp8_file_never_the_4b_one(rows_published):
     fam = _fam("flux.2-klein")
     nine = tpq.te_prequant_sources_for_base(
         fam, "black-forest-labs/FLUX.2-klein-9B", te_quant_mode = "int8", target = CUDA_BF16
@@ -369,7 +376,7 @@ def test_text_only_qwen3_int8_convrot_file_loads_and_tracks_the_dense_hidden_sta
         assert cos > 0.99
 
 
-def test_klein_int8_file_has_the_fp8_file_behind_it():
+def test_klein_int8_file_has_the_fp8_file_behind_it(rows_published):
     fam = detect_family("black-forest-labs/FLUX.2-klein-4B")
     source = tpq.resolve_te_prequant_source(fam, "text_encoder", "int8")
     assert source.filename == "FLUX.2-klein-4B-text_encoder-INT8-ConvRot.safetensors"

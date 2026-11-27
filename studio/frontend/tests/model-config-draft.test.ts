@@ -20,6 +20,7 @@ import {
   readModelConfigDraft,
   replaceModelConfigDraft,
   retainModelConfigDraft,
+  setModelConfigDraftPickedSet,
   setModelConfigDraftRemember,
 } from "../src/features/model-picker/model-config/model-config-draft.ts";
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
@@ -70,6 +71,20 @@ test("a new live signature re-seeds the draft from the resident process", () => 
   assert.equal(reseeded?.config.kvCacheDtype, "q4_0");
   assert.equal(reseeded?.config.nParallel, 4);
   assert.equal(reseeded?.appliedLiveSignature, "sig-b");
+});
+
+test("a one-time pick is shared by both editors until the draft is replaced or re-seeded", () => {
+  const key = modelConfigDraftKey(MODEL, "Q6_K");
+  primeModelConfigDraft(key, { config: SEED, remembered: true }, "sig-a");
+  setModelConfigDraftPickedSet(key, "Other");
+  patchModelConfigDraft(key, { nParallel: 2 });
+  assert.equal(readModelConfigDraft(key)?.pickedSet, "Other");
+  replaceModelConfigDraft(key, SEED);
+  assert.equal(readModelConfigDraft(key)?.pickedSet, undefined);
+  setModelConfigDraftPickedSet(key, null);
+  assert.equal(readModelConfigDraft(key)?.pickedSet, null);
+  primeModelConfigDraft(key, { config: SEED, remembered: true }, "sig-b");
+  assert.equal(readModelConfigDraft(key)?.pickedSet, undefined);
 });
 
 test("remember toggle keeps saved baseline until save", () => {

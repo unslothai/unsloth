@@ -151,9 +151,8 @@ def test_bitsandbytes_guard_is_not_gated_on_use_exact_model_name():
 
 
 def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
-    """A BitsAndBytesConfig in kwargs re-sets the flags downstream, so clearing
-    load_in_4bit/8bit alone still builds the bnb quantizer in Transformers. A
-    non-bnb config (GPTQ/AWQ/fp8) must not be touched."""
+    """A BitsAndBytesConfig in kwargs re-sets the flags downstream, so clearing load_in_4bit and
+    load_in_8bit alone still builds the bnb quantizer; GPTQ, AWQ or fp8 configs stay untouched."""
     _, guards = _bnb_guards()
     for guard in guards:
         # ast.unparse normalises quotes, so match on the call shape instead.
@@ -186,8 +185,7 @@ def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
 
 
 def test_bitsandbytes_guard_clears_8bit_as_well_as_4bit():
-    """8bit is bitsandbytes too: leaving load_in_8bit set sends the request to
-    Transformers, which builds the bnb quantizer and fails there instead."""
+    """load_in_8bit is bnb too; left set, Transformers builds the bnb quantizer and fails."""
     src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     guards = [

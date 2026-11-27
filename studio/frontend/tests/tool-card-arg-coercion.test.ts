@@ -152,6 +152,7 @@ const COERCED: ReadonlyArray<
     ["prompt", "resultPrompt", "size", "quality", "mime"],
   ],
   ["tool-fallback.tsx", "ToolFallbackTrigger", ["name"]],
+  ["tool-ui-memory.tsx", "MemoryToolUI", ["scope", "value"]],
 ];
 
 const COERCION_CALL = /^toolArgText\(/;

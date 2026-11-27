@@ -528,8 +528,7 @@ def test_fork_windows_intel_prefers_published_vulkan_bundle():
 
 
 def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
-    # The widened glob must cover both arch-suffixed (x64) and bare (arm64) CPU
-    # libs so a valid Vulkan install is not re-flagged unhealthy every check.
+    # Glob must cover arch-suffixed (x64) and bare (arm64) CPU libs, or Vulkan installs get flagged.
     choice = ilp.AssetChoice(
         repo = UPSTREAM,
         tag = "b9925",
@@ -893,9 +892,7 @@ def test_sync_marker_selection_records_force_cpu(tmp_path, existing, requested, 
 
 
 def test_sync_marker_selection_records_the_backend_of_a_reused_bundle(tmp_path):
-    """A switch can resolve to the bundle already installed -- CPU-forcing a host
-    whose detected pick was already CPU. The bundle is right, but the recorded
-    choice is not, and only that stops the next update re-detecting it away."""
+    """A reused bundle still needs its recorded backend corrected, or the next update re-detects it away."""
     marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(
         json.dumps({"tag": "b9585", "asset": "cpu.tar.gz", "backend_request": "auto"})
@@ -1100,9 +1097,8 @@ def _detect_windows_host(
     powershell_stdout = "",
     env = None,
 ):
-    """Drive the real detect_host() as a GPU-less Windows host with a fake
-    registry, recording every run_capture invocation. Pins the wiring the
-    unit tests above cannot see: registry-first, CIM only on a registry miss."""
+    """Real detect_host() on a GPU-less Windows host: registry is read first, CIM only on a registry
+    miss."""
     monkeypatch.setitem(sys.modules, "winreg", winreg_fake)
     monkeypatch.setattr(ilp.platform, "system", lambda: "Windows")
     monkeypatch.setattr(ilp.platform, "machine", lambda: "AMD64")
@@ -1940,8 +1936,7 @@ def test_integrated_route_declines_beside_a_physical_nvidia_card(amd_vulkan_icd)
 
 
 def test_integrated_route_declines_under_a_vulkan_device_mask(amd_vulkan_icd, monkeypatch):
-    # An ICD proves a driver, not that this process sees the device: a mask excluding the
-    # APU enumerates nothing.
+    # An ICD proves a driver, not visibility: a device mask excluding the APU enumerates nothing.
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
@@ -1986,8 +1981,7 @@ def test_force_cpu_wins_over_the_integrated_route(amd_vulkan_icd):
 
 
 def test_route_backend_request_keeps_the_arch_for_a_migrated_integrated_host(amd_vulkan_icd):
-    # Read before the route rewrites the host to Vulkan-only; after it the marker loses
-    # the arch and the next update re-detects a ROCm-less host.
+    # Read the arch before routing to Vulkan-only, or the next update re-detects a ROCm-less host.
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     route = ilp.route_backend_request(
         backend = None, published_repo = FORK, published_release_tag = "pin", host = host
@@ -1998,8 +1992,7 @@ def test_route_backend_request_keeps_the_arch_for_a_migrated_integrated_host(amd
 
 
 def test_route_backend_request_keeps_rocm_as_the_fallback_for_the_preference(amd_vulkan_icd):
-    # _vulkan_only_host clears has_rocm, so uncarried the selectors read this box as CPU
-    # and a bad Vulkan asset installs CPU inference.
+    # _vulkan_only_host clears has_rocm, so the ROCm fallback must be carried or selectors read CPU.
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     route = ilp.route_backend_request(
         backend = None, published_repo = FORK, published_release_tag = "pin", host = host
@@ -2503,7 +2496,11 @@ def test_vulkan_opt_in_routes_windows_arm64_to_vulkan(monkeypatch, env, flag):
     assert persist == "vulkan"
 
 
-_ADRENO = ("Qualcomm(R) Adreno(TM) X1-85 GPU",)
+# VK_DRIVER_ID_QUALCOMM_PROPRIETARY = 8, VK_DRIVER_ID_ARM_PROPRIETARY = 9, VK_DRIVER_ID_MESA_TURNIP = 18.
+_ADRENO = (ilp._VulkanGpuName("Qualcomm(R) Adreno(TM) X1-85 GPU", 0x5143, 8),)
+_TURNIP = (ilp._VulkanGpuName("Turnip Adreno (TM) 750", 0x5143, 18),)
+_MALI = (ilp._VulkanGpuName("Mali-G720", 0x13B5, 9),)
+_ARM64_GPU = (ilp._VulkanGpuName("Arm64 Vulkan GPU", 0x13B5, 9),)
 
 
 def _no_vulkan_probe():
@@ -2517,7 +2514,7 @@ def test_windows_arm64_auto_routes_to_vulkan_when_a_gpu_enumerates(
 ):
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
-    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: _ADRENO)
+    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: _ARM64_GPU)
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
         _windows_arm64_host(has_intel_gpu = has_intel_gpu),
         FORK,
@@ -2528,6 +2525,66 @@ def test_windows_arm64_auto_routes_to_vulkan_when_a_gpu_enumerates(
     assert routed.vulkan_routed is True
     # Detected, not chosen: updates re-detect and the Vulkan CPU crash recovery stays armed.
     assert (repo, tag, persist) == (FORK, "pin", None)
+
+
+@pytest.mark.parametrize("flag", [None, "auto"])
+def test_windows_arm64_adreno_stays_on_cpu_unless_vulkan_is_requested(monkeypatch, capsys, flag):
+    # ggml-org/llama.cpp#28290: garbage output on Snapdragon X, so Adreno is opt-in only.
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: _ADRENO)
+    host = _windows_arm64_host()
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False, llama_backend = flag
+    )
+    assert routed is host and routed.vulkan_routed is False
+    assert (repo, tag, persist) == (FORK, "pin", None)
+    captured = capsys.readouterr()
+    assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    "env, flag",
+    [
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "vulkan"}, None),
+        ({"UNSLOTH_FORCE_VULKAN": "1"}, None),
+        ({}, "vulkan"),
+    ],
+)
+def test_windows_arm64_adreno_takes_vulkan_when_requested(monkeypatch, env, flag):
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: _ADRENO)
+    routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        _windows_arm64_host(), FORK, "pin", force_cpu = False, llama_backend = flag
+    )
+    assert routed.vulkan_routed is True
+    assert persist == "vulkan"
+
+
+@pytest.mark.parametrize("devices", [_MALI, _TURNIP], ids = ["mali", "turnip"])
+def test_linux_arm64_mesa_and_mali_still_auto_route_to_vulkan(monkeypatch, devices):
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: devices)
+    routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        _cpu_bound_host("Linux", "arm64"), FORK, "pin", force_cpu = False
+    )
+    assert routed.vulkan_routed is True and routed.vulkan_device_required is True
+    assert persist is None
+
+
+def test_the_probe_keeps_each_device_vendor_and_driver(monkeypatch):
+    probe = _probe_result(
+        monkeypatch, [_vk_device("Adreno X1-85"), _vk_device("Mali", vendor = 0x13B5, driver = 9)]
+    )
+    devices = probe()
+    assert devices == ("Adreno X1-85", "Mali")
+    assert [d.vendor for d in devices] == [0x5143, 0x13B5]
+    assert [d.driver for d in devices] == [8, 9]
 
 
 @pytest.mark.parametrize("has_intel_gpu", [False, True])
@@ -2781,7 +2838,7 @@ def _forced_windows_arm64_host():
 def test_auto_routed_windows_arm64_picks_arm64_vulkan_then_cpu(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
-    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: _ADRENO)
+    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: _ARM64_GPU)
     routed, _repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(
         _windows_arm64_host(), FORK, "", force_cpu = False
     )
@@ -3062,8 +3119,7 @@ def test_automatic_amd_vulkan_marker_records_the_routing_gfx(tmp_path, monkeypat
 
 
 def test_a_remembered_arch_never_outranks_a_live_probe(monkeypatch):
-    """The updater replays the marker's arch, which is a stale probe result, not
-    an operator override: a host whose GPU changed must keep what it reports."""
+    """A remembered arch is a stale probe, not an override; a changed GPU must report its live arch."""
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     unprobed = dataclasses.replace(
         _windows_amd_host(rocm_gfx_target = None, rocm_gfx_targets = []), has_rocm = False
@@ -3263,8 +3319,7 @@ def test_forced_cpu_outranks_every_vulkan_trigger(
 
 
 def test_the_forced_cpu_guard_is_not_vacuous():
-    """The same host DOES take Vulkan once the CPU pin is gone, or the check above
-    would pass on a resolver that had stopped routing to Vulkan entirely."""
+    """Without the pin this host takes Vulkan, so a resolver that stopped routing would fail the check."""
     repo, tag = "unslothai/llama.cpp-prebuilt", "latest"
     _, out_repo, _, persist = ilp._route_to_vulkan_prebuilt(
         _sim_host("Linux", "amd"),
@@ -3277,8 +3332,7 @@ def test_the_forced_cpu_guard_is_not_vacuous():
 
 
 def test_the_icd_search_path_is_built_per_call_not_at_import(monkeypatch):
-    """Path.home() can raise with no home directory, so build the ICD search path per call, not at
-    import."""
+    """Path.home() can raise with no home dir, so the ICD search path is built per call, not at import."""
 
     def _no_home():
         raise RuntimeError("Could not determine home directory.")
@@ -3821,8 +3875,7 @@ class _WindowsWcharT:
 
 
 class _WindowsCfgMgr(_FakeCfgMgr):
-    """CM_Get_DevNode_Registry_PropertyW sizes in bytes, so under_allocated is asserted outside the
-    probe."""
+    """CM_Get_DevNode_Registry_PropertyW sizes in bytes; under_allocated is asserted outside the probe."""
 
     under_allocated = False
 
@@ -4083,7 +4136,8 @@ def _linux_amd(*targets, **overrides):
 
 
 @pytest.mark.parametrize(
-    "targets", [("gfx1010",), ("gfx1011",), ("gfx1012",), ("gfx803",), ("gfx1010", "gfx803")]
+    "targets",
+    [("gfx1010",), ("gfx1011",), ("gfx1012",), ("gfx803",), ("gfx90c",), ("gfx1010", "gfx803")],
 )
 def test_linux_amd_without_rocm_kernels_takes_the_vulkan_route(targets, linux_no_rocm_env):
     host = _linux_amd(*targets)
@@ -4096,7 +4150,15 @@ def test_linux_amd_without_rocm_kernels_takes_the_vulkan_route(targets, linux_no
 
 
 @pytest.mark.parametrize(
-    "targets", [("gfx1010", "gfx1100"), ("gfx1100",), ("gfx1030",), ("gfx906",), ("gfx1151",)]
+    "targets",
+    [
+        ("gfx1010", "gfx1100"),
+        ("gfx90c", "gfx1100"),
+        ("gfx1100",),
+        ("gfx1030",),
+        ("gfx906",),
+        ("gfx1151",),
+    ],
 )
 def test_linux_any_rocm_capable_card_keeps_todays_path(targets, linux_no_rocm_env):
     # Vulkan honours no HIP mask, so one ROCm-capable card keeps the whole host on ROCm.
@@ -4225,11 +4287,16 @@ def _linux_rocm_and_vulkan_bundle():
     )
 
 
-def test_linux_rdna1_plan_installs_the_vulkan_bundle_not_a_source_build(linux_no_rocm_env):
+def test_linux_rdna1_plan_installs_the_vulkan_bundle_not_a_source_build(
+    linux_no_rocm_env, monkeypatch
+):
     bundle = _linux_rocm_and_vulkan_bundle()
     host = _linux_amd("gfx1010")
-    # Unrouted, the ROCm branch finds no bundle and the caller source-builds HIP.
+    # With hipcc, HIP is source-built; without it the build ends CPU-only, so Vulkan is taken.
+    monkeypatch.setattr(ilp, "_hipcc_available", lambda: True)
     assert ilp._linux_published_attempts(host, bundle) == []
+    monkeypatch.setattr(ilp, "_hipcc_available", lambda: False)
+    assert [a.install_kind for a in ilp._linux_published_attempts(host, bundle)] == ["linux-vulkan"]
     routed, *_ = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     kinds = [a.install_kind for a in ilp._linux_published_attempts(routed, bundle)]
     assert kinds == ["linux-vulkan", "linux-cpu"]

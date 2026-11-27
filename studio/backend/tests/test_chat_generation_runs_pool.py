@@ -84,8 +84,7 @@ def test_an_unfinished_transaction_is_rolled_back_before_reuse():
 
 
 def test_two_accounts_never_share_a_cached_connection():
-    """Two accounts resolve to two databases, so a handle cached under one account id must never be
-    handed to the other."""
+    """Two accounts, two databases: a handle cached for one must never be handed to the other."""
     paths = {}
     handles = {}
     for account in (ALICE, BOB):
@@ -128,8 +127,7 @@ def test_switching_account_does_not_write_to_the_previous_database():
 
 
 def test_each_thread_gets_its_own_connection():
-    """sqlite connections here are created with check_same_thread = True, so a handle shared
-    across threads would raise ProgrammingError on use."""
+    """Per thread: check_same_thread = True makes a shared handle raise ProgrammingError."""
     seen = {}
 
     def grab(name):
@@ -303,8 +301,7 @@ def test_closing_the_keeper_drops_the_pool_even_when_there_was_no_keeper():
 
 
 def test_a_connection_in_use_during_a_global_discard_is_closed_on_return():
-    """Yanking a handle mid query would fail that caller, so the borrower closes it instead of
-    parking it back into a pool that has moved on."""
+    """Yanking an in-use handle fails its caller, so it is closed on return, not re-pooled."""
     borrowed = runs_db._connect()
     underlying = borrowed._conn
     runs_db._discard_all_pooled()
@@ -410,9 +407,8 @@ def test_a_handle_prepared_across_an_invalidation_is_not_pooled():
 
 
 def test_the_registry_does_not_grow_with_every_short_lived_thread():
-    """The sweeper adds a pooled entry per account per minute on a fresh daemon thread. The entry
-    itself is collected, but a dead weakref left behind would accumulate for the life of the
-    process and lengthen every later scan. Insert and unregister prune."""
+    """A sweeper on a fresh daemon thread adds a pooled entry per account each minute; dead weakrefs
+    would accumulate and slow every scan, so insert and unregister prune them."""
     runs_db.reset_connection_pool_for_tests()
 
     def park():

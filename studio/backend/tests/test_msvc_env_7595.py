@@ -344,9 +344,8 @@ def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch
 
 
 def test_a_split_toolchain_is_judged_over_the_union(tmp_path, monkeypatch):
-    """clang-cl reads INCLUDE as system include paths and Triton passes its dirs as /I, so the
-    compile sees both. Judging each source alone gates a machine whose halves are split across
-    them, which is the false positive that costs a user a working torch.compile."""
+    """clang-cl reads INCLUDE and Triton passes its dirs as /I, so the compile sees both; judging
+    each alone falsely gates a split toolchain, costing torch.compile."""
     monkeypatch.setattr(sys, "platform", "win32")
     vc = tmp_path / "vc"
     vc.mkdir()

@@ -13,10 +13,12 @@
 
 """Kimi-K3 style remote-code MXFP4 experts load packed into one Mxfp4StackedExperts per MoE layer."""
 
+import inspect
 import json
 import os
 import sys
 import types
+from types import SimpleNamespace
 
 import re
 
@@ -804,10 +806,18 @@ def test_a_kept_packed_load_registers_no_decompress_op():
     quantizer._unsloth_dtype_plan, quantizer._unsloth_plan_dicts = {}, []
     ops = lambda convs: [type(op).__name__ for c in convs for op in getattr(c, "operations", [])]  # noqa: E731
     quantizer._unsloth_keep_packed, quantizer._unsloth_packed_experts = True, ["layers.0.mlp"]
-    kept = ops(quantizer.update_weight_conversions([]))
+    from transformers.quantizers.base import HfQuantizer
+
+    # transformers 5.21+ passes the model to the hook.
+    extra = (
+        (SimpleNamespace(named_parameters = lambda: iter(())),)
+        if "model" in inspect.signature(HfQuantizer.update_weight_conversions).parameters
+        else ()
+    )
+    kept = ops(quantizer.update_weight_conversions([], *extra))
     assert kept.count("StackPackedExperts") == 4 and "DecompressPackedWeights" not in kept
     quantizer._unsloth_keep_packed, quantizer._unsloth_packed_experts = False, []
-    assert "DecompressPackedWeights" in ops(quantizer.update_weight_conversions([]))
+    assert "DecompressPackedWeights" in ops(quantizer.update_weight_conversions([], *extra))
 
 
 def _peft_target_parameters(model, monkeypatch, **kwargs):

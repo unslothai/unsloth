@@ -41,9 +41,9 @@ export function buildChatTourSteps({
       title: "Find a model",
       body: (
         <>
-          Recommended is Unsloth's curated list, On Device is your downloads and
-          finetunes. Search Hub reaches all of Hugging Face. An OOM tag means it
-          will not fit in your VRAM.
+          Discover models is Unsloth's curated list, On Device is your
+          downloads, finetunes and folders, and Favorites keeps the ones you
+          star. Searching on Discover reaches all of Hugging Face.
         </>
       ),
       onEnter: openModelSelector,
@@ -76,7 +76,6 @@ export function buildChatTourSteps({
   ];
 
   if (canShowNav) {
-    // The mobile sidebar is a closed sheet, so there is nothing to spotlight there.
     steps.unshift({
       id: "nav",
       target: "navbar",
@@ -92,8 +91,6 @@ export function buildChatTourSteps({
   }
 
   if (canCompare) {
-    // Compare lives in the + menu, with no sidebar button to anchor to; this step enters compare on
-    // its own and explains it.
     steps.push({
       id: "compare-view",
       target: "chat-compare-view",

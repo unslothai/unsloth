@@ -22,10 +22,28 @@ ROOT = Path(__file__).resolve().parents[1]
 BLOCK = 8
 
 
+@pytest.fixture(autouse = True)
+def _restore_fp8_integration(monkeypatch):
+    # A real fp8 load patches Fp8Dequantize process-wide; later test files check the unpatched class.
+    try:
+        import transformers.integrations.finegrained_fp8 as fp8_integration
+    except Exception:
+        return
+    cls = getattr(fp8_integration, "Fp8Dequantize", None)
+    if cls is not None:
+        for name, value in list(vars(cls).items()):
+            if not name.startswith("__"):
+                monkeypatch.setattr(cls, name, value)
+    if hasattr(fp8_integration, "replace_with_fp8_linear"):
+        monkeypatch.setattr(
+            fp8_integration, "replace_with_fp8_linear", fp8_integration.replace_with_fp8_linear
+        )
+
+
 def _helper():
     # Exact source, without importing unsloth (which needs an accelerator).
     path = ROOT / "unsloth" / "models" / "loader_utils.py"
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = [
         n
         for n in tree.body
@@ -125,7 +143,7 @@ def test_composite_model_keeps_every_scoped_counterpart(tmp_path):
 
 
 def _calls_and_guards(path, cls_name):
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
     found = []
@@ -164,8 +182,13 @@ def test_cleanup_runs_for_every_dequantizing_route(rel, cls_name):
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 @pytest.mark.parametrize("explicit", [True, False])
-def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit):
+def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit, monkeypatch):
     from transformers import LlamaConfig, LlamaForCausalLM
+
+    if not explicit and torch.cuda.is_available():
+        # transformers dequantizes by itself only without CUDA or below sm89; on an sm89+ card
+        # (L4, H100, B200) a device_map="cpu" load keeps fp8 weights. Report a pre-sm89 card.
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
 
     torch.manual_seed(0)
     src = tmp_path / "src"
@@ -197,9 +220,6 @@ def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit):
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkeypatch):
-    # Two submodels whose converters share a type and target but differ in sources: only the
-    # `.weight`-sourced one gets the fp8 dequant prepended. The other one is kept as loaded and must
-    # not gain a second copy, or save_pretrained would reverse it twice.
     import transformers.conversion_mapping as cm
     from types import SimpleNamespace
     from transformers.core_model_loading import (
@@ -209,6 +229,7 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
         WeightConverter,
     )
     from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+    from transformers.quantizers.base import HfQuantizer
 
     target = "mlp.experts.gate_up_proj"
 
@@ -229,8 +250,13 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
         FineGrainedFP8Config(dequantize = True, weight_block_size = [BLOCK, BLOCK])
     )
     quantizer.pre_quantized = True
-    loaded = quantizer.update_weight_conversions(plain())
-    model = SimpleNamespace(_weight_conversions = loaded)
+    model = SimpleNamespace(named_parameters = lambda: iter(()))
+    # Zoo's subclass wrapper hides the model argument; the base interface retains it.
+    if "model" in inspect.signature(HfQuantizer.update_weight_conversions).parameters:
+        loaded = quantizer.update_weight_conversions(plain(), model)
+    else:
+        loaded = quantizer.update_weight_conversions(plain())
+    model._weight_conversions = loaded
     monkeypatch.setattr(cm, "get_model_conversion_mapping", lambda *a, **k: plain())
     assert _helper()(model) > 0
 
@@ -242,3 +268,45 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
     from transformers.integrations.finegrained_fp8 import Fp8Dequantize
 
     assert not any(isinstance(op, Fp8Dequantize) for c in convs for op in c.operations)
+
+
+def _quantization_config_restores(path, cls_name):
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    found = []
+
+    def restores(call):
+        if not (isinstance(call.func, ast.Attribute) and call.func.attr == "update"):
+            return False
+        if ast.unparse(call.func.value) != "model.config" or not call.args:
+            return False
+        arg = call.args[0]
+        if not isinstance(arg, ast.Dict):
+            return False
+        return any(
+            isinstance(k, ast.Constant)
+            and k.value == "quantization_config"
+            and ast.unparse(v).startswith("quantization_config")
+            for k, v in zip(arg.keys, arg.values)
+        )
+
+    def visit(node, guards):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call) and restores(child):
+                found.append(guards)
+            g = guards + [ast.unparse(child.test)] if isinstance(child, ast.If) else guards
+            visit(child, g)
+
+    visit(fn, [])
+    return found
+
+
+@pytest.mark.parametrize("cls_name", ["FastLanguageModel", "FastModel"])
+def test_caller_fp8_config_is_not_restored_over_dequantized_weights(cls_name):
+    # Restoring an fp8 config over dequantized weights saves bf16 as fp8 with no scales (unloadable).
+    found = _quantization_config_restores(ROOT / "unsloth/models/loader.py", cls_name)
+    assert found, "quantization_config restore missing"
+    for guards in found:
+        text = " ".join(guards)
+        assert "_unsloth_fp8_dequantized" in text or "_stamp_bnb" in text, guards
