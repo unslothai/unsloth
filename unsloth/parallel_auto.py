@@ -155,6 +155,21 @@ def _fp8_kept_on_load():
     return False
 
 
+def _fp8_to_nf4_armed(explicit_4bit):
+    """Whether a 4bit load of a block-FP8 checkpoint quantizes it to NF4 (models/fp8_to_nf4.py: an explicit
+    load_in_4bit or UNSLOTH_FP8_TO_NF4=1, not turned off, and the transformers / bitsandbytes it needs)."""
+    mode = os.environ.get("UNSLOTH_FP8_TO_NF4", "").strip().lower()
+    if mode in ("0", "false", "off", "no") or not (
+        explicit_4bit or mode in ("1", "true", "on", "yes", "force")
+    ):
+        return False
+    try:
+        from .models.fp8_to_nf4 import fp8_to_nf4_unavailable_reason
+    except Exception as exc:
+        raise ValueError(f"a 4bit load of an FP8 checkpoint is not sized ({exc})")
+    return fp8_to_nf4_unavailable_reason() is None
+
+
 def _budget(held = 0, held_cuda = 0):
     """(capacity, total) bytes for this rank: what it could use and the device size the margin is a share of.
     CUDA: free + the allocator's reusable cache (reserved - allocated) + `held_cuda`, the part of the sized model
@@ -473,6 +488,12 @@ def resolve_for_load(loader, args, kwargs):
         import inspect
 
         bound = inspect.signature(loader).bind_partial(*args, **kwargs)
+        # load_in_4bit defaults to True: only a passed one is the explicit request fp8 -> NF4 needs.
+        explicit_4bit = bool(
+            bound.arguments.get(
+                "load_in_4bit", (bound.arguments.get("kwargs") or {}).get("load_in_4bit")
+            )
+        )
         bound.apply_defaults()
         call = dict(bound.arguments)
         call.update(call.pop("kwargs", None) or {})
@@ -562,6 +583,12 @@ def resolve_for_load(loader, args, kwargs):
         if full and any(dt in _PACKED for _, dt, _ in tensors):
             # _dequantize_bitsandbytes_for_full_finetuning turns packed weights dense before training.
             raise ValueError("full finetuning a pre-quantized checkpoint dequantizes it; not sized")
+        fp8_to_nf4 = (
+            any(dt.startswith("F8") for _, dt, _ in tensors)
+            and load_in_4bit
+            and not load_in_16bit
+            and _fp8_to_nf4_armed(explicit_4bit)
+        )
         weights, trainable = checkpoint_estimate(
             tensors,
             load_in_4bit = load_in_4bit and not load_in_16bit,
@@ -570,9 +597,7 @@ def resolve_for_load(loader, args, kwargs):
             dtype_bytes = dtype_bytes,
             skip_modules = _quant_skip_modules(model_types) if quantize else None,
             hidden_size = _hidden_size(name, call, revision),
-            dequantize_fp8 = load_in_16bit
-            or full
-            or (any(dt.startswith("F8") for _, dt, _ in tensors) and not _fp8_kept_on_load()),
+            dequantize_fp8 = load_in_16bit or full or not _fp8_kept_on_load() or fp8_to_nf4,
         )
         if adapter:
             # The adapter's own weights (float32 trainable copies) replace the r = 16 guess.

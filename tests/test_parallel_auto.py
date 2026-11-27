@@ -1081,3 +1081,42 @@ def test_fp8_load_sizing_follows_the_device(clean, kept, extra, want):
         from_pretrained, ("org/model-fp8",), {"load_in_4bit": False, **extra}
     )
     assert got == want, auto._STATE["reason"]
+
+
+@pytest.mark.parametrize(
+    "kwargs, env, want",
+    [
+        ({"load_in_4bit": True}, None, "ddp"),  # explicit 4bit: fp8 -> NF4, 17 MiB fits 30 MiB
+        ({}, None, "fsdp2"),  # the default 4bit flag keeps the 32 MiB of FP8 weights
+        ({}, "1", "ddp"),  # UNSLOTH_FP8_TO_NF4=1 arms it without an explicit flag
+        ({"load_in_4bit": True}, "0", "fsdp2"),  # turned off: FP8 kept
+    ],
+    ids = ["explicit_4bit", "default_flag", "env_force", "env_off"],
+)
+def test_fp8_to_nf4_load_is_sized_in_4bit(clean, kwargs, env, want):
+    mp, _, auto = clean
+    _auto_env(mp, auto, budget_mib = 30)
+    if env is None:
+        mp.delenv("UNSLOTH_FP8_TO_NF4", raising = False)
+    else:
+        mp.setenv("UNSLOTH_FP8_TO_NF4", env)
+    mp.setattr(
+        auto,
+        "_checkpoint_tensors",
+        lambda name, **kw: [("model.layers.0.mlp.up_proj.weight", "F8_E4M3", (4096, 8192))],
+    )
+    mp.setattr(auto, "_fp8_kept_on_load", lambda: True, raising = False)
+    stub = types.ModuleType("unsloth.models.fp8_to_nf4")
+    stub.fp8_to_nf4_unavailable_reason = lambda: None
+    mp.setitem(sys.modules, "unsloth.models.fp8_to_nf4", stub)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kw,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, ("org/model-fp8",), kwargs)
+    assert got == want, auto._STATE["reason"]
