@@ -3291,9 +3291,7 @@ def update_openai_auto_switch_override(
                 mlx_int8_prefill = payload.mlx_int8_prefill,
                 mlx_ane_prefill = payload.mlx_ane_prefill,
                 mlx_fast_verify = payload.mlx_fast_verify,
-                load_in_4bit = (
-                    payload.load_in_4bit if "load_in_4bit" in fields_set else None
-                ),
+                load_in_4bit = (payload.load_in_4bit if "load_in_4bit" in fields_set else None),
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,

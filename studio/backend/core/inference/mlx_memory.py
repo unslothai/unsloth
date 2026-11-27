@@ -151,7 +151,10 @@ def _indexed_shards(model_dir: str) -> list:
 
 
 def mlx_shard_files(
-    model_dir: str, config: Optional[dict] = None, *, vision: Optional[bool] = None
+    model_dir: str,
+    config: Optional[dict] = None,
+    *,
+    vision: Optional[bool] = None,
 ) -> list:
     """The shards the package that would load this model actually reads."""
     names = [

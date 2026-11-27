@@ -7286,7 +7286,6 @@ class MLXInferenceBackend:
 
         if dtype is None and not (load_in_4bit or is_lora) and getattr(config, "is_local", False):
             from core.inference.mlx_memory import mlx_saved_16bit_dtype
-
             load_kwargs["dtype"] = mlx_saved_16bit_dtype(load_source, vision = use_vlm)
 
         knobs = offload
