@@ -20,7 +20,16 @@
     "catalog:check": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts",
     "catalog:check:network": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts --network",
     "biome:check": "biome check",
-    "biome:fix": "biome check --write"
+    "biome:fix": "biome check --write",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check",
+    "format:staged": "bun fmt --staged",
+    "lint:external": "cd ../.. && node studio/frontend/node_modules/eslint/bin/eslint.js --config studio/frontend/eslint.external.config.js . --max-warnings=0",
+    "lint:all": "npm run lint && npm run lint:external",
+    "prepare": "node scripts/install-husky.mjs",
+    "precommit": "bun ../../scripts/precommit.ts",
+    "fix:comments": "bun ../../scripts/quality/fix-comments.ts --write",
+    "check:comments": "bun ../../scripts/quality/fix-comments.ts"
   },
   "dependencies": {
     "@assistant-ui/core": "0.1.17",
@@ -140,7 +149,9 @@
     "rolldown": "1.0.3",
     "typescript": "7.0.2",
     "typescript-eslint": "^8.55.0",
-    "vite": "^8.3.4"
+    "vite": "^8.3.4",
+    "eslint-config-flat-gitignore": "^2.1.0",
+    "husky": "^9.1.7"
   },
   "allowScripts": {
     "@biomejs/biome@1.9.4": true,

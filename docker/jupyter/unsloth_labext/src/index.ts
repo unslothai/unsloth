@@ -3,35 +3,35 @@
 
 import {
   ILabShell,
-  JupyterFrontEnd,
-  JupyterFrontEndPlugin
-} from '@jupyterlab/application';
-import { IThemeManager } from '@jupyterlab/apputils';
-import { Widget } from '@lumino/widgets';
-import { UNSLOTH_LOGO_DATA_URI } from './logo';
-import aboutPlugin from './about';
-import cellNavPlugin from './cellNav';
-import colabTitlePlugin from './colabTitle';
-import outputSelectPlugin from './outputSelect';
-import splashPlugin from './splash';
-import uiChromePlugin from './uiChrome';
+  type JupyterFrontEnd,
+  type JupyterFrontEndPlugin,
+} from "@jupyterlab/application";
+import { IThemeManager } from "@jupyterlab/apputils";
+import { Widget } from "@lumino/widgets";
+import { UNSLOTH_LOGO_DATA_URI } from "./logo";
+import aboutPlugin from "./about";
+import cellNavPlugin from "./cellNav";
+import colabTitlePlugin from "./colabTitle";
+import outputSelectPlugin from "./outputSelect";
+import splashPlugin from "./splash";
+import uiChromePlugin from "./uiChrome";
 
 /** A NAMED theme, so Settings > Theme and the adaptive light/dark switch see it. */
 const themePlugin: JupyterFrontEndPlugin<void> = {
-  id: 'unsloth-jupyterlab:theme',
-  description: 'Unsloth Dark (Monokai) theme.',
+  id: "unsloth-jupyterlab:theme",
+  description: "Unsloth Dark (Monokai) theme.",
   autoStart: true,
   requires: [IThemeManager],
   activate: (app: JupyterFrontEnd, manager: IThemeManager): void => {
-    const style = 'unsloth-jupyterlab/index.css';
+    const style = "unsloth-jupyterlab/index.css";
     manager.register({
-      name: 'Unsloth Dark',
+      name: "Unsloth Dark",
       isLight: false,
       themeScrollbars: true,
       load: () => manager.loadCSS(style),
-      unload: () => Promise.resolve(undefined)
+      unload: () => Promise.resolve(undefined),
     });
-  }
+  },
 };
 
 /**
@@ -39,25 +39,25 @@ const themePlugin: JupyterFrontEndPlugin<void> = {
  * widget. An <img> with inline styles, not a LabIcon, so it shows in any theme.
  */
 const logoPlugin: JupyterFrontEndPlugin<void> = {
-  id: 'unsloth-jupyterlab:logo',
-  description: 'Replace the top-left Jupyter logo with the Unsloth logo.',
+  id: "unsloth-jupyterlab:logo",
+  description: "Replace the top-left Jupyter logo with the Unsloth logo.",
   autoStart: true,
   requires: [ILabShell],
   activate: (app: JupyterFrontEnd, shell: ILabShell): void => {
     const logo = new Widget();
-    const img = document.createElement('img');
+    const img = document.createElement("img");
     img.src = UNSLOTH_LOGO_DATA_URI;
-    img.alt = 'Unsloth';
-    img.style.height = '24px';
-    img.style.width = 'auto';
-    img.style.margin = '1px 6px 1px 8px';
-    img.style.display = 'block';
+    img.alt = "Unsloth";
+    img.style.height = "24px";
+    img.style.width = "auto";
+    img.style.margin = "1px 6px 1px 8px";
+    img.style.display = "block";
     logo.node.appendChild(img);
-    logo.node.style.display = 'flex';
-    logo.node.style.alignItems = 'center';
-    logo.id = 'jp-MainLogo';
-    shell.add(logo, 'top', { rank: 0 });
-  }
+    logo.node.style.display = "flex";
+    logo.node.style.alignItems = "center";
+    logo.id = "jp-MainLogo";
+    shell.add(logo, "top", { rank: 0 });
+  },
 };
 
 export default [
@@ -68,5 +68,5 @@ export default [
   outputSelectPlugin,
   uiChromePlugin,
   aboutPlugin,
-  splashPlugin
+  splashPlugin,
 ];

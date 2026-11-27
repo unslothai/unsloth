@@ -145,9 +145,12 @@
         if (!choices || !choices.length) continue;
         const delta = choices[0].delta || {};
         // Reasoning arrives as reasoning_content beside empty content, so summing is not double counting.
-        const content = typeof delta.content === "string" ? delta.content.length : 0;
+        const content =
+          typeof delta.content === "string" ? delta.content.length : 0;
         const reasoning =
-          typeof delta.reasoning_content === "string" ? delta.reasoning_content.length : 0;
+          typeof delta.reasoning_content === "string"
+            ? delta.reasoning_content.length
+            : 0;
         S.wireChars += content + reasoning;
         S.wireFrames += 1;
       } catch (err) {
@@ -178,10 +181,15 @@
       // Only promoted to active below, once the chunk is known to be SSE.
       const st = stateFor(this);
       // Repair a split marker only if this chunk continues it; markerTail implies pending is empty.
-      const carriedMarker = Boolean(st.markerTail && continuesMarker(st.markerTail, out));
+      const carriedMarker = Boolean(
+        st.markerTail && continuesMarker(st.markerTail, out),
+      );
       const chunk = carriedMarker ? st.markerTail + out : out;
       setMarkerTail(st, "");
-      const head = chunk.length <= MAX_SSE_CHUNK_CHARS ? chunk : chunk.slice(0, MAX_SSE_CHUNK_CHARS);
+      const head =
+        chunk.length <= MAX_SSE_CHUNK_CHARS
+          ? chunk
+          : chunk.slice(0, MAX_SSE_CHUNK_CHARS);
       const looksSse = head.indexOf(SSE_MARKER) >= 0;
       // A frame continuation is stream traffic and starts a task chain like any other chunk.
       const continuesFrame = st.pending.length > 0;
@@ -213,7 +221,8 @@
       const f = window.__sb.frames;
       const clamp = f && f.clamp ? f.clamp().clampMs : null;
       S.streamingMs += gap;
-      if (clamp !== null && clamp !== undefined) S.blockedMs += Math.max(0, gap - clamp);
+      if (clamp !== null && clamp !== undefined)
+        S.blockedMs += Math.max(0, gap - clamp);
     }
     setTimeout(tick, 1);
   };
@@ -221,7 +230,8 @@
 
   // Last assistant message only; skipped once idle past the gap since the read is O(DOM).
   const replyChars = (force) => {
-    if (!force && S.lastSseAt > 0 && now() - S.lastSseAt >= IDLE_GAP_MS) return null;
+    if (!force && S.lastSseAt > 0 && now() - S.lastSseAt >= IDLE_GAP_MS)
+      return null;
     const all = document.querySelectorAll('[data-role="assistant"]');
     if (all.length === 0) return null;
     const el = all[all.length - 1];
@@ -234,7 +244,10 @@
       // Before the snapshot: an in-flight chain belongs to the window that started it.
       closeChain();
       const f = window.__sb.frames;
-      const clampInfo = f && f.clamp ? f.clamp() : { clampMs: null, reason: "frames.js absent" };
+      const clampInfo =
+        f && f.clamp
+          ? f.clamp()
+          : { clampMs: null, reason: "frames.js absent" };
       const out = {
         sse_chunks: S.sseChunks,
         sse_chunks_attempted: true,
@@ -246,7 +259,8 @@
         streaming_ms_attempted: true,
         delta_task_ms: Math.round(S.deltaTaskMs * 10) / 10,
         delta_task_ms_attempted: true,
-        driver_elapsed_ms: elapsedMs === null || elapsedMs === undefined ? null : elapsedMs,
+        driver_elapsed_ms:
+          elapsedMs === null || elapsedMs === undefined ? null : elapsedMs,
         clamp_ms: clampInfo.clampMs === null ? null : clampInfo.clampMs,
       };
       if (clampInfo.clampMs === null || clampInfo.clampMs === undefined) {

@@ -4,13 +4,13 @@
 // "About Unsloth Docker Studio": the AGPLv3 license, copyright and source links.
 
 import {
-  JupyterFrontEnd,
-  JupyterFrontEndPlugin
-} from '@jupyterlab/application';
-import { Dialog, ICommandPalette, showDialog } from '@jupyterlab/apputils';
-import { IMainMenu } from '@jupyterlab/mainmenu';
-import { Widget } from '@lumino/widgets';
-import { UNSLOTH_LOGO_DATA_URI } from './logo';
+  type JupyterFrontEnd,
+  type JupyterFrontEndPlugin,
+} from "@jupyterlab/application";
+import { Dialog, ICommandPalette, showDialog } from "@jupyterlab/apputils";
+import { IMainMenu } from "@jupyterlab/mainmenu";
+import { Widget } from "@lumino/widgets";
+import { UNSLOTH_LOGO_DATA_URI } from "./logo";
 import {
   AGPL_NOTICE,
   AGPL_URL,
@@ -22,10 +22,10 @@ import {
   PRODUCT,
   SHORT_LABEL,
   SOURCE_URL,
-  WEBSITE_URL
-} from './branding';
+  WEBSITE_URL,
+} from "./branding";
 
-const COMMAND_ID = 'unsloth:about';
+const COMMAND_ID = "unsloth:about";
 
 /**
  * Trusted branding.ts constants only, so innerHTML has no injection surface, and
@@ -34,10 +34,10 @@ const COMMAND_ID = 'unsloth:about';
 function aboutBody(): Widget {
   const body = new Widget();
   const el = body.node;
-  el.style.textAlign = 'center';
-  el.style.padding = '4px 10px 10px';
-  el.style.maxWidth = '430px';
-  el.setAttribute('data-unsloth-attribution', PHRASE);
+  el.style.textAlign = "center";
+  el.style.padding = "4px 10px 10px";
+  el.style.maxWidth = "430px";
+  el.setAttribute("data-unsloth-attribution", PHRASE);
   el.innerHTML = `
     <img src="${UNSLOTH_LOGO_DATA_URI}" alt="Unsloth"
          style="height:64px;width:auto;margin:2px auto 10px;display:block;" />
@@ -61,31 +61,31 @@ function aboutBody(): Widget {
 }
 
 const aboutPlugin: JupyterFrontEndPlugin<void> = {
-  id: 'unsloth-jupyterlab:about',
-  description: 'About Unsloth Docker Studio (AGPLv3 attribution).',
+  id: "unsloth-jupyterlab:about",
+  description: "About Unsloth Docker Studio (AGPLv3 attribution).",
   autoStart: true,
   optional: [IMainMenu, ICommandPalette],
   activate: (
     app: JupyterFrontEnd,
     mainMenu: IMainMenu | null,
-    palette: ICommandPalette | null
+    palette: ICommandPalette | null,
   ): void => {
     app.commands.addCommand(COMMAND_ID, {
-      label: 'About ' + PRODUCT,
+      label: "About " + PRODUCT,
       execute: () =>
         showDialog({
-          title: 'About ' + PRODUCT,
+          title: "About " + PRODUCT,
           body: aboutBody(),
-          buttons: [Dialog.okButton({ label: 'Close' })]
-        })
+          buttons: [Dialog.okButton({ label: "Close" })],
+        }),
     });
     if (mainMenu) {
       mainMenu.helpMenu.addGroup([{ command: COMMAND_ID }], 20);
     }
     if (palette) {
-      palette.addItem({ command: COMMAND_ID, category: 'Help' });
+      palette.addItem({ command: COMMAND_ID, category: "Help" });
     }
-  }
+  },
 };
 
 export default aboutPlugin;

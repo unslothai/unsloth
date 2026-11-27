@@ -36,7 +36,9 @@ const OXLINT_ENTRY = join(TOOL_DIR, "node_modules", "oxlint", "bin", "oxlint");
 const OXLINT_FILE_ARGS_MAX_CHARS = 24_000;
 
 function mapLang(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "javascript" || normalized === "js") {
     return "js";
   }
@@ -53,7 +55,9 @@ function mapLang(value) {
 }
 
 function mapMode(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (VALIDATION_MODES.has(normalized)) {
     return normalized;
   }
@@ -62,11 +66,15 @@ function mapMode(value) {
 
 function mapBudgetMs(value) {
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : OXLINT_DEFAULT_BUDGET_MS;
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : OXLINT_DEFAULT_BUDGET_MS;
 }
 
 function mapCodeShape(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (CODE_SHAPES.has(normalized)) {
     return normalized;
   }
@@ -151,12 +159,16 @@ function normalizeParserError(error) {
     };
   }
   const code = typeof error.code === "string" ? error.code : null;
-  const message = String(error.message || error.reason || "").trim() || "Unknown parser error";
+  const message =
+    String(error.message || error.reason || "").trim() ||
+    "Unknown parser error";
   const severity = typeof error.severity === "string" ? error.severity : null;
   const labels = Array.isArray(error.labels)
     ? error.labels.map((label) => ({
         message:
-          label && typeof label === "object" && typeof label.message === "string"
+          label &&
+          typeof label === "object" &&
+          typeof label.message === "string"
             ? label.message
             : null,
         start:
@@ -169,7 +181,8 @@ function normalizeParserError(error) {
             : null,
       }))
     : [];
-  const codeframe = typeof error.codeframe === "string" ? error.codeframe : null;
+  const codeframe =
+    typeof error.codeframe === "string" ? error.codeframe : null;
   return {
     code,
     message,
@@ -184,10 +197,8 @@ function normalizeLintDiagnostic(diagnostic) {
     return null;
   }
 
-  const readString = (value) =>
-    typeof value === "string" ? value : null;
-  const readInt = (value) =>
-    Number.isInteger(value) ? value : null;
+  const readString = (value) => (typeof value === "string" ? value : null);
+  const readInt = (value) => (Number.isInteger(value) ? value : null);
   const asObject = (value) =>
     value && typeof value === "object" ? value : null;
 
@@ -196,7 +207,9 @@ function normalizeLintDiagnostic(diagnostic) {
     return null;
   }
 
-  const severityRaw = String(diagnostic.severity || "").trim().toLowerCase();
+  const severityRaw = String(diagnostic.severity || "")
+    .trim()
+    .toLowerCase();
   const severity = severityRaw === "error" ? "error" : "warning";
 
   const labels = [];
@@ -252,7 +265,10 @@ function syntaxResultFromErrors(errors) {
     isValid: errors.length === 0,
     errorCount: errors.length,
     warningCount: 0,
-    message: errors.slice(0, 3).map((error) => error.message).join(" | "),
+    message: errors
+      .slice(0, 3)
+      .map((error) => error.message)
+      .join(" | "),
     severity: first ? first.severity : null,
     code: first ? first.code : null,
     labels: first ? first.labels : [],
@@ -277,12 +293,7 @@ function runSyntaxParse(entry) {
       : [];
     return errors;
   } catch (error) {
-    return [
-      remapDiagnosticOffsets(
-        normalizeParserError(error),
-        entry.offset,
-      ),
-    ];
+    return [remapDiagnosticOffsets(normalizeParserError(error), entry.offset)];
   }
 }
 
@@ -433,7 +444,10 @@ function runLintBatch(entries, budgetMs, startedAtMs) {
         budgetMs - OXLINT_BUDGET_MARGIN_MS - (performance.now() - startedAtMs),
       );
       if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
-        return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
+        return fallbackLintResults(
+          entries,
+          "oxlint skipped: validation budget exhausted",
+        );
       }
       const oxlintArgs = [...oxlintBaseArgs, ...names];
       const exec = spawnSync(oxlintBin, oxlintArgs, {
@@ -541,10 +555,18 @@ function readStdin() {
   });
 }
 
-function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs, startedAtMs }) {
+function runValidation({
+  codes,
+  lang,
+  mode,
+  codeShape,
+  oxlintBudgetMs,
+  startedAtMs,
+}) {
   if (mode === "syntax") {
-    return codes.map((code, index) =>
-      validateSyntaxOne({ code, lang, index, codeShape }).result,
+    return codes.map(
+      (code, index) =>
+        validateSyntaxOne({ code, lang, index, codeShape }).result,
     );
   }
 
@@ -594,7 +616,14 @@ function validatePayload(payload, startedAtMs) {
   const codes = Array.isArray(payload?.codes) ? payload.codes : [];
   const oxlintBudgetMs = mapBudgetMs(payload?.timeout_ms);
   return JSON.stringify(
-    runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs, startedAtMs }),
+    runValidation({
+      codes,
+      lang,
+      mode,
+      codeShape,
+      oxlintBudgetMs,
+      startedAtMs,
+    }),
   );
 }
 

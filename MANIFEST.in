@@ -21,6 +21,7 @@ prune unsloth/kernels/moe/tests
 prune studio/frontend/public
 prune studio/frontend/src
 exclude studio/frontend/package-lock.json
+exclude studio/frontend/bun.lock
 
 # Desktop crate. `tauri build` reads these from a git checkout in
 # release-desktop.yml, never from the published wheel. src-tauri/icons is

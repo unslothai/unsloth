@@ -23,7 +23,11 @@
   const nextPaint = () =>
     window.__sbNextPaint
       ? window.__sbNextPaint()
-      : new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(performance.now()))));
+      : new Promise((r) =>
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => r(performance.now())),
+          ),
+        );
 
   // Last unconsumed keydown, so a key producing no character cannot anchor the next.
   const onKeyDown = (ev) => {
@@ -35,7 +39,13 @@
   const anchor = (now) => {
     const at = S.keyAt;
     S.keyAt = null;
-    if (typeof at !== "number" || !isFinite(at) || at <= 0 || at > now || now - at > 10000) {
+    if (
+      typeof at !== "number" ||
+      !isFinite(at) ||
+      at <= 0 ||
+      at > now ||
+      now - at > 10000
+    ) {
       S.unanchored += 1;
       return null;
     }
@@ -60,7 +70,8 @@
       S.samples.push({
         at_ms: Math.round(at * 10) / 10,
         latency_ms: Math.round((paintedAt - started) * 10) / 10,
-        input_delay_ms: keyAt === null ? null : Math.round((at - keyAt) * 10) / 10,
+        input_delay_ms:
+          keyAt === null ? null : Math.round((at - keyAt) * 10) / 10,
         paint_ms: Math.round((paintedAt - at) * 10) / 10,
         anchored_on: keyAt === null ? "input" : "keydown",
         value_length: lengthAt,
@@ -73,8 +84,10 @@
     // Resolved here so the driver can re-arm after the composer re-renders.
     arm(selector) {
       const el = document.querySelector(selector);
-      if (!el) return { armed: false, reason: "no element matched " + selector };
-      if (S.target && S.target !== el) S.target.removeEventListener("input", onInput, true);
+      if (!el)
+        return { armed: false, reason: "no element matched " + selector };
+      if (S.target && S.target !== el)
+        S.target.removeEventListener("input", onInput, true);
       S.target = el;
       S.baseline = el.value === undefined ? "" : el.value;
       S.samples = [];
@@ -93,14 +106,22 @@
 
     // Driver polls this instead of a fixed wait, which would drop the slowest keystroke.
     settled() {
-      return { pending: S.pending !== null, samples: S.samples.length, seen: S.seen };
+      return {
+        pending: S.pending !== null,
+        samples: S.samples.length,
+        seen: S.seen,
+      };
     },
 
     collect(expected) {
       const samples = S.samples.slice();
       const latencies = samples.map((s) => s.latency_ms).sort((a, b) => a - b);
       const at = (q) =>
-        latencies.length === 0 ? null : latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * q))];
+        latencies.length === 0
+          ? null
+          : latencies[
+              Math.min(latencies.length - 1, Math.floor(latencies.length * q))
+            ];
       const observedText = S.target ? S.target.value : null;
       const delays = samples
         .map((s) => s.input_delay_ms)
@@ -122,7 +143,11 @@
         // Unanchored samples understate the wait, so they are reported rather than blended in.
         unanchored: unanchored,
         input_delay_p95_ms:
-          delays.length === 0 ? null : delays[Math.min(delays.length - 1, Math.floor(delays.length * 0.95))],
+          delays.length === 0
+            ? null
+            : delays[
+                Math.min(delays.length - 1, Math.floor(delays.length * 0.95))
+              ],
         coalesced: S.dropped,
         p50_ms: at(0.5),
         p95_ms: at(0.95),
@@ -130,7 +155,10 @@
         // First sample is a cold outlier, reported separately since on a jammed page it is real.
         first_ms: samples.length === 0 ? null : samples[0].latency_ms,
         text_length: observedText === null ? null : observedText.length,
-        grew_by: observedText === null ? null : observedText.length - S.baseline.length,
+        grew_by:
+          observedText === null
+            ? null
+            : observedText.length - S.baseline.length,
       };
     },
 
