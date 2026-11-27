@@ -3291,9 +3291,11 @@ def _no_grad_sync(model):
         model.set_reshard_after_backward(False)
         if hasattr(model, "set_is_last_backward"):
             model.set_is_last_backward(False)
+    model.__dict__["_unsloth_ga_no_sync"] = True  # fsdp2_save._fsdp_grad_sync_deferred
     try:
         yield
     finally:
+        model.__dict__.pop("_unsloth_ga_no_sync", None)
         model.set_requires_gradient_sync(True)
         if defer:
             model.set_reshard_after_backward(True)
