@@ -14,7 +14,6 @@ SAVE_PY = Path(__file__).resolve().parents[1] / "unsloth" / "save.py"
 SAVE_SRC = SAVE_PY.read_text(encoding = "utf-8")
 SAVE_TREE = ast.parse(SAVE_SRC, filename = str(SAVE_PY))
 
-# Everything the gate needs; stdlib-only, so it runs without save.py's GPU import chain.
 _NAMES = (
     "ALLOWED_QUANTS",
     "IMATRIX_QUANTS",
@@ -44,7 +43,6 @@ def _gate():
 
 
 def _calls(func_name):
-    """(lineno, callee) for every call inside func_name, callee as `name` or `obj.attr`."""
     out = []
     for node in ast.walk(_node(func_name)):
         if isinstance(node, ast.Call):
@@ -97,11 +95,8 @@ def test_supported_quant_is_accepted(quantization_method, imatrix_file):
 
 def test_every_listed_quant_is_accepted():
     gate = _gate()
-    namespace = {}
-    for name in ("ALLOWED_QUANTS", "IMATRIX_QUANTS"):
-        exec(compile(ast.get_source_segment(SAVE_SRC, _node(name)), name, "exec"), namespace)
-    gate(list(namespace["ALLOWED_QUANTS"]), None)
-    gate(list(namespace["IMATRIX_QUANTS"]), True)
+    gate(list(gate.__globals__["ALLOWED_QUANTS"]), None)
+    gate(list(gate.__globals__["IMATRIX_QUANTS"]), True)
 
 
 def test_gate_runs_before_anything_is_merged_or_downloaded():

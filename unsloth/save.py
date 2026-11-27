@@ -228,8 +228,7 @@ IMATRIX_QUANTS = {
 
 
 def _check_quant_method(quant_method, has_imatrix):
-    """Raise unless llama-quantize can write `quant_method` (lowercase, aliases already resolved)."""
-    # IQ low-bit quants are only valid with an imatrix; other methods use the normal allow-list.
+    """`quant_method` is lowercased with aliases resolved; IQ quants need an imatrix."""
     if quant_method in IMATRIX_QUANTS:
         if not has_imatrix:
             raise RuntimeError(
@@ -4542,7 +4541,7 @@ def _preflight_merge_disk(
 
 
 def _normalize_quantization_methods(quantization_method):
-    """The list of GGUF types an export will actually write. Mirrors save_to_gguf's normalisation but cheaply and without validating, since this only feeds a size estimate: an unrecognised name is sized as q8_0 rather than rejected, and the real validation still happens later."""
+    """The list of GGUF types an export will actually write. Mirrors save_to_gguf's normalisation but cheaply and without validating, since this only feeds a size estimate: an unrecognised name is sized as q8_0 rather than rejected (`_check_gguf_quantization_methods` validates)."""
     if quantization_method is None:
         return []
     if isinstance(quantization_method, str):
@@ -4572,7 +4571,7 @@ def _imatrix_is_enabled(imatrix_file):
 
 
 def _check_gguf_quantization_methods(quantization_method, imatrix_file):
-    """save_to_gguf's quant gate, run before the 16-bit merge: a misspelt method or an IQ quant without an imatrix would otherwise fail only after the merge is written."""
+    """save_to_gguf's gate, run before the 16-bit merge so a bad method fails fast."""
     has_imatrix = _imatrix_is_enabled(imatrix_file)
     for quant_method in _normalize_quantization_methods(quantization_method):
         _check_quant_method(quant_method, has_imatrix)
