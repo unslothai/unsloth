@@ -26,6 +26,7 @@ __all__ = [
     "AdapterOffTeacher",
     "is_adapter_off_teacher",
     "resolve_teacher_model",
+    "check_teacher_tokenizer",
     "on_policy_distillation_advantages",
     "score_completion_logps",
     "forwards_are_collective",
@@ -201,6 +202,144 @@ def resolve_teacher_model(
             f"they are sharded by {' and '.join(refused)}. Use DDP or one GPU, or pass a separate teacher model."
         )
     return AdapterOffTeacher(model)
+
+
+_SKIP_TOKENIZER_CHECK = "UNSLOTH_DISTILLATION_SKIP_TOKENIZER_CHECK"
+
+
+def _text_tokenizer(processing_class):
+    """A processor's text tokenizer, or the tokenizer itself."""
+    inner = getattr(processing_class, "tokenizer", None)
+    if inner is not None and callable(getattr(inner, "get_vocab", None)):
+        return inner
+    return processing_class
+
+
+def _teacher_tokenizer_source(teacher):
+    """The hub id / folder a teacher was loaded from (``config._name_or_path``), or None."""
+    if isinstance(teacher, str):
+        return teacher or None
+    teacher = _unwrap(teacher)
+    config = getattr(teacher, "config", None)
+    if config is None:
+        config = getattr(
+            getattr(getattr(teacher, "base_model", None), "model", None), "config", None
+        )
+    source = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
+    return source if isinstance(source, str) and source else None
+
+
+def _added_tokens(tokenizer):
+    try:
+        return {
+            int(i): str(getattr(t, "content", t)) for i, t in tokenizer.added_tokens_decoder.items()
+        }
+    except Exception:
+        return {}
+
+
+def _token_diffs(
+    student,
+    teacher,
+    ignore = (),
+):
+    """Sorted ``(id, student token, teacher token)`` for every id the two mappings disagree on."""
+    s_by_id = {i: t for t, i in student.items() if t not in ignore}
+    t_by_id = {i: t for t, i in teacher.items()}
+    return [
+        (i, s_by_id.get(i), t_by_id.get(i))
+        for i in sorted(set(s_by_id) | set(t_by_id))
+        if s_by_id.get(i) != t_by_id.get(i)
+    ]
+
+
+def tokenizer_mismatches(student_tokenizer, teacher_tokenizer):
+    """``(errors, warnings)`` comparing token -> id maps, added tokens and the bos / eos / pad ids.
+
+    Errors: any token mapped to a different id (``get_vocab()`` includes added tokens), so the teacher's log-prob of
+    an id is about another string. A token only the student has that is its own pad token is ignored (Unsloth may add
+    one). Warnings: added-token registrations or bos / eos / pad ids that differ over the same vocabulary (a Base student of an Instruct teacher ends
+    turns with another token); the scored ids still mean the same strings."""
+    student = _text_tokenizer(student_tokenizer)
+    teacher = _text_tokenizer(teacher_tokenizer)
+    errors, notes = [], []
+    pad = getattr(student, "pad_token", None)
+    ignore = (pad,) if isinstance(pad, str) and pad not in teacher.get_vocab() else ()
+    diffs = _token_diffs(student.get_vocab(), teacher.get_vocab(), ignore)
+    if diffs:
+        shown = ", ".join(f"id {i}: student {s!r} vs teacher {t!r}" for i, s, t in diffs[:5])
+        more = f" (+{len(diffs) - 5} more)" if len(diffs) > 5 else ""
+        errors.append(f"{len(diffs)} token ids map to different tokens: {shown}{more}")
+    s_added, t_added = _added_tokens(student), _added_tokens(teacher)
+    added = sorted(
+        i
+        for i in set(s_added) | set(t_added)
+        if s_added.get(i) != t_added.get(i) and s_added.get(i) not in ignore
+    )
+    if added and not diffs:
+        # Same token -> id map, only the added / special registration differs: the scored ids mean the same strings.
+        shown = ", ".join(
+            f"id {i}: student {s_added.get(i)!r} vs teacher {t_added.get(i)!r}" for i in added[:5]
+        )
+        notes.append(f"added token registrations differ: {shown}")
+    for role in ("bos", "eos", "pad"):
+        s_id = getattr(student, f"{role}_token_id", None)
+        t_id = getattr(teacher, f"{role}_token_id", None)
+        if s_id is not None and t_id is not None and s_id != t_id:
+            notes.append(f"{role}_token_id student {s_id} vs teacher {t_id}")
+    return errors, notes
+
+
+def check_teacher_tokenizer(
+    teacher,
+    student_tokenizer,
+    who = "GRPOTrainer",
+):
+    """Refuse a separate teacher whose tokenizer maps ids to other tokens than the student's.
+
+    A vocab_size check alone passes Qwen2.5 vs Qwen3 (both 151936 rows; Qwen3 adds <think> / </think> and tool
+    tokens). Loads only the teacher's tokenizer files, from the folder / hub id its config was loaded from; when that
+    cannot be read the check is skipped with a warning. ``UNSLOTH_DISTILLATION_SKIP_TOKENIZER_CHECK=1`` skips it."""
+    if isinstance(teacher, dict):
+        for value in teacher.values():
+            check_teacher_tokenizer(value, student_tokenizer, who)
+        return
+    if teacher is None or isinstance(teacher, AdapterOffTeacher) or student_tokenizer is None:
+        return
+    if os.environ.get(_SKIP_TOKENIZER_CHECK, "0").strip().lower() in ("1", "true", "yes", "on"):
+        return
+    student = _text_tokenizer(student_tokenizer)
+    if not callable(getattr(student, "get_vocab", None)):
+        return
+    source = _teacher_tokenizer_source(teacher)
+    if source is None or source == getattr(student, "name_or_path", None):
+        return
+    import warnings
+
+    try:
+        from transformers import AutoTokenizer
+        teacher_tokenizer = AutoTokenizer.from_pretrained(source)
+    except Exception as error:
+        warnings.warn(
+            f"Unsloth: {who} could not load the teacher's tokenizer from {source!r} ({type(error).__name__}), so only "
+            "vocab_size was checked. Token ids must mean the same tokens to the student and the teacher.",
+            stacklevel = 2,
+        )
+        return
+    errors, notes = tokenizer_mismatches(student, teacher_tokenizer)
+    if errors:
+        raise ValueError(
+            f"Unsloth: {who} distillation needs the teacher to share the student's tokenizer, but the teacher "
+            f"tokenizer from {source!r} differs: {'; '.join(errors)}. The teacher's log-probs would score other "
+            "tokens than the student sampled. Use a teacher from the same tokenizer family, or set "
+            f"{_SKIP_TOKENIZER_CHECK}=1 to skip this check."
+        )
+    if notes:
+        warnings.warn(
+            f"Unsloth: {who} teacher tokenizer from {source!r} shares the student's vocabulary but its special "
+            f"tokens differ ({'; '.join(notes)}).",
+            stacklevel = 2,
+        )
 
 
 def on_policy_distillation_advantages(
@@ -621,6 +760,10 @@ def grpo_setup_distillation(trainer, teacher_model = None):
                 f"Unsloth: the student has vocab_size {s_vocab} but the teacher has {t_vocab}. On-policy distillation "
                 "compares per-token log-probs, so the teacher needs the student's tokenizer."
             )
+        student_tokenizer = getattr(trainer, "processing_class", None)
+        if student_tokenizer is None:
+            student_tokenizer = getattr(trainer, "tokenizer", None)
+        check_teacher_tokenizer(teacher, student_tokenizer, "GRPOTrainer")
     trainer._unsloth_distillation_teacher = teacher
     if terminal:
         trainer._unsloth_distillation_terminal_ids = _resolve_terminal_ids(trainer, terminal)
