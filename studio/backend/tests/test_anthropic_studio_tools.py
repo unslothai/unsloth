@@ -922,3 +922,34 @@ def test_client_calls_keep_their_position_in_the_replayed_turn(monkeypatch):
         hosted,
         {"type": "text", "text": "Working."},
     ]
+
+
+def test_anthropic_parallel_results_match_original_call_order():
+    from core.inference.anthropic_compat import anthropic_messages_to_openai
+
+    converted = anthropic_messages_to_openai(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "first", "name": "summarize", "input": {}},
+                    {"type": "tool_use", "id": "second", "name": "count", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "second", "content": "42"},
+                    {"type": "tool_result", "tool_use_id": "first", "content": "Summary"},
+                ],
+            },
+        ],
+        None,
+    )
+
+    results = [
+        (message["tool_call_id"], message["content"])
+        for message in converted
+        if message["role"] == "tool"
+    ]
+    assert results == [("first", "Summary"), ("second", "42")]
