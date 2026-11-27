@@ -8072,37 +8072,75 @@ def _override_places_tensor_on_device(
     extra_args: Optional[Iterable[str]] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """Whether an ``--override-tensor`` (argv or env) may put ``name`` on a device."""
-    source_env = os.environ if env is None else env
-    values: list[str] = []
-    env_value = str(source_env.get("LLAMA_ARG_OVERRIDE_TENSOR") or "").strip()
-    if env_value:
-        values.append(env_value)
-    args = [str(a) for a in extra_args or ()]
-    for i, raw in enumerate(args):
-        if _flag_name(raw) in {"-ot", "--override-tensor"}:
-            _, eq, inline = raw.partition("=")
-            value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-            if value:
-                values.append(value)
-    for value in values:
-        for part in value.split(","):
-            pattern, eq, target = part.rpartition("=")
-            if not eq or not pattern:
-                continue
-            on_host = _override_targets_host(f"{pattern}={target}")
-            if "[:" in pattern:
-                # A POSIX class is std::regex syntax Python reads literally: unknown, so a host
-                if not on_host:
-                    return True
-                continue
-            try:
-                if not re.search(pattern, name):
-                    continue
-            except re.error:
+    """Whether the first tensor override (env or argv) matching ``name`` may put it on a device; a
+    device pattern Python cannot read counts as a match."""
+    from core.inference.offload_layout import std_regex
+
+    for pattern, on_host in _main_tensor_overrides(extra_args, env):
+        regex = std_regex(pattern)
+        if regex is None:
+            if not on_host:
                 return True
+        elif regex.search(name):
             return not on_host
     return False
+
+
+def _main_tensor_overrides(
+    extra_args: Optional[Iterable[str]] = None,
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    n_cpu_moe: Optional[int] = None,
+) -> list[tuple[str, bool]]:
+    """The main model's ``(pattern, on_host)`` tensor overrides in llama.cpp's order: inherited env
+    by option (-ot, -cmoe, -ncmoe, -ncffn), Studio's ``--n-cpu-moe``, then argv. Draft flags place
+    the drafter and are not read."""
+    from core.inference.offload_layout import (
+        FFN_DENSE_OVERRIDE,
+        FFN_EXPS_OVERRIDE,
+        block_ffn_overrides,
+    )
+
+    source_env = os.environ if env is None else env
+    overrides: list[tuple[str, bool]] = []
+
+    def add_value(value: str) -> None:
+        # parse_tensor_buffer_overrides: comma-separated, split at the first '='.
+        for part in str(value).split(","):
+            # An empty pattern is a valid regex that matches every tensor.
+            pattern, eq, target = part.partition("=")
+            if eq:
+                overrides.append((pattern, _override_targets_host(f"x={target}")))
+
+    def add_count(raw: Optional[str], body: str) -> None:
+        try:
+            count = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return
+        overrides.extend((pattern, True) for pattern in block_ffn_overrides(count, body))
+
+    if source_env.get("LLAMA_ARG_OVERRIDE_TENSOR"):
+        add_value(source_env["LLAMA_ARG_OVERRIDE_TENSOR"])
+    if str(source_env.get("LLAMA_ARG_CPU_MOE") or "") in _LLAMA_ARG_TRUE_VALUES:
+        overrides.append((FFN_EXPS_OVERRIDE, True))
+    add_count(source_env.get("LLAMA_ARG_N_CPU_MOE"), FFN_EXPS_OVERRIDE)
+    add_count(source_env.get("LLAMA_ARG_N_CPU_FFN"), FFN_DENSE_OVERRIDE)
+    if n_cpu_moe:
+        add_count(str(n_cpu_moe), FFN_EXPS_OVERRIDE)
+    args = [str(a) for a in extra_args or ()]
+    for i, raw in enumerate(args):
+        flag = _flag_name(raw)
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        if flag in {"-ot", "--override-tensor"}:
+            add_value(value)
+        elif flag in _MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS:
+            overrides.append((FFN_EXPS_OVERRIDE, True))
+        elif flag in _CPU_MOE_COUNT_FLAGS:
+            add_count(value, FFN_EXPS_OVERRIDE)
+        elif flag in _CPU_FFN_COUNT_FLAGS:
+            add_count(value, FFN_DENSE_OVERRIDE)
+    return overrides
 
 
 @functools.lru_cache(maxsize = 8)
@@ -12146,6 +12184,36 @@ class LlamaCppBackend:
             logger.debug("GGUF tensor scan failed for %s (%s)", model_path, e)
             result = None
         self._gguf_tensor_scan_cache = (key, result)
+        return result
+
+    def _gguf_tensor_table(self, model_path: Optional[str]) -> "Optional[dict[str, int]]":
+        """Bytes of every tensor in the files llama-server reads, by name; cached per file
+        identity like ``_gguf_tensor_scan``. None when a shard is missing or unreadable."""
+        if not model_path:
+            return None
+        paths = self._gguf_files_read(model_path)
+        ple_path = self._ple_path_for(model_path)
+        try:
+            key = tuple((p, st.st_size, st.st_mtime_ns) for p in paths for st in (os.stat(p),))
+        except OSError:
+            return None
+        cached = getattr(self, "_gguf_tensor_table_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        try:
+            table: dict[str, int] = {}
+            for p in paths:
+                _arch, part, _experts = self._gguf_scan_tensor_bytes(p, also = lambda _name: True)
+                if p == ple_path:
+                    table.update(part)
+                    continue
+                for name, size in part.items():
+                    table[name] = table.get(name, 0) + size
+            result: Optional[dict[str, int]] = table
+        except Exception as e:  # unreadable or truncated: no table
+            logger.debug("GGUF tensor table read failed for %s (%s)", model_path, e)
+            result = None
+        self._gguf_tensor_table_cache = (key, result)
         return result
 
     def _unloaded_nextn_bytes(self, model_path: Optional[str]) -> int:

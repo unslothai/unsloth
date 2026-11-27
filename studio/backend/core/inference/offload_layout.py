@@ -408,3 +408,188 @@ def spill_pattern_for(layout: ModelLayout, indices: Optional[list[int]] = None) 
 
 
 LM_HEAD_PATTERN = r"^output\.weight$"
+
+
+# llama.cpp keeps its input layer on the host (llama_model::load_tensors: dev_input is the CPU).
+_INPUT_LAYER_TENSORS = frozenset(
+    {
+        "token_embd",
+        "position_embd",
+        "token_types",
+        "value_embd",
+        "per_layer_token_embd",
+        "masked_embd_centroids",
+        "masked_embd_ordering",
+        "mask_embd",
+    }
+)
+# Encoders whose src/models/*.cpp creates no output head, so token_embd is not loaded twice.
+_HEADLESS_ARCHS = frozenset(
+    {
+        "bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "neo-bert",
+        "modern-bert",
+        "eurobert",
+    }
+)
+# common.h LLM_FFN_EXPS_REGEX / LLM_FFN_DENSE_REGEX: what -cmoe, -ncmoe and -ncffn push.
+FFN_EXPS_OVERRIDE = r"\.ffn_(up|down|gate|gate_up)_(ch|)exps"
+FFN_DENSE_OVERRIDE = r"\.ffn_(up|down|gate)\."
+# The expert matrices llama_moe_cache_layer_experts reads; their scales do not decide caching.
+_CACHED_EXPERT_RE = re.compile(r"^blk\.\d+\.ffn_(gate_up|gate|up|down)_exps\.weight$")
+_POSIX_CLASSES = {
+    "alnum": "a-zA-Z0-9",
+    "alpha": "a-zA-Z",
+    "blank": r" \t",
+    "cntrl": r"\x00-\x1f\x7f",
+    "digit": "0-9",
+    "d": "0-9",
+    "graph": r"\x21-\x7e",
+    "lower": "a-z",
+    "print": r"\x20-\x7e",
+    "punct": r"!-/:-@\[-`{-~",
+    "space": r"\s",
+    "s": r"\s",
+    "upper": "A-Z",
+    "w": r"\w",
+    "xdigit": "0-9A-Fa-f",
+}
+_POSIX_CLASS_RE = re.compile(r"\[:([a-z]+):\]")
+
+
+# llama-hparams.h LLAMA_MAX_LAYERS: no model has more blocks for a count to name.
+_MAX_BLOCKS = 512
+
+
+def block_ffn_overrides(count: int, body: str) -> list[str]:
+    """The patterns ``--n-cpu-moe count`` (or ``--n-cpu-ffn``) pushes: blocks 0..count-1."""
+    return [rf"blk\.{i}{body}" for i in range(min(max(0, int(count)), _MAX_BLOCKS))]
+
+
+def std_regex(pattern: str) -> Optional[re.Pattern]:
+    """``pattern`` compiled to match as llama.cpp's std::regex does, or None if Python cannot."""
+
+    def posix(match: re.Match) -> str:
+        cls = _POSIX_CLASSES.get(match.group(1))
+        if cls is None:
+            raise re.error(f"unknown class [:{match.group(1)}:]")
+        return cls
+
+    try:
+        return re.compile(_POSIX_CLASS_RE.sub(posix, pattern))
+    except re.error:
+        return None
+
+
+@dataclass(frozen = True)
+class WeightPlacement:
+    """Where llama.cpp puts the main model's weights, per tensor."""
+
+    device_bytes: int
+    host_bytes: int
+    # Largest block's host weights: op offload copies them into the compute buffer.
+    host_staging_bytes: int
+    # False when an override is a pattern Python cannot read; it is skipped.
+    resolved: bool
+    duplicate_bytes: int = 0
+    host_expert_bytes: int = 0
+    host_head_bytes: int = 0
+
+
+def place_weights(
+    tensor_bytes: dict[str, int],
+    gpu_layers: Optional[int],
+    overrides: Sequence[tuple[str, bool]] = (),
+    architecture: Optional[str] = None,
+) -> Optional[WeightPlacement]:
+    """llama.cpp's placement of every main-model tensor: the first matching ``(pattern, on_host)``
+    override wins, else its layer. Layers offload from the back over the block indices present (a
+    looped GGUF names only its owners), the output layer at ``gpu_layers >= 1``; None offloads all.
+    Per-layer embedding tables are left to the lookup-table pricing. None without block tensors."""
+    blocks: dict[str, int] = {}
+    for name in tensor_bytes:
+        match = _BLOCK_RE.match(name)
+        if match:
+            blocks[name] = int(match.group(1))
+    if not blocks:
+        return None
+    rank = {index: r for r, index in enumerate(sorted(set(blocks.values())))}
+    n_owners = len(rank)
+    first_gpu = 0 if gpu_layers is None else max(n_owners + 1 - max(0, int(gpu_layers)), 0)
+    output_on_gpu = first_gpu <= n_owners
+
+    resolved = True
+    compiled: list[tuple[re.Pattern, bool]] = []
+    for pattern, on_host in overrides:
+        regex = std_regex(pattern)
+        if regex is not None:
+            compiled.append((regex, on_host))
+        else:
+            resolved = False
+
+    def on_host_by_override(name: str) -> Optional[bool]:
+        for regex, on_host in compiled:
+            if regex.search(name):
+                return on_host
+        return None
+
+    device = host = duplicate = 0
+    staged: dict[int, int] = {}
+    head = 0
+    experts: dict[int, list] = {}
+    tied_head = "output.weight" not in tensor_bytes and architecture not in _HEADLESS_ARCHS
+    for name, size in tensor_bytes.items():
+        size = int(size)
+        if is_per_layer_embedding(name):
+            continue
+        stem = name.split(".", 1)[0]
+        override = on_host_by_override(name)
+        if stem in _INPUT_LAYER_TENSORS:
+            # GET_ROWS is never offloaded, so never staged.
+            input_on_host = override is not False
+            if input_on_host:
+                host += size
+            else:
+                device += size
+            if name == "token_embd.weight" and tied_head:
+                head_on_host = override is True or (override is None and not output_on_gpu)
+                if head_on_host and output_on_gpu:
+                    head += size
+                # load_tensors reuses token_embd when the head lands in the same buffer type.
+                if head_on_host != input_on_host:
+                    duplicate += size
+                    if head_on_host:
+                        host += size
+                    else:
+                        device += size
+            continue
+        layer_on_gpu = rank[blocks[name]] >= first_gpu if name in blocks else output_on_gpu
+        on_device = override is False or (override is None and layer_on_gpu)
+        if on_device:
+            device += size
+        else:
+            host += size
+            if name in blocks:
+                staged[blocks[name]] = staged.get(blocks[name], 0) + size
+            elif output_on_gpu:
+                head += size
+        if name in blocks and layer_on_gpu and _CACHED_EXPERT_RE.match(name):
+            entry = experts.setdefault(blocks[name], [0, False])
+            if on_device:
+                entry[1] = True
+            else:
+                entry[0] += size
+    return WeightPlacement(
+        device_bytes = device,
+        host_bytes = host,
+        host_staging_bytes = max(staged.values(), default = 0),
+        resolved = resolved,
+        duplicate_bytes = duplicate,
+        # The cache takes a layer only when all of its experts are on the host.
+        host_expert_bytes = sum(b for b, any_on_device in experts.values() if not any_on_device),
+        host_head_bytes = head,
+    )

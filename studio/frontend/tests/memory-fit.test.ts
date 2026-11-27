@@ -219,7 +219,26 @@ test("the floor notes outrank every verdict, in their own order", () => {
   assert.match(drafter.advisory?.text ?? "", /remote draft model or vision component/);
   const moe = fit({ moeOffloadUnmodelled: true, gpuBytes: 8 * GB, totalBytes: 900 * GB }, {});
   assert.equal(moe.advisory?.tone, "muted");
-  assert.match(moe.advisory?.text ?? "", /Expert layers/);
+  assert.match(moe.advisory?.text ?? "", /tensor override is not reflected/);
+});
+
+test("a zero GPU figure with an unplaced override is not read as a CPU-only load", () => {
+  const zero = fit({ moeOffloadUnmodelled: true, gpuBytes: 0, totalBytes: 2 * GB }, {});
+  assert.equal(zero.cpuOnly, false);
+  assert.match(zero.advisory?.text ?? "", /tensor override is not reflected/);
+  const placed = fit({ gpuBytes: 0, totalBytes: 2 * GB }, {});
+  assert.equal(placed.cpuOnly, true);
+});
+
+test("an unplaced override leaves the host share unjudged, not the combined capacity", () => {
+  const ram8 = { systemRamCapacityGb: 8, usableSystemRamGb: 8, totalCapacityGb: 32 };
+  const unknown = fit({ moeOffloadUnmodelled: true, gpuBytes: 0, totalBytes: 9 * GB }, ram8);
+  assert.equal(unknown.hostShareFit, "unknown");
+  assert.notEqual(unknown.totalFit, "exceeds");
+  const known = fit({ gpuBytes: 0.5 * GB, totalBytes: 9 * GB }, ram8);
+  assert.equal(known.hostShareFit, "exceeds");
+  const beyond = fit({ moeOffloadUnmodelled: true, gpuBytes: 0, totalBytes: 40 * GB }, ram8);
+  assert.equal(beyond.totalFit, "exceeds");
 });
 
 test("the floor marker follows either unsizable case", () => {

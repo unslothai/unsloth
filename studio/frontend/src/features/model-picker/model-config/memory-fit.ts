@@ -238,8 +238,12 @@ export function resolveMemoryFit(
   capacity: MemoryFitCapacity,
 ): MemoryFitResult {
   const { singleMemoryPool } = capacity;
+  // An unplaced override may still put weights on a card, so a zero GPU figure proves nothing then.
   const cpuOnly =
-    !singleMemoryPool && estimate.gpuBytes === 0 && estimate.totalBytes > 0;
+    !singleMemoryPool &&
+    estimate.gpuBytes === 0 &&
+    estimate.totalBytes > 0 &&
+    !estimate.moeOffloadUnmodelled;
   const { gpuBytes, totalBytes, contextShrinks } = autoContextFigures(
     estimate,
     capacity,
@@ -278,10 +282,11 @@ export function resolveMemoryFit(
   const hostPressured =
     usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit = rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
-  // The host share must fit host RAM on its own; unused VRAM cannot hold it. Skipped for one pool.
-  const hostShareFit: MemoryFitVerdict = singleMemoryPool
-    ? "unknown"
-    : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
+  // The host share must fit host RAM on its own; unknown for one pool or an unplaced override.
+  const hostShareFit: MemoryFitVerdict =
+    singleMemoryPool || estimate.moeOffloadUnmodelled
+      ? "unknown"
+      : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
   const combinedFit = classifyMemoryFit(
     totalBytes,
     capacity.totalCapacityGb,
@@ -395,7 +400,7 @@ export function resolveMemoryAdvisory(
   if (estimate.moeOffloadUnmodelled && !verdicts.cpuOnly) {
     return {
       tone: "muted",
-      text: "Expert layers on the CPU are not reflected here. GPU usage may be lower.",
+      text: "A tensor override is not reflected here, so GPU usage may be higher or lower.",
     };
   }
   if (verdicts.cpuOnly) {

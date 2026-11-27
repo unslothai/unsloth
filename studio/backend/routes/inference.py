@@ -15126,6 +15126,7 @@ class _GgufMemoryBreakdown(NamedTuple):
     kv_checkpoint_bytes: int = 0
     lookup_table_bytes: int = 0
     lookup_table_on_disk: bool = False
+    placement_unmodelled: bool = False
 
 
 def _gguf_offloaded_layer_fraction(
@@ -15136,15 +15137,33 @@ def _gguf_offloaded_layer_fraction(
     *,
     device_pin_governs: bool = False,
 ) -> float:
-    """Share of weights kept on GPU in [0,1]: Auto 1.0; Manual --gpu-layers over block_count+1; an extras -ngl wins; --n-cpu-moe not modelled, reads high."""
+    """Share of layers kept on GPU in [0,1]: Auto 1.0; Manual --gpu-layers over block_count+1; an extras -ngl wins."""
     from core.inference.llama_cpp import _device_selection_is_cpu
-    from core.inference.llama_server_args import parse_gpu_layers_override
 
     # A --device naming no GPU beats every layer count; same predicate as the loader.
     if not device_pin_governs and (
         _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu()
     ):
         return 0.0
+    gpu_layers = _gguf_requested_gpu_layers(gpu_memory_mode, gpu_layers, extras)
+    if gpu_layers is None:
+        return 1.0
+    if gpu_layers == 0:
+        # Before the layer count: zero needs none, and an unreadable header must not mean 1.0 here.
+        return 0.0
+    if not layer_count or layer_count <= 0:
+        # No dims to scale against; 1.0 keeps it consistent with Auto.
+        return 1.0
+    return max(0.0, min(1.0, gpu_layers / float(layer_count + 1)))
+
+
+def _gguf_requested_gpu_layers(
+    gpu_memory_mode: Optional[str],
+    gpu_layers: Optional[int],
+    extras: Optional[list[str]] = None,
+) -> Optional[int]:
+    """The --gpu-layers the launch runs, None for every layer: an extras -ngl wins, and Auto offloads every layer unless an inherited LLAMA_ARG_N_GPU_LAYERS fixes a count."""
+    from core.inference.llama_server_args import parse_gpu_layers_override
 
     try:
         override = parse_gpu_layers_override(extras)
@@ -15157,21 +15176,15 @@ def _gguf_offloaded_layer_fraction(
         # Auto emits no -ngl, so an inherited LLAMA_ARG_N_GPU_LAYERS fixes layers and fit.cpp won't override.
         from core.inference.llama_cpp import _env_fixes_gpu_layers
         if not _env_fixes_gpu_layers(os.environ):
-            return 1.0
+            return None
         try:
             gpu_layers = int(str(os.environ.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip())
         except ValueError:
             # llama.cpp's std::stoi would throw and the child never starts.
-            return 1.0
+            return None
     if gpu_layers is None or gpu_layers < 0:
-        return 1.0
-    if gpu_layers == 0:
-        # Before the layer count: zero needs none, and an unreadable header must not mean 1.0 here.
-        return 0.0
-    if not layer_count or layer_count <= 0:
-        # No dims to scale against; 1.0 keeps it consistent with Auto.
-        return 1.0
-    return max(0.0, min(1.0, gpu_layers / float(layer_count + 1)))
+        return None
+    return gpu_layers
 
 
 def _probe_backend():
@@ -15702,6 +15715,10 @@ def _tensor_latches_allow_a_split(
         return True
 
 
+# GGUF header bytes outside the tensor table: measured 6 to 15 MiB on real quants.
+_TENSOR_TABLE_HEADER_SLACK = 64 * 1024 * 1024
+
+
 def _gguf_memory_breakdown(
     config: ModelConfig,
     gguf_path: str,
@@ -15727,6 +15744,7 @@ def _gguf_memory_breakdown(
     # A GPU pin owns placement: load_model strips device flags and env before launch.
     device_pin_governs: bool = False,
     selected_gpu_ids: Optional[list[int]] = None,
+    n_cpu_moe: Optional[int] = None,
 ) -> Optional[_GgufMemoryBreakdown]:
     """None if nothing sizes. Files are cached; the KV and compute buffers are re-derived per call."""
     from core.inference.llama_server_args import (
@@ -16172,13 +16190,100 @@ def _gguf_memory_breakdown(
         projector_runtime_bytes = int(mmproj_bytes * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
         if _resolved_mmproj_offload(llama_extra_args) is False:
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
+    # A device -ot places weights even at 0 layers if the child sees a GPU: Manual zero layers hides
+    # CUDA/ROCm cards unless a --device pin, tensor mode or GPU projector keeps them; Vulkan never.
+    placement = None
+    placement_unmodelled = False
+    _pl_gpu_visible = device_pin_governs or not (
+        _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu()
+    )
+    if _pl_gpu_visible and gpu_fraction == 0.0 and gpu_memory_mode == "manual":
+        _pl_gpu_visible = bool(
+            LlamaCppBackend._is_vulkan_backend()
+            or LlamaCppBackend._cmd_has_gpu_device_pin(_lt_extras, _lt_env)
+            or tensor_parallel
+            or companion_bytes > host_companion_bytes
+        )
+    if _pl_gpu_visible:
+        from core.inference.llama_cpp import _main_tensor_overrides
+        from core.inference.offload_layout import place_weights
+
+        _pl_env = dict(os.environ)
+        _pl_n_cpu_moe = None
+        if gpu_memory_mode == "manual":
+            LlamaCppBackend._clear_manual_placement_env(_pl_env)
+            if n_cpu_moe and gpu_layers is not None and gpu_layers >= 0:
+                _pl_n_cpu_moe = LlamaCppBackend._resolve_cpu_moe_flag(
+                    int(n_cpu_moe), probe.n_moe_layers, probe._leading_dense_block_count or 0
+                )
+        _pl_overrides = _main_tensor_overrides(extras, _pl_env, n_cpu_moe = _pl_n_cpu_moe)
+        try:
+            _pl_table = _lt_backend._gguf_tensor_table(gguf_path)
+        except Exception:  # noqa: BLE001 -- unread header: the layer share below
+            _pl_table = None
+        # A table further off the priced bytes than the header is not this load: use the layer share.
+        if _pl_table and abs(main_bytes - sum(_pl_table.values())) > _TENSOR_TABLE_HEADER_SLACK:
+            _pl_table = None
+        placement = place_weights(
+            _pl_table or {},
+            _gguf_requested_gpu_layers(gpu_memory_mode, gpu_layers, extras),
+            _pl_overrides,
+            architecture = getattr(probe, "_architecture", None),
+        )
+        # Without a tensor table the share below ignores every override.
+        placement_unmodelled = (
+            not placement.resolved if placement is not None else bool(_pl_overrides)
+        )
+    moe_cache_bytes = 0
+    if placement is not None and placement.host_expert_bytes and gpu_fraction > 0.0:
+        from core.inference.llama_server_args import _last_flag_value
+
+        try:
+            _mc_raw = _last_flag_value(extras, frozenset({"--moe-cache-mib"}))
+        except ValueError:
+            _mc_raw = None
+        if _mc_raw is None:
+            _mc_raw = os.environ.get("LLAMA_ARG_MOE_CACHE_MIB")
+        try:
+            # "auto" (or -1) is sized by llama.cpp's fitter from the VRAM left after the fit.
+            _mc_mib = int(str(_mc_raw).strip())
+        except (TypeError, ValueError):
+            _mc_mib = 0
+        if _mc_mib > 0:
+            moe_cache_bytes = min(_mc_mib * 1024 * 1024, placement.host_expert_bytes)
+    if placement is not None:
+        main_gpu_bytes = placement.device_bytes + moe_cache_bytes
+        weights_bytes += placement.duplicate_bytes + moe_cache_bytes
+    else:
+        main_gpu_bytes = int((main_bytes - lookup_table_bytes - _lt_device_bytes) * gpu_fraction)
     gpu_weights = (
-        int((main_bytes - lookup_table_bytes - _lt_device_bytes) * gpu_fraction)
+        main_gpu_bytes
         + _lt_device_bytes
         + int(adapter_bytes * gpu_fraction)
         + companion_bytes
         - host_companion_bytes
     )
+    # Op offload copies host weights into the compute buffer, reused split by split.
+    host_staging_bytes = 0
+    if placement is not None and gpu_fraction > 0.0:
+        from core.inference.llama_server_args import _flag_name
+
+        try:
+            _op_min_batch = int(os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH") or 32)
+        except ValueError:
+            _op_min_batch = 32
+        _op_offload = True
+        for _token in extras:
+            _flag = _flag_name(str(_token))
+            if _flag in {"--op-offload", "--no-op-offload"}:
+                _op_offload = _flag == "--op-offload"
+        _ubatch = runtime.n_ubatch or 512
+        if _op_offload and _ubatch >= _op_min_batch:
+            host_staging_bytes = placement.host_staging_bytes
+        # A CPU-held head stages once slots x (draft + 1) output rows reach the threshold; the draft
+        # depth is unknown here, so charge it as an upper bound. Pooled embeddings never run it.
+        if _op_offload and _ubatch >= _op_min_batch and not probe.is_embedding_gguf:
+            host_staging_bytes = max(host_staging_bytes, placement.host_head_bytes)
     # --spec-draft-hf drafter: cache unsized without a local header, so the total is a floor.
     drafter_kv_unsized = bool(
         ((host_drafter_bytes or gpu_drafter_bytes) and not charged_drafter)
@@ -16187,8 +16292,9 @@ def _gguf_memory_breakdown(
         # Extras' --spec-draft-hf repo is uncharged; listing it per settings change would hit the network.
         or bool(_extra_args_mtp_draft_source(extras)[1])
     )
+    compute_bytes = runtime.compute_bytes + host_staging_bytes
     runtime_bytes = (
-        runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes + projector_runtime_bytes
+        runtime.kv_bytes + compute_bytes + drafter_runtime_bytes + projector_runtime_bytes
     )
 
     # -nkvo puts the cache in host RAM.
@@ -16199,7 +16305,7 @@ def _gguf_memory_breakdown(
     gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
-        gpu_bytes += runtime.compute_bytes
+        gpu_bytes += compute_bytes
     # A separate drafter ignores --gpu-layers; an embedded head goes where the target goes.
     _drafter_on_gpu = (gpu_fraction > 0.0) if embedded_mtp else drafter_on_gpu
     drafter_runtime_gpu_bytes = (
@@ -16224,7 +16330,7 @@ def _gguf_memory_breakdown(
     return _GgufMemoryBreakdown(
         weights_bytes = weights_bytes,
         kv_bytes = runtime.kv_bytes,
-        compute_bytes = runtime.compute_bytes,
+        compute_bytes = compute_bytes,
         drafter_runtime_bytes = drafter_runtime_bytes,
         drafter_runtime_gpu_bytes = drafter_runtime_gpu_bytes,
         projector_runtime_bytes = projector_runtime_bytes,
@@ -16242,6 +16348,7 @@ def _gguf_memory_breakdown(
         kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
         lookup_table_bytes = lookup_table_bytes,
         lookup_table_on_disk = lookup_table_on_disk,
+        placement_unmodelled = placement_unmodelled,
     )
 
 
@@ -22976,7 +23083,6 @@ async def estimate_memory(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     await _require_drafter_access(request)
-    from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         strip_split_mode_only,
@@ -23090,6 +23196,7 @@ async def estimate_memory(
             tensor_split_possible = _tensor_split_possible(request.selected_gpu_ids or None),
             # A pin names the cards; the launch strips conflicting device flags.
             device_pin_governs = bool(request.selected_gpu_ids),
+            n_cpu_moe = request.n_cpu_moe,
             selected_gpu_ids = pinned_gpu_ids,
         )
         breakdown = price(n_ctx = request.n_ctx or 0)
@@ -23132,14 +23239,7 @@ async def estimate_memory(
             ),
             floor_can_offload = context_floor is not None and context_floor.can_offload,
             context_is_pinned = context_floor is None,
-            moe_offload_unmodelled = bool(
-                (request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0)
-                # Outside Manual extras keep expert-placement flags (-ncmoe, -cmoe, -ot); /load strips them only on Manual, where the field owns them.
-                or (
-                    request.gpu_memory_mode != "manual"
-                    and _args_place_tensors_on_cpu(request.llama_extra_args)
-                )
-            ),
+            moe_offload_unmodelled = breakdown.placement_unmodelled,
         )
         return EstimateMemoryResponse(**project_estimate_memory_response(estimate))
 
