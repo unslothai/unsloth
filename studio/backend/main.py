@@ -37,6 +37,15 @@ try:
 except Exception:
     pass
 
+# Windows ROCm: PAL_DISABLE_SDMA=1 before HIP initialises (rocm-systems#12571 stale copy after an event record).
+try:
+    from utils.rocm_pal_env import (
+        apply_windows_rocm_pal_defaults as _apply_windows_rocm_pal_defaults,
+    )
+    _apply_windows_rocm_pal_defaults()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -1401,6 +1410,16 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
+def _modelscope_page_links() -> dict:
+    from utils.hub_settings import MODELSCOPE
+
+    if _active_hub_source() != MODELSCOPE:
+        return {}
+    from hub.modelscope.upstream import page_links
+
+    return {"modelscope_pages": page_links()}
+
+
 _CSP_CACHE: dict = {}
 
 
@@ -2562,6 +2581,7 @@ async def health_check(request: Request, detect_hardware: bool = False):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint.
         **_reportable_hf_endpoints(request),
         "hub_source": _active_hub_source(),
+        **_modelscope_page_links(),
         "hub_proxy": _hub_endpoint_proxy.relay_path(
             _hub_endpoint_proxy.HUB_PREFIX,
             browser_hf_endpoint(),

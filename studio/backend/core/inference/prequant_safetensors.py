@@ -147,9 +147,10 @@ def load_plain_prequant_safetensors(
     *,
     device: str = "cpu",
     skip_names: Iterable[str] = (),
+    skip_prefixes: tuple = (),
 ) -> dict:
     """Reads plain-tensor prequant file without torchao; refuses subclass metadata and unlisted
-    tensors; skip_names are validated but never read."""
+    tensors; skip_names and names starting with a skip_prefixes entry are validated but never read."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:
@@ -181,8 +182,11 @@ def load_plain_prequant_safetensors(
             if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
                 raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
         skip = frozenset(skip_names)
+        prefixes = tuple(skip_prefixes)
         state_dict = {
-            name: _unviewed(handle.get_tensor(name)) for name in names if name not in skip
+            name: _unviewed(handle.get_tensor(name))
+            for name in names
+            if name not in skip and not (prefixes and name.startswith(prefixes))
         }
         state_dict.update(
             (key[len(UNSLOTH_ROOT_PREFIX) :], _unviewed(handle.get_tensor(key))) for key in roots

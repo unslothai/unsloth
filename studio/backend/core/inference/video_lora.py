@@ -24,7 +24,13 @@ _A_SUFFIXES = (".lora_A.weight", ".lora_A.default.weight", ".lora_down.weight")
 _B_SUFFIXES = (".lora_B.weight", ".lora_B.default.weight", ".lora_up.weight")
 _DENOISER_COMPONENTS = frozenset({"transformer", "transformer_2", "transformer_ref"})
 # Wan's original module names (the lightx2v / kohya adapters) -> diffusers WanTransformer3DModel's.
-_WAN_NATIVE_MODULE = re.compile(r"^(blocks\.\d+\.)(self_attn|cross_attn|ffn)\.(q|k|v|o|0|2)$")
+_WAN_NATIVE_MODULE = re.compile(
+    r"^(blocks\.\d+\.)(self_attn|cross_attn|ffn)\.(q|k|v|o|k_img|v_img|0|2)$"
+)
+# musubi-tuner's default Wan format: lora_unet_blocks_N_self_attn_q.
+_WAN_MUSUBI_MODULE = re.compile(
+    r"^lora_unet_blocks_(\d+)_(self_attn|cross_attn|ffn)_(q|k|v|o|k_img|v_img|0|2)$"
+)
 _WAN_NATIVE_LEAF = {
     ("self_attn", "q"): "attn1.to_q",
     ("self_attn", "k"): "attn1.to_k",
@@ -34,14 +40,76 @@ _WAN_NATIVE_LEAF = {
     ("cross_attn", "k"): "attn2.to_k",
     ("cross_attn", "v"): "attn2.to_v",
     ("cross_attn", "o"): "attn2.to_out.0",
+    ("cross_attn", "k_img"): "attn2.add_k_proj",
+    ("cross_attn", "v_img"): "attn2.add_v_proj",
     ("ffn", "0"): "ffn.net.0.proj",
     ("ffn", "2"): "ffn.net.2",
 }
 
 
+# MiniMax-H3 LoRAs in the community layout name the original modules: fused attn.qkv_proj, gated mlp.fc1, out_proj,
+# fc2 and adaln_proj.linear. They map onto the diffusers denoiser by the row map its weight loader already uses.
+_H3_FAMILY = "minimax-h3"
+_H3_COMMUNITY_MODULE = re.compile(
+    r"^(?:blocks\.\d+\.(?:attn\.(?:qkv_proj|out_proj)|mlp\.(?:fc1|fc2)|adaln_proj\.linear)"
+    r"|token_refiner\.blocks\.\d+\.(?:attn\.(?:qkv_proj|out_proj)|mlp\.(?:fc1|fc2)))$"
+)
+
+
+_H3_COMMUNITY_RENAMES = (
+    (".attn.out_proj", ".attn.to_out.0"),
+    (".mlp.fc2", ".ff.net.2"),
+)
+
+
+def h3_community_key_map(module: str, rows: int) -> list:
+    """``[(diffusers module, B row slices or None)]`` for one community-layout H3 module with ``rows`` output rows:
+    fused qkv splits by thirds into to_q / to_k / to_v, gated fc1 [gate; value] becomes ff.net.0.proj [value; gate]."""
+    if module.startswith("token_refiner.blocks."):
+        name = "token_refiner.refiner_blocks." + module[len("token_refiner.blocks.") :]
+    else:
+        name = "transformer_blocks." + module[len("blocks.") :]
+    for old, new in _H3_COMMUNITY_RENAMES:
+        if name.endswith(old):
+            name = name[: -len(old)] + new
+    if name.endswith(".attn.qkv_proj"):
+        if rows % 3:
+            raise ValueError(f"{module}: fused qkv with {rows} rows is not three equal projections")
+        third = rows // 3
+        stem = name[: -len("qkv_proj")]
+        return [
+            (f"{stem}{part}", [(i * third, third)])
+            for i, part in enumerate(("to_q", "to_k", "to_v"))
+        ]
+    if name.endswith(".mlp.fc1"):
+        if rows % 2:
+            raise ValueError(f"{module}: gated fc1 with an odd row count {rows}")
+        half = rows // 2
+        return [(name[: -len(".mlp.fc1")] + ".ff.net.0.proj", [(half, half), (0, half)])]
+    return [(name, None)]
+
+
+def _h3_community_targets(module: str, b: Any) -> Optional[list]:
+    """``[(diffusers module, B)]`` for a community-layout H3 module, else None; A is shared by every split."""
+    if not _H3_COMMUNITY_MODULE.match(module):
+        return None
+    import torch
+
+    return [
+        (key, b if rows is None else torch.cat([b[s : s + n] for (s, n) in rows], dim = 0))
+        for key, rows in h3_community_key_map(module, int(b.shape[0]))
+    ]
+
+
 def _diffusers_module_name(module: str) -> str:
-    """``module`` in diffusers naming: a Wan original block projection is renamed, anything else is unchanged."""
+    """Rename a Wan original (dotted or musubi-flattened) block projection to diffusers; else unchanged."""
     hit = _WAN_NATIVE_MODULE.match(module)
+    if hit is None:
+        musubi = _WAN_MUSUBI_MODULE.match(module)
+        if musubi is not None:
+            block, group, proj = musubi.groups()
+            leaf = _WAN_NATIVE_LEAF.get((group, proj))
+            return f"blocks.{block}.{leaf}" if leaf else module
     leaf = _WAN_NATIVE_LEAF.get((hit.group(2), hit.group(3))) if hit else None
     return hit.group(1) + leaf if leaf else module
 
@@ -357,10 +425,11 @@ def _pattern_value(patterns: Any, module: str, default: Any) -> Any:
     return default
 
 
-def read_deltas(files: Iterable[tuple[str, float]]) -> dict:
+def read_deltas(files: Iterable[tuple[str, float]], *, family: Optional[str] = None) -> dict:
     """``{module path: [(A, B, scale * weight), ...]}`` for ``[(path, weight), ...]`` diffusers / PEFT LoRA files.
     Scale is ``lora_alpha / r`` from the file's adapter config (``/ sqrt(r)`` under rsLoRA), else from ``.alpha``
-    keys, else from the Studio trainer sidecar, else 1 (alpha = r, as diffusers reads such a file)."""
+    keys, else from the Studio trainer sidecar, else 1 (alpha = r, as diffusers reads such a file). ``family``
+    ``minimax-h3`` also maps the community layout (fused qkv, gated fc1) onto the diffusers module names."""
     from safetensors.torch import load_file
 
     out: dict = {}
@@ -402,7 +471,9 @@ def read_deltas(files: Iterable[tuple[str, float]]) -> dict:
                     or rank
                 )
             scale = alpha / (math.sqrt(rank) if meta.get("use_rslora") else rank)
-            out.setdefault(module, []).append((a, b, scale * float(weight)))
+            split = _h3_community_targets(module, b) if family == _H3_FAMILY else None
+            for target, part in split if split is not None else ((module, b),):
+                out.setdefault(target, []).append((a, part, scale * float(weight)))
     return out
 
 
@@ -421,13 +492,14 @@ def bake_into_module_(
     *,
     device: Any = None,
     label: str = "denoiser",
+    family: Optional[str] = None,
 ) -> int:
     """Add every LoRA delta in ``files`` to ``module``'s dense Linear weights in place (parameter identity kept);
     returns the number of layers merged. Every adapted layer must exist and hold a plain float weight, else nothing
     is merged and ValueError says why: a partial bake would be a silently different model."""
     import torch
 
-    deltas = read_deltas(files)
+    deltas = read_deltas(files, family = family)
     params = dict(module.named_parameters())
     missing = [m for m in deltas if f"{m}.weight" not in params]
     if missing:
@@ -495,3 +567,16 @@ def baked_lora_specs(pipe: Any) -> list[dict]:
     if pipe is None or not getattr(pipe, LORAS_BAKED_ATTR, False):
         return []
     return [{"id": i, "weight": w} for (i, w) in getattr(pipe, BAKED_SPECS_ATTR, ()) or ()]
+
+
+# ``lora_fuse`` status of a video load (the images status field, one value here): every video LoRA merges into the
+# dense bf16 denoiser at load, so a load with adapters is always fused.
+LORA_FUSE_BAKED = "baked"
+
+
+def lora_fuse_status(pipe: Any) -> Optional[str]:
+    """``baked`` when the load merged adapters into the denoiser, else None. Never raises."""
+    try:
+        return LORA_FUSE_BAKED if baked_lora_names(pipe) else None
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None

@@ -21,6 +21,8 @@ import datetime
 import functools
 import logging
 import os
+import threading
+import time
 
 import torch
 
@@ -97,6 +99,82 @@ def _dist():
 
 
 _SAVE_COUNTER = {}
+
+
+# Each rank counts the writer handshakes it has finished (after its last store access for one) under
+# one store key per handshake index. Rank 0 hosts the default TCPStore, so when rank 0 returns from a
+# save and its process exits (or destroys the process group), a rank still between its store reads
+# would hit a closed store. A background thread on rank 0 holds the store and keeps the process
+# alive at exit until every rank has counted rank 0's latest handshake. Every rank of the world takes
+# part in each save, so the indices line up; a rank that never catches up delays rank 0's exit by at
+# most UNSLOTH_FSDP2_SAVE_EXIT_WAIT seconds, and never delays a save.
+_HANDSHAKE_PREFIX = "unsloth_fsdp2_handshake_done_"
+_STORE_GUARD = {
+    "lock": threading.Lock(),
+    "store": None,
+    "count": 0,
+    "deadline": 0.0,
+    "thread": None,
+}
+
+
+def _exit_wait_seconds():
+    try:
+        return max(0.0, float(os.environ.get("UNSLOTH_FSDP2_SAVE_EXIT_WAIT", 300)))
+    except ValueError:
+        return 300.0
+
+
+def _keep_store_for_readers(store, world):
+    delay = 0.002
+    while True:
+        with _STORE_GUARD["lock"]:
+            key = _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"])
+        try:
+            done = store.add(key, 0) >= world
+        except Exception:
+            done = True  # the store is gone already: nothing left to keep alive
+        with _STORE_GUARD["lock"]:
+            if (
+                _STORE_GUARD["store"] is not store  # the process group was re-initialized
+                or (done and key == _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"]))
+                or time.monotonic() >= _STORE_GUARD["deadline"]
+            ):
+                if _STORE_GUARD["thread"] is threading.current_thread():
+                    _STORE_GUARD["thread"] = None
+                return
+        time.sleep(delay)
+        delay = min(delay * 2, 0.1)
+
+
+def _handshake_done(dist, store):
+    """Every rank, after its last store access of a writer handshake (any outcome)."""
+    with _STORE_GUARD["lock"]:
+        if _STORE_GUARD["store"] is not store:
+            # A new process group: a guard still running for the old store does not cover this one.
+            _STORE_GUARD.update(store = store, count = 0, thread = None)
+        _STORE_GUARD["count"] += 1
+        key = _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"])
+    try:
+        store.add(key, 1)
+        world = dist.get_world_size()
+        if dist.get_rank() != 0 or world < 2:
+            return
+    except Exception:
+        return
+    with _STORE_GUARD["lock"]:
+        _STORE_GUARD["deadline"] = time.monotonic() + _exit_wait_seconds()
+        if _STORE_GUARD["thread"] is not None:
+            return
+        # Not a daemon: interpreter shutdown joins it, so rank 0 outlives every reader.
+        thread = threading.Thread(
+            target = _keep_store_for_readers,
+            args = (store, world),
+            name = "unsloth_fsdp2_store_guard",
+            daemon = False,
+        )
+        _STORE_GUARD["thread"] = thread
+        thread.start()
 
 
 def _save_timeout():
@@ -268,12 +346,18 @@ def _wait_for_writer(
             )
         return
     if writer:
-        store.set(key, "done" if failed is None else "failed:" + _failure_text(failed))
+        try:
+            store.set(key, "done" if failed is None else "failed:" + _failure_text(failed))
+        finally:
+            _handshake_done(dist, store)
         return
-    store.wait([key], _save_timeout())
-    if failed is not None:
-        return  # this rank's own error is already on its way out
-    value = store.get(key)
+    try:
+        store.wait([key], _save_timeout())
+        if failed is not None:
+            return  # this rank's own error is already on its way out
+        value = store.get(key)
+    finally:
+        _handshake_done(dist, store)
     if value != b"done":
         detail = value.decode("utf-8", errors = "replace").removeprefix("failed:")
         raise WriterFailed(
@@ -328,20 +412,26 @@ def _writers_in_turn(
                 "Unsloth: the FSDP2 save failed on a rank that writes; see that rank's error."
             )
         return
-    if me in writers:
-        index = writers.index(me)
-        if index:
-            store.wait([keys[index - 1]], _save_timeout())
-        try:
-            action()
-        except BaseException as exc:
-            own = exc
-        store.set(keys[index], "done" if own is None else "failed:" + _failure_text(own))
-    store.wait(keys, _save_timeout())
-    if own is not None:
-        raise own
-    for r, key in zip(writers, keys):
-        value = store.get(key)
+    values = []
+    try:
+        if me in writers:
+            index = writers.index(me)
+            if index:
+                store.wait([keys[index - 1]], _save_timeout())
+            try:
+                action()
+            except BaseException as exc:
+                own = exc
+            store.set(keys[index], "done" if own is None else "failed:" + _failure_text(own))
+        store.wait(keys, _save_timeout())
+        if own is not None:
+            raise own
+        values = [store.get(key) for key in keys]
+    finally:
+        # Each rank of the world runs this as often (the group is the world or one of the 1-D
+        # sub-meshes that split it), so it counts toward rank 0's store guard like the others.
+        _handshake_done(dist, store)
+    for r, value in zip(writers, values):
         if value != b"done":
             detail = value.decode("utf-8", errors = "replace").removeprefix("failed:")
             raise WriterFailed(
@@ -877,11 +967,18 @@ def _share_from_writer(
     counter[tag] = counter.get(tag, 0) + 1
     key = f"unsloth_fsdp2_export_r{writer_rank}_{tag}_{counter[tag]}"
     if writer:
-        store.set(key, _store_codec.encode(payload))
+        try:
+            store.set(key, _store_codec.encode(payload))
+        finally:
+            _handshake_done(dist, store)
         return payload
-    store.wait([key], _save_timeout())
     try:
-        return _store_codec.decode(store.get(key))
+        store.wait([key], _save_timeout())
+        value = store.get(key)
+    finally:
+        _handshake_done(dist, store)
+    try:
+        return _store_codec.decode(value)
     except ValueError:
         return (
             ("error", "the writer left an unreadable result in the store")

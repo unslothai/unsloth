@@ -5949,6 +5949,13 @@ class GalleryImage(BaseModel):
     batch_size: int = Field(
         1, description = "Batch size used; with batch_index it lets restore replay this image"
     )
+    coalesced_batch_size: Optional[int] = Field(
+        None,
+        description = "Images in the shared call this one rendered in, when concurrent requests were batched",
+    )
+    coalesced_index: Optional[int] = Field(
+        None, description = "This image's position in that shared call (0-based)"
+    )
     generation_seconds: Optional[float] = Field(
         None,
         description = "Elapsed generation seconds until images are ready to save, shared by the request",
@@ -6520,6 +6527,12 @@ class DiffusionStatusResponse(BaseModel):
         description = "Compile / CUDA-graph engagement counters: this load's graph captures, replays and ungraphed "
         "denoiser calls (whole-step, per block, per-card segments, and the per-block graphs a whole-step graph falls "
         "back to), and the process's dynamo frame and graph-break totals; null when nothing is loaded.",
+    )
+    request_batching: Optional[Dict[str, str]] = Field(
+        None,
+        description = "How concurrent text-to-image requests share pipeline calls on this load: mode 'any', "
+        "'compiled_sizes' (static compile, only batch sizes already compiled) or 'serial' (CUDA graphs, every request "
+        "renders alone), with the reason; null when nothing is loaded.",
     )
     fp8_gemm: Optional[Dict[str, Any]] = Field(
         None,
@@ -8537,6 +8550,11 @@ class VideoStatusResponse(BaseModel):
         default_factory = list,
         description = "The baked adapters as the load requested them, [{id, weight}]; empty when none",
     )
+    lora_fuse: Optional[str] = Field(
+        None,
+        description = "Whether the load's LoRA set is folded into the denoiser weights, as the images status reports "
+        "it: baked (merged into the bf16 denoiser at load, the only video LoRA path); null without LoRAs",
+    )
     lora_refusal: Optional[str] = Field(
         None,
         description = "Why a reload of this model with VideoLoadRequest.loras would be refused (GGUF or "
@@ -8547,6 +8565,13 @@ class VideoStatusResponse(BaseModel):
         description = "Text-encoder quant engaged: fp8 | fp8_dynamic | int8 | nvfp4 | null "
         "(null = the dense bf16 encoder is loaded). An int8 request without a per-family "
         "keep-bf16 schedule is reported as the fp8 it fell back to.",
+    )
+    fp8_gemm: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Which fp8 GEMM an fp8 load runs: path 'torchao_rowwise', or 'unit_scale_fallback' when this "
+        "torch build has no row-wise fp8 kernel on the card (Windows wheels), plus the per-card probe verdict and "
+        "eager call counts; a ModelOpt FP8 denoiser adds modelopt {runtime, route, calls}. null for a load without "
+        "fp8.",
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"

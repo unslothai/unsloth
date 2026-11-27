@@ -187,7 +187,8 @@ def _backend(
 
 def _wait_idle(backend, timeout = 120.0) -> None:
     deadline = time.monotonic() + timeout
-    while backend._generate_job_active:
+    # A single clip hands its slot on before its encode (_hand_off_encode); it is saved once its tail ends.
+    while backend._generate_job_active or backend._encode_tail is not None:
         assert time.monotonic() < deadline, backend._gen
         time.sleep(0.02)
 
@@ -658,6 +659,114 @@ def test_a_gathering_batch_nobody_joined_renders_the_single_clip(monkeypatch, sa
     assert backend.seal_batch() == 1
     _wait_idle(backend)
     assert (_frames(saved, "alone") == _frames(saved, "solo")).all()
+
+
+# ---- the job slot around the encode (#19817's handoff) ---------------------------------------------
+
+
+def _watch_encodes(backend, monkeypatch):
+    """Record, per encode, whether the generate lock and the job slot were held, and every slot handoff."""
+    encodes: list = []
+    handoffs: list = []
+    inner = backend._encode_mp4
+
+    def _encode(frames, fps, audio, pipe, **kw):
+        encodes.append(
+            {
+                "locked": backend._generate_lock.locked(),
+                "slot_busy": backend._generate_job_active,
+                "tail": backend._encode_tail is not None,
+            }
+        )
+        return inner(frames, fps, audio, pipe, **kw)
+
+    backend._encode_mp4 = _encode
+    real_hand_off = backend._hand_off_encode
+
+    def _hand_off(*args, **kwargs):
+        handed = real_hand_off(*args, **kwargs)
+        handoffs.append(handed)
+        return handed
+
+    monkeypatch.setattr(backend, "_hand_off_encode", _hand_off)
+    monkeypatch.delenv("UNSLOTH_VIDEO_ENCODE_OUTSIDE_LOCK", raising = False)
+    return encodes, handoffs
+
+
+def test_a_batched_job_keeps_its_slot_until_every_clip_is_saved(monkeypatch, saved):
+    backend = _backend(monkeypatch)
+    encodes, handoffs = _watch_encodes(backend, monkeypatch)
+    _batch(backend, [("a cat", 1, "lead"), ("a dog", 2, "ride")])
+    assert set(saved) == {"lead", "ride"}
+    assert saved["lead"][1]["seed"] == 1 and saved["ride"][1]["seed"] == 2
+    # Never handed on: the next queued clip starts only after both clips are saved and settled.
+    assert handoffs == [] and backend._encode_tail is None
+    assert len(encodes) == 2 and all(e["slot_busy"] and not e["tail"] for e in encodes)
+    account = video_module.current_account_id()
+    assert backend.generate_outcome("lead", account)["phase"] == "completed"
+    assert backend.generate_outcome("ride", account)["phase"] == "completed"
+    assert backend._forming is None
+
+
+def test_a_gathering_batch_nobody_joined_hands_its_slot_on_like_a_single_clip(monkeypatch, saved):
+    backend = _backend(monkeypatch)
+    encodes, handoffs = _watch_encodes(backend, monkeypatch)
+    backend.begin_generate(prompt = "a cat", seed = 1, video_id = "alone", batch_open = True, **_SHAPE)
+    assert backend.seal_batch() == 1
+    _wait_idle(backend)
+    assert set(saved) == {"alone"}
+    assert handoffs == [True]
+    # The encode ran after the lock, with the slot already free for the next clip.
+    assert encodes == [{"locked": False, "slot_busy": False, "tail": True}]
+    assert backend._forming is None and backend._job_cancel is None
+    assert (
+        backend.generate_outcome("alone", video_module.current_account_id())["phase"] == "completed"
+    )
+
+
+def test_a_job_whose_rider_stopped_before_the_seal_keeps_its_slot_and_records_the_rider(
+    monkeypatch, saved
+):
+    backend = _backend(monkeypatch)
+    encodes, handoffs = _watch_encodes(backend, monkeypatch)
+    recorded: list = []
+    monkeypatch.setattr(
+        video_gallery, "record_job_outcome", lambda video_id, **kw: recorded.append((video_id, kw))
+    )
+    account = video_module.current_account_id()
+    backend.begin_generate(prompt = "a cat", seed = 1, video_id = "lead", batch_open = True, **_SHAPE)
+    backend.begin_generate(prompt = "a dog", seed = 2, video_id = "ride", join = True, **_SHAPE)
+    assert backend.cancel_generate(expected_video_id = "ride", expected_account = account)
+    backend.seal_batch()
+    _wait_idle(backend)
+    assert set(saved) == {"lead"}
+    # The leader renders alone and encodes after the lock, but the job keeps its slot, so its end
+    # settles and persists the stopped rider.
+    assert handoffs == [] and encodes == [{"locked": False, "slot_busy": True, "tail": False}]
+    assert [video_id for video_id, kw in recorded if kw.get("error") == VIDEO_CANCELLED_MSG] == [
+        "ride"
+    ]
+    assert backend.generate_outcome("ride", account)["error"] == VIDEO_CANCELLED_MSG
+
+
+def test_an_oom_batch_encodes_each_clip_after_the_lock_without_handing_off(monkeypatch, saved):
+    backend = _backend(monkeypatch)
+    encodes, handoffs = _watch_encodes(backend, monkeypatch)
+    pipe_cls = type(backend._state.pipe)
+    real_call = pipe_cls.__call__
+
+    def _call(self, *args, **kwargs):
+        prompt = kwargs.get("prompt")
+        if isinstance(prompt, list) and len(prompt) > 1:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 9.00 GiB")
+        return real_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_cls, "__call__", _call)
+    _batch(backend, [("a cat", 1, "lead"), ("a dog", 2, "ride")])
+    assert set(saved) == {"lead", "ride"}
+    assert saved["ride"][1]["seed"] == 2
+    assert handoffs == []
+    assert encodes == [{"locked": False, "slot_busy": True, "tail": False}] * 2
 
 
 # ---- which loads batch ------------------------------------------------------------------------------
