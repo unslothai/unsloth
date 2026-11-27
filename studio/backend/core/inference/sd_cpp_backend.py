@@ -3506,7 +3506,6 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
 
 
 def _request_ref_image_args(state: Any, has_refs: bool) -> Optional[str]:
-    """Per-family ``ref_image_args`` for a run with reference images: only Qwen-Image-Edit sends any."""
     return sd_cpp_args_mod.ref_image_args_for_family(
         getattr(getattr(state, "family", None), "name", None), has_refs
     )

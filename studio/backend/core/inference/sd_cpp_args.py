@@ -46,19 +46,15 @@ def text_encoder_flags_for_family(family_name: str) -> tuple[str, ...]:
     return _TE_FLAGS_BY_FAMILY.get(family_name, ())
 
 
-# Qwen-Image-Edit reads each reference through Qwen2.5-VL at a 384 x 384 pixel area (aspect kept, snapped to the
-# 28 px merge grid), as QwenImageEditPlusPipeline's CONDITION_IMAGE_SIZE does and as upstream sd.cpp now hard-codes
-# (leejet/stable-diffusion.cpp#2433). The pinned build otherwise clamps each side to 384..560 px, so a 1024 px
-# source costs 400 vision tokens instead of 196. A vlm_size here is a pixel area (min == max takes sd.cpp's exact
-# area branch); builds that hard-code 384 x 384 or predate vlm_size land on the same size or ignore the key.
+# Qwen-Image-Edit refs at QwenImageEditPlusPipeline's 384 x 384 area (upstream sd.cpp#2433); the pinned
+# build clamps sides to 384..560 px (400 vs 196 vision tokens). min == max takes sd.cpp's area branch.
 QWEN_EDIT_REF_IMAGE_ARGS = "vlm_size=147456"
 QWEN_EDIT_REF_AREA_ENV = "UNSLOTH_SD_CPP_QWEN_EDIT_REF_AREA"
 _REF_IMAGE_ARGS_BY_FAMILY: dict[str, str] = {"qwen-image-edit": QWEN_EDIT_REF_IMAGE_ARGS}
 
 
 def ref_image_args_for_family(family_name: Optional[str], has_refs: bool) -> Optional[str]:
-    """sd.cpp ``ref_image_args`` for an image run of ``family_name`` with reference images, else None.
-    ``UNSLOTH_SD_CPP_QWEN_EDIT_REF_AREA=0`` keeps the binary's own reference sizing."""
+    """sd.cpp ``ref_image_args`` for a run with refs; ``UNSLOTH_SD_CPP_QWEN_EDIT_REF_AREA=0`` disables."""
     if not has_refs:
         return None
     if (os.environ.get(QWEN_EDIT_REF_AREA_ENV) or "").strip().lower() in (

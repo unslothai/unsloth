@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native (sd.cpp) Qwen-Image-Edit reads each reference through the VLM at a 384 x 384 pixel area on both
-transports; runs without references, other families and the kill switch send nothing."""
+"""sd.cpp Qwen-Image-Edit sends a 384 x 384 ref area on both transports; nothing otherwise."""
 
 from __future__ import annotations
 
