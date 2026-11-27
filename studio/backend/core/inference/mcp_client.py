@@ -2211,6 +2211,30 @@ def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
     return json.dumps(lifted, ensure_ascii = False), found
 
 
+def _mirrors_structured_result(text: str, structured: Any) -> bool:
+    # FastMCP wraps non-object results while keeping the original value in text content.
+    wrapped = (
+        structured.get("result", _MIRRORED)
+        if isinstance(structured, dict) and len(structured) == 1
+        else _MIRRORED
+    )
+    if text == wrapped:
+        return True
+    if wrapped is _MIRRORED and not text.lstrip().startswith("{"):
+        return False
+    try:
+        decoded = json.loads(text)
+        for value in (structured, wrapped):
+            # Python equality alone treats JSON booleans as numbers, even inside lists.
+            if decoded == value and json.dumps(
+                decoded, sort_keys = True, allow_nan = False
+            ) == json.dumps(value, sort_keys = True, allow_nan = False):
+                return True
+    except (TypeError, ValueError, RecursionError):
+        pass
+    return False
+
+
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
@@ -2224,20 +2248,8 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
-            # FastMCP wraps plain string results while also returning the original text.
-            if (
-                isinstance(structured, dict)
-                and len(structured) == 1
-                and structured.get("result") == text
-            ):
+            if structured is not None and _mirrors_structured_result(text, structured):
                 structured = None
-            # Older clients read the JSON text mirror specified by MCP. Keep one copy.
-            elif structured is not None and text.lstrip().startswith("{"):
-                try:
-                    if json.loads(text) == structured:
-                        structured = None
-                except (ValueError, RecursionError):
-                    pass
             text, inline_images = _lift_inline_images(text)
             lifted.extend(inline_images)
             parts.append(text)

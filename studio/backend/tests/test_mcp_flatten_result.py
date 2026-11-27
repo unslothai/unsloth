@@ -444,6 +444,21 @@ def test_json_text_mirror_is_not_duplicated():
     assert flat == '{ "total": 42 }\ndone'
 
 
+def test_json_wrapped_result_text_is_not_duplicated():
+    for text, value in (
+        ("[1, 2]", [1, 2]),
+        ('{"count": 2}', {"count": 2}),
+        ("8", 8),
+        ("null", None),
+    ):
+        assert _flatten_result(_result(_text(text), structured = {"result": value})) == text
+
+
+def test_json_boolean_and_number_are_distinct_results():
+    text = '{"ok": true}'
+    assert _flatten_result(_result(_text(text), structured = {"ok": 1})) == f"{{'ok': 1}}\n{text}"
+
+
 def test_fastmcp_file_format_png_is_rendered():
     # fastmcp File(format='png') labels the blob application/png.
     flat = _flatten_result(_result(_blob_resource(mime = "application/png")))
