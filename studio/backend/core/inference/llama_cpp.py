@@ -42309,7 +42309,7 @@ class LlamaCppBackend:
                                     measured = _fit_count_tokens(
                                         candidate, candidate_tools, _reasoning_kw
                                     )
-                                    # Leave the compaction headroom and, when recall runs, its reserve free, also on a replay.
+                                    # The fit's own target, also on a replay: headroom, plus the recall reserve a rolling fit holds back.
                                     budget = prompt_budget(
                                         self._effective_context_length, _iteration_max_tokens
                                     )
@@ -42319,7 +42319,7 @@ class LlamaCppBackend:
                                     )
                                     reserve = (
                                         _conversation_recall_reserve(thread_id)
-                                        if truncation.get("checkpoint_started", True)
+                                        if not truncation.get("checkpoint")
                                         else 0
                                     )
                                     fitted_tokens = truncation["prompt_tokens_after"]

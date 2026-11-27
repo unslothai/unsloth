@@ -7736,6 +7736,7 @@ def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatc
         ("rolling", None, True, 2, 0, False, "Medium document " * 25, "Medium document " * 25),
         ("rolling", None, True, 2, 300, False, "Medium document " * 25, "Partial passage"),
         ("rolling", None, True, 2, 100, False, "Medium document " * 25, "Medium document " * 25),
+        ("checkpoint", None, True, 0, 300, False, "Medium document " * 25, "Medium document " * 25),
         ("checkpoint", None, True, 0, 0, False, "Large document " * 50, "Partial passage"),
         ("checkpoint", None, True, 0, 0, True, "Complete document", "Partial passage"),
         ("checkpoint", None, False, 0, 0, False, "", None),
@@ -7844,7 +7845,7 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         assert truncation["prompt_tokens_after"] == sum(
             len(str(m.get("content", ""))) for m in payloads[0]["messages"]
         )
-    if policy == "rolling":
+    if recall_budgets:
         from core.inference.context_window import prompt_budget, retrieval_budget
 
         prompt = truncation["prompt_tokens_after"]
