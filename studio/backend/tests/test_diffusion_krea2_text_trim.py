@@ -139,7 +139,6 @@ def test_compiled_pad_pins_krea2_only_when_a_batch_can_mix_lengths():
 
 
 def test_batch_one_krea2_steps_stay_unmasked_at_every_caption_length():
-    # Without the pin each step carries only its own valid rows, so the compiled call never sees a mask.
     for valid in (6, 10, 20):
         pe_b, mask_b = dit._krea2_collate([_entry(valid)], "cpu", torch.float32, pad_to = None)
         assert pe_b.shape[1] == valid and mask_b is None

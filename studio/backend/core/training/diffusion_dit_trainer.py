@@ -1746,11 +1746,8 @@ _krea2_encode_latent_stats = _qwen_encode_latent_stats
 
 
 def _compiled_text_pad_to(family, compiled, caption_embeds, batch_size):
-    """The text length a compiled Qwen-Image / Krea 2 run pads every step to, or None for the batch's own length.
-    Qwen-Image pins its longest prompt. Krea 2 pins its longest valid prompt only when a batch can mix lengths: at
-    batch size 1 the valid rows need no mask, so every step stays unmasked (one graph, flash-eligible) and the
-    dynamic=True compile takes the length change without a recompile, where the pin pads each step to the longest
-    caption and flips the mask between None and a tensor (one extra graph)."""
+    """Fixed text length for compiled Qwen-Image / Krea 2, or None. Krea 2 pins only at batch > 1: at batch 1
+    rows stay unmasked (one flash-eligible graph), while pinning flips the mask None/tensor (an extra graph)."""
     if not compiled or not caption_embeds:
         return None
     if family == "qwen-image":
