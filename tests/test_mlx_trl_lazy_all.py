@@ -352,6 +352,32 @@ for length, expected in ((64, 64), (512, 96)):
 
 
 @_needs_real_mlx
+def test_sft_ends_only_plain_completions_with_eos():
+    _run_shim_probe("""
+from datasets import Dataset
+def append_eos(rows, config = None, **kwargs):
+    config = config or trl.SFTConfig(output_dir = "o")
+    trainer = trl.SFTTrainer(model = model, args = config, train_dataset = rows, **kwargs)
+    return trainer.args.append_eos
+plain = [{"prompt": "q", "completion": "a"}]
+turn = lambda role: [{"role": role, "content": "hi"}]
+chat = [{"prompt": turn("user"), "completion": turn("assistant")}]
+text = [{"text": "<|im_start|>user"}]
+for rows in (plain, Dataset.from_list(plain), Dataset.from_list(plain).to_iterable_dataset()):
+    assert append_eos(rows) is True, type(rows)
+# Chat templates and formatted text end their own turns.
+for rows in (chat, text, []):
+    assert append_eos(rows) is False, rows
+assert append_eos(plain, formatting_func = lambda row: row["completion"]) is False
+assert append_eos(plain, trl.SFTConfig(output_dir = "o", append_eos = False)) is False
+assert append_eos(text, trl.SFTConfig(output_dir = "o", append_eos = True)) is True
+# A reused config follows each trainer's own rows.
+config = trl.SFTConfig(output_dir = "o")
+assert (append_eos(plain, config), append_eos(text, config)) == (True, False)
+""")
+
+
+@_needs_real_mlx
 def test_trl_mappings_refuse_what_zoo_lacks():
     _run_shim_probe("""
 # A TRL field at its inert value is accepted, any other value is refused by name.
