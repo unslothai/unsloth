@@ -1558,9 +1558,9 @@ def _quant_state_dtype(quant_state):
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
 _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
-# Rows from which bnb gemm_4bit replaces the GEMV. Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B): batch 4
-# 13-30% faster at equal NLL vs fp32; batch 2 ~40% slower (host bound), batch 3 a tie.
-_GEMV_ROWS_BNB_FROM_BY_ARCH = {(7, 5): 4}
+# Rows from which bnb gemm_4bit replaces the GEMV (default: above the cap). T4 used it from 4 rows until the
+# GEMV dequantized each tile once for all rows: Colab T4 Llama-3.2-3B decode at 4 rows, 115 vs 92 tok/s.
+_GEMV_ROWS_BNB_FROM_BY_ARCH = {}
 _GEMV_ROWS_BNB_FROM = {}
 
 

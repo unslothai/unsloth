@@ -23,7 +23,7 @@ CASES = {
     },
 }
 
-# Must stay specialized: % 16 hint on masked/vector loads; NF4 GEMV M == 1 folds the row split.
+# Must stay specialized: % 16 hint on masked/vector loads; NF4 GEMV M_GROUPS == 1 folds the row split.
 KEEP_SPECIALIZED = {
     "swiglu.py": {"_fg_kernel": ("n_elements",), "_DWf_DW_dfg_kernel": ("n_elements",)},
     "geglu.py": {
@@ -32,8 +32,8 @@ KEEP_SPECIALIZED = {
     },
     "nf4.py": {"_nf4_dequant_kernel": ("n_elements", "n_bytes")},
     "nf4_gemv.py": {
-        "_gemv_nf4_kernel": ("OUT_STRIDE", "K", "M"),
-        "_gemv_nf4_words_kernel": ("OUT_STRIDE", "K", "M"),
+        "_gemv_nf4_kernel": ("OUT_STRIDE", "K", "M_GROUPS"),
+        "_gemv_nf4_words_kernel": ("OUT_STRIDE", "K", "M_GROUPS"),
     },
     "fp8_lora.py": {"_fp8_tensorwise_cast_kernel": ("numel",)},
 }
