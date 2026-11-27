@@ -298,13 +298,20 @@ def _render_turn(group: list[dict]) -> tuple[str, str | None]:
 
 
 def _retire_clipped_web_read(
-    conn, scope: str, legacy_hash: str | None, ordinal: int | None
-) -> None:
-    """Retire the truncated copy only after a full copy has the same transcript seat."""
-    if legacy_hash is not None and ordinal is not None:
-        for copy in store.documents_by_hash(conn, scope, legacy_hash):
-            if copy.get("archive_ordinal") == ordinal:
-                store.delete_document(conn, copy["id"], commit = False)
+    conn, scope: str, digest: str, legacy_hash: str | None, seats: list[int]
+) -> bool:
+    """Retire truncated copies only at a transcript seat a full copy of the turn already holds."""
+    if legacy_hash is None or not seats:
+        return False
+    held = {copy.get("archive_ordinal") for copy in store.documents_by_hash(conn, scope, digest)}
+    stale = [
+        copy["id"]
+        for copy in store.documents_by_hash(conn, scope, legacy_hash)
+        if copy.get("archive_ordinal") in held.intersection(seats)
+    ]
+    if stale:
+        store.delete_documents(conn, stale, commit = False)
+    return bool(stale)
 
 
 def _archivable(group: list[dict]) -> list[dict]:
@@ -863,6 +870,7 @@ def _archive_turns(
             text, legacy_hash = _render_turn(group)
             if not text:
                 continue
+            legacy_hash = legacy_hash if replace_clipped else None
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             seats = _occurrences(positions, group)
             budget = _write_budget(positions, seats, live_positions, group)
@@ -876,6 +884,8 @@ def _archive_turns(
                     seats[: max(1, budget)] if seats else seats,
                     commit = True,
                 )
+                if _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats):
+                    conn.commit()
                 _widen_span(conn, scope, digest, span)
                 continue
             if collected >= max_chunks:
@@ -896,7 +906,7 @@ def _archive_turns(
                         chunks,
                         seats,
                         budget,
-                        legacy_hash if replace_clipped else None,
+                        legacy_hash,
                     )
                 )
                 needs.append(need)
@@ -1048,8 +1058,7 @@ def _archive_turns(
             )
             try:
                 store.add_chunks(conn, scope, document_id, chunks, group_vectors)
-                if ordinal in seats:
-                    _retire_clipped_web_read(conn, scope, legacy_hash, ordinal)
+                _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats)
             except Exception:
                 conn.rollback()
                 raise
@@ -1154,12 +1163,15 @@ def _archive_turns_lexically(
             text, legacy_hash = _render_turn(group)
             if not text:
                 continue
+            legacy_hash = legacy_hash if replace_clipped else None
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             seats = _occurrences(positions, group)
             budget = _write_budget(positions, seats, live_positions, group)
             if len(store.documents_by_hash(conn, scope, digest)) >= budget:
                 # As the dense pre-check: re-seat, retire surplus copies after a rewind, widen the span.
                 _restamp(conn, scope, digest, seats[:budget], commit = True)
+                if _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats):
+                    conn.commit()
                 _widen_span(conn, scope, digest, span)
                 continue
             chunks = _turn_chunks(text, max(1, int(config.CHUNK_TOKENS)), _rough_token_count)
@@ -1198,8 +1210,7 @@ def _archive_turns_lexically(
                         commit = False,
                     )
                     store.add_lexical_chunks(conn, scope, document_id, chunks)
-                    if replace_clipped:
-                        _retire_clipped_web_read(conn, scope, legacy_hash, ordinal)
+                    _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats)
             except Exception:
                 conn.rollback()
                 raise
@@ -1884,7 +1895,7 @@ def _write_copy(
     )
     try:
         store.add_chunks(conn, scope, document_id, chunks, vectors)
-        _retire_clipped_web_read(conn, scope, legacy_hash, ordinal)
+        _retire_clipped_web_read(conn, scope, digest, legacy_hash, seats)
     except Exception:
         conn.rollback()
         raise

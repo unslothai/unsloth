@@ -5284,10 +5284,11 @@ def test_deleting_a_thread_scans_the_fts_table_once_not_once_per_turn(conn, monk
     assert sum("DELETE FROM chunks_fts" in s for s in statements) == 1
 
 
+@pytest.mark.parametrize("full_copy_first", [False, True])
 @pytest.mark.parametrize("lexical_only", [False, True])
 @pytest.mark.parametrize("page_shape", ["sections", "repeated", "gaps", "batched", "long_url"])
 def test_direct_web_read_tail_is_searchable_after_rearchiving(
-    conn, monkeypatch, lexical_only, page_shape
+    conn, monkeypatch, lexical_only, page_shape, full_copy_first
 ):
     from core.inference import tools
     from storage import studio_db
@@ -5349,10 +5350,12 @@ def test_direct_web_read_tail_is_searchable_after_rearchiving(
     if lexical_only:
         _fail_embedder(monkeypatch)
 
+    if full_copy_first:
+        assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
     with monkeypatch.context() as old_archive:
         old_archive.setattr(conversation_archive, "_is_direct_web_read", lambda _args: False)
         assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
-    assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
+    assert conversation_archive.archive_turns(THREAD, group, branch = group) == (not full_copy_first)
     assert conversation_archive.archive_turns(THREAD, group, branch = group) == 0
 
     scope = store.conversation_archive_scope(THREAD)
