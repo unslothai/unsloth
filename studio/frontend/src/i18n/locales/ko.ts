@@ -2406,6 +2406,10 @@ export const ko = {
         confirmDescriptionChatOnly:
           "서버를 중지하고 설치 프로그램을 다시 실행합니다. 이 설치는 채팅 전용이므로 설치 프로그램이 PyTorch를 포함한 전체 설치로도 업그레이드합니다(총 수 GB). 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "지금 복구",
+        recommendedTorch:
+          "복구 권장: 이 설치의 PyTorch {torch}는 RTX 50 시리즈 GPU가 지원되는 관리형 {managedTorch}보다 오래되었습니다.",
+        recommendedDriver:
+          "PyTorch {torch}는 RTX 50 시리즈 GPU가 지원되는 관리형 {managedTorch}보다 오래되었지만, 이 GPU 드라이버는 CUDA 13을 지원하지 않습니다. 먼저 GPU 드라이버를 업데이트한 다음 설치를 복구하세요.",
       },
       resetPreferences: {
         sectionTitle: "위험 구역",

@@ -2430,6 +2430,10 @@ export const ptBR = {
         confirmDescriptionChatOnly:
           "Para o servidor e executa o instalador novamente. Esta é uma instalação somente chat, então o instalador também a atualiza para a instalação completa com o PyTorch, vários gigabytes no total. As conversas e as configurações são mantidas. Isso pode levar alguns minutos.",
         confirmAction: "Reparar agora",
+        recommendedTorch:
+          "Reparo recomendado: esta instalação tem o PyTorch {torch}, anterior ao {managedTorch} gerenciado no qual as GPUs da série RTX 50 são compatíveis.",
+        recommendedDriver:
+          "O PyTorch {torch} é anterior ao {managedTorch} gerenciado no qual as GPUs da série RTX 50 são compatíveis, mas este driver de GPU não é compatível com CUDA 13. Atualize primeiro o driver da GPU e depois repare a instalação.",
       },
       resetPreferences: {
         sectionTitle: "Zona de perigo",

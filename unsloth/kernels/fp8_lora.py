@@ -87,24 +87,24 @@ def _scaling_for(device):
     return scaling_for_class(gpu_class)
 
 
-# What torch raises for a _scaled_mm scaling this build lacks ("Rowwise scaling is not currently supported on
-# your device" on the Windows wheels). An out of memory or a lost device is no verdict.
-_UNSUPPORTED_WORDS = (
-    "not currently supported",
-    "not supported",
-    "unsupported",
-    "is only supported",
-)
-
-
-def _is_unsupported(exc) -> bool:
-    text = str(exc).lower()
+def _is_oom(exc) -> bool:
     oom = getattr(torch, "OutOfMemoryError", None)
-    if "out of memory" in text or (isinstance(oom, type) and isinstance(exc, oom)):
+    return (isinstance(oom, type) and isinstance(exc, oom)) or "out of memory" in str(exc).lower()
+
+
+def _cuda_context_ok(device) -> bool:
+    """After a failed probe GEMM: surface any error it left (synchronize), let a kernel launch check read and so
+    reset the last CUDA error, then confirm the context still runs work."""
+    if device.type != "cuda":
+        return True
+    try:
+        torch.cuda.synchronize(device)
+    except Exception:
+        pass
+    try:
+        return float(torch.ones(1, device = device).add_(1).item()) == 2.0
+    except Exception:
         return False
-    return isinstance(exc, (RuntimeError, NotImplementedError)) and any(
-        word in text for word in _UNSUPPORTED_WORDS
-    )
 
 
 _ROWWISE_UNSUPPORTED = set()  # devices whose torch build has no row-wise _scaled_mm
@@ -120,31 +120,42 @@ def _note_rowwise_unsupported(device):
         )
 
 
+def _probe_gemm(x, scale_a, scale_b):
+    out = _scaled_mm(x, x.t(), scale_a, scale_b, torch.bfloat16, False)
+    return bool((out == x.shape[1]).all())
+
+
 def rowwise_supported(device) -> bool:
-    """False when this device's tensorwise fp8 _scaled_mm runs and the row-wise one raises torch's "not
-    supported". One tiny GEMM pair per device; anything else (no fp8 GEMM, out of memory) keeps row-wise."""
+    """False when this device's tensorwise fp8 _scaled_mm runs and the row-wise one does not: any failure counts
+    ("Rowwise scaling is not currently supported on your device" on the Windows wheels, cuBLASLt
+    CUBLAS_STATUS_NOT_SUPPORTED on older ones, a wrong answer). One small GEMM pair per device, cached. No verdict
+    (True, not cached) when tensorwise fails too, on out of memory, or when the context is broken afterwards.
+    ROCm runs the same real probe: builds and GPUs without these fp8 GEMMs (gfx1151, or fnuz-only MI300) fail its
+    tensorwise GEMM and give no verdict, so the answer always comes from the device."""
     device = torch.device(device)
     if device in _ROWWISE_UNSUPPORTED:
         return False
-    if torch.version.hip is not None:
-        return True
     verdict = _ROWWISE_PROBED.get(device)
     if verdict is not None:
         return verdict
     try:
-        x = torch.ones((16, 32), device = device).to(E4M3)
+        x = torch.ones((64, 128), device = device).to(E4M3)
         one = torch.ones((), device = device, dtype = torch.float32)
-        _scaled_mm(x, x.t(), one, one, torch.bfloat16, False)
-    except Exception:  # no tensorwise fp8 GEMM either: nothing proven, never cached
+        if not _probe_gemm(x, one, one):
+            return True
+        rows = torch.ones((64, 1), device = device, dtype = torch.float32)
+    except Exception:  # no tensorwise fp8 GEMM either: nothing proven
+        _cuda_context_ok(device)
         return True
     try:
-        rows = torch.ones((16, 1), device = device, dtype = torch.float32)
-        _scaled_mm(x, x.t(), rows, rows.t(), torch.bfloat16, False)
-        verdict = True
+        verdict = _probe_gemm(x, rows, rows.t())
     except Exception as exc:
-        if not _is_unsupported(exc):
+        if _is_oom(exc):
             return True
         verdict = False
+    if not verdict:
+        if not _cuda_context_ok(device):
+            return True
         _note_rowwise_unsupported(device)
     _ROWWISE_PROBED[device] = verdict
     return verdict
@@ -449,10 +460,10 @@ def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
         if dtype == torch.float16:
             return None
         return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
-    except (RuntimeError, NotImplementedError) as exc:
-        if not _is_unsupported(exc):
+    except (RuntimeError, NotImplementedError):
+        # Never swallowed here: only the isolated probe can say the row-wise kernel is missing.
+        if rowwise_supported(a.device):
             raise
-        _note_rowwise_unsupported(a.device)
         return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
 
 

@@ -49,6 +49,7 @@ from core.inference.diffusion_multigpu import (
     with_load_selection,
 )
 from core.inference.sd_cpp_multigpu import split_for_load
+from core.inference import sd_cpp_replicas
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
@@ -2425,6 +2426,9 @@ def _tree_in_use(backend: Any) -> bool:
         return True  # a server is starting from that same file
     if getattr(backend, "_stopping_servers", 0):
         return True  # unpublished, but stop() has not returned: the process is still alive
+    pool = getattr(backend, "_replicas", None)
+    if pool is not None and pool.holds_server():
+        return True  # a card replica runs (or starts) from that same file
     return getattr(backend, "_active_generate_cancel", None) is not None
 
 
@@ -3501,6 +3505,12 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
     )
 
 
+def _request_ref_image_args(state: Any, has_refs: bool) -> Optional[str]:
+    return sd_cpp_args_mod.ref_image_args_for_family(
+        getattr(getattr(state, "family", None), "name", None), has_refs
+    )
+
+
 def _request_scheduler(state: Any) -> Optional[str]:
     """The family's ``--scheduler``; None under custom sigmas (they replace the schedule) or the kill switch."""
     if getattr(state, "sample_sigmas", None) or not sd_cpp_args_mod.family_scheduler_enabled():
@@ -3709,6 +3719,8 @@ class SdCppDiffusionBackend:
     # Thread-local like _loading_card: a rejected concurrent load must not move it.
     _loading_families = None
     _loading_family_default: Any = None
+    # This load's card replicas (sd_cpp_replicas.ReplicaPool), None with one server.
+    _replicas: Any = None
 
     def __init__(self, engine: Optional[SdCppEngine] = None) -> None:
         self._lock = threading.Lock()
@@ -3737,6 +3749,7 @@ class SdCppDiffusionBackend:
         self._stopping_servers = 0
         # Set once the GPU graph is unrunnable (ggml unsupported-op abort); CPU restarts once per load.
         self._cpu_backend_forced = False
+        self._replicas = None
 
     @property
     def is_loaded(self) -> bool:
@@ -4305,8 +4318,35 @@ class SdCppDiffusionBackend:
                 return selected_ordinal if device == "cuda" else None
 
             split_memo: dict[tuple, Any] = {}
+            replica_memo: dict[tuple, Any] = {}
+
+            def _replica_plan() -> Any:
+                """Card replicas of this load (None = one server); may drop a companion split for one-card servers."""
+                key = (mode, device, _ordinal(), tuple(offload), _running()[1])
+                if key not in replica_memo:
+                    replica_memo[key] = sd_cpp_replicas.plan_for_load(
+                        files,
+                        primary = _ordinal(),
+                        offload = offload,
+                        split = _raw_split(),
+                        binary = _running()[1],
+                        device = device,
+                        off_torch = off_torch,
+                        server_mode = mode == "server",
+                    )
+                return replica_memo[key]
+
+            def _masked_primary() -> Optional[int]:
+                """The primary's card when a dropped split runs it one-card: masked to it, so its argv carries no pin."""
+                plan = _replica_plan()
+                return plan.primary if plan is not None and plan.drop_split else None
 
             def _split() -> Any:
+                if _masked_primary() is not None:
+                    return None
+                return _raw_split()
+
+            def _raw_split() -> Any:
                 key = (device, _ordinal(), tuple(offload), _running()[1])
                 if key not in split_memo:
                     split_memo[key] = (
@@ -4327,8 +4367,19 @@ class SdCppDiffusionBackend:
                 return () if split is None else (split,)
 
             def _pin_ordinal() -> Optional[int]:
+                if _masked_primary() is not None:
+                    return None
                 split = _split()
                 return int(split.primary) if split is not None else _ordinal()
+
+            def _with_mask(env: Optional[dict[str, str]]) -> Optional[dict[str, str]]:
+                masked = _masked_primary()
+                if masked is None:
+                    return env
+                return {
+                    **(env or {}),
+                    "CUDA_VISIBLE_DEVICES": sd_cpp_replicas.cuda_mask_entry(masked),
+                }
 
             native_speed = _native_speed_for(speed_mode)
 
@@ -4346,8 +4397,10 @@ class SdCppDiffusionBackend:
                     self._state = None  # the old model is being torn down
                     if old_state is not None and old_state.server is not None:
                         self._reserve_stop()
+                    old_replicas = self._close_replicas_locked()
                 if old_state is not None and old_state.server is not None:
                     self._stop_reserved(old_state.server)
+                self._stop_closed_replicas(old_replicas)
                 # Tree is free now, so the deferred install lands; not gated on resolved mode, since a serverless install resolves one-shot because the deferral skipped it.
                 if self._deferred_accelerator_install:
                     self._deferred_accelerator_install = False
@@ -4416,13 +4469,15 @@ class SdCppDiffusionBackend:
                         server_offload = _offload_with_device_pin_impl(
                             offload, server_binary, _pin_ordinal(), *_split_arg()
                         )
-                        spawn_env = _sd_cpp_spawn_env(
-                            off_torch,
-                            device,
-                            _pin_ordinal(),
-                            offload,
-                            server_offload,
-                            _diffusion_weight_types,
+                        spawn_env = _with_mask(
+                            _sd_cpp_spawn_env(
+                                off_torch,
+                                device,
+                                _pin_ordinal(),
+                                offload,
+                                server_offload,
+                                _diffusion_weight_types,
+                            )
                         )
                         server.start(
                             files,
@@ -4510,6 +4565,8 @@ class SdCppDiffusionBackend:
                     committed_offload_flags,
                     _diffusion_weight_types,
                 )
+                if mode == "server":
+                    spawn_env = _with_mask(spawn_env)
                 state = _SdState(
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
@@ -4541,11 +4598,15 @@ class SdCppDiffusionBackend:
                     sd_accelerator = engine_accelerator if mode == "oneshot" else None,
                     # Never on an off-torch card: the parent-visible ids are torch's, so CUDA0 would name one of them.
                     physical_gpu_id = (
-                        _resolved_server_physical_gpu_id(
-                            server_binary,
-                            device,
-                            _ordinal(),
-                            committed_offload_flags,
+                        (
+                            _split_physical_gpu_id(_masked_primary())
+                            if _masked_primary() is not None
+                            else _resolved_server_physical_gpu_id(
+                                server_binary,
+                                device,
+                                _ordinal(),
+                                committed_offload_flags,
+                            )
                         )
                         if mode == "server" and off_torch is None
                         else None
@@ -4578,6 +4639,12 @@ class SdCppDiffusionBackend:
                             orphan = server
                     else:
                         self._state = state
+                        plan = _replica_plan() if mode == "server" else None
+                        self._replicas = (
+                            sd_cpp_replicas.ReplicaPool(self, state, plan, token = _load_token)
+                            if plan is not None
+                            else None
+                        )
                         # With _state, past the supersession check.
                         self._committed_loading_card = self._loading_card
                         self._loading = None
@@ -5063,7 +5130,7 @@ class SdCppDiffusionBackend:
         return workflow in (None, "reference")
 
     @holds_inference
-    def generate(
+    def _generate_impl(
         self,
         *,
         prompt: str,
@@ -5167,6 +5234,7 @@ class SdCppDiffusionBackend:
                     and not state.server.is_alive()
                 ):
                     self._state = None
+                    self._retire_replicas_locked()
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 # Same window as the diffusers engine: a replacement can commit while this waits (#9448)
                 loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
@@ -5392,6 +5460,52 @@ class SdCppDiffusionBackend:
                         self._active_generate_cancel = None
                         self._active_generate_account = None
 
+    # Only __wrapped__: inspect.signature (the routes' keyword probes) then reads _generate_impl's parameters.
+    @functools.wraps(_generate_impl, assigned = ())
+    def generate(self, **kwargs: Any) -> dict[str, Any]:
+        """Today's render on the primary server, unless this load has card replicas: then the FIFO line in front of
+        every server, which still sends a request straight to an idle primary."""
+        pool = getattr(self, "_replicas", None)
+        if pool is None or pool.closed:
+            return self._generate_impl(**kwargs)
+        return self._generate_on_replicas(pool, kwargs)
+
+    @holds_inference
+    def _generate_on_replicas(self, pool: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+        # Held while queued too, as a render waiting on _generate_lock is on the one-server path.
+        return pool.run(kwargs)
+
+    def _start_replica(self, pool: Any, lane: Any, mmap: bool) -> "_SdCppReplicaLane":
+        """Start one more sd-server for ``pool``'s load, masked to ``lane``'s card, and the lane backend driving it."""
+        state = pool.state
+        binary = state.server.binary
+        server = SdCppServer(binary)
+        if not pool.publish_server(lane, server):
+            raise SdCppCancelled("the load was unloaded before the replica started")
+        env = dict(state.child_env)
+        env["CUDA_VISIBLE_DEVICES"] = sd_cpp_replicas.cuda_mask_entry(lane.ordinal)
+        server.start(
+            state.files,
+            vae_format = state.vae_format,
+            # No --backend pin: inside the mask the card is the child's only device (the one-card argv).
+            offload = list(without_device_backend_flags(state.offload_flags)),
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = env,
+            extra_args = ["--mmap"] if mmap else None,
+            **_family_rng_kwargs(state.family),
+        )
+        lane_state = replace(
+            state,
+            server = server,
+            selected_card = selected_card_identity(lane.ordinal),
+            physical_gpu_id = _split_physical_gpu_id(lane.ordinal),
+            multi_gpu = None,
+            split_physical_gpu_id = None,
+            child_env = tuple(sorted(env.items())),
+        )
+        return _SdCppReplicaLane(lane_state)
+
     def _generate_server(
         self,
         state: _SdState,
@@ -5570,6 +5684,7 @@ class SdCppDiffusionBackend:
                     qwen_image_layers = layers,
                     hires = hires_payload,
                     extra_sample_args = _request_extra_sample_args(state),
+                    ref_image_args = _request_ref_image_args(state, bool(ref_pngs)),
                 )
                 try:
                     rendered = _render(state.server, payload, max(deadline - time.monotonic(), 1.0))
@@ -5693,6 +5808,9 @@ class SdCppDiffusionBackend:
             published = self._state is not None and self._state.server is old_server
             if published:
                 self._state = state
+                # The primary restarted (another backend, a VRAM budget, a lost device): replicas started from the
+                # old placement would repeat its failure, so they go.
+                self._retire_replicas_locked()
             else:
                 self._reserve_stop()
         if not published:
@@ -5940,6 +6058,9 @@ class SdCppDiffusionBackend:
         extra_sample_args = _request_extra_sample_args(state)
         if extra_sample_args:
             extra_args += ["--extra-sample-args", extra_sample_args]
+        ref_image_args = _request_ref_image_args(state, bool(ref_pngs))
+        if ref_image_args:
+            extra_args += ["--ref-image-args", ref_image_args]
 
         images = []
         seeds: list[int] = []
@@ -6051,6 +6172,16 @@ class SdCppDiffusionBackend:
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
+            # A render on a card replica when the primary is idle.
+            gen = next(
+                (
+                    g
+                    for g in (getattr(b, "_gen", None) for b in self._replica_backends())
+                    if g is not None and g.total_steps > 0
+                ),
+                None,
+            )
+        if gen is None or gen.total_steps <= 0:
             return {
                 "active": False,
                 "step": 0,
@@ -6066,9 +6197,50 @@ class SdCppDiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
+    def _close_replicas_locked(self) -> tuple[Any, list[Any]]:
+        """Under ``_lock``: unpublish this load's replicas and reserve their stops in the same step, as for the
+        primary, so the tree never reads idle while one still runs."""
+        pool = getattr(self, "_replicas", None)
+        self._replicas = None
+        if pool is None:
+            return None, []
+        servers = pool.close()
+        self._reserve_stop(len(servers))
+        return pool, servers
+
+    def _reserve_replica_stop(self) -> None:
+        with self._lock:
+            self._reserve_stop()
+
+    def _retire_replicas_locked(self) -> None:
+        """Under ``_lock``, when the primary died: its replicas go with the load, stopped off this thread."""
+        closed = self._close_replicas_locked()
+        if closed[1]:
+            threading.Thread(
+                target = self._stop_closed_replicas,
+                args = (closed,),
+                name = "sd-server-replicas-stop",
+                daemon = True,
+            ).start()
+
+    def _stop_closed_replicas(self, closed: tuple[Any, list[Any]]) -> None:
+        pool, servers = closed
+        for server in servers:
+            self._stop_reserved(server)
+        if pool is not None:
+            pool.wait_idle()
+
+    def _replica_backends(self) -> list[Any]:
+        pool = getattr(self, "_replicas", None)
+        return pool.lane_backends() if pool is not None else []
+
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
         """Native runner polls this event and kills the sd-cli process tree, so stop lands within
-        one poll."""
+        one poll. Card replicas' renders for the same account stop too."""
+        replicas = [b.cancel_generate(expected_account) for b in self._replica_backends()]
+        return self._cancel_own_generate(expected_account) or any(replicas)
+
+    def _cancel_own_generate(self, expected_account: Optional[str] = None) -> bool:
         with self._lock:
             cancel = self._active_generate_cancel
             if cancel is None:
@@ -6098,9 +6270,10 @@ class SdCppDiffusionBackend:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
 
-                if (
-                    self._active_generate_cancel is not None
-                    and self._active_generate_account != expected_account
+                if any(
+                    b._active_generate_cancel is not None
+                    and b._active_generate_account != expected_account
+                    for b in (self, *self._replica_backends())
                 ):
                     raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
                 require_resident_control(
@@ -6128,10 +6301,12 @@ class SdCppDiffusionBackend:
             if pending is not None and state is not None and pending is state.server:
                 to_stop = to_stop[:1]
             self._reserve_stop(len(to_stop))
+            replicas = self._close_replicas_locked()
         # Stop the resident server outside the lock (terminate can take seconds); a mid-flight generation unwinds as
         # the process goes away.
         for srv in to_stop:
             self._stop_reserved(srv)
+        self._stop_closed_replicas(replicas)
         # Wait for a signalled generation to exit: callers treat return as "device is free".
         with self._generate_lock:
             pass
@@ -6176,6 +6351,7 @@ class SdCppDiffusionBackend:
                 if reap:
                     logger.warning("sd-server exited after load; clearing loaded state")
                     self._state = None
+                    self._retire_replicas_locked()
             if reap:
                 state = None
         if state is None:
@@ -6296,7 +6472,37 @@ class SdCppDiffusionBackend:
                 if state.multi_gpu is not None and not self._cpu_backend_forced
                 else {}
             ),
+            **self._replica_status(),
         }
+
+    def _replica_status(self) -> dict[str, Any]:
+        """``replicas`` only for a load that has them (one server keeps main's status)."""
+        pool = getattr(self, "_replicas", None)
+        if pool is None or pool.closed:
+            return {}
+        return {"replicas": pool.describe()}
+
+
+class _SdCppReplicaLane(SdCppDiffusionBackend):
+    """One card replica: renders through the backend's own generate code on its own sd-server. It never restarts
+    itself; a failure retires it and the pool sends the request to another server."""
+
+    def __init__(self, state: _SdState) -> None:
+        super().__init__()
+        self._state = state
+
+    def _restart_server_on_cpu_backend(self, *_args: Any, **_kwargs: Any) -> Optional[SdCppServer]:
+        return None
+
+    def _respawn_server_after_device_loss(
+        self, *_args: Any, **_kwargs: Any
+    ) -> Optional[SdCppServer]:
+        return None
+
+    def _restart_server_with_vram_headroom(
+        self, *_args: Any, **_kwargs: Any
+    ) -> tuple[Optional[SdCppServer], Optional[str]]:
+        return None, None
 
 
 def _native_hires_status(state: Any) -> dict[str, Any]:
@@ -6350,4 +6556,8 @@ def get_sd_cpp_backend() -> SdCppDiffusionBackend:
 def generation_in_flight() -> bool:
     """Read the active-generation marker without constructing or locking the backend."""
     backend = _sd_cpp_backend
-    return backend is not None and backend._gen is not None
+    if backend is None:
+        return False
+    return backend._gen is not None or any(
+        getattr(b, "_gen", None) is not None for b in backend._replica_backends()
+    )

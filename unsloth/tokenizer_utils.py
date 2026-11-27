@@ -1250,18 +1250,35 @@ def load_correct_tokenizer(
     fix_tokenizer = True,
     revision = None,
     config = None,
+    gguf_file = None,
+    local_files_only = False,
 ):
-    tokenizer = _load_correct_tokenizer(
-        tokenizer_name = tokenizer_name,
+    # A GGUF repo with no tokenizer files: the tokenizer lives in the GGUF's metadata.
+    from ._gguf_load import load_gguf_tokenizer_if_missing
+
+    tokenizer = load_gguf_tokenizer_if_missing(
+        tokenizer_name,
+        gguf_file,
+        revision = revision,
+        token = token,
+        cache_dir = None if cache_dir == "huggingface_tokenizers_cache" else cache_dir,
+        local_files_only = local_files_only,
         model_max_length = model_max_length,
         padding_side = padding_side,
-        token = token,
         trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
-        fix_tokenizer = fix_tokenizer,
-        revision = revision,
-        config = config,
     )
+    if tokenizer is None:
+        tokenizer = _load_correct_tokenizer(
+            tokenizer_name = tokenizer_name,
+            model_max_length = model_max_length,
+            padding_side = padding_side,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            cache_dir = cache_dir,
+            fix_tokenizer = fix_tokenizer,
+            revision = revision,
+            config = config,
+        )
 
     if fix_tokenizer:
         _fix_pad_token(tokenizer)

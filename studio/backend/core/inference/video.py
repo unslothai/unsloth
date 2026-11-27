@@ -40,7 +40,7 @@ import re
 import tempfile
 import threading
 import weakref
-from utils.account_context import account_thread, current_account_id
+from utils.account_context import account_thread, current_account, current_account_id, run_as
 import time
 import types
 from dataclasses import dataclass, field
@@ -6784,9 +6784,9 @@ def _encode_after_return(fn: Callable[..., dict[str, Any]]) -> Callable[..., dic
             if resolved is not None:
                 object.__setattr__(resolved, "state", None)
         kwargs.clear()
-        if _on_gpu_released is not None:
-            _on_gpu_released(result)
-        result["mp4_bytes"] = finish(_on_gpu_released is None)
+        # The callback answers whether the encode still owns the slot (a batched job keeps it to the end).
+        owns_slot = _on_gpu_released is None or bool(_on_gpu_released(result))
+        result["mp4_bytes"] = finish(owns_slot)
         return result
 
     return wrapper
@@ -7076,6 +7076,13 @@ class VideoBackend:
         # video_id -> (account, terminal record) of recent clips: a page whose clip ended while a
         # successor took the single progress record still reads its own outcome.
         self._gen_outcomes: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()
+        # Clips denoised in the running job's batch (video_batch.Rider), and the batch the job is still
+        # gathering from the queue (video_batch.Forming), both under _lock.
+        self._forming: Any = None
+        # The running job's own clip asked to stop while its riders keep denoising.
+        self._leader_stopped = False
+        # The running job's own cancel event (begin_generate's), whatever event its render registered.
+        self._job_cancel: Optional[threading.Event] = None
         # A queued clip whose GPU work is done but whose CPU encode still runs: it has handed the job slot to the next
         # clip. One at a time (the semaphore), so finished clips never pile up in host RAM.
         self._encode_tail: Optional[_EncodeTail] = None
@@ -8209,9 +8216,21 @@ class VideoBackend:
                         pinned_snapshot[0],
                         pinned_snapshot[1][:12],
                     )
+            from .host_pinning import cuda_is_integrated
             from .safetensors_pread import pread_safetensors
 
             from .diffusion_families import pinned_repo_revision
+
+            try:
+                _ordinal = kwargs.get("gpu_ordinal")
+                _target = (
+                    resolve_diffusion_device_target()
+                    if _ordinal is None
+                    else resolve_diffusion_device_target(ordinal = _ordinal)
+                )
+                integrated_cuda = cuda_is_integrated(_target.torch_device)
+            except Exception:  # noqa: BLE001 - unresolvable target: the platform default
+                integrated_cuda = False
 
             checkpoint_cached_repo = (
                 str(checkpoint_local) if checkpoint_local is not None else kwargs["repo_id"]
@@ -8228,7 +8247,7 @@ class VideoBackend:
             def _load(offline: bool) -> None:
                 if forced_offline:
                     kwargs["local_files_only"] = offline
-                with pread_safetensors():
+                with pread_safetensors(integrated_cuda = integrated_cuda):
                     with pinned_repo_revision(
                         kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
                     ):
@@ -13066,7 +13085,7 @@ class VideoBackend:
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
             from .diffusion_te_truncate import truncate_text_encoders
-            truncate_text_encoders(pipe, logger = logger)
+            truncate_text_encoders(pipe, logger = logger, family = getattr(fam, "name", None))
             text_encoder_outcome = quantize_text_encoders(
                 pipe,
                 target,
@@ -15577,10 +15596,15 @@ class VideoBackend:
         draft_decode: Optional[bool] = None,
         before_commit: Optional[Callable[[], None]] = None,
         record_outcome: bool = True,
+        batch_open: bool = False,
+        join: bool = False,
     ) -> dict[str, int]:
         """Returns at once (proxy caps ~100 s). VIDEO_NOT_LOADED_MSG and VIDEO_GENERATION_BUSY_MSG map to 409.
         ``before_commit`` runs under the lock just before the reservation; raising aborts it.
-        ``record_outcome`` False keeps a Video page clip's id out of the /v1/videos job store."""
+        ``record_outcome`` False keeps a Video page clip's id out of the /v1/videos job store.
+        ``batch_open`` (the queue has compatible clips waiting behind this one) lets the job gather them
+        until ``seal_batch``; ``join`` adds this clip to that gathering batch instead, and is refused
+        with VIDEO_GENERATION_BUSY_MSG when it cannot share the denoise (it stays queued)."""
         if input_reference is not None and (first_frame is not None or reference_images):
             raise ValueError(
                 "input_reference cannot be combined with explicit conditioning inputs."
@@ -15598,7 +15622,10 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_MODEL_CHANGED_MSG)
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
-                if self._generate_job_active:
+                if join:
+                    if self._forming is None or not self._forming.room():
+                        raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+                elif self._generate_job_active:
                     raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
             resolved_first_frame = first_frame
             resolved_reference_images = reference_images
@@ -15672,9 +15699,89 @@ class VideoBackend:
                 audio_flow_shift = audio_shift,
                 continuation = continuation,
             )
+            batch_key = None
+            if batch_open or join:
+                from . import video_batch
+
+                declined = video_batch.request_decline_reason(
+                    first_frame = first_pil,
+                    last_frame = last_pil,
+                    references = references,
+                    continuation = continuation,
+                    draft_decode = draft_decode,
+                ) or video_batch.load_decline_reason(state)
+                if declined is None:
+                    declined = self._batch_engine_decline(state)
+                if declined is None and getattr(state, "cache_auto", False):
+                    from .diffusion_cache import FBCACHE_MIN_STEPS
+
+                    # Auto turns FBCache on at this many steps, and its residual test spans the whole batch.
+                    if steps is None or int(steps) >= FBCACHE_MIN_STEPS:
+                        declined = "Auto engages a step cache at this step count"
+                if declined is None:
+                    batch_key = video_batch.request_key(
+                        width = canvas_w,
+                        height = canvas_h,
+                        num_frames = run_num_frames,
+                        fps = fps,
+                        steps = steps,
+                        guidance = guidance,
+                        guidance_2 = guidance_2,
+                        flow_shift = shift,
+                    )
+                else:
+                    logger.info("video.batch: renders alone (%s)", declined)
+                if join and batch_key is None:
+                    raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
             with self._lock:
                 if self._state is not state:
                     continue
+                if join:
+                    forming = self._forming
+                    if (
+                        forming is None
+                        or forming.state is not state
+                        or not forming.room()
+                        or forming.key != batch_key
+                        or not self._generate_job_active
+                        or (forming.leader_cancel is not None and forming.leader_cancel.is_set())
+                    ):
+                        raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+                    validate_video_request_shape(
+                        state.family,
+                        width = width,
+                        height = height,
+                        num_frames = run_num_frames,
+                        fps = fps,
+                    )
+                    if before_commit is not None:
+                        before_commit()
+                    rider_account = current_account()
+                    forming.riders.append(
+                        video_batch.Rider(
+                            video_id = video_id,
+                            account_id = rider_account.account_id,
+                            account = rider_account,
+                            prompt = prompt,
+                            negative_prompt = negative_prompt,
+                            seed = seed,
+                            cancel = cancel,
+                            record_outcome = record_outcome,
+                            gen_kwargs = {"guidance_2": guidance_2},
+                        )
+                    )
+                    fam = state.family
+                    return {
+                        "width": canvas_w,
+                        "height": canvas_h,
+                        "num_frames": (
+                            run_num_frames
+                            if run_num_frames is not None
+                            else getattr(fam, "default_num_frames", None)
+                        ),
+                        "fps": fps if fps is not None else getattr(fam, "default_fps", None),
+                        "model": getattr(state, "repo_id", None),
+                    }
                 if self._generate_job_active:
                     raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
                 validate_video_request_shape(
@@ -15686,11 +15793,33 @@ class VideoBackend:
                 )
                 if before_commit is not None:
                     before_commit()
+                self._leader_stopped = False
+                self._job_cancel = cancel
+                self._forming = (
+                    video_batch.Forming(
+                        key = batch_key,
+                        state = state,
+                        limit = video_batch.max_rows(),
+                        leader_cancel = cancel,
+                    )
+                    if batch_key is not None
+                    else None
+                )
+                job_forming = self._forming
+                run_cancel: Any = cancel
+                if job_forming is not None:
+                    # From the start, so a Stop before the seal is this clip's alone: the render ends
+                    # only once every clip in it stopped, or on an unload / superseding load.
+                    run_cancel = video_batch.AllCancelled(
+                        cancel,
+                        lambda: [rider.cancel for rider in job_forming.riders],
+                        hard = lambda: self._teardown_waiters > 0,
+                    )
                 self._generate_job_active = True
                 self._generate_job_token = job_token
                 self._slot_epoch += 1
                 self._generate_job_account = current_account_id()
-                self._active_generate_cancel = cancel
+                self._active_generate_cancel = run_cancel
                 self._gen_video_id = video_id
                 self._gen = {
                     "active": True,
@@ -15722,9 +15851,10 @@ class VideoBackend:
                 guidance_2 = guidance_2,
                 seed = seed,
                 _resolved_inputs = resolved_inputs,
-                cancel_event = cancel,
+                cancel_event = run_cancel,
                 live_preview = live_preview,
                 draft_decode = draft_decode,
+                **({"_batch": job_forming} if job_forming is not None else {}),
             ),
             daemon = True,
         )
@@ -15734,7 +15864,7 @@ class VideoBackend:
             # No thread started, so release the reservation; RuntimeError only, a signal may leave a live worker.
             self._finish_generate_job(
                 job_token = job_token,
-                cancel_event = cancel,
+                cancel_event = run_cancel,
                 error = "Video generation could not start.",
             )
             raise
@@ -15814,20 +15944,32 @@ class VideoBackend:
 
         handed_shape: list = []
 
-        def _hand_off_slot(result: dict[str, Any]) -> None:
+        def _hand_off_slot(result: dict[str, Any]) -> bool:
+            """Hand the job slot on before this clip's deferred encode; True when the encode still owns it."""
+            batch = gen_kwargs.get("_batch")
+            if batch is not None:
+                with self._lock:
+                    # Sealed by now: the load state is only read by a join, so the encode holds no pipeline.
+                    batch.state = None
+                    shared = bool(batch.riders)
+                if shared:
+                    # A job any clip joined keeps its slot until every member is saved and settled
+                    # (_finish_generate_job settles and records its riders), so it never hands off.
+                    return True
             shape = self._last_request_shape
             if self._hand_off_encode(job_token, cancel_event, result.get("steps")):
                 handed_shape.append(shape)
+            return False
 
         def _request_shape() -> Optional[dict[str, Any]]:
             # Once handed off, _last_request_shape is the next clip's.
             return handed_shape[0] if handed_shape else self._last_request_shape
 
         try:
-            result = self.generate(
-                cancel_event = cancel_event,
-                **({"_on_gpu_released": _hand_off_slot} if job_token is not None else {}),
-                **gen_kwargs,
+            result = self._generate_members(
+                cancel_event,
+                gen_kwargs,
+                on_gpu_released = _hand_off_slot if job_token is not None else None,
             )
         except ValueError as exc:
             _record_outcome(str(exc))
@@ -15856,6 +15998,16 @@ class VideoBackend:
 
         # Persist the clip with its full recipe as the JSON sidecar the gallery reads back.
         created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for rider, rider_result in result.pop("riders", None) or ():
+            self._save_rider_clip(rider, rider_result, result, gen_kwargs, created_at)
+        batch = gen_kwargs.get("_batch")
+        if batch is not None and batch.leader_cancel is not None and batch.leader_cancel.is_set():
+            # This job's own clip stopped while its riders kept the shared denoise going.
+            _record_outcome(VIDEO_CANCELLED_MSG)
+            self._finish_generate_job(
+                job_token = job_token, cancel_event = cancel_event, error = VIDEO_CANCELLED_MSG
+            )
+            return
         try:
             record = video_gallery.save(
                 result["mp4_bytes"],
@@ -15912,6 +16064,178 @@ class VideoBackend:
             total = result["steps"],
         )
 
+    def _generate_members(
+        self,
+        cancel_event: Any,
+        gen_kwargs: dict,
+        on_gpu_released: Optional[Callable[[dict], bool]] = None,
+    ) -> dict:
+        """One render of the job's clip and its riders. A batch that runs out of memory (or would not fit)
+        renders its clips one at a time instead, each rider saved as it finishes, so no clip is lost or
+        rendered twice. ``on_gpu_released`` (the slot handoff) reaches only the first render: a clip rendered
+        one at a time after a batch failed belongs to a job with riders, which keeps its slot to the end."""
+        batch = gen_kwargs.get("_batch")
+        try:
+            return self.generate(
+                cancel_event = cancel_event,
+                **({"_on_gpu_released": on_gpu_released} if on_gpu_released is not None else {}),
+                **gen_kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001 -- re-raised unless a batch can be salvaged
+            if batch is None:
+                raise
+            with self._lock:
+                # A batch that failed takes no more clips.
+                batch.sealed.set()
+                riders = list(batch.riders)
+            from .video_batch import BatchDoesNotFit
+
+            if not riders or not (isinstance(exc, BatchDoesNotFit) or is_oom_error(exc)):
+                raise
+            logger.warning(
+                "video.batch: %s; rendering the %d clips one at a time",
+                "out of memory" if is_oom_error(exc) else exc,
+                1 + len(riders),
+            )
+        solo = {k: v for k, v in gen_kwargs.items() if k != "_batch"}
+        own_stop = batch.leader_cancel or threading.Event()
+        result: Optional[dict] = None
+        leader_error: Optional[BaseException] = None
+        if not own_stop.is_set():
+            try:
+                result = self.generate(cancel_event = own_stop, **solo)
+            except Exception as exc:  # noqa: BLE001 -- the riders still render; raised below
+                leader_error = exc
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for rider in riders:
+            if rider.outcome is not None or rider.cancel.is_set():
+                continue
+            try:
+                one = self.generate(
+                    cancel_event = rider.cancel,
+                    **{
+                        **solo,
+                        "prompt": rider.prompt,
+                        "negative_prompt": rider.negative_prompt,
+                        "seed": rider.seed,
+                        "live_preview": False,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 -- one clip's failure is its own
+                if str(exc) != VIDEO_CANCELLED_MSG:
+                    logger.error("video.generate_failed: %s", exc, exc_info = True)
+                    with self._lock:
+                        self._settle_rider_locked(
+                            rider, error = video_failure_detail(exc, self._last_request_shape)
+                        )
+                continue
+            self._save_rider_clip(rider, one, one, solo, created_at)
+        if leader_error is not None:
+            raise leader_error
+        if result is None:
+            # The job's own clip stopped before its rerun; its riders are saved above.
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+        return result
+
+    def _save_rider_clip(
+        self,
+        rider: Any,
+        rider_result: Optional[dict],
+        result: dict,
+        gen_kwargs: dict,
+        created_at: str,
+    ) -> None:
+        """Save one rider's clip under its own id and recipe, and settle it; a stopped rider is only settled.
+        Runs as the rider's account, not the job's: the gallery and job store are per account."""
+        _as_rider(
+            rider,
+            self._save_rider_clip_as_rider,
+            rider,
+            rider_result,
+            result,
+            gen_kwargs,
+            created_at,
+        )
+
+    def _save_rider_clip_as_rider(
+        self,
+        rider: Any,
+        rider_result: Optional[dict],
+        result: dict,
+        gen_kwargs: dict,
+        created_at: str,
+    ) -> None:
+        from . import video_gallery
+
+        def _record(error: Optional[str] = None) -> None:
+            if rider.video_id is None or not rider.record_outcome:
+                return
+            rider.recorded = True
+            try:
+                video_gallery.record_job_outcome(
+                    rider.video_id, completed_at = int(time.time()), error = error
+                )
+            except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the batch
+                logger.warning("video.persist_job_outcome_failed: %s", exc)
+
+        with self._lock:
+            stopped = rider.outcome is not None or rider_result is None
+            if stopped:
+                self._settle_rider_locked(rider, error = VIDEO_CANCELLED_MSG)
+            else:
+                rider.closed = True
+        if stopped:
+            _record((rider.outcome or {}).get("error") or VIDEO_CANCELLED_MSG)
+            return
+        # A solo rerun returns the whole result; a batch row only what differs from the job's clip.
+        merged = {**result, **rider_result}
+        try:
+            record = video_gallery.save(
+                merged["mp4_bytes"],
+                {
+                    "prompt": rider.prompt,
+                    "negative_prompt": merged.get("negative_prompt"),
+                    "width": merged["width"],
+                    "height": merged["height"],
+                    "num_frames": merged["num_frames"],
+                    "fps": merged["fps"],
+                    "duration_s": (
+                        merged["num_frames"] / float(merged["fps"]) if merged.get("fps") else 0.0
+                    ),
+                    "steps": merged["steps"],
+                    "guidance": merged["guidance"],
+                    "guidance_2": rider.gen_kwargs.get("guidance_2", gen_kwargs.get("guidance_2")),
+                    "seed": merged["seed"],
+                    "has_audio": False,
+                    "conditioning": merged["conditioning"],
+                    "flow_shift": merged.get("flow_shift"),
+                    "audio_flow_shift": merged.get("audio_flow_shift"),
+                    "model": merged["repo_id"],
+                    "model_kind": merged.get("model_kind"),
+                    "gguf_filename": merged.get("gguf_filename"),
+                    "transformer_quant": merged.get("transformer_quant"),
+                    "text_encoder_quant": merged.get("text_encoder_quant"),
+                    "memory_mode": merged.get("memory_mode"),
+                    "offload_policy": merged.get("offload_policy"),
+                    **(
+                        {"baked_loras": list(merged["baked_loras"])}
+                        if merged.get("baked_loras")
+                        else {}
+                    ),
+                    "created_at": created_at,
+                },
+                **({"video_id": rider.video_id} if rider.video_id is not None else {}),
+            )
+        except Exception as exc:  # noqa: BLE001 -- disk failure must reach the poller
+            logger.error("video.persist_failed: %s", exc)
+            _record("Failed to save the generated video.")
+            with self._lock:
+                self._settle_rider_locked(rider, error = "Failed to save the generated video.")
+            return
+        _record()
+        with self._lock:
+            self._settle_rider_locked(rider, video = record, total = int(merged["steps"]))
+
     def _hand_off_encode(
         self, job_token: object, cancel_event: threading.Event, steps: Optional[int]
     ) -> bool:
@@ -15938,6 +16262,10 @@ class VideoBackend:
             # The clip answers by id from here (generate_outcome); the record is the next clip's.
             self._gen = {"active": False}
             self._gen_video_id = None
+            # Only a job no clip joined hands off (_hand_off_slot): its sealed, empty batch ends here.
+            self._forming = None
+            self._leader_stopped = False
+            self._job_cancel = None
             # The GPU is free: this is when the next clip can start, so the queue's ETA clock ends here.
             _note_clip_finished(True, total)
         _wake_video_queue()
@@ -16051,8 +16379,22 @@ class VideoBackend:
                     total_steps = total,
                     video_id = (video or {}).get("id"),
                 )
-            # Under the lock, so a successor's start cannot be paired with this clip's time.
-            _note_clip_finished(error is None, total)
+            # Riders the worker did not settle end with this job: its error, or nothing saved.
+            forming, self._forming = self._forming, None
+            for rider in list(getattr(forming, "riders", ()) or ()):
+                if rider.outcome is None:
+                    self._settle_rider_locked(
+                        rider,
+                        error = VIDEO_CANCELLED_MSG
+                        if rider.cancel.is_set()
+                        else (error or "The generation ended before a clip was saved."),
+                    )
+            self._leader_stopped = False
+            self._job_cancel = None
+            # Under the lock, so a successor's start cannot be paired with this clip's time. A shared
+            # denoise's time is not one clip's, so it never feeds the queue's per-clip ETA.
+            shared = bool(getattr(forming, "riders", None))
+            _note_clip_finished(error is None and not shared, total)
             if self._gen_video_id is not None:
                 self._gen_outcomes[self._gen_video_id] = (
                     self._generate_job_account,
@@ -16061,8 +16403,36 @@ class VideoBackend:
                 self._gen_outcomes.move_to_end(self._gen_video_id)
                 while len(self._gen_outcomes) > 64:
                     self._gen_outcomes.popitem(last = False)
+        # Riders settled without a save (a failed or stopped batch) persist their outcome too, each as its own account.
+        self._record_rider_outcomes(forming)
         # Outside the lock: the queue starts the next video as soon as this one ends.
         _wake_video_queue()
+
+    def _record_rider_outcomes(self, forming: Any) -> None:
+        from . import video_gallery
+        with self._lock:
+            pending = [
+                rider
+                for rider in list(getattr(forming, "riders", ()) or ())
+                if rider.outcome is not None
+                and not rider.recorded
+                and rider.record_outcome
+                and rider.video_id is not None
+            ]
+            for rider in pending:
+                rider.recorded = True
+        for rider in pending:
+            error = rider.outcome.get("error") if rider.outcome.get("phase") == "failed" else None
+            try:
+                _as_rider(
+                    rider,
+                    video_gallery.record_job_outcome,
+                    rider.video_id,
+                    completed_at = int(time.time()),
+                    error = error,
+                )
+            except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the backend busy
+                logger.warning("video.persist_job_outcome_failed: %s", exc)
 
     def generate_outcome(self, video_id: str, expected_account: Optional[str]) -> Optional[dict]:
         """The terminal progress record of the clip ``video_id``, for the account that ran it; a clip still encoding
@@ -16094,6 +16464,242 @@ class VideoBackend:
             fraction = 1.0 if gen.get("phase") == "completed" else 0.0,
         )
         return gen
+
+    # ── clips that share a denoise (video_batch) ─────────────────────────────
+
+    def forming_batch(self) -> bool:
+        """True while the running job still takes compatible queued clips into its denoise."""
+        with self._lock:
+            forming = self._forming
+            return bool(self._generate_job_active and forming is not None and forming.room())
+
+    def seal_batch(self) -> int:
+        """Close the running job's batch to new clips; returns how many clips it holds. Idempotent."""
+        with self._lock:
+            forming = self._forming
+            if forming is None:
+                return 0
+            forming.sealed.set()
+            return 1 + sum(1 for rider in forming.riders if rider.outcome is None)
+
+    def _batch_engine_decline(self, state: Any) -> Optional[str]:
+        """Engine-side reasons a load renders one clip per denoise (video_batch covers the load's modules)."""
+        bg = getattr(state, "bg_compile", None)
+        if bg is not None and bg.pending():
+            # The eager render records the compile's inputs: a batch would compile at that batch size.
+            return "a background compile is pending"
+        if self._inline_float_seeds(state) is not None:
+            return "the compile's first clip is still seeding"
+        from .video_dmd import dmd_timesteps
+
+        if (
+            dmd_timesteps(
+                *(
+                    getattr(state, name, None)
+                    for name in ("variant_id", "gguf_filename", "display_repo_id", "repo_id")
+                )
+            )
+            is not None
+        ):
+            return "a DMD student samples its own noise per clip"
+        return None
+
+    def _seal_batch_rows(self, forming: Any, cancel: Any) -> list:
+        """Wait (bounded) for the queue to hand over its riders, then seal; the live riders, in queue order."""
+        from .video_batch import SEAL_TIMEOUT_S
+
+        deadline = time.monotonic() + SEAL_TIMEOUT_S
+        while not forming.sealed.wait(0.1):
+            if self._teardown_waiters:
+                break
+            if time.monotonic() >= deadline:
+                logger.info(
+                    "video.batch: sealed after %.0f s without the queue's word", SEAL_TIMEOUT_S
+                )
+                break
+        with self._lock:
+            forming.sealed.set()
+            riders = [rider for rider in forming.riders if rider.outcome is None]
+        if riders:
+            from . import video_batch
+            video_batch.note("batches")
+            video_batch.note("rows", 1 + len(riders))
+        return riders
+
+    def _rider_record_locked(self, rider: Any) -> dict:
+        if rider.outcome is not None:
+            gen = dict(rider.outcome)
+        else:
+            gen = dict(self._gen)
+            gen["active"] = True
+            # The live preview is the job's own clip.
+            gen.pop("preview", None)
+            gen.pop("preview_seq", None)
+        gen["video_id"] = rider.video_id
+        total = int(gen.get("total") or 0)
+        step = int(gen.get("step") or 0)
+        gen["total_steps"] = total
+        gen["fraction"] = (
+            1.0
+            if gen.get("phase") == "completed"
+            else (min(1.0, step / total) if total > 0 else 0.0)
+        )
+        return gen
+
+    def _job_riders_locked(self) -> list:
+        forming = self._forming
+        return list(forming.riders) if forming is not None else []
+
+    def _keep_outcome_locked(
+        self, video_id: Optional[str], account: Optional[str], gen: dict
+    ) -> None:
+        if video_id is None:
+            return
+        self._gen_outcomes[video_id] = (account, dict(gen))
+        self._gen_outcomes.move_to_end(video_id)
+        while len(self._gen_outcomes) > 64:
+            self._gen_outcomes.popitem(last = False)
+
+    def _settle_rider_locked(
+        self,
+        rider: Any,
+        *,
+        video: Optional[dict] = None,
+        error: Optional[str] = None,
+        total: int = 0,
+    ) -> None:
+        if rider.outcome is not None:
+            return
+        if error is not None:
+            rider.outcome = {
+                "active": False,
+                "phase": "failed",
+                "error": error,
+                "step": 0,
+                "total": 0,
+                "eta_seconds": None,
+            }
+        else:
+            rider.outcome = {
+                "active": False,
+                "phase": "completed",
+                "video": video,
+                "step": total,
+                "total": total,
+                "eta_seconds": None,
+            }
+        self._keep_outcome_locked(rider.video_id, rider.account_id, rider.outcome)
+        logger.info(
+            "video_generation_progress",
+            phase = rider.outcome["phase"],
+            batch_member = True,
+            video_id = rider.video_id,
+        )
+
+    def _stop_rider_locked(self, rider: Any) -> bool:
+        if rider.outcome is not None or getattr(rider, "closed", False):
+            return False
+        rider.cancel.set()
+        self._settle_rider_locked(rider, error = VIDEO_CANCELLED_MSG)
+        return True
+
+    def _settle_stopped_members(
+        self,
+        riders: list,
+        leader_cancel: Any = None,
+    ) -> None:
+        """At a step boundary: a clip whose own Stop arrived without cancel_generate (a chat tool's stop)
+        settles now; the shared denoise keeps going for the rest."""
+        with self._lock:
+            for rider in riders:
+                if rider.cancel.is_set() and rider.outcome is None:
+                    self._settle_rider_locked(rider, error = VIDEO_CANCELLED_MSG)
+            if leader_cancel is not None and leader_cancel.is_set():
+                self._publish_leader_stopped_locked()
+
+    def _publish_leader_stopped_locked(self) -> None:
+        if self._leader_stopped:
+            return
+        self._leader_stopped = True
+        self._keep_outcome_locked(
+            self._gen_video_id,
+            self._generate_job_account,
+            {
+                "active": False,
+                "phase": "failed",
+                "error": VIDEO_CANCELLED_MSG,
+                "step": 0,
+                "total": 0,
+                "eta_seconds": None,
+            },
+        )
+
+    def member_progress(
+        self, video_id: Optional[str], account: Optional[str]
+    ) -> Optional[dict[str, Any]]:
+        """A rider's progress for its own account (by id, else its account's first live rider); None when
+        ``account`` has no clip riding in the running batch."""
+        with self._lock:
+            for rider in self._job_riders_locked():
+                if rider.account_id != account:
+                    continue
+                if video_id is not None and rider.video_id != video_id:
+                    continue
+                if video_id is None and (
+                    rider.outcome is not None or account == self._generate_job_account
+                ):
+                    continue
+                return self._rider_record_locked(rider)
+        return None
+
+    def progress_for_video(self, video_id: str) -> Optional[dict[str, Any]]:
+        """The clip ``video_id``'s own record wherever it is: ended, riding a batch, or the running job.
+        For callers that already scoped ``video_id`` to the caller's account."""
+        with self._lock:
+            kept = self._gen_outcomes.get(video_id)
+            rider = next((r for r in self._job_riders_locked() if r.video_id == video_id), None)
+            if kept is None and rider is not None:
+                return self._rider_record_locked(rider)
+            live = self._gen_video_id == video_id and self._generate_job_active
+        if kept is not None:
+            gen = dict(kept[1])
+            total = int(gen.get("total") or 0)
+            gen.update(
+                video_id = video_id,
+                active = False,
+                total_steps = total,
+                fraction = 1.0 if gen.get("phase") == "completed" else 0.0,
+            )
+            return gen
+        if live:
+            gen = self.generate_progress()
+            if gen.get("video_id") == video_id:
+                return gen
+        return None
+
+    def cancel_rider(self, video_id: Optional[str], account: Optional[str]) -> bool:
+        """Stop ``account``'s clip riding the running batch (by id, else all of its riders)."""
+        with self._lock:
+            stopped = False
+            for rider in self._job_riders_locked():
+                if rider.account_id != account:
+                    continue
+                if video_id is not None and rider.video_id != video_id:
+                    continue
+                stopped = self._stop_rider_locked(rider) or stopped
+            return stopped
+
+    def generation_accounts(self) -> frozenset:
+        """Every account with a clip in the running job: its own and its riders'."""
+        with self._lock:
+            if not self._generate_job_active:
+                return frozenset()
+            accounts = {self._generate_job_account}
+            accounts.update(
+                rider.account_id for rider in self._job_riders_locked() if rider.outcome is None
+            )
+            accounts.discard(None)
+            return frozenset(accounts)
 
     @keeps_system_awake
     @holds_inference
@@ -16128,12 +16734,17 @@ class VideoBackend:
         live_preview: Optional[bool] = None,
         # Wan only: decode the final latent with the tiny VAE (fast, lower fidelity). None = UNSLOTH_VIDEO_DRAFT_DECODE.
         draft_decode: Optional[bool] = None,
+        # The batch begin_generate opened for this clip (video_batch.Forming): its riders share the denoise.
+        _batch: Any = None,
     ) -> dict[str, Any]:
         """Render one clip. The GPU part runs under _generate_lock; the CPU MP4 encode of a clip that was not
         streamed during its decode runs after this frame returns (_encode_after_return), so a queued successor's GPU
         work overlaps it and no pipeline reference outlives the lock."""
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
+        # Riders sealed into this clip's denoise; empty renders exactly the single-clip path.
+        riders: list = []
+        row_seeds: list = []
         with self._generate_lock:
             # Never render beside a background compile; wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
@@ -16310,6 +16921,16 @@ class VideoBackend:
                     )
 
                 import torch
+
+                if _batch is not None:
+                    riders = self._seal_batch_rows(_batch, cancel)
+                if riders:
+                    # ``cancel`` is begin_generate's video_batch.AllCancelled: the shared denoise stops only
+                    # once every clip in it stopped, or on an unload / superseding load.
+                    logger.info(
+                        "video.batch: %d clips share one denoise (%s)", 1 + len(riders), fam.name
+                    )
+                batch_rows = 1 + len(riders)
 
                 if state.engine == "diffusers" and fam.modular_workflow and state.device != "cpu":
                     from .video_minimax_h3 import (
@@ -16507,13 +17128,20 @@ class VideoBackend:
                         # only when engaged, so a lever-off load keeps the key (and the peaks) it had before
                         **_memory_levers_key(state),
                     )
+                    # A batch has its own peaks (one-clip keys are unchanged); its denoise holds every row at once.
+                    single_calibration = calibration
+                    denoise_frames = int(frames) * batch_rows
+                    if batch_rows > 1:
+                        calibration = video_stream_residency.with_extra(
+                            calibration, "batch", batch_rows
+                        )
                     # Tag BEFORE the residency fit: after a reload the fit reads process-wide peaks through this key.
                     video_stream_residency.arm_request(
                         state.pipe,
                         key = calibration,
                         width = width,
                         height = height,
-                        frames = frames,
+                        frames = denoise_frames,
                         device = device_obj,
                         rearm = False,
                     )
@@ -16539,7 +17167,7 @@ class VideoBackend:
                             floor_mib = request_floor_mib,
                             width = width,
                             height = height,
-                            frames = frames,
+                            frames = denoise_frames,
                             logger = logger,
                         )
                     else:
@@ -16548,24 +17176,38 @@ class VideoBackend:
                             key = calibration,
                             width = width,
                             height = height,
-                            frames = frames,
+                            frames = denoise_frames,
                             device = device_obj,
                         )
                     available_bytes = _request_available_bytes(device_obj, torch.cuda)
-                    request_measured_mib = video_stream_residency.measured_extra_mib(
-                        calibration, int(width) * int(height) * int(frames)
+                    batch_denoise_mib = (
+                        video_stream_residency.batch_denoise_mib(
+                            single_calibration,
+                            int(width) * int(height) * int(frames),
+                            batch_rows,
+                            DEFAULT_BASE_OVERHEAD_MIB,
+                        )
+                        if batch_rows > 1
+                        else None
                     )
-                    request_denoise_mib = _ltx25_denoise_price_mib(
-                        state,
-                        family = fam.name,
-                        width = width,
-                        height = height,
-                        frames = frames,
-                        conditioned = first_pil is not None
-                        or last_pil is not None
-                        or bool(references),
-                        cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
-                        fps = out_fps,
+                    request_measured_mib = video_stream_residency.measured_extra_mib(
+                        calibration, int(width) * int(height) * int(frames) * batch_rows
+                    )
+                    request_denoise_mib = (
+                        batch_denoise_mib
+                        if batch_denoise_mib is not None
+                        else _ltx25_denoise_price_mib(
+                            state,
+                            family = fam.name,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            conditioned = first_pil is not None
+                            or last_pil is not None
+                            or bool(references),
+                            cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
+                            fps = out_fps,
+                        )
                     )
                     apply_request_prefetch_depth(
                         state.pipe,
@@ -16597,6 +17239,9 @@ class VideoBackend:
                         denoise_mib = request_denoise_mib,
                     )
                     if shortfall is not None:
+                        if batch_rows > 1:
+                            from .video_batch import BatchDoesNotFit
+                            raise BatchDoesNotFit(shortfall)
                         raise RuntimeError(shortfall)
 
                 # diffusers reproduces a Metal seed only with a CPU generator.
@@ -16607,6 +17252,10 @@ class VideoBackend:
                 if seed is None:
                     seed = int(generator.seed()) % (2**53)
                 generator = generator.manual_seed(int(seed))
+                for rider in riders:
+                    if rider.seed is None:
+                        # Resolved once: a one-at-a-time rerun after an OOM replays the same clip.
+                        rider.seed = int(torch.Generator().seed()) % (2**53)
 
                 # Snapshot the resolved request for failure logs; no prompt text, only its length.
                 request_shape = {
@@ -16715,6 +17364,21 @@ class VideoBackend:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
                 if fam.modular_workflow:
                     kwargs["output"] = ["videos", "audio", "sampling_rate"]
+                if riders:
+                    from .video_batch import row_generators
+
+                    # Row i is drawn from its own clip's generator at the one-clip shape: its solo noise.
+                    kwargs["prompt"] = [prompt] + [rider.prompt for rider in riders]
+                    row_seeds = [int(seed)] + [int(rider.seed) for rider in riders]
+                    kwargs["generator"] = row_generators(row_seeds, generator_device)
+                    negatives = [negative_prompt] + [rider.negative_prompt for rider in riders]
+                    if not fam.supports_cfg:
+                        for rider in riders:
+                            rider.negative_prompt = None
+                    elif any(negatives) and "negative_prompt" in call_params:
+                        # An absent negative prompt is the empty one, as Diffusers reads None alone.
+                        kwargs["negative_prompt"] = [text or "" for text in negatives]
+                    request_shape["batch"] = batch_rows
                 if bg_eager and not i2v_active and _bg_i2v_render(first_pil, i2v_active):
                     # Same as the i2v swap above, for a family that conditions without one (its own render).
                     i2v_swap.enter_context(bg_compile.no_record())
@@ -16908,9 +17572,13 @@ class VideoBackend:
                     if not cancel.is_set():
                         _tick(step_index + 1)
                         if previewer is not None:
-                            previewer.on_step(
-                                callback_kwargs.get("latents"), getattr(p, "scheduler", None)
-                            )
+                            latents = callback_kwargs.get("latents")
+                            if riders and latents is not None:
+                                # The preview is this job's own clip, row 0.
+                                latents = latents[:1]
+                            previewer.on_step(latents, getattr(p, "scheduler", None))
+                    if riders:
+                        self._settle_stopped_members(riders, getattr(cancel, "leader", None))
                     if cancel.is_set():
                         p._interrupt = True
                     cross_forward_step(p, step_index, timestep = timestep)
@@ -16964,6 +17632,15 @@ class VideoBackend:
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         # NaN / inf pixels are refused at the decode, before a clamp or PIL / uint8 cast hides them.
                         stack.enter_context(finite_video_decode(pipe))
+                        if riders:
+                            from .video_batch import eager_render, per_row_decode, per_row_encode
+
+                            # Outermost: each clip decodes alone, through every layer above.
+                            stack.enter_context(per_row_decode(pipe, lambda: batch_rows))
+                            # The batch shape never compiles or captures on a user's request.
+                            stack.enter_context(eager_render(pipe))
+                            # Each clip's prompt is encoded alone, as in its own render.
+                            stack.enter_context(per_row_encode(pipe))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
                         if stream_session is not None:
@@ -17004,6 +17681,12 @@ class VideoBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
+                if riders and state.transformer_cache:
+                    from .video_batch import BatchDoesNotFit
+
+                    # A step cache judges the whole batch's residual: one clip would decide another's skips.
+                    # Before any denoise: the clips render one at a time, each with its own cache decision.
+                    raise BatchDoesNotFit("a step cache engaged for this render")
                 # A step cache keys residuals on cond / uncond context, invisible to a graph key: graphs armed with the cache off run eager.
                 graph_handles = tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
                 if graph_handles:
@@ -17040,9 +17723,11 @@ class VideoBackend:
                 stream_session = open_stream_encode(
                     pipe,
                     out_fps,
+                    # One clip's frames per session: a batch encodes each clip after its decode.
                     engage = not fam.modular_workflow
                     and not fam.has_audio
-                    and ltx25_render_call is None,
+                    and ltx25_render_call is None
+                    and not riders,
                     logger = logger,
                 ) or open_h3_stream_encode(
                     pipe,
@@ -17092,6 +17777,10 @@ class VideoBackend:
                     seeded = kwargs.get("generator")
                     if isinstance(seeded, torch.Generator):
                         seeded.manual_seed(int(seed))
+                    elif isinstance(seeded, list):
+                        # A batch: each row's generator back to its own clip's seed, so the retry draws its solo noise.
+                        for row_generator, row_seed in zip(seeded, row_seeds):
+                            row_generator.manual_seed(int(row_seed))
                     return render_call()
 
                 try:
@@ -17158,10 +17847,28 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
+                rider_results: list = []
+                for index, rider in enumerate(riders, start = 1):
+                    if rider.cancel.is_set():
+                        rider_results.append(None)
+                        continue
+                    # Batch families have no soundtrack (video_batch.BATCH_FAMILIES).
+                    rider_results.append(
+                        {
+                            "mp4_bytes": self._encode_mp4(
+                                output.frames[index], out_fps, None, None
+                            ),
+                            "seed": int(rider.seed),
+                            "negative_prompt": rider.negative_prompt,
+                            "num_frames": len(output.frames[index]),
+                        }
+                    )
                 # A clip not streamed during its decode is encoded on the CPU after the lock is released (NVENC
                 # stays under it: it encodes on the GPU). finish_encode below runs it.
+                # A shared denoise encodes every clip here, under the lock, as its job keeps the slot to the end.
                 deferred_encode = (
                     stream_session is None
+                    and not riders
                     and _encode_outside_lock_enabled()
                     and not nvenc_requested()
                 )
@@ -17248,6 +17955,7 @@ class VideoBackend:
                     "offload_policy": state.offload_policy,
                     "baked_loras": video_lora.baked_lora_names(state.pipe),
                     "draft_decode": bool(getattr(draft_ctx, "calls", 0)),
+                    **({"riders": list(zip(riders, rider_results))} if riders else {}),
                 }
             except Exception as exc:
                 finish_encode = None
@@ -18187,12 +18895,33 @@ class VideoBackend:
         """Stop the in-flight generation; expected_* are rechecked under begin_generate's lock,
         so a cancel of a finished job cannot hit its successor."""
         with self._lock:
+            riders = [rider for rider in self._job_riders_locked() if rider.outcome is None]
+            if riders and expected_video_id is not None:
+                rider = next((r for r in riders if r.video_id == expected_video_id), None)
+                if rider is not None:
+                    if expected_account is not None and rider.account_id != expected_account:
+                        return False
+                    return self._stop_rider_locked(rider)
+            stopped = False
+            if expected_video_id is None and expected_account is not None:
+                # An account-wide stop (a deleted account) reaches its riders too.
+                for rider in riders:
+                    if rider.account_id == expected_account:
+                        stopped = self._stop_rider_locked(rider) or stopped
             cancel = self._active_generate_cancel
             if (
                 cancel is not None
                 and (expected_video_id is None or self._gen_video_id == expected_video_id)
                 and (expected_account is None or self._generate_job_account == expected_account)
             ):
+                if (
+                    any(not rider.cancel.is_set() for rider in riders)
+                    and self._job_cancel is not None
+                ):
+                    # Only this job's own clip stops: the riders sharing its denoise keep going.
+                    self._job_cancel.set()
+                    self._publish_leader_stopped_locked()
+                    return True
                 cancel.set()
                 return True
             # A clip encoding after handing the GPU on is still in progress until its last cancel check: Stop
@@ -18206,7 +18935,7 @@ class VideoBackend:
             ):
                 tail.cancel.set()
                 return True
-            return False
+            return stopped
 
     # ── teardown + status ────────────────────────────────────────────────────
 
@@ -18308,10 +19037,15 @@ class VideoBackend:
                 from .gpu_arbiter import VIDEO, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
 
-                if (
-                    self._active_generate_cancel is not None
-                    and self._generate_job_account != expected_account
+                if self._active_generate_cancel is not None and (
+                    self._generate_job_account != expected_account
+                    or any(
+                        rider.account_id != expected_account
+                        for rider in self._job_riders_locked()
+                        if rider.outcome is None
+                    )
                 ):
+                    # Another account's clip is in the render, its own or riding this job's batch.
                     raise GpuBusyForAnotherAccountError(VIDEO, 1)
                 require_resident_control(
                     VIDEO, self._state.repo_id if self._state is not None else None
@@ -18655,6 +19389,14 @@ def _family_shape_defaults(fam) -> dict:
     }
 
 
+def _as_rider(rider: Any, target: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Call ``target`` as the account that queued ``rider``; a rider with no captured account runs as the caller."""
+    account = getattr(rider, "account", None)
+    if account is None:
+        return target(*args, **kwargs)
+    return run_as(account, target, *args, **kwargs)
+
+
 def _note_clip_started(fam, width, height, num_frames, steps) -> None:
     """Tell the video queue which shape now runs, for its ETAs; never fails a generation."""
     try:
@@ -18698,6 +19440,14 @@ def retire_load_for_account(account_id: str) -> bool:
     """Tear down an in-flight video load ``account_id`` started, without constructing the backend."""
     from hub.services.models.account_access import retire_media_load
     return retire_media_load("video", account_id, _backend)
+
+
+def generation_accounts_in_flight() -> frozenset:
+    """Every account with a clip in the running video job (riders of a shared denoise included)."""
+    backend = _backend
+    if backend is None or not backend._generate_job_active:
+        return frozenset()
+    return backend.generation_accounts()
 
 
 def encode_account_in_flight() -> Optional[str]:

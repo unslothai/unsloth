@@ -1681,6 +1681,30 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     return count
 
 
+def _has_unpriced_media(messages: list[dict]) -> bool:
+    """Audio or video, which every fit leaves uncounted; images are priced."""
+    from core.inference.context_window import _IMAGE_PART_TYPES, _UNPRICED_MEDIA_TYPES
+
+    uncounted = _UNPRICED_MEDIA_TYPES - _IMAGE_PART_TYPES
+    return any(
+        isinstance(part, dict) and part.get("type") in uncounted
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+
+
+def _with_transcript_link(messages: list[dict], thread_id: Optional[str]) -> list[dict]:
+    """The prompt as `_archive_and_recall` will send it, with the transcript link it adds."""
+    from core.inference import compaction_transcript
+    from core.rag import conversation_archive
+
+    if not thread_id or not conversation_archive.enabled():
+        return messages
+    path = compaction_transcript.path_for(thread_id)
+    return compaction_transcript.link_in_block(messages, path) if path else messages
+
+
 def _records_boundary(truncation: dict) -> bool:
     """Not the fits flag: a rescued fit still evicts, and skipping the save compacts silently. Saving is not replaying: sticky logic declines fits-false records."""
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
@@ -4412,6 +4436,12 @@ _WINDOWS_SYSMEM_FALLBACK_MAX_FRACTION = 0.125
 # WDDM backs GPU allocations with system commit the process never touches (#16015).
 _WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB = 2048
 _WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB = 4096
+
+
+def _windows_host_commit_headroom_mib() -> Optional[int]:
+    """Commit headroom for the pre-launch host check; module-level so tests stub the real reading."""
+    from .diffusion_memory import _windows_commit_headroom_mib
+    return _windows_commit_headroom_mib()
 
 
 def _windows_private_memory(pid: int) -> Optional[tuple[int, int]]:
@@ -16925,6 +16955,286 @@ class LlamaCppBackend:
             "slow generation, and slower still on a hard disk than on an SSD. A smaller "
             "or more quantized GGUF, or more free memory, would run faster."
         )
+
+    @staticmethod
+    def _windows_host_commit_refusal_message(
+        private_host_bytes: int,
+        avail_mib: Optional[int],
+        commit_headroom_mib: Optional[int],
+        headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
+    ) -> Optional[str]:
+        """Refusal text when memory the child holds privately in host RAM (an unmapped weight
+        spill plus the host share of the KV cache) exceeds min(available RAM, commit headroom);
+        None when it fits or neither reading is known. Windows does not overcommit, so running
+        past the commit limit fails the load (or other apps) instead of paging."""
+        if private_host_bytes <= 0:
+            return None
+        limits = [v for v in (avail_mib, commit_headroom_mib) if v is not None]
+        if not limits:
+            return None
+        limit_mib = min(limits)
+        need_mib = private_host_bytes / (1024 * 1024)
+        if need_mib <= limit_mib - headroom_mib:
+            return None
+        need_gb = math.ceil(need_mib / 1024)
+        usable_gb = math.floor(max(0, limit_mib - headroom_mib) / 1024)
+        by_commit = commit_headroom_mib is not None and (
+            avail_mib is None or commit_headroom_mib <= avail_mib
+        )
+        what = "commit (RAM plus page file)" if by_commit else "system RAM"
+        return (
+            f"This model and context need about {need_gb} GB of {what} outside the GPU, "
+            f"and only about {usable_gb} GB is free after keeping "
+            f"{headroom_mib / 1024:.0f} GB for the rest of the system, so Windows would run "
+            "out of memory part way through the load. The load was not started: choose a "
+            "smaller or more quantized GGUF, or a shorter context, and load again."
+        )
+
+    def _windows_cpu_expert_layers(
+        self,
+        model_path: Optional[str],
+        argv: Sequence[str],
+        env: Mapping[str, str],
+        n_layers: Optional[int],
+    ) -> tuple[int, int]:
+        """(expert bytes in the GGUF, how many leading layers keep theirs on the CPU) under
+        --cpu-moe / --n-cpu-moe or their LLAMA_ARG_* twins; (0, 0) when unknown. --cpu-moe pins
+        every layer's experts. -ot patterns are not guessed at."""
+        everything = _extra_args_set_any_flag(argv, {"--cpu-moe", "-cmoe"}) or (
+            env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
+        )
+        if not n_layers:
+            if not everything:
+                return 0, 0
+        elif not everything:
+            raw = _extra_args_device(argv, frozenset({"--n-cpu-moe", "-ncmoe"}))
+            if raw is None:
+                raw = env.get("LLAMA_ARG_N_CPU_MOE")
+            if not _is_positive_int(raw):
+                return 0, 0
+        scan = self._gguf_tensor_scan(model_path)
+        experts = int(scan[2]) if scan else 0
+        if everything:
+            return experts, n_layers or 0
+        return experts, min(int(str(raw).strip()), n_layers)
+
+    def _windows_host_kv_share(
+        self, layer_share: float, n_layers: int, n_ctx: int, shape: Mapping[str, object]
+    ) -> float:
+        """Share of the KV cache the CPU layers hold, from ``layer_share`` of the layers on the CPU.
+        llama.cpp offloads the last layers, so the CPU keeps the first ones; layers that allocate no
+        cache (shared-KV tails, SWA weights) are weighted as the estimator weights them."""
+        cpu_layers = min(n_layers, max(0, round(layer_share * n_layers)))
+        try:
+            weights = self._kv_layer_weights(
+                n_ctx,
+                swa_full = bool(shape.get("swa_full")),
+                n_parallel = int(shape.get("n_parallel") or 1),
+                kv_unified = bool(shape.get("kv_unified", True)),
+                n_ubatch = shape.get("n_ubatch"),
+                flash_attn = bool(shape.get("flash_attn", True)),
+            )
+        except Exception:  # noqa: BLE001 -- fall back to the layer count
+            weights = []
+        if len(weights) == n_layers and sum(weights) > 0:
+            return sum(weights[:cpu_layers]) / sum(weights)
+        # Per-layer KV heads (hybrid models): layers with none allocate no growing cache.
+        heads = getattr(self, "_n_kv_heads_by_layer", None)
+        if isinstance(heads, (list, tuple)) and len(heads) == n_layers:
+            per_layer = [max(0, int(h or 0)) for h in heads]
+            shared = int(getattr(self, "_shared_kv_layers", None) or 0)
+            if 0 < shared < n_layers:
+                per_layer[n_layers - shared :] = [0] * shared
+            if sum(per_layer) > 0:
+                return sum(per_layer[:cpu_layers]) / sum(per_layer)
+        allocating = n_layers - int(getattr(self, "_shared_kv_layers", None) or 0)
+        if 0 < allocating < n_layers:
+            return min(cpu_layers, allocating) / allocating
+        return layer_share
+
+    def _windows_host_commit_refusal(
+        self,
+        cmd: Iterable[str],
+        reachable_gpus: Iterable[tuple],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        child_has_no_gpu: bool = False,
+        avail_mib: Optional[int] = None,
+        auto_unmapped: bool = False,
+        shared_gpu_ids: Iterable[int] = (),
+        integrated_gpu_ids: Iterable[int] = (),
+        commit_headroom_mib = None,
+    ) -> Optional[str]:
+        """Pre-launch check on Windows only: private host bytes (weights that spill past free VRAM
+        when the load mode copies them, plus the KV cache share held in host RAM) against
+        min(available RAM, commit headroom). Memory-mapped weights are file-backed and charge no
+        commit, so a mapped spill stays the advisory's business. Never raises."""
+        if sys.platform != "win32":
+            return None
+        try:
+            argv = [str(a) for a in cmd or ()]
+            _env = os.environ if env is None else env
+            # Unified-memory devices price host and GPU memory as one pool elsewhere.
+            if set(shared_gpu_ids or ()) or set(integrated_gpu_ids or ()):
+                return None
+            if (_extra_args_device(argv, self._ARGV_RPC) or "").strip() or str(
+                _env.get("LLAMA_ARG_RPC", "") or ""
+            ).strip():
+                return None
+            model_path = _extra_args_device(argv, self._ARGV_MODEL)
+            model_bytes = self._gguf_read_bytes(model_path) if model_path else 0
+            if not model_bytes:
+                return None
+            gpus = [] if child_has_no_gpu else list(reachable_gpus or ())
+            if not gpus and not child_has_no_gpu:
+                return None  # an unread GPU probe looks GPU-less; never refuse on it
+            # An integrated or unified-memory GPU reports dedicated plus shared host memory as its
+            # own (a 64 GB Windows-on-Arm part shows about 110 GB), so its free figure is never a
+            # VRAM credit, and this check leaves those loads to the unified-memory paths. Probed
+            # here even when uncached: this runs once, right before a model load.
+            try:
+                unified = set(self._rocm_unified_memory_gpu_ids())
+                unified |= set(self._integrated_cuda_gpu_ids())
+            except Exception:  # noqa: BLE001 -- unknown is not unified
+                unified = set()
+            if {row[0] for row in gpus} & unified:
+                return None
+            try:
+                lazy = self._lazy_read_host_bytes(
+                    model_path,
+                    caps = self.probe_server_capabilities(argv[0]),
+                    extra_args = argv,
+                    env = _env,
+                )
+            except Exception:  # noqa: BLE001 -- no discount: mapped bytes are not refused anyway
+                lazy = 0
+            # Without draft-mtp llama.cpp never loads the embedded NextN/MTP blocks.
+            try:
+                unloaded = (
+                    0
+                    if _extra_args_requests_mtp(argv, _env)
+                    else int(self._unloaded_nextn_bytes(model_path) or 0)
+                )
+            except Exception:  # noqa: BLE001 -- unknown: no discount
+                unloaded = 0
+            # Lazy-read tables stay mapped from disk and never take VRAM: price the rest, as the
+            # host-RAM advisory does, so they neither spill nor pull KV onto the host.
+            resident = max(1, model_bytes - max(0, lazy) - max(0, unloaded))
+            free_vram_bytes = sum(max(0, row[1]) for row in gpus) * 1024 * 1024
+            # A hand-set layer count caps what the GPUs hold, whatever VRAM is free.
+            try:
+                requested = parse_gpu_layers_override(argv)
+            except ValueError:
+                requested = None
+            if requested is None and _env_fixes_gpu_layers(_env):
+                raw = str(_env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip().lower()
+                requested = int(raw) if raw.lstrip("-").isdigit() else None
+            n_layers = getattr(self, "_n_layers", None)
+            # Weights sit on physical layers; a looped model visits each more than once (cache slots).
+            n_phys = getattr(self, "_n_weight_layers", None) or n_layers
+            experts, pinned = self._windows_cpu_expert_layers(model_path, argv, _env, n_phys)
+            # llama.cpp offloads the LAST layers, so the CPU keeps the first ones; experts pinned in
+            # the first `pinned` layers stay on the CPU only where those layers were offloaded.
+            gpu_layers = n_phys
+            cpu_layer_share = 0.0
+            if requested is not None and requested >= 0 and n_phys:
+                gpu_layers = min(requested, n_phys)
+                cpu_layer_share = (n_phys - gpu_layers) / n_phys
+            if n_phys:
+                pinned_on_gpu = max(0, pinned - (n_phys - gpu_layers))
+                gpu_eligible = max(0, (resident * gpu_layers - experts * pinned_on_gpu) // n_phys)
+            else:
+                gpu_eligible = max(0, resident - experts)
+            free_vram_bytes = min(free_vram_bytes, gpu_eligible)
+            spill = max(0, resident - free_vram_bytes)
+            _, reserves_ram = resolve_effective_memory_state(
+                argv, _env, auto_unmapped = auto_unmapped
+            )
+            private = spill if reserves_ram else 0
+            # argv wins over the LLAMA_ARG_* environment, as in llama.cpp.
+            ctx_raw = _extra_args_device(argv, frozenset({"-c", "--ctx-size"}))
+            if ctx_raw is None:
+                ctx_raw = str(_env.get("LLAMA_ARG_CTX_SIZE") or "")
+            n_ctx = int(ctx_raw) if ctx_raw.strip().lstrip("-").isdigit() else 0
+            if n_ctx <= 0:
+                n_ctx = int(getattr(self, "_context_length", 0) or 0)
+            kv_on_host = cpu_layer_share
+            if child_has_no_gpu or not _kv_offload_from_args(argv, _env):
+                kv_on_host = 1.0
+            elif (
+                spill
+                and not _args_place_tensors_on_cpu(argv)
+                and not _env_places_tensors_on_cpu(_env)
+            ):
+                # A layer split keeps the KV of the layers left on the CPU in host RAM.
+                kv_on_host = max(kv_on_host, spill / resident)
+            if kv_on_host and n_ctx > 0:
+                k_type, v_type = _effective_main_cache_types(argv, _env)
+                parallel_raw = _extra_args_device(argv, frozenset({"-np", "--parallel"}))
+                if parallel_raw is None:
+                    parallel_raw = str(_env.get("LLAMA_ARG_N_PARALLEL") or "")
+                n_parallel = max(1, int(parallel_raw) if parallel_raw.strip().isdigit() else 1)
+                # Every cache knob the child resolves from argv and the environment.
+                shape = dict(
+                    n_parallel = n_parallel,
+                    swa_full = _swa_full_from_args_or_env(argv, _env),
+                    kv_unified = _kv_unified_from_args(argv, env = _env),
+                    n_ubatch = _extra_args_n_ubatch(argv, _env, n_ctx),
+                    flash_attn = _flash_attn_enabled_from_args(argv, env = _env),
+                )
+                kv = self._estimate_kv_cache_bytes(n_ctx, k_type, **shape)
+                # A refusal must not over-price: K and V each take their width's share of the
+                # cache at their own type (half each when the widths are unknown); MLA caches K only.
+                # With flash attention off the estimator already floors V at f16, so a V at or
+                # under f16 is priced inside the K-type estimate.
+                v_inside = shape["flash_attn"] is False and _kv_bytes_per_elem(
+                    v_type
+                ) <= _kv_bytes_per_elem("f16")
+                if (
+                    v_type != k_type
+                    and not v_inside
+                    and getattr(self, "_kv_lora_rank", None) is None
+                ):
+                    k_len = getattr(self, "_kv_key_length", None)
+                    v_len = getattr(self, "_kv_value_length", None)
+                    k_frac = k_len / (k_len + v_len) if k_len and v_len else 0.5
+                    kv_v = self._estimate_kv_cache_bytes(n_ctx, v_type, **shape)
+                    kv = int(kv * k_frac + kv_v * (1 - k_frac))
+                # Per-slot weights only map onto layers when slots and physical layers agree.
+                if 0 < kv_on_host < 1 and n_layers and n_phys == n_layers:
+                    cpu_layers = min(n_layers, max(0, round(kv_on_host * n_layers)))
+                    # Hybrid models: the estimate holds fixed recurrent state beside the growing
+                    # attention KV; each lives on its own layers, so price each by its CPU share.
+                    try:
+                        recurrent = int(self._rollback_state_bytes(n_parallel) or 0)
+                    except Exception:  # noqa: BLE001 -- not a recurrent hybrid
+                        recurrent = 0
+                    heads = getattr(self, "_n_kv_heads_by_layer", None)
+                    if (
+                        0 < recurrent < kv
+                        and isinstance(heads, (list, tuple))
+                        and len(heads) == n_layers
+                    ):
+                        no_attn = [not int(h or 0) for h in heads]
+                        rec_share = sum(no_attn[:cpu_layers]) / max(1, sum(no_attn))
+                        attn_share = self._windows_host_kv_share(kv_on_host, n_layers, n_ctx, shape)
+                        private += int((kv - recurrent) * attn_share + recurrent * rec_share)
+                        kv_on_host = 0.0
+                    else:
+                        kv_on_host = self._windows_host_kv_share(kv_on_host, n_layers, n_ctx, shape)
+                private += int(kv * kv_on_host)
+            if private <= 0:
+                return None
+            if avail_mib is None:
+                avail_mib = self._available_system_memory_mib()
+            if commit_headroom_mib is None:
+                commit_headroom_mib = _windows_host_commit_headroom_mib()
+            return self._windows_host_commit_refusal_message(
+                private, avail_mib, commit_headroom_mib
+            )
+        except Exception as e:  # noqa: BLE001 -- an unreadable host never blocks a load
+            logger.debug("Windows host commit pre-check skipped: %s", e)
+            return None
 
     @staticmethod
     def _host_offload_warning_opted_out() -> bool:
@@ -33583,6 +33893,25 @@ class LlamaCppBackend:
                     _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 self._record_load_warning(_offload_msg)
 
+                # Windows: the host-RAM advisory above loads anyway, but private host memory past
+                # the commit limit fails mid-load with no clean error, so refuse before the spawn.
+                _win_commit_msg = self._windows_host_commit_refusal(
+                    cmd,
+                    _reachable_gpus,
+                    env,
+                    child_has_no_gpu = _child_has_no_gpu,
+                    avail_mib = _preflight_avail_mib,
+                    auto_unmapped = _launch_auto_unmapped,
+                    shared_gpu_ids = _shared_gpu_ids,
+                    integrated_gpu_ids = _vulkan_igpu_ids,
+                )
+                if _win_commit_msg:
+                    logger.warning("Windows host commit pre-check: %s", _win_commit_msg)
+                    if self._other_servers_running():
+                        # The chat load loop frees a loaded model and retries.
+                        raise GpuMemoryShortError(_win_commit_msg, host = True)
+                    raise RuntimeError(_win_commit_msg)
+
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd
 
@@ -41327,13 +41656,12 @@ class LlamaCppBackend:
         )
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
-            for _ev in _auto["events"]:
-                yield _ev
             conversation.extend(_auto["messages"])
         _auto_satisfies_forced_choice = bool(_auto) and (
             tool_choice == "required" or forced_tool_name(tool_choice) == "search_knowledge_base"
         )
         # After the message, so the tool block heading the cached prompt stays put; a forced tool keeps its first call.
+        _mcp_auto = None
         if (
             mcp_match_exchange
             and mcp_match_exchange.get("messages")
@@ -41343,9 +41671,31 @@ class LlamaCppBackend:
                 continue_final_message and trailing_assistant_resume_kind(conversation) is not None
             )
         ):
-            for _ev in mcp_match_exchange["events"]:
-                yield _ev
-            conversation.extend(mcp_match_exchange["messages"])
+            _mcp_auto = mcp_match_exchange
+            conversation.extend(_mcp_auto["messages"])
+
+        _initial_searches_sent = False
+
+        def _initial_search_events():
+            nonlocal _initial_searches_sent
+            if not _initial_searches_sent:
+                _initial_searches_sent = True
+                for exchange in (_auto, _mcp_auto):
+                    if exchange:
+                        yield from exchange["events"]
+
+        _retry_whole_document = (
+            not _skip_autoinject
+            and context_overflow == "truncate_oldest"
+            and bool(self._effective_context_length)
+            and rag_scope
+            and rag_scope.get("thread_id")
+            and not rag_scope.get("kb_id")
+            and rag_scope.get("whole_doc") is not False
+            and (not (_auto and _auto.get("whole_document")) or _mcp_auto)
+        )
+        if not _retry_whole_document:
+            yield from _initial_search_events()
 
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -41828,6 +42178,7 @@ class LlamaCppBackend:
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop recost failed", exc_info = True)
             if iteration >= max_tool_iterations + _extra + _continuation_credits:
+                yield from _initial_search_events()
                 break
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -41839,6 +42190,7 @@ class LlamaCppBackend:
 
             active_tools = tool_controller.active_tools()
             if not active_tools:
+                yield from _initial_search_events()
                 _append_budget_exhausted_nudge = False
                 break
             from core.inference.chat_template_helpers import neutralize_tool_descriptions
@@ -41916,6 +42268,93 @@ class LlamaCppBackend:
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
                     _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
+                    _fit_recall_cap = float("inf")
+                    if (
+                        _retry_whole_document
+                        and not _initial_searches_sent
+                        and truncation
+                        and truncation.get("fits")
+                        and truncation.get("dropped_messages")
+                        and not _has_unpriced_media(conversation)
+                    ):
+                        try:
+                            old_ids = {id(message) for message in (_auto or {}).get("messages", ())}
+                            live_ids = {id(message) for message in conversation}
+                            if not (_auto and _auto.get("whole_document") and old_ids <= live_ids):
+                                base = [
+                                    message
+                                    for message in conversation
+                                    if id(message) not in old_ids
+                                ]
+                                refreshed = build_rag_autoinject(
+                                    base, rag_scope, whole_document_only = True
+                                )
+                                if refreshed:
+                                    # Keep the document search before the MCP search in the prompt and stream.
+                                    mcp_ids = {
+                                        id(message)
+                                        for message in (_mcp_auto or {}).get("messages", ())
+                                    }
+                                    at = next(
+                                        (
+                                            i
+                                            for i, message in enumerate(base)
+                                            if id(message) in mcp_ids
+                                        ),
+                                        len(base),
+                                    )
+                                    candidate = base[:at] + refreshed["messages"] + base[at:]
+                                    measured = _fit_count_tokens(
+                                        candidate, safe_tools, _reasoning_kw
+                                    )
+                                    # The ceilings bound what is sent, which carries the transcript link the fit leaves uncounted.
+                                    linked = _with_transcript_link(candidate, thread_id)
+                                    sent_tokens = (
+                                        measured
+                                        if linked is candidate
+                                        else _fit_count_tokens(linked, safe_tools, _reasoning_kw)
+                                    )
+                                    # The fit's own target, also on a replay: headroom, plus the recall reserve a rolling fit holds back.
+                                    budget = prompt_budget(
+                                        self._effective_context_length, _iteration_max_tokens
+                                    )
+                                    headroom_line = budget - int(
+                                        budget
+                                        * _effective_headroom_ratio(compaction_headroom_ratio)
+                                    )
+                                    reserve = (
+                                        _conversation_recall_reserve(thread_id)
+                                        if not truncation.get("checkpoint")
+                                        else 0
+                                    )
+                                    fitted_tokens = truncation["prompt_tokens_after"]
+                                    # Growth stays under the unfitted prompt, which admission already priced.
+                                    if measured <= fitted_tokens or sent_tokens <= min(
+                                        headroom_line - reserve,
+                                        truncation["prompt_tokens_before"],
+                                    ):
+                                        # A larger prompt leaves this fit's recall only the room under both ceilings.
+                                        if measured > fitted_tokens:
+                                            _fit_recall_cap = max(
+                                                0,
+                                                min(
+                                                    headroom_line,
+                                                    truncation["prompt_tokens_before"],
+                                                )
+                                                - sent_tokens,
+                                            )
+                                        _auto = refreshed
+                                        conversation = candidate
+                                        truncation["prompt_tokens_after"] = measured
+                                        # A forced name stays forced: this fit priced and worded the prompt for that one tool.
+                                        if tool_choice == "required":
+                                            _forced_choice_resolved = True
+                                            requested_choice = "auto"
+                        except Exception:
+                            logger.debug(
+                                "Whole-document retry after compaction failed", exc_info = True
+                            )
+                    yield from _initial_search_events()
                     if truncation and truncation.get("fits"):
                         # Before the recall injection, so both sides describe the same
                         # messages, priced by the fit with the catalogue and template.
@@ -41939,12 +42378,15 @@ class LlamaCppBackend:
                             # A rescued refusal may evict messages; archive them without recall.
                             recall_done = _conversation_recall_done or not truncation["fits"],
                             # Leave room for the answer appended on the next iteration.
-                            recall_budget_tokens = _retrieval_budget(
-                                self._effective_context_length,
-                                # As above: the cap this iteration will actually send.
-                                _iteration_max_tokens,
-                                truncation.get("prompt_tokens_after") or 0,
-                                reply_returns = True,
+                            recall_budget_tokens = min(
+                                _retrieval_budget(
+                                    self._effective_context_length,
+                                    # As above: the cap this iteration will actually send.
+                                    _iteration_max_tokens,
+                                    truncation.get("prompt_tokens_after") or 0,
+                                    reply_returns = True,
+                                ),
+                                _fit_recall_cap,
                             ),
                             count_tokens = lambda fitted: self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
@@ -41983,6 +42425,7 @@ class LlamaCppBackend:
                 except Exception as exc:
                     logger.warning("Could not preflight the rolling context window: %s", exc)
 
+            yield from _initial_search_events()
             payload = {
                 # Re-run each iteration: tool results may contain forged turns.
                 "messages": neutralize_control_markup_in_messages(

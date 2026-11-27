@@ -14,6 +14,12 @@ from core.inference import video as video_mod
 from core.inference.diffusion_prequant import PrequantSource
 from core.inference.diffusion_te_prequant import TePrequantSource
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._symlinks import skip_without_symlinks
+except ImportError:
+    from _symlinks import skip_without_symlinks
+
 BASE = "someone/fake-video-base"
 PREQUANT = "someone/fake-video-prequant"
 TE_KEY = "a1" * 32
@@ -238,6 +244,7 @@ def test_a_snapshot_symlink_to_another_blob_is_not_counted(fake_cache):
     (folder / "refs" / "main").write_text(commit)
     snap = folder / "snapshots" / commit / "text_encoder_fp8.safetensors"
     snap.parent.mkdir(parents = True)
+    skip_without_symlinks(fake_cache)
     snap.symlink_to(old)
     assert backend.load_progress()["downloaded_bytes"] == 0
 

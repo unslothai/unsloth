@@ -11,7 +11,8 @@
 - Trainer / SFTTrainer: every training step runs through the pipeline schedule (PipelineParallel.step runs the
   backward, the Trainer does not). The Trainer batch is split into UNSLOTH_PP_MICROBATCHES micro-batches
   (default 2 x pp, lowered to a divisor of the batch) under UNSLOTH_PP_SCHEDULE (default 1f1b; a
-  step with fewer micro-batches than stages runs as gpipe); every micro-batch loss is its summed token loss over the
+  step with fewer micro-batches than stages, or a MoE step with the router aux loss on, runs as gpipe: the aux loss
+  is formed over the whole batch, as one GPU does); every micro-batch loss is its summed token loss over the
   token count of the whole accumulation window over every dp replica, as with gradient accumulation on one
   GPU. With gradient_accumulation_steps > 1 the window's batches wait and run together, as micro-batches
   of the same row count, in as few schedule steps as padding allows (rows grouped by length), so the
@@ -937,7 +938,12 @@ def _refuse_split_router_aux_at_init(
             continue  # the step raises its own error
         if pad and layout.microbatches:
             continue  # this schedule cannot run the UNSLOTH_PP_MICROBATCHES asked for; the split says so
-        if m > 1:
+        # A split batch carries the aux loss over the whole batch under GPipe (the default schedule runs it);
+        # evaluation is forward only.
+        whole = schedule == "gpipe" or (
+            getattr(layout, "schedule_auto", False) and schedule == "1f1b"
+        )
+        if m > 1 and train and not whole:
             raise NotImplementedError(_split_router_aux_message(layout.env_vars, m))
 
 
@@ -980,8 +986,10 @@ def _batch(stage, inputs):
 
 
 def _refuse_split_router_aux(stage, n_microbatches):
-    """Pipeline sums router load-balancing loss per micro-batch; one GPU step forms it once over the
-    batch (a product of means), a different objective. Refused when micro-batches > 1."""
+    """One GPU step forms the router load-balancing loss once over the batch (a product of means), not per
+    micro-batch. A split training batch carries it over the whole batch (pp_native._CarriedRouterAux), which
+    needs every forward before the first backward: GPipe, or the default schedule (which then runs GPipe).
+    Refused under an explicit 1F1B / multi-stage schedule."""
     moe = getattr(getattr(stage, "ctx", None), "moe", None)
     if n_microbatches <= 1 or moe is None:
         return
@@ -989,16 +997,30 @@ def _refuse_split_router_aux(stage, n_microbatches):
 
     if not _router_aux_requested(stage.ctx, moe.config) or not _router_aux_coef(moe):
         return
+    if _whole_batch_aux_schedule(stage, n_microbatches):
+        return
     raise NotImplementedError(_split_router_aux_message(_env_vars(stage), n_microbatches))
+
+
+def _whole_batch_aux_schedule(stage, n_microbatches):
+    """The schedule a split batch with the router aux loss runs runs every forward before any backward."""
+    if getattr(getattr(stage, "spec", None), "multi", False):
+        return False
+    step_schedule = getattr(stage, "step_schedule", None)
+    if callable(step_schedule) and getattr(stage.ctx, "aux_batch_rows", None) is not None:
+        return step_schedule(n_microbatches) == "gpipe"
+    schedule = getattr(stage, "schedule", None)
+    return schedule == "gpipe" or (getattr(stage, "schedule_auto", False) and schedule == "1f1b")
 
 
 def _split_router_aux_message(env_vars, n_microbatches):
     return (
         f"Unsloth: {env_vars} (pipeline parallel) splits each Trainer batch into {n_microbatches} "
-        "micro-batches, and the pipeline adds the router load-balancing loss per micro-batch, which is not the "
-        "loss the Trainer forms over the whole batch on one GPU. Set UNSLOTH_PP_MICROBATCHES=1 with "
-        "UNSLOTH_PP_SCHEDULE=gpipe (where this torch allows one micro-batch), or turn the auxiliary loss off "
-        "(router_aux_loss_coef = 0.0 in SFTConfig, or model.config.output_router_logits = False with a plain "
+        "micro-batches. The router load-balancing loss is formed over the whole batch, as the Trainer does on one "
+        "GPU (not as a sum of per micro-batch losses), which needs every micro-batch forward before the first "
+        "backward: only the GPipe schedule does that, and this run asked for another one. Leave "
+        "UNSLOTH_PP_SCHEDULE unset or set it to gpipe, set UNSLOTH_PP_MICROBATCHES=1, or turn the auxiliary loss "
+        "off (router_aux_loss_coef = 0.0 in SFTConfig, or model.config.output_router_logits = False with a plain "
         "Trainer)."
         f"{_hint()}"
     )
@@ -1795,10 +1817,31 @@ def _pp_batch_step(self, model, stage, input_ids, labels, extra, n, scaler):
             1,
         )
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
-    with _pp_step_context(self, model, stage, n) as run:
+    with (
+        _pp_step_context(self, model, stage, n) as run,
+        _whole_batch_router_aux(stage, input_ids.shape[0]),
+    ):
         _refuse_split_router_aux(stage, m)
         input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
         return run(input_ids, labels, extra, m, scaler, scale)
+
+
+class _whole_batch_router_aux:
+    """For one Trainer batch of `rows` real rows: a split batch's router aux loss is the one-GPU loss over the
+    whole batch (pp_native._CarriedRouterAux), not one per micro-batch."""
+
+    def __init__(self, stage, rows):
+        self.ctx, self.rows = getattr(stage, "ctx", None), int(rows)
+
+    def __enter__(self):
+        if self.ctx is not None:
+            self.ctx.aux_batch_rows = self.rows
+        return self
+
+    def __exit__(self, *exc):
+        if self.ctx is not None:
+            self.ctx.aux_batch_rows = None
+        return False
 
 
 def _eval_items(trainer, inputs, labels):
@@ -1850,13 +1893,15 @@ def _pp_prediction_step(
     _set_router_aux_request(stage, _router_aux_request(self))
     applied_coef = _apply_trainer_aux_coef(self, stage)
     try:
-        _refuse_split_router_aux(stage, m)
+        # Forward only: a split batch's router aux loss is formed over the whole batch on any schedule.
+        rows = input_ids.shape[0]
         input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
         # TRL's prediction step passes no num_items_in_batch: the aux term is added once per batch.
         _set_trainer_aux(stage, _trainer_router_aux(self, stage, None, None, train = False))
-        loss = stage.eval_loss(
-            input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra
-        )
+        with _whole_batch_router_aux(stage, rows):
+            loss = stage.eval_loss(
+                input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra
+            )
     finally:
         _restore_trainer_aux_coef(applied_coef)
         _set_trainer_aux(stage, None)
