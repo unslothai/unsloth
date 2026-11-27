@@ -33,6 +33,8 @@
 ``get_conv_config()`` (variant exact shape, exact shape, ``M_LEQ_<n>`` bucket, ``any``). Other gfx11 archs (explicit
 opt-in only) borrow the gfx1151 tables."""
 
+from __future__ import annotations
+
 import functools
 
 import triton

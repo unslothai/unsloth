@@ -347,6 +347,7 @@ def test_pack_cache_never_pins_the_source_weight(shape, getter, cache):
     import gc
     import weakref
 
+    pytest.importorskip("triton")  # _prepack imports the kernel modules
     from core.inference.rocm_triton_conv3d import _prepack as P
 
     P.clear_conv3d_weight_pack_caches()
