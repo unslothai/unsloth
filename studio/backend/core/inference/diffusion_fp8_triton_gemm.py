@@ -186,18 +186,20 @@ if triton is not None:
         c_ptrs = c_ptr + rm[:, None] * stride_cm + rn[None, :] * stride_cn
         tl.store(c_ptrs, out.to(c_ptr.dtype.element_ty), mask = (rm[:, None] < M) & (rn[None, :] < N))
 
+    try:
+        from triton.runtime import errors as _runtime_errors
+    except Exception:  # noqa: BLE001
+        _runtime_errors = None
+    try:
+        from triton.compiler import errors as _compiler_errors
+    except Exception:  # noqa: BLE001
+        _compiler_errors = None
     _UNFIT: tuple = ()
-    for _mod, _names in (
-        ("triton.runtime.errors", ("OutOfResources", "PTXASError")),
-        ("triton.compiler.errors", ("CompileTimeAssertionFailure",)),
+    for _m, _names in (
+        (_runtime_errors, ("OutOfResources", "PTXASError")),
+        (_compiler_errors, ("CompileTimeAssertionFailure",)),
     ):
-        try:
-            _m = __import__(_mod, fromlist = list(_names))
-            _UNFIT += tuple(
-                getattr(_m, n) for n in _names if isinstance(getattr(_m, n, None), type)
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        _UNFIT += tuple(getattr(_m, n) for n in _names if isinstance(getattr(_m, n, None), type))
 
     # ARCH (compute capability): Triton's in-memory tuning cache keys on the key args only, not on the device.
     _fp8_rowwise_gemm = triton.autotune(
