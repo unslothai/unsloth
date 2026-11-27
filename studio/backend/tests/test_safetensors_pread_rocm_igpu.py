@@ -7,6 +7,7 @@ pressure, discrete GPUs mmap, UNSLOTH_SAFETENSORS_PREAD=auto|pread|mmap wins. Ch
 from __future__ import annotations
 
 import functools
+import os
 import sys
 
 import pytest
@@ -173,7 +174,9 @@ def test_rocm_pressure_logs_reason_and_drops_pages(monkeypatch, tmp_path):
     decision = sp.last_reader_decision
     assert decision["reader"] == "pread" and decision["mode"] == "auto"
     assert "< headroom 32.0 GiB" in decision["reason"]
-    assert sp.fadvise_calls - before == 2  # the diffusers shard's two tensors
+    # Windows has no posix_fadvise: pread still runs there, the page drop is skipped by design.
+    expected_drops = 2 if hasattr(os, "posix_fadvise") else 0  # the diffusers shard's two tensors
+    assert sp.fadvise_calls - before == expected_drops
 
 
 @requires_backend
