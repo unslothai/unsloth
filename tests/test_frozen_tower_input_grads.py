@@ -169,21 +169,59 @@ def test_text_embedding_hook_is_unchanged():
 
 
 def test_compiled_hook_skips_a_frozen_tower_and_retraces_on_unfreeze():
-    # Unsloth compiles some towers (Gemma 3's SigLIP), so the hook is traced: a frozen tower must still skip.
+    # Unsloth compiles some towers (Gemma 3's SigLIP), so the hook is traced: a frozen tower must still skip, and
+    # an unfrozen one must get its grad back once the outer model runs again (its eager pre-hook keeps the flag).
     torch._dynamo.reset()
     model, trainable = _model()
     _, _, state = _step(model, trainable)
     assert state["backward"] == 0
     compiled = torch.compile(model.model.visual.patch_embed, backend = "eager", fullgraph = True)
     x = _inputs()["pixel_values"]
+    tower_weight = model.model.visual.blocks[0].mlp.up_proj.weight
     with torch.enable_grad():
         assert not compiled(x).requires_grad  # traced while frozen: no tower backward
-        tower_weight = model.model.visual.blocks[0].mlp.up_proj.weight
         tower_weight.requires_grad_(True)
-        assert compiled(x).requires_grad  # the requires_grad guard retraces with the flag set
+        with torch.no_grad():
+            model(**_inputs())  # the outer forward records that the tower trains now
+        assert compiled(x).requires_grad  # retraced with the flag set
         tower_weight.requires_grad_(False)
+        with torch.no_grad():
+            model(**_inputs())
         assert not compiled(x).requires_grad
     torch._dynamo.reset()
+
+
+def test_compiled_hook_without_an_outer_forward_keeps_the_flag():
+    # Traced before the outer model ever ran (no recorded flag): keep the grad, as before.
+    torch._dynamo.reset()
+    model, _ = _model()
+    model.enable_input_require_grads()
+    compiled = torch.compile(model.model.visual.patch_embed, backend = "eager", fullgraph = True)
+    with torch.enable_grad():
+        assert compiled(_inputs()["pixel_values"]).requires_grad
+    torch._dynamo.reset()
+
+
+def test_unfrozen_tower_trains_under_a_compiled_patch_embedding():
+    # The real order: trace with a frozen tower, unfreeze, train. The tower must receive gradients again.
+    torch._dynamo.reset()
+    model, trainable = _model()
+    _step(model, trainable)
+    visual = model.model.visual
+    patch_embed = visual.patch_embed
+    # Compiling the module (not its forward) traces its forward hooks, as a compiled tower region does.
+    visual.patch_embed = torch.compile(patch_embed, backend = "eager", fullgraph = True)
+    try:
+        _, _, state = _step(model, trainable)
+        assert state["backward"] == 0
+        tower_weight = visual.blocks[0].mlp.up_proj.weight
+        tower_weight.requires_grad_(True)
+        _, _, state = _step(model, trainable + [tower_weight])
+        assert state["backward"] > 0
+        assert tower_weight.grad is not None and tower_weight.grad.abs().sum() > 0
+    finally:
+        visual.patch_embed = patch_embed
+        torch._dynamo.reset()
 
 
 def test_keep_frozen_towers_env_is_read_per_call(monkeypatch):

@@ -6133,18 +6133,36 @@ def patch_enable_input_require_grads():
     def _sub_model_hook(owner):
         # transformers >= 5 hooks every sub-model; a frozen tower's backward is wasted, downstream still gets grad.
         def make_inputs_require_grads(module, input, output):
-            # Read under torch.compile too (a compiled SigLIP tower traces this hook): Dynamo guards every
-            # parameter's requires_grad, so unfreezing a tower later retraces with the flag set.
-            if any(p.requires_grad for p in owner.parameters()):
+            if not torch.compiler.is_compiling():
+                trains = any(p.requires_grad for p in owner.parameters())
+            else:
+                # Traced (Unsloth compiles some towers, e.g. Gemma 3's SigLIP): read the flag the outer model's
+                # eager pre-hook keeps (_refresh_tower_trains). Setting it changes the module's attribute dict, so
+                # a later unfreeze retraces on every torch; a parameter's requires_grad alone does not (torch
+                # 2.10 skips those tensor guards). Without the flag, keep the grad as before.
+                trains = getattr(owner, "_unsloth_tower_trains", None)
+                trains = True if trains is None else trains
+            if trains:
                 return outer_hook(module, input, output)
 
         return make_inputs_require_grads
+
+    def _refresh_tower_trains(owners):
+        # Eager, before the outer forward: record whether each hooked tower trains, writing only on a change.
+        def refresh(module, args):
+            for owner in owners:
+                trains = any(p.requires_grad for p in owner.parameters())
+                if owner.__dict__.get("_unsloth_tower_trains") is not trains:
+                    owner._unsloth_tower_trains = trains
+
+        return refresh
 
     outer_hook = make_inputs_require_grads
 
     @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
         hooks = []
+        owners = []  # sub-models whose input-grad hook depends on whether they train
         seen_modules = set()
         # Read per call, so setting the env after `import unsloth` still applies.
         keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
@@ -6183,8 +6201,12 @@ def patch_enable_input_require_grads():
                 if module is self or keep_frozen_towers
                 else _sub_model_hook(module)
             )
+            if hook is not make_inputs_require_grads:
+                owners.append(module)
             hooks.append(input_embeddings.register_forward_hook(hook))
 
+        if owners:
+            hooks.append(self.register_forward_pre_hook(_refresh_tower_trains(owners)))
         self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
             self._require_grads_hook = hooks[0]
