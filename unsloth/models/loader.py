@@ -1462,6 +1462,7 @@ class FastLanguageModel(FastLlamaModel):
             kwargs.get("float8_training", None),
             full_finetuning,
             quantized_base = bool(load_in_4bit or load_in_8bit or load_in_fp8 not in (False, None)),
+            dtype = dtype,
         )
         if _int8_request is not kwargs.get("float8_training", None):
             kwargs["float8_training"] = _int8_request
@@ -2437,6 +2438,7 @@ class FastModel(FastBaseModel):
             kwargs.get("float8_training", None),
             full_finetuning,
             quantized_base = bool(load_in_4bit or load_in_8bit or load_in_fp8 not in (False, None)),
+            dtype = dtype,
         )
         if _int8_request is not kwargs.get("float8_training", None):
             kwargs["float8_training"] = _int8_request

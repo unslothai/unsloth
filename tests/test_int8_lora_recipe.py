@@ -51,6 +51,20 @@ def test_env_opt_in_on_quantized_base_is_ignored(monkeypatch, capsys):
     assert "quantized" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, "float32"])
+def test_env_opt_in_on_fp32_load_is_ignored(monkeypatch, capsys, dtype):
+    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
+    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
+    assert f8t.float8_training_request(None, dtype = dtype) is None
+    assert "float32" in capsys.readouterr().out
+    assert f8t.float8_training_request(None, dtype = torch.bfloat16) == "int8_lora"
+    import unsloth.kernels.int8_lora as IL
+
+    monkeypatch.setattr(IL, "int8_lora_supported", lambda device: None)
+    with pytest.raises(P.PrecisionRefused, match = "fp32"):  # the explicit request still refuses fp32
+        f8t.resolve_fp8_lora("int8_lora", dtype = torch.float32, gpu = "sm120")
+
+
 def test_env_unset_changes_nothing(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LORA_BASE_INT8", raising = False)
     assert f8t.float8_training_request(None) is None
