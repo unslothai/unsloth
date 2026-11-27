@@ -3,6 +3,7 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
 import { authFetch } from "@/features/auth/api";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { watchStreamSilence } from "@/lib/stream-silence";
 import type {
   OpenAIChatChunk,
@@ -10,6 +11,7 @@ import type {
 } from "../types/api";
 
 import { skillLoadCardEvent } from "./skill-load-event";
+import { notifyChatImageToolSettled } from "./chat-image-tool-events";
 export type ChatGenerationStatus =
   | "queued"
   | "running"
@@ -172,15 +174,9 @@ export function isLegacyFallbackChatGenerationAdmissionError(
 async function json<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = (body as { detail?: unknown; message?: unknown } | null)
-      ?.detail;
-    const message = (body as { message?: unknown } | null)?.message;
     throw new ChatGenerationApiError(
-      typeof detail === "string"
-        ? detail
-        : typeof message === "string"
-          ? message
-          : `Chat generation request failed (${response.status})`,
+      formatApiErrorBody(body) ??
+        `Chat generation request failed (${response.status})`,
       response.status,
     );
   }
@@ -451,6 +447,7 @@ async function* streamChatGenerationEvents(
         if (data.length > 0) {
           const event = JSON.parse(data.join("\n")) as ChatGenerationEvent;
           if (event.type === "chunk") {
+            notifyChatImageToolSettled(event.payload);
             event.payload = normalizeChatGenerationChunkPayload(event.payload);
           }
           onActivity?.();

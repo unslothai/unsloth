@@ -20,8 +20,8 @@ import {
   dedicatedTranslateModel,
   downloadedQuant,
   downloadedTranslateModels,
-  nonTextModelIds,
   isTranslateModelId,
+  nonTextModelIds,
   parseCustomTranslateModel,
   translateInstruction,
   translateMessages,
@@ -30,20 +30,22 @@ import {
 } from "../src/features/translate/models.ts";
 import {
   TRANSLATE_HISTORY_FILE_NAME,
-  TRANSLATE_HISTORY_MAX_CHARS,
   TRANSLATE_HISTORY_MAX_ENTRIES,
   TRANSLATE_HISTORY_TOTAL_CHARS,
   addHistoryEntry,
   buildChatHandoff,
   capHistory,
   exportHistory,
+  recentForChat,
   parseHistory,
   searchHistory,
 } from "../src/features/translate/translate-history.ts";
 import {
   SOURCE_PLACEHOLDER,
   TARGET_PLACEHOLDER,
+  type TranslateChunk,
   clipText,
+  joinPassage,
   restoreChunkWhitespace,
   splitForTranslation,
   stripLeadingReasoning,
@@ -159,17 +161,26 @@ test("the translation keeps the source's own surrounding whitespace", () => {
 
 const auto = { sourceName: null, mode: "automatic", tone: "default" } as const;
 
-test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () => {
-  const [message, ...rest] = translateMessages("hy-mt3-1.8b", "Hello", {
-    ...auto,
-    targetName: "French",
-  });
-  assert.equal(rest.length, 0);
-  assert.equal(message.role, "user");
-  assert.equal(
-    message.content,
-    "Translate the following text into French. Note that you should only output the translated result without any additional explanation:\n\nHello",
-  );
+test("Hy-MT3 uses the documented prompt for manual and detected source languages", () => {
+  const source = "Bonjour. Salut. Est-ce que tu veux venir avec moi?";
+  const expected = [
+    {
+      role: "user",
+      content: `Translate the following text into English. Note that you should only output the translated result without any additional explanation:\n\n${source}`,
+    },
+  ];
+  const options = { ...auto, targetName: "English" };
+  for (const { id } of DEDICATED_TRANSLATE_MODELS) {
+    assert.deepEqual(
+      translateMessages(id, source, { ...options, sourceName: "French" }),
+      expected,
+      id,
+    );
+    assert.deepEqual(translateMessages(id, source, options), expected, id);
+  }
+});
+
+test("Hy-MT3 uses the documented style prompt with a manual source language", () => {
   const [styled] = translateMessages("hy-mt3-7b", "Hello", {
     sourceName: "English",
     targetName: "French",
@@ -178,7 +189,7 @@ test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () 
   });
   assert.equal(
     styled.content,
-    "Please translate the following text from English into French. Note that the translation style must strictly conform to [literal, word for word; formal and professional]:\n\nHello",
+    "Please translate the following text into French. Note that the translation style must strictly conform to [literal, word for word; formal and professional]:\n\nHello",
   );
 });
 
@@ -230,7 +241,7 @@ test("an edited prompt replaces the built one and keeps its language placeholder
   assert.equal(
     translateInstruction(
       "hy-mt3-1.8b",
-      templateOptions({ ...auto, targetName: "French" }),
+      templateOptions({ ...auto, sourceName: "English", targetName: "French" }),
     ),
     `Translate the following text into ${TARGET_PLACEHOLDER}. Note that you should only output the translated result without any additional explanation:`,
   );
@@ -335,11 +346,6 @@ test("history is newest first, replaces a repeat and stays bounded", () => {
     ["Salut", "Au revoir"],
   );
   assert.equal(addHistoryEntry(history, { ...entry, output: "  " }).length, 2);
-  assert.equal(
-    addHistoryEntry(history, { ...entry, source: "x".repeat(30_000) }).length,
-    2,
-    "a translation too long for localStorage is not kept",
-  );
   for (let i = 0; i < TRANSLATE_HISTORY_MAX_ENTRIES + 5; i += 1) {
     history = addHistoryEntry(
       history,
@@ -354,6 +360,54 @@ test("history is newest first, replaces a repeat and stays bounded", () => {
   );
 });
 
+test("a translated document of several pages is kept in the history", () => {
+  const source = "Page after page of a long document. ".repeat(300);
+  const output = "Page après page d'un long document. ".repeat(320);
+  assert.deepEqual(
+    addHistoryEntry([], {
+      source,
+      output,
+      target: "fr",
+      from: "en",
+      model: "Hy-MT2 1.8B",
+    }).map((item) => item.output),
+    [output],
+  );
+});
+
+test("chat with recent translations stays within a budget, newest first", () => {
+  const entry = (id: string, chars: number) => ({
+    id,
+    at: 0,
+    source: "s".repeat(Math.ceil(chars / 2)),
+    output: "o".repeat(Math.floor(chars / 2)),
+    target: "fr",
+    from: null,
+    model: null,
+  });
+  const ids = (history: ReturnType<typeof entry>[]) =>
+    recentForChat(history).map((item) => item.id);
+  assert.deepEqual(
+    ids(["a", "b", "c", "d", "e", "f"].map((id) => entry(id, 10))),
+    ["a", "b", "c", "d", "e"],
+  );
+  assert.deepEqual(
+    ids([
+      entry("a", 25_000),
+      entry("b", 50_000),
+      entry("c", 30_000),
+      entry("d", 1),
+    ]),
+    ["a", "b"],
+  );
+  assert.deepEqual(
+    ids(["a", "b", "c", "d", "e"].map((id) => entry(id, 20_000))),
+    ["a", "b", "c", "d", "e"],
+    "five entries at the former cap still go together",
+  );
+  assert.deepEqual(ids([entry("a", 250_000), entry("b", 10)]), ["a"]);
+});
+
 test("a damaged saved history is read as far as it is valid", () => {
   assert.deepEqual(parseHistory("nope"), []);
   const good = { id: "a", at: 1, source: "s", output: "o", target: "fr" };
@@ -364,7 +418,7 @@ test("a damaged saved history is read as far as it is valid", () => {
 });
 
 test("history stays under a total size, newest first", () => {
-  const big = "x".repeat(TRANSLATE_HISTORY_MAX_CHARS / 2 - 1);
+  const big = "x".repeat(9_999);
   const entries = Array.from({ length: 80 }, (_, i) => ({
     id: String(i),
     at: 1000 - i,
@@ -537,6 +591,120 @@ test("read aloud asks for a voice of the translation's language", () => {
   assert.equal(translateSpeechTag("ja", ["en-US"]), "ja");
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.match(page, /readAloud\.speak\(\s*output,\s*translateSpeechTag\(/);
+});
+
+const translateEach = (
+  source: string,
+  translate: (text: string) => string,
+  limit?: number,
+) => {
+  let output = "";
+  let previous: TranslateChunk | undefined;
+  for (const chunk of splitForTranslation(source, limit)) {
+    if (!chunk.text) {
+      output += chunk.after;
+      continue;
+    }
+    output = joinPassage(
+      output,
+      restoreChunkWhitespace(chunk, translate(chunk.text)),
+      previous,
+      chunk,
+    );
+    previous = chunk;
+  }
+  return output;
+};
+
+test("passages of a long line read as one text in the target language", () => {
+  const toEnglish = (text: string) =>
+    text.replace(/[^。！？]+[。！？]/g, "One sentence. ").trim();
+  for (const end of ["。", "！", "？"]) {
+    const source = `一二三四五六七八九${end}`.repeat(20);
+    const output = translateEach(source, toEnglish, 50);
+    assert.equal(output, "One sentence. ".repeat(20).trim());
+  }
+  const japanese = "これは日本語の文です。".repeat(20);
+  assert.equal(
+    translateEach(japanese, toEnglish, 50),
+    "One sentence. ".repeat(20).trim(),
+  );
+  const toKorean = (text: string) =>
+    text.replace(/[^。]+。/g, "한 문장이다. ").trim();
+  assert.equal(
+    translateEach("一二三四五六七八九。".repeat(20), toKorean, 50),
+    "한 문장이다. ".repeat(20).trim(),
+  );
+  const toChinese = (text: string) =>
+    text.replace(/[^.]+\./g, "一个句子。").replace(/ /g, "");
+  assert.equal(
+    translateEach("One short sentence. ".repeat(20).trim(), toChinese, 50),
+    "一个句子。".repeat(20),
+  );
+  const quoted = "他说：“一二三四五六七八九。”".repeat(10);
+  assert.equal(
+    translateEach(quoted, (text) => text, 50),
+    quoted,
+  );
+  assert.equal(
+    translateEach("一二三四五六七八九。".repeat(20), (text) => text, 50),
+    "一二三四五六七八九。".repeat(20),
+  );
+  const french = "Une phrase courte ici. ".repeat(20).trim();
+  assert.equal(
+    translateEach(french, (text) => text, 50),
+    french,
+  );
+  assert.equal(
+    translateEach("一二三。\n\n四五六。", toEnglish, 5),
+    "One sentence.\n\nOne sentence.",
+  );
+  for (const [open, close] of [
+    ["“", "”"],
+    ["「", "」"],
+    ["『", "』"],
+  ]) {
+    const said = `他说：${open}一二三四五六七八九。${close}`.repeat(80);
+    for (const chunk of splitForTranslation(said))
+      assert.ok(!chunk.text.startsWith(close), chunk.text.slice(0, 10));
+    const toQuoted = (text: string) =>
+      text
+        .split(close)
+        .filter(Boolean)
+        .map(() => `He said, “One.”`)
+        .join(" ");
+    assert.equal(
+      translateEach(said, toQuoted),
+      Array(80).fill(`He said, “One.”`).join(" "),
+    );
+  }
+  const named = `${"word ".repeat(12)}x 田中 太郎 is here.`;
+  assert.equal(
+    translateEach(named, (text) => text, 66),
+    named,
+  );
+  // A hard cut inside a long word or link of a spaced script stays glued.
+  const link = `https://example.com/${"a".repeat(80)}`;
+  assert.equal(
+    translateEach(link, (text) => text, 50),
+    link,
+  );
+});
+
+test("the runner and the image overlay join passages the same way", () => {
+  for (const file of ["translate-runner.ts", "translate-subtitles.ts"]) {
+    const src = readText(`../src/features/translate/${file}`);
+    assert.match(
+      src,
+      /joinPassage\(\s*\w+,\s*restoreChunkWhitespace\(chunk, [^)]*\)\)?,\s*previous,\s*chunk,?\s*\)/,
+    );
+    assert.match(src, /previous = chunk;/);
+  }
+  const runner = readText("../src/features/translate/translate-runner.ts");
+  assert.match(
+    runner,
+    /onOutput\(joinPassage\(output, partial, previous, chunk\)\)/,
+  );
 });
 
 test("a hard cut never lands inside a surrogate pair", () => {

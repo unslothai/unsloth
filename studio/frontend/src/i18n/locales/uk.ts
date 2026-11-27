@@ -2650,6 +2650,10 @@ export const uk = {
         confirmDescriptionChatOnly:
           "Зупиняє сервер і повторно запускає інсталятор. Це інсталяція «Лише чат», тому інсталятор також переведе її на повну інсталяцію з PyTorch, загалом кілька гігабайтів. Чати й налаштування зберігаються. Це може тривати кілька хвилин.",
         confirmAction: "Відновити зараз",
+        recommendedTorch:
+          "Рекомендовано відновлення: у цій установці PyTorch {torch}, старіший за керовану версію {managedTorch}, на якій підтримуються GPU серії RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} старіший за керовану версію {managedTorch}, на якій підтримуються GPU серії RTX 50, але цей драйвер GPU не підтримує CUDA 13. Спершу оновіть драйвер GPU, потім відновіть установку.",
       },
       resetPreferences: {
         sectionTitle: "Небезпечна зона",
@@ -4801,6 +4805,8 @@ export const uk = {
       unsupportedFileType: "Непідтримуваний тип файлу",
       uploadOneFileType: "Вивантажте один файл такого типу: {types}.",
       datasetUploaded: "Набір даних вивантажено",
+      importPandasJson: "Імпортувати .json як стовпці pandas",
+      importSemicolonCsv: "Використовувати крапку з комою як роздільник для .csv",
       evalDatasetUploaded: "Набір даних для оцінювання вивантажено",
       uploadOneFileAtATime: "Вивантажуйте по одному файлу",
       uploadSingleFileDescription:
@@ -4877,6 +4883,12 @@ export const uk = {
       epochs: "Епохи",
       useMaxSteps: "Використовувати макс. кроків",
       useEpochs: "Використовувати епохи",
+      stepGuidancePass: "Близько {steps} кроків це один прохід вашими {rows} рядками при ефективному батчі {batch}.",
+      stepGuidanceFloor: "Один прохід вашими {rows} рядками займає лише {passSteps} кроків при ефективному батчі {batch}, тому близько {steps} кроків (кілька проходів) це розумний мінімум.",
+      stepGuidanceCap: "Один прохід вашими {rows} рядками займає {passSteps} кроків при ефективному батчі {batch}; {steps} кроків навчають на частині даних, чого часто досить для першого запуску.",
+      stepGuidanceEpoch: "Одна епоха це близько {passSteps} кроків вашими {rows} рядками при ефективному батчі {batch}.",
+      stepGuidancePacking: "Пакування об'єднує короткі рядки, тож прохід може зайняти менше кроків.",
+      useSuggestedSteps: "Використати {steps}",
       maxStepsTooltip: "Перевизначити загальну кількість кроків оптимізатора.",
       epochsTooltip: "Кількість повних проходів набором даних.",
       contextLength: "Контекст",
@@ -5449,6 +5461,7 @@ export const uk = {
       showPromptDescription: "Переглянути точні інструкції, надіслані моделі.",
     },
     history: {
+      notSaved: "Не збережено в історію: сховище браузера заповнене.",
       title: "Історія",
       search: "Пошук в історії",
       empty: "Ваші переклади з’являться тут.",

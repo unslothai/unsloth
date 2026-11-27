@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Restore half of the uv download cache; the single definition of the key (Windows jobs use it too).
-# UV_CACHE_DIR is exported so the installers inherit it. ROOT-CHECKOUT ONLY.
+# Single definition of uv cache key (Windows too); exports UV_CACHE_DIR; ROOT-CHECKOUT ONLY.
 
 name: Restore the uv download cache
 description: >-

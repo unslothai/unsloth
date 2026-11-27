@@ -781,13 +781,13 @@ def _own_host_copy(model: Any) -> bool:
     server's pins evict, and each onload then re-reads 23 GB from disk (70-80 s per encode on an A100 host)."""
     import torch
 
-    if not _host_fits(list(model.parameters()) + list(model.buffers()), copies = 1):
+    from core.inference.diffusion_te_embed_host import is_host_embedding
+
+    if not _host_fits(_owned_tensors(model), copies = 1, floor_only = True):
         # Base's streamed and CPU encodes kept the mapping too; a short host keeps it rather than risk the OOM killer.
         return False
     try:
         # Keyed by identity: a tied tensor is copied once and stays shared.
-        from core.inference.diffusion_te_embed_host import is_host_embedding
-
         done: dict = {}
         with torch.no_grad():
             for module in model.modules():
@@ -811,6 +811,31 @@ def _own_host_copy(model: Any) -> bool:
         return False
 
 
+def _owned_tensors(model: Any) -> list:
+    """The host tensors ``_own_host_copy`` copies, once each (its walk): the file-mapped embedding table stays out (only
+    the prompt's rows are read from it), so its 1.9 GB is not priced against host RAM."""
+    from core.inference.diffusion_te_embed_host import is_host_embedding
+
+    seen: set = set()
+    out: list = []
+    if not callable(getattr(model, "modules", None)):
+        # Not an nn.Module (no module walk): price every host tensor it exposes, as the pre-walk check did.
+        tables = [list(model.parameters()) + list(model.buffers())]
+    else:
+        tables = [
+            list(module._parameters.values()) + list(module._buffers.values())
+            for module in model.modules()
+            if not is_host_embedding(module)
+        ]
+    for table in tables:
+        for tensor in table:
+            if tensor is None or tensor.device.type != "cpu" or id(tensor) in seen:
+                continue
+            seen.add(id(tensor))
+            out.append(tensor)
+    return out
+
+
 def _pin_fits_twice(tensors: list) -> bool:
     """Whether host RAM holds a second copy of ``tensors`` above the pin reserve. The loaded encoder's tensors share
     storages, so the pinned chunks fill before the pageable copy is freed (24.9 -> 42.7 GB on an A100 host); on a host
@@ -818,8 +843,16 @@ def _pin_fits_twice(tensors: list) -> bool:
     return _host_fits(tensors, copies = 2)
 
 
-def _host_fits(tensors: list, copies: int) -> bool:
-    """Whether host RAM holds ``copies`` more copies of ``tensors`` above the pin reserve."""
+def _host_fits(
+    tensors: list,
+    copies: int,
+    floor_only: bool = False,
+) -> bool:
+    """Whether host RAM holds ``copies`` more copies of ``tensors`` above the pin reserve. ``floor_only`` keeps just
+    the reserve's fixed floor: the owned copy replaces a file mapping the encode would otherwise re-read. Mapped, its
+    clean pages are what the kernel drops first under the server's pinned weights, and refaulting them scattered is
+    bound by the disk's IOPS: 24-54 s per encode on a 52 GB L4 host (4 s owned), with the fraction's reserve
+    (7.8 GB there) refusing the copy that fits beside a 4 GB floor."""
     from core.inference.diffusion_memory import (
         _PIN_RESERVE_FRACTION,
         _PIN_RESERVE_MIN_BYTES,
@@ -831,7 +864,11 @@ def _host_fits(tensors: list, copies: int) -> bool:
     if available is None or total is None:
         return False
     need = sum(int(t.numel()) * int(t.element_size()) for t in tensors)
-    reserve = max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
+    reserve = (
+        _PIN_RESERVE_MIN_BYTES
+        if floor_only
+        else max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
+    )
     return (int(available) << 20) - int(copies) * need >= reserve
 
 
@@ -1396,6 +1433,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                         (config.get("_stream_stats") or {}).get("prefetched_layers") or 0
                     ),
                     "pinned_mib": int(config.get("_pinned_bytes") or 0) >> 20,
+                    "owned_host": bool(config.get("_owned_host")),
                     "embed_host_mib": int(config.get("_embed_host_bytes") or 0) >> 20,
                     **_memory_stats(config.get("device") or ""),
                 }

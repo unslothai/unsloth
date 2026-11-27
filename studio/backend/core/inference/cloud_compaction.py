@@ -356,10 +356,19 @@ def summary_max_tokens(prompt_budget_tokens: Optional[int]) -> int:
     return max(SUMMARY_MIN_TOKENS, min(SUMMARY_MAX_TOKENS, prompt_budget_tokens // 4))
 
 
-def tail_start(body: list[dict], count_message: Callable[[dict], int], tail_tokens: int) -> int:
+def tail_start(
+    body: list[dict],
+    count_message: Callable[[dict], int],
+    tail_tokens: int,
+    last: Optional[int] = None,
+) -> int:
     """Index in ``body`` where the verbatim tail begins. Always a user turn, so no tool call is
-    split from its result, and never later than the newest user turn."""
-    user_indexes = [index for index, message in enumerate(body) if message.get("role") == "user"]
+    split from its result, and never later than the newest user turn, or than ``last``."""
+    user_indexes = [
+        index
+        for index, message in enumerate(body)
+        if message.get("role") == "user" and (last is None or index <= last)
+    ]
     if not user_indexes:
         return 0
     start = user_indexes[-1]
@@ -571,20 +580,24 @@ def thread_has_summaries(thread_id: Optional[str]) -> bool:
         return False
 
 
-def stored_summary(thread_id: Optional[str], body: list[dict]) -> Optional[dict]:
-    """The deepest saved summary whose covered prefix is still the start of ``body``."""
-    if not thread_id:
-        return None
-    records: list[dict] = []
-    try:
-        from storage import studio_db
-        records.extend(studio_db.list_chat_thread_summaries(thread_id) or [])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("cloud_compaction.load_failed", error = str(exc))
-    with _memory_lock:
-        records.extend(
-            record for (thread, _), record in _memory_summaries.items() if thread == thread_id
-        )
+def stored_summary(
+    thread_id: Optional[str],
+    body: list[dict],
+    extra: tuple[dict, ...] = (),
+) -> Optional[dict]:
+    """The deepest saved summary, or one of ``extra``, whose covered prefix is still the start of
+    ``body``."""
+    records: list[dict] = list(extra)
+    if thread_id:
+        try:
+            from storage import studio_db
+            records.extend(studio_db.list_chat_thread_summaries(thread_id) or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cloud_compaction.load_failed", error = str(exc))
+        with _memory_lock:
+            records.extend(
+                record for (thread, _), record in _memory_summaries.items() if thread == thread_id
+            )
     digests: dict[int, str] = {}
     for record in sorted(records, key = lambda r: int(r.get("covered_messages") or 0), reverse = True):
         covered = int(record.get("covered_messages") or 0)

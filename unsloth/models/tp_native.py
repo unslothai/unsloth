@@ -95,9 +95,8 @@ COLWISE = "colwise"
 ROWWISE = "rowwise"
 HEAD_NORM = "replicated_with_grad_allreduce"
 ELEMENTWISE = "elementwise_replicated"  # scalar-parameter activations inside an MLP
-# A child of an attention region that reads only the block input (identical on every tp rank) and returns
-# something every head uses alike, e.g. Qwen4Exp's QSA indexer (index_qk_proj + norms -> a block mask):
-# kept whole on every rank; trainable parameters (an opted-in adapter) get their gradients summed over tp.
+# Attention child that reads only the block input and whose output every head uses alike (e.g.
+# Qwen4Exp's QSA indexer): kept whole on every rank; trainable params get grads summed over tp.
 INPUT_REPLICATED = "replicated_block_input"
 # A key / value projection when num_key_value_heads < tp: kept whole on every rank (Replicate DTensors, 4-bit:
 # the rows of this rank's key / value head), each rank computing the one key / value head its query heads use.
@@ -183,8 +182,7 @@ _GLOBAL_HEAD_READS = re.compile(r"config\.(num_attention_heads|num_key_value_hea
 _GLOBAL_WIDTH_READS = re.compile(
     r"(config|self)\.(hidden_size|embed_dim|all_head_size|n_embd|d_model|split_size)\b"
 )
-# An MLP forward reducing over its features (activation sparsity statistics, a norm, a softmax) would see
-# only this rank's 1 / tp of the intermediate dimension; one reading the intermediate size splits wrongly.
+# MLP reductions over features (norm, softmax) see only 1/tp of the intermediate dimension.
 _FEATURE_REDUCTIONS = re.compile(
     r"(?:\btorch\.|\bF\.|\bfunctional\.|\.)(mean|std|var|var_mean|std_mean|sum|nansum|prod|amax|amin|"
     r"argmax|argmin|topk|kthvalue|sort|argsort|softmax|log_softmax|logsumexp|cumsum|cumprod|norm|normalize|"
@@ -239,12 +237,10 @@ class _Region:
     latent: bool = (
         False  # latent-query MQA (DeepSeek-V4.1): one replicated key / value head, grouped output
     )
-    # (child module, parameter name, parts[, dim]) sharded on dim (default 0) outside any projection (Gated
-    # DeltaNet conv1d channels, Inkling 2 per-head clip scales): DTensors, read as this rank's local slice while
-    # the region runs.
+    # (child module, parameter name, parts[, dim]) sharded on dim (default 0) outside projections
+    # (Gated DeltaNet conv1d, Inkling 2 clip scales): DTensors, local slice in the region.
     child_params: list = dataclasses.field(default_factory = list)
-    # (child module, parameter name) read whole by every local head (Inkling 2's relative position bias
-    # profiles): replicated, gradients summed over tp.
+    # Read whole per local head (Inkling 2 position bias): replicated, grads summed over tp.
     replicated_params: list = dataclasses.field(default_factory = list)
     # (child module, {attribute: local value}): sizes a child's forward reshapes with (tp_replica restores them).
     local_attrs: list = dataclasses.field(default_factory = list)
@@ -515,8 +511,7 @@ def _classify(
 
 
 def _elementwise_scalars(module):
-    """A parameterised activation with scalar parameters only (Apertus xIELU): elementwise on any shard of
-    the intermediate dimension, so it stays replicated (gradients summed over tp)."""
+    """Scalar-only activation (Apertus xIELU) is elementwise: replicated, grads summed over tp."""
     if isinstance(module, nn.Linear) or "lora_A" in module._modules or list(module.children()):
         return False
     if any(p.numel() != 1 for p in module.parameters()):
@@ -800,9 +795,8 @@ def _region(path, module, kind, compiled, text, tp):
 
 
 def _check_latent_mqa(region, path, tp):
-    """Latent-query MQA: the single key / value head is replicated (already an INPUT_REPLICATED child); the
-    query heads split evenly and the grouped o_a_proj keeps whole groups per rank (rank r: groups r * G / tp ..),
-    which are exactly the groups of its query heads because a group is a run of consecutive heads."""
+    """Latent-query MQA: the single kv head is replicated; query heads split evenly and o_a_proj
+    keeps whole groups per rank, matching its query heads since groups are consecutive heads."""
     by_name = {p.name: p for p in region.projs}
     q = by_name.get("q_b_proj")
     if q is None or _logical_shape(*_weight(q.module))[0] != region.heads * region.head_dim:
@@ -897,8 +891,7 @@ def _gdn_parts(module, layout):
             "in_proj_b": heads,
             "in_proj_a": heads,
         }, conv
-    # [q, k, v, z] and [b, a] contiguous per key head (fix_query_key_value_ordering views [..., Hk, -1]): a
-    # contiguous 1 / tp slice is Hk / tp whole key head groups.
+    # [q,k,v,z] and [b,a] are contiguous per key head; 1/tp slices are whole key head groups.
     return {"in_proj_qkvz": (2 * k + 2 * v,), "in_proj_ba": (2 * module.num_v_heads,)}, conv
 
 
@@ -1544,8 +1537,7 @@ def _refuse_base(
 
 
 def _qat_split_problem(fq, style, local_in):
-    """None when weight fake quantizer `fq` gives on this rank's shard exactly the rows / columns it gives on the
-    whole weight (its scales never reduce across the sharded dimension), else why not."""
+    """None when fq's scales never reduce across the sharded dim; else why not."""
     cls = type(fq).__name__
     config = getattr(fq, "config", None)
     if next(fq.parameters(), None) is not None or next(fq.buffers(), None) is not None:
@@ -1914,6 +1906,59 @@ def _plain_expert(t):
     )
 
 
+def _is_packed_expert(t):
+    """unsloth_zoo's frozen packed expert stack (NVFP4 / MXFP8 / MXFP4 / block-FP8 codes with their scales)."""
+    packed = _loaded_zoo_module("packed_experts")
+    check = getattr(packed, "is_packed_expert_param", None)
+    return callable(check) and isinstance(t, torch.Tensor) and bool(check(t))
+
+
+def _packed_expert_problem(p, E, tp):
+    """Why the packed stack `p` cannot be cut by expert index over tp, or None. Its codes and every companion
+    tensor (block scales, per-expert global scales) are expert-major; a companion with one leading row is shared."""
+    if p.requires_grad:
+        return "a trainable packed expert stack"
+    if p.dim() < 3 or p.shape[0] != E or not callable(getattr(p, "_init_kwargs", None)):
+        return f"a packed expert stack {tuple(p.shape)} not stacked by expert"
+    if tp is not None and (E % tp or E // tp < 2):
+        return f"packed experts: {E} experts do not split into at least 2 per rank over {tp}"
+    for key, value in p._init_kwargs().items():
+        if isinstance(value, torch.Tensor) and value.dim() and value.shape[0] not in (E, 1):
+            return f"packed experts: {key} {tuple(value.shape)} is not stacked by expert"
+    return None
+
+
+def _packed_expert_slice(p, lo, hi):
+    """Experts [lo, hi) of the packed stack `p` (codes and expert-major companions, bitwise), the same class."""
+    E = p.shape[0]
+    kwargs = dict(p._init_kwargs())
+    for key, value in kwargs.items():
+        if isinstance(value, torch.Tensor) and value.dim() and value.shape[0] == E:
+            kwargs[key] = value[lo:hi].clone()
+    new = type(p)(p.data[lo:hi].clone(), requires_grad = False, **kwargs)
+    if hasattr(p, "_is_hf_initialized"):
+        new._is_hf_initialized = p._is_hf_initialized
+    return new
+
+
+def _shard_expert_packed(owner, name, lo, hi, E, mesh, tp):
+    p = owner._parameters[name]
+    preload = getattr(p, _EXPERT_PRELOAD, None)
+    if preload is not None:
+        if preload != (E, tp, tuple(mesh.mesh.tolist())):
+            raise ValueError(
+                f"Unsloth: the packed experts '{name}' were sharded at load as {preload} (experts, ranks, rank "
+                f"ids), not over this mesh; pass the same ep mesh to both."
+            )
+        new = p
+        new.__dict__.pop(_EXPERT_PRELOAD, None)
+    else:
+        new = _packed_expert_slice(p, lo, hi)
+    new._original_shape = torch.Size((hi - lo,) + tuple(p._original_shape)[1:])
+    owner._parameters[name] = new
+    return new
+
+
 # A bitsandbytes 4-bit expert stack (zoo moe_utils_bnb4bit: packed [n, 1] bytes, expert-major, logical shape in
 # _original_shape) sharded by expert index: rank r keeps the bytes and absmax blocks of experts [lo, hi).
 EXPERT_STACK = "expert_stack"
@@ -2078,7 +2123,12 @@ def _patch_param_wrapper_preloaded_shape():
     def get_param(self):
         param = original(self)
         preload = getattr(param, _EXPERT_PRELOAD, None)
-        if preload is None or _is_params4bit(param) or not isinstance(param, torch.Tensor):
+        if (
+            preload is None
+            or _is_params4bit(param)
+            or not isinstance(param, torch.Tensor)
+            or _is_packed_expert(param)  # its _original_shape already holds the whole stack
+        ):
             return param
         return _WholeStackShape(param, (preload[0],) + tuple(param.shape[1:]))
 
@@ -2105,8 +2155,17 @@ def _shard_expert_params4bit(owner, name, lo, hi, E, mesh, rank, tp):
     return new
 
 
-def expert_shard_problem(block, tp = None):
-    """Why `block`'s routed experts cannot be sharded by index over tp exactly, or None when they can."""
+def expert_shard_problem(
+    block,
+    tp = None,
+    packed = True,
+):
+    """Why `block`'s routed experts cannot be sharded by index over tp exactly, or None when they can. `packed`
+    (expert parallel callers): accept zoo's frozen packed stacks (expert parallel slices them; tensor parallel
+    cannot regather them) and expert LoRA factors trained swapped against vanilla PEFT's (zoo
+    moe_lora_factor_swap: Llama 4, Qwen3-VL-MoE on transformers 5.x). Cutting lora_A rows [E*R] and lora_B
+    columns [R*E] by expert does not depend on which stack side they factor, and the expert parallel save writes
+    vanilla factors from the gathered ones; tensor parallel's save is not proven on them."""
     chain = _experts_chain(block)
     if not chain:
         return "no `experts` child"
@@ -2123,7 +2182,7 @@ def expert_shard_problem(block, tp = None):
         names = ()
     if tuple(_EXPERT_CALL_ALIASES.get(n, n) for n in names) != _EXPERT_CALL:
         return f"its experts forward takes {names}, not {_EXPERT_CALL}"
-    if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
+    if not packed and getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
         return "swapped expert LoRA factors"
     lists = sorted(
         name
@@ -2159,6 +2218,23 @@ def expert_shard_problem(block, tp = None):
                     return f"{name} was sharded by sharded_loading as {preload}, not for {E} experts over tp {tp}"
                 continue
             problem = _expert_params4bit_problem(p, E, tp)
+            if problem is not None:
+                return f"{name}: {problem}"
+            continue
+        if _is_packed_expert(p):
+            if not packed:
+                return f"{name} is {type(p).__name__} (packed experts are sharded under expert parallel only)"
+            preload = getattr(p, _EXPERT_PRELOAD, None)
+            if preload is not None:
+                if (
+                    preload[0] != E
+                    or (tp is not None and preload[1] != tp)
+                    or p.shape[0] * preload[1] != E
+                    or tuple(p._original_shape)[0] != E
+                ):
+                    return f"{name} was sharded at load as {preload}, not for {E} experts over {tp}"
+                continue
+            problem = _packed_expert_problem(p, E, tp)
             if problem is not None:
                 return f"{name}: {problem}"
             continue
@@ -2429,6 +2505,10 @@ def _shard_moe_experts(
             # Frozen, so a plain local Params4bit (E % tp == 0: no padding experts); tp_replica regathers it.
             _shard_expert_params4bit(leaf, name, lo, hi, E, mesh, rank, tp)
             continue
+        if _is_packed_expert(leaf._parameters[name]):
+            # Frozen packed codes and scales, cut by expert (E % tp == 0); only expert parallel gets here.
+            _shard_expert_packed(leaf, name, lo, hi, E, mesh, tp)
+            continue
         _shard_expert_param(leaf, name, 0, 1, 1, E, E_pad, mesh, rank, tp)
         shard.swaps.append((leaf, name))
     for wrapper in wrappers:
@@ -2613,8 +2693,7 @@ def _dropout_region_forward(module, forward):
 
     def forward_with_tp_dropout(*args, **kwargs):
         if module.__dict__.get("_unsloth_tp_gathered") or not module.training:
-            # Not torch.is_grad_enabled(): a reentrant checkpoint runs its first forward under no_grad and
-            # recomputes with grad; both must draw one process's masks.
+            # Not is_grad_enabled: reentrant recompute and first pass must draw the same masks.
             return forward(*args, **kwargs)
         state = _DropoutState(module)
         module.__dict__["_unsloth_tp_dropout"] = state
@@ -2676,9 +2755,8 @@ def _input_name(module):
 
 
 def _head_param_views(module, install):
-    """Per-head parameters of the region module itself (attention sinks) are DTensors sharded by heads; while
-    the region runs, the forward reads `self.<name>` as this rank's local heads (an instance attribute shadows
-    the Parameter; its gradient flows back into the DTensor shard)."""
+    """Install or remove local-head views of per-head parameters (attention sinks): an instance
+    attribute shadows the DTensor Parameter, and its grad flows back to the shard."""
     for name in module.__dict__.get("_unsloth_tp_head_params", ()):
         module.__dict__.pop(name, None)
         if install:
@@ -2824,8 +2902,7 @@ def _tp_projection_compute(self, x):
     return out.to(out_dtype)
 
 
-# torch 2.8 / 2.9 inductor miscompiles addmm(alpha = scaling, beta = 1) traced inside a compiled block, forward
-# and backward; fixed in 2.10 (unsloth#3271). The same guard as unsloth_zoo's compiled LoRA forward.
+# Inductor miscompiles addmm in torch 2.8/2.9 compiled blocks; fixed in 2.10 (unsloth#3271).
 _TP_LORA_NO_COMPILED_ADDMM = tuple(int(v) for v in torch.__version__.split(".")[:2]) < (2, 10)
 
 
@@ -2948,9 +3025,8 @@ def _tp_lora_update(proj, adapter, out, x, A, B, scaling, mode):
 
 
 def _tp_grouped_compute(self, base, x, W, bias):
-    """A block-diagonal grouped linear (DeepSeek-V4.1 o_a_proj, input [..., G, in_g]) sharded by whole groups:
-    this rank holds G / tp groups (weight rows) and receives exactly those groups of the input. Unsloth's grouped
-    LoRA keeps lora_A shared by every group (replicated) and lora_B per group (sharded with the weight)."""
+    """Block-diagonal grouped linear (DeepSeek-V4.1 o_a_proj, input [..., G, in_g]) sharded by whole
+    groups: each rank gets G/tp groups; lora_A replicated, lora_B sharded."""
     if _is_params4bit(W):
         raise RuntimeError(
             "Unsloth: tensor parallelism does not shard a 4-bit grouped linear; keep o_a_proj in 16-bit "
@@ -3683,6 +3759,22 @@ def vocab_parallel_active(head) -> bool:
     return bool(getattr(head, "_unsloth_vocab_parallel", False)) and _is_dtensor(_weight(head)[0])
 
 
+def _torch_checkpoint():
+    """torch's own checkpoint, also once unsloth_zoo's smart gradient checkpointing has replaced
+    torch.utils.checkpoint.checkpoint with its forced-reentrant, CPU-offloading version: chunk loops nested
+    in a checkpointed layer need non-reentrant recompute (one replay per backward, closed-over grads)."""
+    import torch.utils.checkpoint as module
+
+    for func in (
+        getattr(module, "_unsloth_pristine_checkpoint", None),
+        module.checkpoint,
+        getattr(module, "_old_checkpoint", None),
+    ):
+        if getattr(func, "__module__", None) == module.__name__:
+            return func
+    return module.checkpoint
+
+
 def vocab_parallel_cross_entropy(
     head,
     hidden_states,
@@ -3698,7 +3790,7 @@ def vocab_parallel_cross_entropy(
     recomputed in backward (one 1/tp chunk per rank); returns sum over valid tokens / n_items
     (mean if None), same on all tp ranks; hidden_states [..., hidden], labels [...]; shift=True
     shifts labels here."""
-    from torch.utils.checkpoint import checkpoint
+    checkpoint = _torch_checkpoint()
 
     group = head.__dict__["_unsloth_tp_group"]
     lo, width, _ = head.__dict__["_unsloth_vocab_rows"]
@@ -3802,8 +3894,7 @@ def apply_tensor_parallel(
                     raise ValueError(
                         f"Unsloth: cannot replicate {region.path}.{name} ({type(p).__name__})."
                     )
-    # Routed experts: decided (and preloaded 4-bit experts checked) before anything changes, so a refusal
-    # leaves the model as loaded.
+    # Experts are decided, 4-bit preloads checked first; refusal leaves the model as loaded.
     shard_experts = moe_shard_enabled() and tp > 1
     mesh_ranks = tuple(tp_mesh.mesh.tolist())
     moe_decisions, covered_experts = [], set()
@@ -3813,7 +3904,7 @@ def apply_tensor_parallel(
         elif not shard_experts:
             problem = f"{_MOE_SHARD_ENV}=0"
         else:
-            problem = expert_shard_problem(block, tp)
+            problem = expert_shard_problem(block, tp, packed = False)
         preloaded = [p for p in block.parameters() if getattr(p, _EXPERT_PRELOAD, None) is not None]
         if preloaded and problem is not None:
             raise ValueError(
@@ -4219,8 +4310,7 @@ _SQUARE_SUM_CHUNK = 1 << 24
 
 
 def _grad_slices(tensor, chunk):
-    """Views of tensor with at most chunk elements each, covering every element once, never a copy.
-    A contiguous tensor splits its flat view; a strided one narrows its largest dim (recursively)."""
+    """Yields views of at most chunk elements, covering each element once and never copying."""
     if tensor.numel() <= chunk:
         yield tensor
         return
@@ -4330,9 +4420,8 @@ def _scale_tensors_(tensors, total, max_norm, eps):
         for local in tensors:
             c = coef.to(device = local.device, dtype = torch.float32)
             if local.dtype in (torch.float16, torch.bfloat16):
-                # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).
-                # Elementwise, so slicing a contiguous gradient keeps every value and bounds the fp32 copy.
-                # A strided gradient slices along its layout when no two indices share an element.
+                # Coefficient cast to grad dtype (fp16 rounds small values to 0); elementwise slices
+                # bound the fp32 copy; strided only if no two indices share an element.
                 parts = (
                     _grad_slices(local, _SQUARE_SUM_CHUNK)
                     if local.layout == torch.strided
@@ -4436,8 +4525,7 @@ def _peft_state_dict(model, **kwargs):
     get_peft_model_state_dict = inspect.unwrap(get_peft_model_state_dict)
     raw = model.state_dict(keep_vars = True)
     adapters = kwargs.get("selected_adapters") or list(model.peft_config)
-    # PEFT selects over local shards: PEFT >= 0.22 gathers selected DTensors into new tensors itself (a
-    # collective), which the identity match below could not trace back, so every sharded factor was dropped.
+    # PEFT >= 0.22 gathers DTensors into new tensors, so identity matching drops every shard.
     local = {key: value.to_local() if _is_dtensor(value) else value for key, value in raw.items()}
     sharded = {id(local[key]): key for key, value in raw.items() if _is_dtensor(value)}
     wanted, unmapped = set(), 0
@@ -4504,8 +4592,7 @@ def save_tp_adapter(model, save_directory, **kwargs):
     _agree_write(write)
 
 
-# Sharded loading (v2): each rank reads only its slices of the sharded projections from the checkpoint, so the
-# load-time peak is the replicated parts plus 1 / tp of the attention / MLP weights, never the whole model.
+# Sharded loading (v2): each rank reads only its slices, so peak is never the whole model.
 
 _PRELOADED = "_unsloth_tp_preloaded"
 _TP_QUANTIZED_HINT = "Load 4-bit / 8-bit / quantized models in full and call apply_tensor_parallel, or pass load_in_4bit = False."
@@ -4690,10 +4777,26 @@ class _SliceReader:
         path = self.index[key]
         if path not in self.handles:
             from safetensors import safe_open
-            self.handles[path] = safe_open(path, framework = "pt", device = "cpu")
+
+            from ._windows_safetensors import pread_backend_kwargs
+
+            # read once per rank and copied to its device: pread where mmap -> GPU is slow
+            self.handles[path] = safe_open(
+                path, framework = "pt", device = "cpu", **pread_backend_kwargs()
+            )
         return self.handles[path]
 
     def shape(self, key):
+        if isinstance(key, tuple):
+            parts = [self.shape(source) for source in key[0]]
+            tail = parts[0][1:]
+            if any(len(s) < 1 or s[1:] != tail for s in parts) or any(
+                [self.shape(source) for source in sources] != parts for sources in key[1:]
+            ):
+                raise _TensorByTensorUnsupported(
+                    f"Unsloth: the checkpoint experts stacked into one tensor ({key[0][0]} ...) differ in shape."
+                )
+            return (len(key), sum(s[0] for s in parts)) + tail
         return tuple(self._open(key).get_slice(key).get_shape())
 
     def full(self, key):
@@ -4728,7 +4831,17 @@ class _SliceReader:
         device,
         sliced = True,
     ):
-        """Rows [start, stop) as `dtype` on `device`, read in ~_READ_SLICE_BYTES slices (no whole-table host copy)."""
+        """Rows [start, stop) as `dtype` on `device`, read in ~_READ_SLICE_BYTES slices (no whole-table host copy).
+        A tuple key: row i is expert i's checkpoint tensors concatenated on dim 0."""
+        if isinstance(key, tuple):
+            out = torch.empty((stop - start,) + self.shape(key)[1:], dtype = dtype, device = device)
+            for row, sources in enumerate(key[start:stop]):
+                offset = 0
+                for source in sources:
+                    part = self.full_to(source, dtype, device, sliced)
+                    out[row, offset : offset + part.shape[0]].copy_(part)
+                    offset += part.shape[0]
+            return out
         view = self._open(key).get_slice(key)
         shape = tuple(view.get_shape())
         tail = shape[1:]
@@ -4756,11 +4869,17 @@ class _SliceReader:
             self.full_bytes += rows * row_bytes
         return out
 
-    def full_to(self, key, dtype, device):
+    def full_to(
+        self,
+        key,
+        dtype,
+        device,
+        sliced = False,
+    ):
         shape = self.shape(key)
         if len(shape) == 0:
             return self.full(key).to(device = device, dtype = dtype)
-        return self.rows_to(key, 0, shape[0], dtype, device, sliced = False)
+        return self.rows_to(key, 0, shape[0], dtype, device, sliced = sliced)
 
 
 _READ_SLICE_BYTES = 64 << 20
@@ -4784,12 +4903,15 @@ def _checkpoint_aliases(
     model,
     index,
     key_mapping = None,
+    stacked_experts = False,
 ):
     """{model key: checkpoint key} for a checkpoint saved under another naming: transformers 5's conversion
     mapping renames (VLMs save `model.layers.*` for `model.language_model.layers.*`) and 4.x
     `_checkpoint_conversion_mapping`. A model key a WeightConverter builds (merged experts, fused or permuted
     weights) maps to None: it is not one checkpoint tensor, so it cannot be read sliced. `key_mapping` is the
-    load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads)."""
+    load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads).
+    stacked_experts: a per-expert stack (see _expert_stack_sources) with experts 0..E-1 maps to a tuple of, per
+    expert, its checkpoint keys in source order."""
     legacy = getattr(model, "_checkpoint_conversion_mapping", None) or {}
     renamings = converters = None
     try:
@@ -4814,6 +4936,10 @@ def _checkpoint_aliases(
     meta = dict.fromkeys(model.state_dict().keys(), True)
     prefix = getattr(model, "base_model_prefix", None) or None
     out = {}
+    stacks = {}
+    stack_sources = {}
+    if stacked_experts and converters:
+        stack_sources = _expert_stack_sources(converters)
     for key in index:
         new = key
         for pattern, replacement in legacy.items():
@@ -4822,15 +4948,71 @@ def _checkpoint_aliases(
                 break
         converted = None
         if renamings is not None:
+            source = new
             try:
                 new, converted = rename_source_key(new, renamings, converters, prefix, meta)
             except Exception:
                 converted = None
         if converted is not None:
             out[new] = None
+            if converted in stack_sources:
+                part, count = stack_sources[converted]
+                # The converter's pattern matches the key after the renamings (e.g. Mistral-format names).
+                try:
+                    renamed = rename_source_key(source, renamings, [], prefix, meta)[0]
+                except Exception:
+                    renamed = source
+                expert = _expert_number(converted, renamed)
+                parts = stacks.setdefault(new, [{} for _ in range(count)])
+                if parts is not None:
+                    if expert is None or len(parts) != count or expert in parts[part]:
+                        stacks[new] = None  # keep the refusal
+                    else:
+                        parts[part][expert] = key
         elif new != key:
             out.setdefault(new, key)
+    for name, parts in stacks.items():
+        experts = len(parts[0]) if parts else 0
+        if experts and all(sorted(p) == list(range(experts)) for p in parts):
+            out[name] = tuple(tuple(p[e] for p in parts) for e in range(experts))
     return out
+
+
+def _expert_stack_sources(converters):
+    """{source pattern: (position, source count)} for MergeModulelist(dim=0) of one source, or of several then
+    Concatenate(dim=1) (gate + up)."""
+    try:
+        from transformers.core_model_loading import Concatenate, MergeModulelist
+    except ImportError:
+        return {}
+    out = {}
+    for t in converters:
+        ops, sources = list(getattr(t, "operations", ()) or ()), list(t.source_patterns)
+        if len(t.target_patterns) != 1 or not ops or not sources:
+            continue
+        if type(ops[0]) is not MergeModulelist or ops[0].dim != 0:
+            continue
+        if len(ops) == 1 and len(sources) == 1:
+            pass
+        elif len(ops) == 2 and len(sources) > 1 and type(ops[1]) is Concatenate and ops[1].dim == 1:
+            pass
+        else:
+            continue
+        if any(source.count("*") != 1 or source.count("*.") != 1 for source in sources):
+            continue
+        for position, source in enumerate(sources):
+            out[source] = (position, len(sources))
+    return out
+
+
+def _expert_number(pattern, key):
+    """The expert index `*` matches in `key`, or None. `pattern` is a regex, as transformers compiles it."""
+    try:
+        regex = re.compile(pattern.replace("*.", r"(?P<_unsloth_expert>\d+)\.") + r"(?!\w)")
+    except re.error:
+        return None
+    match = regex.search(key)
+    return int(match.group("_unsloth_expert")) if match else None
 
 
 def _buffer_skeleton(model):
@@ -4874,6 +5056,7 @@ def _fill_from_checkpoint(
     label = "tensor parallel",
     fallback = "full load, then apply_tensor_parallel",
     host = (),
+    stacked_experts = False,
 ):
     """Fill a meta model from its safetensors checkpoint. `read_local(old, reader, key)` returns this rank's
     Parameter for a sharded tensor (reading only its bytes) or None, and then the tensor is read whole.
@@ -4897,7 +5080,9 @@ def _fill_from_checkpoint(
         if key is not None:
             return key
         if aliases is None:
-            aliases = _checkpoint_aliases(model, index, (kwargs or {}).get("key_mapping"))
+            aliases = _checkpoint_aliases(
+                model, index, (kwargs or {}).get("key_mapping"), stacked_experts = stacked_experts
+            )
         for n in names:
             if n in aliases:
                 if aliases[n] is None:
@@ -4929,6 +5114,12 @@ def _fill_from_checkpoint(
                     f"4-bit form of a {shape} weight; load this model without sharded loading ({fallback})."
                 )
         elif stored != tuple(old.shape):
+            if isinstance(key, tuple):
+                raise _TensorByTensorUnsupported(
+                    f"Unsloth: {label} sharded loading cannot read '{names[0]}' {tuple(old.shape)}: its "
+                    f"per-expert checkpoint tensors stack to {stored} (a quantized or reshaped expert layout); "
+                    f"load this model without sharded loading ({fallback})."
+                )
             if len(stored) == 2 and stored[1] == 1 and f"{key}.absmax" in index:
                 raise _TensorByTensorUnsupported(
                     f"Unsloth: {label} sharded loading cannot read '{names[0]}' {tuple(old.shape)}: the "
@@ -5088,6 +5279,81 @@ _TP_QUANTIZE_OWNER = contextvars.ContextVar("_unsloth_tp_quantize_owner", defaul
 _NESTED_LOAD = object()
 
 
+def _held_bytes(t):
+    """Bytes a stack holds: a packed stack's codes and companions (block / global scales, MXFP4 scales)."""
+    held = getattr(t, "nbytes_packed", None)
+    if callable(held):
+        return held()
+    total = t.numel() * t.element_size()
+    scales = getattr(t, "mxfp4_scales", None)
+    if isinstance(scales, torch.Tensor):
+        total += scales.numel() * scales.element_size()
+    return total
+
+
+def _preload_expert_packed(owner, p, rank, tp, ranks):
+    """This rank's experts of a just-set packed stack (zoo's MXFP4 / NVFP4 / MXFP8), or None; its logical shape
+    keeps every expert, so PEFT sizes the expert LoRA for the whole stack."""
+    E = owner.__dict__.get("num_experts")
+    if (
+        not isinstance(E, int)
+        or isinstance(E, bool)
+        or _packed_expert_problem(p, E, tp) is not None
+    ):
+        return None
+    per_rank = E // tp
+    new = _packed_expert_slice(p, rank * per_rank, (rank + 1) * per_rank)
+    new._original_shape = torch.Size((E,) + tuple(p._original_shape)[1:])
+    setattr(new, _EXPERT_PRELOAD, (E, tp, tuple(ranks)))
+    return new
+
+
+def _logical_dim(p):
+    if _is_params4bit(p):
+        return len(_expert_stack_shape(p) or ())
+    return len(getattr(p, "_original_shape", None) or p.shape)
+
+
+def _cut_expert_stacks(
+    module,
+    block,
+    rank,
+    tp,
+    ranks,
+    experts_only,
+    size = None,
+):
+    """Cut every routed expert stack of a just-loaded experts `module` (of `block`) to this rank's experts:
+    (stacks cut, bytes saved, negative). Every stack of a block or none: one cut stack would leave it unshardable."""
+    params = {n: p for n, p in module._parameters.items() if p is not None}
+    if not params or any(
+        p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None for p in params.values()
+    ):
+        return 0, 0
+    # Tensor parallel cannot regather packed stacks: only expert parallel accepts them (as apply checks).
+    if expert_shard_problem(block, tp, packed = experts_only) is not None:
+        return 0, 0
+    cuts = {}
+    for n, p in params.items():
+        if _is_params4bit(p):
+            cuts[n] = _preload_expert_params4bit
+        elif experts_only and _is_packed_expert(p):
+            cuts[n] = _preload_expert_packed
+        elif experts_only and _plain_expert(p):
+            cuts[n] = _preload_expert_plain
+    stacks = {n: params[n] for n in cuts}
+    # Only biases visible (a weight stack kept outside _parameters, e.g. transformers' own MXFP4 kernels): cutting
+    # them alone would leave the block half sharded.
+    if not any(_logical_dim(p) >= 3 for p in stacks.values()):
+        return 0, 0
+    shards = {n: cuts[n](module, p, rank, tp, ranks) for n, p in stacks.items()}
+    if any(new is None for new in shards.values()):
+        return 0, 0
+    module._parameters.update(shards)
+    size = size or _held_bytes
+    return len(shards), sum(size(shards[n]) - size(stacks[n]) for n in shards)
+
+
 def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     """A bitsandbytes 4-bit quantize-on-load under tensor parallel sharded loading: transformers' own load, each
     4-bit projection weight of the plan and each 4-bit routed expert stack replaced by this rank's shard as soon
@@ -5100,14 +5366,22 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     except Exception:
         loading = None
     set_param = getattr(loading, "set_param_for_module", None)
+    experts_only = bool(state.get("experts_only"))
     if not callable(set_param):
+        if experts_only:
+            return _ep_lists_load_4x(original, cls, name, args, kwargs, mesh, state)
         return original(cls, name, *args, **kwargs)
     tp, rank = mesh.size(), mesh.get_local_rank()
     ranks = mesh.mesh.tolist()
-    experts_only = bool(state.get("experts_only"))
     owner = object()
     plan = {}
-    counts = {"loaded_bytes": 0, "kept_bytes": 0, "sharded_weights": 0, "sharded_expert_stacks": 0}
+    counts = {
+        "loaded_bytes": 0,
+        "kept_bytes": 0,
+        "sharded_weights": 0,
+        "sharded_expert_stacks": 0,
+        "remote_expert_tensors": 0,
+    }
 
     def plan_for(model):
         # The meta model as transformers built it (Linear4bit already swapped in): the plan apply derives later.
@@ -5125,35 +5399,19 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
                 chain = _experts_chain(block)
                 if chain:
                     experts[id(chain[-1])] = block
-        plan.update(model = model, projs = projs, experts = experts)
+        remote = (
+            _ep_remote_modules(model, tp, rank, tuple(ranks)) if experts_only and tp > 1 else {}
+        )
+        plan.update(model = model, projs = projs, experts = experts, remote = remote)
 
-    def nbytes(t):
-        return t.numel() * t.element_size()
+    nbytes = _held_bytes  # a packed stack's companions (scales) count on both sides of every cut
 
     def shard_experts(module):
-        # Every stack of a block or none: one cut stack would leave the block unshardable.
-        params = {n: p for n, p in module._parameters.items() if p is not None}
-        if not params or any(
-            p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None for p in params.values()
-        ):
-            return 0
-        if expert_shard_problem(plan["experts"][id(module)], tp) is not None:
-            return 0
-        cuts = {}
-        for n, p in params.items():
-            if _is_params4bit(p):
-                cuts[n] = _preload_expert_params4bit
-            elif experts_only and _plain_expert(p):
-                cuts[n] = _preload_expert_plain
-        if not cuts:
-            return 0
-        stacks = {n: params[n] for n in cuts}
-        shards = {n: cuts[n](module, p, rank, tp, ranks) for n, p in stacks.items()}
-        if any(new is None for new in shards.values()):
-            return 0
-        module._parameters.update(shards)
-        counts["sharded_expert_stacks"] += len(shards)
-        return sum(nbytes(shards[n]) - nbytes(stacks[n]) for n in shards)
+        cut, delta = _cut_expert_stacks(
+            module, plan["experts"][id(module)], rank, tp, ranks, experts_only
+        )
+        counts["sharded_expert_stacks"] += cut
+        return delta
 
     def set_and_shard(model, target_name, param_value, *rest, **more):
         set_param(model, target_name, param_value, *rest, **more)
@@ -5174,6 +5432,10 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         if not isinstance(p, torch.Tensor) or p.is_meta:
             return
         counts["loaded_bytes"] += nbytes(p)
+        if id(module) in plan["remote"]:
+            _lists_module().replace_remote(module, pname, plan["remote"][id(module)])
+            counts["remote_expert_tensors"] += 1
+            return
         counts["kept_bytes"] += nbytes(p)
         if (
             pname == "weight"
@@ -5202,14 +5464,90 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     loading.set_param_for_module = set_and_shard
     state["active"] = True
     token = _TP_QUANTIZE_OWNER.set(owner)
+    # Expert parallel: a loader that reads packed expert stacks itself (Inkling 2's released experts) reads only
+    # this rank's experts (ep_packed_load_cut).
+    packed = (
+        {
+            "owner": owner,
+            "cls": cls,
+            "tp": tp,
+            "rank": rank,
+            "ranks": tuple(ranks),
+            "sharded_expert_stacks": 0,
+            "loaded_bytes": 0,
+            "kept_bytes": 0,
+        }
+        if experts_only
+        else None
+    )
+    packed_token = _EP_PACKED_LOAD.set(packed) if packed is not None else None
     try:
         with sharded_load_memory(tp):
             loaded = original(cls, name, *args, **kwargs)
     finally:
+        if packed_token is not None:
+            _EP_PACKED_LOAD.reset(packed_token)
         loading.set_param_for_module = set_param
         _TP_QUANTIZE_OWNER.reset(token)
         state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
+    if packed is not None and packed.get("model") is model:
+        for key in ("sharded_expert_stacks", "loaded_bytes", "kept_bytes"):
+            counts[key] += packed[key]
+    if plan.get("model") is model and plan["remote"]:
+        counts["remote_expert_tensors"] += _ep_finish_remote(model, tp, rank, tuple(ranks))
+    _guard_preloaded_modules(model)
+    model.__dict__["_unsloth_tp_load_stats"] = {
+        "tp": tp,
+        "rank": rank,
+        "quantized_on_load": state.get("on_load", True),
+        **counts,
+    }
+    state["models"].append(model)
+    return loaded
+
+
+# Expert parallel over a pre-quantized packed checkpoint (packed_expert_loader: compressed-tensors / ModelOpt NVFP4,
+# MXFP8): transformers' own load, but the packed expert stacks are read for this rank's experts only.
+_EP_PACKED_LOAD = contextvars.ContextVar("_unsloth_ep_packed_load", default = None)
+
+
+def ep_packed_load_cut(model, experts):
+    """(lo, hi, mark) when expert parallel loading reads only experts [lo, hi) of the packed `experts` module of
+    `model` (the meta model transformers is loading), else None (it loads every expert)."""
+    info = _EP_PACKED_LOAD.get()
+    if (
+        info is None
+        or _TP_QUANTIZE_OWNER.get()
+        is not info["owner"]  # a nested load inside it is an ordinary load
+        or not isinstance(model, info["cls"])
+        or info.setdefault("model", model) is not model
+    ):
+        return None
+    tp, rank = info["tp"], info["rank"]
+    E = experts.__dict__.get("num_experts")
+    if not isinstance(E, int) or isinstance(E, bool) or E % tp or E // tp < 2:
+        return None
+    for block in moe_blocks_with_experts(model):
+        chain = _experts_chain(block)
+        if chain and chain[-1] is experts:
+            if expert_shard_problem(block, tp) is not None:
+                return None
+            per = E // tp
+            return rank * per, (rank + 1) * per, (E, tp, info["ranks"])
+    return None
+
+
+def ep_packed_load_count(loaded_bytes, kept_bytes):
+    """packed_expert_loader read one packed expert stack for this rank's experts only."""
+    info = _EP_PACKED_LOAD.get()
+    if info is not None:
+        info["sharded_expert_stacks"] += 1
+        info["loaded_bytes"] += loaded_bytes
+        info["kept_bytes"] += kept_bytes
+
+
+def _guard_preloaded_modules(model):
     for module in model.modules():
         if "_unsloth_tp_load_guard" in module.__dict__:
             continue
@@ -5219,8 +5557,355 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
             module.__dict__["_unsloth_tp_load_guard"] = module.register_forward_pre_hook(
                 _refuse_unapplied_forward
             )
+
+
+def _cut_converter_stack(model, target_name):
+    """The expert parallel converter cut for one just-set tensor (see _ep_packed_load); a no-op elsewhere."""
+    info = _EP_PACKED_LOAD.get()
+    if (
+        info is None
+        or not info.get("converter_cut")
+        or _TP_QUANTIZE_OWNER.get() is not info["owner"]
+        or not isinstance(model, info["cls"])
+        or info.setdefault("model", model) is not model
+    ):
+        return
+    if "experts" not in info:
+        info["experts"] = {}
+        for block in moe_blocks_with_experts(model):
+            chain = _experts_chain(block)
+            if chain:
+                info["experts"][id(chain[-1])] = block
+    module_path = target_name.rpartition(".")[0]
+    try:
+        module = model.get_submodule(module_path) if module_path else model
+    except AttributeError:
+        return
+    block = info["experts"].get(id(module))
+    if block is None:
+        return
+    cut, delta = _cut_expert_stacks(module, block, info["rank"], info["tp"], info["ranks"], True)
+    if cut:
+        held = sum(_held_bytes(p) for p in module._parameters.values() if p is not None)
+        info["sharded_expert_stacks"] += cut
+        info["kept_bytes"] += held
+        info["loaded_bytes"] += held - delta
+
+
+def _install_converter_cut_setter():
+    """Wrap transformers' set_param_for_module once, for good: it cuts only inside the load that asked for it
+    (_EP_PACKED_LOAD), so overlapping loads never install or restore it out of order. False on transformers 4."""
+    try:
+        from transformers import core_model_loading as loading
+    except Exception:
+        return False
+    current = getattr(loading, "set_param_for_module", None)
+    if not callable(current):
+        return False
+    if getattr(current, "_unsloth_ep_converter_cut", False):
+        return True
+
+    def set_param_for_module(model, target_name, *args, **kwargs):
+        out = current(model, target_name, *args, **kwargs)
+        _cut_converter_stack(model, target_name)
+        return out
+
+    set_param_for_module._unsloth_ep_converter_cut = True
+    loading.set_param_for_module = set_param_for_module
+    return True
+
+
+def _keeps_experts_on_device(device_map):
+    """A device map that leaves every tensor where transformers sets it (no CPU / disk offload dispatch later)."""
+    if device_map is None:
+        return True
+    values = device_map.values() if isinstance(device_map, dict) else [device_map]
+    for value in values:
+        if (
+            isinstance(value, int)
+            or isinstance(value, torch.device)
+            and value.type not in ("cpu", "meta")
+        ):
+            continue
+        text = str(value)
+        if text in ("cpu", "disk", "meta", "auto", "balanced", "balanced_low_0", "sequential"):
+            return False
+    return True
+
+
+def _guard_preloaded_root(model):
+    """A model-level guard too: a fused decode path (zoo's one-token gpt-oss decode) reads the expert stacks
+    without calling the experts module, past its leaf guard. It removes itself once apply has consumed the marks."""
+    if "_unsloth_tp_root_guard" in model.__dict__:
+        return
+
+    def refuse(module, args):
+        if any(getattr(p, _EXPERT_PRELOAD, None) is not None for p in module.parameters()):
+            _refuse_unapplied_forward(module, args)
+        handle = module.__dict__.pop("_unsloth_tp_root_guard", None)
+        if handle is not None:
+            handle.remove()
+
+    model.__dict__["_unsloth_tp_root_guard"] = model.register_forward_pre_hook(refuse, prepend = True)
+
+
+def _holds_unapplied_shards(model):
+    """True while a sharded load's slices are still unapplied: a load guard (removed by apply_tensor_parallel /
+    apply_expert_parallel for each module it shards) or a preloaded expert stack apply has not consumed."""
+    return any("_unsloth_tp_load_guard" in m.__dict__ for m in model.modules()) or any(
+        getattr(p, _EXPERT_PRELOAD, None) is not None for p in model.parameters()
+    )
+
+
+def _guard_preloaded_save(model):
+    """save_pretrained of the whole model straight after a tensor / expert parallel sharded load would write only
+    this rank's slices or experts (a checkpoint a fresh load rejects): refuse it before anything is written, as
+    long as forward is refused too. After apply it delegates (expert parallel's collective save chains onto it)."""
+    if "_unsloth_tp_save_guard" in model.__dict__:
+        return
+    save = getattr(model, "save_pretrained", None)
+    if not callable(save):
+        return
+
+    @functools.wraps(save)
+    def save_pretrained(*args, **kwargs):
+        if _holds_unapplied_shards(model):
+            raise RuntimeError(
+                "Unsloth: this model was loaded with tensor / expert parallel sharded loading and holds only this "
+                "rank's slices / experts; call apply_tensor_parallel(model, tp_mesh) or "
+                "apply_expert_parallel(model, ep_mesh) before save_pretrained, or save the adapter instead."
+            )
+        return save(*args, **kwargs)
+
+    model.__dict__["_unsloth_tp_save_guard"] = True
+    model.save_pretrained = save_pretrained
+
+
+def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
+    """transformers' own load of an otherwise quantized checkpoint under expert parallel loading:
+    packed_expert_loader reads each packed expert stack for this rank's experts only (ep_packed_load_cut), and a
+    routed expert stack transformers' converters build and set (gpt-oss MXFP4 kept packed by unsloth_zoo or
+    dequantized) is cut to this rank's experts as soon as it is set (transformers 5), unless the device map
+    offloads (its dispatch expects the whole stacks)."""
+    from .fsdp2_load import sharded_load_memory
+
+    owner = object()
+    info = {
+        "owner": owner,
+        "cls": cls,
+        "tp": mesh.size(),
+        "rank": mesh.get_local_rank(),
+        "ranks": tuple(mesh.mesh.tolist()),
+        "sharded_expert_stacks": 0,
+        "loaded_bytes": 0,
+        "kept_bytes": 0,
+        "converter_cut": _keeps_experts_on_device(kwargs.get("device_map"))
+        and _install_converter_cut_setter(),
+    }
+    # As _tp_load_quantizing: an enclosing sharded_loading passes this load through, a nested one is ordinary.
+    state["active"] = True
+    owner_token = _TP_QUANTIZE_OWNER.set(owner)
+    token = _EP_PACKED_LOAD.set(info)
+    try:
+        with sharded_load_memory(info["tp"]):
+            loaded = original(cls, name, *args, **kwargs)
+    finally:
+        _EP_PACKED_LOAD.reset(token)
+        _TP_QUANTIZE_OWNER.reset(owner_token)
+        state["active"] = False
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
+    if info["sharded_expert_stacks"] and info.get("model") is model:
+        _guard_preloaded_modules(model)
+        _guard_preloaded_root(model)
+        model.__dict__["_unsloth_tp_load_stats"] = {
+            "tp": info["tp"],
+            "rank": info["rank"],
+            "quantized_on_load": False,
+            "prequantized": True,
+            "sharded_weights": 0,
+            "sharded_expert_stacks": info["sharded_expert_stacks"],
+            "remote_expert_tensors": 0,
+            "loaded_bytes": info["loaded_bytes"],
+            "kept_bytes": info["kept_bytes"],
+        }
+        state["models"].append(model)
+    return loaded
+
+
+def _set_param_hook():
+    try:
+        from transformers import core_model_loading as loading
+    except Exception:
+        return False
+    return callable(getattr(loading, "set_param_for_module", None))
+
+
+def _lists_module():
+    from . import ep_expert_lists
+    return ep_expert_lists
+
+
+def _ep_remote_modules(
+    model,
+    ep,
+    rank,
+    ranks = None,
+):
+    """{id(module): (experts, ep, rank)} for every module inside another rank's per-expert expert."""
+    lists = _lists_module()
+    remote = {}
+    for block in moe_blocks_with_experts(model):
+        try:
+            others = lists.load_remote_experts(block, ep, rank)
+        except Exception:
+            others = None
+        for expert in others or ():
+            lists.keep_remote_on_meta(expert)
+            for m in expert.modules():
+                remote[id(m)] = (len(others), ep, rank, ranks)
+    return remote
+
+
+def _ep_finish_remote(
+    model,
+    ep,
+    rank,
+    ranks = None,
+):
+    """Make other ranks' expert params tagged meta stand-ins; forward refused until apply_expert_parallel."""
+    lists = _lists_module()
+    replaced = 0
+    for block in moe_blocks_with_experts(model):
+        try:
+            others = lists.load_remote_experts(block, ep, rank)
+        except Exception:
+            others = None
+        if not others:
+            continue
+        tag = (len(others), ep, rank, ranks)
+        for expert in others:
+            for m in expert.modules():
+                for pname, p in list(m._parameters.items()):
+                    if p is None or lists.is_remote(p):
+                        continue
+                    if not p.is_meta:
+                        replaced += 1
+                    lists.replace_remote(m, pname, tag)
+        if "_unsloth_tp_load_guard" not in block.__dict__:
+            block.__dict__["_unsloth_tp_load_guard"] = block.register_forward_pre_hook(
+                _refuse_unapplied_forward
+            )
+    _drop_remote_device_map(model, ep, rank)
+    return replaced
+
+
+def _drop_remote_device_map(model, ep, rank):
+    """A device map that lists other ranks' experts (on meta) is not a multi-device split: accelerate's Trainer
+    check would refuse it as device_map="auto". Their entries go; one device left collapses to {"": device}."""
+    names = {id(m): n for n, m in model.named_modules()}
+    remote = set()
+    for block in moe_blocks_with_experts(model):
+        try:
+            others = _lists_module().load_remote_experts(block, ep, rank)
+        except Exception:
+            others = None
+        remote.update(names[id(e)] for e in others or () if id(e) in names)
+    for m in model.modules():
+        device_map = m.__dict__.get("hf_device_map")
+        if not isinstance(device_map, dict) or len(device_map) < 2:
+            continue
+        prefix = names.get(id(m), "")
+        prefix = prefix + "." if prefix else ""
+        kept = {
+            k: v
+            for k, v in device_map.items()
+            if str(v) != "meta" and not any((prefix + k + ".").startswith(r + ".") for r in remote)
+        }
+        devices = {str(v) for v in kept.values()}
+        m.hf_device_map = {"": next(iter(kept.values()))} if len(devices) == 1 else kept
+
+
+def _submit_in_context(self, fn, *args, **kwargs):
+    context = contextvars.copy_context()
+    return super(type(self), self).submit(context.run, fn, *args, **kwargs)
+
+
+def _one_device(device_map):
+    """True for a device_map that puts the whole model on one device (None, a device, or a one-device dict)."""
+    if device_map is None or isinstance(device_map, (int, torch.device)):
+        return True
+    if isinstance(device_map, str):
+        return device_map not in ("auto", "balanced", "balanced_low_0", "sequential")
+    if isinstance(device_map, dict):
+        return len({str(v) for v in device_map.values()}) == 1 and not any(
+            str(v) == "disk" for v in device_map.values()
+        )
+    return False
+
+
+def _ep_lists_load_4x(original, cls, name, args, kwargs, mesh, state):
+    """transformers 4.x under expert parallel loading: the checkpoint keys of other ranks' per-expert experts are
+    never read (they stay meta stand-ins until apply_expert_parallel drops them); everything else loads in full."""
+    from transformers import modeling_utils as mu
+
+    from .fsdp2_load import sharded_load_memory
+
+    inner = mu.__dict__.get("_load_state_dict_into_meta_model")
+    if not callable(inner) or not _one_device(kwargs.get("device_map")):
+        return original(
+            cls, name, *args, **kwargs
+        )  # CPU / disk offload places tensors through accelerate's hooks
+    ep, rank = mesh.size(), mesh.get_local_rank()
+    ranks = tuple(mesh.mesh.tolist())
+    owner = object()
+    seen = {}
+    counts = {
+        "loaded_bytes": 0,
+        "kept_bytes": 0,
+        "remote_expert_tensors": 0,
+        "sharded_expert_stacks": 0,
+    }
+
+    def prefixes(model):
+        if id(model) not in seen:
+            names = {id(m): n for n, m in model.named_modules()}
+            remote = _ep_remote_modules(model, ep, rank, ranks) if isinstance(model, cls) else {}
+            seen[id(model)] = tuple(sorted(names[i] + "." for i in remote if names.get(i)))
+        return seen[id(model)]
+
+    def filtered(model, state_dict, *rest, **more):
+        if _TP_QUANTIZE_OWNER.get() is owner and isinstance(state_dict, dict):
+            skip = prefixes(model)
+            if skip:
+                dropped = [k for k in state_dict if k.startswith(skip)]
+                if dropped:
+                    counts["remote_expert_tensors"] += len(dropped)
+                    state_dict = {k: v for k, v in state_dict.items() if not k.startswith(skip)}
+        return inner(model, state_dict, *rest, **more)
+
+    pool = mu.__dict__.get("ThreadPoolExecutor")
+    mu._load_state_dict_into_meta_model = filtered
+    if isinstance(pool, type):
+        # HF_ENABLE_PARALLEL_LOADING loads shards on pool threads: they get the submitting context (and its owner).
+        mu.ThreadPoolExecutor = type("_ContextPool", (pool,), {"submit": _submit_in_context})
+    state["active"] = True
+    token = _TP_QUANTIZE_OWNER.set(owner)
+    try:
+        with sharded_load_memory(ep):
+            loaded = original(cls, name, *args, **kwargs)
+    finally:
+        mu._load_state_dict_into_meta_model = inner
+        if isinstance(pool, type):
+            mu.ThreadPoolExecutor = pool
+        _TP_QUANTIZE_OWNER.reset(token)
+        state["active"] = False
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
+    counts["remote_loaded_then_freed"] = _ep_finish_remote(model, ep, rank, ranks)
+    for p in model.parameters():
+        if not p.is_meta:
+            counts["kept_bytes"] += p.numel() * p.element_size()
     model.__dict__["_unsloth_tp_load_stats"] = {
-        "tp": tp,
+        "tp": ep,
         "rank": rank,
         "quantized_on_load": state.get("on_load", True),
         **counts,
@@ -5366,7 +6051,8 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
     if state.get("experts_only"):
-        # Other quantizations (block FP8 aside), transformers 4.x and 2-D meshes load in full.
+        # Other quantizations (block FP8 aside) and 2-D meshes load in full; transformers 4.x keeps only this rank's
+        # per-expert experts (_ep_lists_load_4x), bitsandbytes quantize-on-load included.
         mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
         fp8 = (
             other
@@ -5384,7 +6070,24 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                 )
             )
         )
+        if (
+            mesh.ndim == 1
+            and not other
+            and not original_kwargs.get("load_in_8bit")
+            and (
+                asked is None or bnb4_quantization(types.SimpleNamespace(quantization_config = asked))
+            )
+            and not _set_param_hook()
+        ):
+            state["on_load"] = on_load
+            try:
+                return _ep_lists_load_4x(original, cls, name, args, original_kwargs, mesh, state)
+            finally:
+                state.pop("on_load", None)
         if chunked is None or on_load or mesh.ndim != 1:
+            if other and not fp8 and mesh.ndim == 1 and mesh.size() > 1:
+                # A pre-quantized packed checkpoint: packed_expert_loader reads this rank's experts only.
+                return _ep_packed_load(original, cls, name, args, original_kwargs, mesh, state)
             return original(cls, name, *args, **original_kwargs)
         state["on_load"] = False
         try:
@@ -5529,9 +6232,13 @@ def _sharded_from_pretrained(state):
     state = dict(state, models = [], active = False)
 
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
-        return _from_pretrained_sharded(
+        seen = len(state["models"])
+        loaded = _from_pretrained_sharded(
             original, cls, pretrained_model_name_or_path, args, kwargs, state
         )
+        for model in state["models"][seen:]:
+            _guard_preloaded_save(model)  # every sharded load: save refused until apply
+        return loaded
 
     PreTrainedModel.from_pretrained = classmethod(from_pretrained)
     try:
@@ -5722,8 +6429,7 @@ def _refuse_tp_trainer_args(
 
 
 def _refuse_full_finetuning_fsdp2(model):
-    """Full finetuning on tp x native FSDP2 trains, but save_model (also every Trainer checkpoint) cannot gather
-    the whole model there yet: refuse before training instead of at the first save."""
+    """Full finetuning on tp x native FSDP2 is refused up front: save_model cannot gather yet."""
     if _has_peft_config(model):
         return
     from .tp_replica import _fsdp2_units, tp_root
@@ -5878,8 +6584,7 @@ def tp_trainer_setup(
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
     for name in ("evaluate", "predict") if cp_data is not None and not pipeline else ():
         trainer.__dict__[name] = _refuse_tp_trainer_call(name)
-    # Trainer checkpoints: per-rank local shards (instance level: before native FSDP2's class hooks, whose
-    # full-state gathers do not restore the packed tp part order).
+    # Per-rank shards, patched on instance; FSDP2 class-hook gathers lose packed tp part order.
     for name, method in (
         ("_save_optimizer_and_scheduler", _tp_save_optimizer_and_scheduler),
         ("_load_optimizer_and_scheduler", _tp_load_optimizer_and_scheduler),
@@ -5943,11 +6648,12 @@ def _tp_localize_bnb(optimizer):
 
 
 def _dp_average(params, mesh):
-    """Average the gradients over the dp mesh (DDP's all-reduce, one per dtype / device bucket). A trainable
-    with a gradient on some dp replicas only (an unrouted expert, an unused tower) gets zeros on the others
-    first, as DDP does, so every replica reduces the same buckets; one with no gradient anywhere stays None."""
+    """Averages grads over dp (one all-reduce per dtype/device bucket); a param with grads on only
+    some replicas gets zeros first, so buckets match; params with no grad stay None."""
     import torch.distributed as dist
     from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
+
+    from .ep_native import _REPLICA_BUCKET_BYTES, _replica_buckets
 
     params = [p for p in params if p.requires_grad]
     if not params:
@@ -5960,17 +6666,25 @@ def _dp_average(params, mesh):
     )
     has = torch.tensor([p.grad is not None for p in params], dtype = torch.int32, device = device)
     dist.all_reduce(has, op = dist.ReduceOp.MAX, group = group)
-    buckets = {}
+    grads = []
     for p, any_grad in zip(params, has.tolist()):
         if not any_grad:
             continue
         if p.grad is None:
             p.grad = torch.zeros_like(p)
         g = p.grad
-        local = g._local_tensor if _is_dtensor(g) else g
-        buckets.setdefault((local.device, local.dtype), []).append(local)
+        grads.append(g._local_tensor if _is_dtensor(g) else g)
     with torch.no_grad():
-        for tensors in buckets.values():
+        # Capped buckets (as EP's replica sync): one flat copy of every gradient would double their memory.
+        for tensors in _replica_buckets(grads, _REPLICA_BUCKET_BYTES):
+            if (
+                len(tensors) == 1
+                and tensors[0].is_contiguous()
+                and tensors[0].dtype != torch.float16
+            ):
+                dist.all_reduce(tensors[0], group = group)
+                tensors[0].div_(n)
+                continue
             flat = _flatten_dense_tensors(tensors)
             if flat.dtype == torch.float16:
                 # fp16 sum can overflow past 65504 though the mean is finite.
@@ -5979,6 +6693,8 @@ def _dp_average(params, mesh):
             flat.div_(n)
             for t, value in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
                 t.copy_(value)
+            # A view of flat in value would keep it alive beside the next bucket's buffer.
+            del flat, value
 
 
 def _dp_sync_before_step(sync, optimizer, args, kwargs):
@@ -5991,7 +6707,9 @@ def _dp_sync_before_step(sync, optimizer, args, kwargs):
 
 # Trainer checkpoints under tensor parallelism: every rank writes its own local shards of the trainable
 # weights and of the optimizer state (DTensor entries as local tensors), the scheduler / scaler / RNG / trainer
-# state stay as the Trainer writes them, and save_model writes the 1-GPU adapter. A resume needs the same layout.
+# state stay as the Trainer writes them, and save_model writes the 1-GPU adapter. Rank 0 also writes the optimizer
+# state in its 1-GPU form (optimizer.pt): a resume on the same layout reads the per-rank files, on another layout
+# (or one GPU) the adapter and optimizer.pt, resharded (portable_resume.py).
 _CKPT_DIR = "unsloth_tp"
 
 
@@ -6101,8 +6819,7 @@ def _tp_layout(trainer):
         **(
             {"pp": pp} if pp > 1 else {}
         ),  # pp_env Trainer checkpoints (a tp-only layout keeps its old keys)
-        # dp_mesh is the flattened (dp, cp) mesh: without cp, tp=2,cp=2 and tp=2 x 2 replicas look alike, and the
-        # resumed step count would skip the wrong number of rows.
+        # Without cp, tp=2,cp=2 and tp=2 x 2 replicas look alike, so resume skips wrong rows.
         **({"cp": cp} if cp > 1 else {}),
         "tp": tp_mesh.size() if tp_mesh is not None else 1,
         "dp": dp_mesh.size() if dp_mesh is not None else 1,
@@ -6164,11 +6881,21 @@ def _load_optimizer_local_state(optimizer, saved):
     inner.load_state_dict({"state": state, "param_groups": saved["param_groups"]})
 
 
+def _release_inference_replica(*models):
+    """Drop a replica left by generate / for_inference (local, no collective): while it is in, named_parameters()
+    yields its whole tensors instead of the shards the optimizer and the checkpoint hold."""
+    from .tp_replica import release_replica
+    for model in models:
+        if model is not None:
+            release_replica(model)
+
+
 def _tp_save_optimizer_and_scheduler(self, output_dir):
     import os
 
     import torch.distributed as dist
 
+    _release_inference_replica(self.model)
     rank = dist.get_rank() if dist.is_initialized() else 0
     path = _ckpt_path(output_dir, rank)
     trainables = {
@@ -6185,10 +6912,19 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
         else None,
     }
     scheduler = getattr(self, "lr_scheduler", None)
+    # The same optimizer state in the 1-GPU form (collective, rank 0 holds it): resumes on another layout.
+    from .portable_resume import portable_optimizer_state, write_portable_optimizer
+
+    portable, why = (
+        portable_optimizer_state(self.model, self.optimizer)
+        if getattr(self, "optimizer", None) is not None
+        else (None, None)
+    )
 
     def write():
         os.makedirs(os.path.dirname(path), exist_ok = True)
         _atomic_torch_save(payload, path)
+        write_portable_optimizer(output_dir, portable, why)
         if self.args.should_save and scheduler is not None:
             from transformers.trainer import SCHEDULER_NAME
             _atomic_torch_save(scheduler.state_dict(), os.path.join(output_dir, SCHEDULER_NAME))
@@ -6196,7 +6932,12 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
     _agree_write(write)
 
 
+_PORTABLE = object()  # _tp_resume_payload: resume from the 1-GPU adapter + optimizer.pt
+
+
 def _tp_resume_payload(self, checkpoint):
+    """This rank's checkpoint state on the saved layout, or _PORTABLE when any rank's layout differs (or has no
+    rank file) and the checkpoint has the 1-GPU adapter + optimizer.pt (collective: every rank decides alike)."""
     import os
 
     import torch.distributed as dist
@@ -6206,25 +6947,44 @@ def _tp_resume_payload(self, checkpoint):
         return cached[1]
     rank = dist.get_rank() if dist.is_initialized() else 0
     path = _ckpt_path(checkpoint, rank)
+    payload, error = None, None
     if not os.path.isfile(path):
-        raise RuntimeError(
+        error = RuntimeError(
             f"Unsloth: tensor parallel resume needs the per-rank state {path}, which this checkpoint does not "
             "have (it was not written by a tensor parallel Trainer, or with save_only_model = True, which saves "
             "no optimizer state to resume from)." + _env_hint()
         )
-    payload = _resume_torch_load(path, map_location = "cpu")
-    want, got = _tp_layout(self), payload["layout"]
-    if want != got:
-        diff = {
-            k: (got.get(k), want.get(k))
-            for k in ("world", "pp", "cp", "tp", "dp", "dp_kind")
-            if got.get(k) != want.get(k)
-        }
-        raise RuntimeError(
-            f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
-            f"({diff or 'trainable parameter names / shard shapes differ'}); resume with the same world size, "
-            "UNSLOTH_TP_SIZE / UNSLOTH_CP_SIZE and data parallel mode."
-        )
+    else:
+        payload = _resume_torch_load(path, map_location = "cpu")
+        want, got = _tp_layout(self), payload["layout"]
+        if want != got:
+            diff = {
+                k: (got.get(k), want.get(k))
+                for k in ("world", "pp", "cp", "tp", "dp", "dp_kind")
+                if got.get(k) != want.get(k)
+            }
+            error = RuntimeError(
+                f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
+                f"({diff or 'trainable parameter names / shard shapes differ'}) and has no 1-GPU optimizer.pt "
+                "(an older Unsloth, or an optimizer whose state cannot be converted); resume with the same world "
+                "size, UNSLOTH_TP_SIZE / UNSLOTH_CP_SIZE and data parallel mode."
+            )
+    from .portable_resume import _agree, portable_available
+
+    if not _agree(error is None):
+        if portable_available(checkpoint, self.model):
+            _print_rank0(
+                f"Unsloth: {checkpoint} was written on another parallel layout; resuming from its 1-GPU adapter "
+                "and optimizer state, resharded."
+            )
+            self.__dict__["_unsloth_tp_resume"] = (checkpoint, _PORTABLE)
+            return _PORTABLE
+        if error is None:
+            error = RuntimeError(
+                f"Unsloth: tensor parallel resume from {checkpoint}: another rank's checkpoint state was written "
+                "on another layout (see that rank's error)."
+            )
+        raise error
     # Outside "layout" so an older Unsloth still resumes this checkpoint; absent in older checkpoints.
     saved_b, this_b = payload.get("expert_lora_b"), _expert_lora_b_layout(self.model)
     if saved_b and this_b and saved_b != this_b:
@@ -6243,8 +7003,18 @@ def _tp_load_from_checkpoint(
     resume_from_checkpoint,
     model = None,
 ):
-    payload = _tp_resume_payload(self, resume_from_checkpoint)
     target = model if model is not None else self.model
+    _release_inference_replica(self.model, target)
+    payload = _tp_resume_payload(self, resume_from_checkpoint)
+    if payload is _PORTABLE:
+        from .portable_resume import portable_load_weights
+
+        n = portable_load_weights(target, resume_from_checkpoint)
+        _print_rank0(
+            f"Unsloth: parallel resume: every rank took its slices of {n} trainable tensors from "
+            f"{resume_from_checkpoint}'s 1-GPU adapter."
+        )
+        return
     with torch.no_grad():
         for name, p in target.named_parameters():
             if p.requires_grad:
@@ -6260,21 +7030,28 @@ def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
 
     if checkpoint is None:
         return None
+    _release_inference_replica(self.model)
     payload = _tp_resume_payload(self, checkpoint)
-    if payload.get("optimizer") is not None:
+    if payload is _PORTABLE:
+        from .portable_resume import PORTABLE_OPTIMIZER, portable_load_optimizer
+        state = _resume_torch_load(os.path.join(checkpoint, PORTABLE_OPTIMIZER), map_location = "cpu")
+        portable_load_optimizer(self.model, self.optimizer, state)
+    elif payload.get("optimizer") is not None:
         _load_optimizer_local_state(self.optimizer, payload["optimizer"])
     from transformers.trainer import SCHEDULER_NAME
 
     path = os.path.join(checkpoint, SCHEDULER_NAME)
     if getattr(self, "lr_scheduler", None) is not None and os.path.isfile(path):
-        self.lr_scheduler.load_state_dict(_resume_torch_load(path))
+        from .portable_resume import remap_scheduler_state
+        self.lr_scheduler.load_state_dict(
+            remap_scheduler_state(self.optimizer, _resume_torch_load(path))
+        )
     self.__dict__.pop("_unsloth_tp_resume", None)
     return None
 
 
 def _dp_gather(data, dp_mesh):
-    """accelerate's gather over the dp replicas only (the tp ranks of a replica hold identical results). dp = 1:
-    the one-process result (accelerate returns its input unchanged on one process)."""
+    """Gathers over dp replicas only (tp ranks hold identical results); dp=1 returns input."""
     if dp_mesh is None or dp_mesh.size() == 1:
         return data
     import torch.distributed as dist
@@ -6403,8 +7180,7 @@ def _install_tp_accelerate_hooks():
                 "dispatches iterable datasets over every rank)." + _env_hint()
             )
         dp_size, dp_rank = layout
-        # The Trainer seeds workers with partial(seed_worker, rank = process_index): tp peers must draw the
-        # same random transforms / collation, so seed them by dp rank too.
+        # Trainer seeds by process_index; tp peers need equal transforms, so seed by dp rank.
         init_fn = getattr(data_loader, "worker_init_fn", None)
         if isinstance(init_fn, functools.partial) and "rank" in (init_fn.keywords or {}):
             data_loader.worker_init_fn = functools.partial(

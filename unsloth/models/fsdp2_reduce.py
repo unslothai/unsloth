@@ -46,8 +46,7 @@ try:
 except ImportError:
     _ProcessGroupAllocReduceScatter = None
 
-# Comms FSDP2's allocator setter installs: they differ from the default only in where the staging buffers come
-# from, so stock FSDP2 runs the same collective whichever one a rank holds.
+# Allocator-setter comms differ only in staging buffers, so the collective matches stock FSDP2.
 _ALLOCATION_ONLY = tuple(
     c for c in (_DefaultReduceScatter, _ProcessGroupAllocReduceScatter) if c is not None
 )
@@ -75,8 +74,7 @@ def _op_name(op):
 
 
 def _cpu_group(pg):
-    """A group over `pg`'s ranks that reduces CPU tensors: `pg` itself when its backend has gloo, else a gloo
-    group over the same ranks (created collectively by those ranks only)."""
+    """pg if its backend has gloo, else a gloo group over the same ranks (built collectively)."""
     try:
         config = str(dist.get_backend_config(pg))
     except Exception:
@@ -187,8 +185,7 @@ class _HalfTransportReduceScatter(_Base):
             return self._stock(output_tensor, input_tensor, group, op, async_op)
         rows = input_tensor.view(world, width)  # row r: this rank's contribution to rank r's shard
         out_flat = output_tensor.view(-1)
-        # Pieces bound the 16-bit send / receive scratch (a whole-unit copy grew peak memory by the
-        # embedding's size); piece k of every row goes out in one all-to-all. Two flat buffers, reused.
+        # Pieces bound 16-bit scratch: a whole-unit copy grew peak memory by embedding size.
         piece = max(1, min(width, self.piece_bytes // (2 * world)))
         send_buffer = torch.empty(world * piece, dtype = dtype, device = input_tensor.device)
         recv_buffer = torch.empty_like(send_buffer)
@@ -214,10 +211,8 @@ class _HalfTransportReduceScatter(_Base):
 
 
 def _group_grad_dtype(group):
-    """The 16-bit dtype every trainable parameter's gradient has, or None. Frozen parameters produce no gradient
-    and are ignored (FSDP2 picks its dtypes from trainable parameters too). A parameter whose gradient may be
-    reduced outside data parallel (TP, a DTensor / spmd parameter) or has an explicit gradient dtype keeps the
-    stock collective for the whole group."""
+    """Returns the 16-bit grad dtype of trainable params (frozen ignored) or None; a param reduced
+    outside DP (TP, DTensor, spmd) or with an explicit grad dtype makes the group stock."""
     params = [
         p
         for p in (getattr(group, "fsdp_params", None) or [])
@@ -247,8 +242,7 @@ def _all_have_dtype(grads, dtype):
 
 
 def _legacy_fresh(group, dtype):
-    # torch <= 2.14: a gradient FSDP2 accumulated in float32 without a reduce sits in unsharded_accumulated_grad;
-    # the rest are the unsharded parameters' own .grad.
+    # torch <= 2.14: unreduced float32 grads live in unsharded_accumulated_grad, rest in .grad.
     grads = []
     for p in group.fsdp_params:
         if getattr(p, "unsharded_accumulated_grad", None) is not None:
@@ -278,8 +272,7 @@ def _wrap_group(group, comm):
         current = group._reduce_scatter_comm
         if current is not comm:  # a public setter replaced the comm, possibly on this rank only
             if comm.inert or type(current) not in _ALLOCATION_ONLY:
-                # inert: every rank already takes the stock collective with no vote. Any other comm (symmetric
-                # memory, a custom comm) changes the collective under stock FSDP2 as well: defer to it.
+                # Inert (all ranks stock, no vote); other comms also change it, so defer.
                 return original(*args, **kwargs)
             # Keep voting with the other ranks, which may still hold this comm: vote "replaced", reduce with the
             # setter's comm, and agree on the stock collective everywhere.
@@ -323,10 +316,9 @@ def _param_groups(modules):
 
 
 def install_half_transport_reduce(modules, enabled = None):
-    """Install on the FSDP2 param groups of `modules` (plain FSDP meshes, 2+ ranks). `enabled`: the switch
-    already agreed across ranks (shard_model folds it into its layout agreement); None reads the environment
-    and agrees it here. Every rank of a group must call this. Idempotent: a group already carrying the comm
-    returns it. Returns the installed comms (empty when off, or on torch without custom reduce-scatter comms)."""
+    """Installs half-transport reduce comms on FSDP2 groups (plain FSDP, 2+ ranks); enabled was
+    agreed across ranks by shard_model, else None reads the environment and agrees it; all ranks
+    must call; idempotent; returns installed comms (empty if off or torch lacks custom comms)."""
     if enabled is False or _DefaultReduceScatter is None:
         return []
     if not dist.is_available() or not dist.is_initialized():

@@ -2629,6 +2629,10 @@ export const vi = {
         confirmDescriptionChatOnly:
           "Dừng máy chủ và chạy lại trình cài đặt. Đây là bản cài đặt Chỉ trò chuyện, nên trình cài đặt cũng sẽ nâng cấp nó lên bản cài đặt đầy đủ với PyTorch, tổng cộng vài gigabyte. Cuộc trò chuyện và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmAction: "Sửa chữa ngay",
+        recommendedTorch:
+          "Nên sửa chữa: bản cài đặt này có PyTorch {torch}, cũ hơn {managedTorch} được quản lý mà GPU dòng RTX 50 được hỗ trợ.",
+        recommendedDriver:
+          "PyTorch {torch} cũ hơn {managedTorch} được quản lý mà GPU dòng RTX 50 được hỗ trợ, nhưng trình điều khiển GPU này không hỗ trợ CUDA 13. Hãy cập nhật trình điều khiển GPU trước, rồi sửa chữa bản cài đặt.",
       },
       resetPreferences: {
         sectionTitle: "Vùng nguy hiểm",
@@ -4759,6 +4763,8 @@ export const vi = {
       unsupportedFileType: "Loại tệp không được hỗ trợ",
       uploadOneFileType: "Tải lên một tệp {types}.",
       datasetUploaded: "Đã tải lên tập dữ liệu",
+      importPandasJson: "Nhập .json dưới dạng cột pandas",
+      importSemicolonCsv: "Dùng dấu chấm phẩy làm dấu phân cách cho .csv",
       evalDatasetUploaded: "Đã tải lên tập dữ liệu đánh giá",
       uploadOneFileAtATime: "Mỗi lần chỉ tải lên một tệp",
       uploadSingleFileDescription:
@@ -4835,6 +4841,12 @@ export const vi = {
       epochs: "Epoch",
       useMaxSteps: "Dùng số bước tối đa",
       useEpochs: "Dùng epoch",
+      stepGuidancePass: "Khoảng {steps} bước là một lượt qua {rows} dòng của bạn với batch hiệu dụng {batch}.",
+      stepGuidanceFloor: "Một lượt qua {rows} dòng của bạn chỉ là {passSteps} bước với batch hiệu dụng {batch}, nên khoảng {steps} bước (vài lượt) là mức tối thiểu hợp lý.",
+      stepGuidanceCap: "Một lượt qua {rows} dòng của bạn là {passSteps} bước với batch hiệu dụng {batch}; {steps} bước huấn luyện trên một phần, thường đủ cho lần chạy đầu.",
+      stepGuidanceEpoch: "Một epoch là khoảng {passSteps} bước qua {rows} dòng của bạn với batch hiệu dụng {batch}.",
+      stepGuidancePacking: "Packing gộp các dòng ngắn, nên một lượt có thể cần ít bước hơn.",
+      useSuggestedSteps: "Dùng {steps}",
       maxStepsTooltip: "Ghi đè tổng số bước của trình tối ưu hóa.",
       epochsTooltip: "Số lần duyệt toàn bộ tập dữ liệu.",
       contextLength: "Ngữ cảnh",
@@ -5406,6 +5418,7 @@ export const vi = {
       showPromptDescription: "Xem hướng dẫn chính xác được gửi đến mô hình.",
     },
     history: {
+      notSaved: "Chưa lưu vào Lịch sử: bộ nhớ của trình duyệt đã đầy.",
       title: "Lịch sử",
       search: "Tìm trong lịch sử",
       empty: "Các bản dịch của bạn sẽ xuất hiện ở đây.",

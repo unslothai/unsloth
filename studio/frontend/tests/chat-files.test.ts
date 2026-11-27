@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   collectChatFiles,
   scheduleChatFiles,
+  settledMessageCount,
 } from "../src/features/chat/lib/chat-files.ts";
 
 const sandboxResult = (
@@ -305,4 +306,25 @@ test("repeated names get the same suffixes as a fresh search from 2", () => {
     collectChatFiles(messages).map((f) => f.name),
     expected,
   );
+});
+
+test("a streaming chat counts every turn but the one being written, whatever its length", () => {
+  const turn = (id: string, text: string) => ({
+    id,
+    role: "assistant",
+    content: [{ type: "text", text }],
+  });
+  const earlier = [turn("a1", "```python\nx = 1\n```"), turn("a2", "plain")];
+  assert.equal(settledMessageCount({ isRunning: false, messages: earlier }), 2);
+  assert.equal(settledMessageCount({ isRunning: true, messages: [] }), 0);
+  const counts = ["", "```py", "```python\ny = 2\n```"].map((text) => {
+    const messages = [...earlier, turn("a3", text)];
+    const count = settledMessageCount({ isRunning: true, messages });
+    assert.deepEqual(
+      collectChatFiles(messages.slice(0, count)).map((f) => f.id),
+      ["a1:0:0"],
+    );
+    return count;
+  });
+  assert.deepEqual(counts, [2, 2, 2]);
 });

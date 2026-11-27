@@ -97,8 +97,7 @@ def cut_row_flags(trainer, completion_ids):
             flags[index] = True
         else:
             return flags
-    # The rollout cannot be lined up with the requests: flag every row holding a cut row's tokens.
-    # Masking an extra row is safe; leaving a cut row in the loss is not.
+    # Unaligned: flag rows holding a cut row's tokens; extra masks are safe, a miss is not.
     cut = {tokens for _, tokens in rows}
     return [_key(ids) in cut for ids in completion_ids]
 

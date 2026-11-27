@@ -493,7 +493,6 @@ def test_gpt_oss_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
     for extra, match in (
         ({"memory": "unsloth_offload"}, "Unsloth checkpoint"),
         ({"fsdp2": True}, "fsdp2_cp"),
-        ({"router_aux_loss": True}, "router auxiliary loss"),
         ({"compile": "block"}, "no numeric parity"),
         ({"attention": "sdpa"}, "no numeric parity"),
         ({"mode": "qlora"}, "4-bit experts"),
@@ -501,6 +500,19 @@ def test_gpt_oss_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
     ):
         with pytest.raises(NotImplementedError, match = match):
             caps.check(caps.Query(**{**kw, **extra}))
+    # The router aux loss under cp has its own gloo parity for full and lora (850983b8e3); expert LoRA has none.
+    aux = caps.Query(**{**kw, "router_aux_loss": True})
+    status, cell = caps.cell_status(aux)
+    if expert_lora:
+        assert status != "supported", cell
+        with pytest.raises(NotImplementedError, match = "no numeric parity"):
+            caps.check(aux)
+    else:
+        assert status == "supported" and (
+            "test_cp_router_aux_gloo.py::test_family_router_aux_loss_under_cp_matches_one_process"
+            f"[gpt_oss-{mode}-plain" in cell.parity
+        ), cell
+        caps.check(aux)
 
 
 def test_gpt_oss_evidence_ids_are_real_parity_cases():

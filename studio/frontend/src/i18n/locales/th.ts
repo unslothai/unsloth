@@ -2520,6 +2520,10 @@ export const th = {
         confirmDescriptionChatOnly:
           "หยุดเซิร์ฟเวอร์และเรียกใช้ตัวติดตั้งซ้ำ เนื่องจากนี่เป็นการติดตั้งแบบแชทเท่านั้น ตัวติดตั้งจะอัปเกรดเป็นการติดตั้งแบบเต็มพร้อม PyTorch ด้วย รวมหลายกิกะไบต์ แชทและการตั้งค่าจะยังคงอยู่ ขั้นตอนนี้อาจใช้เวลาหลายนาที",
         confirmAction: "ซ่อมแซมเดี๋ยวนี้",
+        recommendedTorch:
+          "แนะนำให้ซ่อมแซม: การติดตั้งนี้มี PyTorch {torch} ซึ่งเก่ากว่า {managedTorch} ที่จัดการไว้ซึ่งรองรับ GPU ซีรีส์ RTX 50",
+        recommendedDriver:
+          "PyTorch {torch} เก่ากว่า {managedTorch} ที่จัดการไว้ซึ่งรองรับ GPU ซีรีส์ RTX 50 แต่ไดรเวอร์ GPU นี้ไม่รองรับ CUDA 13 โปรดอัปเดตไดรเวอร์ GPU ก่อน แล้วจึงซ่อมแซมการติดตั้ง",
       },
       resetPreferences: {
         sectionTitle: "โซนอันตราย",
@@ -4565,6 +4569,8 @@ export const th = {
       unsupportedFileType: "ประเภทไฟล์ที่ไม่รองรับ",
       uploadOneFileType: "อัปโหลดไฟล์ {types} หนึ่งไฟล์",
       datasetUploaded: "อัปโหลดชุดข้อมูลแล้ว",
+      importPandasJson: "นำเข้า .json เป็นคอลัมน์ pandas",
+      importSemicolonCsv: "ใช้เครื่องหมายอัฒภาคเป็นตัวคั่นสำหรับ .csv",
       evalDatasetUploaded: "อัปโหลดชุดข้อมูลประเมินผลแล้ว",
       uploadOneFileAtATime: "อัปโหลดครั้งละหนึ่งไฟล์",
       uploadSingleFileDescription: "การอัปโหลดชุดข้อมูลการเทรนรับได้เพียงไฟล์เดียว",
@@ -4636,6 +4642,12 @@ export const th = {
       epochs: "อีพ็อก",
       useMaxSteps: "ใช้สเต็ปสูงสุด",
       useEpochs: "ใช้อีพ็อก",
+      stepGuidancePass: "ประมาณ {steps} สเต็ปคือการวนหนึ่งรอบผ่าน {rows} แถวของคุณ ที่ effective batch {batch}",
+      stepGuidanceFloor: "การวนหนึ่งรอบผ่าน {rows} แถวของคุณใช้เพียง {passSteps} สเต็ปที่ effective batch {batch} ดังนั้นประมาณ {steps} สเต็ป (หลายรอบ) จึงเป็นขั้นต่ำที่เหมาะสม",
+      stepGuidanceCap: "การวนหนึ่งรอบผ่าน {rows} แถวของคุณใช้ {passSteps} สเต็ปที่ effective batch {batch} โดย {steps} สเต็ปจะเทรนบางส่วน ซึ่งมักเพียงพอสำหรับการรันครั้งแรก",
+      stepGuidanceEpoch: "หนึ่งอีพ็อกคือประมาณ {passSteps} สเต็ปผ่าน {rows} แถวของคุณ ที่ effective batch {batch}",
+      stepGuidancePacking: "Packing รวมแถวสั้นเข้าด้วยกัน การวนหนึ่งรอบจึงอาจใช้สเต็ปน้อยลง",
+      useSuggestedSteps: "ใช้ {steps}",
       maxStepsTooltip: "กำหนดจำนวนสเต็ปทั้งหมดของ optimizer แทนค่าเดิม",
       epochsTooltip: "จำนวนรอบที่ผ่านชุดข้อมูลทั้งหมด",
       contextLength: "บริบท",
@@ -5182,6 +5194,7 @@ export const th = {
       showPromptDescription: "ดูคำสั่งที่ส่งไปยังโมเดลอย่างละเอียด",
     },
     history: {
+      notSaved: "ไม่ได้บันทึกลงในประวัติ: พื้นที่จัดเก็บของเบราว์เซอร์เต็มแล้ว",
       title: "ประวัติ",
       search: "ค้นหาประวัติ",
       empty: "คำแปลของคุณจะแสดงที่นี่",

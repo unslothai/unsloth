@@ -39,7 +39,6 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 from utils.hardware import amd
 
-# No /dev or POSIX groups on Windows; macOS still runs the faked-Linux cases.
 pytestmark = pytest.mark.skipif(
     platform.system() == "Windows",
     reason = (
@@ -373,8 +372,7 @@ def _no_passwd_entry(monkeypatch):
                  id = "an_unnamed_gid_under_that_uid_drops_the_groupadd_half_too"),
 ])
 def test_which_account_the_repair_names(monkeypatch, linux, case):
-    """Whether the repair can name an account at all. USER is root in every arm, so a command
-    that names it is one that read the environment instead of the passwd entry."""
+    """The account comes from the passwd entry, not USER, which is root in every test arm."""
     owning, account, says, does_not_say = case
     _nodes(monkeypatch, **_KFD_SHUT)
     monkeypatch.setenv("USER", "root")
@@ -428,7 +426,6 @@ def _pins(
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+rocm7.0",
                   _pins(rocm_intent = False, hip_runtime = False), (_USERMOD,), ()),
                  id = "an_amd_only_host_needs_no_runtime_evidence"),
-    # CUDA wheel on an AMD host: the hint is appended and reinstall advice kept.
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+cu128",
                   _pins(rocm_intent = False, hip_runtime = False),
                   (_USERMOD, "Repair installation"), ()),
@@ -511,7 +508,6 @@ def test_the_health_hint_for_the_train_tooltip(monkeypatch, linux, case):
         assert _USERMOD in hint
     else:
         assert hint is None
-    # A verdict detection did not record gets nothing.
     assert hardware.chat_only_permission_hint("no_gpu", None) is None
 
 
@@ -696,8 +692,7 @@ _THREE_NODES = {
                  id = "an_ordinary_owning_group_is_still_prescribed"),
 ])
 def test_the_group_derivation_over_a_node_set(monkeypatch, case):
-    """The helper itself, since every hint case above stubs it. Every bucket a case does not
-    name has to come back empty, or the hint offers a repair the node does not support."""
+    """Unnamed buckets must be empty, or the hint offers a repair the node does not support."""
     modes, names, paths, buckets = case
     _stat_nodes(monkeypatch, modes, names)
     assert amd._groups_that_own(paths) == _buckets(**buckets)
@@ -1116,16 +1111,14 @@ _IN_FORCE = "visibility mask is also in force"
                  id = "an_unresolvable_rocr_entry_leaves_the_hip_ordinal_alone"),
 ])
 def test_which_stacked_masks_are_reported(monkeypatch, linux, case):
-    """How the four selectors compose, on a HIP build with every AMD node closed. The groups
-    never clear a mask, so anything named here is a second repair the user also needs."""
+    """Groups never clear a mask, so any mask named is a second repair the user also needs."""
     env, gpu_count, says, does_not_say = case
     reason = _reason_with_masks(monkeypatch, env, {"hip"}, gpu_count)
     _asserts(reason, says, does_not_say)
 
 
 def test_the_installer_says_the_same_thing_about_a_missing_render_node(tmp_path):
-    """The shell half of the container case. Stubbed on both sides so the arms differ only in
-    the answer, since the real helper reads the runner's own /sys and /dev."""
+    """Stubbed on both sides so only the answer differs; the real helper reads /sys and /dev."""
     node = tmp_path / "kfd"
     node.write_bytes(b"")
     node.chmod(0o660)
@@ -1140,8 +1133,7 @@ def _diag_route(
     backend: "str | None" = None,
     nvidia: bool = False,
 ) -> bool:
-    """Whether install.sh routes the two node diagnoses for this wheel index. Lifted rather
-    than restated, since the thing under test is which patterns the case actually lists."""
+    """Whether install.sh routes node diagnoses for this wheel index; lifted from the script."""
     lines = _install_sh_lines()
     start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
     esac_at = next(i for i in range(start, len(lines)) if lines[i] == "esac")
@@ -1289,8 +1281,7 @@ def test_a_node_carrying_an_acl_is_not_answered_with_usermod(monkeypatch, tmp_pa
     pytest.param(0o060, id = "the_same_node_owned_by_someone_else_is_still_a_group"),
 ])
 def test_an_ordinary_node_owned_elsewhere_is_still_prescribed_for(monkeypatch, tmp_path, mode):
-    """Control: an ordinary node owned by someone else still gets a group prescription; without it
-    the rule could decline everywhere, removing the repair issue 10466 needs."""
+    """Guards against declining everywhere, which would remove the repair issue 10466 needs."""
     node, _group = _a_node_a_membership_would_open(tmp_path, mode = mode)
     _not_my_group = os.getgid() + 1
     monkeypatch.setattr(amd.os, "getgid", lambda: _not_my_group)
@@ -1330,8 +1321,7 @@ def test_the_installer_says_the_missing_render_node_with_nothing_closed():
 
 
 def test_the_installer_stays_quiet_on_a_host_with_no_amd_gpu():
-    """Its control, and the same vendor trap: without the KFD topology test this fires on
-    every host whose /dev/dri holds another vendor's nodes, or none at all."""
+    """Control: without the KFD topology test, other vendors' or no /dev/dri nodes would fire."""
     out = _install_sh_hint("", render_present = False, amd_present = False)
     assert out.strip() == ""
 
@@ -1339,7 +1329,6 @@ def test_the_installer_stays_quiet_on_a_host_with_no_amd_gpu():
 @pytest.mark.parametrize("case", [
     pytest.param((True, None, False), id = "an_ordinary_node_reports_no_acl"),
     pytest.param((False, None, False), id = "a_path_that_cannot_be_read_reports_no_acl"),
-    # os.listxattr returns str names for a str path.
     pytest.param((True, ["security.selinux", "system.posix_acl_access"], True),
                  id = "the_acl_probe_matches_the_name_type_listxattr_returns"),
     pytest.param((True, [b"system.posix_acl_access"], True),
@@ -1661,8 +1650,7 @@ def test_the_guard_actually_holds_when_those_tools_are_missing(helper, tools):
 
 
 def test_the_installer_denies_the_same_groups_the_runtime_does():
-    """The privileged-group list is kept by hand in Python and install.sh, so a group added to only
-    one half fails here."""
+    """The group list lives by hand in Python and install.sh; a group added to one half fails."""
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     text = install_sh.read_text(encoding = "utf-8")
     match = re.search(r"gname ~ /\^\(([a-z|]+)\)\$/", text)
@@ -2009,8 +1997,7 @@ def test_the_mapping_advice_names_the_nodes_the_caller_opens(
 ))
 # fmt: on
 def test_the_installers_device_pair_follows_the_run(tmp_path, kwargs, contains, absent):
-    """The installer twin: --no-torch with an explicit Vulkan bundle opens no /dev/kfd, so the
-    device pair it prints must not name one, while a torch install opens it and the pair stays."""
+    """--no-torch with Vulkan opens no /dev/kfd, so the printed pair omits it; torch keeps it."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(0o660)
@@ -2038,8 +2025,7 @@ def test_an_unreadable_render_node_vendor_reads_as_present(
 
 
 def test_another_vendors_open_render_node_is_seen(monkeypatch, linux):
-    """The evidence the Vulkan caller needs: a node that was read, named another vendor,
-    and opens. An unreadable one is not evidence either way and must not count."""
+    """A readable node naming another vendor that opens is evidence; an unreadable one is not."""
     monkeypatch.setattr(amd.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         amd.glob, "glob", lambda pattern: ["/dev/dri/renderD128", "/dev/dri/renderD129"]
@@ -2094,8 +2080,7 @@ def test_whether_another_vendors_open_node_is_a_path_for_this_build(
 
 
 def test_the_repair_names_the_account_the_access_tests_answered_for(monkeypatch, linux):
-    """USER is inherited, so a container that changes its numeric user without resetting USER makes
-    the repair name the wrong account, leaving the node shut."""
+    """USER is inherited, so a changed numeric user with a stale USER names the wrong account."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setenv("USER", "root")
     hint = amd.amd_node_permission_hint()
@@ -2112,8 +2097,7 @@ def test_the_installer_names_the_account_id_reports(tmp_path):
 
 
 def test_the_installer_unnamed_gid_repair_is_runnable_too(tmp_path):
-    """The shell repair lines are parsed with bash -n, so a placeholder would fail; without the
-    parse the test only checks that a string changed."""
+    """Shell repair lines are parsed with bash -n, so a placeholder would fail the check."""
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
     # Rejoin `&& \` continuations: bash 3.2 rejects a trailing backslash at EOF.
     _cmds: "list[str]" = []
@@ -2233,8 +2217,7 @@ def test_a_group_name_usermod_would_read_as_structure_is_not_prescribed(
 
 
 def test_the_printed_command_never_names_a_group_it_did_not_mean(monkeypatch, linux):
-    """End to end through the message, since the bucket above is only half the story: what
-    matters is what the user pastes. The GID repair is what this host gets instead."""
+    """The pasted command never names an unintended group; this host gets the GID repair."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     _stat_nodes(monkeypatch, {"/dev/kfd": (993, 0o660, 0)}, {993: "render,sudo"})
     _the_real_group_derivation(monkeypatch)
@@ -2412,8 +2395,7 @@ def test_which_driver_lists_are_evidence_that_amd_is_all_the_loader_has(
 
 
 def test_every_amd_icd_spelling_the_installer_knows_counts_here_too():
-    """The two lists are the same convention twice, and a driver named in one but not the
-    other would make the installer and this diagnosis disagree about the same host."""
+    """Installer and diagnosis must agree on the AMD ICD list, or one host gets two answers."""
     import install_llama_prebuilt
     assert amd._AMD_VULKAN_ICD_NEEDLES == install_llama_prebuilt._AMD_VULKAN_ICD_NEEDLES
 
@@ -2702,8 +2684,7 @@ def test_a_search_that_enumerates_nothing_answers_nothing(monkeypatch, linux, tm
 
 
 def test_the_search_dirs_follow_the_xdg_variables(monkeypatch):
-    """The loader uses its defaults only when an XDG variable is unset; reading them regardless
-    misses custom manifests and counts stale ones."""
+    """Defaults only for unset XDG variables; reading them regardless misses custom manifests."""
     monkeypatch.setenv("XDG_DATA_DIRS", "/opt/one:/opt/two")
     monkeypatch.setenv("XDG_CONFIG_DIRS", "/opt/conf")
     dirs = amd._vulkan_icd_search_dirs()
@@ -3108,8 +3089,7 @@ def test_the_loader_cache_reader_says_none_rather_than_empty_when_ldconfig_is_go
 
 
 def test_a_stale_bare_registration_reaches_the_driver_sentence(monkeypatch, linux, tmp_path):
-    """What the classification is for: with the only registration unresolvable the loader has
-    no driver at all, so the node repair alone would leave the probe empty."""
+    """A sole unresolvable registration means no driver; node repair alone is not enough."""
     manifest = _bare_soname_manifest(tmp_path, "radeon_icd.json")
     monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(tmp_path / "lib")])
     monkeypatch.setattr(amd, "_ld_cache_sonames", lambda: frozenset({"libc.so.6"}))
@@ -3263,8 +3243,7 @@ def test_what_decides_an_icd_manifests_bitness(monkeypatch, linux, tmp_path, cas
 
 
 def test_a_declared_32_bit_manifest_reaches_the_empty_probe_reason(monkeypatch, linux, tmp_path):
-    """With the only other registration 32-bit, that vendor's open render node is not a path this
-    binary has, so the closed AMD node stays the answer."""
+    """A 32-bit other-vendor manifest is unusable, so the closed AMD node stays the answer."""
     _theirs = _icd_manifest_with(tmp_path, "nvidia_icd.json", library = "libGLX_nvidia.so", arch = "32")
     _ours = _icd_manifest(tmp_path, "radeon_icd.x86_64.json")
     _assert_amd_only_loader(
@@ -3282,10 +3261,9 @@ def test_a_declared_32_bit_manifest_reaches_the_empty_probe_reason(monkeypatch, 
 ])
 # fmt: on
 def test_the_pasted_command_quotes_the_names_that_need_it(monkeypatch, linux, case):
-    """Pasted commands need quoting for NSS names (winbind returns DOMAIN-prefixed names the shell
-    de-escapes, leaving usermod an absent account) and for spaced group names, which would
-    silently split; shlex.quote quotes only when needed; fails before the fix that interpolated
-    names raw."""
+    """Pasted commands need quoting for NSS names (winbind DOMAIN-prefixed names the shell
+    de-escapes, leaving usermod an absent account) and spaced group names, which would silently
+    split; shlex.quote quotes only when needed; fails before the raw-interpolation fix."""
     account, group, command, unquoted = case
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(amd, "_repair_account", lambda: account)
@@ -3297,16 +3275,14 @@ def test_the_pasted_command_quotes_the_names_that_need_it(monkeypatch, linux, ca
 
 
 def test_the_installer_quotes_the_account_the_same_way(tmp_path):
-    """The shell twin: the installer prints the same command from the same kind of name, so a
-    host whose account carries a backslash must not get an unquoted one there either."""
+    """Backslash account names must be quoted in the installer's printed command too."""
     node, _group = _a_node_a_membership_would_open(tmp_path)
     out = _install_sh_hint(str(node), id_user = "DOMAIN\\ada", env_user = "DOMAIN\\ada")
     assert "'DOMAIN\\ada'" in out
 
 
 def test_the_two_quoting_rules_are_the_same_rule(tmp_path):
-    """Both halves print the same command, so a value quoted by one and not the other would make
-    them disagree; run the real shell function."""
+    """Both halves print the command, so quoting must agree; run the real shell _shell_quote."""
     lines = _install_sh_lines()
     helper = _shell_fn(lines, "_shell_quote")
     _values = ("ada", "render", "DOMAIN\\ada", "gpu users", "ada;reboot", "a'b", "user@host", "")
@@ -3373,8 +3349,7 @@ def test_the_harnesses_really_lift_every_name_the_allowlist_claims():
 
 
 def test_that_check_sees_a_helper_the_harnesses_would_not_have():
-    """The control. Without it the test above could be passing because the scan matches
-    nothing at all, which is what a name-based scan usually does when it is wrong."""
+    """Control: without it the test above could pass vacuously if the scan matches nothing."""
     lines = (
         "_ensure_rocm_probe_env() {\n    :\n}\n"
         "_amd_rocm_gpu_visible() {\n    return 1\n}\n"
@@ -3663,8 +3638,7 @@ def test_the_two_topology_readers_agree_on_this_host():
 
 
 def test_the_two_confirmed_render_node_readers_agree_on_this_host():
-    """The shell reader must be as strict as the Python one, or an NVIDIA-only host claims an AMD
-    node in the installer but not the backend."""
+    """The shell reader must be as strict as Python's, or NVIDIA-only hosts claim an AMD node."""
     lines = _install_sh_lines()
     script = "\n".join(
         [

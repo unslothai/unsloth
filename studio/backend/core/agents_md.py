@@ -36,8 +36,7 @@ def _read(
     confine: Optional[Path] = None,
     limit: int = MAX_AGENTS_MD_BYTES,
 ) -> bytes:
-    # The model writes in the sandbox but this read is unsandboxed: no link there may pull in a host file
-    # (project and global files may be links, CLAUDE.md -> AGENTS.md). Non-blocking so a FIFO cannot hang.
+    # Unsandboxed read: no link may pull in a host file; O_NONBLOCK so a FIFO cannot hang.
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     if confine is not None:
         if os.path.islink(path):

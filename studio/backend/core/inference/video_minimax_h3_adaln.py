@@ -90,8 +90,7 @@ def _build_curve_time_embedder(curve_grid: int, curve_dim: int) -> Any:
 
 
 def _passthrough_time_proj() -> Any:
-    """Feeds the raw timestep to the curve embedder; Timesteps is parameter-free, so no state keys
-    change."""
+    """Raw timestep feeds curve embedder; Timesteps is parameter-free, so no state keys change."""
     from torch import nn
 
     class _MiniMaxH3RawTimestep(nn.Module):
@@ -168,8 +167,7 @@ _REFERENCE_TEMB_MARK = "_unsloth_h3_reference_temb"
 
 
 def _dense_compute_dtype(transformer: Any) -> Any:
-    """The dtype the reference rounds the dense time embedding to: its compute dtype, here the block stack's AdaLN
-    projection dtype; None when that is not a reduced float (a float32 stack has nothing to round)."""
+    """Dense time-embedding rounding dtype (AdaLN proj dtype); None unless a reduced float."""
     import torch
 
     blocks = getattr(transformer, "transformer_blocks", None) or ()
@@ -190,9 +188,8 @@ def _dense_compute_dtype(transformer: Any) -> Any:
 
 
 def install_h3_reference_temb(transformer: Any, logger: Any = None) -> bool:
-    """Dense checkpoints: round the time embedding to the compute dtype before the AdaLN SiLU, as the reference does
-    (``time_embedder(t).to(dtype)``, then ``silu`` in that dtype). Diffusers keeps it float32 up to the SiLU. Curve-form
-    checkpoints are untouched (the reference keeps their interpolated rows float32 too). Idempotent, instance-level."""
+    """Dense checkpoints round the time embedding to the compute dtype before AdaLN SiLU, as the
+    reference does (diffusers keeps float32); curve-form untouched; idempotent per instance."""
     embedder = getattr(transformer, "time_embedder", None)
     if embedder is None or getattr(embedder, _REFERENCE_TEMB_MARK, False):
         return embedder is not None

@@ -2624,6 +2624,10 @@ export const id = {
         confirmDescriptionChatOnly:
           "Menghentikan server dan menjalankan ulang penginstal. Ini adalah instalasi Hanya chat, jadi penginstal juga meningkatkannya ke instalasi lengkap dengan PyTorch, total beberapa gigabyte. Chat dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Perbaiki sekarang",
+        recommendedTorch:
+          "Perbaikan disarankan: instalasi ini memakai PyTorch {torch}, lebih lama dari {managedTorch} terkelola yang mendukung GPU seri RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} lebih lama dari {managedTorch} terkelola yang mendukung GPU seri RTX 50, tetapi driver GPU ini tidak mendukung CUDA 13. Perbarui driver GPU terlebih dahulu, lalu perbaiki instalasi.",
       },
       resetPreferences: {
         sectionTitle: "Zona berbahaya",
@@ -4759,6 +4763,8 @@ export const id = {
       unsupportedFileType: "Jenis file tidak didukung",
       uploadOneFileType: "Unggah satu file {types}.",
       datasetUploaded: "Dataset diunggah",
+      importPandasJson: "Impor .json sebagai kolom pandas",
+      importSemicolonCsv: "Gunakan titik koma sebagai pemisah untuk .csv",
       evalDatasetUploaded: "Dataset evaluasi diunggah",
       uploadOneFileAtATime: "Unggah satu file sekaligus",
       uploadSingleFileDescription:
@@ -4835,6 +4841,12 @@ export const id = {
       epochs: "Epoch",
       useMaxSteps: "Gunakan Langkah Maks",
       useEpochs: "Gunakan Epoch",
+      stepGuidancePass: "Sekitar {steps} langkah adalah satu putaran atas {rows} baris Anda dengan batch efektif {batch}.",
+      stepGuidanceFloor: "Satu putaran atas {rows} baris Anda hanya {passSteps} langkah dengan batch efektif {batch}, jadi sekitar {steps} langkah (beberapa putaran) adalah batas bawah yang wajar.",
+      stepGuidanceCap: "Satu putaran atas {rows} baris Anda adalah {passSteps} langkah dengan batch efektif {batch}; {steps} langkah melatih sebagian darinya, yang sering cukup untuk percobaan pertama.",
+      stepGuidanceEpoch: "Satu epoch sekitar {passSteps} langkah atas {rows} baris Anda dengan batch efektif {batch}.",
+      stepGuidancePacking: "Packing menggabungkan baris pendek, jadi satu putaran bisa butuh lebih sedikit langkah.",
+      useSuggestedSteps: "Gunakan {steps}",
       maxStepsTooltip: "Ganti total langkah optimizer.",
       epochsTooltip: "Jumlah lintasan penuh atas dataset.",
       contextLength: "Konteks",
@@ -5411,6 +5423,7 @@ export const id = {
       showPromptDescription: "Lihat instruksi persis yang dikirim ke model.",
     },
     history: {
+      notSaved: "Tidak disimpan ke Riwayat: penyimpanan browser penuh.",
       title: "Riwayat",
       search: "Cari riwayat",
       empty: "Terjemahan Anda muncul di sini.",

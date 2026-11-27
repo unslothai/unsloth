@@ -50,7 +50,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Report which signal killed us and whether the suite had already passed (suite_done).
 suite_done=0
 _on_signal() {
   name="$1"; number="$2"

@@ -273,7 +273,6 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
             # Not measured is not failed; `gate_detail_is_unmeasured` is the shared definition.
             if gate_detail_is_unmeasured(detail):
                 continue
-            # First failure wins.
             if cid in out:
                 continue
             out[cid] = (
@@ -354,8 +353,7 @@ def collect(
         shard = path.parent.name
         gate_failures = incomplete_cells([path])
         raw_rows = rows(path)
-        # Unfinished cells are dropped on the null only: there they would narrow the excuse set, while
-        # on the result a dead cell's difference is still real. Resolved per file via the same filter.
+        # Unfinished cells: dropped on the null (would narrow excuses), kept on the result.
         kept_rows = latest_attempt_rows(raw_rows)
         completed = {
             r.get("cell_id")
@@ -1716,7 +1714,6 @@ def report(
             f"cell rows, so completion could not be checked"
         )
     print(f"  matched:                    {matched}")
-    # Report matches that only held after setting fence latch state aside.
     latch_normalised = sum(
         1 for _a, _s, _c, r in results if r.get("verdict") == P.MATCH and r.get("fence_latch")
     )
@@ -1877,8 +1874,7 @@ def report(
         print("\n  (reported, not counted) actions that vary between runs of any build:")
         for action, shard, cell, moved in unstable_bad[:8]:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
-    # A one-sided action fails like a differing digest, since it leaves no digest to compare;
-    # expect_bad is collected before the verdict branches.
+    # One-sided fails like a differing digest (none to compare); expect_bad is gathered first.
     if one_sided or expect_bad or (stable_bad and not declared_ui_change):
         return Outcome(1, frozenset(compared), _keys(results))
     if stable_bad:
@@ -1887,9 +1883,8 @@ def report(
             "rendering differences above are reported, not failed. Behaviour differences still fail."
         )
 
-    # Outcome 2 is the empty-payload code: a run structurally unable to decide must not exit 0 and
-    # turn CI green. Checked after the failure return, on decided not matched; declared differences
-    # count too, since a wrapper change can differ on every pair.
+    # Outcome 2 (empty payload) must not exit 0 and turn CI green; checked after the failure return;
+    # declared differences count too, as a wrapper change can differ on every pair.
     if decided == 0 and not stable_bad:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
@@ -2188,7 +2183,6 @@ def main(argv: list[str] | None = None) -> int:
         # Both, in this order: visible parity catches what users see, behaviour what a viewport cannot.
         if args.mode in ("auto", "visible"):
             if vis_unstable is None:
-                # Derived once from the caller's null control.
                 vis_null: list[Path] = []
                 for pat in args.null:
                     vis_null.extend(shards_of(pat))
@@ -2359,7 +2353,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         worst = max(worst, int(struct))
         note(pattern, struct)
-    # Worst outcome wins across payloads.
     if scored_windowed and scored_structural:
         print(
             f"\nCOMBINED EXIT STATUS {worst}: {scored_windowed} pair(s) scored on the visible "

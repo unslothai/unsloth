@@ -4,8 +4,7 @@
 import { isTauri } from "@/lib/api-base";
 
 /**
- * Forget a saved "Don't allow": WebView2 keeps it with no site-settings UI. Best effort, since
- * browsers and older WebView2 runtimes lack the command but getUserMedia may still prompt.
+ * Forgets a saved "Don't allow" (no UI in WebView2); best effort: older runtimes lack the command.
  */
 export async function resetMicrophonePermission(): Promise<void> {
   if (!isTauri) return;

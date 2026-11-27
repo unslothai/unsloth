@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torch-free image/video model list from family registries; rows carry no paths, so filter per
-request by id, never in place."""
+"""Torch-free image/video list; no paths in rows, so filter per request by id, never in place."""
 
 from __future__ import annotations
 

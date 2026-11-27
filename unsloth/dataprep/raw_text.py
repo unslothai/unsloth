@@ -134,8 +134,7 @@ class RawTextDataLoader:
         stride,
         return_tokenized = True,
     ):
-        """Chunks text at sentence or paragraph boundaries with stride overlap, returning tokenized
-        chunks (more efficient) or text chunks; handles .txt, .md, .json and other text formats."""
+        """Chunk at sentence/paragraph boundaries with stride overlap; tokens or text chunks."""
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
         if stride < 0:
@@ -415,8 +414,7 @@ class TextPreprocessor:
         """Add special tokens for structure (chapters, sections)"""
 
         found = [(m.start(), m.end(), *m.groups()) for m in self._STRUCTURE_PATTERN.finditer(text)]
-        # Each opener stops at the next fence with >= as many backticks (CommonMark); a bare one closes
-        # it, one with an info string leaves it as text. The stack finds that line in linear time.
+        # Closers (CommonMark): >= as many backticks, no info string; a stack keeps it linear.
         stop = [None] * len(found)
         stack = []
         for k in range(len(found) - 1, -1, -1):
@@ -450,8 +448,7 @@ class TextPreprocessor:
         dataset,
         tokenizer = None,
     ):
-        """Checks a dataset for min and max sequence lengths, character encoding issues, repeated
-        content and empty chunks."""
+        """Checks min/max sequence lengths, encoding issues, repeated content and empty chunks."""
         stats = {
             "total_samples": 0,
             "empty_samples": 0,

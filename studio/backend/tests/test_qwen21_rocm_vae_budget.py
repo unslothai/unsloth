@@ -10,8 +10,7 @@ from core.inference import diffusion_vae_tiling as vt
 torch = pytest.importorskip("torch")
 from torch.torch_version import TorchVersion  # noqa: E402
 
-# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
-# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+# Studio reads ROCm from +rocm (AMD wheels leave torch.version.hip unset); fakes clear both.
 _CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 

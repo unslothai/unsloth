@@ -204,8 +204,7 @@ _SPINNER_FRAMES = frozenset("-\\|/")
 # ends on still compares, as does any line with other text on it.
 _PARTIAL_PROGRESS_FRAME = re.compile(r"[█▒]*▒[█▒]*\s+(?:<percent>|<size> / <size>)")
 
-# A full bar can be drawn twice when winget's last redraw lands after the 100% frame, so only a full
-# bar repeating the line just before it is dropped; unfinished or second downloads still compare.
+# Winget's redraw can land after 100%; only a full bar repeating the prior line is dropped.
 _FULL_PROGRESS_FRAME = re.compile(r"█+\s+(?:<percent>|<size> / <size>)")
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
 

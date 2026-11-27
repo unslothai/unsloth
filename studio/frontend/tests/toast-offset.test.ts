@@ -11,6 +11,7 @@ import {
   cornerInsets,
   getToastOffsets,
   insetPastChatSettings,
+  railOverflows,
   subscribeCornerInsets,
   watchChatSettingsInset,
 } from "../src/lib/toast-offset.ts";
@@ -299,9 +300,43 @@ test("panel insets are written to their consumers, never to <html>", () => {
   const toaster = readSrc("components/ui/sonner.tsx");
   assert.match(toaster, /<div\s+ref=\{toasterScope\}\s+style=\{\{ display: "contents" \}\}/);
   assert.match(toaster, /function toasterScope\([\s\S]*?cornerInsetScope\(element\)/);
-  assert.equal(readSrc("app/provider.tsx").match(/ref=\{cornerInsetScope\}\s*\/\/ Scrolls at the cap/g)?.length, 2, "both corner rails read the Run settings inset");
+  assert.equal(readSrc("app/provider.tsx").match(/ref=\{overlayRailScope\}\s*\/\/ Scrolls at the cap/g)?.length, 2, "both corner rails read the Run settings inset");
+  assert.match(readSrc("lib/toast-offset.ts"), /function overlayRailScope\([\s\S]*?cornerInsetScope\(element\)/);
   for (const file of ["features/chat/chat-settings-sheet.tsx", "features/browser/native-view.ts", "lib/toast-offset.ts"]) {
     assert.equal(/documentElement\.style\.setProperty\((?:CHAT_SETTINGS_INSET_VAR|BROWSER_PAGE_INSET_VAR)/.test(readSrc(file)), false, file);
   }
 });
 
+
+function fakeRail(cards: { top: number; bottom: number; position?: string }[], clientHeight: number) {
+  const children = cards.map((card) => ({
+    position: card.position ?? "static",
+    getBoundingClientRect: () => ({ top: card.top, bottom: card.bottom }),
+  }));
+  return { scrollHeight: clientHeight, clientHeight, children, position: "fixed", paddingTop: "16px", paddingBottom: "16px" };
+}
+
+test("the corner rail counts cards running into its bottom padding as overflow", () => {
+  const style = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = ((element: { position: string; paddingTop?: string; paddingBottom?: string }) => ({
+    position: element.position,
+    paddingTop: element.paddingTop ?? "0px",
+    paddingBottom: element.paddingBottom ?? "0px",
+  })) as unknown as typeof getComputedStyle;
+  try {
+    // 534 px rail, 16 px gutters: cards spanning 514 px leave the bottom one 4 px off the corner, and
+    // overflow: visible reports scrollHeight == clientHeight for it (the 921x534 banner layout failure).
+    const intruding = fakeRail([{ top: 16, bottom: 380 }, { top: 383, bottom: 530 }], 534);
+    assert.equal(railOverflows(intruding as unknown as HTMLElement), true);
+    const fits = fakeRail([{ top: 200, bottom: 360 }, { top: 368, bottom: 518 }], 534);
+    assert.equal(railOverflows(fits as unknown as HTMLElement), false);
+    // A dragged card is fixed somewhere else and takes no room in the rail.
+    const dragged = fakeRail([{ top: 0, bottom: 534, position: "fixed" }, { top: 368, bottom: 518 }], 534);
+    assert.equal(railOverflows(dragged as unknown as HTMLElement), false);
+    assert.equal(railOverflows(fakeRail([], 534) as unknown as HTMLElement), false);
+    const scrolling = { ...fakeRail([], 534), scrollHeight: 600 };
+    assert.equal(railOverflows(scrolling as unknown as HTMLElement), true);
+  } finally {
+    globalThis.getComputedStyle = style;
+  }
+});

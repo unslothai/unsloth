@@ -83,8 +83,7 @@ def post_one(repo: str, full_sha: str, status: dict) -> bool:
 
 
 def valid(status: dict) -> str | None:
-    """Reason a status must not be posted, or None if well formed; checked here because this process
-    holds the token, so no state outside the API or foreign context gets signed."""
+    """Why a status must not be posted, or None; the token signs only what is checked here."""
     if status.get("state") not in STATES:
         return f"state {status.get('state')!r} is not one of {STATES}"
     if status.get("context") not in STATUS_CONTEXTS.values():
@@ -95,9 +94,7 @@ def valid(status: dict) -> str | None:
 
 
 def merge_by_commit(resolved: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
-    """One status per (full sha, context), failure winning, every slug named; merging waits for
-    resolved full shas, since an 8 and a 12 character slug of one commit match but two commits
-    can share 8 characters."""
+    """Failure wins per (full sha, context); wait for full shas, as 8-char shas can collide."""
     out: dict[tuple[str, str], dict] = {}
     for full, status in resolved:
         key = (full, status["context"])

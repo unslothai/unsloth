@@ -58,7 +58,6 @@ def is_trusted_org_repo(
 
 
 def _namespace(name: str) -> Optional[str]:
-    """Lowercased org of an ``org/repo`` id, else None."""
     parts = name.split("/")
     if len(parts) != 2 or not parts[0] or not parts[1]:
         return None

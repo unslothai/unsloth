@@ -189,6 +189,8 @@ _DPO_VISION_KEYS = (
     "pixel_position_ids",
     "image_position_ids",
     "mm_token_type_ids",
+    # Qwen2-VL / Qwen2.5-VL / Qwen3-VL: one (t, h, w) row per image; TRL < 0.29 DPO drops it.
+    "image_grid_thw",
 )
 
 torch_compile_options = {
@@ -263,6 +265,43 @@ def gkd_trainer_text_tokenizer(call_args, extra_args):
 
 
 RL_EXTRA_ARGS["gkd_trainer"].append(gkd_trainer_text_tokenizer)
+
+
+def distillation_trainer_adapter_off_teacher(call_args, extra_args):
+    # teacher_model = "base": the LoRA student's base weights with the adapter disabled, no second copy loaded.
+    if "teacher_model" not in call_args or "model" not in call_args:
+        return ""
+    return (
+        "from unsloth.models._on_policy_distillation import resolve_teacher_model as _unsloth_resolve_teacher\n"
+        "teacher_model = _unsloth_resolve_teacher(teacher_model, model, args, type(self).__name__)\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_adapter_off_teacher)
+RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_adapter_off_teacher)
+
+
+def distillation_trainer_teacher_tokenizer(call_args, extra_args):
+    # TRL checks only vocab_size: Qwen2.5 and Qwen3 share 151936 rows but Qwen3 adds <think> / </think>.
+    if "teacher_model" not in call_args or "processing_class" not in call_args:
+        return ""
+    return (
+        "from unsloth.models._on_policy_distillation import check_teacher_tokenizer as _unsloth_check_teacher_tokenizer\n"
+        # The superclass gets `tokenizer` when the caller used that alias (rl.py), so check the same object.
+        "_unsloth_check_teacher_tokenizer(teacher_model, locals().get('tokenizer') if locals().get('tokenizer') is not None else processing_class, type(self).__name__)\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_teacher_tokenizer)
+RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_teacher_tokenizer)
+
+
+def grpo_trainer_distillation_teacher(call_args, extra_args):
+    # GRPOTrainer(..., teacher_model = model) for unsloth_distillation_coef; TRL's GRPOTrainer has no such argument.
+    return "_unsloth_grpo_teacher_model = kwargs.pop('teacher_model', None)\n"
+
+
+RL_EXTRA_ARGS["grpo_trainer"].append(grpo_trainer_distillation_teacher)
 
 
 def gkd_trainer_generate_before_counting(function_name, function):
@@ -634,7 +673,12 @@ def dpo_trainer_vision_process_row(
         "chosen_input_ids": chosen_input_ids,
         "rejected_input_ids": rejected_input_ids,
     }
-    if "pixel_values" in processed_features:
+    if "image_grid_thw" in processed_features:
+        # Grid processors return every image's patch rows flattened into one (patches, dim) array, not one
+        # array per row: [0] would keep a single patch row and the vision tower would see too few patches.
+        output["pixel_values"] = processed_features["pixel_values"]
+        output["image_grid_thw"] = processed_features["image_grid_thw"]
+    elif "pixel_values" in processed_features:
         output["pixel_values"] = processed_features["pixel_values"][0]
     if "pixel_attention_mask" in processed_features:
         output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
@@ -761,8 +805,33 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
         "        except Exception:\n"
         "            _unsloth_trl_pad = None\n"
+        "        if all('image_grid_thw' in example for example in examples):\n"
+        # Concatenate patch rows (vision tower + image_grid_thw layout), never a (batch, patches, dim) block;
+        # rows come from TRL's right-padded tensor, else are converted per row on any layout/dtype mismatch.
+        "            _padded = output.get('pixel_values', None)\n"
+        "            _rows = []\n"
+        "            if isinstance(_padded, _unsloth_torch.Tensor) and _padded.dim() >= 2 and _padded.shape[0] == len(examples):\n"
+        "                for _i, example in enumerate(examples):\n"
+        "                    _pv = example['pixel_values']\n"
+        "                    _probe = _unsloth_torch.as_tensor(_pv[:1])\n"
+        "                    if (\n"
+        "                        len(_pv) == 0 or _padded.dim() != _probe.dim() + 1 or _probe.dtype != _padded.dtype\n"
+        "                        or len(_pv) > _padded.shape[1] or _probe.shape[1:] != _padded.shape[2:]\n"
+        "                        or not _unsloth_torch.equal(_padded[_i, :1], _probe)\n"
+        "                        or not _unsloth_torch.equal(_padded[_i, len(_pv) - 1:len(_pv)], _unsloth_torch.as_tensor(_pv[-1:]))\n"
+        "                    ):\n"
+        "                        _rows = []\n"
+        "                        break\n"
+        "                    _rows.append(_padded[_i, :len(_pv)])\n"
+        "            if len(_rows) != len(examples):\n"
+        "                _rows = [_unsloth_torch.as_tensor(example['pixel_values']) for example in examples]\n"
+        "            output['pixel_values'] = _unsloth_torch.cat(_rows, dim=0)\n"
+        "            del _padded, _rows\n"
+        "            output['image_grid_thw'] = _unsloth_torch.cat(\n"
+        "                [_unsloth_torch.as_tensor(example['image_grid_thw']).reshape(-1, 3) for example in examples], dim=0\n"
+        "            )\n"
         "        for _k in " + _vision_keys + ":\n"
-        "            if not all(_k in example for example in examples):\n"
+        "            if _k == 'image_grid_thw' or not all(_k in example for example in examples):\n"
         "                continue\n"
         "            _is_position_key = _k.endswith('position_ids')\n"
         "            _padding_value = -1 if _is_position_key else 0\n"
@@ -781,6 +850,32 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "\n"
         "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
         "    DataCollatorForPreference._unsloth_vision_keys_patch = True\n"
+    )
+
+
+def _unsloth_dpo_is_vision_model(model, processing_class):
+    # TRL 0.22 picks its vision path from MODEL_FOR_VISION_2_SEQ only, which on transformers 4.x leaves out
+    # image-text-to-text models such as Gemma3: their image rows went through the text tokenizer and datasets.map
+    # raised ArrowInvalid. Such a model counts as vision only when it is paired with an image processor.
+    from transformers.models.auto import modeling_auto
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}):
+        return True
+    if model_type not in getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}):
+        return False
+    return (
+        getattr(processing_class, "image_processor", None) is not None
+        and getattr(processing_class, "tokenizer", None) is not None
+    )
+
+
+def dpo_trainer_vision_model_detection(function_name, function):
+    if function_name != "__init__":
+        return function
+    return function.replace(
+        "self.is_vision_model = model.config.model_type in MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.keys()",
+        "self.is_vision_model = _unsloth_dpo_is_vision_model(model, processing_class)",
     )
 
 
@@ -908,6 +1003,8 @@ def dpo_trainer_reference_snapshot(function_name, function):
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_model_detection)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_is_vision_model))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
@@ -1929,6 +2026,139 @@ def _unsloth_seq_packing_moe_noise(model, result, ref, cmask):
         int(getattr(model, "_unsloth_seq_packing_moe_noise_passes", 0) or 0) + 1
     )
     return True
+
+
+def _unsloth_seq_packing_shape_noise(model, result, ref, cmask):
+    """True when a failed packing self-verify is bf16 GEMM shape noise, not a packing bug.
+
+    cuBLAS picks its kernel from M, so a row scored inside a packed [1, T] stream rounds differently from the same
+    row alone: Qwen3-0.6B on an L4 reaches 0.79 nats on single tokens, past the 0.7 max-diff gate, while every
+    document's mean stays near 0.02. A real bug moves whole documents: a boundary-ignoring leak gives per-document
+    means of 1.5 to 8.9 and puts 94% of tokens past 0.7. So: every document with 8+ scored tokens has a mean |d| of
+    at most 0.1 and at most 1% of scored tokens reach 0.7. UNSLOTH_GRPO_PACKING_SHAPE_NOISE=0 disables."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_PACKING_SHAPE_NOISE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    try:
+        live = cmask > 0
+        n = int(live.sum())
+        if n < 64:
+            return False
+        d = (result.detach().float() - ref.detach().float()).abs().masked_fill(~live, 0.0)
+        if not bool(d.isfinite().all()):
+            return False
+        if int((d >= 0.7).sum()) * 100 > n:
+            return False
+        row_n = live.sum(dim = -1)
+        rows = row_n >= 8
+        if not bool(rows.any()):
+            return False
+        if float((d.sum(dim = -1)[rows] / row_n[rows]).max()) > 0.1:
+            return False
+    except Exception:
+        return False
+    model._unsloth_seq_packing_shape_noise_passes = (
+        int(getattr(model, "_unsloth_seq_packing_shape_noise_passes", 0) or 0) + 1
+    )
+    return True
+
+
+def _unsloth_seq_packing_verify_rows(
+    lengths,
+    completion_counts,
+    trusted,
+    limit = 3,
+    model = None,
+):
+    """Rows the packing self-verify scores alone as ground truth (host ints, no sync). Until packing is trusted,
+    under UNSLOTH_GRPO_SEQ_PACKING_VERIFY=1, and for RoPE that switches with length (rows on either side of the
+    switch run different frequencies alone), every row. Otherwise a re-verify of trusted packing at a larger
+    shape scores at most `limit` rows: the last scored row (it follows every other document in the packed
+    stream, so any cross-document leak reaches it), the longest row (the new position range) and the row with
+    the most completion tokens."""
+    import os
+
+    rows = [i for i, (n, c) in enumerate(zip(lengths, completion_counts)) if n >= 2 and c > 0]
+    if (
+        (not trusted)
+        or limit is None
+        or limit <= 0
+        or len(rows) <= limit
+        or os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
+        or (model is not None and _unsloth_seq_packing_rope_switch(model) is not None)
+    ):
+        return [i for i, n in enumerate(lengths) if n >= 2]
+    pick = [rows[-1]]
+    for i in (
+        max(rows, key = lambda r: lengths[r]),
+        max(rows, key = lambda r: completion_counts[r]),
+    ):
+        if i not in pick:
+            pick.append(i)
+    for i in sorted(rows, key = lambda r: -completion_counts[r]):
+        if len(pick) >= limit:
+            break
+        if i not in pick:
+            pick.append(i)
+    return sorted(pick)
+
+
+def _unsloth_seq_packing_rope_switch(model):
+    """Length where the model's RoPE changes its frequencies (LongRoPE short / long factors, dynamic NTK), else None."""
+    config = getattr(model, "config", None)
+    if hasattr(config, "get_text_config"):
+        try:
+            config = config.get_text_config()
+        except Exception:
+            pass
+    scalings = []
+    for scaling in (
+        getattr(config, "rope_scaling", None),
+        getattr(config, "rope_parameters", None),
+    ):
+        if isinstance(scaling, dict):
+            # transformers 5 can key rope_parameters by layer type
+            scalings.append(scaling)
+            scalings.extend(v for v in scaling.values() if isinstance(v, dict))
+    for scaling in scalings:
+        if str(scaling.get("rope_type", scaling.get("type", ""))).lower() in (
+            "longrope",
+            "su",
+            "dynamic",
+        ):
+            switch = (
+                scaling.get("original_max_position_embeddings", None)
+                or getattr(config, "original_max_position_embeddings", None)
+                or getattr(config, "max_position_embeddings", None)
+            )
+            return int(switch) if switch else None
+    return None
+
+
+def _unsloth_seq_packing_trusted_bound(model, value):
+    """Trusted packing bound after a verify passed at `value` tokens: 2x by default, so record lengths that grow a little do
+    not re-run the verify every time. RoPE that switches with length (LongRoPE short / long factors, dynamic NTK)
+    never widens across `original_max_position_embeddings`, and past it stays at `value`."""
+    import os
+
+    value = int(value)
+    # UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH=1 trusts only the exact verified shape (the old rule).
+    try:
+        growth = float(os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "2"))
+    except ValueError:
+        growth = 2.0
+    if not growth > 1:
+        return value
+    switch = _unsloth_seq_packing_rope_switch(model)
+    if switch is None:
+        return int(growth * value)
+    return min(int(growth * value), switch) if value <= switch else value
 
 
 def _unsloth_grpo_packing_leaks(self, unwrapped):
@@ -2990,6 +3220,34 @@ def grpo_trainer__generate(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
 
 
+def _unsloth_wrap_vllm_generate_with_sleep(function):
+    """Wake a standby (enable_sleep_mode) engine around each self.llm.generate line, then sleep it again."""
+    pattern = re.compile(r".*self\.llm\.generate\(.*\).*", re.MULTILINE)
+    patched = function
+    for match in reversed(list(pattern.finditer(function))):
+        line = match.group(0)
+        indent_match = re.match(r"(\s*)", line)
+        indent = indent_match.group(1) if indent_match else ""
+
+        # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
+        # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
+        wrapped = (
+            f"{indent}_unsloth_sleep_level = None\n"
+            f"{indent}if hasattr(self, 'llm'):\n"
+            f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+            f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
+            f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
+            f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
+            f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
+            f"{indent}        self.llm.wake_up()\n"
+            f"{line}\n\n"
+            f"{indent}if _unsloth_sleep_level is not None:\n"
+            f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
+        )
+        patched = patched[: match.start()] + wrapped + patched[match.end() :]
+    return patched
+
+
 # Older TRL mishandles special tokens: 0.19.0 passed skip_special_tokens = True where it should be False.
 def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
@@ -3333,35 +3591,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     if "wake_up()" not in function:
         # Sleep functionality was added to trl in v0.23.0 (commit edbe823), so do not redo it.
-
-        pattern = re.compile(r".*self\.llm\.generate\(.*\).*", re.MULTILINE)
-        matches = list(pattern.finditer(function))
-        patched = function
-
-        for match in reversed(matches):
-            line = match.group(0)
-            indent_match = re.match(r"(\s*)", line)
-            indent = indent_match.group(1) if indent_match else ""
-
-            # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
-            # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
-            wrapped = (
-                f"{indent}_unsloth_sleep_level = None\n"
-                f"{indent}if hasattr(self, 'llm'):\n"
-                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
-                f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
-                f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
-                f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
-                f"{indent}        self.llm.wake_up()\n"
-                f"{line}\n\n"
-                f"{indent}if _unsloth_sleep_level is not None:\n"
-                f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
-            )
-
-            patched = patched[: match.start()] + wrapped + patched[match.end() :]
-
-        function = patched
+        function = _unsloth_wrap_vllm_generate_with_sleep(function)
 
     _mm_alignment = """
         if (
@@ -4130,6 +4360,79 @@ def _unsloth_vllm_watch_weight_resets(engine):
         engine.collective_rpc = _unsloth_collective_rpc
 
 
+def _unsloth_vllm_moe_relaid_out(module):
+    """True when this vLLM FusedMoE layer keeps its experts in a kernel layout, not the checkpoint's."""
+    quant_method = getattr(module, "quant_method", None)
+    backend = getattr(quant_method, "unquantized_backend", None)
+    if backend is not None:
+        # vLLM >= 0.2x picks one backend per layer; only the Triton ones keep checkpoint layout.
+        return str(getattr(backend, "name", backend)).upper() not in ("TRITON", "BATCHED_TRITON")
+    if type(quant_method).__name__ != "UnquantizedFusedMoEMethod":
+        # Quantized experts are repacked after load.
+        return True
+    # vLLM 0.11: AITER shuffles, VLLM_USE_FLASHINFER_MOE_FP16 swaps w1 / w3.
+    return bool(
+        getattr(quant_method, "rocm_aiter_moe_enabled", False)
+        or getattr(quant_method, "flashinfer_cutlass_moe_enabled", False)
+    )
+
+
+def _unsloth_vllm_reload_takes_iterator(reload, depth = 0):
+    """True when reload_weights accepts weights_iterator and is_checkpoint_format."""
+    try:
+        parameters = inspect.signature(reload).parameters
+    except (TypeError, ValueError):
+        return False
+    if "weights_iterator" in parameters and "is_checkpoint_format" in parameters:
+        return True
+    if depth or not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return False
+    # vLLM 0.29's v2 GPUModelRunner.reload_weights(*args, **kwargs) forwards to the v1 runner's.
+    try:
+        from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+    except Exception:
+        return False
+    return _unsloth_vllm_reload_takes_iterator(getattr(GPUModelRunner, "reload_weights", None), 1)
+
+
+def _unsloth_vllm_reload_runner(llm, vllm_model):
+    """vLLM's model runner when a sync must go through its in-place reload, else None.
+    Unquantized MoE weights are re-laid out after load (FlashInfer TRTLLM / CUTLASS, vLLM's CUDA
+    default on Blackwell; ROCm AITER), so a plain load_weights later writes checkpoint layout into
+    kernel layout and corrupts every expert. Triton experts (Hopper, Ampere, Ada) keep the layout. reload_weights(weights_iterator = ...) re-runs the
+    post-load processing. Dense and MLA layers keep load_weights: MLA's W_UK_T / W_UV are views of
+    kv_b_proj, so they follow it. UNSLOTH_VLLM_SYNC_RELOAD = 0 never reloads, 1 always does."""
+    choice = os.environ.get("UNSLOTH_VLLM_SYNC_RELOAD", "auto").strip().lower()
+    if choice in ("0", "false", "off", "no") or vllm_model is None:
+        return None
+    executor = getattr(getattr(llm, "llm_engine", None), "model_executor", None)
+    runner = getattr(getattr(executor, "driver_worker", None), "model_runner", None)
+    # vLLM 0.11 reloads from disk only; its CUDA MoE default there (Triton) keeps checkpoint layout.
+    if not _unsloth_vllm_reload_takes_iterator(getattr(runner, "reload_weights", None)):
+        return None
+    if getattr(runner, "model", vllm_model) is not vllm_model:
+        return None
+    if choice in ("1", "true", "on", "yes"):
+        return runner
+    relaid_out = getattr(vllm_model, "_unsloth_vllm_relaid_out", None)
+    if relaid_out is None:
+        modules = getattr(vllm_model, "modules", None)
+        relaid_out = callable(modules) and any(
+            hasattr(m, "w13_weight") and _unsloth_vllm_moe_relaid_out(m) for m in modules()
+        )
+        try:
+            vllm_model._unsloth_vllm_relaid_out = relaid_out
+        except Exception:
+            pass
+    return runner if relaid_out else None
+
+
+def _unsloth_vllm_reload(runner, weights):
+    """Every weight through vLLM's in-place reload: load_weights between its start and finish, then
+    the post-load processing (MoE re-layout, MLA W_UK_T / W_UV) on the same storage."""
+    runner.reload_weights(weights_iterator = weights, is_checkpoint_format = True)
+
+
 class _UnslothVllmFrozenSync:
     """Send frozen non-adapter weights once per vLLM name (same param, storage, version); resend
     after a weight drop or receiver change. UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS = 1 disables."""
@@ -4263,6 +4566,16 @@ def _unsloth_vllm_sync_peft_merged(trainer):
                 adapted_ids.add(id(weight))
     else:
         adapted_ids = set(_unsloth_vllm_tuner_groups(model))
+    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None)
+    runner = _unsloth_vllm_reload_runner(trainer.llm, llm_model) if mode == "colocate" else None
+    if runner is not None:
+        # A reload re-lays out whole modules, so it is sent everything, frozen weights included.
+        _unsloth_vllm_reload(
+            runner,
+            ((name, tensor) for name, tensor, _ in _unsloth_vllm_iter_peft_merged(model, fix_name)),
+        )
+        trainer.llm.reset_prefix_cache()
+        return None
     frozen_sync = _UnslothVllmFrozenSync(
         trainer,
         model,
@@ -4270,7 +4583,6 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         engine = trainer.llm if mode == "colocate" else None,
         adapted_ids = adapted_ids,
     )
-    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None)
     for name, tensor, param in _unsloth_vllm_iter_peft_merged(model, fix_name):
         if not frozen_sync.keep(name, tensor, param):
             continue
@@ -4324,18 +4636,76 @@ def _unsloth_vllm_trl_dequantizes(original):
         return Version(trl_version_raw) >= Version("1.19.0")
 
 
+def _unsloth_vllm_engine_quantization(llm):
+    """The quantization method a vLLM LLM was built with ("bitsandbytes", "fp8", ...), or None."""
+    for owner in (llm, getattr(llm, "llm_engine", None)):
+        model_config = getattr(owner, "model_config", None)
+        if model_config is None:
+            model_config = getattr(getattr(owner, "vllm_config", None), "model_config", None)
+        if model_config is not None:
+            return getattr(model_config, "quantization", None) or None
+    return None
+
+
+def _unsloth_trl_vllm_init_error(error):
+    """vLLM >= 0.28 has no built-in bitsandbytes, so TRL's own engine for a bnb checkpoint fails with only
+    "Unknown quantization method: bitsandbytes". The error to raise instead, or None to re-raise vLLM's."""
+    text = str(error)
+    if "bitsandbytes" not in text or "nknown quantization" not in text:
+        return None
+    return RuntimeError(
+        "Unsloth: this vLLM has no bitsandbytes support (vLLM >= 0.28 moved it into vllm-bnb-plugin), so TRL "
+        "cannot build its own vLLM engine for this 4-bit model (use_vllm = True, fast_inference = False). "
+        "`pip install vllm-bnb-plugin` and load the model with fast_inference = True, so Unsloth builds the "
+        "vLLM engine itself and shares the 4-bit weights. Or load a 16-bit base (load_in_4bit = False)."
+    )
+
+
+def _unsloth_trl_vllm_engine_check(generation, model):
+    """Called right after TRL >= 0.28 builds its own colocated vLLM (use_vllm = True, fast_inference = False).
+
+    TRL >= 1.19 (#8269) no longer passes quantization = "bitsandbytes" and sends 4-bit weights dequantized.
+    So a QLoRA model quantized on the fly gets a 16-bit vLLM copy next to the 4-bit trainer, about 4x the
+    weight memory: say so once. A pre-quantized bitsandbytes checkpoint (the unsloth/*-bnb-4bit repos) still
+    builds a bitsandbytes engine from its config, and that engine cannot load the dequantized weights:
+    record it, so the first sync raises Unsloth's clear error instead of vLLM's shape assert."""
+    llm = getattr(generation, "llm", None)
+    generation._unsloth_vllm_engine_quantization = _unsloth_vllm_engine_quantization(llm)
+    if model is None or not getattr(model, "is_loaded_in_4bit", False):
+        return
+    if getattr(model, "is_loaded_in_8bit", False):
+        return
+    original = getattr(type(generation), "_iter_named_params", None)
+    original = getattr(original, "__wrapped__", original)
+    if original is None or not _unsloth_vllm_trl_dequantizes(original):
+        return
+    if generation._unsloth_vllm_engine_quantization is not None:
+        return
+    print(
+        f"Unsloth: TRL {trl_version_raw} builds its own vLLM engine unquantized for this 4-bit model "
+        "(use_vllm = True, fast_inference = False). vLLM holds a 16-bit copy of the weights, about 4x "
+        "the 4-bit model's weight memory, on top of the training model. Load the model with "
+        "fast_inference = True so vLLM shares the 4-bit weights instead, or lower "
+        "vllm_gpu_memory_utilization if this runs out of memory."
+    )
+
+
 def _unsloth_vllm_generation_refuses_quantized(generation, original):
     """TRL 0.28 to 1.18 VLLMGeneration merges the adapters into a quantized base in place and sends
     param.data, which is the packed storage (bitsandbytes 4-bit: uint8 bytes), not weights. A colocated
     engine then fails a shape assert inside vLLM on the first sync, and a vLLM server is sent bytes as
-    weights. Raise the error the TRL < 0.28 sync raises instead; True = skip the sync (explicit opt-in)."""
+    weights. Raise the error the TRL < 0.28 sync raises instead; True = skip the sync (explicit opt-in).
+    TRL >= 1.19 sends bitsandbytes 4-bit weights dequantized: fine for an unquantized engine, still
+    refused for a colocated engine built quantized from a pre-quantized checkpoint."""
     model = getattr(generation, "model", None)
     if model is None or not _unsloth_vllm_quantized(model):
         return False
+    engine_quantization = generation.__dict__.get("_unsloth_vllm_engine_quantization")
     if (
         getattr(model, "is_loaded_in_4bit", False)
         and not getattr(model, "is_loaded_in_8bit", False)
         and _unsloth_vllm_trl_dequantizes(original)
+        and engine_quantization is None
     ):
         return False
     if os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1":
@@ -4346,10 +4716,21 @@ def _unsloth_vllm_generation_refuses_quantized(generation, original):
                 "quantized model and every rollout uses the initial weights."
             )
         return True
+    if engine_quantization is not None and _unsloth_vllm_trl_dequantizes(original):
+        reason = (
+            f"TRL {trl_version_raw} sends dequantized 16-bit weights, but its vLLM engine was built "
+            f"{engine_quantization}-quantized from the checkpoint's own quantization config, so vLLM "
+            "cannot load them."
+        )
+    else:
+        reason = (
+            f"TRL {trl_version_raw} sends the packed quantized storage, not weights, so vLLM cannot "
+            "load it."
+        )
     raise RuntimeError(
         "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a quantized "
-        "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's vLLM engine: TRL "
-        f"{trl_version_raw} sends the packed quantized storage, not weights, so vLLM cannot load it.\n"
+        "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's vLLM engine: "
+        f"{reason}\n"
         "Load the model with fast_inference = True, or load a 16-bit base (load_in_4bit = False, "
         "load_in_8bit = False). Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway with every "
         "rollout from the initial weights."
@@ -4448,6 +4829,15 @@ def online_dpo_trainer__move_model_to_vllm(function_name, function):
 RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
 
 
+def rloo_trainer__move_model_to_vllm(function_name, function):
+    # TRL 0.22 to 0.27 RLOO has GRPO's _move_model_to_vllm: return early only for the fast_inference
+    # engine, so TRL's own vLLM (colocate) gets the trained weights. TRL 0.28+ syncs via VLLMGeneration.
+    return grpo_trainer__move_model_to_vllm(function_name, function)
+
+
+RL_FUNCTIONS["rloo_trainer"].append(rloo_trainer__move_model_to_vllm)
+
+
 def _unsloth_vllm_load_state_dict(trainer, model):
     deepspeed_plugin = getattr(trainer.accelerator.state, "deepspeed_plugin", None)
     if getattr(trainer, "is_fsdp_enabled", False) or (
@@ -4459,9 +4849,12 @@ def _unsloth_vllm_load_state_dict(trainer, model):
         )
     model = trainer.accelerator.unwrap_model(model)
     model = getattr(model, "_orig_mod", model)
-    trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
-        model.state_dict().items()
-    )
+    llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
+    runner = _unsloth_vllm_reload_runner(trainer.llm, llm_model)
+    if runner is not None:
+        _unsloth_vllm_reload(runner, iter(model.state_dict().items()))
+    else:
+        llm_model.load_weights(model.state_dict().items())
     trainer.llm.reset_prefix_cache()
 
 
@@ -4497,6 +4890,19 @@ def online_dpo_trainer__generate_vllm_colocate(function_name, function):
     # Level-2 sleep discards the weights, but the next microbatch of the same step skips the sync.
     if function_name != "_generate_vllm_colocate":
         return function
+    if "self.llm.sleep(" not in function:
+        # TRL < 0.29 OnlineDPO never sleeps the engine: a standby engine would keep ~90% of VRAM during training.
+        return _unsloth_wrap_vllm_generate_with_sleep(function)
+    # Unsloth's allocator never sleeps the shared weights, so a tagged wake_up(tags=["weights"]) maps nothing and
+    # leaves vLLM's executor asleep; the generate wrapper's own wake_up then maps the KV cache a second time
+    # (cumem "invalid argument"). Wake the shared engine untagged, as the GRPO / RLOO sync_weights patch does.
+    function = re.sub(
+        r"^([ \t]+)self\.llm\.wake_up\(tags=(\[[^\]\n]*\])\)\n",
+        r"\1if getattr(self.llm, 'shared_weights', False): self.llm.wake_up()\n"
+        r"\1else: self.llm.wake_up(tags=\2)\n",
+        function,
+        flags = re.MULTILINE,
+    )
     return re.sub(
         r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
         r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",
@@ -5091,10 +5497,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pg_use = False
                     _pg_skip_pk = False
                     _pg_forward_fn = None
-                    # A FlexAttention/Triton compile failure or OOM here is GPU-wide, not layout-specific, so retrying every step just re-pays it. Disable PG persistently; the packed/padded path below still gives the exact result.
-                    unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
-                    if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
+                    # A FlexAttention/Triton compile failure here is GPU-wide, not layout-specific, so retrying every step just re-pays it: disable PG persistently. An OOM (bare or raised while compiling) is transient and only skips PG for this batch. The packed/padded path below still gives the exact result.
+                    if isinstance(_pg_err, torch.cuda.OutOfMemoryError) or isinstance(
+                        getattr(_pg_err, "inner_exception", None), torch.cuda.OutOfMemoryError
+                    ):
                         torch.cuda.empty_cache()
+                    else:
+                        unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
                     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
                         "0" if _unsloth_head_hooked else "1"
                     )
@@ -5177,7 +5586,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_pad,
                                 **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
                             )
-                        _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                        # Completion tokens per row, one read: active rows and the re-verify row pick.
+                        _pk_ccount_cpu = _pk_cmask.sum(dim = 1).tolist()
+                        _pk_active = sum(1 for _pk_c in _pk_ccount_cpu if _pk_c > 0)
                     if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
@@ -5253,7 +5664,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
                             _pk_use = True  # already verified for this shape
                         else:
-                            # verify against the per-row forward (ground truth)
+                            # verify against the per-row forward (ground truth); a re-verify of trusted packing scores at most 3 rows
+                            _pk_vrows = _unsloth_seq_packing_verify_rows(
+                                _pk_len_cpu,
+                                _pk_ccount_cpu,
+                                _pk_ok is True and _pk_vT > 0,
+                                model = unwrapped_model,
+                            )
                             _pk_ref = torch.zeros_like(_pk_result)
                             with torch.no_grad():
                                 with torch.amp.autocast(
@@ -5261,7 +5678,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
-                                    for _pk_i in range(total_rows):
+                                    for _pk_i in _pk_vrows:
                                         _pk_ni = _pk_len_cpu[_pk_i]
                                         if _pk_ni < 2:
                                             continue
@@ -5308,25 +5725,44 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             device_synchronize()
                             # Compare over the loss-mask region only.
                             _pk_cm = _pk_cmask.float()
+                            if len(_pk_vrows) < total_rows:
+                                # Rows not scored alone have no reference: leave them out of the compare.
+                                _pk_vsel = torch.zeros(
+                                    total_rows, 1, dtype = _pk_cm.dtype, device = _pk_cm.device
+                                )
+                                _pk_vsel[_pk_vrows] = 1
+                                _pk_cm = _pk_cm * _pk_vsel
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
                             if UNSLOTH_ENABLE_LOGGING:
                                 print(
-                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
+                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} rows={len(_pk_vrows)}/{total_rows} packed-vs-perrow max|d|={_pk_diff:.4f}",
                                     flush = True,
                                 )
                             # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
-                            if _pk_diff < 7e-1 or _unsloth_seq_packing_moe_noise(
-                                unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                            # Shape noise: bf16 GEMMs round a row differently at another M (L4 tops 0.7).
+                            if (
+                                _pk_diff < 7e-1
+                                or _unsloth_seq_packing_moe_noise(
+                                    unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                                )
+                                or _unsloth_seq_packing_shape_noise(
+                                    unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                                )
                             ):
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
                                 # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
+                                # 2x past this shape, so a slowly growing record length does not re-verify every time.
                                 if _pk_active >= 2:
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
-                                        _pk_vT, _pk_T
+                                        _pk_vT,
+                                        _unsloth_seq_packing_trusted_bound(unwrapped_model, _pk_T),
                                     )
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
-                                        _pk_vS, _pk_maxseg
+                                        _pk_vS,
+                                        _unsloth_seq_packing_trusted_bound(
+                                            unwrapped_model, _pk_maxseg
+                                        ),
                                     )
                                 _pk_ok = True
                                 _pk_use = True
@@ -5568,7 +6004,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # transformers <= 4.48 does not support logits_to_keep, so drop the logits here; see huggingface/trl#2770.
 
-    function = inspect.getsource(_get_per_token_logps_and_entropies)
+    function = _unsloth_wrap_hidden_states_section(
+        inspect.getsource(_get_per_token_logps_and_entropies)
+    )
     if trl_version < Version("1.7.0"):
         # TRL < 1.7.0 unpacks (logps, entropies) while TRL >= 1.7.0 unpacks (logps, entropies, aux_loss), so drop the third element to match. The regex tolerates comment/whitespace drift and fails loud rather than ship a 3-tuple to older TRL.
         new_function, n = re.subn(
@@ -5584,6 +6022,55 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
         function = new_function
     return function
+
+
+_SCORER_HIDDEN_STATES_REQUEST = (
+    'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0" if _unsloth_head_hooked else "1"'
+)
+_SCORER_HIDDEN_STATES_RESET = 'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"'
+
+
+def _unsloth_wrap_hidden_states_section(source):
+    """Put the scorer's hidden-states section in try / finally in the generated source, so a caught error
+    (an OOM retry, auto_find_batch_size) cannot leave UNSLOTH_RETURN_HIDDEN_STATES at "1" for later
+    generate / evaluate forwards. Done on the text so the template body keeps its indentation."""
+    lines = source.split("\n")
+    starts = [i for i, line in enumerate(lines) if line.strip() == _SCORER_HIDDEN_STATES_REQUEST]
+    if len(starts) != 1:
+        raise RuntimeError(
+            "Unsloth GRPO: expected one hidden-states request in _get_per_token_logps_and_entropies, "
+            f"found {len(starts)}; update _unsloth_wrap_hidden_states_section."
+        )
+    start = starts[0]
+    indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+    end = next(
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if lines[i] == indent + _SCORER_HIDDEN_STATES_RESET
+        ),
+        None,
+    )
+    if end is None:
+        raise RuntimeError(
+            "Unsloth GRPO: the hidden-states reset after the scorer section moved; "
+            "update _unsloth_wrap_hidden_states_section."
+        )
+    body = [("    " + line) if line.strip() else line for line in lines[start + 1 : end]]
+    wrapped = (
+        [indent + "_unsloth_prior_hidden_states = os.environ.get('UNSLOTH_RETURN_HIDDEN_STATES')"]
+        + [lines[start], indent + "try:"]
+        + (body if any(line.strip() for line in body) else [indent + "    pass"])
+        + [
+            indent + "finally:",
+            indent + "    if _unsloth_prior_hidden_states is None:",
+            indent + "        os.environ.pop('UNSLOTH_RETURN_HIDDEN_STATES', None)",
+            indent + "    else:",
+            indent
+            + "        os.environ['UNSLOTH_RETURN_HIDDEN_STATES'] = _unsloth_prior_hidden_states",
+        ]
+    )
+    return "\n".join(lines[:start] + wrapped + lines[end:])
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
@@ -6025,6 +6512,7 @@ def _patch_grpo_accumulated_loss_moe_noise(source):
     if "_pack_ref" in source and "_pack_cm" in source:
         source = _GRPO_SEQ_PACKING_GRAD_TOL.sub(
             "if _pack_diff < 7e-1 or _unsloth_seq_packing_moe_noise("
+            "unwrapped_model, _pack_result, _pack_ref, _pack_cm) or _unsloth_seq_packing_shape_noise("
             "unwrapped_model, _pack_result, _pack_ref, _pack_cm):",
             source,
             count = 1,
@@ -6373,6 +6861,326 @@ def _unsloth_grpo_sample_weight(
     return weight[process_slice].to(completion_mask.device)
 
 
+def _unsloth_grpo_npr_settings():
+    """ScaleRL No-Positive-Resampling (arXiv 2510.13786), opt-in: UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING=1.
+    A completion passes when its weighted total reward is >= UNSLOTH_GRPO_NPR_PASS_REWARD (default 1.0);
+    a prompt whose historical pass rate reaches UNSLOTH_GRPO_NPR_PASS_RATE (default 0.9) is not sampled
+    again from the next epoch on. Returns (pass_reward, pass_rate) or None when off."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING", "0").strip().lower() not in (
+        "1",
+        "true",
+        "on",
+        "yes",
+    ):
+        return None
+    pass_reward = float(os.environ.get("UNSLOTH_GRPO_NPR_PASS_REWARD", "1.0"))
+    pass_rate = float(os.environ.get("UNSLOTH_GRPO_NPR_PASS_RATE", "0.9"))
+    if not 0.0 < pass_rate <= 1.0:
+        raise ValueError(f"Unsloth: UNSLOTH_GRPO_NPR_PASS_RATE must be in (0, 1], got {pass_rate}.")
+    return pass_reward, pass_rate
+
+
+def _unsloth_grpo_npr_key(row):
+    """Stable identity of a dataset row for No-Positive-Resampling: the prompt, the other scalar columns
+    (an answer tells apart tasks sharing a prompt) and a content hash of every image / array in the row.
+    Media are a set, so TRL's singular `image` -> `images` normalisation keeps the key."""
+    import hashlib
+
+    if not isinstance(row, dict):
+        return hashlib.sha1(repr(row).encode("utf-8", "surrogatepass")).hexdigest()
+    media = set()
+
+    def visit(value):
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif hasattr(value, "tobytes") and (hasattr(value, "size") or hasattr(value, "shape")):
+            # PIL images, numpy arrays, tensors: hash the content, never the repr (it holds an address).
+            if hasattr(value, "detach"):
+                value = value.detach().cpu().contiguous().numpy()
+            digest = hashlib.sha1(value.tobytes())
+            digest.update(
+                repr(
+                    (
+                        getattr(value, "mode", None),
+                        getattr(value, "size", None),
+                        getattr(value, "shape", None),
+                    )
+                ).encode()
+            )
+            media.add(digest.hexdigest())
+
+    scalars = []
+    for name in sorted(row):
+        value = row[name]
+        if name != "prompt" and isinstance(value, (str, int, float, bool)):
+            scalars.append((name, value))
+        visit(value)
+    prompt = row.get("prompt", None)
+    text = repr((_unsloth_grpo_npr_text(prompt), scalars, sorted(media)))
+    return hashlib.sha1(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _unsloth_grpo_npr_text(value):
+    # The prompt without its media (hashed separately): conversational content parts may hold images.
+    if isinstance(value, (list, tuple)):
+        return [_unsloth_grpo_npr_text(item) for item in value]
+    if isinstance(value, dict):
+        return {name: _unsloth_grpo_npr_text(item) for name, item in sorted(value.items())}
+    if hasattr(value, "tobytes") and (hasattr(value, "size") or hasattr(value, "shape")):
+        return "<media>"
+    return value
+
+
+def _unsloth_grpo_npr_row_keys(inputs):
+    """Row keys of a generation batch, taken on entry: TRL edits the prompts in place before scoring
+    (multimodal content parts, assistant prefill), while the sampler hashes the untouched dataset rows."""
+    if _unsloth_grpo_npr_settings() is None:
+        return None
+    return [_unsloth_grpo_npr_key(x) for x in inputs]
+
+
+def _unsloth_grpo_npr_record(trainer, mode, keys, rewards_per_func):
+    """Accumulate each prompt's (passes, attempts) from this generation batch, gathered over processes so
+    every rank's sampler drops the same prompts. keys: `_unsloth_grpo_npr_row_keys` of the batch."""
+    settings = _unsloth_grpo_npr_settings()
+    if settings is None or mode != "train" or keys is None:
+        return
+    pass_reward, pass_rate = settings
+    num_generations = int(trainer.num_generations)
+    if getattr(trainer.accelerator, "num_processes", 1) > 1:
+        from accelerate.utils import gather_object
+        keys = gather_object(keys)
+    weights = trainer.reward_weights.to(rewards_per_func.device).unsqueeze(0)
+    rewards = (rewards_per_func * weights).nansum(dim = 1)
+    # A completion no reward function scored is not an attempt.
+    scored = ~torch.isnan(rewards_per_func).all(dim = 1)
+    passed = ((rewards >= pass_reward) & scored).float().cpu()
+    scored = scored.float().cpu()
+    if len(keys) != passed.numel() or passed.numel() % num_generations != 0:
+        return
+    stats = trainer.__dict__.setdefault("_unsloth_npr_stats", {})
+    solved = trainer.__dict__.setdefault("_unsloth_npr_solved", set())
+    passed = passed.view(-1, num_generations).sum(dim = 1).tolist()
+    scored = scored.view(-1, num_generations).sum(dim = 1).tolist()
+    for group, (p, n) in enumerate(zip(passed, scored)):
+        key = keys[group * num_generations]
+        passes, attempts = stats.get(key, (0.0, 0.0))
+        passes, attempts = passes + p, attempts + n
+        stats[key] = (passes, attempts)
+        if attempts > 0 and passes / attempts >= pass_rate:
+            solved.add(key)
+    trainer._metrics[mode]["npr/solved_prompts"].append(float(len(solved)))
+    trainer._metrics[mode]["npr/batch_pass_rate"].append(sum(passed) / max(sum(scored), 1.0))
+
+
+def _unsloth_grpo_npr_sampler(trainer, sampler):
+    """Wrap TRL's RepeatSampler so each epoch's permutation skips solved prompts (No-Positive-Resampling),
+    refilled from the unsolved ones to the same length. Same random stream and chunk / repeat layout as
+    TRL, so groups and ranks stay aligned; with nothing solved the stream is TRL's exactly."""
+    if _unsloth_grpo_npr_settings() is None:
+        return sampler
+    needed = (
+        "data_source",
+        "mini_repeat_count",
+        "batch_size",
+        "repeat_count",
+        "shuffle",
+        "num_samples",
+    )
+    # TRL creates the generator only when it shuffles.
+    if not all(hasattr(sampler, name) for name in needed) or (
+        getattr(sampler, "shuffle", False) and not hasattr(sampler, "generator")
+    ):
+        import warnings
+        warnings.warn(
+            "Unsloth: UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING needs TRL's RepeatSampler; it is ignored here.",
+            stacklevel = 2,
+        )
+        return sampler
+    base = type(sampler)
+
+    class _UnslothNPRSampler(base):
+        def _unsloth_npr_indexes(self):
+            if self.shuffle:
+                indexes = torch.randperm(self.num_samples, generator = self.generator).tolist()
+            else:
+                indexes = list(range(self.num_samples))
+            solved = trainer.__dict__.get("_unsloth_npr_solved", None)
+            if not solved:
+                return indexes
+            keys = self.__dict__.setdefault("_unsloth_npr_keys", {})
+
+            def unsolved(order):
+                kept = []
+                for index in order:
+                    key = keys.get(index, None)
+                    if key is None:
+                        key = _unsloth_grpo_npr_key(self.data_source[index])
+                        keys[index] = key
+                    if key not in solved:
+                        kept.append(index)
+                return kept
+
+            kept = unsolved(indexes)
+            trainer.__dict__["_unsloth_npr_dropped"] = len(indexes) - len(kept)
+            if not kept:
+                if not trainer.__dict__.get("_unsloth_npr_all_solved_warned", False):
+                    import warnings
+                    warnings.warn(
+                        "Unsloth: No-Positive-Resampling marked every prompt solved; sampling all of them again.",
+                        stacklevel = 2,
+                    )
+                    trainer._unsloth_npr_all_solved_warned = True
+                return indexes
+            # Refill to the epoch's length with more passes over the unsolved prompts: the trainer fixed its
+            # epoch count from this length, so a shorter epoch would end training before max_steps.
+            target = len(indexes)
+            if len(kept) < target:
+                pool = sorted(kept)
+                while len(kept) < target:
+                    if self.shuffle:
+                        order = torch.randperm(len(pool), generator = self.generator).tolist()
+                        kept.extend(pool[j] for j in order)
+                    else:
+                        kept.extend(pool)
+            return kept[:target]
+
+        def __iter__(self):
+            indexes = self._unsloth_npr_indexes()
+            chunks = [
+                indexes[i : i + self.batch_size] for i in range(0, len(indexes), self.batch_size)
+            ]
+            chunks = [chunk for chunk in chunks if len(chunk) == self.batch_size]
+            for chunk in chunks:
+                for _ in range(self.repeat_count):
+                    for index in chunk:
+                        for _ in range(self.mini_repeat_count):
+                            yield index
+
+    sampler.__class__ = _UnslothNPRSampler
+    return sampler
+
+
+def _unsloth_grpo_truncation_warn(trainer, mode):
+    """Warn when more than UNSLOTH_GRPO_TRUNCATION_WARN (default 0.10, 0 = off) of a generation batch hit
+    max_completion_length: ScaleRL (arXiv 2510.13786) finds 10-15% truncation destabilises RL."""
+    import os
+
+    try:
+        threshold = float(os.environ.get("UNSLOTH_GRPO_TRUNCATION_WARN", "0.10"))
+    except ValueError:
+        threshold = 0.10
+    if threshold <= 0 or mode != "train":
+        return
+    values = trainer._metrics[mode].get("completions/clipped_ratio", None)
+    if not values:
+        return
+    rate = float(values[-1])
+    if rate <= threshold:
+        return
+    step = int(getattr(trainer.state, "global_step", 0))
+    last = trainer.__dict__.get("_unsloth_truncation_warned_step", None)
+    if last is not None and step - last < 50:
+        return
+    trainer._unsloth_truncation_warned_step = step
+    from unsloth_zoo.log import logger as _unsloth_logger
+
+    _unsloth_logger.warning(
+        f"Unsloth: {rate:.0%} of completions hit max_completion_length = "
+        f"{getattr(trainer.args, 'max_completion_length', None)} at step {step} "
+        f"(warning above {threshold:.0%}). Truncation rates of 10-15% destabilise RL training (ScaleRL, "
+        "arXiv 2510.13786): raise max_completion_length or set mask_truncated_completions = True. "
+        "UNSLOTH_GRPO_TRUNCATION_WARN=0 turns this warning off."
+    )
+
+
+def grpo_trainer_scalerl_hooks(function_name, function):
+    # No-Positive-Resampling: wrap the train sampler; record pass rates where the group rewards exist.
+    if function_name == "_get_train_sampler":
+        start = function.find("return RepeatSampler(")
+        if start == -1 or function.count("return RepeatSampler(") != 1:
+            _warn_once(
+                "grpo_npr_sampler",
+                "Unsloth: could not install UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING for this TRL version.",
+            )
+            return function
+        open_at = start + len("return RepeatSampler")
+        depth, end = 0, None
+        for i in range(open_at, len(function)):
+            if function[i] == "(":
+                depth += 1
+            elif function[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end is None:
+            return function
+        return (
+            function[:start]
+            + "return _unsloth_grpo_npr_sampler(self, RepeatSampler"
+            + function[open_at : end + 1]
+            + ")"
+            + function[end + 1 :]
+        )
+    clipped = re.search(
+        r'\n([ \t]*)self\._metrics\[mode\]\["completions/clipped_ratio"\]\.append\([^\n]*\)\n',
+        function,
+    )
+    if clipped is not None:
+        function = (
+            function[: clipped.end()]
+            + f"{clipped.group(1)}_unsloth_grpo_truncation_warn(self, mode)\n"
+            + function[clipped.end() :]
+        )
+    zero_std = re.search(
+        r'\n([ \t]*)self\._metrics\[mode\]\["frac_reward_zero_std"\]\.append\([^\n]*\)\n',
+        function,
+    )
+    if (
+        zero_std is not None
+        and function_name == "_generate_and_score_completions"
+        and "rewards_per_func" in function
+    ):
+        function = (
+            function[: zero_std.end()]
+            + f"{zero_std.group(1)}_unsloth_grpo_npr_record(self, mode, _unsloth_npr_keys, rewards_per_func)\n"
+            + function[zero_std.end() :]
+        )
+        signature = re.search(
+            r"([ \t]*)def _generate_and_score_completions\((?:[^()]|\([^()]*\))*\)[^\n]*:\n",
+            function,
+        )
+        if signature is None:
+            return function.replace(
+                "_unsloth_grpo_npr_record(self, mode, _unsloth_npr_keys, rewards_per_func)\n",
+                "pass\n",
+            )
+        function = (
+            function[: signature.end()]
+            + f"{signature.group(1)}    _unsloth_npr_keys = _unsloth_grpo_npr_row_keys(inputs)\n"
+            + function[signature.end() :]
+        )
+    elif (
+        function_name == "_generate_and_score_completions"
+        and _unsloth_grpo_npr_settings() is not None
+    ):
+        _warn_once(
+            "grpo_npr_record",
+            "Unsloth: could not install UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING for this TRL version.",
+        )
+    return function
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_scalerl_hooks)
+
+
 def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     # Inputs are zero-filled outside the mask; TRL reduces over masked tokens only, else min ratio reads 0.
     if mask is None or delta.shape != mask.shape or flat_is_ratio.shape != mask.shape:
@@ -6515,6 +7323,13 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_fr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_store))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_settings))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_key))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_text))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_row_keys))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_record))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_sampler))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_truncation_warn))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
@@ -6531,6 +7346,10 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_moe_noise))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_shape_noise))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_rope_switch))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_rows))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_trusted_bound))
 RL_PRE_ITEMS["grpo_trainer"].append(
     _patch_grpo_accumulated_loss_moe_noise(
         _patch_grpo_accumulated_loss_seq_packing_kill(
@@ -6550,6 +7369,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(
 )
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
+# TRL 0.22 to 0.27 RLOO builds its vLLM SamplingParams the same way, which patch_functions rewrites to call it.
+RL_PRE_ITEMS["rloo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
 # inspect.getsource inlines function bodies but not module imports, so constants the inlined grpo functions use (UNSLOTH_ENABLE_LOGGING) must be redefined in the generated cache.
 RL_PRE_ITEMS["grpo_trainer"].append(
@@ -6713,6 +7534,14 @@ def grpo_trainer_compute_loss(function_name, function):
         ref_logps = inputs.get("ref_per_token_logps", None)
         # x - x.detach() preserves gradients from x.
         advantages = inputs["advantages"]
+        # On-policy distillation (unsloth_distillation_coef): the teacher's per-token advantages join the rewards'.
+        _distill_advantages = inputs.get("unsloth_distillation_advantages", None)
+        if _distill_advantages is not None:
+            if advantages.dim() == 1:
+                advantages = advantages.unsqueeze(1)
+            advantages = advantages + _distill_advantages.to(
+                device = advantages.device, dtype = advantages.dtype
+            )
         old_logps = inputs.get("old_per_token_logps", None)
 
         input_ids = input_ids[:, -logits_to_keep:]
@@ -6786,6 +7615,18 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_items_in_batch = num_items_in_batch,
                 current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                 num_processes = num_processes,
+                # Only when on: grpo_check_sampler_kl has then verified the zoo takes them.
+                **(
+                    {
+                        "sampler_kl_coef": float(self.args.unsloth_sampler_kl_coef),
+                        "sampler_kl_estimator": getattr(
+                            self.args, "unsloth_sampler_kl_estimator", None
+                        )
+                        or "k1",
+                    }
+                    if float(getattr(self.args, "unsloth_sampler_kl_coef", 0.0) or 0.0) != 0.0
+                    else {}
+                ),
             )
         else:
             # With beta = 0 and num_iterations = 1 the no-grad path (and its zoo gate) never runs, and an older
@@ -7040,6 +7881,22 @@ def grpo_trainer_compute_loss(function_name, function):
 
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
+        if (
+            advantages.shape[1] != 1
+            and coef_1.dim() == 2
+            and advantages.shape[1] != coef_1.shape[1]
+        ):
+            # Distillation's per-token advantages are in the completion layout; coef_1 is in the zoo's left-packed
+            # one. Move them over for the clip metrics, as the zoo did for the loss.
+            if completion_mask.shape == coef_1.shape:
+                from unsloth_zoo.rl_replacements import (
+                    align_logprobs_with_mask as _unsloth_align_logprobs_with_mask,
+                )
+                advantages = _unsloth_align_logprobs_with_mask(
+                    advantages.to(completion_mask.device), completion_mask.to(torch.int32)
+                )
+            else:
+                advantages = inputs["advantages"].reshape(-1, 1)
 
         if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"]:
             is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
@@ -7320,6 +8177,22 @@ def _unsloth_vllm_sync_colocate(generation, vllm_model):
         getattr(state, "deepspeed_plugin", None) is not None
         or getattr(state, "fsdp_plugin", None) is not None
     )
+    runner = _unsloth_vllm_reload_runner(getattr(generation, "llm", None), vllm_model)
+    if runner is not None:
+        # The reload holds a module's tensors until all of them arrive (padded ones until the
+        # end), past where ZeRO-3 / FSDP gathered tensors stay valid and past PEFT's in-place
+        # unmerge. Only the out-of-place merge yields tensors nothing rewrites: copy the rest.
+        if (
+            state is None
+            or sharded
+            or (
+                getattr(generation.model, "peft_config", None) is not None
+                and not _unsloth_vllm_generation_merges_out_of_place(generation)
+            )
+        ):
+            weights = ((name, param.detach().clone()) for name, param in weights)
+        _unsloth_vllm_reload(runner, weights)
+        return
     if not sharded:
         model = generation.model
         # Adapted base weights arrive merged (fresh copies, or TRL's in-place merge): always sent.
@@ -7425,7 +8298,16 @@ def vllm_generation_init_patch():
                 f"{indent}    # before the trainer existed, so only keep the request if the engine returns masks.\n"
                 f"{indent}    if getattr(self, 'return_sampling_mask', False) and not _unsloth_engine_returns_sampling_mask(self.llm):\n"
                 f"{indent}        self.return_sampling_mask = False\n"
-                f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
+                f"{indent}else:\n"
+                f"{indent}    try:\n"
+                + textwrap.indent(llm_block, indent + "        ")
+                + "\n"
+                + f"{indent}    except Exception as _unsloth_init_error:\n"
+                f"{indent}        _unsloth_replacement = _unsloth_trl_vllm_init_error(_unsloth_init_error)\n"
+                f"{indent}        if _unsloth_replacement is None:\n"
+                f"{indent}            raise\n"
+                f"{indent}        raise _unsloth_replacement from _unsloth_init_error\n"
+                + f"{indent}    _unsloth_trl_vllm_engine_check(self, model)"
             )
 
         patched_src, num_replacements = pattern.subn(replace_llm_block, src, count = 1)
@@ -7436,6 +8318,8 @@ def vllm_generation_init_patch():
         vllm_generation._unsloth_engine_returns_sampling_mask = (
             _unsloth_engine_returns_sampling_mask
         )
+        vllm_generation._unsloth_trl_vllm_engine_check = _unsloth_trl_vllm_engine_check
+        vllm_generation._unsloth_trl_vllm_init_error = _unsloth_trl_vllm_init_error
         return patched_src
 
     # Newer versions have sync_weights or reload rpc calls; earlier ones are stripped in the patched grpo_trainer above.
@@ -8126,6 +9010,9 @@ def _unsloth_prepare_frozen_teacher(accelerator, teacher):
     """Like accelerate's prepare_model, but keeps a frozen teacher off the training card when another GPU fits it
     (accelerate would move it there, or refuse it if quantized). UNSLOTH_KD_TEACHER_PLACEMENT=0 disables."""
     default = lambda: accelerator.prepare_model(teacher, evaluation_mode = True)
+    if getattr(teacher, "_unsloth_adapter_off_teacher", False):
+        # teacher_model = "base" is the student itself with the adapter off: nothing to place or wrap.
+        return teacher
     try:
         from accelerate.utils import DistributedType
 
@@ -8934,6 +9821,17 @@ def _unsloth_dpo_loss_head(
     return _unsloth_dpo_chunked_head(self, model, inputs, "_compute_loss")
 
 
+def _unsloth_top1_half_kwargs(fn, _cache = {}):
+    """TRL <= 1.14 token accuracy is the half-logit argmax; older zoo lacks the kwarg and keeps fp32."""
+    if fn not in _cache:
+        try:
+            import inspect
+            _cache[fn] = "is_top1_half_logits" in inspect.signature(fn).parameters
+        except Exception:
+            _cache[fn] = False
+    return {"is_top1_half_logits": True} if _cache[fn] else {}
+
+
 def _unsloth_dpo_loss_stats(
     self,
     chunked,
@@ -8961,6 +9859,7 @@ def _unsloth_dpo_loss_stats(
             return_mean_logits = not ref,
             return_is_top1 = not ref,
             entropy_requires_grad = False,
+            **({} if ref else _unsloth_top1_half_kwargs(_unsloth_fused_linear_logprobs)),
         )
     if not torch.compiler.is_compiling():
         try:
@@ -9163,6 +10062,7 @@ for _dpo_item in (
     _unsloth_dpo_nll,
     _unsloth_dpo_forward,
     _unsloth_dpo_loss_head,
+    _unsloth_top1_half_kwargs,
     _unsloth_dpo_loss_stats,
 ):
     RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_dpo_item))

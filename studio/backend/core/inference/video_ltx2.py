@@ -234,8 +234,7 @@ _DIT_PREFIX = "model.diffusion_model."
 
 
 def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, ...]]:
-    """Tensor name -> shape from the checkpoint HEADER only (no weight data). GGUF shapes come back
-    in GGML (reversed) order, so callers should membership-test, not assume a dimension position."""
+    """Name -> shape from the header only; GGUF shapes are GGML-reversed, so membership-test."""
     names_shapes: dict[str, tuple[int, ...]] = {}
     path = str(checkpoint_path)
     if path.lower().endswith(".gguf"):
@@ -322,8 +321,7 @@ def _apply_rename(state: dict[str, Any], rename: dict[str, str]) -> dict[str, An
 
 
 def _to_plain_dtype(state: dict[str, Any], torch_dtype: Any) -> dict[str, Any]:
-    """Materialise every tensor as a plain torch tensor in torch_dtype. GGUF tensors arrive as
-    block-quantized GGUFParameter; the small non-DiT components run dense, so dequantize here."""
+    """Make all tensors plain torch tensors in torch_dtype, dequantizing GGUFParameter blocks."""
     import torch
 
     try:
@@ -366,8 +364,7 @@ def _checkpoint_group(key: str) -> tuple[str, str]:
 
 
 def _load_checkpoint_without_dit(checkpoint_path: Path | str) -> Optional[dict[str, Any]]:
-    """The non-DiT tensors of a combined safetensors checkpoint, read selectively (the DiT is ~44 GB of
-    the 46 GB file); None when the file is not safetensors, so the caller reads it whole."""
+    """Read only the non-DiT tensors of a combined safetensors file; None if not safetensors."""
     if not str(checkpoint_path).lower().endswith(".safetensors"):
         return None
     from safetensors import safe_open
@@ -543,6 +540,8 @@ def _copy_file_chunks(
             handles.put(handle)
 
     stream = torch.cuda.Stream(device = device)
+    # The targets come from the current stream's pool: wait for its queued work before the side stream writes them.
+    stream.wait_stream(torch.cuda.current_stream(device))
     try:
         with ThreadPoolExecutor(
             max_workers = max(1, threads), thread_name_prefix = "unsloth-direct-load"
@@ -705,8 +704,7 @@ def _gguf_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]
 
 
 def ltx23_checkpoint_variant(checkpoint_path: Path | str | None) -> Optional[str]:
-    """Distilled or dev from the checkpoint content (128-value bias fingerprint); None if
-    unreadable, missing or a finetune, and callers then fall back to the name"""
+    """Distilled or dev by bias fingerprint; None if unreadable or a finetune, so use the name."""
     if not checkpoint_path:
         return None
     path = str(checkpoint_path)
@@ -833,8 +831,7 @@ _LTX23_NO_HASH: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def ltx23_identity_without_hashing() -> Iterator[None]:
-    """For planning (the download plan and its precision check): a local file with the official size and no stored
-    verdict reads as official instead of being hashed there, like an uncached Hub pick; the load hashes it."""
+    """Planning: local file, official size, no verdict: read as official; the load hashes it."""
     token = _LTX23_NO_HASH.set(True)
     try:
         yield
@@ -978,8 +975,7 @@ def _ltx23_hub_cached_file(repo_id: str, filename: str) -> Optional[Path]:
 def ltx23_prequant_eligible(
     checkpoint_filename: Optional[str], repo_id: Optional[str] = None
 ) -> bool:
-    """Whether the hosted DiT may replace this pick's own: the official file by name AND identity (local content, or
-    the official Hub repo, its cached copy verified by content; the load re-checks)."""
+    """Hosted DiT may replace the pick if file name and content are official; load re-checks."""
     if not checkpoint_filename or not repo_id:
         return False
     if Path(str(checkpoint_filename)).name.lower() not in LTX23_PREQUANT_SOURCE_FILES:
@@ -1107,8 +1103,7 @@ LTX2_RECOMPILE_LIMIT = 64
 
 
 def ensure_recompile_limit(limit: int = LTX2_RECOMPILE_LIMIT) -> None:
-    """Raise dynamo's recompile limit in the calling thread: torch >= 2.12 keeps config per thread context, so the
-    render thread would otherwise see the default 8 despite the load-time raise."""
+    """Raise dynamo's recompile limit in this thread; torch >= 2.12 keeps config per thread."""
     try:
         import torch._dynamo.config as dynamo_cfg
     except Exception:  # noqa: BLE001 -- no dynamo, nothing compiled
@@ -1175,10 +1170,9 @@ def install_stg_compile_adapter(transformer: Any) -> int:
     return count
 
 
-# LTX-2.x text masks: the connectors replace padding with learned registers and return an all-ones mask, which the DiT
-# turns into an all-zero additive bias. That bias is a no-op, but it sends every text cross-attention to the
-# mem-efficient kernel, and Inductor materialises it at [batch, heads, video tokens, text tokens] (0.9 GB per call at
-# 1280x704x121). Dropping an all-ones mask keeps the maths and lets SDPA pick flash. =0 keeps the mask.
+# LTX-2.x all-ones text mask becomes an all-zero additive bias (a no-op) that forces the
+# mem-efficient kernel; Inductor materialises [batch, heads, video, text] (0.9 GB per call at
+# 1280x704x121); dropping it lets SDPA pick flash, =0 keeps the mask.
 LTX2_FULL_MASK_ENV = "UNSLOTH_LTX2_DROP_FULL_TEXT_MASK"
 _LTX2_TRANSFORMER_CLS = "LTX2VideoTransformer3DModel"
 _LTX2_MASK_KEYS = ("encoder_attention_mask", "audio_encoder_attention_mask")
@@ -1193,8 +1187,7 @@ def ltx2_full_mask_drop_disabled() -> bool:
 
 
 def _ltx2_mask_all_ones(module: Any, mask: Any) -> bool:
-    """Whether a 2-D multiplicative text mask is 1 everywhere, memoised per tensor and version (one host read per
-    render: the pipeline passes the same mask to every step)."""
+    """Whether a 2-D text mask is all ones; memoised per tensor version to save host reads."""
     import torch
 
     version = "inference" if mask.is_inference() else mask._version
@@ -1254,9 +1247,8 @@ def install_ltx2_full_mask_drop(pipe: Any, logger: Any = None) -> int:
     return count
 
 
-# LTX-2.3 / 2.5 connectors: diffusers keeps the masked norm and both scaled copies ([B, 1024, 49 * 3840], 368 MiB each
-# in bf16) alive while the 1.44 GiB video projection onloads; the lean forward builds each input when its projection
-# runs and frees it after (same ops, bit-identical). =0 keeps the diffusers forward.
+# Builds each connector input only when its 1.44 GiB projection runs, then frees it (bit-identical);
+# diffusers holds all three copies at once. UNSLOTH_LTX2_LEAN_CONNECTOR_FEATURES=0 disables.
 LTX2_LEAN_CONNECTOR_ENV = "UNSLOTH_LTX2_LEAN_CONNECTOR_FEATURES"
 _LTX2_CONNECTORS_CLS = "LTX2TextConnectors"
 _LTX2_LEAN_CONNECTOR_ATTR = "_unsloth_lean_connector_features"
@@ -1481,9 +1473,7 @@ def unpark_ltx2_vae_encoder(
     offload_policy: Any,
     logger: Any = None,
 ) -> int:
-    """For an image-conditioned request: bring a parked encoder back to the card for the whole request (it encodes in
-    both stages, so per-call moves would copy it four times), and return its MiB for the floor; 0 when it does not
-    park. The next unconditioned request parks it again."""
+    """Image-conditioned: parked encoder moves to card once per request; returns MiB, or 0."""
     vae = getattr(pipe, "vae", None)
     if vae is None or not ltx2_vae_encoder_parks(vae, offload_policy):
         return 0
@@ -1871,8 +1861,7 @@ def _no_autocast(device_type: str) -> Any:
 
 
 def _stage_fp32(module: Any) -> list:
-    """Float32 copies of every floating parameter / buffer not already float32, as (owner, name, is_param, copy).
-    Allocates only: the module is untouched, so an out-of-memory here leaves nothing to roll back."""
+    """Float32 copies (owner, name, is_param, copy); allocates only, so OOM needs no rollback."""
     import torch
 
     staged = []
@@ -1888,8 +1877,7 @@ def _stage_fp32(module: Any) -> list:
 
 @contextlib.contextmanager
 def _swapped_in(staged: list) -> Iterator[None]:
-    """Point the module at the staged float32 tensors for the call and back after. Reference swaps only (``.data``
-    on the existing Parameters, buffer dict entries): nothing allocates, so the restore cannot fail half way."""
+    """Swap staged fp32 in and back by reference; nothing allocates, so restore cannot fail."""
     saved = []
     try:
         for owner, name, is_param, copy in staged:
@@ -1940,8 +1928,7 @@ def _fp32_resampler_filter(vocoder: Any) -> Any:
 
 
 def _install_fp32_filter(res: Any, fp32_filter: Any) -> None:
-    """The float32 filter becomes the resampler's ``filter`` buffer (so the float32 forward reads it with no swap and
-    stays traceable); the loaded one is kept beside it as a buffer for the stored-dtype path."""
+    """fp32 filter is the filter buffer (traceable, no swap); the stored one is kept beside it."""
     stored = res._buffers["filter"]
     res.register_buffer(_STORED_FILTER, stored, persistent = False)
     res.register_buffer("filter", fp32_filter.to(stored.device), persistent = False)
@@ -2041,11 +2028,9 @@ def _note_fallback(reason: str) -> None:
 
 
 def install_vocoder_fp32_forward(vocoder: Any) -> None:
-    """Run this vocoder instance's forward in float32 and return a float32 waveform; idempotent, never raises.
-
-    Eager calls never fail a render: short of room on the card, or out of memory (while staging float32 weights or
-    in the pass), the call runs the stored dtype on an unchanged module. Under torch.compile the forward is a plain
-    traceable graph: CUDA autocast in float32, or the stored dtype where float32 needs eager-only weight staging."""
+    """Runs the vocoder forward in float32 returning a float32 waveform; idempotent and never
+    raises; eager OOM or low card room runs the stored dtype; under torch.compile it uses CUDA
+    autocast in float32, or the stored dtype where float32 needs eager-only staging."""
     try:
         import torch
         import types

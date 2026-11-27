@@ -87,8 +87,7 @@ def _saved(model):
 
 
 def _counting_cpu(fn):
-    """Runs fn, returning (its result or the error it raised, the number of Tensor.cpu() calls made
-    by fsdp2_save itself; on CPU ranks `.cpu()` is a no-op, so the calls are recorded)."""
+    """Runs fn; returns (result or error, fsdp2_save's Tensor.cpu() count), counted on CPU too."""
     original = torch.Tensor.cpu
     calls = []
 
@@ -151,8 +150,7 @@ def _case(rank, case, m):
         out["legacy"], _ = _counting_cpu(restore(mine, loose))
         out["legacy"] = "ValueError" if "`0.weight`" in out["legacy"] else out["legacy"]
     elif case == "compare_raises":
-        # Rank 0's byte check fails (an OOM copying the loaded bytes, say): the peer is already
-        # waiting in the verdict broadcast and must fail with it, not time out there.
+        # Rank 0's byte-check error must reach the verdict broadcast, or the peer hangs.
         original = torch.equal
 
         def failing(*args, **kwargs):
@@ -225,8 +223,7 @@ def _needs_bitsandbytes():
 
 
 def test_broadcast_load_with_a_meta_placeholder_on_the_peer():
-    """The peer copied its own placeholder to the host before the broadcast replaced it, which
-    raises on meta tensors (and left rank 0 waiting in the broadcast)."""
+    """Copying a peer's meta placeholder to host raises, leaving rank 0 stuck in the broadcast."""
     results = _run("meta_peer")
     for rank in range(WORLD):
         assert results[rank].get("full") == "loaded", results
@@ -234,8 +231,7 @@ def test_broadcast_load_with_a_meta_placeholder_on_the_peer():
 
 
 def test_broadcast_legacy_load_does_not_read_the_peer_placeholder():
-    """A packed weight without its QuantState: the peer compared its own (meta) placeholder bytes
-    with the live ones on the host, which raises on meta tensors."""
+    """Packed weight without QuantState: peer's meta placeholder bytes compared on host raises."""
     results = _run("meta_peer_legacy")
     for rank in range(WORLD):
         assert results[rank].get("legacy") == "loaded", results
@@ -255,16 +251,14 @@ def test_broadcast_load_copies_to_the_host_only_on_rank0():
 
 
 def test_legacy_byte_check_verdict_is_agreed_across_ranks():
-    """Without broadcast_from_rank0 each rank decided alone: rank 1 (other bytes) raised while rank 0
-    went on loading into the next collective, where it would wait for rank 1 forever."""
+    """Without broadcast_from_rank0 each rank decides alone: rank 1 raises, rank 0 hangs later."""
     results = _run("divergent")
     assert results[0].get("legacy") == "ValueError", results
     assert results[1].get("legacy") == "ValueError", results
 
 
 def test_legacy_byte_check_error_on_rank0_reaches_the_verdict():
-    """An error in rank 0's byte check skipped the verdict broadcast its peer was waiting in, so the
-    peer hung until the collective timeout."""
+    """An error on rank 0 skipped the verdict broadcast its peer waited in, so the peer hung."""
     results = _run("compare_raises")
     assert "simulated out of memory" in str(results[0].get("legacy")), results
     assert "`0.weight`" in str(results[1].get("legacy")), results

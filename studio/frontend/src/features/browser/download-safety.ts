@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Files that run code when opened always ask before downloading, whatever a site's remembered answer or
-// the Ask before downloading setting.
+// Files that run code always ask before downloading, whatever a site's answer or the setting.
 
 import policy from "./dangerous-file-types.json" with { type: "json" };
 

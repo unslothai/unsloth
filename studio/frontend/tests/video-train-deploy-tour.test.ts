@@ -10,12 +10,13 @@ test("video-family adapters deploy to Video, image families to Create", () => {
   assert.match(src, /\?\.is_video === true/);
   assert.match(
     src,
-    /viewRun\.catalog_path && canDeployFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,400}onDeployVideo : onDeploy\)\?\.\(/,
+    /viewRun\.catalog_path && canDeployFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,200}onClick=\{\(\) => deployRun\(viewRun\)\}/,
   );
   assert.match(
     src,
-    /status\?\.catalog_path && canDeployFamily\(status\.family \|\| family\?\.name \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{onDeployClick\}>/,
+    /liveDeploy\?\.catalog_path && canDeployFamily\(liveDeploy\.family \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{\(\) => deployRun\(liveDeploy\)\}>/,
   );
+  assert.match(src, /\(isVideoFamily\(request\.family\) \? onDeployVideo : onDeploy\)\?\.\(request\)/);
   assert.match(readSrc("features/images/api.ts"), /is_video\?: boolean;/);
 });
 
@@ -54,7 +55,7 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
     assert.match(
       src,
       page.includes("video")
-        ? /\/>\s*<\/div>\s*\)\}\s*\{restyleMounted && \(\s*<div className=\{pageMode === "restyle" \? "contents" : "hidden"\} inert=\{pageMode !== "restyle" \|\| undefined\}>\s*<VideoRestylePanel active=\{active\} \/>\s*<\/div>\s*\)\}\s*\{pageMode === "create" && \(/
+        ? /\/>\s*<\/div>\s*\)\}\s*\{restyleMounted && \(\s*<div className=\{pageMode === "restyle" \? "contents" : "hidden"\} inert=\{pageMode !== "restyle" \|\| undefined\}>\s*<VideoRestylePanel active=\{active\} restore=\{restyleRecipe\} \/>\s*<\/div>\s*\)\}\s*\{pageMode === "create" && \(/
         : /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/,
     );
     assert.doesNotMatch(src, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);

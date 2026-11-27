@@ -5,8 +5,7 @@ let release: (() => void) | null = null;
 
 /** Hold the page at its size while the split is dragged, so it lays out once on release, not every frame. */
 export function pinBrowserPage(handle: Element): () => void {
-  // Only the inner box is pinned: the outer one keeps following the panel, so the room a widening
-  // drag opens is painted in the page's background rather than the panel's.
+  // Only the inner box is pinned; a widening drag reveals page background, not the panel's.
   const area = document.querySelector<HTMLElement>("[data-browser-page]");
   const page = area?.querySelector<HTMLElement>(":scope > [data-browser-page]");
   if (release || !area || !page) return () => undefined;

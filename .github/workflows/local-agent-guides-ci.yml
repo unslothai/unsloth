@@ -36,8 +36,7 @@ on:
       - 'pyproject.toml'
       - 'studio/backend/requirements/**'
       - '.github/scripts/retry-with-apt-lock.sh'
-      # The install step in this workflow is `uses:` on that composite action,
-      # so edits to the action must trigger this workflow.
+      # The install step uses that action, so edits to it must trigger this workflow.
       - '.github/actions/install-unsloth-local/action.yml'
       # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
@@ -91,21 +90,17 @@ concurrency:
   # only one pending run, so without this a merge burst silently drops the nightly:
   # cancel-in-progress protects the running run, never the pending one.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # PR: latest run only. Main: never kill a running run; a newer push replaces the pending one.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
-# PR runs execute PR-controlled code, so HF_TOKEN is withheld on pull_request (public GGUFs still
-# download). GH_TOKEN (job-scoped, contents: read) stays: install_llama_prebuilt.py needs it for the releases API.
+# HF_TOKEN withheld on pull_request (PR code runs); GH_TOKEN stays for the releases API.
 
 env:
   UNSLOTH_SEED: '3407'
-  # Stops a headless TTY hang. Sized for the slowest legit turn: Codex's client preamble alone takes
-  # ~460s of prompt processing on CPU.
+  # Stops headless TTY hangs; sized for the slowest legit turn (Codex preamble is slow on CPU).
   AGENT_INVOKE_TIMEOUT: '1200'
 
 jobs:
@@ -120,9 +115,7 @@ jobs:
   connection:
     name: connection (${{ matrix.agents }})
     runs-on: ubuntu-latest
-    # Each agent keeps the old per-leg 40 minute bound. 270 = 5 agents x (40 + 1 kill grace) = 205,
-    # plus about 5 for the per-agent cleanup and 60 for setup (apt 15, GGUF download, install, a
-    # health wait of up to 15) and log upload, so a shard whose agents all hang still reaches and
+    # 270 = 5 x (40 min + 1 kill grace) = 205, plus ~65 min setup/cleanup; a hung shard still
     # reports every agent.
     timeout-minutes: 270
     strategy:
@@ -135,8 +128,7 @@ jobs:
           - shard: b
             agents: openclaw dsh vibe opencode:stable
     env:
-      # gemma-4-E4B: the 270m model gave empty replies for codex/openclaw. Flat GGUF; the -MTP- repo
-      # ships no separate draft.
+      # Flat GGUF: 270m gave empty replies for codex/openclaw; the -MTP- repo ships no draft.
       GGUF_REPO: unsloth/gemma-4-E4B-it-GGUF
       GGUF_FILE: gemma-4-E4B-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18901'
@@ -146,8 +138,7 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
-        # since short ones kill a slow but working mirror.
+        # Two long attempts: short ones kill a slow but working mirror; the bound stops hangs.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -203,8 +194,7 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
 
       - name: Save GGUF model file
-        # Save on main only: PR-scoped caches only serve that PR and push main's shared copies out of the
-        # LRU-evicted, nearly full repo cache budget.
+        # Main only: PR caches serve one PR and push shared copies out of the full LRU budget.
         if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -286,11 +276,8 @@ jobs:
           # (c) drive the agent via start.py and assert a reply.
           bash .github/scripts/agent-guides-drive.sh connection "$AGENT"
           SH
-          # Each agent ran on its own runner, so nothing it started or installed outlived it. Here:
-          # every process it starts carries AGENT_RUN_ID and runs in its own session (setsid), and
-          # after the agent both are killed, which reaches the process groups the nested `timeout`s
-          # in agent-guides-drive.sh create. What it added to the shared home dirs is removed, and
-          # the shell rc files its installer may have edited are restored.
+          # Agent processes carry AGENT_RUN_ID and a setsid session, killed after the agent (nested
+          # timeouts in agent-guides-drive.sh); new home entries removed, rc files restored.
           HOME_DIRS=("$HOME" "$HOME/.local" "$HOME/.local/bin" "$HOME/.local/share" "$HOME/.config" "$HOME/.cache")
           RC_FILES=(.bashrc .profile .bash_profile .zshrc)
           snapshot_home() {
@@ -311,8 +298,7 @@ jobs:
             done | sort | comm -13 "$1/home.before" - | while IFS= read -r entry; do
               # A new entry under a new dir is removed with its parent.
               [ -e "$entry" ] || [ -L "$entry" ] || continue
-              # Agents leave read-only trees (vibe's plugin cache); make them removable first. A
-              # leftover is a warning, never a reason to skip the agents after this one.
+              # chmod read-only trees (vibe plugin cache); leftovers warn, never skip agents.
               [ -L "$entry" ] || chmod -R u+rwX -- "$entry" 2>/dev/null
               rm -rf -- "$entry" 2>/dev/null || echo "::warning::could not remove $entry after the agent"
             done
@@ -336,7 +322,6 @@ jobs:
               # not end the step, so every call here tolerates "no such process".
               sids="$(ps -o sid= -p $(echo $pids | tr ' ' ',') 2>/dev/null | tr -d ' ' | sort -u || true)"
               for s in $sids; do
-                # Never this step's own session.
                 [ "$s" = "$(ps -o sid= -p $$ | tr -d ' ')" ] || pkill "-$sig" -s "$s" 2>/dev/null || true
               done
               kill "-$sig" $pids 2>/dev/null || true
@@ -431,8 +416,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # hermes/openclaw tool loops cannot finish on CPU in time; connection already hard-gates their
-    # wiring, so these cells are best-effort.
+    # hermes/openclaw cannot finish on CPU in time; connection hard-gates wiring; best-effort.
     continue-on-error: ${{ matrix.best_effort || false }}
     strategy:
       fail-fast: false
@@ -457,8 +441,7 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
-        # since short ones kill a slow but working mirror.
+        # Two long attempts: short ones kill a slow but working mirror; the bound stops hangs.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -604,8 +587,7 @@ jobs:
           retention-days: 7
 
   # ═════════════════════════════════════════════════════════════════════
-  # Job: resume. Drives the real launch path: plain launch puts codex/pi homes in a temp dir wiped on
-  # exit, --persist keeps them; opencode/claude persist either way. Dispatch-only.
+  # Real launch: codex/pi homes wiped on exit unless --persist; opencode/claude always persist.
   # ═════════════════════════════════════════════════════════════════════
   resume:
     name: resume (${{ matrix.agent }})
@@ -627,8 +609,7 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
-        # since short ones kill a slow but working mirror.
+        # Bounded retries: apt hangs cancel the job silently; long attempts spare slow mirrors.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -766,8 +747,7 @@ jobs:
           retention-days: 7
 
   # ═════════════════════════════════════════════════════════════════════
-  # Job 3: prompt-cache. (a) turn-2 cached_tokens > 0; (b) Claude Code with
-  # CLAUDE_CODE_ATTRIBUTION_HEADER=0 hits the KV cache on turn 2, without it misses.
+  # Turn-2 cached_tokens > 0; Claude hits the cache only with CLAUDE_CODE_ATTRIBUTION_HEADER=0.
   # ═════════════════════════════════════════════════════════════════════
   prompt-cache:
     name: prompt-cache (gemma-3-270m)
@@ -785,8 +765,7 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
-        # since short ones kill a slow but working mirror.
+        # Bounded retries: apt hangs cancel the job silently; long attempts spare slow mirrors.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'

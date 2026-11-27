@@ -2657,6 +2657,10 @@ export const pl = {
         confirmDescriptionChatOnly:
           "Zatrzymuje serwer i ponownie uruchamia instalator. To instalacja Tylko czat, więc instalator uaktualni ją również do pełnej instalacji z PyTorch, łącznie kilka gigabajtów. Czaty i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmAction: "Napraw teraz",
+        recommendedTorch:
+          "Zalecana naprawa: ta instalacja ma PyTorch {torch}, starszy niż zarządzany {managedTorch}, na którym obsługiwane są karty GPU z serii RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} jest starszy niż zarządzany {managedTorch}, na którym obsługiwane są karty GPU z serii RTX 50, ale ten sterownik GPU nie obsługuje CUDA 13. Najpierw zaktualizuj sterownik GPU, a potem napraw instalację.",
       },
       resetPreferences: {
         sectionTitle: "Strefa zagrożenia",
@@ -4811,6 +4815,8 @@ export const pl = {
       unsupportedFileType: "Nieobsługiwany typ pliku",
       uploadOneFileType: "Prześlij jeden plik typu {types}.",
       datasetUploaded: "Przesłano zbiór danych",
+      importPandasJson: "Importuj .json jako kolumny pandas",
+      importSemicolonCsv: "Użyj średnika jako separatora dla .csv",
       evalDatasetUploaded: "Przesłano zbiór danych ewaluacyjnych",
       uploadOneFileAtATime: "Przesyłaj jeden plik naraz",
       uploadSingleFileDescription:
@@ -4886,6 +4892,12 @@ export const pl = {
       epochs: "Epoki",
       useMaxSteps: "Użyj maks. liczby kroków",
       useEpochs: "Użyj epok",
+      stepGuidancePass: "Około {steps} kroków to jedno przejście przez Twoje {rows} wierszy przy efektywnym batchu {batch}.",
+      stepGuidanceFloor: "Jedno przejście przez Twoje {rows} wierszy to tylko {passSteps} kroków przy efektywnym batchu {batch}, więc około {steps} kroków (kilka przejść) to rozsądne minimum.",
+      stepGuidanceCap: "Jedno przejście przez Twoje {rows} wierszy to {passSteps} kroków przy efektywnym batchu {batch}; {steps} kroków trenuje na części danych, co często wystarcza na pierwszy przebieg.",
+      stepGuidanceEpoch: "Jedna epoka to około {passSteps} kroków przez Twoje {rows} wierszy przy efektywnym batchu {batch}.",
+      stepGuidancePacking: "Packing łączy krótkie wiersze, więc przejście może wymagać mniej kroków.",
+      useSuggestedSteps: "Użyj {steps}",
       maxStepsTooltip: "Zastąp łączną liczbę kroków optymalizatora.",
       epochsTooltip: "Liczba pełnych przejść przez zbiór danych.",
       contextLength: "Kontekst",
@@ -5459,6 +5471,7 @@ export const pl = {
       showPromptDescription: "Zobacz dokładne instrukcje wysyłane do modelu.",
     },
     history: {
+      notSaved: "Nie zapisano w historii: pamięć przeglądarki jest pełna.",
       title: "Historia",
       search: "Szukaj w historii",
       empty: "Tutaj pojawią się Twoje tłumaczenia.",

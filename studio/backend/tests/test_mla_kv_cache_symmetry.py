@@ -80,8 +80,7 @@ class TestTheRetryKeepsKAndVEqualOnMla:
         assert _types_of(out) == ("f16", "f16")
 
     def test_a_quantized_k_alone_still_comes_down(self):
-        """A quantized K with no V flag is not symmetric: V falls back to f16 and MLA rejects it, so
-        lower K."""
+        """Quantized K alone is asymmetric: V falls back to f16, which MLA rejects, so lower K."""
         cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"]
         out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
         assert out[out.index("--cache-type-k") + 1] == "f16"
@@ -144,8 +143,7 @@ class TestTheEnvDropKeepsMlaKAndVEqual:
 
 
 class TestNonMlaBehaviourIsUnchanged:
-    """The size argument still holds everywhere else: resetting K needlessly
-    enlarges it and can OOM a memory-constrained config."""
+    """Non-MLA K stays quantized; resetting K needlessly can OOM a memory-constrained config."""
 
     def test_k_stays_quantized(self):
         out = LlamaCppBackend._with_flash_attn_off(list(QUANT_KV), mla = False)
@@ -159,8 +157,7 @@ class TestNonMlaBehaviourIsUnchanged:
 
 class TestTheSignalStudioAlreadyHas:
     def test_every_call_site_passes_both_per_model_signals(self):
-        """Target and drafter are separate models, so each reset site gates each side on its own
-        metadata."""
+        """Target and drafter are separate models, so each reset gates on its own metadata."""
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert src.count("mla = self._target_kv_symmetry()") >= 2
         assert src.count("draft_mla = self._draft_kv_symmetry(") == src.count(

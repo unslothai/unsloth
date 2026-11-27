@@ -438,8 +438,7 @@ UNWIRED: dict[str, str] = {
     ),
 }
 
-# One kernel holds every leg so the shared account keeps a free session slot.
-# gptoss sits third on purpose so the prefetch lane can finish its download first.
+# One kernel keeps the shared account's session slot free; gptoss third lets prefetch finish.
 KERNELS: tuple[tuple[str, ...], ...] = (
     ("canary", "control", "gptoss", "vision_fla_compile", "default"),
 )

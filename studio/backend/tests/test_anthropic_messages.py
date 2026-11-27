@@ -263,6 +263,17 @@ def test_think_parsing_expected_gates_on_capability_and_request():
         _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none")) is False
     )
 
+    # Inkling's thought still arrives at effort none.
+    from routes.inference import _responses_should_parse_think_markers
+
+    inkling = _EffortBackend()
+    inkling.is_loaded = True
+    inkling._chat_template = "<|message_model|><|content_thinking|>{{ r }}<|end_message|>"
+    off = _basic_payload(reasoning_effort = "none")
+    assert _think_parsing_expected(inkling, off) is True
+    # Responses re-reads text the chat route already split, so it keeps the effort rule.
+    assert _responses_should_parse_think_markers(off, inkling) is False
+
     # _coerce_reasoning_effort rewrites 'none' to 0, so 0 reads as off.
     class _NumericEffortBackend(_Backend):
         def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
@@ -1310,6 +1321,51 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == "Line 1\nLine 2"
+
+    def test_claude_tool_search_result_exposes_the_registered_client_tool(self):
+        tool_name = "mcp__scratch__lookup_mineral_code"
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        }
+        payload = AnthropicMessagesRequest(
+            model = "local",
+            tools = [
+                {"name": "ToolSearch", "input_schema": {"type": "object"}},
+                {"name": tool_name, "input_schema": schema, "defer_loading": True},
+            ],
+            messages = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_search",
+                            "name": "ToolSearch",
+                            "input": {},
+                        },
+                    ],
+                },
+                _tool_result_turn(
+                    tool_use_id = "toolu_search",
+                    content = [
+                        {"type": "tool_reference", "tool_name": tool_name},
+                        {"type": "tool_reference", "tool_name": "unknown"},
+                        {"type": "text", "text": "Ready."},
+                    ],
+                ),
+            ],
+        )
+        from routes.inference import _anthropic_chat_fields
+
+        fields = _anthropic_chat_fields(payload, reads_images = False)
+        result = fields["messages"][-1]
+        assert result["tool_call_id"] == "toolu_search"
+        assert result["content"] == (
+            f"Tool loaded: {tool_name}. Its schema is available in the tools list.\nReady."
+        )
+        assert fields["tools"][-1]["function"]["parameters"] == schema
 
     @pytest.mark.parametrize(
         "content, expected",
@@ -7030,9 +7086,14 @@ class TestInProcessCountTokens:
     @pytest.mark.parametrize(
         "fields, is_mlx, status, detail",
         [
-            ({"enable_tools": True}, False, 503, "No GGUF model loaded"),
+            (
+                {"enable_tools": True},
+                False,
+                503,
+                "Token counting is not available on the transformers backend.",
+            ),
         ],
-        ids = ["not_mlx"],
+        ids = ["transformers_resident"],
     )
     def test_what_it_cannot_price_is_refused(self, monkeypatch, fields, is_mlx, status, detail):
         import routes.inference as inf
@@ -7041,7 +7102,8 @@ class TestInProcessCountTokens:
         with pytest.raises(HTTPException) as exc:
             self._count(monkeypatch, inf.anthropic_count_tokens, payload, is_mlx = is_mlx)
         assert exc.value.status_code == status
-        assert detail in json.dumps(exc.value.detail)
+        assert exc.value.detail == detail
+        assert not exc.value.headers, "no not_loaded problem code for a loaded model"
 
 
 _IP_CHUNKS = [{"delta": {"content": "hi"}}, {"delta": {}, "finish_reason": "stop"}]

@@ -232,8 +232,7 @@ def _bits(t):
 def _inputs(dtype):
     g = torch.Generator().manual_seed(1)
     x = (torch.randn(2, 16, 64, generator = g) * 0.5).to(dtype)
-    # Tiny upstream gradients, as a loss-scaled float16 backward sees in Gemma-4's upper layers: the one-GPU
-    # float16 product flushes part of the low-rank gradient to zero, a float32 product keeps it.
+    # Gemma-4 upper-layer grads: float16 flushes some low-rank grad to zero; float32 keeps it.
     grad = (torch.randn(2, 16, 48, generator = g) * 3e-6).to(dtype)
     return x, grad
 
@@ -290,15 +289,13 @@ def test_tp_lora_dropout_matches_one_gpu_forward(flag, dtype, peft):
 @pytest.mark.parametrize("dropout", [0.0, 0.25])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_tp_lora_several_active_adapters_match_one_gpu_forward(dtype, dropout, scaling):
-    """Several active adapters (this layer holds one, another adapter targets other modules): zoo's guard then
-    casts result and x to the float32 LoRA dtype, as for every dense adapter in older zoo."""
+    """With several active adapters, zoo's guard casts result and x to the float32 LoRA dtype."""
     _check("0", dtype, "dense", scaling, dropout, active = ("default", "other"))
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_tp_lora_two_adapters_on_one_layer_match_one_gpu_forward(dtype):
-    """Two adapters on one layer: the generated forward keeps result in the LoRA dtype across the loop and
-    restores the base output's dtype once at the end; the tp loop must not round between adapters."""
+    """Adapters accumulate in LoRA dtype, cast to base once; tp must not round between them."""
     _check("0", dtype, "dense", adapters = ("default", "second"))
 
 
@@ -314,8 +311,7 @@ def test_dense_mode_follows_zoo_input_cast():
 
 
 def test_single_vanilla_adapter_keeps_the_base_dtype_under_guarded_zoo():
-    """The case zoo's guard exists for: one vanilla adapter, bfloat16 base, float32 LoRA. The one-GPU product runs
-    in bfloat16, so a float32 tp product (result and x cast) is not the one-GPU arithmetic."""
+    """Guard case: bf16 base, fp32 LoRA; one-GPU runs bf16 arithmetic, so fp32 tp would differ."""
     if not _guarded_zoo():
         pytest.skip("this unsloth_zoo casts every dense adapter")
     proj = _with_forward("0", "dense")(torch.bfloat16)
@@ -389,8 +385,7 @@ def test_update_keeps_the_base_output_dtype():
 
 
 def test_forced_float32_one_gpu_flushes_what_float32_keeps():
-    """The case that moved Gemma-4 tp=2 off one GPU: under forced float32 the one-GPU lora_A gradient loses
-    entries a float32 product keeps, so a float32 tp product trains on different gradients."""
+    """Forced float32 one-GPU lora_A grad loses entries a float32 product keeps; tp must match."""
     proj = _with_forward("1")(torch.float16)
     x, grad = _inputs(torch.float16)
     _, a16, _ = _run(lambda p, xx: p.forward(xx), proj, x, grad)
@@ -419,9 +414,8 @@ def _dispatched(
 @pytest.mark.parametrize("stamp", ["0", "1", None])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_dispatcher_resolves_the_stamped_variant(dtype, stamp, order):
-    """Forced and non-forced families in one process: the class forward is zoo's dispatcher, whose own source has
-    no cast line. tp must read the variant the dispatcher picks (the layer's stamp, else the last build) and match
-    that variant's arithmetic bit for bit."""
+    """Zoo's dispatcher has no cast line of its own, so tp must read the variant it picks (layer
+    stamp, else last build) and match that variant's arithmetic bit for bit."""
     picked = order[1] if stamp is None else stamp
     if picked == "1" and dtype is torch.bfloat16:
         pytest.skip("forced float32 keeps float16 base weights")
@@ -436,8 +430,7 @@ def test_dispatcher_resolves_the_stamped_variant(dtype, stamp, order):
 
 
 def test_dispatcher_reads_the_base_layer_stamp():
-    """A layer wrapped after the dispatcher was installed carries no stamp; the dispatcher then reads its base
-    layer's, and so must tp."""
+    """Unstamped wrapper: the dispatcher reads its base layer's stamp, and tp must read it too."""
     proj = _dispatched("0", "1")(torch.float16)
     proj.base_layer.__dict__["_unsloth_force_float32"] = "0"
     assert tpn._one_gpu_lora_mode(proj) == ("lora_guarded" if _guarded_zoo() else "lora")

@@ -227,9 +227,8 @@ class SceneRunner:
         now_ms = (time.monotonic() - t0) * 1000
         if until_ms - now_ms < 250:
             return
-        # Kind is `gap`, not `stream`: most gap windows contain no streaming. The name stays
-        # `stream:gapN` because it is the join key in existing payloads. The census runs before the
-        # window opens so its cost does not land on the idle-phase reading.
+        # Kind is `gap` (most gaps hold no streaming); name stays `stream:gapN` as the join key in
+        # existing payloads; census runs before opening so its cost stays off the idle reading.
         census = self._census()
         with self.open_window(name, "gap") as window:
             window.note("census_before_gap", census)
@@ -289,13 +288,11 @@ class SceneRunner:
             window.note("action", slot.action)
             window.note("ran", result.ran)
 
-        # Census and parity digest run outside the window: their cost grows with the DOM and was being
-        # charged to the preceding action. The deadline is sampled before them for the same reason.
+        # Census/parity run outside the window (cost hits the action); deadline sampled first.
         window_closed_at = time.monotonic()
         over_ms = ((window_closed_at - t0) * 1000) - deadline_ms
 
-        # The visible capture goes first: it closes an accumulating observation, so taking it after
-        # arm-dependent probes kept the two arms' observers open for different intervals.
+        # Visible capture first: it closes an accumulating observation, else arm spans differ.
         visible = self._visible()
         census = self._census()
         parity = self._parity()

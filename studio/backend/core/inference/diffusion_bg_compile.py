@@ -175,6 +175,33 @@ def warm_engage_imports(logger: Any = None) -> int:
     return done
 
 
+def warm_fx_interpreter_shim(logger: Any = None, *, import_missing: bool = True) -> bool:
+    """Fill inductor's cached ``InterpreterShim._dummy_gm()`` on the calling thread, before a compile thread exists.
+
+    Its first call runs ``torch.fx.symbolic_trace``, which patches ``nn.Module.__call__`` process-wide while it
+    traces, so a module called on another thread at that moment goes through the tracer and fails. Paying it
+    here (about 1 ms) leaves only the cached result for the compile thread. ``import_missing=False`` skips the
+    work when inductor's loop_body is not imported yet (its import costs about 1 s). Torch without the
+    attribute: no-op.
+    """
+    if not import_missing and "torch._inductor.loop_body" not in sys.modules:
+        return False
+    try:
+        from torch._inductor import loop_body
+    except Exception:  # noqa: BLE001 - another torch layout
+        return False
+    fn = getattr(getattr(loop_body, "InterpreterShim", None), "_dummy_gm", None)
+    if not callable(fn):
+        return False
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001 - the compile thread builds it on first use as before
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: fx shim warm-up skipped: %s", exc)
+        return False
+    return True
+
+
 def start_deferred_prewarm(logger: Any = None) -> bool:
     """Run the warm-ups on a side thread so none of it lands inside a render; ``PREWARM_ENV=0`` warms the pool inline."""
     global _PREWARM_THREAD
@@ -187,6 +214,11 @@ def start_deferred_prewarm(logger: Any = None) -> bool:
         def run() -> None:
             t0 = time.perf_counter()
             warm_compile_pool(logger)
+            try:
+                # Import only (off the caller's thread): kick() then fills the fx shim cache without the import.
+                import torch._inductor.loop_body  # noqa: F401
+            except Exception:  # noqa: BLE001 - another torch layout
+                pass
             warm_triton_key(logger)
             warm_inductor_key(logger)
             n = warm_engage_imports(logger)
@@ -197,6 +229,7 @@ def start_deferred_prewarm(logger: Any = None) -> bool:
                     n,
                 )
 
+        warm_fx_interpreter_shim(logger, import_missing = False)
         _PREWARM_THREAD = threading.Thread(target = run, name = "unsloth-deferred-prewarm", daemon = True)
         _PREWARM_THREAD.start()
     return True
@@ -213,8 +246,7 @@ def wait_prewarm(timeout: Optional[float] = 60.0) -> bool:
 
 
 def slice_seconds(eager_render_s: Optional[float]) -> float:
-    """Compile seconds a render lets run before it pauses the compile: ``SLICE_ENV`` when set, else the load's
-    fastest eager render (0 when none was timed), clamped to [0, 30]."""
+    """Compile seconds: SLICE_ENV, else fastest eager render (0 if untimed), clamped [0, 30]."""
     raw = (os.environ.get(SLICE_ENV) or "").strip()
     value: Optional[float] = None
     if raw:
@@ -978,8 +1010,7 @@ def capture_suppressed() -> bool:
 
 @contextlib.contextmanager
 def no_capture():
-    """No CUDA graph record or replay: a two-card split call (diffusion_sequence_parallel) issues
-    CUDA work on two threads, so a recording would wait out the other's hold (OUTSIDE_WAIT_S)."""
+    """No CUDA graph in two-card splits: a recording waits out the other thread's hold."""
     token = _NO_CAPTURE.set(True)
     try:
         yield
@@ -1002,8 +1033,7 @@ def auxiliary() -> bool:
 
 @contextlib.contextmanager
 def auxiliary_pass():
-    """Detailer crop inpaints: eager, uncaptured, unrecorded, uncounted. Each box is its own size, so compiling
-    them recompiled per detection and used up the per-module graph cap the main render needs."""
+    """Detailer crops: eager, uncaptured; per-box sizes recompile and exhaust the graph cap."""
     tokens = (_AUXILIARY.set(True), _NO_RECORD.set(True), _FORCE_EAGER.set(True))
     try:
         yield
@@ -1660,6 +1690,8 @@ class BackgroundCompile:
                 self._lock_proxy = (
                     self.yields() and freeze_enabled() and _install_compile_lock_proxy()
                 )
+            # Before the thread starts: its first fx trace would patch nn.Module under a concurrent render.
+            warm_fx_interpreter_shim(self.logger)
             self._thread = threading.Thread(
                 target = self._run, name = "unsloth-diffusion-bg-compile", daemon = True
             )

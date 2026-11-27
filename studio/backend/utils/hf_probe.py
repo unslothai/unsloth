@@ -20,8 +20,7 @@ def hf_file_definitely_absent(
     revision: Optional[str] = None,
     token: Optional[str] = None,
 ) -> bool:
-    """True only when the Hub confirms absence; any other failure returns False so existing handling
-    runs."""
+    """True only if the Hub confirms absence; other failures fall through to existing handling."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
@@ -56,8 +55,7 @@ def is_repo_not_found(exc: BaseException) -> bool:
 
 
 def hub_repo_not_found(repo_id: str, token: Optional[str] = None) -> bool:
-    """True only when the active source answers that it has no such repo for this caller; any
-    other failure is no answer."""
+    """True only if the source says no such repo for this caller; other failures are no answer."""
     try:
         from huggingface_hub import HfApi
 

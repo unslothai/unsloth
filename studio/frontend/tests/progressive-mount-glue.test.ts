@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The mount window glue lives in .tsx, which node type stripping cannot import, so assert on
-// source. The window maths it calls is tested directly in thread-window.test.ts.
+// Node stripping cannot import .tsx glue: asserts on source; maths in thread-window.test.ts.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -40,8 +39,7 @@ const GLUE_WINDOW = () =>
   );
 
 test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Messages", () => {
-  // Upstream renders MessageByIndexProvider, RenderChildrenWithAccessor, then children, while this
-  // row map skips the accessor; switching between them would remount every message.
+  // This row map skips upstream's accessor; switching between them would remount all messages.
   assert.match(
     GLUE,
     /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,
@@ -160,8 +158,7 @@ test("a spacer is keyed by where it sits among the rows", () => {
   assert.match(GLUE, /height: gapHeight\(slot\.from, slot\.to\),\s*counterIncrement: counterIncrement\(slot\.from, slot\.to\),/);
   // The leading spacer holds no slack where it stands for no rows: at the first row, or at a pin.
   assert.match(GLUE, /const atFirstRow = win == null \|\| win\.start <= spacerRows\(win, count\)\.topFrom;/);
-  // A spacer node this commit created is sized before any row's layout effect can read layout,
-  // or the browser clamps scrollTop to a thread that is a few rows long for that moment.
+  // Size new spacers before any row's layout effect reads layout, or scrollTop gets clamped.
   const early = section(GLUE, "useInsertionEffect(() => {", "}, [atFirstRow, spacers, viewportRef]);");
   assert.match(early, /const leading = atFirstRow \? 0 : Math\.max\(0, spacers\.top \+ slackRef\.current\);/);
   assert.match(early, /spacer\("top"\)\?\.style\.setProperty\("height", `\$\{leading\}px`\);/);
@@ -200,8 +197,7 @@ test("a full mount is paced like the old background mount, and waits for a quiet
   );
   // The frontier is the window's first row, not a pinned row far above it.
   assert.match(step, /const frontier = inWindow\.length > 0 \? -inWindow\[0\]\.top : null;/);
-  // Rows alone do not bound a pass: 32 very long replies in one commit held input for seconds
-  // after select all. The pass is given the heights so it can stop at its budget.
+  // Rows alone do not bound a pass: 32 long replies held input; heights let it stop at budget.
   assert.match(step, /const heightOf = \(index: number\) => heights\.heightOf\(lookup\.metas\[index\]\);/);
   assert.match(step, /next = planFill\(current, total, chunk, heightOf\);/);
   // A commit interrupts native wheel momentum; scrolling by row does not wait, a full mount does.
@@ -278,7 +274,6 @@ test("the leading spacer takes a height surprise before scrollTop does", () => {
   // React must not own the heights: a re-render would put the pre-correction value back.
   assert.match(effect, /top\.style\.height = `\$\{spacer\}px`;/);
   assert.match(effect, /bottom\.style\.height = `\$\{spacers\.bottom\}px`;/);
-  // React owns only flexShrink and the equation counters on these two, never their heights.
   assert.match(GLUE, /data-thread-spacer="top" aria-hidden="true" style=\{\{ flexShrink: 0, counterIncrement: counterIncrement\(slot\.from, slot\.to\) \}\}/);
   assert.match(GLUE, /data-thread-spacer="bottom" aria-hidden="true" style=\{\{ flexShrink: 0, counterIncrement: counterIncrement\(slot\.from, slot\.to\) \}\}/);
   // What the spacer took on is folded into scrollTop only once input has gone quiet.
@@ -297,8 +292,7 @@ test("the hook pins a follower during the prepend commit", () => {
 });
 
 test("the hook's correction is instant, because the viewport is scroll-smooth", () => {
-  // With scroll-smooth on the viewport, an animated write would still be in flight at the next
-  // commit's write.
+  // With scroll-smooth, an animated write would still be in flight at the next commit's write.
   assert.match(THREAD, /scroll-smooth/);
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
   assert.match(body, /behavior: "instant"/);
@@ -357,8 +351,7 @@ test("a hidden thread is left as it is", () => {
 });
 
 test("a full mount that ends without a signal is looked at again", () => {
-  // A selection cleared, a pointer lifted and the release time passing fire nothing the window
-  // listens to, so without this a thread mounted whole for one copy stays whole.
+  // Selection clear and pointer release fire nothing the window listens to; a timer rechecks.
   const step = section(GLUE, "const step = useCallback(", "stepRef.current = step;");
   assert.match(
     step,
@@ -373,8 +366,7 @@ test("a copy that runs across a spacer mounts the rows it stands in for first", 
   assert.match(copy, /spacer\.offsetHeight > 0 && selection\.containsNode\(spacer, true\)/);
   // Synchronous: the browser reads the selection when this handler returns.
   assert.match(copy, /commit\(null, true\);/);
-  // WebKit serialises the selection it resolved before the mount (measured: 19,434 characters
-  // of a 1,985,002 character thread), so the selection is set again, ends back on the spacers.
+  // WebKit serialises the pre-mount selection, so it is set again to end on the spacers.
   assert.match(copy, /range\.compareBoundaryPoints\(Range\.START_TO_START, edge\) > 0/);
   // Rows, read after the mount: a spacer keyed by a pin is replaced by it.
   assert.match(copy, /const \{ topFrom, bottomTo \} = spacerRows\(winRef\.current, lookup\.metas\.length\);\s*modeRef/);
@@ -417,8 +409,7 @@ test("a settled window withholds rows without counting as a pending mount", () =
 test("a hidden thread holds no reader up", () => {
   // A hidden thread must not count as a pending reader, or its turn rail blocks every Compare pane.
   assert.match(GLUE, /const hidden = useCallback\(\(\) => viewportRef\.current\?\.clientHeight === 0, \[viewportRef\]\);/);
-  // And a reader that asks a hidden thread for every row is answered at once: the waiter would
-  // never be resolved, and the request must not turn into a full mount when the thread is shown.
+  // Answered at once, as its waiter would never resolve; no full mount may follow when shown.
   const complete = section(GLUE, "const complete = useCallback(", "[hidden, schedule],");
   const answered = complete.indexOf("if (hidden()) {");
   assert.notEqual(answered, -1);
@@ -438,7 +429,6 @@ test("a full mount nobody is waiting for is dropped", () => {
 test("a jump asks for its row instead of for the whole thread", () => {
   assert.match(GLUE, /export function revealProgressiveRow\(viewport: HTMLElement, messageId: string\): boolean/);
   const reveal = section(GLUE, "const reveal = useCallback(", "[aui, readMetas, viewportRef],");
-  // Mounted already: in the window, or pinned outside it.
   assert.match(reveal, /\(index >= current\.start && index < current\.end\) \|\|\s*current\.pins\?\.includes\(index\)\s*\) \{\s*return true;/);
   // Synchronous, so the caller finds the row in the DOM when this returns.
   assert.match(reveal, /flushSync\(\(\) => \{\s*setWin\(next\);\s*\}\);/);
@@ -452,9 +442,7 @@ test("a jump asks for its row instead of for the whole thread", () => {
 });
 
 test("the viewport comes from a ref, not a document-wide query", () => {
-  // The Compare panes each mount their own Thread, so a document-wide query finds whichever
-  // viewport comes first rather than the one these rows are in.
-  // Open dialogs are the one document-wide read: they are portaled out of every thread.
+  // Each Compare pane mounts a Thread, so only OPEN_DIALOG may be queried document-wide.
   assert.doesNotMatch(GLUE, /document\.querySelector\((?!OPEN_DIALOG\))/);
   assert.match(GLUE, /viewportRef\.current/);
 });

@@ -37,8 +37,7 @@ def test_the_message_carries_the_exception():
 
 
 def test_it_still_swallows():
-    """Raising would break every TRL version that renames a trainer, which is
-    the reason the swallow exists. The fix is visibility, not propagation."""
+    """Raising would break TRL versions that rename a trainer, so swallow and make it visible."""
     body = _handler()
     assert "except Exception" in body
     assert "raise" not in body

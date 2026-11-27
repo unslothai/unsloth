@@ -267,6 +267,7 @@ def _utils_save_lora_adapter():
     wanted = {
         "_unsloth_model_parallel_marker",
         "_is_unsloth_tensor_parallel",
+        "_is_unsloth_pipeline_parallel",
         "_is_unsloth_expert_parallel",
         "save_lora_adapter",
     }
@@ -453,7 +454,26 @@ def _case_optimizer_round_trip(rank, world, tmp):
         "scheduler": fresh.lr_scheduler.state_dict() == trainer.lr_scheduler.state_dict()
         and trainer.lr_scheduler.last_epoch == 1,
         "files": sorted(os.listdir(directory)),
+        # The 1-GPU optimizer.pt (keyed by parameter name, every expert), not rank 0's own state.
+        "portable_names": sorted(
+            n
+            for g in torch.load(os.path.join(directory, "optimizer.pt"), weights_only = True)[
+                "param_groups"
+            ]
+            for n in g["params"]
+        ),
+        # Every rank's trainable names: per-expert modules (transformers 4.x) are held by one rank each.
+        "trainable_names": sorted({n for names in _all_names(model) for n in names}),
     }
+
+
+def _all_names(model):
+    import torch.distributed as dist
+
+    mine = sorted(n for n, p in model.named_parameters() if p.requires_grad)
+    every = [None] * dist.get_world_size()
+    dist.all_gather_object(every, mine)
+    return every
 
 
 def _worker(rank, world, tmp, case):
@@ -633,4 +653,5 @@ def test_optimizer_checkpoint_round_trip_from_the_rank_state():
     assert all(r is not None and r["error"] is None for r in results), results
     for r in results:
         assert r["optim"] and r["scheduler"], r
-        assert "optimizer.pt" not in r["files"], r  # rank 0's state lives in its rank file
+        # rank 0's state lives in its rank file; optimizer.pt is the 1-GPU form (portable_resume.py)
+        assert r["portable_names"] == r["trainable_names"], r

@@ -228,8 +228,7 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         texts, final_format = [request["text"]], str(request.get("final_format") or "").lower()
         first_text = texts[0]
     else:
-        # Format a deep copy: templates mutate the tokenizer; the whole pool decides raw-text and
-        # BOS rules.
+        # Copy the tokenizer: templates mutate it; the pool decides raw-text and BOS rules.
         texts, final_format = _format_rows(
             copy.deepcopy(tokenizer), {**config, **request}, request["rows"]
         )
@@ -287,8 +286,7 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
 
 
 def _skip_fingerprint_hashing() -> None:
-    """datasets dill-hashes each map function (and the tokenizer it closes over) to name cache files the
-    in-memory preview never writes; a random id serves the same. Idempotent."""
+    """Random fingerprints replace dill-hashing; the preview writes no cache files. Idempotent."""
     import datasets.arrow_dataset as arrow_dataset
     import datasets.fingerprint as fingerprint
 

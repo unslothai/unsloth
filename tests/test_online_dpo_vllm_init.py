@@ -83,6 +83,14 @@ def _patched_class(tmp_path):
     return namespace["_UnslothOnlineDPOTrainer"]
 
 
+def _without_rank(monkeypatch):
+    """Start without RANK and leave without it. The colocate branch writes RANK=0 for vLLM, and
+    delenv(raising = False) on a missing key records nothing to undo, so that write used to outlive the
+    test and reach every later test in the worker."""
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.delenv("RANK")
+
+
 def _args():
     return types.SimpleNamespace(
         use_vllm = True,
@@ -96,7 +104,7 @@ def _args():
 
 
 def test_trl_owned_vllm_engine_is_built(tmp_path, monkeypatch):
-    monkeypatch.delenv("RANK", raising = False)
+    _without_rank(monkeypatch)
     model = types.SimpleNamespace(name_or_path = "tiny-model")
     trainer = _patched_class(tmp_path)(model, _args())
     assert isinstance(trainer.llm, _LLM)
@@ -107,7 +115,7 @@ def test_trl_owned_vllm_engine_is_built(tmp_path, monkeypatch):
 
 
 def test_fast_inference_reuses_the_shared_engine(tmp_path, monkeypatch):
-    monkeypatch.delenv("RANK", raising = False)
+    _without_rank(monkeypatch)
     engine = types.SimpleNamespace(shared_weights = True)
     model = types.SimpleNamespace(name_or_path = "tiny-model", vllm_engine = engine)
     trainer = _patched_class(tmp_path)(model, _args())
@@ -117,7 +125,7 @@ def test_fast_inference_reuses_the_shared_engine(tmp_path, monkeypatch):
 
 
 def test_fast_inference_never_routes_to_a_vllm_server(tmp_path, monkeypatch):
-    monkeypatch.delenv("RANK", raising = False)
+    _without_rank(monkeypatch)
     engine = types.SimpleNamespace(shared_weights = True)
     model = types.SimpleNamespace(name_or_path = "tiny-model", vllm_engine = engine)
     args = _args()
@@ -128,7 +136,7 @@ def test_fast_inference_never_routes_to_a_vllm_server(tmp_path, monkeypatch):
 
 
 def test_vllm_sampling_params_override_trl_defaults(tmp_path, monkeypatch):
-    monkeypatch.delenv("RANK", raising = False)
+    _without_rank(monkeypatch)
     model = types.SimpleNamespace(name_or_path = "tiny-model")
     args = _args()
     args.vllm_sampling_params = types.SimpleNamespace(_set_kwargs = {"temperature": 0.5})

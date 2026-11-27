@@ -11,7 +11,8 @@
 - Trainer / SFTTrainer: every training step runs through the pipeline schedule (PipelineParallel.step runs the
   backward, the Trainer does not). The Trainer batch is split into UNSLOTH_PP_MICROBATCHES micro-batches
   (default 2 x pp, lowered to a divisor of the batch) under UNSLOTH_PP_SCHEDULE (default 1f1b; a
-  step with fewer micro-batches than stages runs as gpipe); every micro-batch loss is its summed token loss over the
+  step with fewer micro-batches than stages, or a MoE step with the router aux loss on, runs as gpipe: the aux loss
+  is formed over the whole batch, as one GPU does); every micro-batch loss is its summed token loss over the
   token count of the whole accumulation window over every dp replica, as with gradient accumulation on one
   GPU. With gradient_accumulation_steps > 1 the window's batches wait and run together, as micro-batches
   of the same row count, in as few schedule steps as padding allows (rows grouped by length), so the
@@ -581,9 +582,15 @@ def pp_collective(model, what, call):
             release_replica(stage)
 
 
-def pp_save_adapter(model, args, kwargs):
+def pp_save_adapter(
+    model,
+    args,
+    kwargs,
+    cast_lora = False,
+):
     """PeftModel.save_pretrained on a pipeline parallel model: every stage's adapter weights gathered, the
-    standard 1-GPU adapter written by rank 0 (collective)."""
+    standard 1-GPU adapter written by rank 0 (collective). `cast_lora`: the LoRA tensors are written in the
+    input embedding dtype, as `model.save_lora` does on one GPU."""
     import inspect
 
     from peft import PeftModel
@@ -613,6 +620,8 @@ def pp_save_adapter(model, args, kwargs):
     if values.get("safe_serialization", True) is None:
         values["safe_serialization"] = True
     values.pop("is_main_process", None)
+    if cast_lora:
+        extra["_unsloth_cast_lora"] = True
     stage.save_adapter(directory, **values, **extra)
     return None
 
@@ -937,7 +946,12 @@ def _refuse_split_router_aux_at_init(
             continue  # the step raises its own error
         if pad and layout.microbatches:
             continue  # this schedule cannot run the UNSLOTH_PP_MICROBATCHES asked for; the split says so
-        if m > 1:
+        # A split batch carries the aux loss over the whole batch under GPipe (the default schedule runs it);
+        # evaluation is forward only.
+        whole = schedule == "gpipe" or (
+            getattr(layout, "schedule_auto", False) and schedule == "1f1b"
+        )
+        if m > 1 and train and not whole:
             raise NotImplementedError(_split_router_aux_message(layout.env_vars, m))
 
 
@@ -980,8 +994,10 @@ def _batch(stage, inputs):
 
 
 def _refuse_split_router_aux(stage, n_microbatches):
-    """Pipeline sums router load-balancing loss per micro-batch; one GPU step forms it once over the
-    batch (a product of means), a different objective. Refused when micro-batches > 1."""
+    """One GPU step forms the router load-balancing loss once over the batch (a product of means), not per
+    micro-batch. A split training batch carries it over the whole batch (pp_native._CarriedRouterAux), which
+    needs every forward before the first backward: GPipe, or the default schedule (which then runs GPipe).
+    Refused under an explicit 1F1B / multi-stage schedule."""
     moe = getattr(getattr(stage, "ctx", None), "moe", None)
     if n_microbatches <= 1 or moe is None:
         return
@@ -989,16 +1005,30 @@ def _refuse_split_router_aux(stage, n_microbatches):
 
     if not _router_aux_requested(stage.ctx, moe.config) or not _router_aux_coef(moe):
         return
+    if _whole_batch_aux_schedule(stage, n_microbatches):
+        return
     raise NotImplementedError(_split_router_aux_message(_env_vars(stage), n_microbatches))
+
+
+def _whole_batch_aux_schedule(stage, n_microbatches):
+    """The schedule a split batch with the router aux loss runs runs every forward before any backward."""
+    if getattr(getattr(stage, "spec", None), "multi", False):
+        return False
+    step_schedule = getattr(stage, "step_schedule", None)
+    if callable(step_schedule) and getattr(stage.ctx, "aux_batch_rows", None) is not None:
+        return step_schedule(n_microbatches) == "gpipe"
+    schedule = getattr(stage, "schedule", None)
+    return schedule == "gpipe" or (getattr(stage, "schedule_auto", False) and schedule == "1f1b")
 
 
 def _split_router_aux_message(env_vars, n_microbatches):
     return (
         f"Unsloth: {env_vars} (pipeline parallel) splits each Trainer batch into {n_microbatches} "
-        "micro-batches, and the pipeline adds the router load-balancing loss per micro-batch, which is not the "
-        "loss the Trainer forms over the whole batch on one GPU. Set UNSLOTH_PP_MICROBATCHES=1 with "
-        "UNSLOTH_PP_SCHEDULE=gpipe (where this torch allows one micro-batch), or turn the auxiliary loss off "
-        "(router_aux_loss_coef = 0.0 in SFTConfig, or model.config.output_router_logits = False with a plain "
+        "micro-batches. The router load-balancing loss is formed over the whole batch, as the Trainer does on one "
+        "GPU (not as a sum of per micro-batch losses), which needs every micro-batch forward before the first "
+        "backward: only the GPipe schedule does that, and this run asked for another one. Leave "
+        "UNSLOTH_PP_SCHEDULE unset or set it to gpipe, set UNSLOTH_PP_MICROBATCHES=1, or turn the auxiliary loss "
+        "off (router_aux_loss_coef = 0.0 in SFTConfig, or model.config.output_router_logits = False with a plain "
         "Trainer)."
         f"{_hint()}"
     )
@@ -1213,7 +1243,7 @@ def _rope_types(config, depth = 0):
         for entry in (value, *value.values()):
             kind = entry.get("rope_type", entry.get("type")) if isinstance(entry, dict) else None
             if isinstance(kind, str):
-                found.add(kind)
+                found.add(kind.lower())
     for sub in ("text_config", "language_config", "llm_config"):
         found |= _rope_types(get(sub), depth + 1)
     return found
@@ -1245,6 +1275,12 @@ def _foldable(trainer, stage, input_ids, extra, n):
         return False
     if _length_dependent_rope(stage):
         return False  # regrouped rows change max(position_ids), so the rotary frequencies
+    from ..utils.token_budget import _exactness_blocker
+
+    # The token budget's exactness guards (NEFTune, LOMO / layerwise optimizers, router aux, RoPE); the
+    # loss always divides by the window's num_items_in_batch here (n above), so that check is skipped.
+    if _exactness_blocker(trainer, step_loss = False) is not None:
+        return False
     rows, seq = input_ids.shape
     for value in extra.values():
         if not torch.is_tensor(value) or value.dim() != 2 or value.shape[1] != seq:
@@ -1352,7 +1388,240 @@ def _window_rows(stage, window):
         plan_lengths = [max(int(x), 1) for x in shared.tolist()]
     else:
         plan_lengths = lengths
-    return rows, per_mb, _fold_plan(plan_lengths, per_mb, p, floor, cap)
+    plan = _fold_plan(plan_lengths, per_mb, p, floor, cap)
+    packed = None
+    if _pack_requested() and _packs_documents(stage) and _dp_agree(stage, _plain_rows(rows), 0):
+        # The documents packed back to back into equal-length rows when that is cheaper than the length
+        # groups. Planned from the dp-shared lengths: every replica's i-th longest row is at most the shared
+        # i-th, so its rows fit the same bins.
+        best = _pack_plan(plan_lengths, per_mb, p, floor, cap)
+        if best is not None and best[0] < _fold_cost(plan, plan_lengths, per_mb, p):
+            packed = (best[1], best[2], best[3][: len(rows)], floor)
+    return rows, per_mb, plan, packed
+
+
+def _pack_requested():
+    return os.environ.get("UNSLOTH_PP_PACK", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+# RoPE kinds whose rotation is a function of each token's own position only (so restarting the positions at
+# every document gives each document the angles it has alone).
+_POSITION_ONLY_ROPE = ("default", "linear", "llama3", "yarn")
+_HF_MASK_BUILDERS = ("create_causal_mask", "create_sliding_window_causal_mask")
+
+
+def _rope_dicts(config, depth = 0):
+    if config is None or depth > 3:
+        return []
+    get = config.get if isinstance(config, dict) else lambda key: getattr(config, key, None)
+    found = []
+    for name in ("rope_scaling", "rope_parameters"):
+        value = get(name)
+        if isinstance(value, dict):
+            found.append(value)
+            found.extend(v for v in value.values() if isinstance(v, dict))
+    for sub in ("text_config", "language_config", "llm_config"):
+        found.extend(_rope_dicts(get(sub), depth + 1))
+    return found
+
+
+def _code_names(fn):
+    """Global names the function (through its decorators' __wrapped__ chain) reads."""
+    names = set()
+    for _ in range(8):
+        fn = getattr(fn, "__func__", fn)
+        if fn is None:
+            break
+        names |= set(getattr(getattr(fn, "__code__", None), "co_names", ()))
+        fn = getattr(fn, "__wrapped__", None)
+    return names
+
+
+def _attention_keeps_documents(stage):
+    """Rows of several documents (position_ids restarting at 0 per document, no attention_mask) attend only
+    within each document on this stage: Unsloth's fast decoder (varlen attention from the reset positions)
+    or a transformers decoder whose mask builder makes the packed block-causal mask. Anything else (carried
+    state between layers, a model stage forward, stateful mixers, multimodal / M-RoPE positions, other RoPE
+    kinds, older mask code) keeps the rows apart."""
+    from .pp_native import _MEDIA_CONFIG_KEYS
+
+    ctx, parts = getattr(stage, "ctx", None), getattr(stage, "parts", None)
+    if ctx is None or parts is None:
+        return False
+    if ctx.stage_forward is not None or ctx.carry is not None or ctx.ple is not None:
+        return False
+    if getattr(parts, "ple", None) is not None or getattr(parts, "adapter", None) is not None:
+        return False
+    if getattr(parts, "towers", None):
+        return False
+    inner, decoder = parts.inner, parts.decoder
+    config = getattr(inner, "config", None)
+    if config is None or any(getattr(config, k, None) is not None for k in _MEDIA_CONFIG_KEYS):
+        return False
+    for rope in _rope_dicts(config):
+        kind = str(rope.get("rope_type", rope.get("type", "default"))).lower()
+        if kind not in _POSITION_ONLY_ROPE or "mrope_section" in rope:
+            return False
+    try:
+        from ..utils.packing import _iter_stateful_mixers, packing_boundary_blocker
+        if packing_boundary_blocker(inner) is not None or _iter_stateful_mixers(decoder):
+            return False
+    except Exception:
+        return False
+    from .llama import LlamaModel_fast_forward, running_forward, runs_fast_forward
+
+    if runs_fast_forward(decoder, LlamaModel_fast_forward):
+        # Every owned attention reads the packed lengths LlamaModel_fast_forward infers.
+        for i in range(stage.start, stage.end):
+            attn = getattr(parts.layers[i], "self_attn", None)
+            if attn is None:
+                return False
+            if "get_packed_info_from_kwargs" not in _code_names(running_forward(attn)):
+                return False
+        return True
+    implementation = getattr(config, "_attn_implementation", None)
+    if implementation not in ("eager", "sdpa", "flex_attention"):
+        return False
+    return bool(_code_names(running_forward(decoder)) & set(_HF_MASK_BUILDERS))
+
+
+def _packs_documents(stage):
+    """_attention_keeps_documents on every pp rank (each sees only its own layers; all must run the same
+    schedule steps). One collective over the pp group, the first time."""
+    cached = stage.__dict__.get("_unsloth_pp_packs")
+    if cached is None:
+        try:
+            cached = bool(_attention_keeps_documents(stage))
+        except Exception:
+            cached = False
+        import torch.distributed as dist
+
+        if stage.num_stages > 1 and dist.is_initialized():
+            flag = torch.tensor([int(cached)], dtype = torch.int64, device = _comm_device(stage))
+            dist.all_reduce(flag, op = dist.ReduceOp.MIN, group = stage.group)
+            cached = bool(flag[0])
+        stage.__dict__["_unsloth_pp_packs"] = cached
+    return cached
+
+
+def _plain_rows(rows):
+    """Every row is one document: attended up to its length (right padding only) with positions 0, 1, ..."""
+    for length, _, _, extra in rows:
+        mask = extra.get("attention_mask")
+        if mask is not None and not bool((mask != 0).all()):
+            return False
+        positions = extra.get("position_ids")
+        if positions is not None:
+            want = torch.arange(length, device = positions.device, dtype = positions.dtype)
+            if positions.dim() != 2 or not torch.equal(positions[0], want):
+                return False
+    return True
+
+
+_PACK_BUCKET = 32
+
+
+def _bins_fit(lengths, m, capacity):
+    """Best-fit decreasing of `lengths` (descending) into m bins of `capacity` tokens: the bin of each length,
+    or None."""
+    import bisect
+
+    loads = [(0, b) for b in range(m)]  # (load, bin), ascending
+    where = []
+    for length in lengths:
+        k = bisect.bisect_right(loads, (capacity - length, m)) - 1  # the fullest bin it still fits
+        if k < 0:
+            return None
+        load, b = loads.pop(k)
+        bisect.insort(loads, (load + length, b))
+        where.append(b)
+    return where
+
+
+def _pack_plan(lengths, per_mb, num_stages, floor, cap):
+    """One schedule step of m single-row micro-batches, each whole documents (descending `lengths`) packed
+    into `width` tokens: (cost, m, width, bin of each length), or None. Cost is _fold_plan's,
+    (max(m, floor) + p - 1) x width. A micro-batch holds at most what the unfolded step's largest one did
+    (per_mb rows of the longest); GPipe keeps at most `cap` in flight. Counts whose lower bound cannot beat
+    the best so far are skipped, and the smallest fitting width is bisected, so large windows plan quickly."""
+    if not lengths:
+        return None
+    total, longest = sum(lengths), lengths[0]
+    limit = max(per_mb * longest, longest)
+    best = None
+    for m in range(1, len(lengths) + 1):
+        if cap is not None and m > max(cap, floor):
+            break
+        steps = max(m, floor) + num_stages - 1
+        if best is not None and steps * longest >= best[0]:
+            break  # the width is at least the longest document: no larger m can be cheaper either
+        width = max(longest, -(-total // m))
+        width = min(-(-width // _PACK_BUCKET) * _PACK_BUCKET, limit)
+        if width * m < total or (best is not None and steps * width >= best[0]):
+            continue
+        where = _bins_fit(lengths, m, width)
+        if where is None:
+            top = limit
+            if best is not None:  # widths stay whole buckets (or the limit): fewer step shapes
+                top = min(top, (best[0] - 1) // steps // _PACK_BUCKET * _PACK_BUCKET)
+            if top <= width or _bins_fit(lengths, m, top) is None:
+                continue
+            low, high = width, top  # fits at high, not at low
+            while high - low > _PACK_BUCKET:
+                mid = low + (high - low) // (2 * _PACK_BUCKET) * _PACK_BUCKET
+                mid = mid if mid > low else low + _PACK_BUCKET
+                if _bins_fit(lengths, m, mid) is None:
+                    low = mid
+                else:
+                    high = mid
+            width, where = high, _bins_fit(lengths, m, high)
+        cost = steps * width
+        if best is None or cost < best[0]:
+            best = (cost, m, width, where)
+    return best
+
+
+def _fold_cost(plan, lengths, per_mb, num_stages):
+    """_fold_plan's cost in tokens of work: its micro-batches hold per_mb rows each (packed ones one)."""
+    return per_mb * sum((m + num_stages - 1) * lengths[start] for start, _, m in plan)
+
+
+def _stack_packed(rows, m, width, where, floor):
+    """m rows of `width` tokens: each the documents of its bin back to back, positions restarting at 0 per
+    document and for the padding tail (a segment of its own), the first label of every document ignored
+    (the previous document's last token must not predict it; one process never targets it either)."""
+    device = rows[0][1].device if rows else None
+    ids_dtype, label_dtype = rows[0][1].dtype, rows[0][2].dtype
+    bins = [[] for _ in range(m)]
+    for row, b in zip(rows, where):
+        bins[b].append(row)
+    ids, labels, positions = [], [], []
+    for docs in bins:
+        pieces_i, pieces_l, pieces_p = [], [], []
+        for length, input_ids, row_labels, _ in docs:
+            pieces_i.append(input_ids[0])
+            first = row_labels[0].clone()
+            first[0] = -100
+            pieces_l.append(first)
+            pieces_p.append(torch.arange(length, device = device))
+        used = sum(d[0] for d in docs)
+        tail = width - used
+        if tail:
+            pieces_i.append(torch.zeros(tail, dtype = ids_dtype, device = device))
+            pieces_l.append(torch.full((tail,), -100, dtype = label_dtype, device = device))
+            pieces_p.append(torch.arange(tail, device = device))
+        ids.append(torch.cat(pieces_i))
+        labels.append(torch.cat(pieces_l))
+        positions.append(torch.cat(pieces_p))
+    input_ids, labels = torch.stack(ids), torch.stack(labels)
+    extra = {"position_ids": torch.stack(positions)}
+    pad = max(m, floor) - m
+    return _pad_rows(input_ids, labels, extra, pad) if pad > 0 else (input_ids, labels, extra)
 
 
 def _stack_group(rows, start, end, m, per_mb):
@@ -1367,11 +1636,15 @@ def _stack_group(rows, start, end, m, per_mb):
             for k in group[0][3]
         }
     else:
-        # This replica ran out of rows (a shorter last batch than another dp replica's): one filler row.
+        # This replica ran out of rows (a shorter last batch than another dp replica's): one filler row,
+        # no labels and always attended (a left padded first column would leave it fully masked: NaN).
         input_ids, labels, extra = (
             rows[0][1][:, :1],
             torch.full_like(rows[0][2][:, :1], -100),
-            {k: v[:, :1] for k, v in rows[0][3].items()},
+            {
+                k: torch.ones_like(v[:, :1]) if k == "attention_mask" else v[:, :1]
+                for k, v in rows[0][3].items()
+            },
         )
     pad = m * per_mb - input_ids.shape[0]
     return _pad_rows(input_ids, labels, extra, pad) if pad > 0 else (input_ids, labels, extra)
@@ -1379,13 +1652,29 @@ def _stack_group(rows, start, end, m, per_mb):
 
 def _pp_window_step(self, model, stage, window, n, scaler):
     """One accumulation window as few schedule steps (usually one) over all of its micro-batches."""
-    rows, per_mb, plan = _window_rows(stage, window)
+    rows, per_mb, plan, packed = _window_rows(stage, window)
     stats = stage.__dict__.setdefault(
-        "_unsloth_fold_stats", {"windows": 0, "schedule_steps": 0, "batches": 0, "plans": []}
+        "_unsloth_fold_stats",
+        {"windows": 0, "schedule_steps": 0, "batches": 0, "plans": [], "packed": 0},
     )
     stats["windows"] += 1
-    stats["schedule_steps"] += len(plan)
     stats["batches"] += len(window)
+    if packed is not None:
+        m, width, where, floor = packed
+        stats["packed"] = stats.get("packed", 0) + 1
+        stats["schedule_steps"] += 1
+        stats["plans"] = (stats["plans"] + [[max(m, floor), width]])[-8:]
+        if not stage.__dict__.get("_unsloth_pack_note"):
+            stage.__dict__["_unsloth_pack_note"] = True
+            _print_rank0(
+                f"Unsloth: pipeline parallel: a gradient accumulation window of {len(window)} batch(es) runs as one "
+                f"schedule step of {max(m, floor)} micro-batch(es), its documents packed into rows of {width} "
+                "tokens with positions restarting per document (UNSLOTH_PP_PACK=0 groups rows by length)."
+            )
+        with _pp_step_context(self, model, stage, n) as run:
+            input_ids, labels, extra = _stack_packed(rows, m, width, where, floor)
+            return run(input_ids, labels, extra, max(m, floor), scaler, 1.0)
+    stats["schedule_steps"] += len(plan)
     stats["plans"] = (stats["plans"] + [[m for _, _, m in plan]])[-8:]
     if not stage.__dict__.get("_unsloth_fold_note"):
         stage.__dict__["_unsloth_fold_note"] = True
@@ -1536,10 +1825,31 @@ def _pp_batch_step(self, model, stage, input_ids, labels, extra, n, scaler):
             1,
         )
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
-    with _pp_step_context(self, model, stage, n) as run:
+    with (
+        _pp_step_context(self, model, stage, n) as run,
+        _whole_batch_router_aux(stage, input_ids.shape[0]),
+    ):
         _refuse_split_router_aux(stage, m)
         input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
         return run(input_ids, labels, extra, m, scaler, scale)
+
+
+class _whole_batch_router_aux:
+    """For one Trainer batch of `rows` real rows: a split batch's router aux loss is the one-GPU loss over the
+    whole batch (pp_native._CarriedRouterAux), not one per micro-batch."""
+
+    def __init__(self, stage, rows):
+        self.ctx, self.rows = getattr(stage, "ctx", None), int(rows)
+
+    def __enter__(self):
+        if self.ctx is not None:
+            self.ctx.aux_batch_rows = self.rows
+        return self
+
+    def __exit__(self, *exc):
+        if self.ctx is not None:
+            self.ctx.aux_batch_rows = None
+        return False
 
 
 def _eval_items(trainer, inputs, labels):
@@ -1591,13 +1901,15 @@ def _pp_prediction_step(
     _set_router_aux_request(stage, _router_aux_request(self))
     applied_coef = _apply_trainer_aux_coef(self, stage)
     try:
-        _refuse_split_router_aux(stage, m)
+        # Forward only: a split batch's router aux loss is formed over the whole batch on any schedule.
+        rows = input_ids.shape[0]
         input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
         # TRL's prediction step passes no num_items_in_batch: the aux term is added once per batch.
         _set_trainer_aux(stage, _trainer_router_aux(self, stage, None, None, train = False))
-        loss = stage.eval_loss(
-            input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra
-        )
+        with _whole_batch_router_aux(stage, rows):
+            loss = stage.eval_loss(
+                input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra
+            )
     finally:
         _restore_trainer_aux_coef(applied_coef)
         _set_trainer_aux(stage, None)

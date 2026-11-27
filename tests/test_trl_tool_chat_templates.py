@@ -167,10 +167,31 @@ def test_template_ignoring_enable_thinking_does_not_borrow_qwen3(patched):
     branch = "{%- if enable_thinking is defined and enable_thinking is false %}"
     assert branch in UNSLOTH_QWEN3
     ignores = UNSLOTH_QWEN3.replace(branch, "{%- if false %}", 1)
-    with pytest.raises(ValueError):
-        trl_utils.get_training_chat_template(_tokenizer(ignores))
-    with pytest.raises(ValueError, match = "Unrecognized chat template"):
-        trl_utils.add_response_schema(_tokenizer(ignores))
+    # TRL >= 1.19 ships qwen3_instruct_2507_v2, which renders exactly this, so its training template is the
+    # right match there; older TRL has no family for it and must refuse. Never qwen3's own.
+    instruct_2507 = {
+        getattr(trl_utils, name)
+        for name in ("qwen3_instruct_2507_training_chat_template", "qwen3_instruct_2507_v2_training_chat_template")
+        if hasattr(trl_utils, name)
+    }
+    try:
+        got = trl_utils.get_training_chat_template(_tokenizer(ignores))
+    except ValueError:
+        got = None
+    assert got not in {
+        getattr(trl_utils, name, None) for name in ("qwen3_training_chat_template", "qwen3_v2_training_chat_template")
+    }
+    if hasattr(trl_utils, "qwen3_instruct_2507_v2_chat_template"):
+        assert got in instruct_2507
+        tokenizer = _tokenizer(ignores)
+        trl_utils.add_response_schema(tokenizer)
+        reference = _tokenizer(trl_utils.qwen3_instruct_2507_v2_chat_template)
+        trl_utils.add_response_schema(reference)
+        assert _parser(tokenizer) == _parser(reference)
+    else:
+        assert got is None
+        with pytest.raises(ValueError, match = "Unrecognized chat template"):
+            trl_utils.add_response_schema(_tokenizer(ignores))
 
 
 def test_vision_template_keeps_its_own_training_family(patched):

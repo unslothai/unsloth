@@ -75,10 +75,8 @@ release_apt_locks() {
   sleep 5
 }
 
-# GitHub's Ubuntu images send apt through mirror+file:$APT_MIRRORS with azure.archive.ubuntu.com
-# first. apt fails over only on errors: a mirror trickling at a few KB/s (runner-images #14823)
-# never trips Acquire::*::Timeout, so every retry downloads from the same slow node.
-# This measures each mirror once and puts the fastest first; a failed attempt demotes the leader.
+# apt fails over only on errors, so a trickling mirror (runner-images #14823) never trips
+# Acquire::*::Timeout; probe each mirror once, fastest first; a failed attempt demotes the leader.
 APT_MIRRORS="${APT_MIRRORS_FILE:-/etc/apt/apt-mirrors.txt}"
 MIRROR_PROBE_SECONDS="${APT_MIRROR_PROBE_SECONDS:-5}"
 
@@ -86,8 +84,7 @@ mirror_urls() {
   grep -vE '^[[:space:]]*(#|$)' "$APT_MIRRORS" 2> /dev/null | awk '{print $1}'
 }
 
-# bytes/s fetched from a mirror in MIRROR_PROBE_SECONDS; 0 when unreachable. curl prints the rate
-# even when --max-time cuts the transfer, which is exactly the slow case being measured.
+# Bytes/s in MIRROR_PROBE_SECONDS, 0 if unreachable; curl keeps the rate on a --max-time cut.
 probe_mirror() {
   speed="$(curl -sS -o /dev/null --max-time "$MIRROR_PROBE_SECONDS" -w '%{speed_download}' \
     "${1%/}/dists/${2}/main/binary-${3}/Packages.gz" 2> /dev/null)"
@@ -124,8 +121,7 @@ prefer_fast_apt_mirror() {
   codename="$(. /etc/os-release 2> /dev/null && printf '%s' "${VERSION_CODENAME:-}")"
   arch="$(dpkg --print-architecture 2> /dev/null || echo amd64)"
   [ -n "$codename" ] || return 0
-  # The global archive carries every amd64 pocket, so it is a valid fallback beside any
-  # *.archive.ubuntu.com mirror. ports.ubuntu.com (arm64) has no such twin and is left alone.
+  # Global archive has all amd64 pockets, a fallback; ports.ubuntu.com (arm64) has no twin.
   if printf '%s\n' "$urls" | grep -q 'archive\.ubuntu\.com/ubuntu' \
     && ! printf '%s\n' "$urls" | grep -qE '^https?://archive\.ubuntu\.com/ubuntu/?$'; then
     urls="$(printf '%s\nhttp://archive.ubuntu.com/ubuntu/' "$urls")"
@@ -153,8 +149,7 @@ demote_apt_mirror() {
     && echo "apt mirror ${first} moved last for the retry"
 }
 
-# A timed-out attempt can leave apt-get running under sudo (timeout signals sudo, not its
-# grandchildren), still holding the dpkg lock and still downloading from the slow mirror.
+# timeout signals only sudo, so an orphaned apt-get keeps the dpkg lock and its download.
 stop_orphaned_apt() {
   sudo pkill -TERM -x apt-get > /dev/null 2>&1 || true
   sudo pkill -TERM -x apt > /dev/null 2>&1 || true

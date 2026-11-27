@@ -42,12 +42,10 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # Kaggle spends an external GPU quota rather than runner minutes.
 QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.yml"})
 
-# Allowed to keep a group per commit on main, each with its reason. None today: codeql.yml was
-# the one entry, and it no longer runs on pushes to main.
+# Per-commit main groups need a reason here; empty since codeql.yml stopped running on main.
 PER_COMMIT_ALLOWED = frozenset()
 
-# Phrasings claiming main runs are never cancelled or are grouped per commit; both are false for a
-# shared-group workflow, whose PENDING run the next push replaces.
+# Main-run claims are false for shared-group workflows: the next push replaces a PENDING run.
 CLAIMS_PROTECTION = re.compile(
     r"never on main|never cancelled on main|not cancelled on main|never cancels on main"
     r"|unique per commit on main|grouped per commit on main|one group per commit on main",
@@ -170,8 +168,7 @@ def _coalescing() -> dict[str, dict]:
 
 
 def test_every_workflow_that_runs_on_main_coalesces_a_merge_burst():
-    """Every main workflow must coalesce merge bursts: a shared group runs the executing commit plus
-    the tip, while a per-commit group queued the whole org for hours."""
+    """Main workflows must coalesce bursts: a per-commit group queued the whole org for hours."""
     offenders = sorted(
         name for name, document in _coalescing().items() if _is_per_commit_on_main(_group(document))
     )
@@ -287,8 +284,7 @@ def test_every_group_expression_is_understood():
 
 
 def test_the_evaluator_reads_which_branch_supplies_the_sha():
-    """The per-commit evaluator must read which branch supplies github.sha, since a substring grep
-    cannot tell a coalescing group from a per-commit one; rendering can."""
+    """Grep cannot tell which branch supplies github.sha, so the test renders the expression."""
     gated = "${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}"
     reversed_ = "${{ github.ref }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}"
     wrong_branch = "${{ github.ref }}-${{ github.ref == 'refs/heads/main' && '' || github.sha }}"
@@ -309,8 +305,7 @@ def test_the_evaluator_reads_which_branch_supplies_the_sha():
 
 
 def test_no_workflow_claims_a_main_protection_it_does_not_have():
-    """No workflow comment may claim a main protection its group lacks; the check reads raw text,
-    since YAML parsing discards comments and comments are what people act on."""
+    """Comments may not claim a main protection the group lacks; YAML parsing discards them."""
     offenders = []
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
         text = path.read_text(encoding = "utf-8")

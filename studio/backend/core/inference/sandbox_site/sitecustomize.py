@@ -4,14 +4,13 @@
 """Remaps invented paths like /mnt/data onto CWD; reads heal only if the target exists; all wrapped
 in try/except so a failure never breaks the interpreter; no redirect onto existing CWD file"""
 
+import _thread
 import builtins
 import io
-import json
 import os
 import sys
 
-# First, ahead of everything below: no later failure in this file can leave the hook unregistered.
-# The static host check cannot see DNS aliases or redirects; every connect does see the final address.
+# Hook registers before any failure; host checks miss DNS aliases, so connects are checked.
 _METADATA_NAMES = frozenset(
     (
         "metadata",
@@ -132,10 +131,22 @@ def _sidecar_path(cwd):
     return os.path.join(cwd, _REMAP_SIDECAR)
 
 
+def _stdlib_json():
+    """Lazily imported stdlib json, or None if sys.modules holds a non-stdlib (chat-planted) json."""
+    module = sys.modules.get("json")
+    if module is None:
+        import json as module  # _StdlibLazyFinder serves the stdlib copy
+    origin = getattr(module, "__file__", None) or ""
+    return module if origin and _is_stdlib_file(origin) else None
+
+
 def _load_sidecar(cwd):
     """Return the persisted ``source -> healed target`` map, or {} on any error
     (missing/corrupt/foreign sidecar degrades to in-process-only behaviour)."""
     try:
+        json = _stdlib_json()
+        if json is None:
+            return {}
         with open(_sidecar_path(cwd), encoding = "utf-8") as fh:
             data = json.load(fh)
     except Exception:  # noqa: BLE001 - a bad sidecar must never break user code
@@ -150,6 +161,9 @@ def _record_sidecar(cwd, source, target):
         if data.get(source) == target:
             return
         data[source] = target
+        json = _stdlib_json()
+        if json is None:
+            return
         tmp = _sidecar_path(cwd) + ".tmp"
         with open(tmp, "w", encoding = "utf-8") as fh:
             json.dump(data, fh)
@@ -232,14 +246,11 @@ def _remap(path, notify = True):
 
 
 def _install():
-    import pathlib
-
     original_open = builtins.open
     original_io_open = io.open
     original_os_open = os.open
     original_makedirs = os.makedirs
     original_mkdir = os.mkdir
-    original_path_mkdir = pathlib.Path.mkdir
 
     def _open(
         file,
@@ -278,25 +289,47 @@ def _install():
             return original_os_open(mapped, flags, mode)
         return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
 
-    def _path_mkdir(self, *args, **kwargs):
-        # pathlib probes unpatched os.stat on FileExistsError; remap up front for exist_ok.
-        mapped = _remap(self)
-        target = self if mapped is self else self.__class__(mapped)
-        return original_path_mkdir(target, *args, **kwargs)
+    def _patch_pathlib(pathlib):
+        original_path_mkdir = pathlib.Path.mkdir
+
+        def _path_mkdir(self, *args, **kwargs):
+            # pathlib probes unpatched os.stat on FileExistsError; remap up front for exist_ok.
+            mapped = _remap(self)
+            target = self if mapped is self else self.__class__(mapped)
+            return original_path_mkdir(target, *args, **kwargs)
+
+        # Python < 3.11: pathlib's _NormalAccessor captured the original io.open; repoint it.
+        accessor = getattr(pathlib, "_NormalAccessor", None)
+        if accessor is not None and hasattr(accessor, "open"):
+            accessor.open = staticmethod(_io_open)
+            # Imported after the os patches, it captured the patched ones; restore the originals.
+            originals = {
+                _mkdir: original_mkdir,
+                _makedirs: original_makedirs,
+                _os_open: original_os_open,
+            }
+            for name, value in list(vars(accessor).items()):
+                if value in originals:
+                    setattr(accessor, name, staticmethod(originals[value]))
+        # Path.mkdir calls os.mkdir per part; patch both, since exist_ok/parents need Path.mkdir.
+        pathlib.Path.mkdir = _path_mkdir
 
     builtins.open = _open
     # pathlib.Path.open / write_text / read_text call io.open directly, so patch both.
     io.open = _io_open
-    # Python < 3.11: pathlib's _NormalAccessor captured the original io.open; repoint it.
-    accessor = getattr(pathlib, "_NormalAccessor", None)
-    if accessor is not None and hasattr(accessor, "open"):
-        accessor.open = staticmethod(_io_open)
     # Path.touch() and other low-level opens call os.open directly, so patch it too.
     os.open = _os_open
     os.makedirs = _makedirs
-    # Path.mkdir calls os.mkdir per part; patch both, since exist_ok/parents need Path.mkdir.
     os.mkdir = _mkdir
-    pathlib.Path.mkdir = _path_mkdir
+    if "pathlib" in sys.modules:
+        _patch_pathlib(sys.modules["pathlib"])
+    else:
+        # Deferred to pathlib's first import (_StdlibLazyFinder): it costs 2-8 ms per launch.
+        global _pending_pathlib_patch
+        _pending_pathlib_patch = _patch_pathlib
+
+
+_pending_pathlib_patch = None
 
 
 try:
@@ -402,8 +435,7 @@ class _HostPackagesFinder:
         )
 
 
-# --python hands the install to another interpreter, whose own pip decides. optparse also takes unambiguous
-# abbreviations: the shortest is listed (--pre is its own option; --us, --ro, --pyth are ambiguous in pip).
+# Shortest unambiguous optparse prefixes; --python hands the install to another interpreter.
 _PIP_LOCATION_FLAGS = (
     ("--target", 4),
     ("--prefix", 6),
@@ -470,8 +502,7 @@ def _pip_options():
 
 
 def _cli_locations():
-    # {target|prefix|root|python: value} as pip ends up with it: the last occurrence wins, an empty one included
-    # (pip tests it for truthiness, so --target= after --target vendor chooses nothing).
+    # Last occurrence wins, even empty: pip tests truthiness, so --target= chooses nothing.
     found, argv, command = {}, sys.argv + [""], False
     for at, arg, option in _pip_words():
         if not option:
@@ -572,12 +603,87 @@ def _stdlib_paths():
 
 
 _saved_path = sys.path[:]
-sys.path[:] = _stdlib_paths()
+# Computed once: realpath per sys.path entry is slow on Windows, more so inside the container.
+_STARTUP_STDLIB_PATHS = _stdlib_paths()
+sys.path[:] = _STARTUP_STDLIB_PATHS
 try:
     # The stdlib copy, never an importlib/ the chat put on PYTHONPATH (this runs before any import of it).
     from importlib.machinery import PathFinder as _PathFinder
 finally:
     sys.path[:] = _saved_path
+
+
+def _is_stdlib_file(path):
+    base = os.path.join(os.path.normcase(os.path.realpath(sys.base_prefix)), "")
+    real = os.path.normcase(os.path.realpath(path))
+    return real.startswith(base) and "site-packages" not in real and "dist-packages" not in real
+
+
+class _StdlibLazyFinder:
+    """Serves the first import of json / pathlib from the stdlib (as the old eager import did, so a cwd json.py
+    never wins), patching pathlib after load. Installed once at startup and never removed: importlib walks the live
+    sys.meta_path, so editing it while another thread imports could make that thread skip a finder."""
+
+    def __init__(self, names):
+        self._names = set(names)
+        self._paths = _STARTUP_STDLIB_PATHS
+        self._loading = _thread._local()  # builtin; importing threading costs ~1 ms per launch
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if name in self._names:
+            spec = _PathFinder.find_spec(name, self._paths)
+            if spec is None or spec.loader is None:
+                return spec
+            patch = _pending_pathlib_patch if name == "pathlib" else None
+            spec.loader = _StdlibLoader(spec.loader, patch, self, name)
+            return spec
+        # While this thread runs json / pathlib, their own top-level imports (re, enum, ...) resolve stdlib-first.
+        if getattr(self._loading, "depth", 0) and path is None and "." not in name:
+            return _PathFinder.find_spec(name, self._paths)
+        return None
+
+
+class _StdlibLoader:
+    def __init__(self, loader, patch, finder, name):
+        self._loader = loader
+        self._patch = patch
+        self._finder = finder
+        self._name = name
+
+    def create_module(self, spec):
+        return self._loader.create_module(spec)
+
+    def exec_module(self, module):
+        loading = self._finder._loading
+        loading.depth = getattr(loading, "depth", 0) + 1
+        try:
+            self._loader.exec_module(module)
+        finally:
+            loading.depth -= 1
+            module.__loader__ = self._loader
+            if getattr(module, "__spec__", None) is not None:
+                module.__spec__.loader = self._loader
+        # Only after exec: a bare find_spec probe must not consume the patch.
+        self._finder._names.discard(self._name)
+        if self._patch is None:
+            return
+        try:
+            self._patch(module)
+        except Exception:  # noqa: BLE001 - a broken shim must never break user code
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+_lazy = [n for n in ("json", "pathlib") if n not in sys.modules]
+if _lazy:
+    sys.meta_path.insert(0, _StdlibLazyFinder(_lazy))
 
 
 def _win_folder(csidl, name, env, default):
@@ -652,8 +758,7 @@ def _config_chooses_location(
     encoding = "utf-8" if sys.flags.utf8_mode else locale.getpreferredencoding(False)
 
     def load(files):
-        # One parser per file as pip's Configuration._load_file: a [DEFAULT] applies inside its own file only;
-        # keys normalised as its _normalize_name (lower case, _ -> -, a leading -- dropped).
+        # One parser per file: [DEFAULT] applies in its file only; keys normalised like pip.
         merged = {}
         for path in files:
             parser = configparser.RawConfigParser()
@@ -673,8 +778,7 @@ def _config_chooses_location(
     except (configparser.Error, UnicodeDecodeError):
         return False
 
-    # pip's precedence per option: [global], then [install], then a PIP_* variable (ignored under --isolated);
-    # empty values are skipped, as pip's _get_ordered_configuration_items does.
+    # [global], [install], then PIP_ env vars (ignored under --isolated); empty ones skipped.
     def value(key):
         env = "" if isolated else os.environ.get("PIP_" + key.upper(), "")
         if env.strip() and env != os.environ.get("_UNSLOTH_PIP_PREFIX"):
@@ -687,8 +791,7 @@ def _config_chooses_location(
 
     if any(value(k).strip() for k in ("target", "prefix", "root") if k not in skip):
         return True
-    # python: pip re-runs itself in that interpreter, as --python does, which installs there.
-    # [global] only: that is the main parser's section ([install] python is never read for delegation).
+    # Only [global] python counts: pip re-runs in that interpreter, as --python does.
     if "python" not in skip and full.get("global", {}).get("python", "").strip():
         return True
     items = []
@@ -698,8 +801,7 @@ def _config_chooses_location(
 
 
 def _user_site(items = (), isolated = False):
-    # user and no-user set one option (pip assigns either key's boolean as given); the last non-empty one in
-    # pip's order ([global], [install], then PIP_USER / PIP_NO_USER) wins.
+    # The last non-empty of [global], [install], PIP_USER/PIP_NO_USER sets user and no-user.
     if not isolated:
         items = list(items) + [
             (k[4:].lower().replace("_", "-"), v)
@@ -1059,8 +1161,7 @@ class _SessionPackagesFinder:
         for finder in () if name.partition(".")[0] in _stdlib_names() else self._editable:
             spec = finder.find_spec(name, path, target)
             if spec is not None and spec.loader is not None:
-                # The cwd / script dir and anything else ahead of the session dirs, and for a submodule the
-                # chosen parent's own __path__, still come first.
+                # Earlier entries (cwd, script dir) and a parent's __path__ still come first.
                 first = min(i for i, e in enumerate(sys.path) if e in self._entries)
                 ahead = sys.path[:first]
                 if path is not None:
@@ -1198,8 +1299,7 @@ def _failed_installs():
 _PENDING = ".unsloth-installing-"
 
 
-# Per run, not per pid: bwrap's --unshare-pid makes every tool call PID 2. A run holds an flock on each of its
-# notes until it exits, which any later process sees whatever its pid namespace.
+# Per run, not pid: bwrap --unshare-pid makes each tool call PID 2; flocks span pid namespaces.
 _RUN_ID = "%d-%s" % (os.getpid(), os.urandom(6).hex())
 _held = []
 
@@ -1270,8 +1370,7 @@ def _alive(path):
 
 
 def _killed_installs():
-    # A pip killed mid-wheel (tool timeout, SIGKILL) runs no handler: its pending note, written before the
-    # wheel, names the RECORD mtimes from before; whatever differs now is that wheel's half-written state.
+    # Killed mid-wheel, pip runs no handler; its note's RECORD mtimes show half-written state.
     prefix = os.environ.get("PIP_PREFIX", "")
     found = set()
     try:
@@ -1300,8 +1399,7 @@ def _killed_installs():
             os.remove(path)
         except (OSError, ValueError):
             pass
-    # A dead run's pre-install file lists, whether it died inside a wheel or between two: kept for the next
-    # retirement (lists of untouched distributions only repeat what their RECORD still says).
+    # Dead run's pre-install lists await the next retirement; untouched dists repeat RECORD.
     for name in os.listdir(prefix):
         run = name[len(_SAVED) + 1 :] if name.startswith(_SAVED + "-") else ""
         if (
@@ -1322,8 +1420,7 @@ def _killed_installs():
 
 
 def _finished(entry, dist_info):
-    # pip and uv record INSTALLER in the RECORD they write last; a wheel's own RECORD (copied in
-    # mid-install) never lists it, so an install that died halfway does not count as a replacement.
+    # pip and uv write INSTALLER last; RECORD copied mid-install lacks it, so no replacement.
     record = os.path.join(entry, dist_info, "RECORD")
     try:
         stamp = str(os.stat(record).st_mtime_ns)
@@ -1440,8 +1537,7 @@ def _prune_stale_dist_info():
             # Files another surviving distribution now ships stay too.
             keep |= _claimed(root, set(stale))
             for entry, name in stale:
-                # Also the files only the replaced version had, as pip's uninstall would remove; a failed
-                # same-version rewrite's saved list too, its RECORD no longer names them.
+                # Also old-only files, and failed rewrites' saved lists (RECORD dropped them).
                 old = _recorded_files(entry, name, root) | saved.pop(
                     (os.path.abspath(entry), name), set()
                 )
@@ -1494,8 +1590,7 @@ def _write_saved(saved):
 
 
 def _record_snapshot():
-    # What each chat-local distribution's RECORD lists before this pip run: a same-version reinstall (an
-    # editable over a wheel) rewrites RECORD in place, so the old file list is gone by the time pip exits.
+    # Pre-run RECORD of each chat-local dist: a same-version reinstall rewrites it in place.
     snapshot = {}
     try:
         root = os.path.join(os.path.normcase(os.path.abspath(os.environ["PIP_PREFIX"])), "")
@@ -1583,8 +1678,7 @@ def _track_wheel(entry):
         prefix = os.environ["PIP_PREFIX"]
         pending, held, written = os.path.join(prefix, f"{_PENDING}{_RUN_ID}"), None, False
         try:
-            # Only into an existing prefix: nothing to protect before the first install, and the path remap
-            # would move a write under a missing folder into the CWD.
+            # Only for an existing prefix: a missing one's writes would be remapped to the CWD.
             if before and os.path.isdir(prefix):
                 rows = [f"{os.path.abspath(e)}\t{n}\t{v}\n" for (e, n), v in before.items()]
                 held, written = _write_held(pending, rows), True

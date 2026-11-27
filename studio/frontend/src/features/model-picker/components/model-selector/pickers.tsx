@@ -65,6 +65,7 @@ import {
   useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
   isHuggingFaceOffline,
+  formatBytes,
 } from "@/features/hub";
 import { type HfModelResult, useHubModelSearch } from "@/features/hub";
 import {
@@ -638,20 +639,8 @@ export function ListLabel({
   );
 }
 
-function formatBytes(bytes: number, unitSeparator = ""): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  // Decimal units to match Hugging Face sizes (GPU-fit math stays base-1024); Math.log is off at
-  // exact powers of 1000.
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let value = bytes;
-  while (value >= 1000 && i < units.length - 1) {
-    value /= 1000;
-    i += 1;
-  }
-  // No space: "145MB" reads as one value beside the quant chip.
-  return `${value.toFixed(value < 10 ? 1 : 0)}${unitSeparator}${units[i]}`;
-}
+// No space: "145MB" reads as one value beside the quant chip.
+const compactBytes = (bytes: number) => formatBytes(bytes, "");
 
 // Most distinguishing first, since only the first MAX_CAPABILITY_BADGES are drawn.
 const CAPABILITY_BADGES: {
@@ -1002,7 +991,7 @@ export function formatFootprintBytes(bytes: number): string {
     ? `${(bytes / 1_000_000_000).toFixed(1)} GB`
     : bytes >= 1_000_000_000_000
       ? `${(bytes / 1_000_000_000_000).toFixed(1)} TB`
-      : formatBytes(bytes, " ");
+      : formatBytes(bytes);
 }
 
 /** Diffusion GGUFs get an explanation, since the checkpoint is only part of what is kept on disk. */
@@ -1116,7 +1105,7 @@ const META_COLUMN = {
   // Device rows reserve the slot so the quant column stays aligned; 4.4em fits "0.35B" at text-ui-10.
   param: "min-w-min min-[560px]:w-[4.4em]",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
-  // formatBytes writes no space ("536MB"), so 3.2em suffices.
+  // compactBytes writes no space ("536MB"), so 3.2em suffices.
   size: "min-w-min min-[560px]:w-[3.2em]",
   format: "min-[560px]:w-[calc(14px*var(--ui-space-scale,1))]",
 } as const;
@@ -1824,7 +1813,7 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
         <ModelRow
           label={c.repo_id}
           hubUrl={hubRepoUrl(c.repo_id)}
-          meta={`${isMlxId(c.repo_id, cachedRepoHasMlxTag(c)) ? "MLX" : "Safetensors"} · ${formatBytes(
+          meta={`${isMlxId(c.repo_id, cachedRepoHasMlxTag(c)) ? "MLX" : "Safetensors"} · ${compactBytes(
             c.size_bytes,
           )}`}
           selected={isSelected}
@@ -2040,7 +2029,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
             meta={[
               "GGUF",
               // Match the Hub's cached inventory size; the weight-only size remains in the memory estimate.
-              formatBytes(c.size_bytes > 0 ? c.size_bytes : variant.size_bytes),
+              compactBytes(c.size_bytes > 0 ? c.size_bytes : variant.size_bytes),
               variant.estimated_resident_gb && audioCardGb > 0
                 ? `${residentGbLabel(variant.estimated_resident_gb)} to run`
                 : null,
@@ -3270,7 +3259,7 @@ function GgufVariantExpander({
                 )}
               >
                 {companionBytes === null ? (
-                  <SizeText value={formatBytes(v.size_bytes)} />
+                  <SizeText value={compactBytes(v.size_bytes)} />
                 ) : (
                   <GgufDownloadFootprint
                     checkpointBytes={v.size_bytes}
@@ -3798,6 +3787,7 @@ export function HubModelPicker({
   resolveDownloadFootprint,
   onFoldersChange,
   onBrowseHub,
+  browseHubHint,
   onConfigureConnection,
   onModelsChange,
   onConfigure: onConfigureProp,
@@ -3833,6 +3823,7 @@ export function HubModelPicker({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
+  browseHubHint?: string;
   /** Opens the connection's settings for a Connected row's gear. */
   onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -4979,7 +4970,7 @@ export function HubModelPicker({
         ? [
             ggufParams ? formatCompact(ggufParams) : null,
             "GGUF",
-            r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
+            r.estimatedSizeBytes ? compactBytes(r.estimatedSizeBytes) : null,
             r.estimatedResidentGb && audioCardGb > 0
               ? `${residentGbLabel(r.estimatedResidentGb)} to run`
               : null,
@@ -4991,7 +4982,7 @@ export function HubModelPicker({
               ? formatCompact(r.totalParams)
               : extractParamLabel(r.id),
             isMlxId(r.id, hasMlxCardTag(r)) ? "MLX" : "Safetensors",
-            r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
+            r.estimatedSizeBytes ? compactBytes(r.estimatedSizeBytes) : null,
           ]
             .filter(Boolean)
             .join(" · ") || null;
@@ -6626,7 +6617,7 @@ export function HubModelPicker({
           .map((result) => [
             result.id,
             result.estimatedSizeBytes
-              ? `~${formatBytes(result.estimatedSizeBytes)}`
+              ? `~${compactBytes(result.estimatedSizeBytes)}`
               : formatCompact(result.totalParams!),
           ]),
       ),
@@ -7428,7 +7419,7 @@ export function HubModelPicker({
               entry.quant,
             )})`}
             meta={
-              sizeBytes ? `GGUF · ${formatBytes(sizeBytes)}` : "GGUF"
+              sizeBytes ? `GGUF · ${compactBytes(sizeBytes)}` : "GGUF"
             }
             quantChip={ggufQuantChipLabel(entry.quant)}
             showVision={hasVision}
@@ -7908,7 +7899,7 @@ export function HubModelPicker({
                   Search Hub
                 </button>
               </TooltipTrigger>
-              <TooltipContent>Search all models</TooltipContent>
+              <TooltipContent>{browseHubHint ?? "Search all models"}</TooltipContent>
             </Tooltip>
           ) : null}
         </div>
@@ -9237,7 +9228,7 @@ function FineTunedRows({
                   label={adapter.name}
                   meta={
                     adapter.sizeBytes
-                      ? `${meta} · ${formatBytes(adapter.sizeBytes)}`
+                      ? `${meta} · ${compactBytes(adapter.sizeBytes)}`
                       : meta
                   }
                   selected={value === adapter.id}

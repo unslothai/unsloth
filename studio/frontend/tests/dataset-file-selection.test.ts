@@ -125,6 +125,25 @@ test("reports basenames a folder pick would flatten together", () => {
   ]);
 });
 
+test("caption files differing only by extension case are one stored file", () => {
+  const result = selectDatasetFiles([
+    picked("IMG.PNG"),
+    picked("IMG.txt"),
+    picked("IMG.TXT"),
+    picked("metadata.jsonl"),
+    picked("Metadata.JSONL"),
+  ]);
+
+  assert.deepEqual(
+    result.files.map((f) => f.name),
+    ["IMG.PNG", "IMG.txt", "metadata.jsonl"],
+  );
+  assert.deepEqual(result.collisions, [
+    { kind: "name", first: "IMG.txt", second: "IMG.TXT" },
+    { kind: "name", first: "metadata.jsonl", second: "Metadata.JSONL" },
+  ]);
+});
+
 test("reports two images sharing a stem, which would share one caption sidecar", () => {
   const result = selectDatasetFiles([picked("cat.png"), picked("cat.jpg"), picked("cat.txt")]);
 

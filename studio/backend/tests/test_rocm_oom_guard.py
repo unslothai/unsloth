@@ -179,7 +179,6 @@ class TestDeviceNameFallback:
             "AMD Radeon(TM) 660M",
             # gfx1036 Raphael / Dragon Range, gfx1037 Mendocino
             "AMD Radeon(TM) 610M",
-            # case variants
             "RADEON 8060S GRAPHICS",
             "radeon 8050s",
             "RADEON 860M",
@@ -259,8 +258,7 @@ class TestMemFractionSelection:
         assert "if _env_fraction is not None" in source
 
     def test_guard_reports_a_props_vs_driver_total_gap(self) -> None:
-        """The guard must say which totals it saw, since no CI machine can reproduce a props-vs-
-        driver gap."""
+        """The guard must report both totals; no CI machine reproduces a props-vs-driver gap."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
         assert "mem_get_info(_mem_index)[1]" in source
         assert "if not _allocator_divides_by_props_total(" in source

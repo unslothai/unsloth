@@ -65,8 +65,7 @@ def test_the_fit_helpers_still_floor_where_the_invariant_assumes():
 
 
 def test_the_published_ui_ceiling_tracks_the_auto_offload_context():
-    """Asserted on the source because the value is produced deep inside load_model; a failure means
-    a stale literal, not a bad number."""
+    """Source check: the value is computed in load_model; a failure means a stale literal."""
     source = inspect.getsource(LlamaCppBackend.load_model)
     anchor = re.search(
         r"max_available_ctx\s*=\s*min\(\s*([A-Za-z_0-9]+)\s*,\s*native_ctx_for_cap",

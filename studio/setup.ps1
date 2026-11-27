@@ -403,8 +403,8 @@ $FrontendBuildMark = Join-Path $FrontendDir ".unsloth-build.local"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
-# ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
+# ---------------------------------------------
+# ---------------------------------------------
 function Refresh-Environment {
     foreach ($level in @('Machine', 'User')) {
         $vars = [System.Environment]::GetEnvironmentVariables($level)
@@ -455,7 +455,7 @@ function Refresh-Environment {
     $env:Path = $unique -join ";"
 }
 
-# ── Helper: is a conda environment ACTIVE in this session? ──
+# -- Helper: is a conda environment ACTIVE in this session? --
 function Test-ActiveCondaEnvironment {
     foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
         if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
@@ -1910,7 +1910,7 @@ function New-StudioChildScriptDirectory {
     return $dir
 }
 
-# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+# -- BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) --
 # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
 function Get-NvidiaNvmlLibraryPath {
     $dirs = @()
@@ -2214,7 +2214,7 @@ function Get-NvidiaLibraryInventory {
     }
     return $script:NvidiaLibraryInventory
 }
-# ── END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+# -- END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) --
 
 # Must match install.ps1's Get-TorchIndexUrl ladder exactly (asserted by a test).
 # Below CUDA 11 gets "cpu".
@@ -2874,6 +2874,39 @@ function Test-SetupConsoleHeadless {
     return (-not [Environment]::UserInteractive) -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
 }
 
+# Windows on ARM installs NVIDIA's pinned win_arm64 build (e.g. +cu134), not the $CuTag leaf.
+function Get-CudaTorchInstallLabel {
+    param([string]$CuTag, [bool]$WinArm64Venv, [string]$WinArm64TorchSpec)
+    if ($WinArm64Venv) {
+        if ("$WinArm64TorchSpec" -match '\+(cu\d+)') { return $Matches[1] }
+        return "win_arm64 CUDA build"
+    }
+    return $CuTag
+}
+
+# Whether this process already runs elevated (an elevated run is never shown a UAC prompt). Its own
+# function so the unattended-UAC tests can pin it: GitHub's Windows runners are elevated.
+function Test-SetupProcessElevated {
+    try {
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+        return [bool]$_principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
+# An unanswerable UAC prompt blocks forever. Not stdout: the CLI pipes it for logging.
+function Test-SetupUacUnanswerable {
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
+    if (Test-SetupProcessElevated) { return $false }
+    $opt = "$env:UNSLOTH_NONINTERACTIVE".Trim().ToLowerInvariant()
+    if ($opt -in @("1", "true", "yes")) { return $true }
+    if ($opt -in @("0", "false", "no")) { return $false }
+    $ci = "$env:CI".Trim().ToLowerInvariant()
+    if ($ci -and $ci -notin @("0", "false", "no")) { return $true }
+    if (-not [Environment]::UserInteractive) { return $true }
+    try { if ([Console]::IsInputRedirected) { return $true } } catch { }
+    return $false
+}
+
 # A failed prebuilt is not consent to a multi-GB toolchain. No prompt (#8040): headless runs
 # outside Desktop keep installing; a terminal or Desktop opts in via UNSLOTH_INSTALL_BUILD_TOOLS.
 function Test-LlamaBuildToolsInstallAllowed {
@@ -2980,6 +3013,13 @@ function Ensure-VCRedist {
         substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
         return
     }
+    if (Test-SetupUacUnanswerable) {
+        step "vcredist" "missing; not installed (needs admin approval, and this run is unattended)" "Yellow"
+        substep "torch and the prebuilt llama.cpp need it. Run this once in an Admin terminal:" "Yellow"
+        substep "winget install --id Microsoft.VCRedist.2015+.x64 --source winget --accept-package-agreements --accept-source-agreements" "Yellow"
+        substep "(or install https://aka.ms/vs/17/release/vc_redist.x64.exe)" "Yellow"
+        return
+    }
     Write-StudioLine "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
     if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
         try {
@@ -3033,8 +3073,8 @@ function Ensure-VCRedist {
     }
 }
 
-# ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
+# ---------------------------------------------
+# ---------------------------------------------
 $Rule = [string]::new([char]0x2500, 52)
 
 
@@ -3299,9 +3339,9 @@ function Show-NpmRegistryHint {
     substep "(min-release-age and save-exact stay enforced.)"
 }
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Banner
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 Write-StudioLine ""
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine ("  " + (Get-StudioAnsi Title) + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup" + (Get-StudioAnsi Reset))
@@ -3648,7 +3688,7 @@ function Invoke-NvidiaSmiBounded {
     }
 }
 
-# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+# -- BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) --
 # nvidia-smi dirs in preference order, filtered to ones holding the binary (SysNative/ProgramW6432 for
 # 32-bit processes, DriverStore). System32 before legacy NVSMI, which may hold an older binary.
 function Get-NvidiaSmiCandidatePaths {
@@ -3704,7 +3744,7 @@ function Get-NvidiaSmiCandidatePaths {
     }
     return $paths
 }
-# ── END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+# -- END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) --
 
 # A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row.
 # 124 means the bounded runner killed the probe; recorded so the banner skips a second query.
@@ -3854,16 +3894,13 @@ function Test-IntelXpuRuntimeProven {
 function Test-OtherVendorAdapterPresent {
     param($Scan = $null)
     if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
-    # AMD evidence the AMD route finds without WMI (override, the installer's forwarded arch, HIP SDK,
-    # opted-in amd-smi) vetoes too.
+    # AMD evidence found without WMI (override, forwarded arch, HIP SDK) vetoes too.
     if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim() -or "$env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF".Trim()) { return $true }
     try {
         if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
         foreach ($hipEnv in @($env:HIP_PATH, $env:HIP_PATH_57, $env:ROCM_PATH)) {
             if ($hipEnv -and (Test-Path -LiteralPath (Join-Path $hipEnv "bin\hipinfo.exe"))) { return $true }
         }
-        if ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$' -and
-            (Get-Command amd-smi -ErrorAction SilentlyContinue)) { return $true }
     } catch {}
     # Same classification as the Intel route, which ignores PNP ID and status.
     if ($Scan.Ok) {
@@ -4115,47 +4152,8 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
         }
     } catch {}
 }
-# amd-smi auto-elevates and pops a UAC prompt; RunAsInvoker stops it.
-function Invoke-AmdSmiNoElevate {
-    param(
-        [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
-        [Parameter(Position = 1)][string[]]$SmiArgs = @(),
-        [int]$TimeoutSec = 30
-    )
-    $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
-    $env:__COMPAT_LAYER = 'RunAsInvoker'
-    try {
-        # [Process]::Start: Start-Process -PassThru leaves .ExitCode $null on PS 5.1.
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $Exe
-        $psi.Arguments = ($SmiArgs -join ' ')
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.CreateNoWindow = $true
-        $proc = [System.Diagnostics.Process]::Start($psi)
-        $outTask = $proc.StandardOutput.ReadToEndAsync()
-        $errTask = $proc.StandardError.ReadToEndAsync()
-        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-            try { $proc.Kill() } catch {}
-            $global:LASTEXITCODE = 124
-            return ""
-        }
-        $global:LASTEXITCODE = $proc.ExitCode
-        return ($outTask.Result + "`n" + $errTask.Result)
-    } catch {
-        $global:LASTEXITCODE = 1
-        return ""
-    } finally {
-        if ($null -eq $prevCompat) {
-            Remove-Item Env:__COMPAT_LAYER -ErrorAction SilentlyContinue
-        } else {
-            $env:__COMPAT_LAYER = $prevCompat
-        }
-    }
-}
 
-# ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
+# -- AMD ROCm detection (Windows): probe hipinfo for actual GPU --
 $HasROCm = $false
 $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
 $ROCmGpuLabel = $null
@@ -4331,7 +4329,7 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
         }
     }
     if ($hipinfoExe) {
-        $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+        $HipSdkInstalled = $true   # binary found -> SDK is installed regardless of device state
         try {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
             if ($hipOut -match "(?i)gcnArchName") {
@@ -4362,65 +4360,6 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
                 substep "       Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
             }
         } catch {}
-    }
-    # amd-smi can pop an unsuppressable UAC prompt, so probe only with a HIP SDK or on opt-in.
-    $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
-    $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
-    if (-not $HasROCm -and $amdSmiAllowed) {
-        $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
-        if ($amdSmiExe) {
-            try {
-                $smiOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('list')
-                if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
-                    $HasROCm = $true
-                    # All gfx tokens in output order, no dedup, so the mask index lines up.
-                    $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
-                        ForEach-Object { $_.Groups[1].Value.ToLower() })
-                    if ($allGfxArches.Count -gt 0) {
-                        # amd-smi lists every GPU regardless of masks, so resolve the index here.
-                        $_smiPickIdx = Resolve-VisibleGpuIndex $allGfxArches.Count
-                        $script:ROCmGfxArch = $allGfxArches[$_smiPickIdx]
-                        $_smiShadowPick = Resolve-ShadowingGfxPick $script:ROCmGfxArch $allGfxArches
-                        if ($_smiShadowPick -ne $script:ROCmGfxArch) {
-                            $script:ROCmGfxArch = $_smiShadowPick
-                            $_smiPickIdx = [array]::IndexOf($allGfxArches, $_smiShadowPick)
-                        }
-                        $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
-                        # Carry the index forward: IndexOf on duplicate arches always returns 0.
-                        $_smiNames = @([regex]::Matches($smiOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                        if ($_smiNames.Count -eq $allGfxArches.Count -and $_smiPickIdx -ge 0) {
-                            $ROCmGpuName = $_smiNames[$_smiPickIdx]
-                        }
-                    } else {
-                        # 'static --asic' exposes the GFX target on ROCm 6+.
-                        $smiAsicOut = ""
-                        try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
-                        # Every token, not just the first, or a leading iGPU is picked.
-                        $asicGfxArches = @([regex]::Matches($smiAsicOut, '(?i)\b(gfx\d+[a-z]?)\b') |
-                            ForEach-Object { $_.Groups[1].Value.ToLower() })
-                        if ($asicGfxArches.Count -gt 0) {
-                            $_asicPickIdx = Resolve-VisibleGpuIndex $asicGfxArches.Count
-                            $script:ROCmGfxArch = $asicGfxArches[$_asicPickIdx]
-                            $_asicShadowPick = Resolve-ShadowingGfxPick $script:ROCmGfxArch $asicGfxArches
-                            if ($_asicShadowPick -ne $script:ROCmGfxArch) {
-                                $script:ROCmGfxArch = $_asicShadowPick
-                                $_asicPickIdx = [array]::IndexOf($asicGfxArches, $_asicShadowPick)
-                            }
-                            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
-                            $_asicNames = @([regex]::Matches($smiAsicOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                            if ($_asicNames.Count -eq $asicGfxArches.Count -and $_asicPickIdx -ge 0) {
-                                $ROCmGpuName = $_asicNames[$_asicPickIdx]
-                            }
-                        } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
-                            $ROCmGpuName  = $Matches[1].Trim()
-                            $ROCmGpuLabel = "AMD ROCm ($ROCmGpuName)"
-                        } else {
-                            $ROCmGpuLabel = "AMD ROCm"
-                        }
-                    }
-                }
-            } catch {}
-        }
     }
     # WMI gives a marketing name, never a gfx arch, so $HasROCm stays false.
     if (-not $HasROCm) {
@@ -4458,7 +4397,7 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
         @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
     )
     $script:ROCmUnsupportedGfxArch = $null
-    # ── Arch resolution: env-var override → name inference ──────────────────
+    # -- Arch resolution: env-var override -> name inference ------------------
     # Runs even without a confirmed runtime: the Adrenalin driver alone runs the per-gfx llama.cpp
     # prebuilt, which only needs the arch. PyTorch ROCm wheels stay gated on $HasROCm.
     if (-not $script:ROCmGfxArch) {
@@ -4592,15 +4531,6 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
                 }
             } catch {}
         }
-        if (-not $script:ROCmVersion -and $amdSmiAllowed) {
-            $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
-            if ($amdSmiVer) {
-                try {
-                    $smiVerOut = Invoke-AmdSmiNoElevate $amdSmiVer.Source @('version')
-                    if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $script:ROCmVersion = $Matches[1] }
-                } catch {}
-            }
-        }
         # Last resort: the SDK root itself is versioned (...\AMD\ROCm\7.1).
         if (-not $script:ROCmVersion) {
             $hipVersionedRoot = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
@@ -4622,7 +4552,7 @@ $_rocmWheelArches = @(
 # "AMD gets GPU wheels", not "AMD GPU present": unmapped arches install CPU torch.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
 if ($script:ProbeAmdBesideNvidia) {
-    # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+    # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo or WMI must see one.
     if ($AmdHasGpuWheels -and ($HasROCm -or @($script:ROCmGpuLabels).Count -gt 0)) {
         # An AMD host from here on, so the stale check keeps ROCm torch rather than restoring CUDA.
         $HasNvidiaSmi = $false
@@ -4705,7 +4635,6 @@ if ($HasNvidiaSmi) {
     substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
     Write-StudioLine ""
 } elseif ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
-    # amd-smi can set $HasROCm without an arch.
     step "gpu" $ROCmGpuDisplay
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
@@ -4790,6 +4719,10 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; skipped at your request" "Yellow"
     substep "torch.compile / Triton may fail on very long paths. To enable later, in an Admin terminal:" "Yellow"
     substep 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Yellow"
+} elseif (Test-SetupUacUnanswerable) {
+    step "long paths" "could not enable (unattended run; UAC not requested)" "Yellow"
+    Write-StudioLine "       torch.compile / Triton may fail on very long paths. Run this manually in an Admin terminal:" -ForegroundColor Yellow
+    Write-StudioLine '       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' -ForegroundColor Cyan
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
@@ -5692,7 +5625,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
 
-        # ── Restore hidden .gitignore files ──
+        # -- Restore hidden .gitignore files --
         foreach ($gi in $HiddenGitignores) {
             Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
         }
@@ -5951,8 +5884,94 @@ function Test-WoaWheelTagsParity {
     return (($pyTags -contains $PyTag) -and ($abiTags -contains $AbiTag))
 }
 
+# Exact tags, or a wheel that does not care (cp38-abi3, py3-none). Free-threaded has no abi3.
+function Test-WoaWheelTagsUsableParity {
+    param([string]$Name, [string]$PyTag, [string]$AbiTag = "")
+    if (-not $AbiTag) { $AbiTag = $PyTag }
+    if (Test-WoaWheelTagsParity -Name $Name -PyTag $PyTag -AbiTag $AbiTag) { return $true }
+    $fields = ($Name -replace '(?i)\.whl$', '') -split '-'
+    if ($fields.Count -lt 5) { return $false }
+    # Free-threaded CPython has no stable ABI (CPython #111506), so abi3 is not an option there.
+    if ($AbiTag -like "*t") { return $false }
+    $abiTags = $fields[$fields.Count - 2] -split '\.'
+    $minor = 0
+    if ($PyTag -match '^cp3(\d+)$') { $minor = [int]$Matches[1] }
+    foreach ($pyTag in ($fields[$fields.Count - 3] -split '\.')) {
+        # abi3 is forward compatible only from what it was built against: cp314-abi3 fails on cp313.
+        if (($abiTags -contains "abi3") -and ($pyTag -match '^cp3(\d+)$')) {
+            if ([int]$Matches[1] -le $minor) { return $true }
+        }
+        if ($abiTags -contains "none") {
+            if ($pyTag -match '^py3(\d*)$') {
+                if ([string]::IsNullOrEmpty($Matches[1]) -or ([int]$Matches[1] -le $minor)) { return $true }
+            }
+            if ($pyTag -match '^cp3(\d+)$') {
+                if ([int]$Matches[1] -le $minor) { return $true }
+            }
+        }
+    }
+    return $false
+}
+
+# The torch specifier in a wheel's METADATA ("" when it names none, or only under a marker).
+function Get-WoaMetadataTorchRequirementParity {
+    param([string]$Metadata)
+    if (-not $Metadata) { return "" }
+    $clauses = @()
+    foreach ($line in ($Metadata -split "`r?`n")) {
+        if ($line -eq "") { break }
+        if ($line -notmatch '^Requires-Dist:\s*(.+)$') { continue }
+        $req = $Matches[1].Trim()
+        if ($req -match ';') { continue }
+        if ($req -notmatch '^(?i)torch(?![A-Za-z0-9_.-])\s*(\[[^\]]*\])?\s*\(?\s*([^()]*?)\s*\)?\s*$') { continue }
+        if ($Matches[2]) { $clauses += $Matches[2] }
+    }
+    return ($clauses -join ',')
+}
+
+# Torch requirement a companion wheel declares (PEP 658 .metadata, else the wheel's METADATA); "" if unreadable.
+function Get-WoaWheelTorchRequirementParity {
+    param([string]$WheelUrl, [bool]$HasCoreMetadata = $false)
+    if (-not $WheelUrl) { return "" }
+    if ($null -eq $script:WoaWheelTorchRequirementCacheParity) { $script:WoaWheelTorchRequirementCacheParity = @{} }
+    if ($script:WoaWheelTorchRequirementCacheParity.ContainsKey($WheelUrl)) { return $script:WoaWheelTorchRequirementCacheParity[$WheelUrl] }
+    $answer = ""
+    $tmp = $null
+    try {
+        $tmp = [System.IO.Path]::GetTempFileName()
+        $metadata = $null
+        if ($HasCoreMetadata) {
+            try {
+                Invoke-WebRequest -Uri "$WheelUrl.metadata" -OutFile $tmp -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
+                if ((Get-Item -LiteralPath $tmp).Length -le 1048576) { $metadata = [System.IO.File]::ReadAllText($tmp, [System.Text.Encoding]::UTF8) }
+            } catch { $metadata = $null }
+        }
+        if ($null -eq $metadata) {
+            Invoke-WebRequest -Uri $WheelUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($tmp)
+            try {
+                $entry = $null
+                foreach ($e in $zip.Entries) {
+                    if ($e.FullName -match '^[^/]+\.dist-info/METADATA$') { $entry = $e; break }
+                }
+                if (-not $entry -or $entry.Length -gt 1048576) { throw "no METADATA" }
+                $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
+                try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            } finally { $zip.Dispose() }
+        }
+        $answer = Get-WoaMetadataTorchRequirementParity -Metadata $metadata
+    } catch {
+        $answer = ""
+    } finally {
+        if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+    $script:WoaWheelTorchRequirementCacheParity[$WheelUrl] = $answer
+    return $answer
+}
+
 function Test-WoaPairsWithTorchParity {
-    param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision")
+    param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision", [string]$TorchRequirement = "")
     if (-not $TorchVersion -or -not $OtherVersion) { return $false }
     $stamp = {
         param($v)
@@ -5967,7 +5986,55 @@ function Test-WoaPairsWithTorchParity {
     if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
     if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
     if (& $stamp $TorchVersion) { return $true }
-    # Stable releases pair by offset: torchvision 0.(M+15) with torch 2.M.
+    # A stable companion pairs with what its own torch requirement admits; $null (a clause this cannot read) falls through.
+    $admits = {
+        param([string]$v, [string]$spec)
+        $public = ($v -split '\+', 2)[0]
+        if ($public -notmatch '^\d+(\.\d+)*$') { return $null }
+        $have = @($public -split '\.' | ForEach-Object { [long]$_ })
+        $order = {
+            param($a, $b)
+            for ($i = 0; $i -lt [Math]::Max($a.Count, $b.Count); $i++) {
+                $x = if ($i -lt $a.Count) { $a[$i] } else { 0 }
+                $y = if ($i -lt $b.Count) { $b[$i] } else { 0 }
+                if ($x -ne $y) { return [Math]::Sign($x - $y) }
+            }
+            return 0
+        }
+        foreach ($clause in ($spec -split ',')) {
+            $c = $clause.Trim()
+            if (-not $c) { continue }
+            if ($c -notmatch '^(~=|==|!=|<=|>=|<|>)\s*(\d+(?:\.\d+)*)(\.\*)?$') { return $null }
+            $op = $Matches[1]; $want = @($Matches[2] -split '\.' | ForEach-Object { [long]$_ }); $wild = [bool]$Matches[3]
+            if ($wild -and $op -notin @('==', '!=')) { return $null }
+            if ($wild) {
+                $prefix = ($want.Count -le $have.Count) -and ((& $order @($have[0..($want.Count - 1)]) $want) -eq 0)
+                if (($op -eq '==') -ne $prefix) { return $false }
+                continue
+            }
+            $cmp = & $order $have $want
+            $ok = switch ($op) {
+                '==' { $cmp -eq 0 }
+                '!=' { $cmp -ne 0 }
+                '<=' { $cmp -le 0 }
+                '>=' { $cmp -ge 0 }
+                '<'  { $cmp -lt 0 }
+                '>'  { $cmp -gt 0 }
+                '~=' {
+                    if ($want.Count -lt 2) { $null }
+                    else { ($cmp -ge 0) -and ((& $order @($have[0..($want.Count - 2)]) @($want[0..($want.Count - 2)])) -eq 0) }
+                }
+            }
+            if ($null -eq $ok) { return $null }
+            if (-not $ok) { return $false }
+        }
+        return $true
+    }
+    if ($TorchRequirement) {
+        $verdict = & $admits $TorchVersion $TorchRequirement
+        if ($null -ne $verdict) { return [bool]$verdict }
+    }
+    # Unread metadata: stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to 2.M.
     $rel = {
         param($v)
         $m = [regex]::Match($v, '^(\d+)\.(\d+)')
@@ -6320,7 +6387,7 @@ function Test-WoaAudioMatchesTorchParity {
 
 function Get-WoaCudaWheelVersionParity {
     param([string]$IndexUrl, [string]$PyTag, [string]$AbiTag, [string]$Project = "torch",
-          [string]$PairWith = "", [string]$Below = "")
+          [string]$PairWith = "", [string]$Below = "", [string]$MaxCuda = "")
     if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PyTag)) { return $null }
     if (-not $AbiTag) { $AbiTag = $PyTag }
     $base = ($IndexUrl -split '[?#]', 2)[0].TrimEnd('/')
@@ -6329,6 +6396,29 @@ function Get-WoaCudaWheelVersionParity {
         $body = [string](Invoke-RestMethod -Uri "$base/$Project/$tail" -UseBasicParsing -TimeoutSec 20)
     } catch { return $null }
     if ([string]::IsNullOrWhiteSpace($body)) { return $null }
+    $projectUrl = "$base/$Project/"
+    # Each wheel's link, so a stable companion's own torch requirement can be read (PEP 658 when the index serves it).
+    $links = @{}
+    foreach ($anchor in [regex]::Matches($body, '(?i)<a\s[^>]*>')) {
+        $href = [regex]::Match($anchor.Value, '(?i)\bhref\s*=\s*["'']([^"'']+)["'']')
+        if (-not $href.Success) { continue }
+        $target = ($href.Groups[1].Value -split '[#?]', 2)[0]
+        $file = ($target -split '/')[-1]
+        try { $file = [System.Uri]::UnescapeDataString($file) } catch {}
+        $core = [regex]::Match($anchor.Value, '(?i)\bdata-(?:core|dist-info)-metadata\s*=\s*["'']([^"'']*)["'']')
+        $links[$file.ToLowerInvariant()] = @{ Href = $target; Core = ($core.Success -and $core.Groups[1].Value -ne 'false') }
+    }
+    # Same release twice (+cu134 and +cu135): the newest CUDA build the driver runs, else the newest.
+    $driverCu = $null
+    if ($MaxCuda -match '^(\d+)\.(\d+)') { $driverCu = [int]$Matches[1] * 10 + [int]$Matches[2] }
+    $cudaRank = {
+        param([string]$v)
+        if ($v -notmatch '\+cu(\d+)') { return @(0, 0) }
+        $cu = [int]$Matches[1]
+        return @($(if ($null -eq $driverCu -or $cu -le $driverCu) { 1 } else { 0 }), $cu)
+    }
+    $readRequirement = [bool]($PairWith -and ($PairWith -notmatch '(?i)\.dev\d') -and
+        (($Project -replace '[-_.]+', '-').ToLowerInvariant() -eq "torchvision"))
     $best = $null
     $bestKey = $null
     # PEP 440 order within one release: dev < a < b < rc < final.
@@ -6348,10 +6438,21 @@ function Get-WoaCudaWheelVersionParity {
     foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
         $name = $match.Value
         try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
-        if (-not (Test-WoaWheelTagsParity -Name $name -PyTag $PyTag -AbiTag $AbiTag)) { continue }
+        # torch is built per interpreter; a companion may be interpreter-agnostic (torchvision 0.29.2 is py3-none).
+        $tagsOk = if ($Project -eq "torch") { Test-WoaWheelTagsParity -Name $name -PyTag $PyTag -AbiTag $AbiTag }
+                  else { Test-WoaWheelTagsUsableParity -Name $name -PyTag $PyTag -AbiTag $AbiTag }
+        if (-not $tagsOk) { continue }
         if ($name -notmatch '\+cu[0-9]+') { continue }
         $version = ($name -split '-')[1]
-        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version -Project $Project)) { continue }
+        $requirement = ""
+        if ($readRequirement -and (($PairWith -split '\+', 2)[-1] -eq ($version -split '\+', 2)[-1]) -and $links.ContainsKey($name.ToLowerInvariant())) {
+            $link = $links[$name.ToLowerInvariant()]
+            try {
+                $wheelUrl = ([System.Uri]::new([System.Uri]$projectUrl, $link.Href)).AbsoluteUri
+                $requirement = Get-WoaWheelTorchRequirementParity -WheelUrl $wheelUrl -HasCoreMetadata $link.Core
+            } catch { $requirement = "" }
+        }
+        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version -Project $Project -TorchRequirement $requirement)) { continue }
         $release = ($version -split '\+', 2)[0]
         $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
         $key = $null
@@ -6367,6 +6468,10 @@ function Get-WoaCudaWheelVersionParity {
         elseif ($key -eq $bestKey) {
             $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
             if (($rankNew[0] -gt $rankBest[0]) -or (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -gt $rankBest[1]))) { $best = $version }
+            elseif (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -eq $rankBest[1])) {
+                $cuNew = & $cudaRank $version; $cuBest = & $cudaRank $best
+                if (($cuNew[0] -gt $cuBest[0]) -or (($cuNew[0] -eq $cuBest[0]) -and ($cuNew[1] -gt $cuBest[1]))) { $best = $version }
+            }
         }
     }
     return $best
@@ -7472,7 +7577,7 @@ function Fast-Download {
     }
 }
 
-# ── Check if Python deps need updating ──
+# -- Check if Python deps need updating --
 # One definition of a verified install for the incomplete-install guard and the offline rule.
 function Test-StudioInstallVerified {
     try {
@@ -7676,7 +7781,17 @@ function Get-TritonWindowsRocmSpec {
 # Defined before the fast path, which reads it too.
 function Get-TritonWindowsSpec {
     param([string]$TorchVersion, [bool]$WinArm64 = $false)
-    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
+    if ($WinArm64) {
+        # Same per-torch-minor upper bound as x64 (a triton-windows built for a newer torch does not pair with
+        # this one), floored at the first win_arm64 wheel. Torch below 2.14 has no win_arm64 pairing, and a minor
+        # the x64 table does not name yet (2.16 dev from the nightly index) keeps the open floor too.
+        $x64Spec = Get-TritonWindowsSpec -TorchVersion $TorchVersion
+        if ($x64Spec -match '^triton-windows>=3\.(\d+),<(\S+)$' -and [int]$Matches[1] -ge 8) {
+            $woaFloor = if ([int]$Matches[1] -eq 8) { "3.8.0.post28" } else { "3.$($Matches[1])" }
+            return "triton-windows>=$woaFloor,<$($Matches[2])"
+        }
+        return "triton-windows>=3.8.0.post28"
+    }
     if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
         switch ([int]$Matches[1]) {
             12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
@@ -7957,6 +8072,19 @@ function Test-UnparseableManagedTorchCache {
     return $trimmed -ieq $Managed.Trim().Replace('/', '\').TrimEnd('\')
 }
 
+# USER value is account-wide: a custom-home run must not repoint it at its own tree.
+function Test-TorchCacheMayPersist {
+    param([string]$Value, [string]$Persisted, [string]$StudioRoot, [bool]$HomeIsCustom)
+    if (-not $HomeIsCustom) { return $true }
+    if ([string]::IsNullOrWhiteSpace($Persisted)) { return $true }
+    $norm = { param($p) [Environment]::ExpandEnvironmentVariables($p).Trim().Replace('/', '\').TrimEnd('\') }
+    $p = & $norm $Persisted
+    if ($p -ieq (& $norm $Value)) { return $true }
+    $h = & $norm $StudioRoot
+    # StartsWith, not -like: a home holding [ or ] would read as a wildcard pattern.
+    return ([bool]$h -and ($p -ieq $h -or $p.StartsWith("$h\", [StringComparison]::OrdinalIgnoreCase)))
+}
+
 function Clear-UnparseableTorchCacheEnv {
     $managedTorchCache = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
     if (-not $StageRoot) {
@@ -8061,7 +8189,12 @@ if ($TorchCacheDir) {
     if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
     $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
     if (-not $StageRoot) {
-        [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        $_persistedTorchCache = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
+        if (Test-TorchCacheMayPersist $TorchCacheDir $_persistedTorchCache $StudioHome $StudioHomeIsCustom) {
+            [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        } else {
+            substep "kept the account's TORCHINDUCTOR_CACHE_DIR ($_persistedTorchCache): it belongs to another install, so $TorchCacheDir is used for this run only"
+        }
     }
     substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 }
@@ -8238,13 +8371,16 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
     } catch { $_woaTags = "" }
     if ($_woaTags -match '^(cp\d+)\|(cp\d+t?)$') {
         $_woaPyTag = $Matches[1]; $_woaAbi = $Matches[2]
-        $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi
+        # Ties between CUDA builds of one release go to the newest this driver runs, as in install.ps1.
+        $_woaMaxCuda = ""
+        try { $_woaMaxCuda = [string](Get-LlamaDriverMaxCuda) } catch { $_woaMaxCuda = "" }
+        $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -MaxCuda $_woaMaxCuda
         if ($_woaTorchV) {
             $WinArm64TorchSpec = "torch==$_woaTorchV"
             $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
             $_woaBacktracks = 0
             while (-not $_woaVisionV -and $_woaBacktracks -lt 5) {
-                $_woaOlderTorch = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Below $_woaTorchV
+                $_woaOlderTorch = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Below $_woaTorchV -MaxCuda $_woaMaxCuda
                 if (-not $_woaOlderTorch) { break }
                 substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV; trying torch $_woaOlderTorch" "Yellow"
                 $_woaTorchV = $_woaOlderTorch
@@ -8258,11 +8394,12 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
                 # Keep the installed pair rather than pin a torch whose torchvision would resolve wrong.
                 $_woaInstalledPair = ""
                 try {
-                    $_woaInstalledPair = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import importlib.metadata as m; print(m.version('torch') + '|' + m.version('torchvision'))" 2>$null | Out-String).Trim()
+                    # The installed torchvision's own torch requirement as well, read from its METADATA the way the probe reads the index's.
+                    $_woaInstalledPair = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import importlib.metadata as m, re; r = [re.sub(r'^torch\s*\(?\s*([^()]*?)\s*\)?\s*$', r'\1', q.strip()) for q in (m.requires('torchvision') or []) if ';' not in q and re.match(r'(?i)torch(?![A-Za-z0-9_.-])', q.strip())]; print(m.version('torch') + '|' + m.version('torchvision') + '|' + ','.join(x.replace(' ', '') for x in r if x))" 2>$null | Out-String).Trim()
                 } catch { $_woaInstalledPair = "" }
-                $_woaKeptTorch = ""; $_woaKeptVision = ""
-                if ($_woaInstalledPair -match '^(\S+)\|(\S+)$') { $_woaKeptTorch = $Matches[1]; $_woaKeptVision = $Matches[2] }
-                if ($_woaKeptTorch -and $_woaKeptVision -and (Test-WoaPairsWithTorchParity -TorchVersion $_woaKeptTorch -OtherVersion $_woaKeptVision -Project "torchvision")) {
+                $_woaKeptTorch = ""; $_woaKeptVision = ""; $_woaKeptRequirement = ""
+                if ($_woaInstalledPair -match '^(\S+)\|(\S+)\|(\S*)$') { $_woaKeptTorch = $Matches[1]; $_woaKeptVision = $Matches[2]; $_woaKeptRequirement = $Matches[3] }
+                if ($_woaKeptTorch -and $_woaKeptVision -and (Test-WoaPairsWithTorchParity -TorchVersion $_woaKeptTorch -OtherVersion $_woaKeptVision -Project "torchvision" -TorchRequirement $_woaKeptRequirement)) {
                     substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV; keeping the installed torch $_woaKeptTorch and torchvision $_woaKeptVision" "Yellow"
                     $_woaTorchV = $_woaKeptTorch
                     $WinArm64TorchSpec = "torch==$_woaKeptTorch"
@@ -8283,8 +8420,8 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
         }
     }
 }
-# win_arm64's first triton-windows wheel is 3.8.0.post28.
-$_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
+# Until torch is read below: win_arm64's first triton-windows wheel is 3.8.0.post28.
+$_tritonSpec = Get-TritonWindowsSpec -TorchVersion "" -WinArm64 ([bool]$WinArm64Venv)
 # The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
@@ -8418,7 +8555,7 @@ if ($ROCmIndexUrl) {
     }
 }
 
-# ── Intel XPU (SYCL) ─────────────────────────────────────────────────────────
+# -- Intel XPU (SYCL) ---------------------------------------------------------
 # Intel XPU has its own index leaf and must not fall into the CUDA branch.
 $XpuCpuFallback = $false
 if (-not $ROCmIndexUrl -and $CuTag -eq "xpu") { $XpuIndexUrl = $TorchInstallIndexUrl }
@@ -8509,7 +8646,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         Exit-SetupFailure "PyTorch installation failed (exit code $torchInstallExit)"
     }
 } elseif (-not $ROCmIndexUrl -and -not $XpuIndexUrl) {
-    substep "installing PyTorch with CUDA support ($CuTag)..."
+    substep "installing PyTorch with CUDA support ($(Get-CudaTorchInstallLabel -CuTag $CuTag -WinArm64Venv ([bool]$WinArm64Venv) -WinArm64TorchSpec $WinArm64TorchSpec))..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     # PEP 440 ignores +cuXXX, so a cu126 -> cu128 change needs --force-reinstall.
     $cudaForce = @()
@@ -8542,6 +8679,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
         # Only a release this index publishes, so a CUDA family change never pins an unservable one.
         # download.pytorch.org win_amd64: cu126 2.6-2.14, cu128 2.7-2.11, cu129 2.8-2.9, cu130 2.9-2.14.
+        # cu130 tops out at the minor below install.ps1 $Cu130TorchCeiling (exclusive, "2.15.0"), so both keep
+        # the same releases; raise them together once a 2.15 cu130 win_amd64 wheel is published.
         $_keptRange = @{ "cu126" = @(6, 14); "cu128" = @(7, 11); "cu129" = @(8, 9); "cu130" = @(9, 14) }[[string]$CuTag]
         if ($_keptRange -and $_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.(\d+)\.\d+)(\+\S*)?\s*$') -and
                 [int]$Matches[2] -ge $_keptRange[0] -and [int]$Matches[2] -le $_keptRange[1]) {
@@ -8678,7 +8817,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # No unsloth.exe rename needed: install.ps1 runs the CLI through python.exe and the base is not
 # reinstalled. Duplicate metadata repair is wrapped in the CLI launcher transaction.
 
-# ── Publish the torch flavor this run settled on ──
+# -- Publish the torch flavor this run settled on --
 # so install_python_stack.py can enforce it; PyPI's Windows torch wheel is +cpu.
 if (-not $NoTorchMode) {
     $_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl
@@ -8786,7 +8925,7 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
     }
 }
 
-# ── Intel XPU: bitsandbytes must carry XPU kernels ──
+# -- Intel XPU: bitsandbytes must carry XPU kernels --
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
 # Never the unsloth[intel-gpu-torch*] extra. Must stay above the EAP restore below (5.1 needs Continue).
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
@@ -8805,7 +8944,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     }
 }
 
-# ── Intel XPU: triton-windows must not shadow torch's XPU triton ──
+# -- Intel XPU: triton-windows must not shadow torch's XPU triton --
 # Both own the `triton` package. Run after the stack (it reinstalls triton-windows); always
 # pair the uninstall with a reinstall.
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
@@ -8975,7 +9114,7 @@ if ($stackExit -ne 0) {
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
 
-# ── Finish with the setup script this update installed ──
+# -- Finish with the setup script this update installed --
 # Phases a release adds below would be skipped by the update installing it. A module scope keeps this
 # run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
@@ -9056,7 +9195,7 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     }
 }
 
-# ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
+# -- Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ --
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
 # T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
@@ -10558,7 +10697,7 @@ if (-not $llamaCppIsLink -and (
 
 Complete-FrontendBuildBackground
 
-# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+# -- Precompile bytecode -- (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
 $_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
 $_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
 $_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
@@ -10576,9 +10715,9 @@ if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOp
     $global:LASTEXITCODE = $_pycPrevExit
 }
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Footer
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 $DoneLabel = if ($env:SKIP_STUDIO_BASE -eq "1") { "Unsloth Studio Setup Complete" } else { "Unsloth Studio Updated" }
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))

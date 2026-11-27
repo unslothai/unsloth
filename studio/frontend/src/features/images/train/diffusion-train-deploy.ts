@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { DiffusionTrainableFamily } from "../api";
+import type {
+  DiffusionTrainableFamily,
+  DiffusionTrainingRunSummary,
+  DiffusionTrainingStatus,
+} from "../api";
+import type { AdapterDeployRequest } from "../stores/image-workflow-store";
+
+export type DiffusionDeployRun = Pick<
+  DiffusionTrainingRunSummary,
+  "base_model" | "family" | "catalog_path" | "instance_prompt"
+>;
 
 function normalizedRepo(repo: string): string {
   return repo.trim().toLowerCase();
@@ -24,6 +34,39 @@ export function resolveDiffusionDeployBase(
     return family.deploy_base;
   }
   return trainedBase;
+}
+
+export function diffusionDeployRequest(
+  families: DiffusionTrainableFamily[] | undefined,
+  run: DiffusionDeployRun,
+): AdapterDeployRequest | null {
+  if (!run.base_model) return null;
+  const family = run.family || "";
+  const rec = families?.find((f) => f.name === family);
+  return {
+    baseRepo: resolveDiffusionDeployBase(rec, run.base_model),
+    family,
+    families: rec?.lora_families ?? [family],
+    catalogPath: run.catalog_path || "",
+    trigger: run.instance_prompt?.trim() || "",
+  };
+}
+
+// The job's own trigger, since the form may be edited or empty after a reload or resume; older backends omit it.
+export function liveDeployRun(
+  status: Pick<DiffusionTrainingStatus, "base_model" | "family" | "catalog_path" | "instance_prompt">,
+  record: DiffusionDeployRun | null,
+  form: { baseModel: string; family: string; trigger: string },
+): DiffusionDeployRun {
+  return {
+    base_model: status.base_model || form.baseModel,
+    family: status.family || form.family,
+    catalog_path: status.catalog_path,
+    instance_prompt:
+      status.instance_prompt !== undefined
+        ? status.instance_prompt
+        : record ? record.instance_prompt : form.trigger,
+  };
 }
 
 /**

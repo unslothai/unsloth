@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { DiffusionRunProgress } from "./diffusion-run-progress";
+import { stepGuidanceText } from "./step-guidance";
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
@@ -69,11 +70,9 @@ import {
   type DiffusionTrainingInfo,
   type DiffusionTrainingRunDetail,
   type DiffusionTrainingRunSummary,
-  type DiffusionTrainingStatus,
   datasetItemCount,
   getDiffusionTrainingInfo,
   getDiffusionTrainingRun,
-  getDiffusionTrainingStatus,
   listDiffusionDatasetExamples,
   listDiffusionDatasetImages,
   listDiffusionTrainingRuns,
@@ -112,9 +111,12 @@ import {
 } from "./resume-diffusion-run";
 import {
   catalogFileName,
-  resolveDiffusionDeployBase,
+  type DiffusionDeployRun,
+  diffusionDeployRequest,
+  liveDeployRun,
   resolveDiffusionTrainingBase,
 } from "./diffusion-train-deploy";
+import type { AdapterDeployRequest } from "../stores/image-workflow-store";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
 import {
   type DiffusionBlockSwapMode,
@@ -126,6 +128,7 @@ import { useSystemInfo } from "@/hooks/use-system";
 import { diffusionTrainGuideUrl } from "./diffusion-train-guides";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
 import { runningTrainingSelection, trainingRunSelection } from "./diffusion-train-restore";
+import { useDiffusionTrainingStatus } from "./use-diffusion-training-status";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 import {
   MediaGenerationPresetControl,
@@ -435,21 +438,9 @@ export function DiffusionTrainPanel({
   // One owner per store: Video keeps its own Train panel mounted, and two would race the saved selection.
   savedPresets?: boolean;
   onTrainingComplete?: () => void;
-  onDeploy?: (args: {
-    baseRepo: string;
-    family: string;
-    families?: string[];
-    catalogPath: string;
-    trigger: string;
-  }) => void;
+  onDeploy?: (args: AdapterDeployRequest) => void;
   // Video-family adapters bake into the video loader instead; absent = no Deploy for them.
-  onDeployVideo?: (args: {
-    baseRepo: string;
-    family: string;
-    families?: string[];
-    catalogPath: string;
-    trigger: string;
-  }) => void;
+  onDeployVideo?: (args: AdapterDeployRequest) => void;
 }) {
   const [info, setInfo] = useState<DiffusionTrainingInfo | null>(null);
   const [infoLoadState, setInfoLoadState] = useState<
@@ -596,7 +587,7 @@ export function DiffusionTrainPanel({
     onScroll: onSettingsScroll,
     className: settingsFadeClass,
   } = useScrollFades();
-  const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
+  const { status, poll } = useDiffusionTrainingStatus(active);
   const [prevRuns, setPrevRuns] = useState<DiffusionTrainingRunSummary[]>([]);
   const [viewRun, setViewRun] = useState<DiffusionTrainingRunDetail | null>(null);
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
@@ -938,21 +929,6 @@ export function DiffusionTrainPanel({
     [defaultPresetParams, setFamilyName, setBaseChoice],
   );
 
-  const poll = useCallback(async () => {
-    try {
-      setStatus(await getDiffusionTrainingStatus());
-    } catch {
-      /* best-effort; a failed poll should not surface an error while the tab is open */
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!active) return;
-    void poll();
-    const id = window.setInterval(() => void poll(), 1500);
-    return () => window.clearInterval(id);
-  }, [active, poll]);
-
   const applyRunSelection = useCallback(
     (run: { familyName: string; baseModel: string | null }) => {
       seededFromLoaded.current = true;
@@ -1011,17 +987,21 @@ export function DiffusionTrainPanel({
 
   // Re-armed in onStart too, so a run notifies even if "running" is never observed.
   const notifiedComplete = useRef(false);
+  // Keyed by job too: a hidden tab skips idle polls, so a run started elsewhere may finish unseen.
+  const notifiedJobId = useRef<string | null>(null);
   useEffect(() => {
     const producedAdapter =
       status?.status === "completed" ||
       (status?.status === "stopped" && Boolean(status?.lora_path));
-    if (producedAdapter && !notifiedComplete.current) {
+    const jobId = status?.job_id ?? null;
+    if (producedAdapter && (!notifiedComplete.current || notifiedJobId.current !== jobId)) {
       notifiedComplete.current = true;
+      notifiedJobId.current = jobId;
       onTrainingComplete?.();
     } else if (status?.status === "running" && notifiedComplete.current) {
       notifiedComplete.current = false;
     }
-  }, [status?.status, status?.lora_path, onTrainingComplete]);
+  }, [status?.status, status?.lora_path, status?.job_id, onTrainingComplete]);
 
   const selectedDataset =
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
@@ -1091,15 +1071,21 @@ export function DiffusionTrainPanel({
       cancelled = true;
       if (delayed !== undefined) clearTimeout(delayed);
     };
-  }, [active, status?.status]);
+  }, [active, status?.status, status?.job_id]);
 
   const openPrevRun = useCallback(async (jobId: string) => {
     try {
-      setViewRun(await getDiffusionTrainingRun(jobId));
+      const detail = await getDiffusionTrainingRun(jobId);
+      setViewRun(detail);
+      // Opening a run from history points an untouched form at its family and base; a user's own pick stays.
+      if (!modelPickedByUser.current) {
+        const opened = trainingRunSelection(detail, families);
+        if (opened) applyRunSelection(opened);
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not load that run");
     }
-  }, []);
+  }, [families, applyRunSelection]);
 
   const viewLossHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = viewRun?.metric_history;
@@ -1533,19 +1519,6 @@ export function DiffusionTrainPanel({
     [poll],
   );
 
-  // Variant pairs cover FLUX.2 Klein 4B/9B; the scalar fallback serves older backends.
-  const deployBaseFor = useCallback(
-    (trainedBase: string, famName: string): string => {
-      const rec = info?.families?.find((f) => f.name === famName);
-      return resolveDiffusionDeployBase(rec, trainedBase);
-    },
-    [info?.families],
-  );
-  const loraFamiliesFor = useCallback(
-    (famName: string): string[] =>
-      info?.families?.find((f) => f.name === famName)?.lora_families ?? [famName],
-    [info?.families],
-  );
   // The images loader refuses video bases, so their adapters deploy to the Video page instead.
   const isVideoFamily = useCallback(
     (famName: string) => info?.families?.find((f) => f.name === famName)?.is_video === true,
@@ -1563,36 +1536,24 @@ export function DiffusionTrainPanel({
     (catalogPath: string) => void navigate({ to: "/export", search: { imageLora: catalogFileName(catalogPath) } }),
     [navigate],
   );
-  const onDeployClick = useCallback(() => {
-    if (!status?.catalog_path) {
-      toast.error("The trained adapter is not available yet.");
-      return;
-    }
-    const trainedBase = status.base_model || (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase);
-    if (!trainedBase) {
-      toast.error("Could not determine the base model to load for this adapter.");
-      return;
-    }
-    const famName = status.family || family?.name || "";
-    (isVideoFamily(famName) ? onDeployVideo : onDeploy)?.({
-      baseRepo: deployBaseFor(trainedBase, famName),
-      family: famName,
-      families: loraFamiliesFor(famName),
-      catalogPath: status.catalog_path,
-      trigger: instancePrompt.trim(),
+  const deployRun = useCallback(
+    (run: DiffusionDeployRun) => {
+      const request = diffusionDeployRequest(info?.families, run);
+      if (!request) {
+        toast.error("Could not determine the base model to load for this adapter.");
+        return;
+      }
+      (isVideoFamily(request.family) ? onDeployVideo : onDeploy)?.(request);
+    },
+    [info?.families, isVideoFamily, onDeploy, onDeployVideo],
+  );
+  const liveDeploy =
+    status &&
+    liveDeployRun(status, liveRunSummary, {
+      baseModel: effectiveBase === CUSTOM_BASE ? customBase : effectiveBase,
+      family: family?.name || "",
+      trigger: instancePrompt,
     });
-  }, [
-    status,
-    effectiveBase,
-    customBase,
-    family,
-    instancePrompt,
-    onDeploy,
-    onDeployVideo,
-    isVideoFamily,
-    deployBaseFor,
-    loraFamiliesFor,
-  ]);
 
   // For fields no family seeds: editing one must not stop a family switch from reseeding rank / LR / resolution.
   const keepFamilyDefaults = () => {};
@@ -1623,6 +1584,14 @@ export function DiffusionTrainPanel({
     </div>
   );
 
+  // Only families with a measured step sweep get a per-family count, scaled to the picked set; the rest keep the
+  // generic hint.
+  const familyStepGuidance = stepGuidanceText(
+    family?.label ?? familyName,
+    reportedFamily?.step_guidance,
+    selectedItemCount,
+    effectiveBatchSize * Math.max(1, gradAccum),
+  );
   const durationField = (
     <div className={fieldClass}>
       <FieldLabel
@@ -1667,6 +1636,11 @@ export function DiffusionTrainPanel({
           </SelectContent>
         </Select>
       </div>
+      {familyStepGuidance ? (
+        <p className="text-ui-10 leading-snug text-muted-foreground" data-testid="train-step-guidance">
+          {familyStepGuidance}
+        </p>
+      ) : null}
     </div>
   );
 
@@ -1674,7 +1648,7 @@ export function DiffusionTrainPanel({
     m: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto",
   ): string => {
     if (m === "auto") return "Auto";
-    if (m === "nf4") return "nf4 (lowest VRAM)";
+    if (m === "nf4") return "NF4 (bitsandbytes, not NVFP4)";
     if (m === "bf16") return "bf16 (fastest)";
     if (m === "int8") return "int8";
     if (m === "mxfp8") return "mxfp8 (Blackwell)";
@@ -1881,7 +1855,7 @@ export function DiffusionTrainPanel({
 
         {isDiT ? (
           <div className={fieldClass}>
-            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; nf4 uses the least VRAM.">
+            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; NF4 uses the least VRAM. NF4 is the bitsandbytes 4-bit format QLoRA uses, not NVIDIA's NVFP4, which Studio runs for image and video generation only.">
               Base precision
             </FieldLabel>
             <Select
@@ -2456,15 +2430,7 @@ export function DiffusionTrainPanel({
                   <Button
                     type="button"
                     size="sm"
-                    onClick={() =>
-                      (isVideoFamily(viewRun.family || "") ? onDeployVideo : onDeploy)?.({
-                        baseRepo: deployBaseFor(viewRun.base_model || "", viewRun.family || ""),
-                        family: viewRun.family || "",
-                        families: loraFamiliesFor(viewRun.family || ""),
-                        catalogPath: viewRun.catalog_path || "",
-                        trigger: viewRun.instance_prompt || "",
-                      })
-                    }
+                    onClick={() => deployRun(viewRun)}
                   >
                     {deployLabel(viewRun.family || "")}
                   </Button>
@@ -2671,9 +2637,9 @@ export function DiffusionTrainPanel({
                   )}
                 </p>
                 <div className="mt-1 flex flex-wrap gap-2">
-                  {status?.catalog_path && canDeployFamily(status.family || family?.name || "") && (
-                    <Button type="button" size="sm" onClick={onDeployClick}>
-                      {deployLabel(status.family || family?.name || "")}
+                  {liveDeploy?.catalog_path && canDeployFamily(liveDeploy.family || "") && (
+                    <Button type="button" size="sm" onClick={() => deployRun(liveDeploy)}>
+                      {deployLabel(liveDeploy.family || "")}
                     </Button>
                   )}
                   {status?.catalog_path && (
