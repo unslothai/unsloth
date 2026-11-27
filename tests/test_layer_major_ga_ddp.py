@@ -134,7 +134,8 @@ def test_a_forward_that_writes_a_broadcast_buffer_keeps_the_step_standard(report
     for rank, r in reports.items():
         b = r["buffer_written"]
         assert b["windows"] == 0 and b["aborts"] == 1 and b["reduces"] == 0, (rank, b)
-        assert b["bitwise_vs_plain"] and b["close_to_one_process"], (rank, b)
+        # The output reads the buffer: the retry is bitwise plain DDP only if the window's writes were put back.
+        assert b["bitwise_vs_its_plain"], (rank, b)
 
 
 def test_hooks_on_the_ddp_wrapper_keep_the_step_standard(reports):

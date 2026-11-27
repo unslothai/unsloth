@@ -393,18 +393,21 @@ def main(out_dir, zoo_dir):
         return lambda: mlp.__dict__.pop("forward", None)
 
     def buffer_written(mod, engine, model):
-        # A forward writing a DDP-broadcast buffer (BatchNorm, dynamic RoPE) fails every rank's commit vote.
+        # A forward writing a DDP-broadcast buffer the output reads (a counter, as BatchNorm's running stats and
+        # dynamic RoPE): every rank's commit vote fails, and the buffer is put back before the standard retry.
         attn = model.get_base_model().model.layers[2].self_attn
+        attn.register_buffer("unsloth_calls", torch.zeros(()), persistent = False)
         mlp = model.get_base_model().model.layers[2].mlp
         real = mlp.forward
 
         def write(*args, **kwargs):
-            attn.unsloth_inv_freq.add_(0)
-            return real(*args, **kwargs)
+            attn.unsloth_calls.add_(1)
+            return real(*args, **kwargs) + 1e-3 * attn.unsloth_calls
 
         mlp.forward = write
         return lambda: mlp.__dict__.pop("forward", None)
 
+    buf0 = run("buffer_written_plain", "0", inject = buffer_written)
     buf_r = run("buffer_written", "1", inject = buffer_written)
     hook_r = run("ddp_wrapper_hook", "1", hook_wrapper = True)
     wrap_r = run("rank1_instance_wrapper", "1", rank1_wrapper = True)
@@ -438,6 +441,11 @@ def main(out_dir, zoo_dir):
             "steps": len(r["grads"]),
         }
     report["one_process_vs_plain_max_diff"] = max_diff(plain["grads"], ref_grads)
+    report["buffer_written"]["bitwise_vs_its_plain"] = (
+        bitwise(buf_r["grads"], buf0["grads"])
+        and bitwise([buf_r["weights"]], [buf0["weights"]])
+        and buf_r["logs"] == buf0["logs"]
+    )
     # use_gradient_checkpointing = "unsloth" at max_seq_length >= 512 (Unsloth's default): its checkpoint shim on
     # every decoder layer, 512-token rows. Windows run where the engine accepts the shim, else every rank aborts
     # alike and runs the standard step; either way bitwise equal to plain DDP.
