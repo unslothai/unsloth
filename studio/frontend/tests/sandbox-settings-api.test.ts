@@ -129,6 +129,7 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       builtinContainerBuild: null,
     },
     memory: null,
+    fileSize: null,
     setup: null,
     checkedAt: 12,
   });
@@ -429,4 +430,48 @@ test("the build that adds the built-in container reaches the tab", async () => {
   };
   assert.equal(win.windowsBuild, "26200.6584");
   assert.equal(win.builtinContainerBuild, "26200.9278");
+});
+
+test("the file size limit reaches the tab and an older server has none", async () => {
+  const linux = {
+    platform: "linux",
+    python: { backend: "bubblewrap", available: true, reason: "", limitations: [] },
+    terminal: { backend: "bubblewrap", available: true, reason: "", limitations: [] },
+    windows: null,
+    checked_at: 1,
+  };
+  const { api } = loadApi(() =>
+    json({
+      ...linux,
+      file_size: {
+        limit_mb: 2048,
+        saved_mb: 100,
+        default_mb: 100,
+        min_mb: 1,
+        max_mb: 1048576,
+        locked_by_environment: true,
+      },
+    }),
+  );
+  assert.deepEqual((await api.loadSandboxStatus(false, "fallback")).fileSize, {
+    limitMb: 2048,
+    savedMb: 100,
+    defaultMb: 100,
+    minMb: 1,
+    maxMb: 1048576,
+    lockedByEnvironment: true,
+  });
+  const older = loadApi(() => json(linux));
+  assert.equal(
+    (await older.api.loadSandboxStatus(false, "fallback")).fileSize,
+    null,
+  );
+});
+
+test("a file size limit save sends only file_size_limit_mb", async () => {
+  const { api, calls } = loadApi(() => json(WINDOWS_STATUS));
+  await api.updateSandboxSettings({ fileSizeLimitMb: 4096 }, "fallback");
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+    file_size_limit_mb: 4096,
+  });
 });

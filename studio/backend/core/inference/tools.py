@@ -126,7 +126,7 @@ from utils.account_context import (
 from utils.current_date_prompt_settings import strip_current_date_update_note
 from utils.host_policy import _literal_ip_address
 from core.inference.providers import _metadata_host as _provider_metadata_host
-from utils import sandbox_memory_limit, tool_result_limit
+from utils import sandbox_file_size_limit, sandbox_memory_limit, tool_result_limit
 from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from integrations.unreal import CALL_GUIDE as UNREAL_CALL_GUIDE
@@ -10247,14 +10247,17 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
 
 # Read by _sandbox_preexec after the fork, so it is resolved here first: the settings store cannot be read in the child.
 _sandbox_as_bytes = 8 * 1024 * 1024 * 1024
+_sandbox_fsize_bytes = sandbox_file_size_limit.DEFAULT_FILE_SIZE_LIMIT_MB * 1024 * 1024
 
 
 def _refresh_sandbox_memory_limit() -> None:
-    global _sandbox_as_bytes
+    """Resolves the saved memory and file size limits for the next sandboxed launch."""
+    global _sandbox_as_bytes, _sandbox_fsize_bytes
     # RLIMIT_AS only works on Linux; Windows and macOS get the limit from _cap_tool_memory.
     _sandbox_as_bytes = (
         sandbox_memory_limit.memory_limit_bytes() if sys.platform == "linux" else None
     )
+    _sandbox_fsize_bytes = sandbox_file_size_limit.file_size_limit_bytes()
 
 
 _MEMORY_WATCHDOG_POLL_S = 1.0
@@ -10348,6 +10351,32 @@ def _cap_tool_memory(proc, pgid, sandboxed: bool) -> None:
     threading.Thread(target = _memory_watchdog, args = (proc, limit_bytes, pgid), daemon = True).start()
 
 
+_SIGXFSZ = getattr(signal, "SIGXFSZ", None)
+# The shell's report of a SIGXFSZ kill (Linux strsignal, then macOS), EFBIG for writers that ignore the signal
+# (Python does), and bash refusing to raise the hard limit.
+_FILE_SIZE_EXCEEDED_RE = re.compile(
+    r"File ?size limit exceeded|File too large|ulimit: file size: cannot modify limit",
+    re.IGNORECASE,
+)
+
+
+def _file_size_exceeded_note(proc, output: str, sandboxed: bool) -> str:
+    """Names the sandbox file size limit when a failed call ran into it, so the model stops retrying with ulimit:
+    the hard limit is set too, so nothing inside the sandbox can raise it."""
+    if not sandboxed or sys.platform == "win32" or _SIGXFSZ is None or proc.returncode == 0:
+        return ""
+    if proc.returncode not in (-_SIGXFSZ, 128 + _SIGXFSZ) and not _FILE_SIZE_EXCEEDED_RE.search(
+        output or ""
+    ):
+        return ""
+    limit_mb = _sandbox_fsize_bytes // (1024 * 1024)
+    return (
+        f"Stopped: this call hit the {limit_mb} MB sandbox file size limit "
+        "(Settings > Security > File size limit). ulimit cannot raise it from inside the sandbox; ask the "
+        "user to raise the limit instead of retrying.\n"
+    )
+
+
 def _completion_reason(proc, timed_out: bool, cancel_event) -> str:
     if timed_out:
         return "timed_out"
@@ -10404,7 +10433,8 @@ def _sandbox_preexec():
         except (ValueError, OSError, AttributeError):
             pass
         try:
-            _resource.setrlimit(_resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
+            fsize = _sandbox_fsize_bytes
+            _resource.setrlimit(_resource.RLIMIT_FSIZE, (fsize, fsize))
         except (ValueError, OSError):
             pass
         try:
@@ -10546,7 +10576,7 @@ def _sandbox_rlimit_args() -> "list[str] | None":
         )
     except ValueError:
         pass
-    wanted.append(("fsize", _resource.RLIMIT_FSIZE, 100 * 1024 * 1024))
+    wanted.append(("fsize", _resource.RLIMIT_FSIZE, _sandbox_fsize_bytes))
     if _sandbox_as_bytes is not None:
         wanted.append(("as", _resource.RLIMIT_AS, _sandbox_as_bytes))
     try:
@@ -24877,7 +24907,11 @@ def _python_exec(
                 else ""
             )
 
-        result = _memory_exceeded_note(proc) + (output or "")
+        result = (
+            _memory_exceeded_note(proc)
+            + _file_size_exceeded_note(proc, output, not disable_sandbox)
+            + (output or "")
+        )
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
         # Detect on full output (truncation may hide it), append after truncation; use the real workdir.
@@ -25156,7 +25190,11 @@ def _bash_exec(
                 else ""
             )
 
-        result = _memory_exceeded_note(proc) + (output or "")
+        result = (
+            _memory_exceeded_note(proc)
+            + _file_size_exceeded_note(proc, output, not disable_sandbox)
+            + (output or "")
+        )
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.
