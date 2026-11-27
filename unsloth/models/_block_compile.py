@@ -1945,16 +1945,30 @@ def _route_gdn_instance(gdn):
     raw conv and one built after keeps the raw chunk kernel; each load then trains a different graph."""
     from ._gdn_op import _causal_depthwise_conv
 
+    def _raw_fla(fn):
+        return (
+            callable(fn)
+            and not getattr(fn, "_unsloth_block_adapter", False)
+            and str(getattr(fn, "__module__", "")).endswith("fla.ops.gated_delta_rule.chunk")
+        )
+
     scan = gdn.__dict__.get("chunk_gated_delta_rule")
     if callable(scan) and not getattr(scan, "_unsloth_block_adapter", False):
         _route_fla_kernel()
         scan = gdn.__dict__.get("chunk_gated_delta_rule")
+        # Packing's scan wrapper (@wraps copies fla's __module__) injects cu_seqlens, so it stays
+        # outermost; the kernel it holds as its `_orig` default is routed under it instead.
+        packed = (
+            gdn.__dict__.get("_unsloth_varlen_wrapped", False)
+            and "_unsloth_varlen_orig_scan" in gdn.__dict__
+            and scan is not gdn.__dict__["_unsloth_varlen_orig_scan"]
+        )
+        if packed:
+            defaults = getattr(scan, "__kwdefaults__", None)
+            if isinstance(defaults, dict) and _raw_fla(defaults.get("_orig")):
+                defaults["_orig"] = _gdn_chunk_adapter(defaults["_orig"])
         # The walk finds callers of the kernel fla's module holds now; an earlier walk replaced it there.
-        if (
-            callable(scan)
-            and not getattr(scan, "_unsloth_block_adapter", False)
-            and str(getattr(scan, "__module__", "")).endswith("fla.ops.gated_delta_rule.chunk")
-        ):
+        elif _raw_fla(scan):
             gdn.__dict__["chunk_gated_delta_rule"] = _gdn_chunk_adapter(scan)
     _route_causal_conv(gdn)
     conv = gdn.__dict__.get("causal_conv1d_fn")

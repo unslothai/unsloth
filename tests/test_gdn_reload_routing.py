@@ -138,3 +138,51 @@ def test_packing_wrapped_conv_stays_outermost(monkeypatch):
     gdn._unsloth_varlen_wrapped = True
     M._prepare_gdn(layer, torch.zeros(1, 4, 8))
     assert gdn.__dict__["causal_conv1d_fn"] is wrapper
+
+
+def _packing_scan_wrapper(scan_orig, module, calls):
+    # The shape of utils/packing.py's per-instance scan wrapper: @wraps copies fla's __module__.
+    from functools import wraps
+
+    @wraps(scan_orig)
+    def scan_fn(
+        *args,
+        _orig = scan_orig,
+        _module = module,
+        **kwargs,
+    ):
+        calls.append(("packing", dict(kwargs)))
+        if kwargs.get("cu_seqlens") is None:
+            kwargs["cu_seqlens"] = "packed"
+        return _orig(*args, **kwargs)
+
+    return scan_fn
+
+
+@pytest.mark.parametrize("first_load", [True, False])
+def test_packing_wrapped_scan_stays_outside_the_chunk_adapter(monkeypatch, first_load):
+    # Hybrid packing wraps an instance's kernels before the first compiled forward; the adapter must go under it.
+    M = _load()
+    M.__package__ = "_ugdn_reload"
+    monkeypatch.setattr(M, "_GDN_OP", [None if first_load else True])
+    monkeypatch.setattr(M, "_route_sm_count", lambda: None)
+    fla, modeling = _install_fakes(monkeypatch)
+    layer = modeling.Layer()
+    gdn = layer.linear_attn
+    calls = []
+    raw = gdn.chunk_gated_delta_rule
+    wrapper = _packing_scan_wrapper(raw, gdn, calls)
+    gdn._unsloth_varlen_orig_scan = raw
+    gdn.chunk_gated_delta_rule = wrapper
+    gdn._unsloth_varlen_wrapped = True
+
+    M._prepare_gdn(layer, torch.zeros(1, 4, 8))
+
+    outer = gdn.__dict__["chunk_gated_delta_rule"]
+    assert outer is wrapper, "the chunk adapter was put outside packing's scan wrapper"
+    assert _routed(
+        outer.__kwdefaults__["_orig"]
+    ), "the kernel under packing's wrapper was not routed"
+    q = torch.zeros(1, 4, 2, 4)
+    outer(q, q, q, g = q[..., 0], beta = q[..., 0], use_qk_l2norm_in_kernel = True)
+    assert calls and calls[0][0] == "packing" and calls[0][1].get("cu_seqlens") is None
