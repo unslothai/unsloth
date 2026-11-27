@@ -449,12 +449,18 @@ def int8_lora_unavailable(gpu = "current"):
     return int8_lora.int8_lora_supported(torch.device("cuda"))
 
 
-def float8_training_request(float8_training, full_finetuning = False):
+def float8_training_request(
+    float8_training,
+    full_finetuning = False,
+    quantized_base = False,
+):
     """The LoRA frozen-base request: the float8_training kwarg, or 'int8_lora' when UNSLOTH_LORA_BASE_INT8=1
-    and the kwarg is unset. The environment opt-in never fails a load: where the int8 base cannot run it says
-    why and training stays 16 bit (float8_training = 'int8_lora' refuses instead)."""
+    and the kwarg is unset. The environment opt-in never fails a load: on a quantized base (load_in_4bit, ...)
+    or where the int8 base cannot run it says why and training stays as loaded (float8_training = 'int8_lora'
+    refuses instead)."""
     if float8_training in (None, False) and not full_finetuning and int8_lora_requested():
-        why = int8_lora_unavailable()
+        why = "the base is loaded quantized (load_in_4bit / 8bit / fp8)" if quantized_base else None
+        why = why or int8_lora_unavailable()
         if why is not None:
             print(
                 f"Unsloth: UNSLOTH_LORA_BASE_INT8=1 is ignored here ({why}); training stays in 16 bit."

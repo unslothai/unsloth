@@ -1459,7 +1459,9 @@ class FastLanguageModel(FastLlamaModel):
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         fp8_lora = None
         _int8_request = float8_training_request(
-            kwargs.get("float8_training", None), full_finetuning
+            kwargs.get("float8_training", None),
+            full_finetuning,
+            quantized_base = bool(load_in_4bit or load_in_8bit or load_in_fp8 not in (False, None)),
         )
         if _int8_request is not kwargs.get("float8_training", None):
             kwargs["float8_training"] = _int8_request
@@ -2432,7 +2434,9 @@ class FastModel(FastBaseModel):
         user_config = kwargs.pop("config", None)
         fp8_lora = None
         _int8_request = float8_training_request(
-            kwargs.get("float8_training", None), full_finetuning
+            kwargs.get("float8_training", None),
+            full_finetuning,
+            quantized_base = bool(load_in_4bit or load_in_8bit or load_in_fp8 not in (False, None)),
         )
         if _int8_request is not kwargs.get("float8_training", None):
             kwargs["float8_training"] = _int8_request

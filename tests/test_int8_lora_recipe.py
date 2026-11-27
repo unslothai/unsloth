@@ -44,6 +44,13 @@ def test_env_opt_in_on_unsupported_gpu_stays_16bit(monkeypatch, capsys, gpu):
     assert "ignored here" in capsys.readouterr().out
 
 
+def test_env_opt_in_on_quantized_base_is_ignored(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
+    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
+    assert f8t.float8_training_request(None, quantized_base = True) is None
+    assert "quantized" in capsys.readouterr().out
+
+
 def test_env_unset_changes_nothing(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LORA_BASE_INT8", raising = False)
     assert f8t.float8_training_request(None) is None

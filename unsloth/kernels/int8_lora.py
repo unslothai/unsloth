@@ -358,6 +358,8 @@ def _mm(xq, xs, wq, ws, delta, out_dtype):
     N = wq.shape[0]
     out = torch.empty((M, N), device = xq.device, dtype = out_dtype)
     bm, bn, bk, gm, warps, stages = _TILE
+    if delta is not None and delta.stride(-1) != 1:
+        delta = delta.contiguous()  # the epilogue reads rows with a unit column stride
     d = delta if delta is not None else out
     with _device_ctx(xq):
         _launch(
@@ -384,6 +386,8 @@ def _dgrad_mm(dyq, dys, wqt, delta, out_dtype):
     K = wqt.shape[0]
     out = torch.empty((M, K), device = dyq.device, dtype = out_dtype)
     bm, br, gm, warps, stages = _DGRAD_TILE
+    if delta is not None and delta.stride(-1) != 1:
+        delta = delta.contiguous()
     d = delta if delta is not None else out
     h = _hadamard_pm1(dyq.device, torch.bfloat16)
     with _device_ctx(dyq):
