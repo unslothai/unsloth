@@ -132,10 +132,18 @@ def _cache_worker(rank, world):
             other = pos.clone()  # a different tensor (next step) re-gathers
             ud._full_position_ids(other, None)
             assert len(gathers) == 3
+            # Inference mode (inputs sharded before entering it): the gathered tensor has no version counter,
+            # so nothing is cached and every call gathers.
+            fresh = pos.clone()
+            with torch.inference_mode():
+                full = ud._full_position_ids(fresh, None)
+                assert torch.equal(full, torch.arange(8).unsqueeze(0) + 100)
+                ud._full_position_ids(fresh, None)
+            assert len(gathers) == 5
         # Outside the step there is no active manager: gather every call, keep nothing.
         ud._full_position_ids(pos, None)
         ud._full_position_ids(pos, None)
-        assert len(gathers) == 5
+        assert len(gathers) == 7
         assert manager._deepseek_full_position_ids is None
     finally:
         dist.all_gather = all_gather

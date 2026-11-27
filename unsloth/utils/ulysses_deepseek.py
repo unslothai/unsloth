@@ -227,6 +227,9 @@ def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, traini
 
 
 def _position_key(position_ids, group):
+    # Under inference mode the gathered tensor is an inference tensor (no version counter): gather every call.
+    if torch.is_inference_mode_enabled():
+        return None
     try:
         version = position_ids._version
     except RuntimeError:  # inference tensors carry no version counter
