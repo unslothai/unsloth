@@ -13,7 +13,8 @@ export function subscribeDictationLevel(listener: LevelListener): () => void {
   };
 }
 
-function publishLevel(level: number): void {
+/** Publish a level from any capture path (the analyser meter or raw PCM). */
+export function publishDictationLevel(level: number): void {
   for (const listener of levelListeners) {
     listener(level);
   }
@@ -41,7 +42,7 @@ export function startDictationLevelMeter(
       // A closing or already-closed context is harmless.
     });
     audioContext = null;
-    publishLevel(0);
+    publishDictationLevel(0);
   };
 
   try {
@@ -74,7 +75,7 @@ export function startDictationLevelMeter(
       const rms = Math.sqrt(sum / data.length);
       onFrame?.(rms, performance.now());
       // Perceptual boost so normal speech remains clearly visible.
-      publishLevel(Math.min(1, rms * 3.2));
+      publishDictationLevel(Math.min(1, rms * 3.2));
       levelRaf = requestAnimationFrame(tick);
     };
     levelRaf = requestAnimationFrame(tick);

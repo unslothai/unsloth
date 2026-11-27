@@ -269,8 +269,14 @@ test("a dictation download is reported once, not twice", () => {
     !VOICE_TAB.includes("sttCancelDownload"),
     "cancelling belongs to the panel",
   );
-  assert.match(VOICE_TAB, /\{sttModelStatusText\}/);
-  assert.match(VOICE_TAB, /sttDownloading/);
+  assert.ok(
+    !VOICE_TAB.includes("sttModelStatusText"),
+    "no duplicate status line under the picker",
+  );
+  assert.ok(
+    !VOICE_TAB.includes("sttDownloading"),
+    "progress lives in the shared downloads panel",
+  );
 });
 
 test("the rate estimator went with the bar it fed", () => {

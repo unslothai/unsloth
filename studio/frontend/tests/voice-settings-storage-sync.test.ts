@@ -27,6 +27,7 @@ const { useVoiceSettingsStore } = loadWithStubs<
     "./stt-model-catalog": sttModelCatalog,
     "./stt-context": sttContext,
     "../api/stt-device": { syncSttDevicePreference: () => undefined },
+    "./default-dictation-dictionary": { DEFAULT_DICTATION_DICTIONARY_WORDS: [] },
   },
 );
 
@@ -39,7 +40,10 @@ test("a save in this window keeps what another window added", () => {
     JSON.stringify({
       state: {
         ...saved(),
-        dictionary: ["Zephyrine"],
+        collections: saved().collections.map(
+          (c: { words: string[] }, i: number) =>
+            i === 0 ? { ...c, words: [...c.words, "Zephyrine"] } : c,
+        ),
         recentDictations: [{ id: "d1", text: "hello there", at: 1 }],
       },
       version: 1,
@@ -47,7 +51,7 @@ test("a save in this window keeps what another window added", () => {
   );
   fireWindowEvent("storage", { key: KEY });
   useVoiceSettingsStore.getState().setAutoReadAloud(true);
-  assert.deepEqual(saved().dictionary, ["Zephyrine"]);
+  assert.ok(saved().collections.some((c: { words: string[] }) => c.words.includes("Zephyrine")));
   assert.deepEqual(
     saved().recentDictations.map((d: { text: string }) => d.text),
     ["hello there"],
