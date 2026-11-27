@@ -799,12 +799,16 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     llama_compat_module.is_engine_probe_path = lambda full_path: False
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
+    scheduled_tasks_module = ModuleType("routes.scheduled_tasks")
+    scheduled_tasks_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")
     preview_module.router = APIRouter()
     whisper_module = ModuleType("routes.whisper")
     whisper_module.router = APIRouter()
     npu_module = ModuleType("routes.npu")
     npu_module.router = APIRouter()
+    video_restyle_module = ModuleType("routes.video_restyle")
+    video_restyle_module.router = APIRouter()
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
     accounts_module = ModuleType("routes.accounts")
@@ -820,6 +824,11 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     systemone_module.MCP_PATH = "/mcp/decisions"
     systemone_module.RequireStudioAuth = lambda app: app
     systemone_module.decisions_mcp = FastMCP("Unsloth Decisions")
+    browser_module = ModuleType("routes.browser")
+    browser_module.router = APIRouter()
+    browser_module.BROWSER_FRAME_PATH = "/api/browser/frame"
+    browser_module.BROWSER_PRINT_PATH = "/api/browser/print"
+    browser_module.EXPOSED_HEADERS = ()
 
     # Derived from main.py's import block: hand-listed stubs went stale and broke this file.
     for name in _routers_main_imports():
@@ -837,14 +846,17 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.engines", engines_module)
     monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
+    monkeypatch.setitem(sys.modules, "routes.scheduled_tasks", scheduled_tasks_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
     monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
     monkeypatch.setitem(sys.modules, "routes.npu", npu_module)
+    monkeypatch.setitem(sys.modules, "routes.video_restyle", video_restyle_module)
     monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
     monkeypatch.setitem(sys.modules, "routes.accounts", accounts_module)
     monkeypatch.setitem(sys.modules, "routes.library", library_module)
     monkeypatch.setitem(sys.modules, "routes.sandbox_capability", sandbox_capability_module)
     monkeypatch.setitem(sys.modules, "routes.systemone", systemone_module)
+    monkeypatch.setitem(sys.modules, "routes.browser", browser_module)
 
     import studio.backend.main as backend_main
 
@@ -1081,8 +1093,7 @@ def test_desktop_auth_provision_has_bounded_timeout():
 
 
 def test_the_router_stub_covers_every_router_main_imports():
-    """Router stub is derived from main.py; check it against __all__, since a reshaped import
-    shortens it."""
+    """Router stub is parsed from main.py, so a reshaped import shrinks it; check __all__."""
     import re
     from pathlib import Path
 
@@ -1189,8 +1200,7 @@ def test_the_shipped_desktop_probes_never_consume_the_login_budget(probe):
 
 
 def test_the_shipped_desktop_probe_is_answered_during_a_real_lockout():
-    """Shape-check probes before reading the lockout bucket, so a real lockout still answers 401,
-    not 429."""
+    """Shape checks come before the lockout bucket, so a real lockout answers 401, not 429."""
     seed_user(must_change_password = False)
     auth_route = auth_route_module()
     client = auth_client(auth_route)
@@ -1206,8 +1216,7 @@ def test_the_shipped_desktop_probe_is_answered_during_a_real_lockout():
 
 
 def test_a_malformed_desktop_secret_never_reaches_the_kdf(monkeypatch):
-    """Reject malformed secrets before the KDF: the route is unauthenticated, so attackers could
-    spend it."""
+    """Malformed secrets fail before the KDF, so unauthenticated callers cannot burn KDF time."""
     seed_user(must_change_password = False)
     auth_route = auth_route_module()
     client = auth_client(auth_route)
@@ -1319,8 +1328,7 @@ def test_a_password_spray_does_not_lock_the_desktop_shell_out():
 
 
 def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
-    """The desktop secret must not reset /login's per-IP throttle, or each NAT account gets fresh
-    guesses."""
+    """Desktop exchange must not reset /login's per-IP throttle; NAT users get fresh guesses."""
     seed_user(must_change_password = False)
     raw = storage.create_desktop_secret()
     auth_route = auth_route_module()

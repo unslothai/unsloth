@@ -90,8 +90,7 @@ class _ThreadPage:
         return {"thread": self.mounted, "gone": 0}.get(self.phase, self.frame.mounted)
 
     def _probe(self) -> dict:
-        """Mounted rows are numbered as a window anchored at the end, setsize - mounted + 1 through
-        setsize."""
+        """Mounted rows: ordinals setsize - mounted + 1 through setsize, anchored at the end."""
         self.probes += 1
         f = self.frame
         mounted = self.message_count()
@@ -234,9 +233,7 @@ def test_refusing_the_substitute_does_not_refuse_the_click():
 
 
 def test_the_default_still_navigates_for_every_other_caller():
-    """The signature gained a keyword and must not have changed what anyone else gets. The reopen
-    half of `thread_reopen` depends on this: from an empty new chat the navigation is what puts the
-    thread back for the slots that follow."""
+    """Other callers still navigate by default; thread_reopen needs it from a new chat."""
     page = _ThreadPage(unclickable = {NEW_CHAT})
     got = A._click_or_navigate(_ctx(page), NEW_CHAT, NEW_CHAT_URL)
 
@@ -267,9 +264,7 @@ def test_the_scripted_rebuild_declares_its_total_before_it_has_built_anything():
 
 
 def test_reopen_waits_for_the_thread_to_be_rebuilt_not_for_it_to_be_declared():
-    """The reading the old condition produced came off frame 0: three of eighteen rows, no end of
-    conversation, no highlighting. Every observation below is taken after the wait, so they are the
-    assertion that the wait outlasted the declaration."""
+    """Observations come after the wait, so they assert the rebuild outlasted the declaration."""
     page = _ThreadPage()
     result = A.thread_reopen(_ctx(page))
 
@@ -297,9 +292,7 @@ def test_the_row_carries_the_gate_the_timing_was_taken_against():
 
 
 def test_a_thread_that_declares_its_total_and_never_rebuilds_gets_no_timing(monkeypatch):
-    """The old condition's worst case, and the one that made the defect invisible: the store
-    publishes eighteen, three rows mount, nothing else ever arrives. That was scored as a fast
-    re-open. It is now a run with no timing and the outstanding condition named."""
+    """Declared but never rebuilt gets no timing and names the condition, not scored fast."""
     monkeypatch.setattr(A, "_REOPEN_READY_CEILING_S", 0.4)
     page = _ThreadPage(frames = STALLED)
     result = A.thread_reopen(_ctx(page))
@@ -315,9 +308,7 @@ def test_a_thread_that_declares_its_total_and_never_rebuilds_gets_no_timing(monk
 
 
 def test_a_windowed_arm_is_held_to_the_windowed_gate_and_not_to_a_full_mount():
-    """The other way this fix could have been wrong. A windowed arm never mounts every message, so
-    waiting for a full mount would time out on the arm the whole comparison exists to score. The
-    mode is read from the mount the action LEFT, exactly as the cell's opening gate read it."""
+    """A windowed arm never mounts every message, so the mode is read off the mount it left."""
     page = _ThreadPage(frames = WINDOWED, mounted = 6, total = TOTAL)
     result = A.thread_reopen(_ctx(page))
 
@@ -428,8 +419,7 @@ def test_the_failed_click_retry_is_not_charged_to_the_close_or_the_rebuild():
 
 
 def test_a_control_that_clicks_first_time_reports_no_retry_at_all():
-    """The control. Nothing about the ordinary path moves, and the new fields read zero rather than
-    a small plausible number that a reader would have to interpret."""
+    """Control: ordinary path is unchanged and new fields read zero, not a plausible number."""
     page = _HoverRevealedPage()
     result = A.thread_reopen(_ctx(page))
 

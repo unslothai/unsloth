@@ -121,9 +121,7 @@ def test_the_sampler_scores_a_pinned_stream(page):
 
 
 def test_returning_to_the_end_reattaches_so_the_rest_of_the_stream_is_still_scored(page):
-    """THE DEFECT. A deliberate scroll used to detach the sampler permanently, so every sample for
-    the remainder of the stream -- and for every later stream in the cell -- was scored against the
-    second half of the contract and contributed nothing to the verdict."""
+    """At the end, the sampler reattaches; a deliberate scroll must not detach it for good."""
     _start_at_bottom(page)
     _settle(page)
     before = _read(page)["running_samples"]
@@ -144,8 +142,7 @@ def test_returning_to_the_end_reattaches_so_the_rest_of_the_stream_is_still_scor
 
 
 def test_a_gesture_that_ends_scrolled_up_does_NOT_reattach(page):
-    """The other half of the contract has to survive the fix. A user who scrolled away and stayed
-    away is detached, and any pin after that is the app yanking them down."""
+    """A user who scrolled away and stayed away is detached; any later pin yanks them down."""
     _start_at_bottom(page)
     _settle(page)
     page.evaluate("() => window.__sb.follow.suspend()")
@@ -174,8 +171,7 @@ def test_the_app_pulling_the_viewport_down_on_its_own_is_not_laundered_into_a_re
 
 
 def test_the_coverage_travels_with_the_verdict(page):
-    """A fraction computed over the attached phases cannot be read without knowing how much of the
-    streaming time those phases covered. Reported beside it so the one cannot be quoted alone."""
+    """Report the coverage beside the fraction, since a fraction alone cannot be read."""
     _start_at_bottom(page)
     _settle(page, 400)
     page.evaluate("() => window.__sb.follow.suspend()")
@@ -191,8 +187,7 @@ def test_the_coverage_travels_with_the_verdict(page):
     )
 
 
-# The film's gesture never ends at the bottom, so re-attachment comes from a new run the user
-# started, not from resume().
+# The gesture never ends at the bottom; re-attach comes from a new user run, not resume().
 
 
 def _end_run(page) -> None:
@@ -212,8 +207,7 @@ def _start_run(page) -> None:
 
 
 def test_a_run_the_user_started_reattaches_when_the_app_pins_for_it(page):
-    """THE DEFECT. The verdict covered the first few seconds of the opening stream and nothing
-    else, because every later turn of the film was scored against the yank half of the contract."""
+    """Verdict covered only the opening stream's first seconds, not the rest of the film."""
     _start_at_bottom(page)
     _settle(page, 400)
 
@@ -239,8 +233,7 @@ def test_a_run_the_user_started_reattaches_when_the_app_pins_for_it(page):
 
 
 def test_a_new_run_the_app_does_NOT_pin_for_leaves_the_sampler_detached(page):
-    """A run start is not a free pass. The re-attachment needs the viewport to actually BE at the
-    end, so an app that leaves a scrolled-up user where they are is scored exactly as before."""
+    """A run start is no free pass; re-attaching needs the viewport actually at the end."""
     _start_at_bottom(page)
     _settle(page, 400)
     page.evaluate("() => window.__sb.follow.suspend()")

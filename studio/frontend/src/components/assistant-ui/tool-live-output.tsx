@@ -3,32 +3,19 @@
 
 "use client";
 
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useToolOutputFor, useToolPaneScope } from "@/features/chat";
+import { useToolOutput } from "@/features/chat";
 import { stripAnsi, tailToolOutput } from "@/lib/strip-ansi";
 import { useEffect, useMemo, useRef } from "react";
 
-/**
- * Live-scrolling stdout/stderr pane for a running server-side tool, backed by
- * the transient `toolLiveOutput` map fed by `tool_output` SSE events. Renders
- * nothing until the first chunk, then follows the tail. Mounted only while
- * running; the finished card shows the persisted result instead.
- */
+/** Fed by `tool_output` SSE events; mounted only while running. */
 export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
-  const paneScope = useToolPaneScope();
-  const output = useToolOutputFor(
-    useChatRuntimeStore((s) => s.toolLiveOutput),
-    paneScope,
-    toolCallId,
-  );
+  const output = useToolOutput("toolLiveOutput", toolCallId);
   return output ? <ToolLiveOutputPane output={output} /> : null;
 }
 
 /** Presentational production pane, exported so browser smoke tests this exact path. */
 export function ToolLiveOutputPane({ output }: { output: string }) {
   const scrollRef = useRef<HTMLPreElement>(null);
-  // Pinned to the bottom until the user scrolls up (handler below), so
-  // streaming chunks no longer yank them down.
   const pinnedToBottom = useRef(true);
 
   // The stream can reach hundreds of KB; render only the clean tail while live.
@@ -42,7 +29,6 @@ export function ToolLiveOutputPane({ output }: { output: string }) {
     if (!el) {
       return;
     }
-    // Within 40px of the bottom counts as pinned (tolerates small nudges).
     pinnedToBottom.current =
       el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   };

@@ -38,6 +38,11 @@ def _is_saved_dataset_dict(path: Path) -> bool:
 
 def _require_manifest_inside(path: Path) -> None:
     # load_from_disk joins manifest paths onto the folder unchecked: a crafted manifest could read another account's files.
+    # It also reads the folder as an fsspec URL, where "::" chains to another path than the one checked here.
+    if "::" in str(path):
+        raise ValueError(
+            f"saved dataset at {path} has '::' in its path, which datasets reads as a URL chain"
+        )
     root = path.resolve()
 
     def check(entry: Path) -> Path:
@@ -46,12 +51,15 @@ def _require_manifest_inside(path: Path) -> None:
             raise ValueError(f"saved dataset at {path} refers to files outside its folder")
         return resolved
 
+    # load_from_disk prefers the folder's own state.json even beside a dataset_dict.json, so both are checked.
     folders = [path]
     if _is_saved_dataset_dict(path):
         splits = (
             json.loads((path / "dataset_dict.json").read_text(encoding = "utf-8")).get("splits") or []
         )
-        folders = [check(path / str(split)) for split in splits]
+        if any("::" in str(split) for split in splits):
+            raise ValueError(f"saved dataset at {path} has '::' in a split name")
+        folders += [check(path / str(split)) for split in splits]
     for folder in folders:
         state = folder / "state.json"
         if state.is_file():

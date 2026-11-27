@@ -5,10 +5,28 @@
 
 from __future__ import annotations
 
+import json
+
 import core.inference.llama_stats as ls
 from core.inference.llama_stats import LlamaServerStatsLogger
 
 _TICK_S = 10.0
+
+
+class _Resp:
+    status = 200
+
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
 class _Capture:
@@ -139,7 +157,7 @@ def test_the_decode_counter_reports_while_the_token_counters_are_still(monkeypat
     snaps = [_busy(decode = float(i * 20), gen_gauge = 0.0) for i in range(4)]
     stats = _drive(snaps, monkeypatch)
 
-    assert all(s["gen_tok_s"] == 0.0 for s in stats)
+    assert [s.get("gen_tok_s") for s in stats] == [0.0, None, None, None]
     assert [s.get("decode_calls_s") for s in stats] == [None, 2.0, 2.0, 2.0]
 
 
@@ -232,21 +250,6 @@ def test_a_build_with_no_prompt_metric_omits_the_field(monkeypatch):
 def test_a_non_finite_metric_value_never_reaches_the_line(monkeypatch):
     """float() turns a long digit string into inf; _env_float refuses the same text."""
 
-    class _Resp:
-        status = 200
-
-        def __init__(self, body):
-            self._body = body
-
-        def read(self):
-            return self._body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
     body = (
         "llamacpp:prompt_tokens_seconds " + "9" * 400 + "\n"
         "llamacpp:prompt_tokens_total 10\n"
@@ -268,3 +271,45 @@ def test_the_llama_cpp_gauge_still_wins_when_it_reports(monkeypatch):
     stats = _drive(snaps, monkeypatch)
 
     assert stats and all(s["gen_tok_s"] == 24.6 for s in stats)
+
+
+def _slots(monkeypatch, *ticks):
+    bodies = iter(
+        json.dumps(
+            [
+                {
+                    "id": slot,
+                    "is_processing": True,
+                    "id_task": task,
+                    "next_token": [{"n_decoded": n}],
+                }
+                for slot, task, n in tick
+            ]
+        ).encode()
+        for tick in ticks
+    )
+    monkeypatch.setattr(
+        ls.urllib.request.OpenerDirector, "open", lambda *a, **k: _Resp(next(bodies))
+    )
+
+
+def test_a_long_reply_reports_its_rate_while_it_is_still_generating(monkeypatch):
+    _slots(monkeypatch, [(0, 7, 250)], [(0, 7, 500)], [(0, 7, 750)])
+    snaps = [_busy(running = 0.0)] + [
+        _busy(decode = float(i * 250), gen_gauge = 0.0) for i in range(1, 4)
+    ]
+    stats = _drive(snaps, monkeypatch)
+
+    assert [s["gen_tok_s"] for s in stats] == [25.0, 25.0, 25.0]
+
+
+def test_a_new_task_on_a_slot_is_counted_from_zero(monkeypatch):
+    _slots(monkeypatch, [(0, 7, 900)], [(0, 8, 100)])
+    snaps = [
+        _busy(running = 0.0),
+        _busy(decode = 900.0, gen_gauge = 0.0),
+        _busy(decode = 1000.0, gen_gauge = 0.0),
+    ]
+    stats = _drive(snaps, monkeypatch)
+
+    assert [s["gen_tok_s"] for s in stats] == [90.0, 10.0]

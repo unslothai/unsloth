@@ -641,10 +641,13 @@ class _CountingFile:
     def __init__(self, handle) -> None:
         self._handle = handle
         self.operations = 0
+        self.furthest = 0
 
     def read(self, size = -1):
         self.operations += 1
-        return self._handle.read(size)
+        data = self._handle.read(size)
+        self.furthest = max(self.furthest, self._handle.tell())
+        return data
 
     def seek(
         self,
@@ -652,7 +655,9 @@ class _CountingFile:
         whence = 0,
     ):
         self.operations += 1
-        return self._handle.seek(offset, whence)
+        pos = self._handle.seek(offset, whence)
+        self.furthest = max(self.furthest, pos)
+        return pos
 
     def __enter__(self):
         return self
@@ -661,8 +666,14 @@ class _CountingFile:
         return self._handle.__exit__(*exc_info)
 
 
-def _count_header_operations(monkeypatch, path: Path, read) -> int:
-    """File operations ``read`` performs against ``path``. Other files are untouched."""
+def _count_header_operations(
+    monkeypatch,
+    path: Path,
+    read,
+    measure = "operations",
+) -> int:
+    """File operations ``read`` performs against ``path`` (or, with ``measure="furthest"``, the
+    furthest offset it reached). Other files are untouched."""
     import builtins
 
     real_open = builtins.open
@@ -681,6 +692,8 @@ def _count_header_operations(monkeypatch, path: Path, read) -> int:
         read(str(path))
     finally:
         monkeypatch.undo()
+    if measure == "furthest":
+        return max(counter.furthest for counter in counters)
     return sum(counter.operations for counter in counters)
 
 
@@ -705,9 +718,18 @@ def test_architecture_read_stops_before_a_large_tokenizer_array(tmp_path: Path, 
     whole.write_bytes(p.read_bytes())
 
     targeted_ops = _count_header_operations(monkeypatch, targeted, read_gguf_architecture)
-    whole_ops = _count_header_operations(monkeypatch, whole, read_gguf_general_metadata)
+    reach = tmp_path / "reach.gguf"
+    reach.write_bytes(p.read_bytes())
+    targeted_reach = _count_header_operations(
+        monkeypatch, reach, read_gguf_architecture, measure = "furthest"
+    )
+    whole_reach = _count_header_operations(
+        monkeypatch, whole, read_gguf_general_metadata, measure = "furthest"
+    )
     assert targeted_ops < 10, targeted_ops
-    assert whole_ops > 20000, whole_ops
+    # The whole-header read walks the 20000-entry array (one buffered pass); the targeted one stops before it.
+    assert targeted_reach < 1024, targeted_reach
+    assert whole_reach > 20000 * 8, whole_reach
 
 
 def test_architecture_is_stripped_and_absent_values_are_none(tmp_path: Path):

@@ -341,7 +341,7 @@ export default function ComparePanel(props: ComparePanelProps) {
                   ? `${shape} = ${count} cell${count === 1 ? "" : "s"} (limit ${MAX_COMPARE_CELLS})`
                   : preview.error}
             </p>
-            <Button type="button" size="sm" disabled={busy || running !== null || !preview.ok} onClick={() => void run()}>
+            <Button variant="dark" type="button" size="sm" disabled={busy || running !== null || !preview.ok} onClick={() => void run()}>
               {preview.ok ? `Generate grid (${count})` : "Generate grid"}
             </Button>
           </div>
@@ -358,7 +358,7 @@ export default function ComparePanel(props: ComparePanelProps) {
           <div className="max-h-[70dvh] space-y-4 overflow-auto">
             {grids.map((g, i) => (
               <figure key={g.url} className="space-y-2">
-                <img src={g.url} alt={g.title || "Compare grid"} className="mx-auto max-w-full rounded-md" />
+                <img src={g.url} alt={g.title || "Compare grid"} className="mx-auto max-w-full rounded-lg" />
                 <figcaption className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>
                     {g.title ? `${g.title}, ` : ""}

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from studio_mcp import video_queue
+from studio_mcp.profile import CHAT
 
 from .mcp_harness import call_tool, fake_studio, make_caller, openai_error, run_tool, served
 
@@ -28,6 +29,9 @@ GPU_BUSY = JSONResponse(
     {"error": "gpu_busy", "message": "Another account is generating.", "retry_after": 0},
     status_code = 409,
     headers = {"Retry-After": "0"},
+)
+NO_MODEL = openai_error(
+    "No video model is loaded.", 503, headers = {"X-Unsloth-Problem": "not_loaded kind=video"}
 )
 ETA = 30.0
 
@@ -226,7 +230,7 @@ def test_a_settled_record_drops_its_request_and_caller(monkeypatch):
     [
         (MODEL_CHANGED, "[model_changed] The requested video model changed"),
         (GPU_BUSY, "GPU busy: Another account is generating. Retry after 0 s."),
-        (openai_error("No video model is loaded.", 503), "Load a video model with load_model"),
+        (NO_MODEL, "Load a video model with load_model"),
     ],
 )
 def test_other_refusals_raise_as_before_and_queue_nothing(monkeypatch, answer, text):
@@ -379,3 +383,15 @@ def test_a_stalled_eta_read_leaves_the_eta_unknown(monkeypatch):
     monkeypatch.setattr(video_queue, "READ_S", 0.05)
     item = video_queue._enqueue(make_caller(account_id = "a"), {"prompt": "x"}, None)
     assert asyncio.run(video_queue._position_eta(item)) == (1, None)
+
+
+def test_a_call_scoped_caller_is_told_to_retry_instead_of_queued():
+    # The chat bridge's key is revoked when its call returns, so a clip queued for later would 401.
+    fake = OneVideoStudio()
+    agent = make_caller(studio_app = fake.app)
+    assert asyncio.run(video_queue.post_or_queue(agent, {"prompt": "A"}))["id"] == "video-1"
+    chat = make_caller(studio_app = fake.app, profile = CHAT)
+    with pytest.raises(ToolError, match = r"(?s)^\[gpu_busy\].*Try again once it finishes"):
+        asyncio.run(video_queue.post_or_queue(chat, {"prompt": "B"}))
+    assert not video_queue._waiting.get("owner") and not video_queue._pumps
+    assert fake.prompts() == ["A", "B"]

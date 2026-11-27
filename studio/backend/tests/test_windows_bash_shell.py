@@ -430,8 +430,7 @@ def test_a_quoted_program_path_handed_to_cmd_or_start_is_screened(
 
 
 def test_cmd_strips_the_outer_quotes_of_a_doubled_quote_payload(monkeypatch, _windows_blocklist):
-    # cmd turns `""prog" args"` into `"prog" args`. Git Bash would strip the backslashes first, so only
-    # the cmd Terminal runs this as pwsh.
+    # cmd strips outer quotes; Git Bash would strip backslashes first, so only cmd runs pwsh.
     assert "pwsh" in _screen_on_windows(monkeypatch, None, r'cmd /c ""C:\x\pwsh.exe" -c ls"')
 
 

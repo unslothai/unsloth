@@ -128,9 +128,15 @@ def test_no_gpu_host_routes_krea2_gguf_to_sd_cpp_only_on_a_capable_build(
     monkeypatch.setattr(
         r, "ensure_sd_cpp_binary", lambda **_: _binary(tmp_path, "sd-cli-old", marker = False)
     )
+    # A CPU GGUF is refused rather than swapped for a diffusers load the plan never staged.
+    monkeypatch.delenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV, raising = False)
+    with pytest.raises(ValueError, match = "the installed sd.cpp build predates 'krea-2' support"):
+        r.select_and_activate_engine(fam, model_kind = "gguf")
+    monkeypatch.setenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV, "1")
     r.select_and_activate_engine(fam, model_kind = "gguf")
     assert r.active_engine_name() == ENGINE_DIFFUSERS
     assert r._fallback_reason == "the installed sd.cpp build predates 'krea-2' support"
+    monkeypatch.delenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV)
 
     monkeypatch.setattr(
         r, "ensure_sd_cpp_binary", lambda **_: _binary(tmp_path, "sd-cli-new", marker = True)

@@ -127,8 +127,7 @@ try {
     $found = @(Get-NvidiaSmiCandidatePaths)
     Check "both DriverStore spellings still share one bound of eight" ($found.Count -le 8)
 
-    # The bound applies to dirs that HOLD the binary: newer nv* packages (audio, network)
-    # lack it. Plant the real one FIRST so it is the oldest.
+    # Bound counts only dirs holding the binary; plant the real one first so it is the oldest.
     Reset-FakeMachine
     $repo = "Windows/System32/DriverStore/FileRepository"
     $planted = Add-FakeSmi "$repo/nvmii.inf_amd64_0001/"
@@ -169,8 +168,7 @@ try {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-# The first binary prints no parseable CUDA version, the second 12.8; taking the first
-# would send a cu128 host to cu126.
+# First binary prints no parseable CUDA version; taking it would send a cu128 host to cu126.
 $setupAll = Get-Content -Raw -LiteralPath $setupPs1
 $start = $setupAll.IndexOf('$smiCandidates = @(Get-NvidiaSmiCandidatePaths)')
 if ($start -lt 0) { Check "the detection loop still makes two passes" $false }
@@ -213,8 +211,7 @@ Invoke-Expression $loopSrc
 Check "with no version anywhere, the first listing candidate is still taken" (
     $HasNvidiaSmi -eq $true -and $NvidiaSmiExe -eq "C:\first\nvidia-smi.exe")
 
-# Each candidate waits out its own bound on a wedged driver, so probes really sleep. The
-# shipped 30 s deadline is rewritten to 2 and asserted separately.
+# Each candidate waits its own bound on a wedged driver; tests rewrite the 30 s deadline to 2.
 Check "the shipped soft deadline is 30 seconds" ($setupAll -match '\$probeDeadline = \(Get-Date\)\.AddSeconds\(30\)')
 Check "the shipped hard deadline is 60 seconds" ($setupAll -match '\$probeHardDeadline = \(Get-Date\)\.AddSeconds\(60\)')
 $fastLoop = ($loopSrc -replace 'AddSeconds\(30\)', 'AddSeconds(2)') -replace 'AddSeconds\(60\)', 'AddSeconds(4)'
@@ -247,8 +244,7 @@ $NvidiaSmiExe = $null
 Invoke-Expression $fastLoop
 Check "control: with fast probes every candidate is still tried" ($script:Probed -eq 10)
 
-# The wedge flag must describe the binary the loop settles on, not a later one, or a
-# working binary has its name/capability/driver queries skipped.
+# Wedge flag must describe the binary the loop settles on, or a working one skips its queries.
 $script:NvidiaSmiWedged = $false
 function Test-NvidiaSmiHasGpu {
     param([string]$Exe)
@@ -281,8 +277,7 @@ Invoke-Expression $loopSrc
 Check "control: a selected binary that did hang is still reported wedged" (
     $script:NvidiaSmiWedged -eq $true)
 
-# Two budgets: the soft one applies only once there is a usable answer; only the hard one
-# may end the search empty-handed.
+# Soft budget applies only once a usable answer exists; hard budget alone may end empty-handed.
 $script:Probed = 0
 function Test-NvidiaSmiHasGpu {
     param([string]$Exe)
@@ -315,8 +310,7 @@ Check "with nothing working the hard bound still stops the walk" ($script:Probed
 Check "and it spends the HARD budget, not the soft one, before giving up" ($spent -ge 2)
 Check "control: giving up empty-handed really reports no GPU" ($HasNvidiaSmi -eq $false)
 
-# The banner probe must respect the deadline too, or a late candidate adds nearly two
-# probe timeouts.
+# Banner probe must respect the deadline, or a late candidate adds nearly two probe timeouts.
 $script:Listings = 0
 $script:Banners = 0
 function Test-NvidiaSmiHasGpu { param([string]$Exe) $script:Listings++; Start-Sleep -Milliseconds 900; return $true }

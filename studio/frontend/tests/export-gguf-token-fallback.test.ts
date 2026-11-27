@@ -144,3 +144,22 @@ test("disabling imatrix excludes a previously entered path", async () => {
   assert.equal(body.imatrix, false);
   assert.equal(body.imatrix_path, null);
 });
+
+test("a checkpoint load forwards the remote-code approval", async () => {
+  stub.resetStub();
+  await useExportRuntimeStore.getState().runExport(
+    params({
+      sourceMode: "checkpoint",
+      checkpointPath: "/studio/outputs/k2-horizon/checkpoint-60",
+      source: "checkpoint-60",
+      trustRemoteCode: true,
+      approvedRemoteCodeFingerprint: "fp123",
+    }),
+  );
+  const load = stub.calls.find((entry) => entry.name === "loadCheckpoint");
+  assert.ok(load, "no load request was made");
+  const body = load.args[0] as Record<string, unknown>;
+  assert.equal(body.checkpoint_path, "/studio/outputs/k2-horizon/checkpoint-60");
+  assert.equal(body.trust_remote_code, true);
+  assert.equal(body.approved_remote_code_fingerprint, "fp123");
+});

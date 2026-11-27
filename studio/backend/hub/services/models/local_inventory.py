@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, NamedTuple, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
 from hub.storage.scan_folders import (
@@ -187,8 +188,7 @@ _NESTED_SCAN_SKIP_NAMES = frozenset({"ollama_links", "node_modules", "__pycache_
 def _is_plain_dir_entry(entry: os.DirEntry) -> bool:
     if not entry.is_dir(follow_symlinks = False):
         return False
-    # A Windows junction is a directory to is_dir(follow_symlinks=False) before 3.12; other reparse
-    # points (OneDrive placeholders) are real folders and stay walkable.
+    # Pre-3.12 junctions look like dirs; OneDrive placeholders are real folders and stay walkable.
     tag = getattr(entry.stat(follow_symlinks = False), "st_reparse_tag", 0)
     return tag != _IO_REPARSE_TAG_MOUNT_POINT
 
@@ -199,9 +199,7 @@ def is_loadable_model_dir(path: Path) -> bool:
 
 
 def nested_scan_roots(folder_path: Path) -> list[Path]:
-    """Sub-folders of a recursive scan folder to scan like the folder itself (#6371). Skips listed models, HF cache
-    repos, hidden folders, symlinks and junctions, so each model is reached once and the walk stays inside."""
-    # Same test _scan_models_dir uses to list the folder as one model; loose GGUFs beside sub-folders are not.
+    """Same test as _scan_models_dir; loose GGUFs beside sub-folders are not one model."""
     if _is_model_directory_for_scan(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES):
         return []
     roots: list[Path] = []
@@ -492,10 +490,7 @@ def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
 
 
 def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
-    """Whether the newest snapshot (the one ``_scan_hf_cache`` classifies) holds a real file.
-    Without symlinks huggingface_hub moves blobs into ``snapshots/<rev>/`` and leaves ``blobs/``
-    empty. Walked with ``scandir``, bounded by entries read (``rglob`` lists a whole directory
-    before yielding); unreadable entries are skipped."""
+    """Without symlinks, huggingface_hub leaves blobs/ empty, so real files live in snapshots/."""
     snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
     if snapshot is None:
         return False
@@ -706,8 +701,10 @@ def _scan_hf_cache(
             snapshot_partial_resumable = snapshot_partial_resumable,
         )
         # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
-        if not snapshot_partial and hf_cache_scan.snapshot_pipeline_missing_denoiser(
-            latest_snapshot := hf_cache_scan.latest_snapshot_dir(repo_dir)
+        latest_snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
+        if not snapshot_partial and (
+            hf_cache_scan.snapshot_pipeline_missing_denoiser(latest_snapshot)
+            or hf_cache_scan.snapshot_is_encoder_companion(model_id, repo_dir, latest_snapshot)
         ):
             # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.
             companion_prefetch = not hf_cache_scan.snapshot_denoiser_has_weights(latest_snapshot)
@@ -761,11 +758,9 @@ def _artifact_mirror_rows(
     updated_at: Optional[float] = None,
     active_cache: bool = True,
 ) -> List[LocalModelInfo]:
-    """An artifact mirror (a model's own GGUF / FP8 repo that also holds its base's official diffusers folders) never
-    lists those folders as a pipeline row: they are what a pick of the BASE fetches, a pipeline pick of the repo id is
-    refused, and deletes are whole-repo or per-quant, so a separate row's delete would wipe the quants. A GGUF repo's
-    folders fold into its GGUF row's size; the FP8 repo's row stays partial and flagged, so nothing loads or resumes it
-    as a pipeline. A snapshot with no pipeline index is left exactly as released builds listed it."""
+    """Artifact mirror base folders never form a pipeline row (deletes are whole-repo or per-quant);
+    GGUF folders fold into the GGUF row; FP8 row stays flagged partial; no-index snapshots
+    unchanged"""
     if not _hosts_artifacts(model_id):
         return rows
     snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
@@ -803,10 +798,8 @@ def _artifact_mirror_rows(
 def _merge_artifact_mirror_roots(
     rows_by_root: list[tuple[Path, List[LocalModelInfo]]],
 ) -> List[LocalModelInfo]:
-    """The cross-root half of ``_artifact_mirror_rows``, which sees one cache root at a time. When an artifact
-    mirror's GGUF sits in one root and its diffusers folders in another, each root keeps its own row, because a delete
-    is scoped to one root: the GGUF row counts only its own root, and the folders-only row stays partial and flagged as
-    the GGUF's companion prefetch, never a pick. Every other row passes through unchanged."""
+    """Cross-root half of _artifact_mirror_rows: each root keeps its own row since deletes are
+    root-scoped; the folders-only row stays partial and flagged, never a pick"""
     gguf_ids = {
         (row.model_id or "").lower()
         for _root, rows in rows_by_root
@@ -1332,9 +1325,8 @@ async def _collect_models_from_default_sources(
             nested_roots = nested_roots,
         )
         if _inventory_physical_identity(str(folder_path)) in hermes_identities:
-            # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
-            # the walk lists every download a second time under the same id. Anything else kept
-            # in that folder is still the user's custom row.
+            # Hermes-registered folder: its downloads come from the Hermes scan (the walk would list
+            # each twice); anything else kept there is still a custom row
             staged = {
                 _inventory_physical_identity(row.path) for row in scan_hermes_dir(folder_path)
             }
@@ -1734,6 +1726,7 @@ def _classify_unsloth_models(models: List[LocalModelInfo]) -> List[LocalModelInf
         return models
 
 
+@in_scan_memo
 async def list_unsloth_models_response() -> LocalModelListResponse:
     # Off the loop with the scan: classifying a GGUF reads its header.
     try:
@@ -1752,6 +1745,7 @@ async def _account_local_response(response):
     return response.model_copy(update = {"models": models})
 
 
+@in_scan_memo
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
 

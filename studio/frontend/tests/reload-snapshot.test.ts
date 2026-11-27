@@ -1173,7 +1173,7 @@ test("roots the copy in an html element so html-anchored rules still match", () 
     navigationType: "navigate",
     rootHtml: "<main>Existing chat</main>",
     styleSheets: ["/assets/index-abc123.css"],
-    htmlAttributes: { "data-palette": "classic", "data-contrast-adjust": "" },
+    htmlAttributes: { "data-palette": "matcha", "data-contrast-adjust": "" },
   });
   outgoing.dispatch("pageswap", {
     activation: { navigationType: "reload" },
@@ -1186,7 +1186,7 @@ test("roots the copy in an html element so html-anchored rules still match", () 
   assert.equal(incoming.shell?.rootTag, "HTML");
   assert.equal(incoming.shell?.bodyTag, "BODY");
   assert.deepEqual(incoming.shell?.rootAttributes, {
-    "data-palette": "classic",
+    "data-palette": "matcha",
     "data-contrast-adjust": "",
   });
 });
@@ -1196,7 +1196,7 @@ test("gives the copy's root the live root's viewport gates, so width-gated rules
     navigationType: "navigate",
     rootHtml: "<main>Existing chat</main>",
     styleSheets: ["/assets/index-abc123.css"],
-    htmlAttributes: { "data-palette": "classic" },
+    htmlAttributes: { "data-palette": "matcha" },
   });
   outgoing.dispatch("pageswap", {
     activation: { navigationType: "reload" },
@@ -1212,7 +1212,7 @@ test("gives the copy's root the live root's viewport gates, so width-gated rules
     },
   });
   assert.deepEqual(incoming.shell?.rootAttributes, {
-    "data-palette": "classic",
+    "data-palette": "matcha",
     "data-mq-min-width-40rem": "",
     "data-mq-min-width-48rem": "",
   });
@@ -1220,7 +1220,7 @@ test("gives the copy's root the live root's viewport gates, so width-gated rules
   incoming.changeRootAttribute("data-mq-min-width-64rem", "");
   incoming.changeRootAttribute("data-palette", "changed");
   assert.deepEqual(incoming.shell?.rootAttributes, {
-    "data-palette": "classic",
+    "data-palette": "matcha",
     "data-mq-min-width-40rem": "",
     "data-mq-min-width-64rem": "",
   });

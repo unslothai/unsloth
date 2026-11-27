@@ -18,13 +18,14 @@ for _up in _iso.parents:
         _spec.loader.exec_module(_mod)  # sets the env vars on import
         break
 
-# --- one CPU share per xdist worker -----------------------------------------------
-# Also before torch is imported. Each xdist worker otherwise starts a torch / OpenMP pool
-# as wide as the machine, so `-n 4` on a 4 vCPU runner runs 16 spinning threads on 4 cores
-# and CPU training tests slow down by an order of magnitude: test_decision_model's Clef
-# training took >330 s there against ~50 s alone. An explicit thread setting is kept.
-# Loaded by path: tests/_shared is put on sys.path only below.
+# One CPU share per xdist worker, set before torch import or each worker's OpenMP pool spans the
+# machine; an explicit thread setting wins; loaded by path, as tests/_shared is not on sys.path.
 import os as _os  # noqa: E402
+
+# The suite predates the CPU training backend: a GPU-less runner must keep refusing `import unsloth`
+# (so GPU-path tests skip there, as before) and stubbed-torch tests must not inherit this host's
+# CPU-fallback answer. tests/test_cpu_backend_init.py removes it to exercise the backend itself.
+_os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 _share_path = _iso.parent / "_shared" / "xdist_cpu_share.py"
 if _share_path.is_file():
@@ -45,6 +46,11 @@ _shared_dir = _iso.parent / "_shared"
 if _shared_dir.is_dir() and str(_shared_dir) not in _sys.path:
     _sys.path.insert(0, str(_shared_dir))
 
+# pytest 9.2's monkeypatch deletes a torch config entry on undo instead of restoring it; see torch_config_guard.py.
+from torch_config_guard import install_monkeypatch_fix  # noqa: E402
+
+install_monkeypatch_fix()
+
 import importlib.util
 import os
 import sys
@@ -56,6 +62,8 @@ import pytest
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
 # A fake CPU host must not take the Vulkan route through this machine's real GPUs.
 os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
+# Installer tests mock subprocess, not downloads: never fetch the HNSW pair into this venv.
+os.environ.setdefault("RAG_VEC_ANN_AUTO_INSTALL", "0")
 
 
 @pytest.fixture(autouse = True)
@@ -65,6 +73,91 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
 
 
+@pytest.fixture(autouse = True)
+def _no_deleted_torch_config_entries():
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
+    from torch_config_guard import check_after_test, install_delete_recorder
+
+    install_delete_recorder()
+    yield
+    check_after_test()
+
+
+@pytest.fixture(autouse = True)
+def _fresh_parallel_layout():
+    """unsloth.models.tp_env reads the UNSLOTH_TP_SIZE / UNSLOTH_PARALLEL layout once per process. A test
+    that read it under another environment would hand every later test in its worker that stale layout,
+    so each test starts with it unread. Only when the module is already imported: no unsloth import here."""
+    tp_env = sys.modules.get("unsloth.models.tp_env")
+    if tp_env is not None:
+        tp_env._reset_env_layout()
+
+
+@pytest.fixture(autouse = True)
+def _fresh_new_mapper_cache():
+    """Reset loader_utils' process-wide mapper cache; never imports unsloth."""
+    loader_utils = sys.modules.get("unsloth.models.loader_utils")
+    if loader_utils is not None and hasattr(loader_utils, "_NEW_MAPPER_CACHE"):
+        loader_utils._NEW_MAPPER_CACHE["entry"] = None
+
+
+# The variables that pick unsloth's device route. Every test in a worker, and every interpreter it spawns,
+# inherits them, so a test module that sets one while it is collected decides the route for all of them
+# (tests/test_pp_native_fused_ce.py once left UNSLOTH_FORCE_CPU=1: 14 tests elsewhere in its shard failed).
+_DEVICE_ROUTE_ENV = (
+    "UNSLOTH_FORCE_CPU",
+    "UNSLOTH_ALLOW_CPU",
+    "UNSLOTH_DISABLE_CPU_FALLBACK",
+    "UNSLOTH_FORCE_GPU_PATH",
+    "CUDA_VISIBLE_DEVICES",
+)
+_DEVICE_ROUTE_AT_START = {name: os.environ.get(name) for name in _DEVICE_ROUTE_ENV}
+
+
+def device_route_changes(before: dict, after: dict) -> list[str]:
+    return [
+        f"{name}: {before[name]!r} -> {after[name]!r}"
+        for name in before
+        if before[name] != after[name]
+    ]
+
+
+@pytest.hookimpl(hookwrapper = True)
+def pytest_make_collect_report(collector):
+    """Fails the collection of a test module that leaves a device route variable changed, and puts it back."""
+    outcome = yield
+    if not isinstance(collector, pytest.Module):
+        return
+    changed = device_route_changes(
+        _DEVICE_ROUTE_AT_START, {name: os.environ.get(name) for name in _DEVICE_ROUTE_ENV}
+    )
+    if not changed:
+        return
+    for name, value in _DEVICE_ROUTE_AT_START.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    report = outcome.get_result()
+    report.outcome = "failed"
+    report.longrepr = (
+        f"{collector.nodeid} changed the device route for every later test while it was imported "
+        f"({'; '.join(changed)}). Set it only inside a test (monkeypatch.setenv) or a child's env=, "
+        "or restore it once the import that needs it is done."
+    )
+
+
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py; then UNSLOTH_TEST_SPLIT."""
+    from shard_split import select
+    from xdist_group_check import check
+
+    select(config, items)
+    check(config, items)
+
+
 def _has_real_accelerator() -> bool:
     """Calls the probe before any spoof; the name is pinned by a test that reads this file's AST."""
     from real_accelerator import has_real_accelerator
@@ -72,9 +165,7 @@ def _has_real_accelerator() -> bool:
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
-    """Pre-load <package>.device_type under a mocked is_available()==True so its
-    @cache captures "cuda"; prereqs are submodules to load first (e.g. 'utils').
-    Returns False if anything is unimportable, so the caller falls back to a stub."""
+    """Mocks is_available() True so @cache captures cuda; prereqs first; False if unimportable."""
     target = f"{package}.device_type"
     if target in sys.modules:
         return True
@@ -126,9 +217,7 @@ def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
 
 
 def _patch_torch_cuda_for_import() -> None:
-    """Stub the torch.cuda.* probes fired at import time once DEVICE_TYPE is
-    forced to "cuda"; returning plausible Ampere values lets the import finish
-    (real-tensor tests still run on CPU)."""
+    """Stub torch.cuda import probes (DEVICE_TYPE=cuda) with Ampere values; tests run on CPU."""
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 
@@ -168,6 +257,12 @@ def _install_device_type_stub(name: str) -> None:
     stub.hip_visible_archs = lambda: []
     stub.cuda_visible_capabilities = lambda *a, **k: []
     stub.cuda_gate_capabilities = lambda: []
+    stub.cuda_current_capability = lambda: None
+    stub.cuda_bf16_capability = lambda: None
+    stub.distributed_launch = lambda: False
+    stub.apply_pre_volta_compile_workaround = lambda *a, **k: False
+    stub.hip_current_arch = lambda: ""
+    stub.arch_breaks_compile = lambda arch: False
     stub.cuda_order_mismatch_names = lambda: []
     stub.xpu_supports_native_bf16 = lambda: True
     stub.zoo_shares_xpu_bf16 = lambda: False
@@ -213,3 +308,9 @@ def _kernel_lock_dir(tmp_path_factory):
 def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
     # Tests never take (or create) the environment's real kernel install locks.
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)
+
+
+# Gloo ranks fork from a zygote that already ran this file and imported unsloth.
+if os.environ.get("UNSLOTH_TEST_RANK_ZYGOTE") == "1":
+    import rank_zygote
+    rank_zygote.install()

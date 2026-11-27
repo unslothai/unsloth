@@ -113,6 +113,31 @@ test("the consent dialog offers the custom-code way out before an install fails"
     /phase === "error" && trustRemoteCodeFallback/,
     "the custom-code fallback must not wait for an install to fail first",
   );
+  assert.match(
+    dialog,
+    /<DropdownMenuItem onSelect=\{\(\) => resolve\(true\)\}>\s*Continue with custom code/,
+    "beside Update, custom code lives under Other and only resolves the dialog",
+  );
+  assert.doesNotMatch(
+    dialog,
+    /trustRemoteCode\s*=/,
+    "the dialog must never grant trust itself",
+  );
+});
+
+test("chat raises the remote-code scan after the upgrade dialog", () => {
+  for (const file of [
+    "../src/features/chat/shared-composer.tsx",
+    "../src/features/chat/hooks/use-chat-model-runtime.ts",
+  ]) {
+    const source = readText(file);
+    const upgradeAt = source.indexOf("confirmTransformersUpgradeIfNeeded({");
+    const scanAt = source.indexOf("confirmRemoteCodeIfNeeded({", upgradeAt);
+    assert.ok(
+      upgradeAt >= 0 && scanAt > upgradeAt,
+      `${file} must scan custom code after the upgrade dialog`,
+    );
+  }
 });
 
 test("both start paths carry the upgrade gate's custom-code verdict forward", () => {

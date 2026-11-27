@@ -350,6 +350,77 @@ def test_fake_quantized_embedding_forward_compiles_fullgraph():
         torch.testing.assert_close(compiled(ids), emb(ids))
 
 
+def _expected_lookup_with(emb, weight, ids):
+    with torch.no_grad():
+        w = emb.weight_fake_quantizer(weight)
+        return torch.nn.functional.embedding(ids, w).float() * emb.embed_scale
+
+
+def test_functional_call_plain_tensor_weight_is_fake_quantized():
+    emb = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4").get_input_embeddings()
+    ids = torch.randint(0, 256, (2, 12))
+    weight = emb.weight.detach().clone().requires_grad_()
+    calls = _count_fake_quant_calls(emb)
+    out = torch.func.functional_call(emb, {"weight": weight}, (ids,)).float()
+    assert len(calls) == 1
+    torch.testing.assert_close(out.detach(), _expected_lookup_with(emb, weight, ids))
+    out.sum().backward()
+    assert weight.grad is not None and torch.isfinite(weight.grad).all()
+    assert isinstance(emb.weight, torch.nn.Parameter)
+
+
+def test_nested_fake_quantized_weight_call_quantizes_once():
+    from unsloth.models._utils import _call_with_fake_quantized_weight
+
+    emb = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4").get_input_embeddings()
+    ids = torch.randint(0, 256, (2, 12))
+    calls = _count_fake_quant_calls(emb)
+
+    def lookup():
+        return torch.nn.functional.embedding(ids, emb.weight).float() * emb.embed_scale
+
+    with torch.no_grad():
+        out = _call_with_fake_quantized_weight(emb, _call_with_fake_quantized_weight, emb, lookup)
+    assert len(calls) == 1
+    torch.testing.assert_close(out, _expected_fake_quantized_lookup(emb, ids))
+    assert "_unsloth_weight_fake_quantized" not in vars(emb)
+
+
+@pytest.mark.parametrize("use_orig_params", [False, True])
+def test_fsdp1_embedding_is_fake_quantized(use_orig_params, tmp_path):
+    import torch.distributed as dist
+
+    if not dist.is_available() or not dist.is_gloo_available():
+        pytest.skip("requires torch.distributed with gloo")
+    if dist.is_initialized():
+        pytest.skip("a process group is already initialized")
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    emb = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4").get_input_embeddings()
+    ids = torch.randint(0, 256, (2, 12))
+    with torch.no_grad():
+        expected = emb(ids).float()
+    dist.init_process_group(
+        "gloo", store = dist.FileStore(str(tmp_path / "store"), 1), rank = 0, world_size = 1
+    )
+    try:
+        wrapped = FSDP(emb, device_id = torch.device("cpu"), use_orig_params = use_orig_params)
+        calls = _count_fake_quant_calls(emb)
+        seen = []
+        emb.register_forward_pre_hook(
+            lambda m, a: seen.append(isinstance(m.weight, torch.nn.Parameter))
+        )
+        out = wrapped(ids).float()
+        out.sum().backward()
+        grads = [p.grad for p in wrapped.parameters() if p.requires_grad]
+    finally:
+        dist.destroy_process_group()
+    assert seen == [False]
+    assert len(calls) == 1
+    torch.testing.assert_close(out.detach(), expected)
+    assert grads and all(g is not None and torch.isfinite(g).all() for g in grads)
+
+
 def _offload_embedding(model, **hook_kwargs):
     # What cpu_offload / dispatch_model install: the real weight in weights_map, the parameter on meta between calls.
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module

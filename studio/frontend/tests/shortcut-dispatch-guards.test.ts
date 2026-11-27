@@ -205,7 +205,7 @@ test("route shortcuts stay idle while Settings is open", async () => {
   }
   assert.equal(
     enabledById.get("switchToTrain"),
-    "routeShortcutEnabled && !chatOnlyMeasured",
+    "routeShortcutEnabled && !trainBlocked",
   );
   assert.equal(
     enabledById.get("switchToVideo"),
@@ -333,7 +333,7 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
   assert.match(APP_SIDEBAR, /isSurfaceBackgrounded\(SIDEBAR_SELECTOR\)/);
   assert.match(
     APP_SIDEBAR,
-    /document\.querySelector\(SIDEBAR_SELECTOR\) === null &&\n\s*isSurfaceBackgrounded\("#root"\)/,
+    /surfaceElements\(SIDEBAR_SELECTOR\)\.length === 0 &&\n\s*isSurfaceBackgrounded\("#root"\)/,
   );
 });
 
@@ -464,7 +464,7 @@ test("selection and clipboard chords stop at a covered sidebar", async () => {
 
 // resolveNavRowState leaves pending rows enabled, so chords must match their rows.
 test("the workspace chords wait on the same verdict their rows do", async () => {
-  assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !chatOnlyMeasured,/);
+  assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !trainBlocked,/);
   assert.match(SRC__ROOT, /enabled: routeShortcutEnabled && !videoDisabled,/);
   const rowState = await readSrcAsync("components/nav-row-state.ts");
   assert.match(

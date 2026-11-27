@@ -296,3 +296,59 @@ def test_the_pinned_swap_only_installs_from_the_parked_state(monkeypatch):
     _swap_ready(monkeypatch)
     vae = torch.nn.Linear(4, 4).to("meta")
     assert not install_pinned_swap(vae)
+
+
+def test_a_vae_that_cannot_pin_still_parks_by_repointing_at_its_pageable_copy(monkeypatch):
+    import core.inference.video_minimax_h3_te as te
+    from core.inference.video_minimax_h3_residency import install_pinned_swap
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: False)
+    monkeypatch.setattr(
+        te, "pin_module_in_place", lambda *a, **k: pytest.fail("pinned without a pin budget")
+    )
+    vae = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3), torch.nn.GroupNorm(2, 4))
+    expect = {k: v.clone() for k, v in vae.state_dict().items()}
+    host_ptr = vae[0].weight.data_ptr()
+    assert install_pinned_swap(vae)
+    assert not vae[0].weight.is_pinned()
+    vae[0].weight.data = vae[0].weight.data.clone()
+    vae.to("cpu")
+    assert vae[0].weight.data_ptr() == host_ptr, "the CPU move copied instead of re-pointing"
+    for k, v in vae.state_dict().items():
+        assert torch.equal(v, expect[k])
+
+
+def test_the_pageable_swap_honours_its_kill_switch(monkeypatch):
+    import core.inference.video_minimax_h3_te as te
+    from core.inference.video_minimax_h3_residency import install_pinned_swap
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: False)
+    monkeypatch.setenv("UNSLOTH_H3_VAE_PAGEABLE_SWAP", "0")
+    vae = torch.nn.Linear(4, 4)
+    assert not install_pinned_swap(vae)
+    assert "to" not in vae.__dict__
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_a_pageable_swap_round_trip_on_cuda(monkeypatch):
+    import core.inference.video_minimax_h3_te as te
+    from core.inference.video_minimax_h3_residency import install_pinned_swap
+
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: False)
+    vae = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3), torch.nn.GroupNorm(2, 4))
+    expect = {k: v.clone() for k, v in vae.state_dict().items()}
+    host_ptr = vae[0].weight.data_ptr()
+    assert install_pinned_swap(vae)
+    x = torch.randn(1, 3, 8, 8)
+    ref = vae(x)
+    for _ in range(2):
+        vae.to("cuda")
+        assert all(t.is_cuda for t in vae.parameters())
+        y = vae(x.cuda()).cpu()
+        vae.to("cpu")
+        assert vae[0].weight.data_ptr() == host_ptr
+    for k, v in vae.state_dict().items():
+        assert torch.equal(v, expect[k])
+    assert torch.allclose(y, ref, atol = 1e-5)

@@ -49,10 +49,13 @@ def _compilable_attention(model, enabled: bool):
     original = config._attn_implementation
     if enabled and original == "sdpa":
         from transformers import AttentionInterface, AttentionMaskInterface
-        from transformers.masking_utils import sdpa_mask
+        from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
 
         AttentionInterface.register("unsloth_decision_sdpa", _encoder_sdpa)
-        AttentionMaskInterface.register("unsloth_decision_sdpa", sdpa_mask)
+        # The registry entry, which carries the fully masked row fix (import_fixes).
+        AttentionMaskInterface.register(
+            "unsloth_decision_sdpa", ALL_MASK_ATTENTION_FUNCTIONS["sdpa"]
+        )
         config._attn_implementation = "unsloth_decision_sdpa"
     try:
         yield
@@ -107,15 +110,15 @@ def _on_gpu(model) -> bool:
     return next(model.parameters()).device.type == "cuda"
 
 
+def _has_triton() -> bool:
+    return importlib.util.find_spec("triton") is not None
+
+
 def _wants_compile(model, forwards: int) -> bool:
     choice = os.environ.get("UNSLOTH_DECISION_COMPILE", "auto")
     if choice in ("0", "1"):
         return choice == "1"
-    return (
-        _on_gpu(model)
-        and forwards >= COMPILE_MIN_FORWARDS
-        and importlib.util.find_spec("triton") is not None
-    )
+    return _on_gpu(model) and forwards >= COMPILE_MIN_FORWARDS and _has_triton()
 
 
 def _warm_up(model, amp_dtype) -> None:
@@ -152,10 +155,8 @@ def compiled_encoder(
     amp_dtype = None,
     max_length: Optional[int] = None,
 ):
-    """Compile each Laya encoder layer in place for one training run, then go back to eager.
-
-    In place keeps parameter names, saving and LoRA merging unchanged.
-    """
+    """Compile Laya encoder layers in place for one training run, then go back to eager; parameter
+    names stay unchanged so saving and LoRA merging work"""
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
         layers = []
@@ -209,8 +210,7 @@ def compiled_encoder(
 
 
 def pad_length(model, inputs: dict) -> dict:
-    # Pads a training batch to the static bucket; padded positions are masked keys and never
-    # gathered, so the loss is unchanged.
+    # Padded keys are masked and never gathered, so the loss is unchanged.
     multiple = model.__dict__.get("_unsloth_pad_multiple", 0)
     extra = -inputs["input_ids"].shape[1] % multiple if multiple and model.training else 0
     if extra:

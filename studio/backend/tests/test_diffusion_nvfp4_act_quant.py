@@ -114,7 +114,7 @@ def test_install_tags_the_compile_cache_and_uninstall_clears_it(monkeypatch):
     assert cc.cache_key_tag == "other=1"
 
 
-def test_failed_verification_leaves_the_cache_untagged(monkeypatch):
+def test_failed_verification_tags_the_cache_off(monkeypatch):
     cc = pytest.importorskip("torch.compiler.config")
     if not isinstance(getattr(cc, "cache_key_tag", None), str):
         pytest.skip("torch without compiler cache_key_tag")
@@ -129,7 +129,70 @@ def test_failed_verification_leaves_the_cache_untagged(monkeypatch):
     monkeypatch.setattr(aq, "_ORIGINAL", None)
     monkeypatch.delenv(aq.FAST_ACT_QUANT_ENV, raising = False)
     assert aq.install_nvfp4_act_quant_patch() is False
-    assert cc.cache_key_tag == ""
+    assert cc.cache_key_tag == "unsloth_nvfp4_act_quant=0"
+
+
+def _isolated_tag_state(monkeypatch, tag = ""):
+    cc = pytest.importorskip("torch.compiler.config")
+    if not isinstance(getattr(cc, "cache_key_tag", None), str):
+        pytest.skip("torch without compiler cache_key_tag")
+    nvfp4 = pytest.importorskip("torchao.prototype.mx_formats.nvfp4_tensor")
+    monkeypatch.setattr(nvfp4.NVFP4Tensor, "to_nvfp4", nvfp4.NVFP4Tensor.__dict__["to_nvfp4"])
+    monkeypatch.setattr(cc, "cache_key_tag", tag)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(aq, "verify", lambda: (True, "stub"))
+    monkeypatch.setattr(
+        aq, "_STATE", {"installed": False, "verified": None, "reason": "", "fallback": 0}
+    )
+    monkeypatch.setattr(aq, "_ORIGINAL", None)
+    monkeypatch.delenv(aq.FAST_ACT_QUANT_ENV, raising = False)
+    return cc, nvfp4.NVFP4Tensor
+
+
+def test_kill_switch_key_differs_from_the_legacy_untagged_key(monkeypatch):
+    # Caches from before the tag are untagged and may hold the patched graph: "off" must not land on that key.
+    cc, _ = _isolated_tag_state(monkeypatch, "other=1")
+    monkeypatch.setenv(aq.FAST_ACT_QUANT_ENV, "0")
+    assert aq.install_nvfp4_act_quant_patch() is False
+    assert cc.cache_key_tag == "other=1;unsloth_nvfp4_act_quant=0"
+    monkeypatch.delenv(aq.FAST_ACT_QUANT_ENV)
+    assert aq.install_nvfp4_act_quant_patch() is True
+    assert cc.cache_key_tag == "other=1;unsloth_nvfp4_act_quant=1"
+
+
+def test_kill_switch_after_install_restores_torchao(monkeypatch):
+    cc, NVFP4Tensor = _isolated_tag_state(monkeypatch)
+    original = NVFP4Tensor.to_nvfp4
+    assert aq.install_nvfp4_act_quant_patch() is True
+    assert NVFP4Tensor.to_nvfp4 is not original
+    monkeypatch.setenv(aq.FAST_ACT_QUANT_ENV, "0")
+    assert aq.install_nvfp4_act_quant_patch() is False
+    assert NVFP4Tensor.to_nvfp4 is original
+    assert cc.cache_key_tag == "unsloth_nvfp4_act_quant=0"
+
+
+def test_per_load_reset_drops_the_tag_for_a_non_nvfp4_load(monkeypatch):
+    cc, NVFP4Tensor = _isolated_tag_state(monkeypatch, "other=1")
+    assert aq.install_nvfp4_act_quant_patch() is True
+    aq.reset_compile_cache_tag()
+    assert cc.cache_key_tag == "other=1"
+    assert aq.install_nvfp4_act_quant_patch() is True
+    assert cc.cache_key_tag == "other=1;unsloth_nvfp4_act_quant=1"
+
+
+def test_load_pipeline_resets_the_tag_after_unload():
+    import ast
+    import pathlib
+
+    src = pathlib.Path(aq.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline"
+    )
+    body = ast.get_source_segment(src, fn)
+    assert "reset_compile_cache_tag()" in body
+    assert body.index("self._unload_locked()") < body.index("reset_compile_cache_tag()")
 
 
 _CROSS_PROCESS_PROBE = """

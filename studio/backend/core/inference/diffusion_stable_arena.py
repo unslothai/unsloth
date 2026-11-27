@@ -1,28 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stable device addresses for a whole-module CPU-offloaded denoiser (``memory_mode=low_vram``).
-
-accelerate's ``CpuOffload`` hook onloads the denoiser with ``module.to(device)`` at the start of every render, so the
-caching allocator hands its weights new addresses each time and a CUDA graph recorded on render 1 cannot replay on
-render 2 (``diffusion_cuda_graph.MODEL_OFFLOAD_REASON``). Here the denoiser's device copy lives in one CUDA virtual
-address range reserved once for the load (driver VMM: ``cuMemAddressReserve``). An onload creates physical memory,
-maps it at that range and copies the kept host weights in; the offload syncs the card, unmaps and releases the
-physical memory, so the text encoder and VAE phases get the VRAM back exactly as with the stock hook. The weights
-land at the same addresses on every render, so the recorded step graph keeps replaying.
-
-ComfyUI does the same for its graph replays over offloaded weights (comfy_aimdo ``model_vbar``).
-
-Plain dense tensors (with their strides) and torchao-style wrapper weights (int8 / fp8: their plain inner tensors,
-rebuilt over the range) are placed; a module holding any other parameter type (GGUF) is left to the stock hook.
-Opt out with ``UNSLOTH_DIFFUSION_MODEL_OFFLOAD_ARENA=0``.
-"""
+"""Keeps offloaded denoiser weights at fixed VMM addresses so recorded CUDA graphs replay; GGUF or
+other parameter types left to the stock hook"""
 
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
+import sys
 import threading
+import time
 import weakref
 from typing import Any, Optional
 
@@ -112,9 +101,78 @@ def _driver() -> Any:
     return _LIB
 
 
+# Physical bytes mapped through every range, per CUDA ordinal: memory the caching allocator's counters do not see.
+_MAPPED: dict = {}
+# High-water mark of ``_MAPPED`` since the last ``reset_peak_mapped`` (the stable ranges' max_memory_allocated).
+_PEAK_MAPPED: dict = {}
+_MAPPED_LOCK = threading.Lock()
+
+
+def mapped_bytes(device_index: Optional[int]) -> int:
+    """Bytes currently mapped in stable ranges on ``device_index`` (outside ``torch.cuda.memory_allocated``)."""
+    with _MAPPED_LOCK:
+        return int(_MAPPED.get(device_index, 0))
+
+
+def peak_mapped_bytes(device_index: Optional[int]) -> int:
+    """Most bytes mapped at once on ``device_index`` since the last ``reset_peak_mapped``."""
+    with _MAPPED_LOCK:
+        return int(max(_PEAK_MAPPED.get(device_index, 0), _MAPPED.get(device_index, 0)))
+
+
+def reset_peak_mapped(device_index: Optional[int]) -> None:
+    with _MAPPED_LOCK:
+        _PEAK_MAPPED[device_index] = _MAPPED.get(device_index, 0)
+
+
+def _count_mapped(device_index: int, delta: int) -> None:
+    with _MAPPED_LOCK:
+        now = _MAPPED.get(device_index, 0) + int(delta)
+        _MAPPED[device_index] = now
+        _PEAK_MAPPED[device_index] = max(_PEAK_MAPPED.get(device_index, 0), now)
+
+
 def _check(rc: int, what: str) -> None:
     if rc != 0:
         raise RuntimeError(f"{what} failed (CUresult {rc})")
+
+
+# cuMemSetAccess right after cuMemMap can return CUDA_ERROR_NOT_READY on Windows (WDDM) while the OS video memory
+# manager is still paging the new allocation in. Unmapping and releasing it at that moment tears down an allocation
+# the OS paging thread may still be touching, so the transient code is retried with a 1, 2, 4, 8, 16, 16, ... ms
+# backoff until _NOT_READY_MAX_WAIT_S of monotonic time has elapsed (sleep overshoot and time inside the driver call
+# count) before the caller unmaps as it does for any other failure.
+_CUDA_ERROR_NOT_READY = 600
+_NOT_READY_MAX_WAIT_S = 2.0
+_NOT_READY_MAX_DELAY_S = 0.016
+
+
+def _retries_not_ready() -> bool:
+    return sys.platform == "win32"
+
+
+def _set_access_settled(lib: Any, va: int, size: int, access: "_AccessDesc") -> int:
+    """``cuMemSetAccess`` for one device, retrying only CUDA_ERROR_NOT_READY and only on Windows; returns the final
+    CUresult (any other code, or NOT_READY elsewhere, is returned from the first call unchanged)."""
+    rc = lib.cuMemSetAccess(va, size, ctypes.byref(access), 1)
+    if rc != _CUDA_ERROR_NOT_READY or not _retries_not_ready():
+        return rc
+    start = time.monotonic()
+    delay, tries = 0.001, 1
+    while rc == _CUDA_ERROR_NOT_READY and time.monotonic() - start < _NOT_READY_MAX_WAIT_S:
+        time.sleep(delay)
+        delay = min(delay * 2, _NOT_READY_MAX_DELAY_S)
+        rc = lib.cuMemSetAccess(va, size, ctypes.byref(access), 1)
+        tries += 1
+    waited = time.monotonic() - start
+    logging.getLogger(__name__).warning(
+        "cuMemSetAccess returned CUDA_ERROR_NOT_READY for a %d MiB range; waited %.0f ms over %d calls, result %d",
+        int(size) >> 20,
+        waited * 1000,
+        tries,
+        rc,
+    )
+    return rc
 
 
 def arena_disabled() -> bool:
@@ -210,19 +268,26 @@ class VmmArena:
             _check(rc, "cuMemCreate")
             try:
                 _check(lib.cuMemMap(self.va, self.size, 0, handle.value, 0), "cuMemMap")
+            except BaseException:
+                lib.cuMemRelease(handle.value)
+                raise
+            try:
                 access = _AccessDesc()
                 access.location.type = _CU_MEM_LOCATION_TYPE_DEVICE
                 access.location.id = self.device_index
                 access.flags = _CU_MEM_ACCESS_FLAGS_PROT_READWRITE
-                rc = lib.cuMemSetAccess(self.va, self.size, ctypes.byref(access), 1)
-                if rc != 0:
-                    lib.cuMemUnmap(self.va, self.size)
-                    _check(rc, "cuMemSetAccess")
-            except Exception:
+                _check(_set_access_settled(lib, self.va, self.size, access), "cuMemSetAccess")
+                base = torch.as_tensor(_CudaArray(self.va, self.size), device = self.device)
+            except BaseException:
+                # The range is mapped but not yet recorded in self._handle: any failure here (a driver error, an
+                # interrupt during the NOT_READY retry sleep, a failed wrap) unmaps and releases it, so the arena is
+                # unmapped and retryable and the caller's stock fallback holds the only copy.
+                lib.cuMemUnmap(self.va, self.size)
                 lib.cuMemRelease(handle.value)
                 raise
             self._handle = int(handle.value)
-            self._base = torch.as_tensor(_CudaArray(self.va, self.size), device = self.device)
+            self._base = base
+        _count_mapped(self.device_index, self.size)
         self.maps += 1
         return self._base
 
@@ -258,12 +323,46 @@ class VmmArena:
             return
         lib = _driver()
         with torch.cuda.device(self.device_index):
-            torch.cuda.synchronize(self.device_index)
-            self._base = None
-            _check(lib.cuMemUnmap(self.va, self.size), "cuMemUnmap")
-            _check(lib.cuMemRelease(self._handle), "cuMemRelease")
+            from .diffusion_cuda_graph import synchronize_outside_capture
+            synchronize_outside_capture(self.device_index)
+            self._release_synced(lib)
+
+    def _release_synced(self, lib: Any) -> None:
+        """Unmap and release, the card already synchronized with no capture recording."""
+        self._base = None
+        _check(lib.cuMemUnmap(self.va, self.size), "cuMemUnmap")
+        _check(lib.cuMemRelease(self._handle), "cuMemRelease")
         self._handle = None
+        _count_mapped(self.device_index, -self.size)
         self.unmaps += 1
+
+    def _close_idle(self) -> None:
+        """``close`` for ``release_when_capture_idle``: run under the capture lock with no capture recording."""
+        import torch
+
+        if self.closed:
+            return
+        try:
+            if self._handle is not None:
+                with torch.cuda.device(self.device_index):
+                    torch.cuda.synchronize(self.device_index)
+                    self._release_synced(_driver())
+        finally:
+            self.closed = True
+            try:
+                _driver().cuMemAddressFree(self.va, self.size)
+            except Exception:  # noqa: BLE001 - process teardown
+                pass
+
+    def close_from_finalizer(self) -> None:
+        """``close`` for weakref finalizers: never blocks on the capture gate (the finalizer's thread may hold its
+        lock). Runs now when no capture records and the lock is free, else at the next gated point; the memory is
+        freed only after a device sync with no capture recording, as ``unmap`` does."""
+        if self.closed:
+            return
+        from .diffusion_cuda_graph import release_when_capture_idle
+
+        release_when_capture_idle(self._close_idle)
 
     def close(self) -> None:
         if self.closed:
@@ -310,11 +409,8 @@ def _set_tensor(owner: Any, leaf: str, kind: str, value: Any) -> None:
 
 
 def _entries(module: Any) -> list:
-    """(qualified name, registrations, kind, tensor) for every parameter and buffer, each tensor once.
-
-    ``registrations`` lists every (owner module, leaf name, qualified name) the tensor is registered under: a buffer
-    shared by several submodules (or names) has one registry slot per registration, and each must point at the placed
-    copy."""
+    """Yields (qualified name, registrations, kind, tensor) per tensor, each once; a shared buffer's
+    registrations must each point at the placed copy."""
     out: list = []
     index: dict = {}
     for mod_name, mod in module.named_modules(remove_duplicate = False):
@@ -353,7 +449,7 @@ class ModuleArena:
         self.arena: Optional[VmmArena] = None
         self.failed: Optional[str] = None
         self.retiring = False
-        self.stats = {"onloads": 0, "placed": 0, "stock": 0, "maps": 0, "unmaps": 0}
+        self.stats = {"onloads": 0, "placed": 0, "stock": 0, "maps": 0, "unmaps": 0, "rebuilds": 0}
         self._module = weakref.ref(module)
         self._stock_to = type(module).to
         module.__dict__["to"] = self._to
@@ -375,12 +471,19 @@ class ModuleArena:
         arena = state.get("arena")
         if arena is not None:
             try:
-                arena.close()
+                arena.close_from_finalizer()
             except Exception:  # noqa: BLE001 - process teardown
                 pass
 
     def detach(self) -> None:
+        """Restores the stock onload and closes the range; if weights still sit in it when detached,
+        placing stops and the offload finishes, so the range is never left mapped."""
         module = self._module()
+        if self.arena is not None and module is not None and self._referenced(module):
+            self.failed = self.failed or "detached"
+            self.retiring = True
+            return
+        self.retiring = False
         if module is not None and module.__dict__.get("to") == self._to:
             module.__dict__.pop("to", None)
         try:
@@ -430,6 +533,26 @@ class ModuleArena:
         self.layout = layout
         self.arena = VmmArena(max(offset, _ALIGN), self.device.index)
 
+    def _stale(self, entries: list) -> bool:
+        """Whether a placeable host weight has no slot of its shape, stride and dtype in the layout, or a slot outlived
+        its weight (an unloaded adapter): a removed piece must not keep its share of the range mapped."""
+        assert self.layout is not None
+        seen: set = set()
+        for name, regs, _kind, whole in entries:
+            if whole.device.type != "cpu" or not _placeable(whole):
+                continue
+            for key, t in _pieces(name, whole):
+                slot = self.layout.get(key)
+                if slot is None or (tuple(t.shape), tuple(t.stride()), t.dtype) != (
+                    slot[1],
+                    slot[2],
+                    slot[3],
+                ):
+                    return True
+                suffix = key[len(name) :]
+                seen.update(qual + suffix for _owner, _leaf, qual in regs)
+        return not seen.issuperset(self.layout)
+
     def _referenced(self, module: Any) -> bool:
         if self.arena is None or not self.arena.mapped:
             return False
@@ -455,6 +578,13 @@ class ModuleArena:
         import torch
 
         entries = _entries(module)
+        if self.layout is not None and self._stale(entries):
+            # Host weights changed (adapter, dtype, shape): re-lay out, else the stale range stays mapped beside them.
+            if self.arena is not None:
+                self.arena.close()
+            self.arena = None
+            self.layout = None
+            self.stats["rebuilds"] += 1
         if self.layout is None:
             self._build(entries)
         assert self.arena is not None and self.layout is not None
@@ -605,3 +735,251 @@ def arena_of(module: Any) -> Optional[ModuleArena]:
         return module.__dict__.get(_ARENA_ATTR)
     except Exception:  # noqa: BLE001
         return None
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Block offload gives resident groups a reserved address range, since the stock re-pin after an
+# encode lands at new allocator addresses and re-records the step graph each prompt; opt out with
+# UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0.
+
+REPIN_ENV = "UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE"
+_REPIN_ATTR = "_unsloth_repin_range"
+_REPIN_WANTED = "_unsloth_repin_wanted"
+_REPIN_STATS = "_unsloth_repin_stats"
+
+
+def repin_disabled() -> bool:
+    return (os.environ.get(REPIN_ENV) or "").strip().lower() in _OFF
+
+
+def want_stable_repin(module: Any) -> Optional[str]:
+    """Mark ``module`` (a block-offloaded denoiser whose step records a graph) so its group re-pins land in stable
+    ranges from now on. Returns why not, else None."""
+    if repin_disabled():
+        return f"disabled by {REPIN_ENV}=0"
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "no CUDA device"
+        _driver()
+    except Exception as exc:  # noqa: BLE001
+        return f"CUDA virtual memory unavailable ({exc})"
+    try:
+        module.__dict__[_REPIN_WANTED] = True
+        module.__dict__.setdefault(
+            _REPIN_STATS,
+            {
+                "groups": 0,
+                "pins": 0,
+                "placed": 0,
+                "stock": 0,
+                "maps": 0,
+                "unmaps": 0,
+                "bytes": 0,
+                "rebuilds": 0,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"module not writable ({exc})"
+    return None
+
+
+def drop_stable_repin(module: Any) -> None:
+    """Graphing stopped for ``module``: later re-pins move the stock way. A mapped range is unmapped by the next
+    release as before; the address ranges themselves go with the module."""
+    try:
+        module.__dict__.pop(_REPIN_WANTED, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def stable_repin_wanted(module: Any) -> bool:
+    try:
+        return bool(module.__dict__.get(_REPIN_WANTED)) and not repin_disabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def repin_stats(module: Any) -> Optional[dict]:
+    try:
+        stats = module.__dict__.get(_REPIN_STATS)
+    except Exception:  # noqa: BLE001
+        return None
+    return dict(stats) if isinstance(stats, dict) else None
+
+
+def _host_pieces(t: Any) -> Optional[list]:
+    """(attr or None, plain tensor) for each storage of a host copy, else None (a type the range cannot hold)."""
+    if _plain(t):
+        return [(None, t.data)]
+    inner = _inner(t)
+    return None if inner is None else list(inner)
+
+
+def _span(t: Any) -> int:
+    if not t.numel():
+        return 0
+    return (1 + sum((n - 1) * st for n, st in zip(t.shape, t.stride()))) * t.element_size()
+
+
+class GroupRange:
+    """The reserved device range of one offload group's resident copy: ``layout[i]`` holds the (offset, shape, stride,
+    dtype) of each storage of the group's i-th tensor, fixed at the first re-pin."""
+
+    def __init__(self, layout: dict, nbytes: int, device_index: int) -> None:
+        self.layout = layout
+        self.arena = VmmArena(max(nbytes, _ALIGN), device_index)
+
+    def referenced(self, tensors: list) -> bool:
+        if not self.arena.mapped:
+            return False
+        lo, hi = self.arena.va, self.arena.va + self.arena.size
+        for t in tensors:
+            try:
+                pieces = _host_pieces(t) or [(None, t)]
+                if any(x.device.type == "cuda" and lo <= x.data_ptr() < hi for _, x in pieces):
+                    return True
+            except Exception:  # noqa: BLE001 - unreadable: keep the memory
+                return True
+        return False
+
+
+def _close_ranges(ranges: list) -> None:
+    for rng in ranges:
+        try:
+            rng.arena.close_from_finalizer()
+        except Exception:  # noqa: BLE001 - process teardown
+            pass
+
+
+def _range_for(owner: Any, group: Any, sources: list, device: Any) -> Optional[GroupRange]:
+    """``group``'s range, built on first use from the host copies ``sources`` (index -> tensor) it places."""
+    offset = 0
+    layout: dict = {}
+    for i, src in sources:
+        pieces = _host_pieces(src)
+        if pieces is None or any(x.device.type != "cpu" for _, x in pieces):
+            continue
+        slots = []
+        for _attr, x in pieces:
+            slots.append((offset, tuple(x.shape), tuple(x.stride()), x.dtype))
+            offset += -(-max(_span(x), 1) // _ALIGN) * _ALIGN
+        layout[i] = tuple(slots)
+    held = owner.__dict__.get("_unsloth_repin_ranges")
+    stats = owner.__dict__.get(_REPIN_STATS)
+    rng = getattr(group, "__dict__", {}).get(_REPIN_ATTR)
+    if rng is not None:
+        if rng.layout == layout or rng.arena.mapped:
+            # unchanged, or still holding weights (a release that could not move them all out): reused as is
+            return rng
+        # Host tensors changed (LoRA, dtype, shape): re-lay out, else the stale range stays mapped beside them.
+        rng.arena.close()
+        group.__dict__.pop(_REPIN_ATTR, None)
+        if held is not None and rng in held:
+            held.remove(rng)
+        if isinstance(stats, dict):
+            stats["rebuilds"] = stats.get("rebuilds", 0) + 1
+            stats["groups"] -= 1
+            stats["bytes"] -= rng.arena.size
+    if not layout:
+        return None
+    rng = GroupRange(layout, offset, device.index)
+    group.__dict__[_REPIN_ATTR] = rng
+    # The ranges outlive any one group object only as long as the denoiser does.
+    if held is None:
+        held = []
+        owner.__dict__["_unsloth_repin_ranges"] = held
+        weakref.finalize(owner, _close_ranges, held)
+    held.append(rng)
+    if isinstance(stats, dict):
+        stats["groups"] += 1
+        stats["bytes"] += rng.arena.size
+    return rng
+
+
+def pin_group_in_range(
+    owner: Any,
+    group: Any,
+    tensors: list,
+    pending: Any,
+    host_of: Any,
+    device: Any,
+    swap_wrapper: Any,
+) -> set:
+    """Place ``group``'s ``tensors`` for which ``pending`` holds (not on the card yet) into its stable range, copied
+    from ``host_of(t)`` (queued on the current stream: the caller synchronizes). The range is laid out over the
+    tensors pending at the first re-pin (a tied tensor another group placed takes no room here); a slot is keyed on
+    the tensor's position in ``tensors``. Returns the ids placed; the caller moves the rest the stock way."""
+    import torch
+
+    device = torch.device(device)
+    if device.index is None:
+        device = torch.device("cuda", torch.cuda.current_device())
+    todo = [(i, t, host_of(t)) for i, t in enumerate(tensors) if pending(t)]
+    rng = _range_for(owner, group, [(i, src) for i, _t, src in todo], device)
+    if rng is None:
+        return set()
+    rng.arena.map()
+    stats = owner.__dict__.get(_REPIN_STATS)
+    placed: set = set()
+    undo: list = []  # how to point each tensor installed so far back at its original storage
+    try:
+        for i, t, src in todo:
+            slots = rng.layout.get(i)
+            pieces = _host_pieces(src)
+            if (
+                slots is None
+                or pieces is None
+                or len(slots) != len(pieces)
+                or any(
+                    (tuple(x.shape), tuple(x.stride()), x.dtype) != slot[1:]
+                    for slot, (_attr, x) in zip(slots, pieces)
+                )
+            ):
+                continue
+            views = []
+            for slot, (_attr, x) in zip(slots, pieces):
+                view = rng.arena.view(slot[0], slot[1], slot[3], slot[2])
+                view.copy_(x, non_blocking = True)
+                views.append(view)
+            if pieces[0][0] is None:
+                prev = t.data
+                t.data = views[0]
+                undo.append((t, prev, False))
+            else:
+                _names, ctx = src.__tensor_flatten__()
+                rebuilt = type(src).__tensor_unflatten__(
+                    dict(zip([a for a, _ in pieces], views)), ctx, src.shape, src.stride()
+                )
+                swap_wrapper(t, rebuilt)  # a swap: ``rebuilt`` now holds t's original contents
+                undo.append((t, rebuilt, True))
+            placed.add(id(t))
+    except BaseException:
+        # Leave the range empty so the caller unmaps it and moves the whole group the stock way.
+        for t, prev, wrapped in reversed(undo):
+            if wrapped:
+                swap_wrapper(t, prev)
+            else:
+                t.data = prev
+        raise
+    if isinstance(stats, dict):
+        stats["pins"] += 1
+        stats["maps"] = sum(r.arena.maps for r in owner.__dict__.get("_unsloth_repin_ranges", ()))
+        stats["placed"] += len(placed)
+        stats["stock"] += len(todo) - len(placed)
+    return placed
+
+
+def release_group_range(owner: Any, group: Any, tensors: list) -> bool:
+    """After ``group`` streamed again (its tensors back on their host copies): unmap its range. False when a tensor
+    still lives in it (the memory then stays until the next re-pin reuses it)."""
+    rng = getattr(group, "__dict__", {}).get(_REPIN_ATTR)
+    if rng is None or not rng.arena.mapped:
+        return True
+    if rng.referenced(tensors):
+        return False
+    rng.arena.unmap()
+    stats = owner.__dict__.get(_REPIN_STATS) if owner is not None else None
+    if isinstance(stats, dict):
+        stats["unmaps"] += 1
+    return True

@@ -459,7 +459,7 @@ test("the GPU pick is compared after reconciliation, not as saved", () => {
 });
 
 test("an unset context length is resolved the way the load resolves it", () => {
-  // resolveLoadMaxSeqLength gives 0 cross-model and the resident context on re-pick.
+  // An Auto GGUF resolves to 0; any positive resolution must equal the recorded request.
   assert.equal(
     matches({ ...DEFAULTS, requested_context_length: 0 }, BLANK),
     true,
@@ -663,6 +663,28 @@ test("an MLX resident is judged on its speculative settings, a standing ngram re
   // llama.cpp's retry arms: an identical MLX load dedupes.
   const notFound = { ...mlx, spec_fallback_reason: "drafter_not_found" };
   assert.equal(residentSpeculativeNeedsRepair(notFound, "auto"), false);
+});
+
+test("MLX-only load settings are judged on an MLX resident, not on a transformers one", () => {
+  const mlx = { ...DEFAULTS, is_gguf: false, is_mlx: true };
+  for (const [chosen, running] of [
+    [{ disableVision: true }, { disable_vision: true }],
+    [{ reasoningBudget: 64 }, { requested_reasoning_budget: 64 }],
+    [{ reasoningBudgetMessage: "Done." }, { requested_reasoning_budget_message: "Done." }],
+    [{ nUbatch: 512 }, { requested_n_ubatch: 512 }],
+    [{ nBatch: 512 }, { requested_n_batch: 512 }],
+    [{ cacheRam: 0 }, { requested_cache_ram: 0 }],
+  ] as [object, object][]) {
+    const config = { ...BLANK, ...chosen };
+    const resident = { ...mlx, ...running };
+    assert.deepEqual(
+      [matches(mlx, config), matches(resident, config), matches(resident, BLANK)],
+      [false, true, false],
+    );
+    assert.equal(matches({ ...mlx, is_mlx: false }, config), true);
+  }
+  // MLX has no unlimited prompt cache and loads -1 as the default.
+  assert.equal(matches(mlx, { ...BLANK, cacheRam: -1 }), true);
 });
 
 test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
@@ -883,6 +905,17 @@ test("the arch-gate excuse reads the resolved split, not the toggle", () => {
     ),
     false,
   );
+});
+
+test("manual GPU layer keywords adopt a matching resident model", () => {
+  for (const flag of ["-ngl", "--gpu-layers", "--n-gpu-layers"]) {
+    for (const [value, layers] of [["auto", -1], ["all", 2147483647]] as const) {
+      assert.equal(matches(
+        { ...DEFAULTS, is_gguf: true, gpu_memory_mode: "manual", gpu_layers: layers },
+        { ...BLANK, gpuMemoryMode: "manual", llamaExtraArgs: [flag, value] },
+      ), true, `${flag} ${value}`);
+    }
+  }
 });
 
 test("a malformed manual layer override declines rather than normalizing away", () => {
@@ -1527,10 +1560,9 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
     restore > hydrate,
     "the adopted pick no longer keeps its own GPU selection",
   );
-  assert.ok(
-    USE_CHAT_MODEL_RUNTIME.includes(
-      "getInferenceStatus(undefined, modelId).catch(() => null);",
-    ),
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /getInferenceStatus\(\s*undefined,\s*servedCheckpoint\([\s\S]{0,160}?\),\s*\)\.catch\(\(\) => null\);/,
     "the re-read no longer tolerates a failed status",
   );
 });
@@ -1732,13 +1764,16 @@ test("a pick asks the status about its own model and keeps or replaces the other
   assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /let keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(paramsNow\.checkpoint\) && loadedNow\.length > 1;/,
+    /let keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(modelId\) && loadedNow\.length > 1;/,
   );
-  assert.match(USE_CHAT_MODEL_RUNTIME, /touchesOnlySelected \? \(paramsNow\.checkpoint \?\? undefined\) : undefined,/);
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /touchesOnlySelected\s*\?\s*servedCheckpoint\(loadedNow, modelId, ggufVariant\)\s*:\s*undefined,/,
+  );
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, keepsOthers \|\| touchesOnlySelected\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!keepsOthers && !touchesOnlySelected\) \{\s*requestLocalPromptQueueStop\(\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepsOthers\)/);
-  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive && !touchesOnlySelected\) \{/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive && !touchesOnlySelected\b/);
   assert.equal(
     USE_CHAT_MODEL_RUNTIME.match(/alongside: keepModelsLoaded \|\| touchesOnlySelected,/g)?.length,
     2,
@@ -1758,7 +1793,7 @@ test("ejects stop only the ejected model's chats; eject all asks once and unload
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*checkpoint\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
+    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*target\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
   );
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, Boolean\(scope\)\);/);
   assert.match(

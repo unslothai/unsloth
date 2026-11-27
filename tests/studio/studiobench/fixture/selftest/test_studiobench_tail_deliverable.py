@@ -51,11 +51,7 @@ MATRIX: list[tuple[str, int, bool]] = [
 def test_every_requested_tail_is_delivered_or_refused(
     corpus: Corpus, rung: str, tail: int, deliverable: bool
 ):
-    """The whole property, over the whole matrix: no third outcome.
-
-    The two assertions are the reply-axis test's own, applied to every pair rather than to two of
-    them. Where the corpus cannot answer, the requirement is a refusal and not a smaller number.
-    """
+    """Every requested tail is delivered or refused across the whole matrix, with no third outcome."""
     if not deliverable:
         with pytest.raises(ValueError, match = "cannot deliver"):
             plan_rung(corpus, rung, stream_tail_chars = tail)
@@ -94,8 +90,7 @@ def test_the_refusal_does_not_name_a_maximum_it_has_not_computed(corpus: Corpus)
 
 
 def test_the_default_ladder_is_untouched(corpus: Corpus):
-    """The guard is scoped to an EXPLICIT request. The pinned ladder must not acquire a new way
-    to fail, at any rung, and its numbers must not move by a character."""
+    """Guard is explicit-request only; pinned ladder gains no failure and keeps its numbers."""
     for rung in RUNGS:
         plan = plan_rung(corpus, rung)
         assert plan.streamed_chars <= STREAM_TAIL_CHARS, rung

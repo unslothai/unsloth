@@ -102,8 +102,7 @@ export function canvasErrors(
   return state.entries.filter((entry) => entry.kind === "error");
 }
 
-// The shell's render(); it and every frame below it are Studio's, not the canvas's.
-// Matched by name, not URL: Firefox and WebKit give the canvas's own frames the shell's URL.
+// Matched by name, not URL: Firefox and WebKit give canvas frames the shell's URL.
 const SHELL_RENDER_FRAME = "unslothRenderArtifact";
 // V8 frames start with "at " after the message line; SpiderMonkey and JavaScriptCore use "name@url".
 const STACK_FRAME = /^\s*at\s|^[^\s@]*@\S|^(?:global|module|eval) code@/;

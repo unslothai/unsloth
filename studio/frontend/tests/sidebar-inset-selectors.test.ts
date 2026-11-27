@@ -72,7 +72,7 @@ const candidates = [...current, currentActive];
 const activeVariant = postcss
   .parse(
     readFileSync(
-      new URL("tailwind.css", import.meta.resolve("shadcn")),
+      new URL("../src/shadcn-tailwind.css", import.meta.url),
       "utf8",
     ),
   )

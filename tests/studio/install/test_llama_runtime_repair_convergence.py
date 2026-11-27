@@ -325,9 +325,8 @@ def build_damaged(
 def test_the_online_repair_reaches_a_fixed_point_from_every_damaged_tree(
     tmp_path, cell, host, backend, shape
 ):
-    """Reachable listing: one reinstall, and its result is a fixed point. A second cycle would
-    mean the installer writes a tree its own probe rejects, a permanent loop for every user.
-    """
+    """One reinstall must reach a fixed point; a second cycle would mean the installer writes a tree
+    its own probe rejects, looping for every user."""
     marker = MF.shape_with_backend(shape, backend)
     for label, damage in damage_modes(host, backend, marker):
         root = build_damaged(tmp_path / label, host, backend, marker, damage)
@@ -460,9 +459,8 @@ def test_no_damaged_tree_survives_the_shell_rebuild_skip(
 
 @pytest.mark.parametrize(("host_id", "host"), HOSTS, ids = [h[0] for h in HOSTS])
 def test_a_runtime_quarantined_again_after_every_repair_is_not_a_code_loop(tmp_path, host_id, host):
-    """Antivirus that re-quarantines after each repair never converges, and must not read as
-    the bug above. The distinguisher is progress, not convergence: every repair here replaces
-    the tree, whereas the shell shortcut returned an identical one."""
+    """Antivirus that re-quarantines after each repair never converges and is not a code loop:
+    progress, not convergence, distinguishes them, as each repair replaces the tree."""
     backend = "cuda"
     root = tmp_path / "quarantined"
     install_fresh_prebuilt(root, host, backend)
@@ -558,9 +556,8 @@ def test_grading_an_unparseable_marker_still_terminates_on_every_cell(
 
 
 def test_the_freshly_installed_tree_is_a_fixed_point_on_every_cell(tmp_path):
-    """The base case the whole argument rests on: whatever the repair installs is accepted. If
-    this failed for any cell, every cycle above would be infinite whichever branch ran.
-    """
+    """Base case: whatever a fresh prebuilt install produces is accepted on every host and backend;
+    if not, every repair cycle would loop forever."""
     for host_id, host in HOSTS:
         for backend in BACKENDS:
             prebuilt = tmp_path / f"{host_id}-{backend}-prebuilt"

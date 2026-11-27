@@ -30,6 +30,17 @@ export function hasModelSearchFilters(filters: ModelSearchFilters): boolean {
   );
 }
 
+export function needsModelMetadata(filters: ModelSearchFilters): boolean {
+  const uploaders = filters.uploaders;
+  return (
+    filters.minContext !== undefined ||
+    filters.maxContext !== undefined ||
+    (!!uploaders &&
+      uploaders.length < HUB_UPLOADERS.length &&
+      uploaders.includes("organization") !== uploaders.includes("personal"))
+  );
+}
+
 export function parameterRange(filters: ModelSearchFilters): string {
   return [
     filters.minParams === undefined
@@ -108,6 +119,7 @@ export async function* filterModelListing(
   filters: ModelSearchFilters,
   fetchJson: JsonFetch,
   pinnedModel?: Promise<unknown | null>,
+  keep?: (raw: unknown) => boolean,
 ): AsyncGenerator<unknown> {
   const owners = new Map<string, Promise<boolean>>();
   async function filter(raw: unknown): Promise<ListingModel | null> {
@@ -125,6 +137,9 @@ export async function* filterModelListing(
         filters.maxParams,
       )
     ) {
+      return null;
+    }
+    if (keep && !keep(model)) {
       return null;
     }
     const uploaders = filters.uploaders;

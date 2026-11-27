@@ -179,7 +179,7 @@ def test_mx_qat_linear_takes_float32_activations_under_autocast(weight_dtype):
     # Autocast feeds float32 activations into bfloat16 (or float32) linears.
     # torchao's CPU fake-quant backward cannot mix a float32 weight with bfloat16 activations.
     device = "cpu" if weight_dtype == torch.bfloat16 else "cuda"
-    if device == "cuda" and not torch.cuda.is_available():
+    if device == "cuda" and not has_real_cuda():
         pytest.skip("float32 weights under autocast need the CUDA MX path")
     model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(device, weight_dtype)
     model = _prepare_model_for_qat(model, _mx_torchao_config())
@@ -344,6 +344,38 @@ def test_nvfp4_biased_layers_need_bias_grad(monkeypatch, bias_grad, scheme):
     assert any("no bias" in str(w.message) for w in caught) is not bias_grad
 
 
+@pytest.mark.parametrize("scheme", ["nvfp4", "mxfp8"])
+def test_frozen_bias_layers_are_fake_quantized_without_bias_grad(monkeypatch, scheme):
+    # LoRA freezes the base bias, so a backward without a bias gradient loses nothing: Qwen2 q / k / v
+    # must still be fake quantized, as the export quantizes them.
+    from peft import LoraConfig, get_peft_model
+
+    _probe_ok(monkeypatch, bias_grad = False)
+    linear_cls = _nvfp4_linear() if scheme == "nvfp4" else _mx_linear()
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    model = get_peft_model(base, LoraConfig(r = 16, target_modules = ["q_proj", "down_proj"]))
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    assert not q_proj.base_layer.bias.requires_grad
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, scheme)
+    assert isinstance(q_proj.base_layer, linear_cls)
+    assert not any("no bias" in str(w.message) for w in caught)
+
+    # A trainable bias (LoRA bias = "all") still needs the gradient and stays in full precision.
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    model = get_peft_model(base, LoraConfig(r = 16, target_modules = ["q_proj"], bias = "all"))
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    assert q_proj.base_layer.bias.requires_grad
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, scheme)
+    assert not isinstance(q_proj.base_layer, linear_cls)
+    assert any("no bias" in str(w.message) for w in caught)
+
+
 def test_nvfp4_accepts_rank4_inputs(monkeypatch):
     linear_cls = _nvfp4_linear()
 
@@ -358,3 +390,385 @@ def test_nvfp4_accepts_rank4_inputs(monkeypatch):
     for shape in [(6, 64), (2, 3, 64), (2, 3, 5, 64)]:
         out = model(torch.randn(*shape, dtype = torch.bfloat16))
         assert out.shape == (*shape[:-1], 128)
+
+
+def test_nvfp4_qat_forward_compiles_fullgraph(monkeypatch):
+    # fullgraph = True: the patched forward must not be a compiler boundary.
+    linear_cls = _nvfp4_linear()
+    monkeypatch.setattr(linear_cls, "forward", lambda self, x: x @ self.weight.t())
+    _probe_ok(monkeypatch)
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(64, 128, bias = False)
+
+        def forward(self, x):
+            return self.proj(x * 2) + 1
+
+    model = _prepare_model_for_qat(Block().to(torch.bfloat16), "nvfp4")
+    assert isinstance(model.proj, linear_cls)
+    torch._dynamo.reset()
+    explain = torch._dynamo.explain(model)(torch.randn(4, 64, dtype = torch.bfloat16))
+    assert explain.graph_break_count == 0 and explain.graph_count == 1
+    x = torch.randn(2, 3, 64, dtype = torch.bfloat16)
+    torch.testing.assert_close(torch.compile(model, fullgraph = True, backend = "eager")(x), model(x))
+
+
+_needs_fp4_gpu = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() < (10, 0),
+    reason = "needs an FP4 tensor core GPU",
+)
+
+
+@pytest.fixture
+def exact_inductor(monkeypatch):
+    # Inductor otherwise keeps silu(gate) * up in fp32 before the bf16 round, shifting fp4 codes (~2% grads).
+    import torch._inductor.config as inductor_config
+
+    monkeypatch.setattr(inductor_config, "emulate_precision_casts", True)
+    torch._dynamo.reset()
+    yield
+    torch._dynamo.reset()
+
+
+def _nvfp4_mlp(weight_dtype = torch.bfloat16):
+    import torch.nn.functional as F
+
+    class MLP(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_proj = torch.nn.Linear(256, 512, bias = False)
+            self.up_proj = torch.nn.Linear(256, 512, bias = False)
+            self.down_proj = torch.nn.Linear(512, 256, bias = False)
+
+        def forward(self, x):
+            return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
+    torch.manual_seed(0)
+    model = MLP().to("cuda", weight_dtype)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    assert isinstance(model.gate_proj, _nvfp4_linear())
+    return model
+
+
+def _torchao_reference(model):
+    """torchao's own eager NVFP4 QAT forward (its autograd Function), not the custom op."""
+    import types
+    from torchao.prototype.qat import NVFP4FakeQuantizedLinear
+
+    ref = __import__("copy").deepcopy(model)
+    for module in ref.modules():
+        if isinstance(module, NVFP4FakeQuantizedLinear):
+            module.forward = types.MethodType(NVFP4FakeQuantizedLinear.forward, module)
+    return ref
+
+
+def _grads(model, forward, x):
+    model.zero_grad(set_to_none = True)
+    x = x.detach().requires_grad_(True)
+    out = forward(x)
+    out.float().square().mean().backward()
+    grads = {n: p.grad.float().clone() for n, p in model.named_parameters()}
+    grads["x"] = x.grad.float().clone()
+    return out.detach().float(), grads
+
+
+def _assert_same(
+    got,
+    want,
+    tol = 0.0,
+):
+    (out, grads), (ref_out, ref_grads) = got, want
+    assert float((out - ref_out).norm() / ref_out.norm()) <= tol
+    for name, ref in ref_grads.items():
+        rel = float((grads[name] - ref).norm() / ref.norm())
+        assert rel <= tol, (name, rel)
+
+
+@_needs_fp4_gpu
+def test_nvfp4_qat_custom_op_matches_torchao_eager():
+    model = _nvfp4_mlp()
+    x = torch.randn(2, 64, 256, device = "cuda", dtype = torch.bfloat16)
+    ref = _torchao_reference(model)
+    _assert_same(_grads(model, model, x), _grads(ref, ref, x))
+    op = qat_utils._nvfp4_qat_linear_op()
+    w = model.gate_proj.weight
+    torch.library.opcheck(
+        op,
+        (x.view(-1, 256).detach().requires_grad_(True), w, None, True, True, True, False, None),
+        # test_aot_dispatch_dynamic sums every output, which float8 scales do not support.
+        test_utils = ("test_schema", "test_autograd_registration", "test_faketensor"),
+    )
+
+
+@_needs_fp4_gpu
+@pytest.mark.parametrize("fullgraph", [False, True])
+def test_nvfp4_qat_weight_grads_match_eager_under_compile(exact_inductor, fullgraph):
+    # Inductor used to shrink the gate / up weight grads (~100% relative error against eager).
+    model = _nvfp4_mlp()
+    x = torch.randn(2, 64, 256, device = "cuda", dtype = torch.bfloat16)
+    eager = _grads(model, model, x)
+    compiled = torch.compile(model, fullgraph = fullgraph)
+    _assert_same(_grads(model, compiled, x), eager)
+    _assert_same(_grads(model, compiled, x), eager)  # warm call
+
+
+@_needs_fp4_gpu
+def test_nvfp4_qat_weight_grads_close_to_eager_with_default_inductor():
+    model = _nvfp4_mlp()
+    x = torch.randn(2, 64, 256, device = "cuda", dtype = torch.bfloat16)
+    eager = _grads(model, model, x)
+    torch._dynamo.reset()
+    _assert_same(_grads(model, torch.compile(model, fullgraph = True), x), eager, 0.05)
+
+
+@_needs_fp4_gpu
+def test_nvfp4_qat_dynamic_batch_fullgraph_one_graph(exact_inductor):
+    from torch._dynamo.testing import CompileCounterWithBackend
+
+    model = _nvfp4_mlp()
+    counter = CompileCounterWithBackend("inductor")
+    compiled = torch.compile(model, fullgraph = True, dynamic = True, backend = counter)
+    for batch in (2, 3, 4, 7):
+        x = torch.randn(batch, 32, 256, device = "cuda", dtype = torch.bfloat16)
+        torch._dynamo.mark_dynamic(x, 0)
+        _assert_same(_grads(model, compiled, x), _grads(model, model, x))
+    assert counter.frame_count == 1, counter.frame_count
+
+
+@_needs_fp4_gpu
+def test_nvfp4_qat_one_token_decode_fullgraph(exact_inductor):
+    model = _nvfp4_mlp()
+    model.requires_grad_(False)
+    x = torch.randn(1, 1, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        want = model(x)
+        got = torch.compile(model, fullgraph = True)(x)
+    torch.testing.assert_close(got, want, rtol = 0, atol = 0)
+
+
+@_needs_fp4_gpu
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+def test_nvfp4_qat_autocast_grads_match_torchao(exact_inductor, weight_dtype):
+    model = _nvfp4_mlp(weight_dtype)
+    ref = _torchao_reference(model)
+    x = torch.randn(2, 16, 256, device = "cuda", dtype = torch.bfloat16)
+
+    def under_autocast(module):
+        def run(t):
+            with torch.autocast("cuda", dtype = torch.bfloat16):
+                return module(t)
+
+        return run
+
+    want = _grads(ref, under_autocast(ref), x)
+    _assert_same(_grads(model, under_autocast(model), x), want)
+    compiled = torch.compile(under_autocast(model), fullgraph = True)
+    _assert_same(_grads(model, compiled, x), want)
+
+
+def _torchao_nvfp4_contract_forward(self, x):
+    # What torchao's NVFP4 QAT forward accepts: nvfp4_quantize asserts these, then the output follows x.
+    assert x.dim() == 2, x.shape
+    assert x.dtype in (torch.bfloat16, torch.float32), f"{x.dtype} not supported"
+    assert x.is_contiguous(), "Only support contiguous data for now"
+    return (x.float() @ self.weight.float().t()).to(x.dtype)
+
+
+def test_nvfp4_accepts_strided_inputs(monkeypatch):
+    _probe_ok(monkeypatch)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    ref = model[0].weight.detach().clone()
+    model = _prepare_model_for_qat(model, "nvfp4")
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    base = torch.randn(4, 6, 128, dtype = torch.bfloat16)
+    for x in [base[0, :, ::2], base[:, :, :64], base.transpose(0, 1)[..., 64:].unsqueeze(0)]:
+        assert not x.is_contiguous()
+        out = model(x)
+        assert out.shape == (*x.shape[:-1], 128) and out.dtype == torch.bfloat16
+        expected = (x.float() @ ref.float().t()).to(torch.bfloat16)
+        torch.testing.assert_close(out, expected)
+
+
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+def test_nvfp4_takes_float16_autocast_activations(monkeypatch, weight_dtype):
+    # Linear(63, 64) stays plain (63 is not a multiple of 16) and emits float16 under autocast.
+    _probe_ok(monkeypatch)
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(
+        torch.nn.Linear(63, 64, bias = False), torch.nn.Linear(64, 128, bias = False)
+    ).to(weight_dtype)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    assert not isinstance(model[0], _nvfp4_linear()) and isinstance(model[1], _nvfp4_linear())
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    x = torch.randn(2, 3, 63, dtype = weight_dtype, requires_grad = True)
+    with torch.autocast("cpu", dtype = torch.float16):
+        out = model(x)
+    assert out.dtype == torch.float16 and out.shape == (2, 3, 128)
+    out.float().sum().backward()
+    assert x.grad is not None and model[1].weight.grad is not None
+
+
+def test_nvfp4_float16_activations_under_bfloat16_autocast_return_bfloat16(monkeypatch):
+    _probe_ok(monkeypatch)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    x = torch.randn(2, 3, 64, dtype = torch.float16)
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        out = model(x)
+    assert out.dtype == torch.bfloat16 and out.shape == (2, 3, 128)
+
+
+@pytest.mark.parametrize("scheme", ["nvfp4", "mxfp8"])
+def test_opted_in_adapter_with_trainable_bias_keeps_its_bias_grad(monkeypatch, scheme):
+    # UNSLOTH_QAT_FAKE_QUANTIZE_LORA=1 quantizes the adapters as well, and PEFT's lora_bias = True gives
+    # lora_B a trainable bias. A backward without a bias gradient would silently stop training it, so
+    # lora_B must stay in full precision like any other layer with a trainable bias.
+    from peft import LoraConfig, get_peft_model
+
+    _probe_ok(monkeypatch, bias_grad = False)
+    monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+    linear_cls = _nvfp4_linear() if scheme == "nvfp4" else _mx_linear()
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    model = get_peft_model(
+        base,
+        LoraConfig(r = 32, target_modules = ["q_proj"], lora_bias = True),
+        autocast_adapter_dtype = False,
+    )
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    lora_B = q_proj.lora_B["default"]
+    assert lora_B.bias is not None and lora_B.bias.requires_grad
+    assert not q_proj.base_layer.bias.requires_grad
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, scheme)
+    # quantize_ swaps the module, so look it up again.
+    lora_B = q_proj.lora_B["default"]
+    assert not isinstance(lora_B, linear_cls)
+    assert lora_B.bias.requires_grad
+    assert any("no bias" in str(w.message) and "lora_B" in str(w.message) for w in caught)
+    # The frozen-bias base layer is still fake quantized (#18823).
+    assert isinstance(q_proj.base_layer, linear_cls)
+
+
+def test_mx_forward_accepts_strided_activations():
+    # torchao's MX QAT forward flattens the input with .view: a transposed activation raised
+    # "view size is not compatible with input tensor's size and stride".
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias = True)).to(torch.bfloat16)
+    model[0].bias.requires_grad_(False)  # a LoRA base layer: frozen bias, so it is converted
+    model = _prepare_model_for_qat(model, _mx_torchao_config())
+    q_proj = model[0]
+    assert isinstance(q_proj, _mx_linear())
+    torch.manual_seed(0)
+    x = torch.randn(2, 3, 128, dtype = torch.bfloat16).transpose(0, 1).requires_grad_()
+    assert not x.is_contiguous()
+    out = q_proj(x)
+    ref = q_proj(x.detach().contiguous())
+    torch.testing.assert_close(out, ref, rtol = 0, atol = 0)
+    out.float().sum().backward()
+    assert x.grad is not None and x.grad.shape == x.shape
+
+
+def _two_biased_adapters():
+    from peft import LoraConfig, get_peft_model
+
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    config = LoraConfig(r = 32, target_modules = ["q_proj"], lora_bias = True)
+    model = get_peft_model(base, config, autocast_adapter_dtype = False)
+    model.add_adapter("second", config, autocast_adapter_dtype = False)
+    model.base_model.set_adapter("default")
+    return model.to(torch.bfloat16)
+
+
+@pytest.mark.parametrize("scheme", ["nvfp4", "mxfp8"])
+def test_adapter_activated_after_prepare_keeps_its_bias_grad(monkeypatch, scheme):
+    # PEFT freezes an inactive adapter's bias and unfreezes it on set_adapter. Prepared while only
+    # "default" was active, "second" was converted and its bias stopped training once selected.
+    _probe_ok(monkeypatch, bias_grad = False)
+    monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+    model = _two_biased_adapters()
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    assert not q_proj.lora_B["second"].bias.requires_grad
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, scheme)
+    linear_cls = _nvfp4_linear() if scheme == "nvfp4" else _mx_linear()
+    for name in ("default", "second"):
+        assert not isinstance(q_proj.lora_B[name], linear_cls), name
+    assert isinstance(q_proj.base_layer, linear_cls)
+    model.base_model.set_adapter("second")
+    lora_B = q_proj.lora_B["second"]
+    assert lora_B.bias.requires_grad
+    lora_B(torch.randn(4, 32, dtype = torch.bfloat16)).float().sum().backward()
+    assert lora_B.bias.grad is not None
+
+
+def test_bias_grad_probe_runs_unsloth_forward(monkeypatch):
+    # The probe must run the forward Unsloth installs (its NVFP4 custom op returns the bias gradient),
+    # not torchao's raw one, or opted-in biased adapters lose working NVFP4 QAT.
+    from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+
+    def forward(self, x):
+        return torch.nn.functional.linear(x, self.weight, self.bias)
+
+    monkeypatch.setattr(qat_utils, "_nvfp4_any_rank_forward", forward)
+    monkeypatch.setattr(qat_utils, "_nvfp4_qat_linear_op", lambda: None)
+    config = NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
+    assert qat_utils._qat_bias_grad_supported(config, torch.device("cpu"), torch.bfloat16)
+
+
+def _lora_bias_grad_after_real_prepare(monkeypatch, scheme):
+    from peft import LoraConfig, get_peft_model
+
+    monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    model = get_peft_model(
+        base,
+        LoraConfig(r = 32, target_modules = ["q_proj"], lora_bias = True),
+        autocast_adapter_dtype = False,
+    ).to("cuda")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, scheme)
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    x = torch.randn(32, 128, device = "cuda", dtype = torch.bfloat16)
+    q_proj(x).float().sum().backward()
+    return q_proj.lora_B["default"]
+
+
+@_needs_fp4_gpu
+def test_nvfp4_opted_in_biased_adapter_stays_fake_quantized_on_gpu(monkeypatch):
+    lora_B = _lora_bias_grad_after_real_prepare(monkeypatch, "nvfp4")
+    assert isinstance(lora_B, _nvfp4_linear())
+    assert lora_B.bias.grad is not None and lora_B.bias.grad.abs().max() > 0
+
+
+@_needs_fp4_gpu
+def test_mxfp8_opted_in_biased_adapter_keeps_bias_grad_on_gpu(monkeypatch):
+    lora_B = _lora_bias_grad_after_real_prepare(monkeypatch, "mxfp8")
+    # torchao's MX backward drops the bias gradient, so lora_B stays in full precision.
+    assert not isinstance(lora_B, _mx_linear())
+    assert lora_B.bias.grad is not None and lora_B.bias.grad.abs().max() > 0
+
+
+def test_mx_backward_accepts_strided_output_grads():
+    # torchao's MX QAT backward flattens grad_output with .view: a transpose after the projection
+    # handed it a strided gradient and raised "view size is not compatible".
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias = False)).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, _mx_torchao_config())
+    assert isinstance(model[0], _mx_linear())
+    torch.manual_seed(0)
+    x = torch.randn(16, 2, 128, dtype = torch.bfloat16, requires_grad = True)
+    model(x).transpose(0, 1).contiguous().float().square().mean().backward()
+    grads = (x.grad.clone(), model[0].weight.grad.clone())
+    x.grad = model[0].weight.grad = None
+    model(x).float().square().mean().backward()
+    torch.testing.assert_close(grads[0], x.grad, rtol = 0, atol = 0)
+    torch.testing.assert_close(grads[1], model[0].weight.grad, rtol = 0, atol = 0)

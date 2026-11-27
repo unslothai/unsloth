@@ -23,13 +23,13 @@ function summaryForLabel(sourceText: string, label: string): string {
 }
 
 test("the shared detail toggle puts a custom down chevron after its label", async () => {
-  const summary = summaryForLabel(await source("log-details.tsx"), "Show {label}");
+  const summary = summaryForLabel(await source("log-details.tsx"), "{showLabel}");
 
   assert.match(summary, /\blist-none\b/);
   assert.match(summary, /\[&::\-webkit-details-marker\]:hidden/);
   assert.match(summary, /\bflex\b/);
   assert.ok(
-    summary.indexOf("<HugeiconsIcon") > summary.indexOf("Show {label}") &&
+    summary.indexOf("<HugeiconsIcon") > summary.indexOf("{hideLabel}") &&
       summary.includes("icon={ChevronDownStandardIcon}"),
     "the chevron must be on the right",
   );
@@ -39,15 +39,17 @@ test("every Tauri screen names its logs through the shared toggle", async () => 
   const startup = await source("startup-screen.tsx");
   const update = await source("update-screen.tsx");
 
-  for (const [sourceText, label] of [
-    [startup, "installation details"],
-    [startup, "setup details"],
-    [update, "update details"],
+  for (const [sourceText, kind] of [
+    [startup, "Install"],
+    [startup, "Setup"],
+    [update, "Update"],
   ] as const) {
     assert.match(
       sourceText,
-      new RegExp(`<LogDetails label="${label}" lines=`),
-      `${label} must render through LogDetails`,
+      new RegExp(
+        `<LogDetails\\s+showLabel=\\{t\\("desktopStartup\\.details\\.show${kind}"\\)\\}\\s+hideLabel=\\{t\\("desktopStartup\\.details\\.hide${kind}"\\)\\}\\s+lines=`,
+      ),
+      `${kind} details must render through LogDetails`,
     );
   }
 

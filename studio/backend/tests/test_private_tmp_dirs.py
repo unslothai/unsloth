@@ -185,3 +185,15 @@ def test_mode_that_will_not_go_is_refused(tmp, monkeypatch):
     monkeypatch.setattr(private_tmp.os, "chmod", lambda *a, **k: None)
     with pytest.raises(PermissionError):
         private_tmp.private_tmp_dir("probe")
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o750, 0o705])
+def test_readable_mode_that_will_not_go_is_refused(mode, tmp, monkeypatch):
+    from utils.paths import private_tmp
+
+    folder = private_tmp.private_tmp_path("probe")
+    folder.mkdir()
+    os.chmod(folder, mode)
+    monkeypatch.setattr(private_tmp.os, "chmod", lambda *a, **k: None)
+    with pytest.raises(PermissionError):
+        private_tmp.private_tmp_dir("probe")

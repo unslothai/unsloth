@@ -84,6 +84,7 @@ def test_explicit_backend_dropped_off_nvidia_cuda(monkeypatch):
 
 def test_aiter_honored_on_rocm(monkeypatch):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
+    monkeypatch.setattr(att, "_diffusers_aiter_usable", lambda: True)
     assert select_attention_backend(_target(), "aiter", speed_active = False) == "aiter"
 
 
@@ -247,6 +248,11 @@ class _Recorder:
         return types.SimpleNamespace(returncode = 0)
 
 
+def _pip_calls(run):
+    # A kernels install is followed by a `python -c "import transformers.activations"` check.
+    return [c for c in run.calls if "pip" in c]
+
+
 def _stub_subprocess(monkeypatch, run):
     import subprocess
     monkeypatch.setattr(subprocess, "run", run)
@@ -283,7 +289,7 @@ def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
-    assert len(run.calls) == 1
+    assert len(_pip_calls(run)) == 1
     cmd = run.calls[0]
     assert "--only-binary" in cmd and ":all:" in cmd
 
@@ -299,7 +305,7 @@ def test_sage_install_never_asks_pypi_for_sageattention(monkeypatch):
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
     assert run.calls and not any("sageattention" in part for cmd in run.calls for part in cmd)
-    assert run.calls[0][-1] == "kernels"
+    assert run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 _XFORMERS_WHEEL = "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
@@ -397,10 +403,8 @@ class _CapturingLogger:
 
 
 def test_a_private_mirrors_credentials_never_reach_the_log(monkeypatch):
-    """UNSLOTH_PYTORCH_MIRROR is allowed to be an authenticated index, and the wheel URL is
-    built from it -- so logging the URL as the package name wrote the token into the backend
-    log on every install. pip is still handed the real URL; only the log is redacted, and
-    pip's own stderr echoes the URL back, so that is redacted too."""
+    """UNSLOTH_PYTORCH_MIRROR can embed credentials in the wheel URL; pip gets the real URL, but the
+    log and pip's echoed stderr are redacted."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
     import subprocess as sp
@@ -435,8 +439,7 @@ def test_a_query_string_token_is_stripped_too():
 
 
 def test_xformers_install_refused_when_no_matching_wheel_exists(monkeypatch):
-    """No matched wheel must mean NO install. Falling back to an unpinned resolve is the
-    bug; the caller stays on torch SDPA and gets the reason back."""
+    """No matched wheel means no install; an unpinned resolve is the bug, so SDPA is kept."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
@@ -513,8 +516,7 @@ def test_xformers_resolution_skipped_when_already_installed(monkeypatch):
 
 
 def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
-    """sage (via kernels) / flash / kernels still go to pip by name -- only xFormers has the silent
-    ABI failure that forces URL resolution."""
+    """Only xFormers has a silent ABI failure; sage, flash and kernels still install by name."""
     assert att._MATCHED_WHEEL_BACKENDS == frozenset({"xformers"})
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
@@ -528,8 +530,8 @@ def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
     monkeypatch.setattr(att, "_kernels_hub_compatible", lambda: True)
     att._ensure_attention_backend_installed("sage")
-    assert len(run.calls) == 1
-    assert run.calls[0][-1] == "kernels"
+    assert len(_pip_calls(run)) == 1
+    assert run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 def test_failed_install_not_retried_in_same_process(monkeypatch):
@@ -662,7 +664,8 @@ def test_kernels_install_allowed_on_supported_hub(monkeypatch):
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("flash_4_hub")
-    assert len(run.calls) == 1 and "kernels" in run.calls[0]
+    pip = _pip_calls(run)
+    assert len(pip) == 1 and pip[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 def test_kernels_gate_also_covers_sage(monkeypatch):
@@ -886,6 +889,94 @@ def test_mps_answers_from_the_torch_build_not_an_execution_probe(version, env, f
     assert att.sdpa_math_only(target) is not fused
 
 
+def _mps_tensor(
+    shape,
+    dtype,
+    requires_grad = False,
+):
+    return types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "mps"),
+        shape = shape,
+        dtype = dtype,
+        requires_grad = requires_grad,
+    )
+
+
+@pytest.mark.parametrize(
+    "change, prefill",
+    [
+        ({}, True),
+        ({"q_len": 9}, True),
+        ({"q_len": 8}, False),
+        ({"head_dim": 72}, True),
+        ({"head_dim": 48}, False),
+        ({"head_dim": 160}, False),
+        ({"v_dim": 64}, False),
+        ({"dtype": "float32"}, True),
+        ({"dtype": "float64"}, False),
+        ({"mask": "bool"}, True),
+        ({"mask": "bfloat16"}, True),
+        ({"mask": "float32"}, False),
+        ({"grad": True}, False),
+        ({"device": "cpu"}, False),
+        ({"version": "2.12.1"}, False),
+    ],
+)
+def test_mps_prefill_attention_follows_the_torch_dispatch(change, prefill, monkeypatch):
+    # The rule torch 2.13-2.15 applies in _scaled_dot_product_attention_math_mps: anything else builds the scores.
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch, "__version__", change.get("version", "2.14.1"))
+    monkeypatch.delenv(att.MPS_PREFILL_ATTENTION_OFF_ENV, raising = False)
+    dtype = getattr(torch, change.get("dtype", "bfloat16"))
+    head_dim = change.get("head_dim", 128)
+    q = _mps_tensor((1, 24, change.get("q_len", 4096), head_dim), dtype, change.get("grad", False))
+    k = _mps_tensor((1, 24, 4096, head_dim), dtype)
+    v = _mps_tensor((1, 24, 4096, change.get("v_dim", head_dim)), dtype)
+    if "device" in change:
+        q.device = types.SimpleNamespace(type = change["device"])
+    mask = (
+        _mps_tensor((1, 1, 1, 4096), getattr(torch, change["mask"])) if "mask" in change else None
+    )
+    with torch.enable_grad():
+        assert att.mps_prefill_attention(q, k, v, mask) is prefill
+    q.shape = (q.shape[0], q.shape[2], q.shape[1], q.shape[3])
+    k.shape = (k.shape[0], k.shape[2], k.shape[1], k.shape[3])
+    with torch.enable_grad():
+        assert att.mps_prefill_attention(q, k, v, mask, seq_dim = 1) is prefill
+
+
+@pytest.mark.parametrize(
+    "device, version, head_dims, math_only",
+    [
+        ("mps", "2.14.1", None, False),
+        ("mps", "2.14.1", {128}, False),
+        ("mps", "2.14.1", {64, 128}, False),
+        ("mps", "2.14.1", {128, 160}, True),
+        ("mps", "2.12.1", {128}, True),
+        ("cuda", "2.14.1", {160}, False),
+    ],
+)
+def test_family_head_dims_narrow_the_mps_answer(device, version, head_dims, math_only, monkeypatch):
+    # A family whose head dim has no prefill instance builds the scores on every call, whatever the torch build.
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch, "__version__", version)
+    monkeypatch.delenv(att.MPS_PREFILL_ATTENTION_OFF_ENV, raising = False)
+    if device == "cuda":
+        _stub_probe(monkeypatch, ("flash", "math"))
+    target = _target(device)
+    assert att.sdpa_math_only(target, head_dims) is math_only
+    assert att.sdpa_subquadratic_confirmed(target, head_dims) is not math_only
+    records = []
+    logger = types.SimpleNamespace(warning = lambda *a: records.append(a))
+    config = {"attention_head_dim": sorted(head_dims or ())}
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(config = config))
+    att._configure_native_attention(pipe, target, logger)
+    assert any("math_only" in record[0] for record in records) is math_only
+    from core.inference.diffusion import _quadratic_attention
+
+    assert _quadratic_attention(target, None, pipe) is math_only
+
+
 def test_an_unanswerable_probe_is_not_a_math_only_verdict(monkeypatch):
     _stub_probe(monkeypatch, ())
     assert att.sdpa_math_only(_target()) is False
@@ -1009,9 +1100,8 @@ def test_apply_does_not_warn_when_a_real_backend_engaged(monkeypatch):
 
 
 def test_an_unanswerable_probe_is_not_memoised(monkeypatch):
-    """A probe that could not RUN is not an answer about the hardware. Caching it disabled the
-    warning for the rest of the process, including after the memory that broke it was freed --
-    and a device under memory pressure is exactly when this warning matters."""
+    """A probe that could not run says nothing about hardware; caching it would disable the warning
+    for the whole process, even after memory frees."""
     calls: list = []
 
     def _flaky(device, dtype):

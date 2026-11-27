@@ -18,6 +18,7 @@ const KLEIN_BASE = "black-forest-labs/flux-3-image-klein-base";
 const QWEN_21 = "unsloth/Qwen-Image-2.1";
 const QWEN_21_TURBO = "Qwen/Qwen-Image-2.1-Turbo";
 const KONTEXT = "unsloth/FLUX.1-Kontext-dev";
+const MINIMAX_H3_IMAGE = "MiniMaxAI/MiniMax-H3-Image";
 const notDownloaded = () => false;
 const GIB = 1024 ** 3;
 
@@ -48,6 +49,7 @@ test("each auto-quantised row states the hosted encoder file the backend loads",
     [QWEN_21, 17_534_340_584, 9_349_769_248],
     [QWEN_21_TURBO, 17_534_340_584, 9_349_769_248],
     [KONTEXT, 9_524_648_584, 6_163_991_880],
+    [MINIMAX_H3_IMAGE, 66_726_510_529, 27_141_342_152],
   ] as const) {
     const te = artifactForRepoId(id, IMAGE_CATALOG)?.artifact.autoQuantTextEncoderGb;
     assert.ok(te, id);

@@ -91,8 +91,7 @@ def test_every_documented_rename_is_carried_across():
 
 
 def test_a_rename_overwrites_the_mirrored_default_not_a_real_value():
-    """The generated __init__ always passes the new name, so the rename must win
-    over the class default it carries when untouched..."""
+    """Generated __init__ passes the new name, so a rename beats an untouched class default."""
     kept, _ = _collect(ModernGRPOConfig, {"use_liger_kernel": False, "use_liger_loss": True})
     assert kept["use_liger_kernel"] is True
 
@@ -193,8 +192,7 @@ def test_the_transformers_tables_do_not_overlap_or_contradict_the_trl_ones():
 
 
 def test_a_field_the_installed_version_still_declares_is_never_migrated():
-    """Entries are consulted only once the config rejects the name, so they must be inert while it
-    exists."""
+    """Entries apply only when the config rejects a name, so they stay inert while it exists."""
     transformers = pytest.importorskip("transformers")
     fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
 
@@ -205,8 +203,7 @@ def test_a_field_the_installed_version_still_declares_is_never_migrated():
 
 
 def test_a_transformers_rename_target_exists_once_the_old_name_is_gone():
-    """A rename is only reachable after the old name goes, so that is when its
-    target has to be real. A typo there degrades the migration to a plain drop."""
+    """Rename targets must be real: reached only after the old name goes, a typo just drops it."""
     transformers = pytest.importorskip("transformers")
     fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
 
@@ -382,8 +379,7 @@ def test_an_alias_whose_target_is_read_during_post_init_is_not_a_rename():
 
 
 def test_a_rename_target_normalised_in_post_init_is_not_a_rename():
-    """`setattr` on an existing config skips `__post_init__`, so a field that
-    normalises its own value cannot be migrated by assignment."""
+    """setattr skips __post_init__, so self-normalising fields can't be migrated by assignment."""
     assert "include_tokens_per_second" in TRANSFORMERS_REMOVED_FIELD_ADVICE
     assert "include_tokens_per_second" not in TRANSFORMERS_CONFIG_RENAMES
 
@@ -399,6 +395,65 @@ def test_a_default_factory_field_is_compared_not_crashed_on():
     kept, _ = _collect(WithFactory, {"include_for_metrics": [], "use_liger_loss": True})
     assert kept["use_liger_kernel"] is True
     assert kept["include_for_metrics"] == []
+
+
+@dataclasses.dataclass
+class SFTConfig:
+    """TRL 0.22.x `SFTConfig`: no `loss_type` yet, training is always plain NLL."""
+
+    output_dir: str = "out"
+    completion_only_loss: bool = None
+
+
+@dataclasses.dataclass
+class ModernSFTConfigWithLossType:
+    """TRL >= 0.23.0 `SFTConfig`, which declares `loss_type`."""
+
+    output_dir: str = "out"
+    loss_type: str = "nll"
+
+
+def test_loss_type_nll_on_an_sft_config_without_it_is_dropped_quietly():
+    """Issue #16034: the Kaggle notebooks pin trl==0.22.2 and set `loss_type = "nll"`."""
+    kept, messages = _collect(SFTConfig, {"output_dir": "out", "loss_type": "nll"})
+    assert kept == {"output_dir": "out"}
+    assert SFTConfig(**kept).output_dir == "out"
+    assert messages == []
+
+
+def test_another_loss_type_on_an_older_sft_config_names_the_trl_it_needs():
+    """`dft` changes training, so dropping it must stay loud and say how to get it."""
+    kept, messages = _collect(SFTConfig, {"loss_type": "dft"})
+    assert kept == {}
+    assert len(messages) == 1
+    assert "IGNORED" in messages[0]
+    assert "TRL >= 0.23.0" in messages[0]
+    assert "'dft'" in messages[0]
+
+
+def test_loss_type_is_forwarded_once_sft_config_declares_it():
+    """A TRL that has the field gets every value, `nll` included."""
+    for value in ("nll", "dft"):
+        kept, messages = _collect(ModernSFTConfigWithLossType, {"loss_type": value})
+        assert kept == {"loss_type": value}
+        assert messages == []
+
+
+def test_an_added_field_is_only_excused_on_the_config_that_gained_it():
+    """Other configs rejecting `loss_type` still get the generic warning."""
+    kept, messages = _collect(ModernGRPOConfig, {"loss_type": "nll"})
+    assert kept == {}
+    assert len(messages) == 1
+    assert "not a valid ModernGRPOConfig argument" in messages[0]
+
+
+def test_added_field_entries_carry_a_version_and_noop_values():
+    """A malformed entry would raise while unpacking inside the filter."""
+    for (config_name, field), (version, noop_values) in _MODULE.TRL_ADDED_FIELDS.items():
+        assert config_name.endswith("Config"), config_name
+        assert field.isidentifier(), field
+        assert all(part.isdigit() for part in version.split(".")), version
+        assert isinstance(noop_values, tuple), noop_values
 
 
 # Guards the rl.py template wiring; read as text since importing pulls in torch/trl/zoo.

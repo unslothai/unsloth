@@ -743,6 +743,27 @@ def test_the_whole_pdd_denoiser_forward_compiles_fullgraph_without_recompiles():
     )
 
 
+def test_studio_regional_fullgraph_compile_keeps_the_pdd_hook_eager():
+    """Regional compile keeps the root eager, so the pre-hook (``is_inference()``, untraceable) stays out of fullgraph."""
+    import torch._dynamo as dynamo
+
+    model = _tiny()
+    eager = _tiny()
+    sigmas = _bound(model)
+    _bound(eager)
+    dynamo.reset()
+    model.compile_repeated_blocks(fullgraph = True, backend = "eager")
+    assert getattr(model, "_compiled_call_impl", None) is None
+    assert any(getattr(m, "_compiled_call_impl", None) is not None for m in model.modules())
+    with torch.no_grad():
+        for i in range(1, 8):
+            kw = _inputs("cpu", 1.0 - float(sigmas[i]), seed = i)
+            out, ref = model(**kw), eager(**kw)
+            assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1]), i
+            assert float(model.proj_out.pdd_state[1]) == float(sigmas[i + 1]), i
+    dynamo.reset()
+
+
 def test_the_denoiser_under_model_cpu_offload_matches_resident():
     _cuda()
     accelerate = pytest.importorskip("accelerate")
@@ -821,3 +842,67 @@ def test_pdd_defaults_apply_only_to_minimax_h3():
         30,
         1.0,
     )
+
+
+@pytest.mark.parametrize("has_fp64", [False, True])
+def test_device_has_fp64_reads_the_xpu_capability(monkeypatch, has_fp64):
+    import types
+
+    monkeypatch.setattr(pdd, "_FP64_BY_DEVICE", {})
+    monkeypatch.setattr(
+        torch.xpu,
+        "get_device_properties",
+        lambda index = None: types.SimpleNamespace(has_fp64 = has_fp64),
+        raising = False,
+    )
+    assert pdd.device_has_fp64(torch.device("xpu", 0)) is has_fp64
+    assert pdd.device_has_fp64("cpu") and pdd.device_has_fp64(torch.device("cuda", 0))
+    assert not pdd.device_has_fp64(torch.device("mps"))
+
+
+def test_an_unreadable_xpu_counts_as_without_fp64(monkeypatch):
+    def boom(index = None):
+        raise RuntimeError("no XPU")
+
+    monkeypatch.setattr(pdd, "_FP64_BY_DEVICE", {})
+    monkeypatch.setattr(torch.xpu, "get_device_properties", boom, raising = False)
+    assert not pdd.device_has_fp64(torch.device("xpu", 0))
+
+
+def test_the_denoiser_never_puts_float64_on_a_device_without_it(monkeypatch):
+    """CUDA spoofed as an fp64-less XPU (float64 on it raises like Arc A-series): the blend still matches every step."""
+    _cuda()
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from torch.utils._pytree import tree_flatten
+
+    class _NoDeviceFp64(TorchDispatchMode):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            for t in tree_flatten((args, kwargs, out))[0]:
+                if isinstance(t, torch.Tensor) and t.dtype == torch.float64 and t.is_cuda:
+                    raise RuntimeError(
+                        f"Required aspect fp64 is not supported on the device ({func})"
+                    )
+            return out
+
+    monkeypatch.setattr(
+        pdd, "device_has_fp64", lambda d: getattr(d, "type", d) != "cuda", raising = False
+    )
+    model = _tiny(device = "cuda")
+    sigmas = _bound(model)
+    for i in range(8):
+        kw = _inputs("cuda", 1.0 - float(sigmas[i]), seed = i)
+        with _NoDeviceFp64():
+            _out, seen = _run_and_capture(model, kw)
+        state = model.proj_out.pdd_state
+        assert state.device.type == "cpu" and state.dtype == torch.float64
+        assert abs(float(state[0]) - float(sigmas[i])) < 1e-6
+        assert float(state[1]) == float(sigmas[i + 1])
+        assert seen["video"][1].is_cuda
+        _check_step(model, seen, sigmas, i)

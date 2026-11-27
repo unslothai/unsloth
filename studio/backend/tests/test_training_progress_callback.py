@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Progress callbacks must report an active status: the parent only overwrites a non-empty one."""
+"""Callbacks distinguish loop startup from measured training; the parent preserves non-empty statuses."""
 
 from __future__ import annotations
 
@@ -69,6 +69,7 @@ if not _TRAINER_PRE_IMPORTED:
     sys.modules.pop("core.training", None)
 
 ACTIVE = "Training in progress..."
+STARTING = "Starting training loop..."
 
 
 class _FakeQueue:
@@ -116,17 +117,16 @@ def _make_owner():
     return owner
 
 
-def test_train_begin_reports_active_status():
+def test_train_begin_reports_loop_entry_before_any_loss():
     owner = _make_owner()
     callback = owner._create_progress_callback()
 
     callback.on_train_begin(None, _state(), SimpleNamespace())
 
-    assert owner.training_progress.status_message == ACTIVE
+    assert owner.training_progress.status_message == STARTING
 
 
 def test_logging_reports_an_empty_status_so_the_active_one_is_sent_once():
-    # The parent keeps the last non-empty status, so a run costs one status event.
     owner = _make_owner()
     reported: list[str] = []
     owner.add_progress_callback(lambda progress: reported.append(progress.status_message))
@@ -134,7 +134,7 @@ def test_logging_reports_an_empty_status_so_the_active_one_is_sent_once():
     _drive(owner._create_progress_callback(), steps = 3)
 
     assert owner.training_progress.status_message == ""
-    assert [status for status in reported if status] == [ACTIVE]
+    assert [status for status in reported if status] == [STARTING, ACTIVE]
     assert owner.training_progress.step == 3
     assert owner.training_progress.loss == pytest.approx(1 / 3)
     assert owner.training_progress.num_tokens == 384
@@ -232,6 +232,7 @@ def test_stop_status_is_never_replaced_by_the_active_one(stop_status):
         backend._handle_event(event)
 
     assert [e["message"] for e in event_queue.events if e["type"] == "status"] == [
+        STARTING,
         ACTIVE,
         stop_status,
     ]
@@ -316,7 +317,7 @@ def test_embedding_parent_status_advances_over_the_whole_chain():
 
     assert [e["message"] for e in event_queue.events if e["type"] == "status"] == [
         "Starting embedding training...",
-        ACTIVE,
+        STARTING,
     ]
     assert backend._progress.status_message == ACTIVE
     assert backend._progress.step == 3
@@ -365,3 +366,31 @@ def test_embedding_resumed_run_eta_uses_the_steps_done_in_this_session():
     assert backend._progress.eta_seconds == pytest.approx(540, rel = 0.02)
     assert backend._progress.session_start_step == 900
     assert backend._progress.elapsed_seconds == 60
+
+
+@pytest.mark.parametrize("kind", ["sft", "decision_embedding"])
+def test_first_step_reports_accumulation_then_waits_for_the_first_loss(kind):
+    event_queue = _FakeQueue()
+    if kind == "sft":
+        owner = _make_owner()
+        owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
+        callback = owner._create_progress_callback()
+    else:
+        callback = _make_embedding_callback(event_queue)
+    args = SimpleNamespace(gradient_accumulation_steps = 4)
+    state, control = _state(), SimpleNamespace(should_training_stop = False)
+    callback.on_train_begin(args, state, control)
+    callback.on_step_begin(args, state, control)
+    for _ in range(3):
+        callback.on_substep_end(args, state, control)
+    assert not [e for e in event_queue.events if e.get("loss") is not None]
+    state.global_step = 1
+    callback.on_step_end(args, state, control)
+    statuses = [e["message"] for e in event_queue.events if e["type"] == "status"]
+    assert statuses[0] == STARTING
+    assert [f"batch {i} of up to 4" in statuses[i] for i in range(1, 5)] == [True] * 4
+    assert "Waiting for the first loss measurement" in statuses[-1]
+    callback.on_log(args, state, control, logs = {"loss": 0.0})
+    progress = [e for e in event_queue.events if e["type"] == "progress"][-1]
+    assert progress["loss"] == 0.0
+    assert progress["status_message"] == ACTIVE

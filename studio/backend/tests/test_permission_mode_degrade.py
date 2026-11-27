@@ -319,27 +319,30 @@ def test_no_startup_warmup_on_windows(monkeypatch):
     assert called == []
 
 
-class _Clock:
+class _LeapingClock:
+    """Each read is a day later, so any TTL left in the code expires between two calls."""
+
     def __init__(self):
         self.now = 1000.0
 
     def __call__(self):
+        self.now += 86400.0
         return self.now
+
+
+def _leap_time(monkeypatch, module):
+    import types
+    clock = types.SimpleNamespace(monotonic = _LeapingClock(), time = time.time, sleep = time.sleep)
+    monkeypatch.setattr(module, "time", clock, raising = False)
 
 
 @pytest.fixture
 def probe_env(monkeypatch):
     monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "0")
     sandbox_probe.reset_probe_cache()
-    clock = _Clock()
-    import types
-
-    monkeypatch.setattr(
-        sandbox_probe,
-        "time",
-        types.SimpleNamespace(monotonic = clock, time = time.time, sleep = time.sleep),
-    )
-    monkeypatch.setattr(os_sandbox, "_runtime_identity", lambda: "identity")
+    _leap_time(monkeypatch, sandbox_probe)
+    identity = ["identity"]
+    monkeypatch.setattr(os_sandbox, "_runtime_identity", lambda: identity[0])
     verdicts = []
     gate = threading.Event()
     gate.set()
@@ -351,12 +354,106 @@ def probe_env(monkeypatch):
         return verdicts.pop(0)
 
     monkeypatch.setattr(sandbox_probe, "_run_probe", run_probe)
-    yield clock, verdicts, gate, calls
+    yield identity, verdicts, gate, calls
     sandbox_probe.reset_probe_cache()
 
 
 class _Backend:
     BACKEND_NAME = "fake"
+
+
+@pytest.fixture(
+    params = list(itertools.product(("linux", "darwin"), ("settings", "capability"))),
+    ids = lambda case: "-".join(case),
+)
+def posix_refresh(request, monkeypatch, probe_env):
+    from core.inference import sandbox_linux
+    from routes import sandbox_capability, settings
+
+    platform, route = request.param
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda: False)
+    monkeypatch.setattr(os_sandbox, "_host_key", lambda: "host")
+    monkeypatch.setattr(os_sandbox, "linux_unavailable_remediation", lambda: "blocked")
+    monkeypatch.setattr(settings, "_sandbox_terminal_target", lambda: ("/bin/bash", None))
+    monkeypatch.setattr(settings, "_sandbox_setup_status", lambda _available: None)
+    return settings._build_sandbox_status if route == "settings" else sandbox_capability._refresh
+
+
+def test_a_successful_refresh_probes_once_and_refreshes_both_tools(posix_refresh, probe_env):
+    _identity, verdicts, _gate, calls = probe_env
+    for tool in os_sandbox.ISOLATED_TOOLS:
+        os_sandbox.note_tool_isolation(tool, False, backend = "none", reason = "old failure")
+    verdicts.extend((True, f"fresh {i}") for i in range(3))
+
+    for i in range(3):
+        posix_refresh(True)
+        assert len(calls) == i + 1
+        for tool in os_sandbox.ISOLATED_TOOLS:
+            answer = os_sandbox.cached_tool_capability(tool)
+            assert answer[0] is True and answer[2] == f"fresh {i}"
+        posix_refresh(False)
+        assert len(calls) == i + 1
+
+
+@pytest.mark.parametrize("reason", ["blocked", sandbox_probe.UndecidedReason("out of disk")])
+def test_a_failed_refresh_retries_even_after_a_cached_pass(
+    posix_refresh, probe_env, monkeypatch, reason
+):
+    _identity, verdicts, _gate, calls = probe_env
+    verdicts.append((True, "old pass"))
+    assert os_sandbox.capability_snapshot(force = True).available
+    calls.clear()
+    verdicts.extend([(False, reason), (False, "still blocked")])
+
+    posix_refresh(True)
+
+    assert len(calls) == 2
+    # Reading an undecided answer would otherwise start an unrelated background retry.
+    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "1")
+    assert os_sandbox.cached_tool_capability("python") == (False, "none", reason)
+    assert os_sandbox.cached_tool_capability("terminal") == (False, "none", "still blocked")
+
+
+@pytest.mark.parametrize("change", ["reset", "runtime"])
+def test_a_refresh_rechecks_when_the_cache_changes_between_tools(
+    posix_refresh, probe_env, monkeypatch, change
+):
+    identity, verdicts, _gate, calls = probe_env
+    verdicts.extend([(True, "before change"), (False, "after change")])
+    real_snapshot = os_sandbox.capability_snapshot
+    answers = []
+
+    def snapshot(**kwargs):
+        if kwargs["execution_kind"] == "terminal":
+            if change == "reset":
+                sandbox_probe.reset_probe_cache()
+            else:
+                identity[0] = "new runtime"
+        answer = real_snapshot(**kwargs)
+        answers.append(answer.available)
+        return answer
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", snapshot)
+    posix_refresh(True)
+
+    assert len(calls) == 2
+    assert answers == [True, False]
+
+
+def test_windows_capability_refresh_keeps_forcing_each_tool(monkeypatch, probe_env):
+    from routes import sandbox_capability
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    calls = []
+
+    def refresh(tool, *, force = False):
+        calls.append((tool, force))
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    sandbox_capability._refresh(True)
+    assert calls == [("python", True), ("terminal", True)]
 
 
 def _wait_for(predicate, timeout = 5.0):
@@ -366,73 +463,129 @@ def _wait_for(predicate, timeout = 5.0):
     return predicate()
 
 
-def test_a_stale_pass_is_served_while_one_reprobe_runs(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(True, "first"), (True, "second")])
-    assert sandbox_probe.probe(_Backend()) == (True, "first")
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
-    gate.clear()
-    assert sandbox_probe.probe(_Backend()) == (True, "first")
-    assert sandbox_probe.probe(_Backend()) == (True, "first")
-    assert _wait_for(lambda: len(calls) == 2)
-    assert calls[1] == "unsloth-sandbox-reprobe"
-    gate.set()
-    assert _wait_for(lambda: sandbox_probe.probe(_Backend()) == (True, "second"))
+@pytest.mark.parametrize("first", [(True, "ok"), (False, "blocked")])
+def test_a_verdict_is_held_until_an_event_not_a_timer(probe_env, first):
+    identity, verdicts, gate, calls = probe_env
+    verdicts.extend([first, (True, "after reset"), (False, "forced"), (True, "new runtime")])
+    assert sandbox_probe.probe(_Backend()) == first
+    for _ in range(20):
+        assert sandbox_probe.probe(_Backend()) == first
+    assert len(calls) == 1
+    sandbox_probe.reset_probe_cache()
+    assert sandbox_probe.probe(_Backend()) == (True, "after reset")
+    assert sandbox_probe.probe(_Backend(), force = True) == (False, "forced")
+    identity[0] = "swapped venv"
+    assert sandbox_probe.probe(_Backend()) == (True, "new runtime")
+    assert len(calls) == 4
+    assert all(name == threading.current_thread().name for name in calls)
+
+
+def test_an_undecided_verdict_is_retried_by_the_next_caller(probe_env):
+    identity, verdicts, gate, calls = probe_env
+    verdicts.extend([(False, sandbox_probe.UndecidedReason("out of disk")), (True, "ok")])
+    assert sandbox_probe.probe(_Backend())[0] is False
+    assert sandbox_probe.probe(_Backend()) == (True, "ok")
+    assert sandbox_probe.probe(_Backend()) == (True, "ok")
     assert len(calls) == 2
 
 
-def test_a_failed_reprobe_replaces_the_stale_pass(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(True, "ok"), (False, "now blocked")])
-    sandbox_probe.probe(_Backend())
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
-    assert sandbox_probe.probe(_Backend()) == (True, "ok")
-    assert _wait_for(lambda: sandbox_probe.probe(_Backend()) == (False, "now blocked"))
-
-
-def test_a_fail_is_never_served_stale(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(False, "blocked"), (True, "fixed")])
-    assert sandbox_probe.probe(_Backend()) == (False, "blocked")
-    clock.now += sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS + 1
-    assert sandbox_probe.probe(_Backend()) == (True, "fixed")
-    assert all(name != "unsloth-sandbox-reprobe" for name in calls)
-
-
-def test_a_pass_past_the_grace_is_probed_in_the_foreground(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(True, "old"), (True, "new")])
-    sandbox_probe.probe(_Backend())
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + sandbox_probe._STALE_GRACE_SECONDS + 1
-    assert sandbox_probe.probe(_Backend()) == (True, "new")
-    assert all(name != "unsloth-sandbox-reprobe" for name in calls)
-
-
-def test_a_stale_pass_is_reprobed_in_the_foreground_when_background_probes_are_off(
-    probe_env, monkeypatch
-):
-    clock, verdicts, gate, calls = probe_env
-    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "1")
-    verdicts.extend([(True, "old"), (False, "broke")])
-    sandbox_probe.probe(_Backend())
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
-    assert sandbox_probe.probe(_Backend()) == (False, "broke")
-    assert all(name != "unsloth-sandbox-reprobe" for name in calls)
-    assert not sandbox_probe._refreshing
-
-
-def test_a_reset_during_a_reprobe_keeps_its_result_out(probe_env):
-    clock, verdicts, gate, calls = probe_env
-    verdicts.extend([(True, "ok"), (True, "from before the reset"), (False, "after")])
-    sandbox_probe.probe(_Backend())
-    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
+def test_a_reset_during_a_probe_keeps_its_result_out(probe_env):
+    identity, verdicts, gate, calls = probe_env
+    verdicts.extend([(True, "from before the reset"), (False, "after")])
     gate.clear()
-    sandbox_probe.probe(_Backend())
-    assert _wait_for(lambda: len(calls) == 2)
+    worker = threading.Thread(target = sandbox_probe.probe, args = (_Backend(),))
+    worker.start()
+    assert _wait_for(lambda: len(calls) == 1)
     sandbox_probe.reset_probe_cache()
     gate.set()
-    assert _wait_for(lambda: not sandbox_probe._refreshing)
+    worker.join(5)
     assert sandbox_probe.probe(_Backend()) == (False, "after")
+
+
+def test_an_older_probe_finishing_last_never_replaces_a_newer_verdict(probe_env, monkeypatch):
+    """With no TTL, a slow ordinary probe landing after a forced Refresh would have stuck for good."""
+    identity, verdicts, gate, calls = probe_env
+    slow_started, release_slow = threading.Event(), threading.Event()
+
+    def run_probe(backend, name, plan_cls):
+        if not slow_started.is_set():
+            slow_started.set()
+            release_slow.wait(5)
+            return False, "old failure"
+        return True, "forced pass"
+
+    monkeypatch.setattr(sandbox_probe, "_run_probe", run_probe)
+    slow = threading.Thread(target = sandbox_probe.probe, args = (_Backend(),))
+    slow.start()
+    assert slow_started.wait(5)
+    assert sandbox_probe.probe(_Backend(), force = True) == (True, "forced pass")
+    release_slow.set()
+    slow.join(5)
+    assert sandbox_probe.probe(_Backend()) == (True, "forced pass")
+
+
+def test_an_undecided_answer_is_checked_again_by_the_next_read(monkeypatch):
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    started = []
+
+    def refresh(tool, *, force = False):
+        started.append(tool)
+        os_sandbox.note_tool_isolation(tool, True, backend = "bubblewrap")
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    os_sandbox.note_tool_isolation(
+        "python", False, backend = "none", reason = sandbox_probe.UndecidedReason("out of disk")
+    )
+    assert os_sandbox.cached_tool_capability("python")[0] is False
+    assert _wait_for(lambda: os_sandbox.cached_tool_isolation("python") is True)
+    for _ in range(5):
+        os_sandbox.cached_tool_capability("python")
+    assert started == ["python"]
+
+
+def test_polling_an_answered_tool_never_probes_again(monkeypatch):
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    _leap_time(monkeypatch, os_sandbox)
+    started = []
+    import types
+
+    monkeypatch.setattr(
+        os_sandbox,
+        "threading",
+        types.SimpleNamespace(
+            Thread = lambda *a, **k: started.append(k.get("name")) or threading.Thread()
+        ),
+    )
+    os_sandbox.note_tool_isolation("python", False, backend = "none", reason = "blocked")
+    for _ in range(50):
+        assert os_sandbox.cached_tool_capability("python")[:3] == (False, "none", "blocked")
+        assert tool_policy.off_mode_still_gates("python") is True
+    assert started == [], "polling an answered tool started a re-probe"
+
+
+def test_an_answer_noted_under_another_host_key_is_checked_once(monkeypatch):
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    key = ["no bwrap"]
+    monkeypatch.setattr(os_sandbox, "_host_key", lambda: key[0])
+    started = []
+
+    def refresh(tool, *, force = False):
+        started.append(tool)
+        os_sandbox.note_tool_isolation(tool, True, backend = "bubblewrap")
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    os_sandbox.note_tool_isolation("python", False, backend = "none", reason = "no bwrap")
+    for _ in range(5):
+        assert os_sandbox.cached_tool_capability("python")[0] is False
+    assert started == []
+    key[0] = "bwrap installed"
+    os_sandbox.cached_tool_capability("python")
+    assert _wait_for(lambda: os_sandbox.cached_tool_isolation("python") is True)
+    for _ in range(5):
+        os_sandbox.cached_tool_capability("python")
+    assert started == ["python"]
 
 
 @pytest.fixture(autouse = True)

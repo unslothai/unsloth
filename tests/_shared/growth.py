@@ -31,7 +31,6 @@ def growth(
     ratios, big, result = [], None, None
     started, pair_costs = read_clock(), []
     for _ in range(repeats):
-        # Reserve room for another pair at the worst observed cost, before running it.
         if budget_s is not None and pair_costs:
             if read_clock() - started + max(pair_costs) > budget_s:
                 break

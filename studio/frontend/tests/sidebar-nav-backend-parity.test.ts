@@ -66,14 +66,14 @@ test("Train and Video are still the capability-gated rows", async () => {
   // Video needs its own disabled state; reusing the chat-only verdict un-gates it on MLX-only Macs.
   for (const [id, disabled] of [
     // Train stays enabled only to open the full install dialog on an upgradable Chat only install.
-    ["train", /disabled: chatOnlyMeasured && !fullInstall,/],
+    ["train", /disabled: trainBlocked && !fullInstall,/],
     ["video", /disabled: (?!chatOnlyMeasured)\w+,/],
   ] as const) {
     const body = bodies.get(id);
     assert.ok(body, `no ${id} row`);
     assert.match(
       body,
-      /pending: capabilitiesUnknown,/,
+      /pending: capabilitiesUnknown && !detectionDeferred,/,
       `the ${id} row renders its disabled state before the verdict is measured`,
     );
     assert.match(
@@ -82,4 +82,18 @@ test("Train and Video are still the capability-gated rows", async () => {
       `the ${id} row is no longer capability-gated on its own verdict`,
     );
   }
+});
+
+// Records saved before an item existed get the backend's defaults, so they must match; read the real constant.
+test("the backend sidebar menu defaults match the frontend", () => {
+  const source = readText("../../backend/routes/settings.py");
+  const block = /SIDEBAR_MENU_ITEM_DEFAULTS = \{([\s\S]*?)^\}/m.exec(source);
+  assert.ok(block, "could not find SIDEBAR_MENU_ITEM_DEFAULTS in settings.py");
+  // Menu ids are camelCase (darkMode, guidedTour), unlike the lowercase nav ids.
+  const backend = [...block[1].matchAll(/"([A-Za-z]+)":\s*(True|False)/g)].map((m) => ({
+    id: m[1],
+    visible: m[2] === "True",
+  }));
+  // Order matters: the backend appends missing ids in this order.
+  assert.deepEqual(backend, DEFAULT_CUSTOMIZATION.sidebarMenu);
 });

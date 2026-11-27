@@ -2,10 +2,14 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
 import sqlite3
 import sys
+import time
 import types as _types
 from pathlib import Path
+
+import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -391,3 +395,161 @@ def test_scan_checkpoints_reads_training_loss_past_an_eval_entry(tmp_path, monke
     models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
     assert models[0][1] == [("checkpoint-50", str(checkpoint_dir), 0.25)]
+
+
+def test_scan_checkpoints_reads_history_once_for_many_fallback_runs(tmp_path, monkeypatch):
+    # Full fine-tunes save config.json without _name_or_path, so every such run falls back to history.
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    db_path = tmp_path / "studio.db"
+    _setup_training_runs_table(db_path)
+    expected = {}
+    conn = _make_history_connection(db_path)
+    try:
+        for index in range(12):
+            model = f"org/model-{index % 3}"
+            project = "Support" if index % 2 else None
+            run_name = build_default_output_dir_name(model, project, timestamp = 1771227800 + index)
+            run_dir = outputs_dir / run_name
+            run_dir.mkdir()
+            (run_dir / "config.json").write_text("{}")
+            expected[run_name] = model
+            conn.execute(
+                "INSERT INTO training_runs (id, model_name, config_json, output_dir, started_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    f"run-{index}",
+                    model,
+                    json.dumps({"project_name": project}),
+                    str(run_dir.resolve()) if index % 3 == 0 else None,
+                    f"2026-04-09T00:00:{index:02d}Z",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    opened = []
+
+    def connect():
+        conn = _make_history_connection(db_path)
+        opened.append(conn)
+        return conn
+
+    parsed = []
+    real_loads = json.loads
+
+    class _CountingJson:
+        JSONDecodeError = json.JSONDecodeError
+        load = staticmethod(json.load)
+
+        @staticmethod
+        def loads(*args, **kwargs):
+            parsed.append(args[0] if args else None)
+            return real_loads(*args, **kwargs)
+
+    monkeypatch.setattr(checkpoints_module, "get_connection", connect)
+    monkeypatch.setattr(checkpoints_module, "json", _CountingJson)
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert {name: metadata["base_model"] for name, _, metadata in models} == expected
+    assert len(opened) == 1
+    assert len(parsed) <= 12 + len(models)
+
+
+def test_scan_checkpoints_tied_exact_match_follows_sqlite_order(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "custom-run"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text("{}")
+    db_path = tmp_path / "studio.db"
+    _setup_training_runs_table(db_path)
+    conn = _make_history_connection(db_path)
+    try:
+        for run_id, model in (("a", "first/base"), ("b", ""), ("c", "second/base")):
+            conn.execute(
+                "INSERT INTO training_runs (id, model_name, config_json, output_dir, started_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (run_id, model, "{}", str(run_dir.resolve()), "2026-04-09T00:00:00Z"),
+            )
+        conn.commit()
+        want = conn.execute(
+            "SELECT model_name FROM training_runs WHERE output_dir IN (?, ?) AND model_name != ''"
+            " ORDER BY started_at DESC",
+            (str(run_dir.resolve()), str(run_dir)),
+        ).fetchone()["model_name"]
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        checkpoints_module, "get_connection", lambda: _make_history_connection(db_path)
+    )
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models[0][2]["base_model"] == want
+
+
+def _write_loss_state(path: Path, loss: str) -> None:
+    path.write_text('{"log_history": [{"loss": ' + loss + ', "step": 10}]}')
+
+
+def _counting_json_load(monkeypatch) -> list:
+    calls = []
+    real_load = checkpoints_module.json.load
+
+    def load(f, *args, **kwargs):
+        calls.append(f.name)
+        return real_load(f, *args, **kwargs)
+
+    monkeypatch.setattr(checkpoints_module.json, "load", load)
+    return calls
+
+
+def _skip_settle_window(monkeypatch) -> None:
+    real_time_ns = time.time_ns
+    monkeypatch.setattr(time, "time_ns", lambda: real_time_ns() + 3600 * 10**9)
+
+
+def test_checkpoint_loss_cache_skips_reparse_of_unchanged_file(tmp_path, monkeypatch):
+    _skip_settle_window(monkeypatch)
+    checkpoint_dir = tmp_path / "checkpoint-10"
+    checkpoint_dir.mkdir()
+    _write_loss_state(checkpoint_dir / "trainer_state.json", "1.25")
+    calls = _counting_json_load(monkeypatch)
+
+    assert checkpoints_module._read_checkpoint_loss(checkpoint_dir) == 1.25
+    assert checkpoints_module._read_checkpoint_loss(checkpoint_dir) == 1.25
+    assert len(calls) == 1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "st_ctime is the creation time on Windows, so it does not move on a rewrite",
+)
+def test_checkpoint_loss_cache_sees_same_size_rewrite_with_restored_mtime(tmp_path, monkeypatch):
+    _skip_settle_window(monkeypatch)
+    checkpoint_dir = tmp_path / "checkpoint-10"
+    checkpoint_dir.mkdir()
+    state = checkpoint_dir / "trainer_state.json"
+    _write_loss_state(state, "1.25")
+    assert checkpoints_module._read_checkpoint_loss(checkpoint_dir) == 1.25
+
+    before = state.stat()
+    with open(state, "r+") as f:
+        f.write('{"log_history": [{"loss": 2.75, "step": 10}]}')
+    os.utime(state, ns = (before.st_atime_ns, before.st_mtime_ns))
+    assert state.stat().st_size == before.st_size
+
+    assert checkpoints_module._read_checkpoint_loss(checkpoint_dir) == 2.75
+
+
+def test_checkpoint_loss_cache_ignores_recently_written_files(tmp_path, monkeypatch):
+    checkpoint_dir = tmp_path / "checkpoint-10"
+    checkpoint_dir.mkdir()
+    _write_loss_state(checkpoint_dir / "trainer_state.json", "1.25")
+    calls = _counting_json_load(monkeypatch)
+
+    checkpoints_module._read_checkpoint_loss(checkpoint_dir)
+    checkpoints_module._read_checkpoint_loss(checkpoint_dir)
+
+    assert len(calls) == 2

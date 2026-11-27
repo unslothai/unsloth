@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where a conversation with no saved thread was last cut, so later requests cut in the same place and reuse
-the prompt cache. Process-local and in memory only: a restart costs one recut.
-"""
+"""Cut point for thread-less chats, reused so the prompt cache hits; process-local, lost on restart."""
 
 from __future__ import annotations
 

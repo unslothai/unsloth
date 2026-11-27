@@ -134,8 +134,7 @@ def test_resolver_returns_edge_template_for_e2b_e4b():
 
 
 def test_resolver_routes_qat_repos_by_family():
-    # QAT repos add '-qat'; E2B/E4B QAT must still get the edge template, or thinking-off
-    # gets an empty thought block.
+    # E2B/E4B QAT must keep the edge template, or thinking-off emits an empty thought block.
     for mid in ("unsloth/gemma-4-E2B-it-qat-GGUF", "unsloth/gemma-4-E4B-it-qat-GGUF"):
         out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
         assert out == EDGE
@@ -221,9 +220,8 @@ def test_detect_reasoning_flags_on_bundled_template(tpl):
 
 
 def test_edge_template_omits_empty_thought_block_on_thinking_off():
-    """E2B/E4B must NOT emit the empty <|channel>thought<channel|> block when
-    thinking is disabled; the larger-model template must. This is the only
-    intended difference between the two bundled templates."""
+    """E2B/E4B omit the empty thought block when thinking is off, but the larger-model template
+    keeps it; this is the only intended difference between the two bundled templates."""
     EMPTY = "<|channel>thought\n<channel|>"
     msgs = [{"role": "user", "content": "hi"}]
     edge_off = _render_with(EDGE, msgs, enable_thinking = False)

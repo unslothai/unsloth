@@ -325,12 +325,20 @@ def save_lan_access_addresses(app, addresses: Any) -> dict:
 
 
 def _available_lan_addresses() -> list[dict]:
-    """Detected addresses with a public flag; a detection failure offers nothing rather than failing status."""
+    """Detected addresses, then virtual switch ones flagged ``host_only``; a detection failure offers nothing
+    rather than failing status."""
     try:
-        from lan_access import detect_lan_addresses, is_public_address
+        from lan_access import detect_host_only_addresses, detect_lan_addresses, is_public_address
+
+        detected = detect_lan_addresses()
+        host_only = [address for address in detect_host_only_addresses() if address not in detected]
         return [
-            {"address": address, "public": is_public_address(address)}
-            for address in detect_lan_addresses()
+            {
+                "address": address,
+                "public": is_public_address(address),
+                "host_only": address in host_only,
+            }
+            for address in (*detected, *host_only)
         ]
     except Exception:
         return []
@@ -499,12 +507,7 @@ def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> l
 
 
 def _has_keyless_lan_url(urls: list[str]) -> bool:
-    """Whether any of these URLs is one a keyless caller can actually reach.
-
-    Resolution alone is not enough: `keyless_api_access._host_authority_is_direct` refuses a `Host` that names anything, so a hostname bind yields a URL that resolves to a private address and is still refused. Reporting it eligible is what made the LAN panel advertise `Bearer not-needed` against a URL that answers 401, so the literal is required here too.
-
-    Admission decides, through the shared `keyless_api_access.keyless_authority_address_allowed`. A second copy of the test is what let an IPv4-mapped literal like `::ffff:192.168.1.24` be advertised while admission refused it: `_normalized_ip` un-maps, which is exactly what that form is refused for.
-    """
+    """Shares admission's check, so a hostname bind or an IPv4-mapped literal is never advertised."""
     import ipaddress
     from urllib.parse import urlparse
 

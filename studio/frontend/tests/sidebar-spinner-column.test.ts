@@ -56,7 +56,59 @@ test("nav and Recents spinners land on one trailing column", async () => {
   );
 });
 
-// The kebab overlays the row's right edge, so a spinner row must pad past it.
+// The kebab overlays the row's right edge, so a spinner row must pad past it; the spinner, approval
+// dot and unread dot share one slot, and a dot off that centre reads as misaligned.
+test("the Recents spinner, the approval mark and the unread dot share one centre", () => {
+  const centre = (anchor: string, box: string) => inset(anchor, "right") + inset(box, "size") / 2;
+  const spinnerAnchor = grab(
+    APP_SIDEBAR,
+    /className=\{cn\(\s*"(pointer-events-none absolute right-[0-9.]+[^"]*)"[\s\S]{0,1200}?data-testid="chat-row-spinner"/,
+    "Recents chat spinner anchor",
+  );
+  const spinner = grab(
+    APP_SIDEBAR,
+    /data-testid="chat-row-spinner"[\s\S]{0,400}?className="([^"]*)"/,
+    "Recents chat spinner",
+  );
+  const approvalBox = grab(
+    APP_SIDEBAR,
+    /<ApprovalMark testId="chat-row-approval" className="([^"]*)"/,
+    "approval mark",
+  );
+  const unreadAnchor = grab(
+    APP_SIDEBAR,
+    /\{hasUnreadActivity \? \([\s\S]{0,200}?className=\{cn\(\s*"([^"]*)"/,
+    "unread dot anchor",
+  );
+
+  const spinnerCentre = centre(spinnerAnchor, spinner);
+  assert.equal(spinnerCentre, 23);
+  assert.equal(centre(spinnerAnchor, approvalBox), spinnerCentre);
+  assert.equal(centre(unreadAnchor, unreadAnchor), spinnerCentre, "the unread dot left the spinner's column");
+});
+
+test("every trailing mark yields to the row actions on hover, an open menu and keyboard focus", () => {
+  const marks: [string, RegExp][] = [
+    ["spinner", /\{showWorkSpinner \? \([\s\S]{0,1600}?\{awaitingApproval \? \(/],
+    ["unread dot", /\{hasUnreadActivity \? \([\s\S]{0,900}?aria-hidden/],
+    ["fork mark", /\{showForkMark \? \([\s\S]{0,1600}?<GitBranchIcon/],
+  ];
+  for (const [name, pattern] of marks) {
+    const block = pattern.exec(APP_SIDEBAR)?.[0] ?? "";
+    assert.ok(block, `could not find the ${name}`);
+    for (const group of ["recent-item", "project-chat-item"]) {
+      for (const fade of [
+        `group-hover/${group}:opacity-0`,
+        // The actions follow the mark in the row, so the mark looks at its later siblings.
+        "[&:has(~.sidebar-row-action[data-state=open])]:opacity-0",
+        "[&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
+      ]) {
+        assert.ok(block.includes(fade), `the ${name} lacks ${fade}`);
+      }
+    }
+  }
+});
+
 test("a working Recents row clears the kebab on hover", async () => {
   const [source, css] = await Promise.all([
     atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
@@ -79,7 +131,7 @@ test("a working Recents row clears the kebab on hover", async () => {
   );
 
   // focus-visible reveals the actions without hover, so rows reserve room there too.
-  const focusPads = [...source.matchAll(/:focus-visible\]\/[a-z-]+:pr-([0-9.]+)/g)].map(
+  const focusPads = [...source.matchAll(/:has\(~\.sidebar-row-action:focus-visible\)\]:pr-([0-9.]+)/g)].map(
     (m) => Number(m[1]) * TAILWIND_UNIT,
   );
   assert.equal(focusPads.length, 2, `expected 2 focus paddings, got ${focusPads.length}`);

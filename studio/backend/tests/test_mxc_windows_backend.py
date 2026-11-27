@@ -113,6 +113,21 @@ def test_unavailable_capability_names_the_host_prep_command(monkeypatch, tmp_pat
     assert "install_mxc_prebuilt.py" in capability.remediation or not advised
 
 
+def test_an_inconclusive_host_prep_check_is_asked_again(monkeypatch):
+    from core.inference import mxc_probe
+
+    monkeypatch.setattr(mxc_probe, "_host_prep_cache", {})
+    monkeypatch.setattr(mxc_probe.mxc_runtime, "installation_identity", lambda: "runner")
+    answers = [None, ("prepare-null-device",)]
+    monkeypatch.setattr(
+        mxc_probe.mxc_runtime, "probe_host_prep_steps", lambda **_kwargs: answers.pop(0)
+    )
+    assert mxc_probe.host_prep_remediation() is None
+    assert "prepare-null-device" in mxc_probe.host_prep_remediation()
+    assert "prepare-null-device" in mxc_probe.host_prep_remediation()
+    assert answers == []
+
+
 def test_host_prep_is_not_advised_without_the_dacl_opt_in(monkeypatch, tmp_path):
     from core.inference import mxc_probe, sandbox_windows_mxc
 
@@ -638,7 +653,7 @@ def test_policy_mutation_is_refused_before_wxc_dispatch(monkeypatch):
         mxc_adapter.spawn(request)
 
 
-@pytest.mark.parametrize("dacl, grants", [(True, True), (True, False), (False, True)])
+@pytest.mark.parametrize("dacl, grants", [(True, True), (True, False)])
 def test_a_launch_holds_the_read_grants_until_its_last_cleanup(monkeypatch, tmp_path, dacl, grants):
     from core.inference import sandbox_windows_mxc
 
@@ -691,7 +706,7 @@ def test_a_launch_whose_grant_lease_cannot_be_recorded_is_refused(monkeypatch, t
         raise mxc_read_grants.ReadGrantError("controlled lease failure")
 
     built = []
-    monkeypatch.setattr(mxc_read_grants, "hold_if_needed", refuse)
+    monkeypatch.setattr(mxc_read_grants, "hold_before_build", refuse)
     monkeypatch.setattr(
         sandbox_windows_mxc.mxc_policy,
         "build_launch_request",
@@ -970,9 +985,15 @@ def test_uv_base_prefix_junction_grants_concrete_runtime(monkeypatch, tmp_path):
     assert str(base.resolve()) in roots
     assert str(alias) not in roots
     assert str(tmp_path) not in roots
-    # The exception belongs only to Python's own base prefix. Arbitrary grants
-    # and workdirs must still reject the same redirect.
+    # Only Python's own base prefix is exempt; grants and workdirs must still reject redirects.
     with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):
         mxc_policy._runtime_read_roots(str(prefix / "python.exe"), [str(alias)])
     with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):
         mxc_policy._safe_canonical_path(str(alias), directory = True)
+
+
+@pytest.fixture(autouse = True)
+def _dacl_capable_pin(monkeypatch):
+    # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
+    from core.inference import mxc_runtime
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)

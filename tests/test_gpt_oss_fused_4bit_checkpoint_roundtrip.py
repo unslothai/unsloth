@@ -208,8 +208,7 @@ def _quantized_tiny_gpt_oss():
 
 
 def test_supplied_foreign_packed_bytes_without_quant_state_are_refused(tmp_path):
-    """Packed expert bytes that are not the live parameter's (an EMA snapshot, another checkpoint)
-    must not be saved with the live parameter's absmax."""
+    """Foreign expert bytes (EMA, other checkpoint) must not be saved with the live absmax."""
     pytest.importorskip("bitsandbytes")
     model, experts = _quantized_tiny_gpt_oss()
     supplied = {k: v.clone() for k, v in model.state_dict().items()}
@@ -248,8 +247,7 @@ def test_supplied_quant_state_and_cloned_live_bytes_are_kept(tmp_path):
 
 
 def test_live_bytes_check_compares_in_bounded_chunks(monkeypatch):
-    """Copied (not same-storage) packed bytes are compared slice by slice: no full-size copy of
-    the live tensor is ever moved to the supplied tensor's device, and a difference exits early."""
+    """Copied packed bytes are compared in bounded chunks, never moved whole to the device."""
     from unsloth import save as unsloth_save
 
     monkeypatch.setattr(unsloth_save, "_PARAMS4BIT_COMPARE_CHUNK_BYTES", 1024)
@@ -283,8 +281,7 @@ def test_live_bytes_check_compares_in_bounded_chunks(monkeypatch):
 
 
 def test_live_bytes_check_errors_are_not_reported_as_foreign(monkeypatch):
-    """An error while comparing (an OOM moving a slice) propagates instead of becoming the
-    misleading foreign-weights ValueError."""
+    """Errors while comparing (e.g. an OOM) propagate, never as a foreign-weights ValueError."""
     from unsloth import save as unsloth_save
 
     live = torch.zeros(64, 1, dtype = torch.uint8)
@@ -296,3 +293,60 @@ def test_live_bytes_check_errors_are_not_reported_as_foreign(monkeypatch):
     monkeypatch.setattr(unsloth_save.torch, "equal", boom)
     with pytest.raises(torch.OutOfMemoryError):
         unsloth_save._is_live_params4bit_data(param, live.clone())
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_live_bytes_check_is_bitwise_for_float_quant_storage(monkeypatch, dtype):
+    from unsloth import save as unsloth_save
+
+    monkeypatch.setattr(unsloth_save, "_PARAMS4BIT_COMPARE_CHUNK_BYTES", 64)
+    raw = torch.randint(0, 256, (257 * 4 * 4,), dtype = torch.uint8)
+    live = raw.view(dtype).reshape(-1, 4)
+    live[3, 1] = float("nan")
+    live[7, 2] = 0.0
+    assert torch.isnan(live).any()
+
+    def param_of(t):
+        return SimpleNamespace(data = t, shape = t.shape, dtype = t.dtype, device = t.device)
+
+    param = param_of(live)
+    assert unsloth_save._is_live_params4bit_data(param, live.clone())
+    flipped = live.clone()
+    flipped[7, 2] = -0.0  # different bytes, equal under ==
+    assert not unsloth_save._is_live_params4bit_data(param, flipped)
+    param_nc = param_of(live.t())
+    assert unsloth_save._is_live_params4bit_data(param_nc, live.t().contiguous())
+    assert not unsloth_save._is_live_params4bit_data(param_nc, flipped.t().contiguous())
+    scalar = torch.tensor(float("nan"), dtype = dtype)
+    assert unsloth_save._is_live_params4bit_data(param_of(scalar), scalar.clone())
+
+
+@pytest.mark.parametrize("quant_storage", [torch.float16, torch.bfloat16, torch.float32])
+def test_supplied_cloned_float_quant_storage_bytes_are_kept(tmp_path, quant_storage):
+    bnb = pytest.importorskip("bitsandbytes")
+    from unsloth.save import patch_saving_functions
+
+    model = _tiny_gpt_oss()
+    experts = model.model.layers[0].mlp.experts
+    for name in ("gate_up_proj", "down_proj"):
+        weight = getattr(experts, name).data.normal_(0.0, 0.05)
+        param = bnb.nn.Params4bit(
+            weight.detach().clone(),
+            requires_grad = False,
+            quant_type = "nf4",
+            quant_storage = quant_storage,
+        ).to("cpu")
+        setattr(experts, name, param)
+    assert any(torch.isnan(getattr(experts, n).data).any() for n in ("gate_up_proj", "down_proj"))
+    model.config.quantization_config = dict(BNB_QC, bnb_4bit_quant_type = "nf4")
+    patch_saving_functions(model)
+    supplied = {k: v.clone() for k, v in model.state_dict().items()}
+    out = str(tmp_path / "saved")
+    model.save_pretrained(out, state_dict = supplied)
+
+    saved = load_file(os.path.join(out, "model.safetensors"))
+    for name in ("gate_up_proj", "down_proj"):
+        key = f"{P}.experts.{name}"
+        assert f"{key}.absmax" in saved and f"{key}.quant_state.bitsandbytes__nf4" in saved
+        want = getattr(experts, name)
+        assert torch.equal(saved[key].view(torch.uint8), want.data.view(torch.uint8))

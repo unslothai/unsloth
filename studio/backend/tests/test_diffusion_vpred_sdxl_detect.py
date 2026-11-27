@@ -207,9 +207,7 @@ def test_a_pipeline_pick_makes_no_hub_call(hub_cache, monkeypatch):
     assert detect_family_for_pick(NOOB) is None
 
 
-def test_prefetch_is_skipped_for_named_overridden_local_and_gguf_picks(
-    hub_cache, monkeypatch, tmp_path
-):
+def test_prefetch_is_skipped_for_named_overridden_and_local_picks(hub_cache, monkeypatch, tmp_path):
     import huggingface_hub
 
     def boom(*a, **k):
@@ -219,7 +217,6 @@ def test_prefetch_is_skipped_for_named_overridden_local_and_gguf_picks(
     monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", boom)
     evidence.prefetch_for_pick("stabilityai/stable-diffusion-xl-base-1.0", None, None, None)
     evidence.prefetch_for_pick(NOOB, NOOB_FILE, "sdxl", None)
-    evidence.prefetch_for_pick(NOOB, "noob-Q4_K.gguf", None, None)
     evidence.prefetch_for_pick(str(tmp_path), None, None, None)
 
 
@@ -348,6 +345,22 @@ def _stub_header(monkeypatch, keys_by_call):
 
     monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
     return calls
+
+
+def test_catalog_identifies_whole_sdxl_files_by_content_even_when_names_are_neutral(monkeypatch):
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    keys = [
+        ["transformer.single_transformer_blocks.0.attn.to_k.lora_A.weight"],
+        SDXL_DIFFUSERS_UNET_ONLY_KEYS,
+        SDXL_UNET_KEYS,
+    ]
+    _stub_header(monkeypatch, keys)
+    picks = [
+        is_sdxl_checkpoint("example/checkpoint", filename, "1" * 40, False, "test-user")
+        for filename in ("edition-1.safetensors", "unet.safetensors", "edition-2.safetensors")
+    ]
+    assert picks == [False, False, True]
 
 
 def test_a_denoiser_only_unet_is_not_evidence_for_a_whole_pipeline_family(hub_cache, monkeypatch):
@@ -672,10 +685,16 @@ def test_a_recorded_marker_read_is_per_snapshot_commit(hub_cache, monkeypatch):
     other.mkdir()
     # Another commit of the repo was never read: its shipped config stands offline.
     assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(other), NOOB, None, False) == {}
-    # An online read that finds no markers replaces the record, so an eps re-release stays eps offline.
-    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS, [])
-    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == {}
-    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == {}
+    # A commit is immutable: a later online load of the same snapshot answers from the record, no Hub call.
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS, seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    assert seen == []
+    # A re-release is a new commit: read online, recorded under its own key.
+    newer = _staged_snapshot(hub_cache, commit = "e" * 40)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(newer), NOOB, None, True) == {}
+    assert seen == ["list", "header"]
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(newer), NOOB, None, False) == {}
 
 
 def test_an_unrecorded_cache_only_load_keeps_the_shipped_config(hub_cache, monkeypatch):
@@ -886,3 +905,216 @@ def test_concurrent_marker_records_keep_every_entry(hub_cache, monkeypatch):
     b.join(5)
     record = json.loads(sampler._marks_record_path().read_text(encoding = "utf-8"))
     assert {sampler._marks_key(NOOB, "a" * 40), sampler._marks_key(NOOB, "b" * 40)} <= set(record)
+
+
+def test_the_root_headers_are_read_side_by_side_in_name_order(hub_cache, monkeypatch):
+    import threading
+    import time
+
+    import huggingface_hub
+
+    snap = _staged_snapshot(hub_cache)
+    names = ["a.safetensors", "b.safetensors", "c.safetensors"]
+    active, peak = [0], [0]
+    lock = threading.Lock()
+
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
+        return ["model_index.json", *names]
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.2)
+        with lock:
+            active[0] -= 1
+        keys = ["v_pred", "ztsnr"] if filename == "c.safetensors" else []
+        return types.SimpleNamespace(tensors = {k: None for k in keys}, metadata = {})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", files)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    from core.inference import diffusion_sampler as smp
+
+    marks = smp._root_single_marks(str(snap), NOOB, None, True)
+    assert peak[0] > 1
+    # Results stay in name order: only the last file carries the markers.
+    assert [bool(m) for m in marks] == [False, False, True]
+
+
+def test_the_overlapped_marker_read_matches_the_inline_one(hub_cache, monkeypatch):
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference import diffusion_sampler as smp
+
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    future = smp.start_root_single_marks(str(snap), NOOB, None, True)
+    pipe = types.SimpleNamespace(
+        scheduler = diffusers.EulerDiscreteScheduler.from_config(NOOB_SCHEDULER)
+    )
+    assert smp.apply_pipeline_prediction_type(
+        pipe, str(snap), repo_id = NOOB, allow_network = True, marks_future = future
+    )
+    assert seen == ["list", "header"]
+    assert pipe.scheduler.config.prediction_type == "v_prediction"
+
+
+def test_a_failed_overlapped_read_is_read_again_inline(hub_cache, monkeypatch):
+    from concurrent.futures import Future
+
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference import diffusion_sampler as smp
+
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    failed: Future = Future()
+    failed.set_exception(RuntimeError("thread died"))
+    pipe = types.SimpleNamespace(
+        scheduler = diffusers.EulerDiscreteScheduler.from_config(NOOB_SCHEDULER)
+    )
+    assert smp.apply_pipeline_prediction_type(
+        pipe, str(snap), repo_id = NOOB, allow_network = True, marks_future = failed
+    )
+    assert seen == ["list", "header"]
+
+
+def test_the_load_starts_the_marker_read_before_the_weights():
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
+    ).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    starts = [
+        c.lineno
+        for c in ast.walk(tree)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "start_root_single_marks"
+    ]
+    loads = [
+        c.lineno
+        for c in ast.walk(tree)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and c.func.attr == "from_pretrained"
+        and getattr(c.func.value, "id", None) == "pipeline_cls"
+    ]
+    applies = [
+        c
+        for c in ast.walk(tree)
+        if isinstance(c, ast.Call)
+        and getattr(c.func, "id", None) == "apply_pipeline_prediction_type"
+    ]
+    assert len(starts) == 1 and any(starts[0] < line < starts[0] + 20 for line in loads)
+    assert "marks_future" in {k.arg for k in applies[0].keywords}
+
+
+def test_the_marker_read_overlaps_only_a_staged_snapshot():
+    # A Hub id resolves its revision inside from_pretrained: an early read could take refs/main's older commit while
+    # the load downloads a newer one, so the overlap is gated on the staged, commit-pinned snapshot dir.
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
+    ).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.IfExp)
+        and isinstance(node.body, ast.Call)
+        and getattr(node.body.func, "id", None) == "start_root_single_marks"
+    ]
+    assert len(calls) == 1
+    gate = ast.unparse(calls[0].test)
+    assert "_base_local_dir" in gate
+    first = calls[0].body.args[0]
+    assert ast.unparse(first) == "_base_local_dir"
+
+
+def test_a_managed_account_reads_checkpoint_headers_without_the_installation_token(monkeypatch):
+    import huggingface_hub
+    from fastapi import HTTPException
+
+    from hub.routes import inventory
+    from hub.services.models import account_access
+
+    tokens = []
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        tokens.append(token)
+        return types.SimpleNamespace(
+            tensors = {k: types.SimpleNamespace(shape = [0]) for k in SDXL_UNET_KEYS},
+            metadata = {},
+        )
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    for managed in (False, True):
+        monkeypatch.setattr(account_access, "managed_account", lambda managed = managed: managed)
+        assert inventory.is_sdxl_checkpoint("example/ckpt", "a.safetensors", None, None, "u")
+    assert tokens == [None, False]
+
+    monkeypatch.setattr(account_access, "model_allowlist", lambda: ["allowed/*"])
+    with pytest.raises(HTTPException):
+        inventory.is_sdxl_checkpoint("example/ckpt", "a.safetensors", None, None, "u")
+    assert len(tokens) == 2
+
+
+def test_the_catalog_never_offers_a_checkpoint_the_loader_vetoes_by_name(monkeypatch):
+    from core.inference.diffusion import get_diffusion_backend
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS])
+    repo = "example/neutral-mix"
+    assert is_sdxl_checkpoint(repo, "edition.safetensors", None, False, "u")
+    assert not is_sdxl_checkpoint(repo, "edition-inpaint.safetensors", None, False, "u")
+    get_diffusion_backend().validate_load_request(
+        repo, gguf_filename = "edition.safetensors", family_override = None, model_kind = "single_file"
+    )
+
+
+@pytest.mark.parametrize(
+    "keys, offered",
+    [
+        (
+            [
+                "img_in.weight",
+                "single_stream_modulation.lin.weight",
+                "double_stream_modulation_img.lin.weight",
+            ],
+            True,
+        ),
+        (["model.embed_tokens.weight", "model.layers.0.self_attn.q_proj.weight"], False),
+        (["encoder.conv_in.weight", "decoder.conv_in.weight"], False),
+    ],
+)
+def test_a_single_file_repo_offers_only_its_transformer(monkeypatch, keys, offered):
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    _stub_header(monkeypatch, [keys])
+    repo = "Comfy-Org/Flux-2-Klein-4B"
+    filename = "split_files/diffusion_models/flux-2-klein-4b.safetensors"
+    assert is_sdxl_checkpoint(repo, filename, None, False, "u") is offered
+
+
+def test_a_bare_sdxl_unet_is_not_offered_as_a_checkpoint(monkeypatch):
+    from hub.routes.inventory import is_sdxl_checkpoint
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS[:5]])
+    assert not is_sdxl_checkpoint("example/sdxl-unet", "unet.safetensors", None, False, "u")

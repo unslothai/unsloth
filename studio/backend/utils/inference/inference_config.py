@@ -6,6 +6,7 @@
 from pathlib import Path
 from typing import Dict, Any, Optional
 from functools import lru_cache
+import glob
 import json
 import math
 import os
@@ -77,7 +78,7 @@ def _has_specific_yaml(model_identifier: str) -> bool:
     return any(
         config_path.is_file()
         for name in names
-        for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml")
+        for config_path in defaults_dir.rglob(glob.escape(name.replace("/", "_")) + ".yaml")
     )
 
 
@@ -132,7 +133,8 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
     return inference_config
 
 
-# field -> (env var, static default, min, max, is_int). Per field an operator pin via UNSLOTH_SAMPLING_* wins even over an explicit client value, then the client value, then the per-model recommendation, then the static schema default.
+# field -> (env var, default, min, max, is_int). Precedence: UNSLOTH_SAMPLING_* pin,
+# client value, per-model recommendation, static default.
 # ── Effective sampling resolution for `unsloth run` / `unsloth start` ──────────
 _SAMPLING_FIELDS = {
     "temperature": ("UNSLOTH_SAMPLING_TEMPERATURE", 0.6, 0.0, 2.0, False),

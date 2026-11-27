@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  carriedThought,
   continuationSeed,
   isContinuableContent,
   readContinuationRequest,
@@ -231,6 +232,18 @@ test("a continued answer keeps the thought it followed", () => {
   assert.equal(continuationSeed("2, 3 ", ""), "2, 3 ");
 });
 
+test("a managed engine keeps a finished thought but never reopens one", () => {
+  const answer = { partial: "2, 3", reasoning: "Easy." };
+  const thoughtOnly = { partial: "", reasoning: THOUGHT };
+  const managed = { resumesThought: false, managedEngine: true };
+  assert.equal(carriedThought(answer, managed), "Easy.");
+  assert.equal(carriedThought(thoughtOnly, managed), "");
+  const llama = { resumesThought: true, managedEngine: false };
+  assert.equal(carriedThought(thoughtOnly, llama), THOUGHT);
+  const transformers = { resumesThought: false, managedEngine: false };
+  assert.equal(carriedThought(answer, transformers), "");
+});
+
 function clock(start = 1_000_000) {
   let now = start;
   return {
@@ -302,4 +315,13 @@ test("Continue response leads the More menu and yields to the Resume bar", () =>
     /if \(!completed \|\| reason \|\| !canResume \|\| editing \|\| cited\) \{\n\s*return null;/,
   );
   assert.equal(thread.match(/\[CONTINUATION_RUN_CONFIG_KEY\]/g)?.length, 1);
+});
+
+test("Vertex shares Gemini's thought replay and resume in the adapter", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.doesNotMatch(adapter, /providerType === "gemini"/);
+  assert.match(
+    adapter,
+    /const hasGeminiReplayContinuation = Boolean\(\s*continuation &&\s*isGeminiApiProviderType\(externalProvider\?\.providerType\)/,
+  );
 });

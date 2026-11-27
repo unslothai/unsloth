@@ -87,6 +87,13 @@ for (const task of [null, "text-generation", "image-text-to-text", "text-to-imag
         reconcileGgufPinsAfterDelete: async (...args: unknown[]) => { reconciliations++; assert.equal(args[1], "hf_fixture_token"); await reconcile(...args); },
         onDeleteVariant: async () => {}, deleteCachedModel: async () => {}, deleteCachedDataset: async () => {},
         refreshCachedLists: () => {}, prunePinnedQuantValidation: () => {}, setRefreshKey: () => {},
+        // Memoized On Device rows reach the picker's callbacks through its actions holder.
+        actions: {
+          get: () => ({
+            hfToken: "hf_fixture_token", togglePinned, unpinRepo,
+            refreshCachedLists: () => undefined, prunePinnedQuantValidation: () => undefined,
+          }),
+        },
       });
       await callback();
       assert.deepEqual(pinned, !chat && wholeRepo ? [] : [repoId, pinKey(repoId, surviving)]);

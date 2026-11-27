@@ -458,15 +458,20 @@ def test_a_tauri_update_is_verified_too(monkeypatch):
 @pytest.mark.parametrize(
     "system, expected",
     [
-        ("Linux", "| UNSLOTH_STUDIO_HOME=/srv/studios/a sh"),
-        ("Windows", "$env:UNSLOTH_STUDIO_HOME = '/srv/studios/a'; irm"),
+        ("Linux", "| UNSLOTH_STUDIO_HOME={quoted} sh"),
+        ("Windows", "$env:UNSLOTH_STUDIO_HOME = '{root}'; irm"),
     ],
 )
 def test_a_custom_root_is_carried_into_the_reinstall_command(monkeypatch, capsys, system, expected):
     import platform as _platform
+    import shlex
+
     import typer
 
     studio = _studio()
+    # The root as this host spells it: a Windows runner prints `\srv\studios\a` for either target shell.
+    root = str(Path("/srv/studios/a"))
+    expected = expected.format(root = root, quoted = shlex.quote(root))
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
     monkeypatch.setattr(
         studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
@@ -493,7 +498,10 @@ def test_a_root_with_spaces_is_quoted(monkeypatch, capsys):
     monkeypatch.setattr(_platform, "system", lambda: "Linux")
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
-    assert "UNSLOTH_STUDIO_HOME='/srv/my studios/a' sh" in capsys.readouterr().err
+    import shlex
+
+    root = shlex.quote(str(Path("/srv/my studios/a")))  # as this host prints it
+    assert f"UNSLOTH_STUDIO_HOME={root} sh" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -592,13 +600,18 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
 @pytest.mark.parametrize(
     "system, exe, expected",
     [
-        ("Linux", "/srv/my studios/a/bin/python", "'/srv/my studios/a/bin/python' -m pip"),
-        ("Windows", r"C:\my studios\a\python.exe", "& 'C:\\my studios\\a\\python.exe' -m pip"),
+        ("Linux", "/srv/my studios/a/bin/python", "{quoted} -m pip"),
+        ("Windows", r"C:\my studios\a\python.exe", "& '{path}' -m pip"),
     ],
 )
 def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, exe, expected):
     import platform as _platform
+    import shlex
+
     import typer
+
+    # The interpreter as this host prints it (a POSIX path gets backslashes on a Windows runner).
+    expected = expected.format(path = str(Path(exe)), quoted = shlex.quote(str(Path(exe))))
 
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
@@ -725,3 +738,35 @@ def test_our_own_runtime_trees_are_still_checked(site):
     (site / "unsloth_zoo" / "tests" / "helper.py").unlink()
     found = _deps().damaged_installed_files()
     assert len(found) == 1 and "unsloth_zoo/tests/helper.py is missing" in found[0]
+
+
+def test_a_launcher_restored_from_an_older_copy_is_not_damage(site):
+    # #16897: the update put back an older uv trampoline, shorter than the RECORD the newest uv wrote.
+    launcher = "../Scripts/unsloth.exe"
+    _make_dist(
+        site,
+        "unsloth",
+        {"unsloth/__init__.py": b"u\n", launcher: b"MZ" + b"\0" * 40979},
+        record_sizes = {launcher: 47104},
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_a_missing_launcher_is_still_damage(site):
+    launcher = "../Scripts/unsloth.exe"
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"u\n", launcher: b"MZ" * 10})
+    (site / launcher).unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "Scripts/unsloth.exe is missing" in found[0]
+
+
+def test_only_the_managed_launcher_loses_its_size_check(site):
+    other = "../Scripts/hf.exe"
+    _make_dist(
+        site,
+        "huggingface_hub",
+        {"huggingface_hub/__init__.py": b"h\n", other: b"MZ" * 10},
+        record_sizes = {other: 47104},
+    )
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "Scripts/hf.exe is 20 bytes, expected 47104" in found[0]

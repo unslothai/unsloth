@@ -57,7 +57,7 @@ def spawn(
     encoded_config = mxc_policy.canonical_config_bytes(config)
     if encoded_config != request.get("configBytes"):
         raise MxcAdapterError("the MXC configuration changed before dispatch", stage = "policy")
-    if mxc_policy.compute_policy_hash(config) != request.get("policyHash"):
+    if mxc_policy.policy_hash_of_bytes(encoded_config) != request.get("policyHash"):
         raise MxcAdapterError("the MXC configuration hash is invalid", stage = "policy")
     fallback = config.get("fallback")
     if (
@@ -109,8 +109,7 @@ def spawn(
                 stage = "spawn",
             ) from exc
 
-        # From this point WXC may have created the workload. No caller may replay
-        # the original command on the host.
+        # WXC may have created the workload from here: never replay the command on the host
         proc._mxc_dispatched = True
         proc._mxc_backend_tier = "unknown"
         proc._mxc_policy_hash = request["policyHash"]

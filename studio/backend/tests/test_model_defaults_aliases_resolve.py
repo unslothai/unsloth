@@ -95,6 +95,18 @@ def test_lfm2_supported_ids_use_all_linear_defaults(model_id):
     assert config["lora"]["target_modules"] == ["all-linear"]
 
 
+def test_lfm3_omni_uses_all_linear_defaults():
+    for name in (
+        "LiquidAI/LFM3-Omni-2B",
+        "LiquidAI/LFM3-1.7B",
+        "LiquidAI/LFM3-1.7B-Base",
+        "LiquidAI/LFM3-VL-2B",
+        "LiquidAI/LFM3-Audio-2B",
+    ):
+        config = _load_tuned(name, "LiquidAI_LFM3-Omni-2B.yaml")
+        assert config["lora"]["target_modules"] == ["all-linear"]
+
+
 _QWEN35_SIZES = ["0.8B", "2B", "4B", "9B", "27B", "35B-A3B"]
 
 

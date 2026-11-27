@@ -32,6 +32,31 @@ def test_the_no_torch_runtime_pin_is_at_or_above_the_floor() -> None:
     assert _release(pin) >= CERTIFI_FLOOR
 
 
+ENGINE_LOCKS = sorted((REPO_ROOT / "studio" / "backend" / "requirements" / "engines").glob("*.txt"))
+
+
+def test_there_are_engine_locks() -> None:
+    assert len(ENGINE_LOCKS) >= 5
+
+
+@pytest.mark.parametrize("lock", ENGINE_LOCKS, ids = lambda p: p.stem)
+def test_every_engine_lock_pins_certifi_at_or_above_the_floor(lock) -> None:
+    """An isolated vLLM / SGLang environment uses its own certifi, not the Studio venv's."""
+    text = lock.read_text(encoding = "utf-8")
+    (pin,) = re.findall(r"^certifi==(\S+)", text, re.MULTILINE)
+    assert _release(pin) >= CERTIFI_FLOOR
+    # pip in an engine environment would verify TLS with its own vendored certifi.
+    for pip in re.findall(r"^pip==(\S+)", text, re.MULTILINE):
+        assert _release(pip) >= (26, 2, 2)
+
+
+@pytest.mark.parametrize("lock", ENGINE_LOCKS, ids = lambda p: p.stem)
+def test_every_engine_lock_input_keeps_the_floor_on_recompile(lock) -> None:
+    text = lock.with_suffix(".in").read_text(encoding = "utf-8")
+    (floor,) = re.findall(r"^certifi>=(\S+)", text, re.MULTILINE)
+    assert _release(floor) >= CERTIFI_FLOOR
+
+
 def test_core_declares_the_certifi_floor() -> None:
     try:
         import tomllib

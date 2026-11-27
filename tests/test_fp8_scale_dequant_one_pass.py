@@ -171,7 +171,9 @@ def test_compiled_dequant_below_sm89_is_one_opaque_op(F, monkeypatch, dtype, lay
     else:
         x, xs, ref = q, s[5:6], _reference(q, s[5:6].view(1, 1), dtype)
     out, ops = _compiled_graph_ops(lambda a, b: F.weight_dequant(a, b, dtype), x, xs)
-    assert any("fp8_scale_dequant" in op for op in ops), ops
+    # bf16 on a card without native bf16 (T4): Inductor skips the graph, so the torch expression stays.
+    opaque = not F._bf16_skipped_by_inductor(x, dtype)
+    assert any("fp8_scale_dequant" in op for op in ops) == opaque, ops
     assert out.stride() == ref.stride()
     _assert_same_bits(out, ref)
 
@@ -199,3 +201,22 @@ def test_compiled_dequant_reads_no_device_capability(F, monkeypatch):
     out, ops = _compiled_graph_ops(lambda x, y: F.weight_dequant(x, y, torch.float16), q, s)
     assert any("fp8_scale_dequant" in op for op in ops), ops
     _assert_same_bits(out, _reference(q, s, torch.float16))
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("layout", ["row", "tensor"])
+def test_inductor_fullgraph_dequant_matches_eager(F, dtype, layout):
+    # Real Inductor, no forced gate. On T4, bf16 graphs are skipped by Inductor, so routing them to the
+    # opaque op made Dynamo trace its body and fail fullgraph (device_count()); fp16 must stay one graph.
+    q, s = _weight(96, 160)
+    if layout == "tensor":
+        s = s[5:6]
+    ref = _reference(q, s.view(1, 1) if layout == "tensor" else s, dtype)
+    torch._dynamo.reset()
+    out = torch.compile(lambda a, b: F.weight_dequant(a, b, dtype), fullgraph = True)(q, s)
+    if F._fp8_e4m3fn_unsupported_in_trace(q):
+        _assert_same_bits(out, ref)
+    else:
+        # sm89+: Inductor fuses the torch expression itself and may round bf16 one ulp from eager.
+        ulp = 2.0**-7 if dtype == torch.bfloat16 else 2.0**-10
+        torch.testing.assert_close(out, ref, rtol = ulp, atol = 0, equal_nan = True)

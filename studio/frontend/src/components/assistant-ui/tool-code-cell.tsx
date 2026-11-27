@@ -9,7 +9,8 @@ import { MAX_HIGHLIGHT_CHARS, codeFence } from "@/lib/markdown-plugins";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
-import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { IconActionButton } from "./icon-action-button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -23,6 +24,9 @@ const SHIKI_THEME = ["github-light", "github-dark"] as [
 ];
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
+// Module constants: Streamdown's memo compares plugins by identity, so a fresh object re-parses.
+const STREAMDOWN_PLUGINS = { code: codePlugin };
+const STREAMDOWN_CONTROLS = { code: false };
 
 export function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -58,8 +62,7 @@ export function CopyBtn({ text }: { text: string }) {
 }
 
 function DownloadBtn({ code, name }: { code: string; name: string }) {
-  // Route through the shared boundary: browsers keep the normal download, Tauri gets the native
-  // save chooser. A bare blob anchor is silently dropped by the desktop WebView2.
+  // A bare blob anchor is silently dropped by WebView2; the shared boundary gives Tauri a save chooser.
   const download = useCallback(() => {
     void downloadFile(code, name, "text/plain;charset=utf-8").catch((error) => {
       if (!isDownloadCancelled(error)) {
@@ -75,9 +78,7 @@ function DownloadBtn({ code, name }: { code: string; name: string }) {
   );
 }
 
-/** Syntax-highlighted code via Streamdown + shiki. Always in the DOM as plain monospace, but
- * shiki only tokenizes once the block nears the viewport, so a long transcript does not
- * highlight every script up front. Immediate where IntersectionObserver is missing. */
+/** Shiki tokenizes only once the block nears the viewport; immediate without IntersectionObserver. */
 function HighlightedCode({
   code: source,
   language,
@@ -95,7 +96,6 @@ function HighlightedCode({
   const [nearViewport, setNearViewport] = useState(
     () => typeof IntersectionObserver === "undefined",
   );
-  // Pinned to the bottom until the reader scrolls up, so a streaming payload visibly grows.
   const pinnedToBottom = useRef(true);
   useEffect(() => {
     if (nearViewport) return;
@@ -108,7 +108,6 @@ function HighlightedCode({
           io.disconnect();
         }
       },
-      // Highlight just before the block enters view, so it is ready on arrival.
       { rootMargin: "200px" },
     );
     io.observe(el);
@@ -143,15 +142,14 @@ function HighlightedCode({
       {highlight ? (
         <Streamdown
           mode="static"
-          plugins={{ code: codePlugin }}
-          controls={{ code: false }}
+          plugins={STREAMDOWN_PLUGINS}
+          controls={STREAMDOWN_CONTROLS}
           shikiTheme={SHIKI_THEME}
         >
           {markdown}
         </Streamdown>
       ) : (
-        // A div, not a <pre>: the container's [&_pre]:!p-0 would strip the padding and shift
-        // the content when shiki swaps in. whitespace-pre so long lines scroll.
+        // A div, not a <pre>: the container's [&_pre]:!p-0 would shift content when shiki swaps in.
         <div className="whitespace-pre p-3 font-mono text-xs text-muted-foreground">
           {source}
         </div>
@@ -160,7 +158,12 @@ function HighlightedCode({
   );
 }
 
-/** The code a tool is about to run, in the card's collapsible content so the chevron hides code and output together. */
+/** Python ends a line (and a comment) at a lone carriage return, a browser does not: show ␍, and for Python
+ *  also break the row there. Bash does not end a line at CR, so its card only marks it. Display only. */
+function showCarriageReturns(code: string, language: string): string {
+  return code.replace(/\r(?!\n)/g, language === "python" ? "␍\n" : "␍");
+}
+
 export function ToolCodeCell({
   label,
   code,
@@ -187,7 +190,7 @@ export function ToolCodeCell({
       </div>
       {/* Display only: Copy and Download above keep the code as it runs. */}
       <HighlightedCode
-        code={escapeBidiControls(code)}
+        code={showCarriageReturns(escapeBidiControls(code), language)}
         language={language}
         plain={streaming}
       />

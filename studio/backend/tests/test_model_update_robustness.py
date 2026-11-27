@@ -469,8 +469,7 @@ def _rev(*files):
 
 
 def test_repo_gguf_blob_map_collects_all_revision_blobs():
-    """Every cached revision's blob for a gguf file is kept as a set, not
-    collapsed to one arbitrary blob."""
+    """Every cached revision's blob for a GGUF is kept, not collapsed to one arbitrary blob."""
     repo_info = SimpleNamespace(
         repo_path = "/",
         revisions = [
@@ -520,8 +519,7 @@ def _requirement(*expected):
 
 
 def test_repo_gguf_blob_map_uses_size_identity_when_cache_has_no_blob():
-    """A snapshot-resident GGUF (no blobs/ entry) must NOT be recorded under its
-    filename as if that were a hash -- it gets a size identity instead."""
+    """A snapshot-resident GGUF gets a size identity, never its filename recorded as a hash."""
     repo_info = SimpleNamespace(
         repo_path = "/hf/models--org--repo",
         revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 4096))],
@@ -533,8 +531,7 @@ def test_repo_gguf_blob_map_uses_size_identity_when_cache_has_no_blob():
 
 
 def test_repo_gguf_blob_map_skips_snapshot_file_with_unknown_size():
-    """No blob and no readable size means no identity at all, rather than a
-    filename masquerading as a hash."""
+    """No blob and no readable size means no identity, not a filename masquerading as a hash."""
     repo_info = SimpleNamespace(
         repo_path = "/hf/models--org--repo",
         revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 0))],
@@ -586,8 +583,7 @@ def test_no_symlink_cache_with_different_remote_size_still_reports_update():
 
 
 def test_symlinked_cache_with_stale_blob_still_reports_update():
-    """The blob-hash path is untouched: a real blob that does not match the remote
-    sha256 is still stale, and a size-identity fallback must not rescue it."""
+    """A blob that mismatches the remote sha256 is stale; size identity must not rescue it."""
     local_blobs = {"model-Q4_K_M.gguf": {"OLDsha"}}
     requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
 
@@ -605,8 +601,7 @@ def test_symlinked_cache_with_current_blob_reports_no_update():
 
 
 def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp_path):
-    """After a verified update, stale same-variant files/blobs are removed while
-    the freshly downloaded hash and sibling variants remain cached."""
+    """A verified update prunes old same-variant files; new hash and siblings stay cached."""
     repo_id = "org/repo-GGUF"
     repo_path = tmp_path / "models--org--repo-GGUF"
     old_snap = repo_path / "snapshots" / ("a" * 40) / "model-Q4_K_M.gguf"

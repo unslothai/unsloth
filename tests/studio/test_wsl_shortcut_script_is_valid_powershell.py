@@ -138,11 +138,8 @@ def test_the_icon_refresh_python_notifies_each_shortcut_then_the_shell() -> None
 
 @needs_pwsh
 def test_the_icon_refresh_launch_runs_one_interpreter_with_every_shortcut(tmp_path: Path) -> None:
-    """The PowerShell half: candidate order, the WindowsApps skip, argv quoting, stop on success.
-
-    The block is lifted from the rendered script as written; only the elevation probe, which has
-    no answer off Windows, is pinned to "not elevated".
-    """
+    """The PowerShell half checks candidate order, the WindowsApps skip, argv quoting and stop on
+    success; only the elevation probe is pinned to not elevated off Windows."""
     import json
 
     rendered = _render()

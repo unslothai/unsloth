@@ -9,6 +9,8 @@ import {
   AUDIO_CPP_MODELS,
   AUDIO_CPP_REPO,
   AUDIO_CPP_UNOFFERED_FOLDERS,
+  SEPARATION_GOAL_LABELS,
+  type SeparationGoal,
   audioCppDisplayName,
   isAudioCppFolderId,
 } from "./audio-cpp-catalog.ts";
@@ -28,11 +30,15 @@ export interface AudioCatalogRow {
   display_name: string;
   family: string | null;
   task: string;
+  /** Separate rows: what the model is for; absent on older servers. */
+  separation_goal?: SeparationGoal | null;
   workflows: readonly string[];
   description: string | null;
   languages: readonly string[] | null;
   status: AudioCatalogStatus | null;
   size_bytes: number | null;
+  estimated_resident_gb?: number | null;
+  smallest_estimated_resident_gb?: number | null;
   downloaded: boolean;
   unsupported_reason: string | null;
 }
@@ -119,9 +125,11 @@ export function catalogMoreRows(
 }
 
 /** A "More models" row; the picker reads `sizeBytes` for its size column. */
-export function catalogModelOption(
-  row: AudioCatalogRow,
-): ModelOption & { sizeBytes: number | null } {
+export function catalogModelOption(row: AudioCatalogRow): ModelOption & {
+  sizeBytes: number | null;
+  estimatedResidentGb: number | null;
+  smallestResidentGb: number | null;
+} {
   // Named by folder like the seed rows, and a Community repo by its full id: two repos can
   // share one spec display name, or one repo name.
   const name = row.folder || row.id;
@@ -135,6 +143,8 @@ export function catalogModelOption(
         ? [row.display_name, about].filter(Boolean).join(" · ")
         : about,
     sizeBytes: row.size_bytes,
+    estimatedResidentGb: row.estimated_resident_gb ?? null,
+    smallestResidentGb: row.smallest_estimated_resident_gb ?? null,
   };
 }
 
@@ -179,6 +189,7 @@ export function audioRowDescription(row: AudioCatalogRow): string {
   const parts: string[] = [];
   const pages = row.workflows.map((w) => WORKFLOW_LABELS[w]).filter(Boolean);
   if (pages.length > 0) parts.push(pages.join(", "));
+  if (row.separation_goal) parts.push(SEPARATION_GOAL_LABELS[row.separation_goal]);
   const codes = (row.languages ?? []).filter(
     (code) => code && code.toLowerCase() !== "auto",
   );

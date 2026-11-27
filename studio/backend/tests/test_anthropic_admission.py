@@ -114,6 +114,94 @@ def _payload(**fields) -> AnthropicMessagesRequest:
     return AnthropicMessagesRequest(**base)
 
 
+@pytest.mark.parametrize(
+    "thinking", [{"type": "disabled"}, {"type": "enabled", "budget_tokens": 1024}]
+)
+@pytest.mark.parametrize("server_tools", [False, True])
+def test_admission_counts_native_anthropic_thinking_mode(monkeypatch, thinking, server_tools):
+    counts = []
+    generated = []
+
+    def count(*args, **kwargs):
+        counts.append(kwargs)
+        return 2
+
+    backend = _install_backend(monkeypatch, count_tokens = count)
+
+    def generate(**kwargs):
+        generated.append(kwargs)
+        yield "ok"
+
+    def generate_tools(**kwargs):
+        generated.append(kwargs)
+        kwargs["on_conversation_grew"](kwargs["messages"])
+        yield {"type": "content", "text": "ok"}
+
+    backend.generate_chat_completion = generate
+    backend.generate_chat_completion_with_tools = generate_tools
+    backend._request_reasoning_kwargs = lambda enable, effort, preserve: {"enable_thinking": enable}
+    payload = _payload(
+        thinking = thinking,
+        max_tokens = 1536,
+        stream = False,
+        enable_tools = server_tools,
+        permission_mode = "off",
+    )
+    asyncio.run(inf_mod.anthropic_messages(payload, _Request(), "test-user"))
+    expected = thinking["type"] == "enabled"
+    assert generated[0]["enable_thinking"] is expected
+    assert counts[0]["chat_template_kwargs"]["enable_thinking"] is expected
+    assert all(item["chat_template_kwargs"]["enable_thinking"] is expected for item in counts)
+
+
+@pytest.mark.parametrize("mode", ["forced-tool", "schema"])
+def test_admission_uses_normalized_anthropic_passthrough_body(monkeypatch, mode):
+    backend = _install_backend(monkeypatch)
+    backend.supports_tool_passthrough = True
+    fields = {"stream": False}
+    if mode == "forced-tool":
+        fields.update(
+            tools = [
+                {
+                    "name": name,
+                    "description": name,
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+                for name in ["first", "wanted"]
+            ],
+            tool_choice = {"type": "tool", "name": "wanted"},
+        )
+    else:
+        fields["output_config"] = {
+            "format": {
+                "type": "json_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                    "additionalProperties": False,
+                },
+            }
+        }
+    captured = []
+
+    async def reserve(**kwargs):
+        captured.append(kwargs)
+        raise RuntimeError("captured admission")
+
+    monkeypatch.setattr(inf_mod, "_reserve_counted_gguf_chat", reserve)
+    with pytest.raises(RuntimeError, match = "captured admission"):
+        asyncio.run(inf_mod.anthropic_messages(_payload(**fields), _Request(), "test-user"))
+    body = captured[0]["prepared_body"]
+    if mode == "forced-tool":
+        assert [tool["function"]["name"] for tool in body["tools"]] == ["wanted"]
+        assert body["tool_choice"] == "required"
+    else:
+        assert body["response_format"]["type"] == "json_schema"
+    assert captured[0]["messages"] == body["messages"]
+    assert captured[0]["injected_tools"] == body.get("tools")
+
+
 def _record_admission_logs(monkeypatch):
     """Records via the logger, not caplog: this structlog logger never reaches the stdlib handlers."""
     records = []
@@ -135,6 +223,21 @@ def _record_admission_logs(monkeypatch):
 
 def _snapshot(key = _KEY):
     return get_llama_admission_queue(key).snapshot()
+
+
+async def _until_queued(
+    task,
+    n = 1,
+    key = _KEY,
+    timeout = 5.0,
+):
+    """Wait for ``task`` to reach the admission queue; a fixed 0.1 s sleep raced the handler on a loaded runner."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while _snapshot(key).queued < n:
+        assert not task.done(), "the request finished without queueing"
+        assert loop.time() < deadline, _snapshot(key)
+        await asyncio.sleep(0.01)
 
 
 def _occupy(key, capacity, n):
@@ -307,7 +410,7 @@ def test_non_streaming_queued_then_admitted(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         assert _snapshot().queued == 1
         held[0].release()
         response = await asyncio.wait_for(task, timeout = 2)
@@ -325,7 +428,7 @@ def test_capacity_enforced_from_effective_parallel_slots(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         snap = _snapshot()
         assert snap.capacity == 3 and snap.active == 3 and snap.queued == 1
         for lease in held:
@@ -444,7 +547,7 @@ def test_shares_queue_with_openai_by_base_url(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         assert _snapshot().queued == 1
         openai_lease.release()
         assert (await asyncio.wait_for(task, timeout = 2)).status_code == 200
@@ -501,8 +604,13 @@ def test_fifo_fairness_across_many_waiters(monkeypatch):
             order.append(i)
             return resp
 
-        tasks = [asyncio.create_task(_one(i)) for i in range(8)]
-        await asyncio.sleep(0.2)
+        # Admission awaits prompt preparation first: queue each waiter before the next so arrival order is fixed.
+        tasks = []
+        for i in range(8):
+            tasks.append(asyncio.create_task(_one(i)))
+            deadline = time.monotonic() + 5
+            while _snapshot().queued < i + 1 and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
         assert _snapshot().queued == 8
         held[0].release()
         await asyncio.wait_for(asyncio.gather(*tasks), timeout = 5)
@@ -731,7 +839,7 @@ def test_passthrough_dispatch_site_reserves_and_releases(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_passthrough_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         assert _snapshot().queued == 1
         for lease in held:
             lease.release()
@@ -769,7 +877,7 @@ def test_queued_non_stream_cancel_does_not_leak_a_coroutine(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         assert _snapshot().queued == 1
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

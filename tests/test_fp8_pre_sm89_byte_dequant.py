@@ -19,11 +19,14 @@ needs_cuda = pytest.mark.skipif(not CUDA, reason = "needs CUDA")
 @pytest.fixture
 def pre_sm89(monkeypatch):
     # Real pre-sm89 cards take this path anyway; newer ones are told they are an A100.
-    # On ROCm the real device decides: gfx11 (gfx1151) takes the byte decoder.
     fp8._fp8_device_lacks_kernel.cache_clear()
     fp8._rocm_bytes_dequant_arch.cache_clear()
     if CUDA and torch.version.hip is None and torch.cuda.get_device_capability() >= (8, 9):
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+    elif CUDA and torch.version.hip is not None:
+        # ROCm routes on the gfx arch + triton version, not the capability: a gfx arch with fp8e4nv
+        # (gfx1151 on triton 3.5+) would otherwise take the fp8 GEMM instead of the dequant path.
+        monkeypatch.setattr(fp8, "_rocm_fp8e4nv_kernel_supported", lambda device: False)
     yield
     fp8._fp8_device_lacks_kernel.cache_clear()
     fp8._rocm_bytes_dequant_arch.cache_clear()
@@ -212,9 +215,7 @@ def test_routes_to_bytes_kernel_on_nvidia(monkeypatch):
     assert route((9, 0), weight = _weight(130, 256, "cuda")) == "bytes"
     assert route((10, 0), weight = _weight(256, 200, "cuda")) == "bytes"
     assert route((9, 0), weight = _weight(130, 256, "cuda").float().to(torch.float8_e5m2)) == "torch"
-    # NVIDIA fp16 output takes the byte decoder too (only gfx11 keeps the torch loop for fp16).
     assert route((9, 0), weight = _weight(130, 256, "cuda"), out_dtype = torch.float16) == "bytes"
-    # CDNA (gfx90a here, triton 3.2 without fp8e4nv) keeps the torch loop; only gfx11 takes the byte decoder.
     assert route((9, 4), hip = "6.4.0") == "torch"
     assert route((11, 5), hip = "6.4.0", arch = "gfx1151") == "bytes"
     # e5m2 weights are compiled natively before sm89 and never reach the byte decoder.
@@ -222,23 +223,32 @@ def test_routes_to_bytes_kernel_on_nvidia(monkeypatch):
 
 
 ROCM_ROUTES = [
-    # (gcnArchName, triton, route, route with UNSLOTH_FP8_HIP_BYTES_DEQUANT=0 = the old one).
-    # Even tiles. gfx11 (RDNA3 / 3.5) takes the byte decoder where the torch loop ran; with fp8e4nv
-    # (triton 3.5+, emulated) it keeps that kernel. Other archs keep their route.
+    # (gcnArchName, triton, route, route with UNSLOTH_FP8_HIP_BYTES_DEQUANT=0).
     ("gfx1151", "3.6.0", "triton_fp8", "triton_fp8"),  # Strix Halo
-    ("gfx1151", "3.4.0", "bytes", "torch"),  # no fp8e4nv here: was the torch loop
+    ("gfx1151", "3.4.0", "bytes", "torch"),
     ("gfx1100", "3.3.1", "bytes", "torch"),
     ("gfx1030", "3.5.0", "triton_fp8", "triton_fp8"),
     ("gfx90a:sramecc+:xnack-", "3.5.0", "triton_fp8", "triton_fp8"),
     ("gfx942:sramecc+:xnack-", "3.5.0", "triton_fp8", "triton_fp8"),
     ("gfx942:sramecc+:xnack-", "3.4.0", "triton_fp8", "triton_fp8"),
     ("gfx942:sramecc+:xnack-", "3.2.0", "torch", "torch"),
-    # OCP e4m3fn hardware: native kernel when triton has fp8e4nv, else the torch loop.
     ("gfx950", "3.5.0", "triton_fp8", "triton_fp8"),
     ("gfx950", "3.2.0", "torch", "torch"),
     ("gfx1201", "3.4.0", "triton_fp8", "triton_fp8"),
     ("gfx1201", "3.3.1", "torch", "torch"),
 ]
+
+
+def test_hip_bytes_dequant_takes_fp16_once_its_rounding_is_exact(monkeypatch):
+    """fp16 joins bf16 / fp32 on the gfx11 byte decoder only under the integer fp16 rounding."""
+    monkeypatch.setattr(fp8, "_HIP_FP8_BYTES_DEQUANT", True)
+    monkeypatch.setattr(fp8, "_rocm_bytes_dequant_arch", lambda device: True)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
+    assert fp8._hip_bytes_dequant("cuda", torch.bfloat16)
+    assert fp8._hip_bytes_dequant("cuda", torch.float16)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "0")
+    assert fp8._hip_bytes_dequant("cuda", torch.bfloat16)
+    assert not fp8._hip_bytes_dequant("cuda", torch.float16)
 
 
 @needs_cuda
@@ -247,18 +257,18 @@ def test_rocm_routes(monkeypatch, arch, triton_version, expected, old):
     route, w = _router(monkeypatch)
     hip = dict(hip = "6.4.0", arch = arch, triton_version = triton_version)
     assert route((11, 5), **hip) == expected
-    # Ragged and rectangular blocks: the byte decoder on gfx11, else the torch loop as before.
     ragged = "bytes" if arch.startswith("gfx11") else "torch"
     assert route((11, 5), weight = _weight(130, 200, "cuda"), **hip) == ragged
     assert route((11, 5), block = (64, 128), **hip) == ragged
     assert (
         route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float32, **hip) == ragged
     )
-    # fp16 output keeps the old route (the torch loop rounds fp16 differently on gfx1151).
-    assert (
-        route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip) == "torch"
-    )
-    # Only e4m3fn is decoded: e5m2 / e4m3fnuz keep the native triton kernel.
+    # fp16: byte decoder with the integer rounding (ROCm default), torch loop without it.
+    fp16 = dict(weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
+    assert route((11, 5), **fp16) == ragged
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "0")
+    assert route((11, 5), **fp16) == "torch"
     assert route((11, 5), weight = w.float().to(torch.float8_e5m2), **hip) == "triton_fp8"
     if hasattr(torch, "float8_e4m3fnuz"):
         fnuz = w.float().nan_to_num(0).clamp(-240, 240).to(torch.float8_e4m3fnuz)
@@ -276,10 +286,25 @@ def test_rocm_kill_switch_restores_old_routes(monkeypatch, arch, triton_version,
 
 
 def test_kill_switch_env_is_read_at_import():
-    code = "from unsloth.kernels import fp8; print(fp8._HIP_FP8_BYTES_DEQUANT)"
-    env = dict(os.environ, UNSLOTH_FP8_HIP_BYTES_DEQUANT = "0")
-    out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True)
-    assert out.stdout.strip().splitlines()[-1] == "False", out.stderr[-2000:]
+    # A fresh interpreter has no conftest spoof, so on a CPU-only box `import unsloth` raises
+    # "cannot find any torch accelerator" before the switch is ever read; install the CI spoof.
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    code = (
+        "import sys, torch\n"
+        f"sys.path.insert(0, {tests_dir!r})\n"
+        "if not torch.cuda.is_available():\n"
+        "    import _zoo_aggressive_cuda_spoof\n"
+        "    _zoo_aggressive_cuda_spoof.apply()\n"
+        "from unsloth.kernels import fp8\n"
+        "print(fp8._HIP_FP8_BYTES_DEQUANT)\n"
+    )
+    for value, expected in (("0", "False"), ("1", "True")):
+        env = dict(os.environ, UNSLOTH_FP8_HIP_BYTES_DEQUANT = value)
+        out = subprocess.run(
+            [sys.executable, "-c", code], env = env, capture_output = True, text = True, timeout = 600
+        )
+        lines = out.stdout.strip().splitlines()
+        assert lines and lines[-1] == expected, (value, out.stderr[-2000:])
 
 
 @needs_cuda
@@ -290,7 +315,6 @@ def test_rocm_unknown_arch_keeps_its_route(monkeypatch):
         fp8._rocm_bytes_dequant_arch.cache_clear()
         assert not fp8._rocm_bytes_dequant_arch(torch.device("cuda", 0))
     fp8._rocm_bytes_dequant_arch.cache_clear()
-    # Triton 3.5+ needs no arch for fp8e4nv, so the native kernel stays; ragged keeps the torch loop.
     assert route((11, 5), hip = "6.4.0", arch = None, triton_version = "3.6.0") == "triton_fp8"
     assert (
         route(
@@ -311,8 +335,6 @@ HIP = CUDA and torch.version.hip is not None
 @pytest.mark.parametrize("shape", [(4096, 4096), (14336, 4096), (4096, 14336), (130, 200)])
 @pytest.mark.parametrize("out_dtype", [torch.bfloat16, torch.float16])
 def test_real_rocm_device_takes_bytes_kernel_bit_exact(pre_sm89, monkeypatch, shape, out_dtype):
-    # Unmocked ROCm: on gfx11, the cases the torch loop took (ragged here) run the byte decoder,
-    # bit-equal to the torch loop for bf16; even tiles and fp16 output keep their route.
     m, n = shape
     w = _weight(m, n, "cuda")
     s = _scale(m, n, [128, 128], torch.float32, "cuda")
@@ -323,7 +345,8 @@ def test_real_rocm_device_takes_bytes_kernel_bit_exact(pre_sm89, monkeypatch, sh
     )
     out = fp8.weight_dequant(w, s, out_dtype)
     loop_case = m % 128 or n % 128 or fp8._fp8_kernel_unsupported(w)
-    if not (fp8._rocm_bytes_dequant_arch(w.device) and loop_case and out_dtype != torch.float16):
+    exact = out_dtype != torch.float16 or fp8._fp8_exact_f16_round(out_dtype)
+    if not (fp8._rocm_bytes_dequant_arch(w.device) and loop_case and exact):
         assert not calls
         return
     assert calls == [1]
@@ -347,14 +370,23 @@ def test_fp8_block_linear_forward_backward_unchanged(pre_sm89):
     assert torch.equal(X.grad, Xr.grad)
 
 
+def _compile_dtype():
+    # Inductor skips (SkipFrame) a graph with a bf16 output on a card without native bf16 (T4), and Dynamo then
+    # traces the op body as its own frame, so fullgraph fails there. fp16 is what Unsloth runs on such cards.
+    try:
+        native = torch.cuda.is_bf16_supported(including_emulation = False)
+    except TypeError:  # torch without the argument
+        native = torch.cuda.get_device_capability()[0] >= 8
+    return torch.bfloat16 if native else torch.float16
+
+
 @needs_cuda
 def test_under_torch_compile(pre_sm89):
+    dtype = _compile_dtype()
     w = _weight(256, 384, "cuda")
     s = _scale(256, 384, [128, 128], torch.float32, "cuda")
-    f = torch.compile(
-        lambda w, s: fp8._e4m3fn_bytes_dequant(w, s, 128, 128, torch.bfloat16), fullgraph = True
-    )
-    _same_bits(f(w, s), fp8._torch_blockwise_dequant(w, s, [128, 128], torch.bfloat16))
+    f = torch.compile(lambda w, s: fp8._e4m3fn_bytes_dequant(w, s, 128, 128, dtype), fullgraph = True)
+    _same_bits(f(w, s), fp8._torch_blockwise_dequant(w, s, [128, 128], dtype))
 
 
 def test_cpu_keeps_torch_path(monkeypatch):

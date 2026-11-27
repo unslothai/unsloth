@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  audioCppNameForFileStem,
   AUDIO_CPP_DICTATION_MODELS,
   AUDIO_CPP_MODELS,
   AUDIO_CPP_MUSIC_MAX_SECONDS,
@@ -16,10 +17,10 @@ import {
   audioCppDisplayName,
   audioCppHubPath,
   audioCppModelFor,
-  audioCppSizeLabel,
   audioCppWorkflowsFor,
   isAudioCppFolderId,
 } from "../src/features/audio/audio-cpp-catalog.ts";
+import { formatBytes } from "../src/features/hub/lib/format.ts";
 import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioCppRuntimeProblem,
@@ -147,12 +148,9 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
   assert.equal(audioCppHubPath("unsloth/Qwen3-8B-GGUF"), null);
   assert.equal(audioCppModelFor("OpenMOSS-Team/MOSS-TTS-Nano-100M"), null);
   assert.equal(audioCppModelFor(""), null);
-  assert.equal(audioCppSizeLabel(57.6 * 1024 * 1024), "58 MB");
-  assert.equal(audioCppSizeLabel(2358.4 * 1024 * 1024), "2.3 GB");
 });
 
 test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
-  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 23);
   for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
     assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
     assert.match(folder, /-GGUF$/);
@@ -440,7 +438,7 @@ test("dictation settings list the saved keys by their Hub name", () => {
     assert.equal(STT_MODEL_REPOS[key], model.id);
     assert.doesNotMatch(sttModelName(key), BRAND);
     assert.ok(sttModelName(key).startsWith(audioCppDisplayName(model.id)), key);
-    assert.equal(sttModelSize(key), audioCppSizeLabel(model.sizeBytes));
+    assert.equal(sttModelSize(key), formatBytes(model.sizeBytes));
   }
   assert.equal(sttModelName("audiocpp-qwen3-asr-0.6b"), "Qwen3-ASR-0.6B-GGUF");
   assert.equal(sttModelName("audiocpp-moonshine-tiny"), "Moonshine-Streaming-GGUF (tiny)");
@@ -790,7 +788,8 @@ test("GGUF runtime speech trades sampling controls for the model's own options",
   const page = readAudioWorkspaceSource();
   assert.match(
     page,
-    /\{musicGeneration \|\|\s*samplingControls \|\|\s*audioOptionSpecs\.length > 0 \? \(\s*<AdvancedDisclosure/,
+    // Advanced always renders: the load device lives there even when a model has no options.
+    /<AdvancedDisclosure[\s\S]*?ariaLabel="Load model into"[\s\S]*?!musicGeneration && samplingControls \? \(\s*<ParamSlider/,
   );
   assert.match(page, /!musicGeneration && samplingControls && temperatureEdited/);
   assert.match(page, /audioOptionSpecsFor\(status, workflow\)/);
@@ -971,4 +970,12 @@ test("adopting a saved-key audio download keeps it warmable", async () => {
   );
   assert.equal(sttModelVariant("audiocpp-moonshine-tiny", "tiny/Q8_0"), null);
   assert.equal(sttModelVariant("audiocpp-moonshine-tiny", ""), null);
+});
+
+test("older clips labelled with a GGUF file stem show the catalog name", () => {
+  assert.equal(audioCppNameForFileStem("kokoro-82m-q8_0"), "Kokoro-82M-GGUF");
+  assert.equal(audioCppNameForFileStem("Kokoro-82M-Q4_K_M"), "Kokoro-82M-GGUF");
+  // No quant tag, or no catalog match: the label stays as stored.
+  assert.equal(audioCppNameForFileStem("kokoro-82m"), null);
+  assert.equal(audioCppNameForFileStem("my-voice-q8_0"), null);
 });

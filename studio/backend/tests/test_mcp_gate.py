@@ -47,6 +47,26 @@ def live_key():
     return raw_key
 
 
+@pytest.fixture
+def off_key():
+    """The owner's API key, with the switch off."""
+    seed_owner()
+    raw_key, _row = owner_key()
+    return raw_key
+
+
+OFF_HINT_TEXT = (
+    "Unsloth Studio MCP is off. The owner turns it on in Settings > Agents > Allow agent connections, "
+    "or starts Unsloth Studio with UNSLOTH_STUDIO_ENABLE_MCP=1."
+)
+OFF_HINT_BODY = {
+    "jsonrpc": "2.0",
+    "id": None,
+    "error": {"code": -32600, "message": OFF_HINT_TEXT},
+    "detail": OFF_HINT_TEXT,
+}
+
+
 def probe_mcp():
     mcp = FastMCP("probe")
 
@@ -117,7 +137,50 @@ def test_off_is_a_plain_404_before_any_auth(studio, key_spy, method, path, autho
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}
     assert "www-authenticate" not in response.headers
-    assert key_spy == []
+    # Only an sk-unsloth- bearer with no Origin reaches the key store while off.
+    sk_bearer = bool(authorization) and authorization.startswith("Bearer sk-unsloth-")
+    assert key_spy == ([{"touch": False}] if sk_bearer and origin is None else [])
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_off_tells_a_valid_full_access_key_why(studio, key_spy, off_key, method):
+    response = studio.request(
+        method, "/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)}
+    )
+    assert response.status_code == 404
+    assert response.json() == OFF_HINT_BODY and key_spy == [{"touch": False}]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "ui-session-jwt",
+        "unknown-key",
+        "revoked-key",
+        "inference-key",
+        "workflow-key",
+        "foreign-origin",
+    ],
+)
+def test_off_keeps_the_bare_404_for_every_other_request(studio, case):
+    seed_owner()
+    revoked, row = owner_key()
+    storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
+    storage._reset_api_key_hash_cache()
+    token = {
+        "ui-session-jwt": lambda: create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME),
+        "unknown-key": lambda: "sk-unsloth-" + "0" * 32,
+        "revoked-key": lambda: revoked,
+        "inference-key": lambda: owner_key(access = storage.API_KEY_ACCESS_INFERENCE)[0],
+        "workflow-key": lambda: owner_key(internal = True)[0],
+        "foreign-origin": lambda: owner_key()[0],
+    }[case]()
+    origin = {"Origin": "https://evil.example"} if case == "foreign-origin" else {}
+    response = studio.post(
+        "/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(token), **origin}
+    )
+    assert response.status_code == 404
+    assert response.content == json.dumps({"detail": "Not Found"}).encode()
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -538,3 +601,68 @@ def test_oauth_discovery_is_a_404_not_the_app_shell(tmp_path, path):
     root = client.get("/")
     assert root.status_code == 200
     assert "<title>studio</title>" in root.text
+
+
+def _rpc(http, body, headers):
+    response = http.post("/mcp/", json = body, headers = {**MCP_HEADERS, **headers})
+    assert response.status_code == 200, response.text
+    data = [line[5:].strip() for line in response.text.splitlines() if line.startswith("data:")]
+    return json.loads(data[-1])["result"]
+
+
+def _settings_and_mcp():
+    """The settings router beside the real /mcp, gate and middleware included."""
+    from routes import settings
+
+    mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
+    app = FastAPI(lifespan = mcp_app.lifespan)
+    app.include_router(settings.router, prefix = "/api/settings")
+    app.mount("/mcp", StudioMcpGate(mcp_app))
+    for name, value in {
+        "server_port": 8888,
+        "cloudflare_url": None,
+        "bind_host": "127.0.0.1",
+        "secure": False,
+        "remote_access_is_colab": False,
+        "lan_access_is_colab": False,
+        "lan_access_secure_launch": False,
+    }.items():
+        setattr(app.state, name, value)
+    return app
+
+
+def test_a_turned_off_tool_leaves_the_listing_live_and_its_call_is_refused(live_key):
+    from mcp_server import tool_names
+
+    key = bearer(live_key)
+    owner = bearer(create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME))
+    # Valid arguments: the SDK checks arguments against a tool it listed before the middleware runs.
+    cancel = {
+        **LISTING,
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": "cancel", "arguments": {"kind": "chat", "id": "x"}},
+    }
+    with TestClient(_settings_and_mcp(), **LOCAL) as http:
+
+        def listed():
+            return [tool["name"] for tool in _rpc(http, LISTING, key)["tools"]]
+
+        def put(names):
+            response = http.put(
+                "/api/settings/mcp-access", json = {"disabled_tools": names}, headers = owner
+            )
+            assert response.status_code == 200, response.text
+
+        assert listed() == list(tool_names())
+        put(["cancel"])
+        assert listed() == [name for name in tool_names() if name != "cancel"]
+        refused = _rpc(http, cancel, key)
+        assert refused["isError"] is True
+        assert refused["content"][0]["text"] == (
+            "[tool_disabled] cancel is turned off in Unsloth Studio. "
+            "The owner can turn it on in Settings > Agents."
+        )
+        put([])
+        assert listed() == list(tool_names())
+        assert "tool_disabled" not in json.dumps(_rpc(http, cancel, key))

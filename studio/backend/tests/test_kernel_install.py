@@ -156,8 +156,7 @@ def _nothing_installed_and_online(monkeypatch, tmp_path):
     )
     # Every copy of the module (and any child process) uses the test's folder too.
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
-    # Tests that need an installed distribution say so; the host's own packages and offline
-    # switches must not decide them.
+    # Tests stub the installed version, so host packages and offline switches cannot decide them.
     monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: None)
     for name in ("UV_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         monkeypatch.delenv(name, raising = False)
@@ -392,15 +391,16 @@ def test_sm80_kernels_are_skipped_below_sm80(name, capability, capsys, monkeypat
     assert f"skipping {name}, which needs sm80" in capsys.readouterr().out
 
 
-# unsloth_zoo keeps mamba_ssm's fast path on sm75 with Triton 3.4+ (torch 2.8+).
+# unsloth_zoo keeps mamba_ssm's fast path on sm70 / sm75 with Triton 3.4+ (torch 2.8+).
 
 
+@pytest.mark.parametrize("capability", ["7 5", "7 0"])
 @pytest.mark.parametrize("triton", [(3, 4), (3, 6), (4, 0)])
-def test_mamba_ssm_installs_on_sm75_with_a_new_triton(uv, monkeypatch, triton):
+def test_mamba_ssm_installs_on_sm75_with_a_new_triton(uv, monkeypatch, triton, capability):
     uv(False)
     monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
     monkeypatch.setattr(kernel_install, "_triton_version", lambda run: triton)
-    run = _Runner([False, True], capability = "7 5")
+    run = _Runner([False, True], capability = capability)
     assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls[0][-1].endswith(
         "mamba_ssm-2.3.2.post1+cu13torch2.11cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
@@ -415,7 +415,7 @@ def test_mamba_ssm_is_skipped_on_sm75_with_an_old_triton(monkeypatch, capsys, tr
     assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls == []
     out = capsys.readouterr().out
-    assert "sm75 with Triton 3.4+" in out
+    assert "sm70+ with Triton 3.4+" in out
     assert ("missing" if triton is None else "%d.%d" % triton) in out
 
 
@@ -433,13 +433,13 @@ def test_triton_is_read_from_the_module(uv, monkeypatch, triton, installs):
     assert bool(run.installer_calls) is installs
 
 
-def test_mamba_ssm_is_skipped_below_sm75_whatever_the_triton(monkeypatch, capsys):
+def test_mamba_ssm_is_skipped_below_sm70_whatever_the_triton(monkeypatch, capsys):
     monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
     monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 6))
-    run = _Runner([], capability = "7 0")
+    run = _Runner([], capability = "6 1")
     assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls == []
-    assert "the best GPU is sm70" in capsys.readouterr().out
+    assert "the best GPU is sm61" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -1020,12 +1020,8 @@ def test_install_wheel_never_falls_back_to_pip_under_uv_offline(monkeypatch):
 
 
 def _process_gone(pid):
-    """True once ``pid`` has exited: no such process, or a zombie waiting to be reaped.
-
-    Reaped by init once killed; a zombie still answers kill(0) briefly, so its /proc state is read too.
-    The process can be reaped between opening /proc/<pid>/stat and reading it, and that read then
-    raises ProcessLookupError (ESRCH) rather than FileNotFoundError: both mean it is gone.
-    """
+    """True once pid exits or is a zombie; a zombie still answers kill(0), so its /proc state is
+    read too; a ProcessLookupError mid-read also means gone."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

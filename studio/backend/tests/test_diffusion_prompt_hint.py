@@ -33,7 +33,14 @@ from test_diffusion_backend import (  # noqa: E402,F401
 from test_mlx_diffusion_backend import _load as _load_mlx, env  # noqa: E402,F401
 from test_sd_cpp_backend import _loaded_backend as _loaded_sd_cpp_backend  # noqa: E402
 
-_TIPPED = {"flux.1-kontext", "qwen-image-edit", "qwen-image-2.1", "ideogram-4", "moss-image"}
+_TIPPED = {
+    "flux.1-kontext",
+    "qwen-image-edit",
+    "qwen-image-2.1",
+    "ideogram-4",
+    "moss-image",
+    "minimax-h3-image",
+}
 _HINT = "Describe the scene first."
 
 

@@ -274,6 +274,9 @@ class _Verdict:
         self.model_name = "acme/evil"
         self.max_severity = "CRITICAL"
 
+    def blocked_message(self, _subject = "Model"):
+        return "flagged CRITICAL"
+
     def response_payload(self):
         return {"blocked": self.blocked}
 

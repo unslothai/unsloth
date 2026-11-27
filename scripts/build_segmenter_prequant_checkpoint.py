@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build a pre-quantized SAM 3 / SAM 3.1 detector (Mask from text) for Unsloth Studio.
-
-The segmenter counterpart of scripts/build_prequant_checkpoint.py: the same torchao config, filter, ConvRot rotation,
-safetensors container (torchao flatten layout + ``unsloth_format`` / ``unsloth_metadata``) and canonical fingerprint,
-reached through ``core.inference.diffusion_segment_quant`` so the artifact matches what Studio's loader checks
-(scheme, min_features, exclusions, rotation contract). Deterministic for a given source, scheme and torchao.
-
-  python scripts/build_segmenter_prequant_checkpoint.py --src <Sam3Model dir> --base-model-id unsloth/sam3.1 \\
-      --source-revision <sha> --scheme int8 --convrot-groupsize 256 --out sam3.1-INT8-ConvRot.safetensors
-"""
+"""SAM 3 / 3.1 segmenter builder; reuses diffusion_segment_quant so Studio's loader checks pass."""
 
 from __future__ import annotations
 

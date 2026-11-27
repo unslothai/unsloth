@@ -154,6 +154,15 @@ def test_arg_parser_secure_polarity_and_not_secure_alias():
     assert parser.parse_args(["--not-secure", "--secure"]).secure is True
 
 
+def test_arg_parser_cloudflare_help_names_the_saved_auto_start_setting(monkeypatch):
+    import run
+
+    monkeypatch.setenv("COLUMNS", "1000")
+    help_text = run._build_arg_parser().format_help()
+    assert "'Start automatically' setting also starts one on every launch" in help_text
+    assert "--no-cloudflare forces both off" in help_text
+
+
 def test_arg_parser_dns_pinning_opt_out_defaults_off():
     import run
 
@@ -235,6 +244,56 @@ def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "Server-side tools" in out
     assert "follow each request's enable_tools" in out
+
+
+def test_startup_output_auto_start_on_wildcard_does_not_say_tunnel_off(capsys, monkeypatch):
+    import run
+
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_is_wsl_nat", lambda: False)
+    monkeypatch.setattr(run, "_cloudflare_url", None)
+    monkeypatch.setattr(run, "_cloudflare_requested", False)
+    monkeypatch.setattr(run, "_cloudflare_flag", None)
+
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", remote_access_starting = True)
+    out = capsys.readouterr().out
+    assert "PUBLIC Cloudflare URL" in out
+    assert "Cloudflare tunnel: OFF" not in out
+
+
+def test_startup_output_auto_start_keeps_the_public_raw_port_warning(capsys, monkeypatch):
+    import run
+
+    def _reachable(*a, **k):
+        run._public_reachable = True
+
+    monkeypatch.setattr(run, "_verify_global_reachability", _reachable)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_is_wsl_nat", lambda: False)
+    monkeypatch.setattr(run, "_cloudflare_url", None)
+    monkeypatch.setattr(run, "_cloudflare_requested", False)
+    monkeypatch.setattr(run, "_cloudflare_flag", None)
+
+    run._emit_startup_output("0.0.0.0", 8000, "203.0.113.5", remote_access_starting = True)
+    out = capsys.readouterr().out
+    assert "raw port is also reachable from the public internet" in out
+    assert "bind 127.0.0.1" in out
+    assert "Cloudflare tunnel: OFF" not in out
+
+
+def test_startup_output_auto_start_on_wildcard_keeps_a_ready_tunnel_url(capsys, monkeypatch):
+    import run
+
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_is_wsl_nat", lambda: False)
+    monkeypatch.setattr(run, "_cloudflare_url", "https://ready.trycloudflare.com")
+    monkeypatch.setattr(run, "_cloudflare_requested", False)
+    monkeypatch.setattr(run, "_cloudflare_flag", None)
+
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", remote_access_starting = True)
+    assert "https://ready.trycloudflare.com" in capsys.readouterr().out
 
 
 def test_startup_output_emits_disabled_notice(capsys, monkeypatch):

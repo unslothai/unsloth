@@ -111,8 +111,7 @@ class TestSetupPs1PublishesTheFlavor:
         assert "if (-not $NoTorchMode) {" in _publication_block()
 
     def test_unsetting_does_not_depend_on_the_powershell_version(self):
-        """Unset with Remove-Item: empty assignment keeps the name on PowerShell 7.5 and deletes it
-        on 5.1."""
+        """Remove-Item unsets; an empty value keeps the name on PS 7.5 but deletes it on 5.1."""
         block = _publication_block()
         for name in (
             "UNSLOTH_EXPECTED_TORCH_TAG",
@@ -126,8 +125,7 @@ class TestSetupPs1PublishesTheFlavor:
 
 
 class TestInstallPs1Parity:
-    """A venv repaired by `studio update` and one repaired by install.ps1 must land on the
-    same wheels, and a support log from either must read the same."""
+    """A venv repaired by studio update or install.ps1 must get the same wheels and log text."""
 
     def test_the_repair_trio_matches_install_ps1(self):
         # install.ps1 builds the non-XPU trio as three scalars; a kept pin substitutes one by one.
@@ -289,25 +287,24 @@ def _base_total(**flags) -> int:
 
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
-        # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the
-        # no-torch case also gets the runtime-deps slot an update announces separately. Both also
-        # carry the diffusers main slot (11c), which is spent on every path including opting out.
-        # causal-conv1d and mamba-ssm have no slot: they install when a model needs them.
-        assert _base_total(IS_WINDOWS = True) == 18
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 16
+        # Both carry the Windows-only accelerate repair (8c, ignores NO_TORCH) and diffusers main
+        # (11c, even when opting out); the no-torch case adds the runtime-deps slot; causal-conv1d
+        # and mamba-ssm have no slot; the HNSW slot (11e) is on demand by default.
+        assert _base_total(IS_WINDOWS = True) == 19
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 17
 
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 18),  # Linux, torch
-            ({"NO_TORCH": True}, 16),  # Linux, GGUF-only (incl. the no-torch runtime step)
+            ({}, 19),  # Linux, torch
+            ({"NO_TORCH": True}, 17),  # Linux, GGUF-only (incl. the no-torch runtime step)
             # Two MLX slots (install + re-resolve) plus the grammar engine (11d).
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 17),  # Apple Silicon
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 18),  # Apple Silicon
             (
                 {"IS_MACOS": True, "IS_MAC_ARM": True, "NO_TORCH": True},
-                16,
-            ),  # Apple Silicon, GGUF-only
-            ({"IS_MACOS": True}, 14),  # Intel Mac
+                19,
+            ),  # Apple Silicon, GGUF-only: the MLX slots plus the no-torch runtime step
+            ({"IS_MACOS": True}, 15),  # Intel Mac
         ],
     )
     def test_the_other_platform_totals_include_torchcodec(self, flags, total):
@@ -502,9 +499,7 @@ class TestTheProvenanceMarkerSurvivesAResolution:
 
 
 class TestAnUnknownMirrorPinNamesNoFlavor:
-    """The wheel came from a mirror whose leaf names no family, so nothing downstream can
-    name one for this venv: not the manifest, which describes the install the mirror
-    replaced, and not the CUDA probe, which reads the mirror's own leaf back as a flavor."""
+    """A mirror leaf with no family gives no flavor, so the old manifest must not supply one."""
 
     def test_the_expectation_stops_before_the_stale_manifest(self):
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
@@ -611,7 +606,7 @@ def test_the_rocm_trio_is_reinstalled_when_the_architecture_index_moves():
     ]
     assert "]+@', '$1'" in identity and "-split '[?#]'" in identity
     # The record follows the install, never precedes it: a failed trio must not be recorded.
-    failed = text.index("AMD ROCm PyTorch install failed -- falling back to CPU")
+    failed = text.index("AMD ROCm PyTorch could not be installed for")
     assert failed < record
 
 

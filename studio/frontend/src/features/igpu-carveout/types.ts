@@ -1,27 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Advice attached to a model load when the integrated GPU has less memory dedicated
- *  to it than the weights need, so they run from shared system memory. Sent at most
- *  once per allocation, and never on hardware where the setting does not exist. */
 export interface IgpuCarveoutAdvice {
-  /** GB currently dedicated to the integrated GPU. */
   current_gb: number;
-  /** GB of weights this model wants resident. */
   needed_gb: number;
-  /** GB to suggest: the smallest plausible setting that holds the weights. */
   suggested_gb: number;
-  /** GB the machine has in total (visible RAM plus the current allocation). */
+  /** Visible RAM plus the current allocation. */
   machine_gb: number;
-  /** GB left for the rest of the system if the suggestion is taken. */
   host_left_gb: number;
-  /** Prose written by the backend, which owns the wording. */
   message: string;
 }
 
-/** Narrow an unknown load-response field. The notice quotes numbers, so a partial
- *  payload from an older or proxied backend is treated as no advice at all rather
- *  than rendered as "undefined GB". */
+/** A partial payload from an older backend is treated as no advice. */
 export function parseCarveoutAdvice(value: unknown): IgpuCarveoutAdvice | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;

@@ -136,12 +136,144 @@ def test_preformatted_text_keeps_its_layout(ebooks):
     assert ebooks._html_text(data) == "Intro text\n\ndef f():\n    return 1"
 
 
+def test_soft_hyphens_and_zero_width_characters_do_not_split_words(ebooks):
+    html = (
+        "<html><body><p>Donau&shy;dampf&#173;schiff \u200b fahrt\u2060en \ufeffgehen.</p>"
+        "<pre>co\u00adop\n  run</pre></body></html>"
+    )
+    assert ebooks._html_text(html.encode()) == "Donaudampfschiff fahrten gehen.\n\ncoop\n  run"
+
+
 def test_definition_lists_and_figures_do_not_merge_words(ebooks):
     data = (
         b"<html><body><dl><dt>Term</dt><dd>Definition</dd></dl>"
         b"<figure><img src='a.png'/><figcaption>Caption</figcaption></figure><aside>Note</aside></body></html>"
     )
     assert ebooks._html_text(data) == "Term\n\nDefinition\n\nCaption\n\nNote"
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        '<span epub:type="pagebreak" id="p12">12</span>',
+        '<span role="doc-pagebreak" id="p12">12</span>',
+        '<a epub:type="pagebreak" role="doc-pagebreak" id="p12" title="12"/>',
+    ],
+)
+def test_print_page_numbers_are_not_inlined_into_the_text(ebooks, marker):
+    html = (
+        '<html xmlns:epub="http://www.idpf.org/2007/ops"><body><p>The quick '
+        + marker
+        + 'brown fox.</p><div epub:type="pagebreak">13</div><p>Next.</p></body></html>'
+    )
+    assert ebooks._html_text(html.encode()) == "The quick brown fox.\n\nNext."
+
+
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (b'<p>quick<span epub:type="pagebreak"> </span>brown</p>', "quick brown"),
+        (b'<p>quick<span epub:type="pagebreak"> 12 </span>brown</p>', "quick brown"),
+        (b'<p>quick<span role="doc-pagebreak"><b>12</b> </span>brown</p>', "quick brown"),
+        (b'<p>exam<span epub:type="pagebreak">12</span>ple</p>', "example"),
+        (b'<p>exam<span role="doc-pagebreak"><span hidden>12 </span></span>ple</p>', "example"),
+        (b'<pre>x=1<span role="doc-pagebreak">\n</span>y=2</pre>', "x=1\ny=2"),
+        (
+            b'<pre>return<span role="doc-pagebreak"> 12<span aria-hidden="true"><img src="x"/></span></span>None</pre>',
+            "return None",
+        ),
+        (b'<p>quick<span epub:type="pagebreak"><br/></span>brown</p>', "quick\nbrown"),
+        (b'<p>exam<span epub:type="pagebreak">Page <b>12</b></span>ple</p>', "example"),
+        (
+            b'<p>a <span epub:type="pagebreak"><span epub:type="pagebreak">1</span>2</span> b</p>',
+            "a b",
+        ),
+        (
+            b'<p>exam<span role="doc-pagebreak">Page <span role="doc-pagebreak">12</span></span>ple</p>',
+            "example",
+        ),
+    ],
+)
+def test_page_break_markers_keep_word_separators(ebooks, html, expected):
+    assert ebooks._html_text(html) == expected
+
+
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (
+            b'<body><p role="doc-pagebreak">12<p>Actual chapter text</body>',
+            "12\n\nActual chapter text",
+        ),
+        (
+            b'<body><p role="doc-pagebreak">12<hr>Actual chapter text</body>',
+            "12\n\nActual chapter text",
+        ),
+        (b'<table><tr><td epub:type="pagebreak">12<td>Cell</table>', "12 Cell"),
+        (b'<p>The <span epub:type="pagebreak">12 quick brown fox</p>', "The 12 quick brown fox"),
+        (
+            "<ruby><rb role='doc-pagebreak'>12<rb>東京</rb></ruby>に行く。".encode(),
+            "12東京に行く。",
+        ),
+        (b'<p role="doc-pagebreak">12<hr>Actual chapter text</p>', "12\n\nActual chapter text"),
+    ],
+)
+def test_unclosed_page_break_markers_keep_their_text(ebooks, html, expected):
+    assert ebooks._html_text(html) == expected
+
+
+def test_block_page_break_markers_still_separate_text(ebooks):
+    html = b'<body>end<hr epub:type="pagebreak" title="5"/>start<div role="doc-pagebreak">6</div>more</body>'
+    assert ebooks._html_text(html) == "end\n\nstart\n\nmore"
+
+
+@pytest.mark.parametrize(
+    "ruby",
+    [
+        "<ruby>東<rt>とう</rt>京<rt>きょう</rt></ruby>",
+        "<ruby>東京<rp>(</rp><rt>とうきょう</rt><rp>)</rp></ruby>",
+        "<ruby>東<rp>(</rp><rt>とう<rp>)</rp>京<rp>(</rp><rt>きょう<rp>)</rp></ruby>",
+        "<ruby>東<rp>(<rt>とう<rp>)</rp>京<rt>きょう</ruby>",
+        "<ruby><rb>東<rb>京<rt>とう<rt>きょう</ruby>",
+        "<ruby>東京<rtc>とうきょう</rtc></ruby>",
+        "<ruby><rb>東<rb>京<rtc><rt>とう<rt>きょう</rtc><rtc>Tokyo</rtc></ruby>",
+    ],
+    ids = ["rt", "rp", "omitted-rt-end", "omitted-rp-end", "omitted-rb-end", "rtc", "double-sided"],
+)
+def test_ruby_readings_are_not_inlined_into_the_text(ebooks, ruby):
+    data = f"<html><body><p>{ruby}に行く。</p></body></html>".encode("utf-8")
+    assert ebooks._html_text(data) == "東京に行く。"
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<template><p>Card title placeholder</p></template>",
+        '<audio src="a.mp3" controls="controls">Your reader does not support audio.</audio>',
+        '<video src="a.mp4"><p>Your reader does not support video.</p><track kind="captions"/></video>',
+    ],
+)
+def test_content_a_reader_does_not_display_is_not_training_text(ebooks, markup):
+    html = f"<html><body><p>Before.</p>{markup}<p>After.</p></body></html>"
+    assert ebooks._html_text(html.encode()) == "Before.\n\nAfter."
+
+
+def test_canvas_fallback_is_kept_for_readers_without_scripting(ebooks):
+    html = (
+        '<html><body><p>Before.</p><canvas id="chart"><p>Sales rose 4%.</p></canvas></body></html>'
+    )
+    assert ebooks._html_text(html.encode()) == "Before.\n\nSales rose 4%."
+
+
+def test_mathml_annotation_is_not_appended_to_the_formula(ebooks):
+    html = (
+        '<html><body><p>Area <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics>'
+        "<mrow><mi>x</mi><mo>+</mo><mn>2</mn></mrow>"
+        '<annotation encoding="application/x-tex">x + 2</annotation>'
+        '<annotation-xml encoding="MathML-Content"><apply><plus/><ci>x</ci><cn>2</cn></apply>'
+        "</annotation-xml></semantics></math> units.</p></body></html>"
+    )
+    assert ebooks._html_text(html.encode()) == "Area x+2 units."
 
 
 def test_bom_is_dropped_when_xml_declares_utf8(ebooks):
@@ -156,6 +288,24 @@ def test_declared_html_charset_is_honored(ebooks):
         )
     )
     assert ebooks._html_text(data) == "café"
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<p aria-hidden>Shown.</p>",
+        "<head><meta http-equiv content></head><body><p>Shown.</p></body>",
+        '<head><meta http-equiv="Content-Type" content></head><body><p>Shown.</p></body>',
+    ],
+)
+def test_valueless_attributes_do_not_abort_the_book(ebooks, markup):
+    assert ebooks._html_text(f"<html>{markup}</html>".encode()) == "Shown."
+    assert ebooks._html_text(b"<html><p hidden>Gone.</p><p>Shown.</p></html>") == "Shown."
+
+
+def test_valueless_meta_charset_defers_to_a_later_declaration(ebooks):
+    data = '<html><head><meta charset><meta charset="windows-1252"></head><p>café</p></html>'
+    assert ebooks._html_text(data.encode("cp1252")) == "café"
 
 
 def test_html_body_closes_implicit_head(ebooks):
@@ -281,6 +431,31 @@ def test_empty_missing_unsupported_and_corrupt_inputs(ebooks, tokenizer, tmp_pat
     empty = make_epub(tmp_path / "empty.epub", chapters = {"empty.xhtml": "<p> </p>"})
     with pytest.raises(ValueError, match = "readable text"):
         ebooks.load_ebook_dataset(empty, tokenizer = tokenizer)
+
+
+@pytest.mark.parametrize("fallback", ["c1", "art", "missing"])
+def test_foreign_spine_item_uses_its_text_fallback(ebooks, tokenizer, tmp_path, fallback):
+    book = make_epub(tmp_path / "book.epub")
+    with zipfile.ZipFile(book) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    package = files["Books/content.opf"].decode()
+    items = (
+        '<item id="art" href="art.pdf" media-type="application/pdf" fallback="page"/>'
+        f'<item id="page" href="page.png" media-type="image/png" fallback="{fallback}"/>'
+    )
+    files["Books/content.opf"] = package.replace("</manifest>", items + "</manifest>").replace(
+        'idref="c1"', 'idref="art"'
+    )
+    with zipfile.ZipFile(book, "w") as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+        archive.writestr("Books/art.pdf", b"")
+        archive.writestr("Books/page.png", b"")
+    text = ebooks.load_ebook_dataset(book, tokenizer = tokenizer)[0]["text"]
+    expected = "Chapter Two\n\nSecond paragraph."
+    if fallback == "c1":
+        expected = "Chapter One\n\nFirst paragraph.\n\n" + expected
+    assert text == expected
 
 
 def test_non_linear_and_nav_documents_are_not_training_text(ebooks, tokenizer, tmp_path):

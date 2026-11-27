@@ -4,6 +4,7 @@
 export const FLOATING_PANEL_POSITION_KEYS = {
   liveMonitor: "unsloth_live_monitor_position",
   apiMonitor: "unsloth_api_monitor_position",
+  liveMonitorWidth: "unsloth_live_monitor_width",
 } as const;
 
 /** User's drop spot in its constraints box; a null axis stays anchored to the far edge. */
@@ -101,4 +102,46 @@ export function snapsToAnchor(
     Math.abs(drop.left - a.left) <= threshold &&
     Math.abs(drop.top - a.top) <= threshold;
   return near(rest) || near(max);
+}
+
+function clampWidth(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/** Width only: the height follows the content. */
+export interface PanelResizeOptions {
+  minWidth: number;
+  maxWidth: number;
+  /** The CSS width when none is chosen; a squeezed panel grows back to it. */
+  defaultWidth: () => number;
+  storageKey: string;
+}
+
+/** -1 left/top, 1 right/bottom, 0 not grabbed; `y` picks the edge that stays put. */
+export interface ResizeEdges {
+  x: -1 | 0 | 1;
+  y: -1 | 0 | 1;
+}
+
+export function readPanelWidth(
+  options: PanelResizeOptions | undefined,
+): number | null {
+  if (!options) return null;
+  try {
+    const value = Number(localStorage.getItem(options.storageKey));
+    return Number.isFinite(value) && value > 0
+      ? clampWidth(value, options.minWidth, options.maxWidth)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function resizedWidth(
+  session: { width: number; edges: ResizeEdges },
+  dx: number,
+  bounds: { min: number; max: number },
+): number {
+  const next = session.width + session.edges.x * dx;
+  return clampWidth(next, bounds.min, Math.max(bounds.min, bounds.max));
 }

@@ -7,6 +7,7 @@ from core.training.account_jobs import account_path, managed_account, validate_r
 import base64
 import functools
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -20,6 +21,7 @@ from fastapi import HTTPException
 
 from utils.paths import recipe_datasets_root
 
+from .huggingface import processor_folder_name_error
 from .jsonable import _is_pandas_missing, to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
@@ -265,6 +267,68 @@ def _apply_data_designer_expression_blank_patch() -> None:
     setattr(ExpressionColumnGenerator, "_unsloth_expression_blank_patch_applied", True)
 
 
+_TEMPLATE_CACHE_ATTR = "_unsloth_compiled_templates"
+_TEMPLATE_CACHE_MAX = 32
+
+
+def _apply_data_designer_template_cache_patch() -> None:
+    # Jinja2 never caches from_string, so safe_render recompiled every row. The key covers what the compiler
+    # bakes in (source, finalize, filter and test objects), so a hit runs what a fresh compile would.
+    try:
+        from jinja2 import Environment
+        from data_designer.engine.processing.ginja.environment import (  # pyright: ignore[reportMissingImports]
+            UserTemplateSandboxEnvironment,
+        )
+    except ImportError:
+        return
+
+    if getattr(UserTemplateSandboxEnvironment, "_unsloth_template_cache_patch_applied", False):
+        return
+    original_from_string = getattr(UserTemplateSandboxEnvironment, "from_string", None)
+    if original_from_string is not Environment.from_string or not callable(
+        getattr(UserTemplateSandboxEnvironment, "safe_render", None)
+    ):
+        return
+    try:
+        params = list(inspect.signature(original_from_string).parameters)
+    except (TypeError, ValueError):
+        return
+    if params != ["self", "source", "globals", "template_class"]:
+        return
+
+    @functools.wraps(original_from_string)
+    def _cached_from_string(
+        self: Any,
+        source: Any,
+        globals: Any = None,
+        template_class: Any = None,
+    ) -> Any:
+        if globals is not None or template_class is not None or not isinstance(source, str):
+            return original_from_string(self, source, globals, template_class)
+        try:
+            key = (
+                source,
+                self.finalize,
+                self.autoescape,
+                tuple(self.filters.items()),
+                tuple(self.tests.items()),
+            )
+            cache = self.__dict__.setdefault(_TEMPLATE_CACHE_ATTR, {})
+            template = cache.get(key)
+        except (AttributeError, TypeError):
+            return original_from_string(self, source, globals, template_class)
+        if template is None:
+            # A failed compile is not stored, so a broken template errors the same way every row.
+            template = original_from_string(self, source, globals, template_class)
+            if len(cache) >= _TEMPLATE_CACHE_MAX:
+                cache.clear()
+            cache[key] = template
+        return template
+
+    UserTemplateSandboxEnvironment.from_string = _cached_from_string
+    setattr(UserTemplateSandboxEnvironment, "_unsloth_template_cache_patch_applied", True)
+
+
 def _is_missing_cell(value: Any) -> bool:
     return (
         value is None
@@ -458,12 +522,7 @@ def _apply_data_designer_sql_inline_config_patch() -> None:
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
-    """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
-    transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
-    may rebind to loopback or the LAN after this public-address check.
-
-    With the switch on, the HTTPS and public-address rules stand down so a saved connection is one
-    a recipe can run on. The metadata rule does not: this path has no validator behind it."""
+    """Managed endpoints need HTTPS unless private switch is on; the metadata block holds even then."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
@@ -478,8 +537,7 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     url = str(endpoint or "")
     if get_managed_private_provider_urls_allowed():
         try:
-            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
-            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            # The switch lifts HTTPS-only and public-only, not http(s)-only.
             if urlsplit(url).scheme not in ("http", "https"):
                 raise ValueError("Provider endpoints must use http or https.")
             provider_address_excluding_metadata(url)
@@ -503,12 +561,8 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
 
 
 def install_public_egress_guard() -> None:
-    """Managed recipe workers: the engine dials providers itself, so every name resolves through this
-    guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
-    time rather than dialled. Process-wide, so it is installed only in the job subprocess.
-
-    With the switch on the guard narrows to the metadata services rather than standing down: a
-    worker whose engine dials for itself has nothing else between it and that address."""
+    """Job subprocess only: refuses rebinding hosts at connect; with the private switch on, metadata
+    only."""
     if not managed_account():
         return
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
@@ -615,9 +669,8 @@ def _names_env_credential(value: Any) -> bool:
 
 
 def recipe_names_host_env_credential(recipe: Any) -> bool:
-    """True when a credential would come from this host's environment (Data Designer resolves a bare
-    variable name in api_key/token from the environment first). Only top-level local model providers
-    are exempt: the routes rewire exactly those to this server and drop their external auth."""
+    """A bare api_key/token name resolves from this host's env; top-level local providers are
+    exempt, since the routes rewire exactly those to this server and drop external auth."""
     if isinstance(recipe, dict) and isinstance(recipe.get("model_providers"), list):
         rest = {key: value for key, value in recipe.items() if key != "model_providers"}
         external = [
@@ -675,8 +728,7 @@ def _require_confinable_mcp_transport(provider_type: str) -> None:
 def build_mcp_providers(recipe: dict[str, Any]) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
-    # Same gate as the chat MCP path: stdio providers spawn a local subprocess, so build
-    # them only when this host allows it (desktop loopback default / explicit opt-in).
+    # stdio providers spawn a local subprocess; same gate as chat MCP.
     from core.inference.mcp_client import stdio_mcp_enabled
 
     stdio_allowed = stdio_mcp_enabled()
@@ -759,6 +811,13 @@ def validate_recipe_names(recipe: dict[str, Any]) -> None:
             raise ValueError(
                 f"Processor names can't contain '/' or '\\', start with a drive letter, or be '.' / '..': {name!r}"
             )
+    name_error = processor_folder_name_error(
+        item["name"]
+        for item in (processors if isinstance(processors, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    )
+    if name_error:
+        raise ValueError(name_error)
 
 
 def _safe_module_name(record_id: Any, column_name: str) -> str:
@@ -821,8 +880,7 @@ def build_config_builder(recipe: dict[str, Any]):
         specs = text_format_specs,
     )
 
-    # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
-    # survive the API payload.
+    # from_config skips processors; re-attach them.
     for processor in recipe_core.get("processors") or []:
         if not isinstance(processor, dict):
             continue
@@ -844,15 +902,18 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_image_context_patch()
     _apply_data_designer_prompt_blank_patch()
     _apply_data_designer_expression_blank_patch()
+    _apply_data_designer_template_cache_patch()
     _apply_data_designer_mixed_type_parquet_patch()
     _apply_data_designer_seed_uri_quote_patch()
     _apply_data_designer_sql_inline_config_patch()
     _apply_data_designer_python_validator_path_patch()
-    from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
+    from data_designer.interface.data_designer import (  # pyright: ignore[reportMissingImports]
+        DEFAULT_SEED_READERS,
+        DataDesigner,
+    )
 
     if artifact_path is None:
-        # DataDesigner defaults to cwd/artifacts and packaged Unsloth can run with cwd=/, so pin the
-        # writable recipe artifact root.
+        # Packaged Unsloth can run with cwd=/, so pin the artifact root.
         artifact_path = str(recipe_datasets_root())
 
     recipe = _strip_frontend_model_config_metadata(recipe)
@@ -875,6 +936,9 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
         artifact_path = artifact_path,
         model_providers = model_providers,
         mcp_providers = build_mcp_providers(recipe),
+        # The defaults are shared module-level instances and attach() stores the source on them:
+        # concurrent in-process validations would read each other's (other accounts') seeds.
+        seed_readers = [type(reader)() for reader in DEFAULT_SEED_READERS],
     )
 
 

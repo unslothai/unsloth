@@ -33,10 +33,7 @@ const DEFAULT: GpuUtilization = {
     power_utilization_pct: null,
 };
 
-/**
- * Poll `GET /api/train/hardware` for live GPU utilization stats while
- * `enabled` (training running). Interval defaults to 10 000 ms.
- */
+/** Polls only while `enabled` (training running). */
 export function useGpuUtilization(
     enabled: boolean,
     intervalMs = 10_000,
@@ -46,7 +43,6 @@ export function useGpuUtilization(
 
     useEffect(() => {
         if (!enabled) {
-            // Reset when training stops so the cards show "--" again
             setData(DEFAULT);
             return;
         }
@@ -64,12 +60,24 @@ export function useGpuUtilization(
             }
         }
 
-        void poll();
-        timerRef.current = setInterval(() => void poll(), intervalMs);
+        let lastPollAt = 0;
+        const pollNow = () => {
+            lastPollAt = Date.now();
+            void poll();
+        };
+        pollNow();
+        timerRef.current = setInterval(() => {
+            if (!document.hidden) pollNow();
+        }, intervalMs);
+        const onVisibilityChange = () => {
+            if (!document.hidden && Date.now() - lastPollAt >= intervalMs) pollNow();
+        };
+        document.addEventListener("visibilitychange", onVisibilityChange);
 
         return () => {
             cancelled = true;
             if (timerRef.current) clearInterval(timerRef.current);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
         };
     }, [enabled, intervalMs]);
 

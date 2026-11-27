@@ -64,7 +64,6 @@ def _nt(mod, monkeypatch, returncode):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, returncode, "", "")
 
-    # Patch the module's own references, not the real os/subprocess.
     monkeypatch.setattr(mod, "os", SimpleNamespace(name = "nt"))
     monkeypatch.setattr(mod, "subprocess", SimpleNamespace(run = _run))
     return calls
@@ -267,9 +266,8 @@ def test_the_profile_step_passes_the_budget():
 
 
 def test_the_profile_step_sets_pipefail():
-    """`shell: bash` already implies -o pipefail, so this is belt and braces: the
-    gate's exit code only reaches the step through the pipe into tee, and it has to
-    survive that shell key being dropped or changed to `bash {0}`."""
+    """shell: bash implies -o pipefail, so set -o pipefail is belt and braces: the gate's exit code
+    reaches the step only through the pipe into tee, even if the shell key is dropped or changed."""
     run = _profile_step()["run"]
     assert "| tee" in run, "no pipe left; this guard can go"
     assert "set -o pipefail" in run

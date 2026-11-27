@@ -271,3 +271,110 @@ def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica():
     torch.cuda.synchronize()
     assert router.stats["replica_rebuilds"] == 1
     assert torch.equal(out, reference)
+
+
+class _PrefixKVDit(torch.nn.Module):
+    """Qwen-Image-2.1 prefix KV cache shape: a list of per-layer K/V holders."""
+
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(4, 4)
+
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        kv_cache = None,
+        kv_cache_mode = None,
+        return_dict = False,
+    ):
+        key = self.proj(hidden_states)
+        for layer in kv_cache.layer_caches:
+            if kv_cache_mode == "extract":
+                layer.k = self.proj(encoder_hidden_states).clone()
+            key = torch.cat([layer.k, key], dim = 0)[-hidden_states.shape[0] :] + layer.k.sum(0)
+        return (key * timestep,)
+
+
+def _kv_cache(layers = 3):
+    from types import SimpleNamespace
+    class Cache:
+        def __init__(self):
+            self.layer_caches = [SimpleNamespace(k = None) for _ in range(layers)]
+
+    return Cache()
+
+
+def _kv_render(dit, latents, cond, neg, steps):
+    x = latents.clone()
+    caches = (_kv_cache(), _kv_cache())
+    for i in range(steps):
+        t = torch.tensor(1.0 - i / steps, device = x.device)
+        mode = "extract" if i == 0 else "cached"
+        a = dit(
+            hidden_states = x,
+            timestep = t,
+            encoder_hidden_states = cond,
+            kv_cache = caches[0],
+            kv_cache_mode = mode,
+        )[0]
+        b = dit(
+            hidden_states = x,
+            timestep = t,
+            encoder_hidden_states = neg,
+            kv_cache = caches[1],
+            kv_cache_mode = mode,
+        )[0]
+        x = x - 0.1 * (b + 4.0 * (a - b))
+    return x
+
+
+def test_prefix_kv_cache_branch_runs_on_the_second_card_and_stays_exact():
+    torch.manual_seed(0)
+    dit = _PrefixKVDit().cuda(0)
+    latents = torch.randn(2, 4, device = "cuda:0")
+    cond = torch.randn(3, 4, device = "cuda:0")
+    neg = torch.randn(3, 4, device = "cuda:0")
+    with torch.no_grad():
+        reference = [_kv_render(dit, latents, cond, neg, 5) for _ in range(2)]
+        router = _arm(dit)
+        outs = []
+        for _ in range(2):
+            outs.append(_kv_render(dit, latents, cond, neg, 5))
+            router.end_render()
+    torch.cuda.synchronize()
+    assert router.disabled_reason is None, router.disabled_reason
+    assert router.stats["steps_parallel"] >= 6 and router.stats["kv_cache_copies"] == 2
+    assert all(torch.equal(o, r) for o, r in zip(outs, reference))
+
+
+def test_a_step_graph_on_the_second_card_records_its_forward():
+    # Regression: cuda:1 captured on torch's cuda:0 default capture stream, so replays returned the recording's output.
+    from core.inference import diffusion_cuda_graph as cg
+
+    def graphed_steps(card):
+        torch.manual_seed(0)
+        dit = _Dit().cuda(card)
+        handle = cg.GraphedForward(dit).enable()
+        outs, refs = [], []
+        with torch.cuda.device(card), torch.inference_mode():
+            for value in (1.0, 2.0, 3.0):
+                x = torch.full((2, 4), value, device = f"cuda:{card}")
+                t = torch.tensor(value, device = f"cuda:{card}")
+                e = torch.randn(3, 4, device = f"cuda:{card}")
+                refs.append(dit.__class__.forward(dit, x, t, e)[0].clone())
+                outs.append(
+                    handle(hidden_states = x, timestep = t, encoder_hidden_states = e, return_dict = False)[
+                        0
+                    ]
+                )
+            torch.cuda.synchronize()
+        return handle, outs, refs
+
+    first, outs0, refs0 = graphed_steps(0)
+    second, outs1, refs1 = graphed_steps(1)
+    for handle in (first, second):
+        assert handle.stats["captures"] == 1 and handle.stats["replays"] == 3, handle.stats
+    for out, ref in zip(outs0 + outs1, refs0 + refs1):
+        assert torch.equal(out.cpu(), ref.cpu())

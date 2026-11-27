@@ -277,9 +277,8 @@ class TestMacosDyldLoadProbe:
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
     def test_the_referencing_dylib_survives_into_the_message(self, tmp_path):
-        """dyld names the library AND the dylib that asked for it. The second half
-        is what says libggml-rpc rather than llama-server is at fault, so keep
-        enough of the tail to carry it."""
+        """dyld names the missing library and the dylib that asked for it; that second half shows
+        libggml-rpc, not llama-server, is at fault, so keep the tail."""
         real = (
             "dyld[41694]: Library not loaded: /usr/lib/librdma.dylib\\n"
             "  Referenced from: /Users/r/.unsloth/llama.cpp/build/bin/libggml-rpc.0.dylib\\n"

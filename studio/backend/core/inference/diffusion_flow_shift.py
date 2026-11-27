@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rebuild the loaded scheduler at ComfyUI's static sigma shift (shipped schedulers differ, e.g.
-Qwen-Image dynamic ~2.0 + terminal stretch vs 3.1), unless the checkpoint ships its own sampling
-grid. No torch/diffusers imports."""
+"""Rebuilds the loaded scheduler at ComfyUI static sigma shift unless the checkpoint ships its own
+grid; no torch or diffusers imports."""
 
 from __future__ import annotations
 
@@ -74,6 +73,44 @@ def apply_comfy_flow_shift(
     if logger is not None:
         logger.info("scheduler flow shift set to %s (ComfyUI default)", shift)
     return True
+
+
+def apply_scheduler_overrides(
+    pipe: Any,
+    overrides: Any,
+    logger: Any = None,
+) -> bool:
+    """Rebuild ``pipe.scheduler`` with a family's ``scheduler_overrides`` (the publisher's sampling config). True when
+    it changed; a scheduler that rejects them keeps the shipped schedule."""
+    pairs = dict(overrides or ())
+    scheduler = getattr(pipe, "scheduler", None)
+    config = getattr(scheduler, "config", None)
+    if not pairs or scheduler is None or config is None:
+        return False
+    if all(config.get(k) == v for k, v in pairs.items()):
+        return False
+    try:
+        pipe.scheduler = type(scheduler).from_config(config, **pairs)
+    except Exception as exc:  # noqa: BLE001 - keep the shipped schedule rather than fail the load
+        if logger is not None:
+            logger.warning("scheduler overrides %s not applied: %s", pairs, exc)
+        return False
+    if logger is not None:
+        logger.info("scheduler rebuilt with the family's overrides %s", pairs)
+    return True
+
+
+def apply_comfy_schedule(
+    pipe: Any,
+    shift: Optional[float],
+    overrides: Any = (),
+    logger: Any = None,
+) -> bool:
+    """``shift``, then scheduler ``overrides``; the opt-out keeps the shipped scheduler. True when it changed."""
+    if not comfy_sigmas_enabled():
+        return False
+    shifted = apply_comfy_flow_shift(pipe, shift, logger)
+    return apply_scheduler_overrides(pipe, overrides, logger) or shifted
 
 
 # A pipeline config's fixed sampling grid, terminal sigma excluded (QwenImage21Pipeline, huggingface/diffusers#14950).
@@ -189,10 +226,9 @@ def requested_flow_shift(
     height: Optional[int] = None,
     defaults: Optional[dict] = None,
 ) -> Optional[float]:
-    """The static flow shift a request asks for, or None when it sets none (today's schedule).
-
-    ``defaults`` (``shift_control``'s) fills the base / max shift a request leaves out, so changing one
-    starts from what the load resolved. Raises ValueError for a field this family's node does not take."""
+    """The static flow shift a request asks for (None keeps today's schedule); a missing base or max
+    shift comes from shift_control's defaults, and ValueError is raised for a field the node does
+    not take."""
     if shift is None and base_shift is None and max_shift is None:
         return None
     if node not in SHIFT_NODES:
@@ -230,10 +266,9 @@ def requested_flow_shift(
 
 
 def scheduler_with_flow_shift(scheduler: Any, shift: float) -> Any:
-    """A copy of ``scheduler`` sampling at static ``shift`` (dynamic shifting and terminal stretch off), or
-    ``scheduler`` itself when it already samples there (the resolved value: no rebuild, identical render).
-
-    Raises ValueError when the scheduler has no flow shift Studio can set."""
+    """Returns a copy of the scheduler sampling at static shift (dynamic shifting and terminal
+    stretch off), or the scheduler itself when it already samples there (no rebuild, identical
+    render); ValueError if it has no flow shift."""
     config = getattr(scheduler, "config", None)
     overrides = flow_shift_overrides(config, shift) if config is not None else None
     if not overrides:

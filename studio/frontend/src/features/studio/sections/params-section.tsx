@@ -22,6 +22,12 @@ import {
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
 } from "@/features/training";
+import {
+  llmStepGuidance,
+  runDataParallelSize,
+  trainedRowCount,
+} from "@/features/training/lib/step-guidance";
+import { useTrainingParallelStore } from "@/features/training/stores/training-parallel-store";
 import { useT } from "@/i18n";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -63,6 +69,12 @@ export function ParamsSection({
       embeddingLearningRate: state.embeddingLearningRate,
       maxSteps: state.maxSteps,
       saveSteps: state.saveSteps,
+      batchSize: state.batchSize,
+      gradientAccumulation: state.gradientAccumulation,
+      packing: state.packing,
+      datasetTotalRows: state.datasetTotalRows,
+      datasetSliceStart: state.datasetSliceStart,
+      datasetSliceEnd: state.datasetSliceEnd,
       setProjectName: state.setProjectName,
       setEpochs: state.setEpochs,
       setContextLength: state.setContextLength,
@@ -127,6 +139,55 @@ export function ParamsSection({
     setSaveSteps: store.setSaveSteps,
   });
 
+  // batchSize is per device: data-parallel replicas multiply the rows per step, and an unknown
+  // multi-GPU layout gives no hint rather than one that overestimates the steps.
+  const dataParallelSize = useTrainingParallelStore((s) =>
+    runDataParallelSize({
+      capabilitiesStatus: s.capabilitiesStatus,
+      gpuCount: s.capabilities ? s.capabilities.gpus.length : null,
+      plan: s.plan,
+      planFresh:
+        s.planStatus === "ready" &&
+        s.planRequestKey !== null &&
+        s.planRequestKey === s.wantedPlanKey,
+    }),
+  );
+  const stepGuidance = store.isDecision
+    ? null
+    : llmStepGuidance(
+        trainedRowCount(
+          store.datasetTotalRows,
+          store.datasetSliceStart,
+          store.datasetSliceEnd,
+        ),
+        store.batchSize,
+        store.gradientAccumulation,
+        dataParallelSize,
+      );
+  const stepGuidanceText = (() => {
+    if (!stepGuidance) return null;
+    const values = {
+      steps: stepGuidance.suggestedSteps.toLocaleString(),
+      passSteps: stepGuidance.passSteps.toLocaleString(),
+      rows: stepGuidance.rows.toLocaleString(),
+      batch: stepGuidance.effectiveBatch.toLocaleString(),
+    };
+    const main = useEpochs
+      ? t("studio.params.stepGuidanceEpoch", values)
+      : stepGuidance.kind === "floor"
+        ? t("studio.params.stepGuidanceFloor", values)
+        : stepGuidance.kind === "cap"
+          ? t("studio.params.stepGuidanceCap", values)
+          : t("studio.params.stepGuidancePass", values);
+    return store.packing
+      ? `${main} ${t("studio.params.stepGuidancePacking")}`
+      : main;
+  })();
+  const canUseSuggestedSteps =
+    stepGuidance != null &&
+    !useEpochs &&
+    store.maxSteps !== stepGuidance.suggestedSteps;
+
   const maxStepsSliderMax = Math.max(500, store.maxSteps, 30);
   const epochsSliderMax = Math.max(20, store.epochs, 1);
   const durationKey = useEpochs ? "epochs" : "steps";
@@ -175,7 +236,7 @@ export function ParamsSection({
                   {useEpochs
                     ? t("studio.params.epochs")
                     : t("studio.params.maxSteps")}
-                  <Tooltip>
+                  <Tooltip disableHoverableContent={false}>
                     <TooltipTrigger asChild={true}>
                       <button
                         type="button"
@@ -255,7 +316,7 @@ export function ParamsSection({
                     max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                     step={1}
                     // Same floor: a step count needs more room at 16px.
-                    className="w-14 pointer-coarse:w-20 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
+                    className="w-14 pointer-coarse:w-20 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-full px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>
@@ -272,6 +333,30 @@ export function ParamsSection({
                 max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                 step={1}
               />
+              {stepGuidanceText && stepGuidance && (
+                <p
+                  className="text-ui-10 leading-snug text-muted-foreground"
+                  data-testid="llm-step-guidance"
+                >
+                  {stepGuidanceText}
+                  {canUseSuggestedSteps && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          store.setMaxSteps(stepGuidance.suggestedSteps)
+                        }
+                        className="text-primary underline cursor-pointer"
+                      >
+                        {t("studio.params.useSuggestedSteps", {
+                          steps: stepGuidance.suggestedSteps.toLocaleString(),
+                        })}
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
             </div>
           </div>
 
@@ -279,7 +364,7 @@ export function ParamsSection({
             <div className="flex flex-col gap-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 {t("studio.params.contextLength")}
-                <Tooltip>
+                <Tooltip disableHoverableContent={false}>
                   <TooltipTrigger asChild={true}>
                     <button
                       type="button"
@@ -361,7 +446,7 @@ export function ParamsSection({
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.params.learningRate")}
-              <Tooltip>
+              <Tooltip disableHoverableContent={false}>
                 <TooltipTrigger asChild={true}>
                   <button
                     type="button"

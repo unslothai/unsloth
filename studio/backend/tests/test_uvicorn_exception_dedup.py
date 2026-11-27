@@ -62,8 +62,7 @@ def _uvicorn_record(exc, msg = _UVICORN_MSG):
 
 
 def _raise_through_middleware(exc, path = "/api/rag/knowledge-bases"):
-    """Run a failing app under the middleware and hand back the exception uvicorn
-    would see (the same object, re-raised)."""
+    """Re-raise exc through the middleware and return the same object uvicorn would see."""
 
     async def app(scope, receive, send):
         raise exc
@@ -94,8 +93,7 @@ def test_exception_never_seen_by_the_middleware_still_logs():
 
 
 def test_other_uvicorn_error_records_pass_through(logs):
-    # Only the ASGI-application traceback is a duplicate; every other uvicorn error
-    # line is uvicorn's alone.
+    # Only the ASGI-application traceback is a duplicate; other uvicorn errors pass through.
     raised = _raise_through_middleware(RuntimeError("boom"))
     record = _uvicorn_record(raised, msg = "ASGI callable returned without starting response.")
     assert _DropDuplicateAsgiException().filter(record) is True
@@ -121,8 +119,7 @@ def test_verbose_keeps_both_copies(logs, monkeypatch):
 
 
 def test_installed_filter_suppresses_the_record_on_uvicorn_error(logs):
-    # End to end through the logging module: the filter is attached to the
-    # uvicorn.error logger, so the handler never sees the duplicate.
+    # The filter is attached to uvicorn.error, so the handler never sees the duplicate.
     uvicorn_logger = logging.getLogger("uvicorn.error")
     before = list(uvicorn_logger.filters)
     seen = []

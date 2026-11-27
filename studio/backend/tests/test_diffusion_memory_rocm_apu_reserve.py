@@ -114,10 +114,10 @@ def test_nvidia_unified_memory_unchanged(host):
 
 
 def test_discrete_vram_keeps_the_discrete_reserve(host):
-    # a real discrete card: 10% of the total, capped (diffusion_memory.DISCRETE_RESERVE_CAP_MIB)
-    assert _plan(kind = "discrete_vram").estimates["safe_device_budget_mib"] == POOL_FREE - min(
-        int(POOL_TOTAL * 0.10), dm.DISCRETE_RESERVE_CAP_MIB
-    )
+    # a real discrete card: the fixed discrete reserve (diffusion_memory.discrete_reserve_mib)
+    assert _plan(kind = "discrete_vram").estimates[
+        "safe_device_budget_mib"
+    ] == POOL_FREE - dm.discrete_reserve_mib(POOL_TOTAL)
 
 
 def test_fast_budget_follows_the_same_reserve(host):

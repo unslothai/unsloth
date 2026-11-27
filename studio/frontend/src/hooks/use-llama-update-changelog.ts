@@ -25,8 +25,7 @@ interface LlamaUpdateChangelog {
   error: string | null;
 }
 
-// "unavailable" is a definitive answer, not a failure to get one: this pair can
-// never be compared, so a Retry would spend two lookups on the same conclusion.
+// "unavailable" is definitive for this pair, so Retry would only repeat it.
 export type LlamaUpdateChangelogState =
   | "idle"
   | "loading"
@@ -116,9 +115,7 @@ export function useLlamaUpdateChangelog({
       const requestId = requestIdRef.current;
       setState("loading");
       setChangelog(null);
-      // Name the pair being displayed: another surface's forced status check
-      // advances the backend's shared memo, and the check below rejects the
-      // answer that would come back about a target this banner has not adopted.
+      // Name the displayed pair: another surface's forced check advances the backend's shared memo.
       const query = new URLSearchParams();
       query.set("installed_tag", installedTag);
       query.set("latest_tag", latestTag);

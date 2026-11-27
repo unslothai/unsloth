@@ -92,8 +92,7 @@ def test_an_old_callers_request_still_answers_the_old_keys(monkeypatch, tmp_path
 
 
 def test_the_answer_for_a_pinned_context_did_not_move(monkeypatch, tmp_path):
-    """The added parameters default to what the previous version implied, so an
-    unchanged request must produce an unchanged number."""
+    """New parameters default to the old behaviour, so an unchanged request returns an unchanged number."""
     gguf = _gguf(tmp_path)
     before = _call(monkeypatch, gguf, n_ctx = 4096)
     after = _call(monkeypatch, gguf, n_ctx = 4096, n_parallel = None, speculative_type = None)
@@ -111,8 +110,7 @@ def test_omitting_the_context_sizes_at_the_models_native_length(monkeypatch, tmp
 
 
 def test_the_failure_answer_carries_every_key(monkeypatch):
-    """A row that cannot be sized still has to be readable by both clients,
-    rather than arriving as a short dict that KeyErrors in the caller."""
+    """An unsizable row must still carry every key, or a short dict would KeyError in the caller."""
     monkeypatch.setattr(models_routes, "_resolve_quant_gguf", lambda *_a, **_k: (None, 0))
     out = _call(monkeypatch, None)
     assert _LEGACY_KEYS <= set(out)

@@ -157,8 +157,7 @@ class Session:
             self.ctx.recorder.emit(w.row())
 
     def each_instrument(self, method: str, *args) -> dict:
-        """Iterate a snapshot: _safe may drop a failing instrument, which would skip its neighbour's
-        hook."""
+        """Iterate a snapshot: _safe can drop a failing one, skipping its neighbour's hook."""
         out: dict = {}
         for inst in list(self.instruments):
             got = self._safe(inst, method, *args)
@@ -633,8 +632,7 @@ class CellRunner:
 
     @staticmethod
     def _streamed_follow_ups(plan: RungPlan, row: dict) -> list:
-        """Counts every follow-up that streamed, from the action rows, so the mirror seeds only what
-        landed."""
+        """Counts streamed follow-ups from action rows, so the mirror seeds only what landed."""
         streamed = 0
         for action in row.get("actions") or []:
             if action.get("action") != "send_turn":
@@ -725,8 +723,7 @@ class CellRunner:
             page.wait_for_timeout(250)
 
         def settled(fn) -> float:
-            """Times fn plus a round trip into the page, since the call can return before the page
-            processes it."""
+            """Times fn and a page round trip, since fn returns before the page processes it."""
             started = time.monotonic()
             fn()
             page.evaluate("() => document.body.offsetHeight")

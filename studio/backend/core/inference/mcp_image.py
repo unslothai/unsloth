@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Send a user's attached image to a mapped MCP tool field without the model seeing its bytes.
-
-A server opts in by mapping one top-level string field of a tool. The model only ever sees the
-placeholder ``ATTACHED_IMAGE`` in that field; the tool loop asks the user before every call that
-would carry the image, and ``execute_tool`` swaps the bytes in after that approval.
-"""
+"""Image bytes hidden from the model: opted-in fields get ATTACHED_IMAGE, swapped in after approval."""
 
 from __future__ import annotations
 
@@ -111,8 +106,7 @@ class McpImage:
         return WITHHELD_RESULT if self._reencoded_in(head) else head
 
     def _reencoded_in(self, text: str) -> bool:
-        # Slices spread over the image, at every base64 alignment, catch wrapped, escaped, percent, url-safe and
-        # hex copies, partial ones too.
+        # Slices at every base64 alignment catch wrapped, escaped, url-safe and hex copies, even partial.
         compact = "".join(text.split()).replace("\\n", "").replace("\\r", "").replace("\\/", "/")
         if "%" in compact:
             compact = unquote(compact)

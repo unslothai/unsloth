@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type GuardProbe,
+  readAdvertisedPatchGuards,
   readGuardProbe,
+  resolveGuardProbe,
   schemaDeclaresRepairGuards,
 } from "../src/features/chat/utils/openapi-support.ts";
 
@@ -79,4 +82,81 @@ test("an HTTP failure is a moment, not an answer", () => {
     supported: false,
     settled: false,
   });
+});
+
+test("a thread list from a current backend advertises the guards", () => {
+  assert.equal(
+    readAdvertisedPatchGuards({ threads: [], threadPatchGuards: true }),
+    true,
+  );
+  assert.equal(
+    readAdvertisedPatchGuards({
+      rows: [],
+      hasMore: false,
+      total: 0,
+      threadPatchGuards: false,
+    }),
+    false,
+  );
+});
+
+test("an older backend's list, or anything malformed, advertises nothing", () => {
+  for (const data of [
+    { threads: [] },
+    { rows: [], hasMore: false, total: 0 },
+    { threadPatchGuards: "true" },
+    { threadPatchGuards: 1 },
+    { threadPatchGuards: null },
+    null,
+    undefined,
+    [],
+    "threadPatchGuards",
+  ]) {
+    assert.equal(readAdvertisedPatchGuards(data), null, JSON.stringify(data));
+  }
+});
+
+function countingProbe(result: GuardProbe) {
+  const calls: number[] = [];
+  return {
+    calls,
+    probe: async () => {
+      calls.push(1);
+      return result;
+    },
+  };
+}
+
+test("an advertised flag settles the guard without fetching the schema", async () => {
+  for (const advertised of [true, false]) {
+    const { calls, probe } = countingProbe({
+      supported: !advertised,
+      settled: true,
+    });
+    assert.deepEqual(await resolveGuardProbe(advertised, probe), {
+      supported: advertised,
+      settled: true,
+    });
+    assert.equal(calls.length, 0);
+  }
+});
+
+test("without a flag (older backend) the schema probe decides as before", async () => {
+  for (const result of [
+    { supported: true, settled: true },
+    { supported: false, settled: true },
+    { supported: false, settled: false },
+  ]) {
+    const { calls, probe } = countingProbe(result);
+    assert.deepEqual(await resolveGuardProbe(null, probe), result);
+    assert.equal(calls.length, 1);
+  }
+});
+
+test("the flag and the schema probe agree on what a current backend serves", async () => {
+  const schema = readGuardProbe(true, documentWith(GUARDED));
+  const flag = await resolveGuardProbe(true, async () => {
+    throw new Error("must not probe");
+  });
+  assert.deepEqual(flag, schema);
 });

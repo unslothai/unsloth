@@ -125,7 +125,8 @@ def test_default_auto_model_loads_the_checkpoints_own_audio_head():
     source = LOADER_PATH.read_text(encoding = "utf-8")
     flat = "".join(source.split())
     assert "_resolve_audio_auto_model(model_config,**_probe_hub_kwargs)" in flat
-    assert "include_bare=resolve_model_class(auto_model,model_config,**_probe_hub_kwargs)" in flat
+    assert "auto_model=_resolve_non_vlm_auto_model(model_config,**_probe_hub_kwargs)" in flat
+    assert "include_bare=notcausal_maps" in flat
 
 
 def test_audio_processor_frontends_are_right_padded_too():

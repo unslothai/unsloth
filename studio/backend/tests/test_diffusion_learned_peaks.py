@@ -60,8 +60,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mp, "current_device_name", lambda: "NVIDIA L4", raising = False
     )  # the planner's card
-    # Video keys read the card per device; without this a host with a real GPU records under None (stubbed torch)
-    # and reads under its own card name.
+    # Video keys read the card per device; without this, stubbed torch records under None.
     monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
     return path
 
@@ -1834,7 +1833,9 @@ def test_cfg_off_keys_are_wired_into_the_load_and_guard():
     src = "".join(src.split())  # whitespace-free: the formatter may wrap these lines
     for needle in (
         'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))',
-        "cfg = guard_cfg,",
+        # the guard's CFG value reaches the pricer through the split-aware wrapper
+        "guard_cfg, extra_mib = split_aware_request_extra(state.pipe, guard_cfg, workflow, lambda cfg:",
+        "cfg = cfg, unpriced_references = guard_unpriced_refs,",
         'plan.estimates.get("measured_learned_cfg_off", False),',
         "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)",
     ):
@@ -1866,7 +1867,7 @@ def test_render_with_lora_adapters_is_not_probed(monkeypatch):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert '"unknown"  # adapters baked in at load' in src
+    assert 'peak_model = "unknown"' in src and "price_attached_loras(" in src
 
 
 def test_learned_reserve_falls_back_to_the_flat_estimate_with_loras_or_a_failed_saver(klein_pipe):
@@ -2042,8 +2043,10 @@ def test_attention_scaling_unknown_render_is_not_recorded(store, monkeypatch):
     )
     monkeypatch.setattr(diffusion, "_conditioning_cache_hits", lambda pipe: 0)
     answers = {"math": False, "fused": False}
-    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target: answers["math"])
-    monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", lambda target: answers["fused"])
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target, *_: answers["math"])
+    monkeypatch.setattr(
+        diffusion, "sdpa_subquadratic_confirmed", lambda target, *_: answers["fused"]
+    )
     target = types.SimpleNamespace(device = "cuda:0")
     assert not diffusion._attention_scaling_known(target, "native")  # the probe answered nothing
     assert not diffusion._attention_scaling_known(None, None)
@@ -2287,7 +2290,7 @@ def test_torchao_variants_of_one_weight_class_do_not_share_a_label(monkeypatch):
     monkeypatch.setattr(dm, "_torchao_weight_classes", lambda module: {"Int8Tensor"})
     pipe = types.SimpleNamespace(transformer = torch.nn.Linear(4, 4))
     variant = {"weights": {"Linear/Int8Tensor": 1}}
-    monkeypatch.setattr(cc, "graph_variant", lambda dit: variant)
+    monkeypatch.setattr(cc, "graph_variant", lambda dit, **kw: variant)
     plain = dm.denoiser_quant_label(pipe)
     assert plain.startswith("torchao:Int8Tensor#")
     variant = {"weights": {"Linear/Int8Tensor/convrot256": 1}}
@@ -2444,3 +2447,26 @@ def test_partially_quantized_text_encoders_neither_read_nor_record(klein_pipe):
         encoding = "utf-8"
     )
     assert "peak_te = _peak_te_label(te_quant, te_outcome)" in src
+
+
+def test_a_split_render_records_no_learned_peak(monkeypatch):
+    # A split's probe sees only the primary card, padded to the streamed scale; its sample raised the shared max-wins
+    # key so the next load declined the split (Z-Image on 2x T4: headroom 5376 -> 8448 MiB, one card + group offload).
+    import core.inference.diffusion_layer_split_plan as lsp
+    import core.inference.diffusion_multigpu as mg
+
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+
+    class _Pipe:
+        _unsloth_peak_identity = state.pipe._unsloth_peak_identity
+        vae = state.pipe.vae
+        components = {}
+
+    state.pipe = _Pipe()
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    assert diffusion._start_peak_probe(state) is not None  # one card: measured
+    monkeypatch.setattr(lsp, "is_layer_split", lambda pipe: pipe is state.pipe)
+    assert diffusion._start_peak_probe(state) is None  # layer split
+    monkeypatch.setattr(lsp, "is_layer_split", lambda pipe: False)
+    monkeypatch.setitem(mg._PLACEMENTS, state.pipe, {"secondary": "cuda:1"})
+    assert diffusion._start_peak_probe(state) is None  # companion split

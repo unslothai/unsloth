@@ -624,8 +624,7 @@ def test_build_external_messages_non_vision_anthropic_keeps_compaction():
         "content": "prior summary",
         "encrypted_content": "opaque-compaction",
     } in parts
-    # Non-anthropic + non-vision -> compaction stripped, text collapsed
-    # back to a string.
+    # Non-Anthropic, non-vision providers strip compaction and collapse text to a string.
     out2 = _build_external_messages(msgs, supports_vision = False, provider_type = "deepseek")
     assert out2[0]["content"] == "answer", out2
 
@@ -747,7 +746,12 @@ def test_a_model_without_compaction_is_never_sent_a_compaction_block(monkeypatch
     assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
 
 
-def _native_replay(monkeypatch, model: str, threshold) -> dict:
+def _native_replay(
+    monkeypatch,
+    model: str,
+    threshold,
+    native = None,
+) -> dict:
     captured: dict = {}
 
     def http_handler(request: httpx.Request) -> httpx.Response:
@@ -765,7 +769,7 @@ def _native_replay(monkeypatch, model: str, threshold) -> dict:
         httpx.AsyncClient(transport = httpx.MockTransport(http_handler)),
     )
     client = _make_client()
-    native = [
+    native = native or [
         {"type": "compaction", "content": "PRIOR SUMMARY"},
         {"type": "text", "text": "answer"},
     ]
@@ -799,6 +803,17 @@ def test_a_replayed_native_compaction_block_keeps_its_beta_with_auto_compact_off
     assistant = captured["body"]["messages"][1]
     assert assistant["content"][0] == {"type": "compaction", "content": "PRIOR SUMMARY"}
     assert "compact-2026-01-12" in captured["headers"].get("anthropic-beta", "")
+
+
+def test_a_replayed_compaction_block_and_its_signed_thinking_stay_byte_exact(monkeypatch):
+    # Signed thinking is bound to every byte before it (Anthropic prefix check): editing the summary 400s.
+    native = [
+        {"type": "compaction", "content": "I am reading Moby Dick."},
+        {"type": "thinking", "thinking": "chapter 2 next", "signature": "SIG"},
+        {"type": "text", "text": "answer"},
+    ]
+    captured = _native_replay(monkeypatch, "claude-opus-5-5", None, native = native)
+    assert captured["body"]["messages"][1]["content"] == native
 
 
 def test_a_model_without_compaction_is_never_sent_a_native_compaction_block(monkeypatch):

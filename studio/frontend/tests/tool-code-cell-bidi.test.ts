@@ -37,8 +37,10 @@ const { ToolCodeCell } = loadWithStubs<typeof ToolCodeCellModule>(
       isDownloadCancelled: () => false,
     },
     "@/lib/tick-icon": { Tick02Icon: {} },
+    "@/lib/copy-icon": { Copy01Icon: {} },
     "@/lib/toast": { toast: { error() {} } },
     "@hugeicons/core-free-icons": { Copy01Icon: {}, Download01Icon: {} },
+    "@/lib/folder-icons": { Copy01Icon: {}, Download01Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: () => null },
     "./icon-action-button": {
       IconActionButton: ({ label, onClick }: { label: string; onClick: () => void }) => {

@@ -62,7 +62,7 @@ test("the api speaks to the four skill routes", () => {
 });
 
 test("every write re-reads the folders and tells the other windows", () => {
-  assert.equal((API.match(/await skillsMutated\(\);/g) ?? []).length, 3);
+  assert.equal((API.match(/await skillsMutated\(\);/g) ?? []).length, 4);
   assert.match(
     API,
     /async function skillsMutated\(\): Promise<void> \{\n\s*channel\?\.postMessage\("changed"\);\n\s*void refreshContextUsage\(\{ invalidate: true \}\);\n\s*await listSkills\(true\)/,

@@ -88,6 +88,18 @@ def test_list_paginates_with_limit_offset():
     assert len(gallery.list_videos(offset = 4)) == 1
 
 
+def test_listing_resolves_the_folder_once(monkeypatch):
+    for i in range(4):
+        _save_with_mtime(f"p{i}", float(i))
+    calls = []
+    real = gallery.gallery_dir
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: calls.append(1) or real())
+    listed = gallery.list_videos()
+    assert len(calls) == 1
+    assert [r["prompt"] for r in listed] == ["p3", "p2", "p1", "p0"]
+    assert [r["order_at"] for r in listed] == [3.0, 2.0, 1.0, 0.0]
+
+
 def test_video_path_rejects_unsafe_ids():
     assert gallery.video_path("../../etc/passwd") is None
     assert gallery.video_path("/etc/passwd") is None
@@ -145,8 +157,7 @@ def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
             raise PermissionError("mp4 locked")
         return real_unlink(self, *a, **k)
 
-    # Patch Path.unlink, not os.unlink (3.10 caches an _accessor); scoped context keeps
-    # the autouse studio_root redirect.
+    # Patch Path.unlink, not os.unlink (3.10 caches _accessor); scope keeps studio_root.
     with pytest.MonkeyPatch.context() as m:
         m.setattr(Path, "unlink", _fail_on_mp4)
         assert gallery.delete(record["id"]) is False
@@ -161,6 +172,30 @@ def test_clear_returns_count():
     assert gallery.clear() == 2
     assert gallery.list_videos() == []
     assert list(gallery.gallery_dir().glob("*.json")) == []
+
+
+def test_clear_uses_the_locked_folder_when_the_folder_moves_mid_clear(monkeypatch, tmp_path):
+    # A Settings relocation can change gallery_dir() while clear() holds the old folder's lock.
+    record = gallery.save(_mp4(), _meta(prompt = "old folder"))
+    old = gallery.gallery_dir()
+    new = tmp_path / "relocated"
+    new.mkdir()
+    (new / f"{record['id']}.json").write_text(
+        json.dumps(_meta(prompt = "new folder")), encoding = "utf-8"
+    )
+    (new / f"{record['id']}.mp4").write_bytes(_mp4())
+    calls = []
+
+    def _moving_dir():
+        calls.append(1)
+        return old if len(calls) == 1 else new
+
+    monkeypatch.setattr(gallery, "gallery_dir", _moving_dir)
+    assert gallery.clear(include_archived = True, return_ids = True) == [record["id"]]
+    assert not (old / f"{record['id']}.mp4").exists()
+    assert not (old / f"{record['id']}.json").exists()
+    assert (new / f"{record['id']}.json").exists()
+    assert (new / f"{record['id']}.mp4").exists()
 
 
 def test_clear_preserves_orphan_mp4():
@@ -285,6 +320,7 @@ def _real_mp4_bytes(
     frames: int = 8,
     size: int | tuple[int, int] = 32,
     rate: int = 8,
+    codec: str = "mpeg4",
 ) -> bytes:
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
@@ -292,7 +328,7 @@ def _real_mp4_bytes(
 
     buf = io.BytesIO()
     with av.open(buf, "w", format = "mp4") as out:
-        stream = out.add_stream("mpeg4", rate = rate)
+        stream = out.add_stream(codec, rate = rate)
         width, height = size if isinstance(size, tuple) else (size, size)
         stream.width = width
         stream.height = height
@@ -380,8 +416,7 @@ def test_webm_export_keeps_the_audio_track():
     with av.open(io.BytesIO(webm)) as container:
         for frame in container.decode(audio = 0):
             samples += frame.samples
-    # Allow one 20 ms Opus frame of loss; compare to the decoded source since PyAV
-    # versions differ on AAC encoder padding.
+    # Allow one 20 ms Opus frame; PyAV AAC padding varies, so compare the decoded source.
     assert samples >= source_seconds * 48000 - 960, (samples, source_seconds)
 
 
@@ -441,6 +476,16 @@ def test_transcode_gif_and_webm_produce_real_containers():
     assert gif is not None and gif.startswith(b"GIF8")
     webm = gallery.transcode(record["id"], "webm")
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
+
+
+def test_webm_export_keeps_every_frame_of_an_h264_clip():
+    av = pytest.importorskip("av")
+    import io
+
+    record = gallery.save(_real_mp4_bytes(frames = 25, codec = "libx264"), _meta())
+    webm = gallery.transcode(record["id"], "webm")
+    with av.open(io.BytesIO(webm)) as container:
+        assert sum(1 for _ in container.decode(video = 0)) == 25
 
 
 def test_thumbnail_produces_a_webp_from_the_video():
@@ -549,9 +594,8 @@ def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch
 
 
 def test_gif_export_bounds_frames_and_edge(monkeypatch):
-    """Every kept frame is held as a paletted image before the encoder runs, so an unbounded walk
-    is a memory bomb: the generate request allows 2048x2048 for 1024 frames, and at the 12 fps
-    target the step is 1, which is over 4 GB of frames plus the GIF buffer. Cap both axes."""
+    """Every kept frame is held as a paletted image before encoding, so an unbounded walk is a
+    memory bomb: 2048x2048 x 1024 frames at a 12 fps target is over 4 GB; cap both axes."""
     import io as _io
 
     from core.inference import video_gallery as vg
@@ -680,6 +724,63 @@ def test_gif_export_uses_one_clip_wide_palette(monkeypatch, hold):
     assert info["loop"] == 0  # NETSCAPE loop 0 = forever
     assert all(d in (8, 9) for d in info["delays"]), info["delays"]
     assert sum(info["delays"]) in (99, 100, 101)
+
+
+_GIF_PEAK_RSS_SCRIPT = r"""
+from fractions import Fraction
+import av, numpy as np
+import core.inference.video_gallery as vg
+
+vg._GIF_HOLD_BYTES = 0
+side, n = 720, 300
+rgb = np.zeros((side, side, 3), np.uint8)
+rgb[..., 0] = np.arange(side, dtype = np.uint8)[None, :]
+
+
+def _frames(path, step, width, height):
+    for _ in range(n):
+        yield av.VideoFrame.from_ndarray(rgb, format = "rgb24")
+
+
+def _peak_kib():
+    # VmHWM is per address space; ru_maxrss would carry over the forking parent's peak
+    with open("/proc/self/status") as f:
+        return int(next(line for line in f if line.startswith("VmHWM:")).split()[1])
+
+
+vg._gif_scaled_frames = _frames
+before = _peak_kib()
+gif = vg._transcode_gif_palette(None, Fraction(12), 1, side, side, n)
+assert gif.startswith(b"GIF8")
+print((_peak_kib() - before) // 1024)
+"""
+
+
+def test_gif_export_two_pass_does_not_queue_the_clip_in_palettegen():
+    """With frames over _GIF_HOLD_BYTES the palette pass must not hold them either: 300 720p frames are 445 MiB if
+    FFmpeg queues them all before palettegen sees EOF."""
+    import subprocess
+    import sys
+
+    from core.inference import video_gallery as vg
+
+    pytest.importorskip("numpy")
+    if not os.path.exists("/proc/self/status"):
+        pytest.skip("peak RSS is read from /proc/self/status (Linux only)")
+    if not vg._gif_palette_supported():
+        pytest.skip("this PyAV build has no palettegen / paletteuse / gif encoder")
+    backend = Path(vg.__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", _GIF_PEAK_RSS_SCRIPT],
+        cwd = backend,
+        env = {**os.environ, "PYTHONPATH": str(backend)},
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    growth_mib = int(result.stdout.split()[-1])
+    assert growth_mib < 160, f"peak RSS grew {growth_mib} MiB"
 
 
 def test_gif_export_palette_path_caps_frames_and_edge(monkeypatch):

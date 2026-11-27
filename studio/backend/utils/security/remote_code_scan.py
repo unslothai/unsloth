@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import io
 import tokenize
 import importlib.util
 import os
+import itertools
 import pathlib
 import re
 import stat
@@ -58,11 +61,115 @@ def remote_code_config_paths(load_subdirs = ()) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def versioned_config_paths(cfg_name: str, cfg) -> tuple[str, ...]:
+    """transformers loads a config.<version>.json named in config.json's configuration_files instead of
+    config.json, so that file's auto_map runs too: its repo path, beside the config.json."""
+    path = pathlib.PurePosixPath(cfg_name)
+    files = cfg.get("configuration_files") if isinstance(cfg, dict) else None
+    if path.name != "config.json" or not isinstance(files, (list, tuple)):
+        return ()
+    out = []
+    for name in files:
+        entry = pathlib.PurePosixPath(str(name))
+        if (
+            not isinstance(name, str)
+            or not name
+            or "\\" in name
+            or entry.is_absolute()
+            or any(
+                part in {"", ".", ".."} or pathlib.PureWindowsPath(part).drive
+                for part in entry.parts
+            )
+        ):
+            continue
+        out.append((path.parent / entry).as_posix())
+    return tuple(dict.fromkeys(out))
+
+
 class RemoteCodeUnscannable(Exception):
     """The repo's executable code could not be fully fetched/listed to scan. Raised (not returned empty) so the gate distinguishes "code PRESENT but unreadable" (offline/gated/transient/404/listing failure), which fails CLOSED, from "repo has NO .py" (empty result), where trust_remote_code is a no-op and the load is allowed. Conflating them would block a code-free repo or fail open on code we could not see."""
 
 
-# Fallback patterns (used only if scripts/scan_packages.py is absent): (regex, check, severity). A flat subset of the canonical scanner so a stripped install still scans; the canonical scanner (imported below) supersedes it whenever the repo is present.
+_CONFIG_READS: contextvars.ContextVar = contextvars.ContextVar(
+    "unsloth_remote_code_config_reads", default = None
+)
+
+
+@contextlib.contextmanager
+def shared_config_reads():
+    """Per context: each Hub config is read once per scope; failures are never kept, only paths or 404s."""
+    if _CONFIG_READS.get() is not None:
+        yield
+        return
+    reset = _CONFIG_READS.set({})
+    try:
+        yield
+    finally:
+        _CONFIG_READS.reset(reset)
+
+
+def _config_read_key(model_name: str, cfg_name: str, hf_token) -> Optional[tuple]:
+    try:
+        from huggingface_hub import constants as hf_constants
+        from utils.hub_settings import active_source
+
+        token = (
+            hashlib.sha256(hf_token.encode("utf-8")).hexdigest()
+            if isinstance(hf_token, str)
+            else repr(hf_token)
+        )
+        return (
+            hf_constants.ENDPOINT,
+            os.environ.get("HF_ENDPOINT"),
+            bool(hf_constants.HF_HUB_OFFLINE),
+            os.environ.get("HF_HUB_OFFLINE"),
+            active_source(),
+            str(active_hf_hub_cache()),
+            model_name,
+            cfg_name,
+            token,
+        )
+    except Exception:
+        return None
+
+
+def hub_config_path(model_name: str, cfg_name: str, hf_token) -> Optional[str]:
+    """Hub config path, None when absent, raises on other failures; probes first so 404s aren't cached."""
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    from huggingface_hub.utils import EntryNotFoundError
+    from hub.utils.hf_tokens import anonymous_retrying
+    from utils.hf_probe import hf_file_definitely_absent
+
+    hf_hub_download = anonymous_retrying(hf_hub_download)
+    reads = _CONFIG_READS.get()
+    key = _config_read_key(model_name, cfg_name, hf_token) if reads is not None else None
+    if key is not None and key in reads:
+        path = reads[key]
+        # A kept path purged from the cache meanwhile is read again.
+        if path is None or os.path.isfile(path):
+            return path
+    if hf_file_definitely_absent(model_name, cfg_name, token = hf_token):
+        path = None
+    else:
+        try:
+            path = hf_hub_download(
+                model_name,
+                cfg_name,
+                token = hf_token,
+                cache_dir = active_hf_hub_cache(),
+            )
+        except EntryNotFoundError as exc:
+            # A local cache miss (offline, timeout) reads as absent but is no answer to keep.
+            if isinstance(exc, LocalEntryNotFoundError):
+                return None
+            path = None
+    if key is not None:
+        reads[key] = path
+    return path
+
+
+# Fallback used only if scripts/scan_packages.py is absent (stripped install).
 _FALLBACK_PATTERNS: tuple[tuple[re.Pattern, str, str], ...] = (
     (
         re.compile(
@@ -421,6 +528,10 @@ def repo_remote_code_files(
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
+            # A JSON file path loads as the config itself (AutoConfig reads it): scan beside it, and its auto_map.
+            config_file = root if root.is_file() else None
+            if config_file is not None:
+                root = root.parent
 
             # Walk ALL .py, not just the auto_map entry's static import closure. This is DELIBERATE: the entry can reach a sibling via an absolute import, importlib, or exec, which a relative-import closure misses, so closure-only scanning is a real bypass. A broad scan never under-scans; the cost is that a benign script can over-block, the safe direction for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             def raise_walk_error(error):
@@ -452,11 +563,23 @@ def repo_remote_code_files(
                     files[str(p.relative_to(root))] = _read_python_source(p)
             # A local config can still point auto_map at an EXTERNAL Hub repo that executes on load, so fetch it; every config that can declare auto_map is checked. The external form is owner/name--module.Class.
             ext_refs = set()
-            for name in remote_code_config_paths(load_subdirs):
+            if config_file is not None:
+                try:
+                    ext_refs |= _auto_map_refs(
+                        json.loads(config_file.read_text(encoding = "utf-8-sig"))
+                    )
+                except Exception:
+                    pass
+            names = list(remote_code_config_paths(load_subdirs))
+            for name in names:
                 p = root.joinpath(*pathlib.PurePosixPath(name).parts)
                 if p.is_file():
                     try:
-                        ext_refs |= _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
+                        cfg = json.loads(p.read_text(encoding = "utf-8-sig"))
+                        ext_refs |= _auto_map_refs(cfg)
+                        names.extend(
+                            [n for n in versioned_config_paths(name, cfg) if n not in names]
+                        )
                     except Exception:
                         pass
             if not _add_external_refs(files, ext_refs, hf_token, model_name):
@@ -468,30 +591,25 @@ def repo_remote_code_files(
 
         hf_hub_download = anonymous_retrying(hf_hub_download)
         list_repo_files = anonymous_retrying(list_repo_files)
-        from huggingface_hub.utils import EntryNotFoundError
-        from utils.hf_probe import hf_file_definitely_absent
 
-        # Collect auto_map refs from EVERY config that can declare one. A 404 (EntryNotFoundError) means the config is absent -> skip; any other failure is transient/auth and could hide an auto_map, so fail closed (unscannable).
+        # Refs from EVERY config that can declare auto_map; an unreadable one could hide one, so fail closed.
         refs = set()
-        for cfg_name in remote_code_config_paths(load_subdirs):
-            # Avoid caching expected 404s; other failures still reach the fail-closed path.
-            if hf_file_definitely_absent(model_name, cfg_name, token = hf_token):
-                continue
+        cfg_names = list(remote_code_config_paths(load_subdirs))
+        for cfg_name in cfg_names:
             try:
-                cfg_path = hf_hub_download(
-                    model_name,
-                    cfg_name,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
-                )
-            except EntryNotFoundError:
-                continue
+                cfg_path = hub_config_path(model_name, cfg_name, hf_token)
             except Exception as exc:
                 raise RemoteCodeUnscannable(
                     f"{model_name}: config {cfg_name} could not be fetched ({exc})"
                 ) from exc
+            if cfg_path is None:
+                continue
             try:
-                refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
+                cfg = json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig"))
+                refs |= _auto_map_refs(cfg)
+                cfg_names.extend(
+                    [n for n in versioned_config_paths(cfg_name, cfg) if n not in cfg_names]
+                )
             except Exception:
                 pass
         own_refs = {fn for repo, fn in refs if repo is None}
@@ -555,22 +673,7 @@ _MAX_CONFIG_DEPTH = 12
 
 
 def iter_auto_maps(cfg, _depth: int = 0):
-    """Yield every ``auto_map`` dict in a config, at the top level and in any sub-config.
-
-    transformers reads ``auto_map`` off whichever config object builds the thing being
-    built, and for a composite model that is a SUB-config, not the top level. Reading
-    only ``cfg["auto_map"]`` therefore scans less than the load executes:
-    ``unsloth/models/_utils.py`` resolves ``text_config.auto_map["AutoModelForCausalLM"]``
-    through ``get_class_from_dynamic_module``, and ``unsloth/models/loader.py`` already
-    walks every level for the compiler because nesting goes beyond text/vision/audio
-    (Qwen-Omni ``thinker_config``, nested ``llm_config``). A repo whose only ``auto_map``
-    sits on a sub-config used to read as "ships no remote code", so the gate allowed it
-    with no scan, no findings and no fingerprint.
-
-    Depth-bounded rather than unbounded: a config is attacker-supplied JSON, and the
-    bound is what keeps a deeply nested one from costing anything. Twelve is far past
-    the deepest real composite (three).
-    """
+    """Walks sub-configs too, where composite models keep auto_map; depth-bounded because the config is attacker-supplied JSON."""
     if _depth > _MAX_CONFIG_DEPTH or not isinstance(cfg, dict):
         return
     auto_map = cfg.get("auto_map")
@@ -614,11 +717,6 @@ def _auto_map_refs(cfg: dict) -> set:
     return out
 
 
-def _auto_map_py(cfg: dict) -> set[str]:
-    """Own-repo ``.py`` filenames referenced by auto_map (external refs excluded)."""
-    return {fn for repo, fn in _auto_map_refs(cfg) if repo is None}
-
-
 def external_auto_map_repos(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -635,41 +733,45 @@ def external_auto_map_repos(
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
-            for cfg_name in remote_code_config_paths(load_subdirs):
-                p = root.joinpath(*pathlib.PurePosixPath(cfg_name).parts)
+            # A JSON file target is read as the config itself; the listed configs sit next to it.
+            direct = root if root.is_file() else None
+            if direct is not None:
+                root = root.parent
+            cfg_names = list(remote_code_config_paths(load_subdirs))
+            for cfg_name in itertools.chain([None] if direct is not None else [], cfg_names):
+                p = (
+                    direct
+                    if cfg_name is None
+                    else root.joinpath(*pathlib.PurePosixPath(cfg_name).parts)
+                )
                 if not p.is_file():
                     continue
                 try:
-                    refs = _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
+                    cfg = json.loads(p.read_text(encoding = "utf-8-sig"))
+                    refs = _auto_map_refs(cfg)
+                    if cfg_name is not None:
+                        cfg_names.extend(
+                            [n for n in versioned_config_paths(cfg_name, cfg) if n not in cfg_names]
+                        )
                 except Exception:
                     continue
                 repos.update(repo for repo, _fn in refs if repo)
             return repos
 
-        from huggingface_hub import hf_hub_download
-        from hub.utils.hf_tokens import anonymous_retrying
-
-        hf_hub_download = anonymous_retrying(hf_hub_download)
-        from huggingface_hub.utils import EntryNotFoundError
-        from utils.hf_probe import hf_file_definitely_absent
-
-        for cfg_name in remote_code_config_paths(load_subdirs):
-            # Same guard as the scanner above; see utils/hf_probe.py.
-            if hf_file_definitely_absent(model_name, cfg_name, token = hf_token):
-                continue
+        cfg_names = list(remote_code_config_paths(load_subdirs))
+        for cfg_name in cfg_names:
             try:
-                cfg_path = hf_hub_download(
-                    model_name,
-                    cfg_name,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
-                )
-            except EntryNotFoundError:
-                continue
+                cfg_path = hub_config_path(model_name, cfg_name, hf_token)
             except Exception:
                 continue
+            if cfg_path is None:
+                continue
             try:
-                refs = _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
+                cfg = json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig"))
+                refs = _auto_map_refs(cfg)
+                cfg_names.extend(
+                    [n for n in versioned_config_paths(cfg_name, cfg) if n not in cfg_names]
+                )
             except Exception:
                 continue
             repos.update(repo for repo, _fn in refs if repo)

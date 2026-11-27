@@ -232,3 +232,27 @@ def test_rope_positions_pair_matches_two_single_calls(layout):
     for r, x in zip(ref[:4], got[:4]):
         assert r.stride() == x.stride()
         assert torch.equal(r.view(torch.int16), x.view(torch.int16))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_rope_broadcasts_one_row_position_ids(compiled):
+    # [1, seq] int32 ids at the front of a buffer of ones: an unbroadcast read past them
+    # rotates batch rows >= 1 by position 1.
+    from unsloth.kernels.rope_embedding import fast_rope_embedding
+
+    if compiled and not hasattr(torch.library, "triton_op"):
+        pytest.skip("needs torch.library.triton_op")
+    bsz, seq, hd = 3, 21, 64
+    buf = torch.ones(bsz * seq + 64, dtype = torch.int32, device = "cuda")
+    buf[:seq] = torch.arange(seq, dtype = torch.int32, device = "cuda") + 3
+    one_row = buf[:seq].view(1, seq)
+    cos, sin = _cos_sin(seq + 16, hd, torch.float32)
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    Q = torch.randn(bsz, 4, seq, hd, device = "cuda", generator = g)
+    K = torch.randn(bsz, 2, seq, hd, device = "cuda", generator = g)
+    fn = torch.compile(fast_rope_embedding, fullgraph = True) if compiled else fast_rope_embedding
+    got = fn(Q.clone(), K.clone(), cos, sin, one_row)
+    want = fast_rope_embedding(
+        Q.clone(), K.clone(), cos, sin, one_row.expand(bsz, seq).contiguous()
+    )
+    assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1])

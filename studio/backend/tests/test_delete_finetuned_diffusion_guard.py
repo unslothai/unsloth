@@ -60,17 +60,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(models_module, "exports_root", lambda: tmp_path / "exports")
     entries = {f"model:training:{outputs / 'my-diffusion-model'}": {}, "upload:abc": {}}
     monkeypatch.setattr(library_db, "list_entries", lambda: entries)
-    monkeypatch.setattr(models_module, "get_inference_backend", lambda: _NoChat())
 
     app = FastAPI()
     app.include_router(models_router, prefix = "/api/models")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app), outputs
-
-
-class _NoChat:
-    active_model_name = None
-    loading_models: set = set()
 
 
 def _model_dir(outputs):
@@ -206,8 +200,7 @@ def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, mon
 
 
 def test_deleting_a_gguf_variant_drops_its_library_entry(client, forgotten, monkeypatch):
-    """A GGUF export is listed by one of its files; deleting that variant ends its entry, and the
-    other variants keep theirs."""
+    """A GGUF export is listed via its files; deleting one variant drops only its own entry."""
     c, outputs = client
     run = outputs.parent / "exports" / "my-export"
     run.mkdir(parents = True)

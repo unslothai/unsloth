@@ -89,7 +89,7 @@ export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) 
   };
 }
 
-/** Register an artifact's opaque-origin frame for annotation commands only. */
+/** Register an artifact's opaque-origin frame for annotation and browser agent commands only. */
 export function registerArtifactFrame(tabId: string, frame: HTMLIFrameElement): () => void {
   frames.set(tabId, frame);
   for (const notify of frameListeners) notify();
@@ -97,6 +97,7 @@ export function registerArtifactFrame(tabId: string, frame: HTMLIFrameElement): 
     if (event.source !== frame.contentWindow || event.origin !== "null") return;
     const message = parseFrameMessage(event.data);
     if (message?.type === "annotate") annotateListeners.get(tabId)?.(message.event);
+    else if (message?.type === "agent") agentRequests.get(message.id)?.({ installed: message.installed, result: message.result });
   };
   window.addEventListener("message", listener);
   return () => {
@@ -156,6 +157,7 @@ export function PageFrame({
   base,
   ownBase = false,
   anyOrigin = false,
+  siteCookies = false,
   refresh,
   title,
   tabId,
@@ -173,6 +175,7 @@ export function PageFrame({
   base: string | null;
   ownBase?: boolean;
   anyOrigin?: boolean;
+  siteCookies?: boolean;
   refresh?: { delay: number; url: string } | null;
   title: string;
   onMessage: (message: FrameMessage) => void;
@@ -240,6 +243,7 @@ export function PageFrame({
             frame,
             message.url,
             message.seq,
+            message.sameSite,
           );
         return;
       }
@@ -341,6 +345,7 @@ export function PageFrame({
             base,
             ownBase,
             anyOrigin,
+            siteCookies,
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,

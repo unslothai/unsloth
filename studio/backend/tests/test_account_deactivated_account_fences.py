@@ -66,8 +66,7 @@ def client_for(account):
 
 
 def test_owner_unload_refuses_a_deactivated_accounts_live_generation(deactivatable):
-    """Item 3971721488: /unload's resident-control fence and the active-generation
-    refusal both go blind once the sole managed account is deactivated."""
+    """Once the sole account is deactivated, unload's fence and generation refusal go blind."""
     event = threading.Event()
     with run_as(ALICE, active_generations.ActiveGeneration, event, model = "org/alice-private"):
         deactivatable["value"] = False
