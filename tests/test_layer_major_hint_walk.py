@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""The off-mode offload_layers opt-in hint (UNSLOTH_OFFLOAD_LAYER_MAJOR unset, gradient_accumulation_steps > 1) walks
-model.modules() once per train() call for a model without a block swap, not once per optimizer step, and still prints
-exactly once when a swap exists, including one built after training started (CPU, no transformers)."""
+"""The off-mode opt-in hint walks modules once per model, re-walking after any new BlockSwap."""
 
 import ast
 import importlib.util
@@ -126,7 +124,6 @@ def test_hint_prints_for_a_swap_built_mid_training(mod, monkeypatch, capsys):
 
     def on_step(trainer, step):
         if step == 3:
-            # What unsloth.models._utils._new_block_swap does before every attach / auto re-plan.
             mod.note_block_swap_installed()
             trainer.model.layers._unsloth_block_swap = object()
 
@@ -177,8 +174,7 @@ def test_new_block_swap_bumps_the_install_counter(mod, monkeypatch):
 
 
 def test_every_swap_attach_builds_through_new_block_swap():
-    """Each function under unsloth/ that sets `x._unsloth_block_swap = <not None>` builds the swap through
-    _new_block_swap, so the hint's remembered miss is invalidated by every install."""
+    """Every `_unsloth_block_swap = <x>` site builds via _new_block_swap (which invalidates the cached miss)."""
     offenders = []
     for root, _, files in os.walk(os.path.join(_ROOT, "unsloth")):
         for name in files:

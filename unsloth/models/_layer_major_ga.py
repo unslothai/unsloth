@@ -100,7 +100,7 @@ def _block_swap_layers(model):
     return None, None
 
 
-# Bumped by unsloth.models._utils._new_block_swap before every BlockSwap is built (attach, load, auto re-plan).
+# Bumped by _utils._new_block_swap on every BlockSwap build; invalidates cached hint misses.
 _BLOCK_SWAP_INSTALLS = [0]
 
 
@@ -109,9 +109,7 @@ def note_block_swap_installed():
 
 
 def _hint_swap_found(trainer):
-    """Whether trainer.model has an active block swap, for the off-mode opt-in hint. A miss is remembered for the
-    same model until the next BlockSwap is built (and for this train() call only), so a model without offload_layers
-    walks its modules once instead of once per optimizer step."""
+    """Block swap present? Misses are cached per (model, install count) to avoid a module walk every step."""
     model = getattr(trainer, "model", None) or torch.nn.Module()
     key = (id(model), _BLOCK_SWAP_INSTALLS[0])
     if trainer.__dict__.get("_unsloth_layer_major_hint_miss") == key:
