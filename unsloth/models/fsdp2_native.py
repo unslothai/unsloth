@@ -3542,6 +3542,34 @@ def _inner_optimizer(optimizer):
     return optimizer
 
 
+@contextlib.contextmanager
+def _host_state_gatherable(optimizer):
+    """UNSLOTH_OFFLOAD_OPTIMIZER_STATE keeps a DTensor state's local shard in host memory under its original
+    (device) wrapper. torch's full state gather moves a DTensor to its mesh's device only when the wrapper
+    reports another device, so it would hand NCCL a host tensor. For the gather each such state is wrapped
+    with its host device instead: torch then moves it to the device one tensor at a time, and the offloaded
+    state (the objects the offloader tracks) is put back afterwards."""
+    from .fsdp2_save import _dtensor_class
+
+    DTensor = _dtensor_class()
+    swapped = []
+    if DTensor is not None:
+        for state in list(getattr(optimizer, "state", {}).values()):
+            if not isinstance(state, dict):
+                continue
+            for key, value in list(state.items()):
+                if isinstance(value, DTensor) and value._local_tensor.device != value.device:
+                    state[key] = DTensor(
+                        value._local_tensor, value._spec, requires_grad = value.requires_grad
+                    )
+                    swapped.append((state, key, value))
+    try:
+        yield
+    finally:
+        for state, key, value in swapped:
+            state[key] = value
+
+
 def native_save_optimizer(
     model,
     optimizer,
@@ -3563,7 +3591,7 @@ def native_save_optimizer(
     if writer_rank == 0:
         from .fsdp2_bnb_optim import full_cpu_state_export
         export = full_cpu_state_export(optimizer)
-    with export:
+    with export, _host_state_gatherable(optimizer):
         state = get_optimizer_state_dict(
             model,
             optimizer,
@@ -3571,8 +3599,8 @@ def native_save_optimizer(
                 full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0
             ),
         )
-    if writer_rank != 0:
-        state = _gather_to_writer(state, writer_rank)
+        if writer_rank != 0:
+            state = _gather_to_writer(state, writer_rank)
     dist = _dist()
     if should_save is None or writer_rank != 0:
         # Only the sub-mesh writer holds the state; a global-rank-0 should_save would write nothing.
