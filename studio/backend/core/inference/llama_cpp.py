@@ -17195,7 +17195,6 @@ class LlamaCppBackend:
         """Clears the old notice only once a load commits to replacing the server; a rejected try
         keeps it."""
         self._last_load_warning = None
-        self._tensor_parallel_notice = None
         self.hub_access_warning = None
         # The advice describes the dying child's placement, not its replacement.
         self._last_carveout_advice = None
@@ -26370,6 +26369,9 @@ class LlamaCppBackend:
 
                 self._mmproj_fallback_reason = None
                 self._variant_fallback_warning = None
+                # Per load, not per _begin_load_warnings(): the narrowed-GPU respawn re-prices only
+                # the memory notices, and its layer split still needs this explanation.
+                self._tensor_parallel_notice = None
             # Reset at the teardown, not where the binary resolves: early bails keep the old server.
             self._launch_binary_revision = self._binary_revision(binary)
             (

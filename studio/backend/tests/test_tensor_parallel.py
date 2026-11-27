@@ -2000,3 +2000,34 @@ class TestTensorSplitUnsupportedArchitecture:
         os.utime(binary, ns = (time.time_ns() + 10**9, time.time_ns() + 10**9))
 
         assert not LlamaCppBackend._tensor_split_arch_unsupported(str(binary), "nemotron_h_moe")
+
+    def test_the_kernel_image_respawn_keeps_the_notice(self, tmp_path, monkeypatch):
+        """The narrowed-GPU respawn re-prices only the memory notices; the layer split it serves
+        still owes the user the tensor-parallel explanation, in the response and in /status."""
+        import functools
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_fit_retry_harness_tensor_arch",
+            Path(__file__).resolve().parent / "test_fit_retry_gpu_mask.py",
+        )
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        monkeypatch.setattr(
+            harness, "GgufLoadIntent", functools.partial(GgufLoadIntent, tensor_parallel = True)
+        )
+        # The harness binary is not on disk, so it has no build key to latch against.
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_tensor_split_arch_unsupported",
+            classmethod(lambda _cls, _binary, _arch: True),
+        )
+
+        backend, launches, error = harness._load(
+            monkeypatch, tmp_path, returncodes = [1, None], outputs = [harness._NO_KERNELS]
+        )
+
+        assert error is None
+        assert [harness._mask(launch) for launch in launches] == ["0", "1"]
+        assert all(self._mode(launch[0]) != "tensor" for launch in launches)
+        assert "layer split" in (backend.last_load_warning or "")
