@@ -10,6 +10,7 @@ import type {
 } from "../types/api";
 
 import { skillLoadCardEvent } from "./skill-load-event";
+import { notifyChatImageToolSettled } from "./chat-image-tool-events";
 export type ChatGenerationStatus =
   | "queued"
   | "running"
@@ -451,6 +452,7 @@ async function* streamChatGenerationEvents(
         if (data.length > 0) {
           const event = JSON.parse(data.join("\n")) as ChatGenerationEvent;
           if (event.type === "chunk") {
+            notifyChatImageToolSettled(event.payload);
             event.payload = normalizeChatGenerationChunkPayload(event.payload);
           }
           onActivity?.();
