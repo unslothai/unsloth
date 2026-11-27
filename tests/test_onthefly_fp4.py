@@ -10,6 +10,7 @@ import sys
 import types
 
 import pytest
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 
@@ -367,7 +368,7 @@ def _case(
     return json.loads(lines[-1][len("ONTHEFLY_CASE ") :])
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "W4A16 kernels need a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "W4A16 kernels need a GPU")
 @pytest.mark.parametrize("api", ["FastLanguageModel", "FastModel"])
 @pytest.mark.parametrize("fmt", ["nvfp4", "mxfp4"])
 def test_lora_trains_on_an_onthefly_fp4_base(tiny_dense, tmp_path, api, fmt):
@@ -388,7 +389,7 @@ def test_lora_trains_on_an_onthefly_fp4_base(tiny_dense, tmp_path, api, fmt):
         assert r["peft_merge_packed_left"] == 0 and r["peft_merge_rel"] < 2e-2, r
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "W4A16 kernels need a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "W4A16 kernels need a GPU")
 def test_bool_load_in_4bit_is_still_bitsandbytes(tiny_dense, tmp_path):
     r = _case(tiny_dense, "FastLanguageModel", "nf4", tmp_path)
     assert r["stats"]["linear"] == 0 and r["dequant_calls"] == 0
