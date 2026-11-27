@@ -2727,13 +2727,15 @@ def test_gguf_execution_gate_is_built_from_the_sanitized_catalog():
     source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py").read_text(
         encoding = "utf-8"
     )
-    gate = source.index("_enabled_tool_names = {")
+    gate = source.index("def _round_tool_names(safe_tools, forced_name):")
     sweep = source.index(
         "neutralize_tool_descriptions(\n                active_tools, _markup_cache, self.markup_profile\n            )"
     )
     assert sweep < gate, "the catalog must be sanitized before the execution gate is built"
     window = source[gate : gate + 220]
     assert "for tool in safe_tools" in window
+    call = source.index("_enabled_tool_names = _round_tool_names(safe_tools, forced_name)")
+    assert "= _round_tool_choice(active_tools)" in source[call - 300 : call]
 
 
 @pytest.mark.parametrize("root", ["parameters", "input_schema", "inputSchema", "outputSchema"])
