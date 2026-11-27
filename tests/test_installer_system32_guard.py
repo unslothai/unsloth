@@ -167,7 +167,7 @@ def test_install_ps1_containment_has_a_path_boundary():
 def _extract_relocation_block() -> str:
     src = _install_ps1()
     start = src.index("    if ($InSystemDir) {")
-    end = src.index("\n    # ── Check winget ──", start)
+    end = src.index("\n    # -- Check winget --", start)
     return src[start:end]
 
 
