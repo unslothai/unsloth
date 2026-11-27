@@ -860,14 +860,12 @@ def test_split_calls_pair_each_prompt_with_its_own_negative():
 
 
 def test_flux3_images_share_one_generation_chunk():
-    # The facade batches the rows of one text window in one modular call (diffusion_flux3 _row_groups).
     from core.inference.diffusion import _generation_chunks
 
     jobs = [("a", 1), ("a", 2), ("b", 3)]
     for name in (FLUX3_KLEIN_FAMILY_NAME, FLUX3_KLEIN_BASE_FAMILY_NAME):
         assert _family(name).batched_forward is True
         assert _generation_chunks(_family(name), jobs, 1) == [jobs]
-    # A FLUX.3 record that does not say it batches keeps one chunk per image.
     unstated = SimpleNamespace(name = FLUX3_KLEIN_FAMILY_NAME)
     assert _generation_chunks(unstated, jobs, 1) == [[j] for j in jobs]
     # Other families keep one forward for the whole list.

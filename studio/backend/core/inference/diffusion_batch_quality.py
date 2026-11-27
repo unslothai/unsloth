@@ -29,9 +29,7 @@ FILE_NAME = "batch_quality.json"
 # (family name, device class, path) -> verdict. Only PASS verdicts measured on a release build belong here.
 SHIPPED: dict[tuple[str, str, str], dict] = {}
 
-# FLUX.3 klein on an RTX PRO 6000 Blackwell (Colab G4), streamed Low VRAM, int8 Auto, 16 steps, batch 2: 8 held-out
-# prompts x 3 seeds, batched vs solo on the same path against an eager bf16 reference. Both paths scored alike (the
-# solo renders were byte-identical across paths).
+# FLUX.3 klein, RTX PRO 6000 (G4), Low VRAM int8, 16 steps, batch 2, 8 prompts x 3 seeds vs eager bf16.
 _KLEIN_G4 = {
     "verdict": "PASS",
     "n": 24,

@@ -191,8 +191,7 @@ def test_a_flux3_load_without_the_capability_renders_alone_and_says_why(studio):
     assert all(r.status_code == 200 for r in responses)
     assert _alone(backend) == ["a fox", "a cat"]
     assert _batched_calls(backend) == []
-    # The FLUX.3 record says its call fuses the rows, so the route's family check admits it; this load's family
-    # (no ``batched_forward``) is refused by the engine plan instead.
+    # The route admits FLUX.3; this load's family (no batched_forward) is refused by the engine plan.
     from core.inference.diffusion_families import detect_family
 
     assert adapters.batched_forward(detect_family("", name))

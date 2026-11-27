@@ -82,17 +82,14 @@ def _text_step(mp: Any) -> tuple[Any, Any]:
 
 
 class _Flux3RowsMismatch(Exception):
-    """A batched modular call's text step did not match the rows it was built for: run those rows one by one."""
+    """Batched text step did not match the rows: run them one by one."""
 
 
-# The rows of the batched modular call in flight on this thread: the text step returns their stacked embeddings.
 _ROW_TEXT = contextvars.ContextVar("unsloth_flux3_row_text", default = None)
 
 
 class _RowText:
-    """Per-row prompts of one batched modular call: the step's first text call takes ``positive``, its second (the
-    base model's unconditional branch) ``negative``. ``encoded`` holds this call's positive embeddings, encoded
-    beforehand with ``args`` by text (each row alone, exactly as its own call would)."""
+    """Rows of one batched call: text call 1 takes ``positive``, call 2 (unconditional branch) ``negative``."""
 
     __slots__ = ("positive", "negative", "encoded", "args", "calls", "references", "processed")
 
@@ -109,13 +106,12 @@ class _RowText:
         self.encoded = encoded
         self.args = args
         self.calls = 0
-        # per row, its own resized reference images (None: the call's references are shared by every row)
+        # None: references shared by every row
         self.references = references
         self.processed = 0
 
 
 def _row_text_embeds(owner: Any, rows: _RowText, a: dict) -> Any:
-    """The stacked ``(rows, window, dim)`` embeddings for the text step call ``a``; every row's window must match."""
     import torch
 
     which = rows.calls
@@ -153,7 +149,6 @@ def _row_text_embeds(owner: Any, rows: _RowText, a: dict) -> Any:
 
 
 def _text_defaults(step: Any, pad_multiple: Optional[int], hidden_states_layers: Any) -> tuple:
-    """``(pad_multiple, layers)`` the text step encodes with when the call names neither."""
     if pad_multiple is None:
         pad_multiple = step.pad_multiple
     if hidden_states_layers is None:
@@ -168,8 +163,7 @@ def _text_defaults(step: Any, pad_multiple: Optional[int], hidden_states_layers:
 
 def _bridge_text_step(pipe: Any, mp: Any) -> bool:
     """Route the text step's per-prompt encode through ``pipe.encode_prompt`` (prompt cache, dead-tail probe).
-    Only for this pipe's own encoder and tokenizer; a foreign encoder runs the step's helper unchanged. Inside a
-    batched modular call (``_ROW_TEXT`` set) it returns every row's embeddings, stacked."""
+    Only for this pipe's own encoder and tokenizer; a foreign encoder runs the step's helper unchanged."""
     import inspect
     import weakref
 
@@ -212,9 +206,7 @@ def _bridge_text_step(pipe: Any, mp: Any) -> bool:
 
 
 def _bridge_reference_preprocess(mp: Any) -> bool:
-    """Inside a batched modular call with per-row references, the image step's per-reference ``preprocess`` returns
-    that reference of EVERY row, stacked (each row preprocessed alone, so the VAE encodes each row's own pixels).
-    Outside one it is the processor's own method."""
+    """In a batched call with per-row references, ``preprocess`` returns every row's reference, each alone, stacked."""
     import weakref
 
     processor = getattr(mp, "image_processor", None)
@@ -637,8 +629,7 @@ class _Flux3KleinPipelineMixin:
         guidance_stop: Optional[float] = None,
         row_images: Optional[list] = None,
     ):
-        """``row_images``: one reference image (or list of them) per image of the list, instead of ``image`` (the
-        references every image shares)."""
+        """``row_images``: per-image references, instead of shared ``image``."""
         self._interrupt = False
         mp = self.modular_pipeline()
         if row_images is not None and image is not None:
@@ -654,7 +645,6 @@ class _Flux3KleinPipelineMixin:
             raise ValueError("FLUX.3 takes a text prompt (str) per image.")
         generators = generator if isinstance(generator, (list, tuple)) else None
         negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
-        # One prompt per call (text encoder sizes per prompt); _row_groups batches calls sharing a text window.
         if len(prompts) > 1 or generators is not None:
             count = max(len(prompts), len(generators or ()))
             if len(prompts) == 1:
@@ -734,7 +724,6 @@ class _Flux3KleinPipelineMixin:
             first: bool,
             rows: Optional[_RowText] = None,
         ) -> Any:
-            # The base model's text and reference streams run once per call, not once per step and branch.
             transformer = getattr(self, "transformer", None)
             if not self.is_distilled:
                 cond_blocks.begin_render(transformer, guided = lambda: _guider_runs_both(mp))
@@ -754,8 +743,6 @@ class _Flux3KleinPipelineMixin:
                 cond_blocks.end_render(transformer)
 
         def run_rows(group: list, first: bool) -> list:
-            """One modular call over every row of ``group`` (same text window): each row keeps its own prompt
-            embeddings, noise and negative prompt, so it is the computation of its own call at a larger batch."""
             kwargs = call_kwargs(group[0])
             kwargs["num_images_per_prompt"] = 1
             row_generators = [calls[i][1] for i in group]
@@ -843,12 +830,8 @@ class _Flux3KleinPipelineMixin:
         seeded_noise: bool,
         references: Optional[list] = None,
     ) -> tuple:
-        """``(groups, encoded, text_args)``: the call indexes that share one batched modular call, in first-row
-        order. A group shares its text window (the transformer attends to the padding, so a longer window is not
-        the shorter row's computation), its negative prompt and its reference sizes; each row's embeddings
-        are encoded alone, once, here. Every call renders alone when rows cannot be told apart exactly: caller latents, a row without a
-        readable seed, a denoiser whose activation scale comes from the whole call, no row bridge, or per-row
-        references (unless ``ROW_REFS_BATCH_ENV``)."""
+        """``(groups, encoded, text_args)``. Groups share text window (the transformer attends to padding),
+        negative and reference sizes; anything that could couple rows renders every call alone."""
         alone = ([[i] for i in range(len(calls))], {}, None)
         if len(calls) < 2 or latents is not None or batch_rows_disabled():
             return alone
@@ -872,7 +855,7 @@ class _Flux3KleinPipelineMixin:
             encoded: dict = {}
             texts = [prompt for prompt, _, _ in calls]
             if negative is not None and getattr(mp, "requires_unconditional_embeds", False):
-                # the unconditional branch's prompts too, so a later group never brings the encoder back
+                # negatives too, so a later group never reloads the encoder
                 texts += [negative(i) for i in range(len(calls))]
             for prompt in texts:
                 if prompt not in encoded:
@@ -889,7 +872,6 @@ class _Flux3KleinPipelineMixin:
         keyed: dict = {}
         for i, (prompt, _, _) in enumerate(calls):
             embeds = encoded[prompt]
-            # per-row references batch at one canvas: the same count and sizes on every row of the call
             key = (
                 tuple(embeds.shape[1:]),
                 None if negative is None else negative(i),
@@ -973,9 +955,7 @@ def flux3_row_key(
     prompt: str,
     max_sequence_length: int = 8192,
 ) -> Optional[tuple]:
-    """What a row must share with batch neighbours to join their modular call: its text window (the prompt's chat
-    templated token count rounded up to the step's pad multiple, as the text step sizes it). None when it cannot be
-    measured; rows of other windows still render correctly, in their own call."""
+    """A row's batch key: its padded chat-templated text window, or None if unmeasurable."""
     import math
     try:
         step, _helper = _text_step(pipe.modular_pipeline())
@@ -997,13 +977,11 @@ def flux3_row_key(
 
 
 def batch_rows_disabled() -> bool:
-    """``UNSLOTH_DIFFUSION_FLUX3_BATCH=0``: every image of a list runs as its own modular call again."""
     import os
     return (os.environ.get(BATCH_ROWS_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-# Rows with their own references (``row_images``) render one by one: a row's bytes are not yet shown independent of
-# a neighbour's reference on GPU. ``=1`` batches rows whose references share one canvas (for measuring that).
+# Per-row references render one by one until GPU-proven neighbour-independent; ``=1`` batches them (to measure).
 ROW_REFS_BATCH_ENV = "UNSLOTH_DIFFUSION_FLUX3_ROW_REFS_BATCH"
 
 
@@ -1013,8 +991,7 @@ def row_refs_batch_enabled() -> bool:
 
 
 def _per_call_scaled(module: Any) -> Optional[str]:
-    """The denoiser's first layer whose activation scale comes from the whole call (cached on the module, the
-    same record the request batcher reads), or None."""
+    """The denoiser's first layer whose activation scale comes from the whole call (cached), or None."""
     if module is None or not hasattr(module, "named_modules"):
         return None
     cached = module.__dict__.get("_unsloth_per_call_scaled")

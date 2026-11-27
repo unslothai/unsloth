@@ -171,26 +171,23 @@ class _AnimaInterrupted(Exception):
 
 
 class _AnimaRowsMismatch(Exception):
-    """A batched modular call's text steps did not match the rows it was built for: run those rows one by one."""
+    """Batched text steps did not match the rows: run them one by one."""
 
 
-# The per-row text record of the batched modular call in flight on this thread (None outside one).
 _ROW_TEXT = contextvars.ContextVar("unsloth_anima_row_text", default = None)
 
 BATCH_ROWS_ENV = "UNSLOTH_DIFFUSION_ANIMA_BATCH"
-# The text step's default ``max_sequence_length`` (the length its tokenizers truncate at).
+# The text step's default max_sequence_length.
 _T5_MAX_LENGTH = 512
 _ROW_BRIDGE = "_unsloth_row_bridge"
 
 
 def batch_rows_disabled() -> bool:
-    """``UNSLOTH_DIFFUSION_ANIMA_BATCH=0``: every image of a list runs as its own modular call again."""
     import os
     return (os.environ.get(BATCH_ROWS_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
 def _pad_rows(tensors: list) -> Any:
-    """Right-pad ``(1, L_i, ...)`` row tensors with zeros to the longest and stack them."""
     import torch
     import torch.nn.functional as F
 
@@ -206,9 +203,7 @@ def _pad_rows(tensors: list) -> Any:
 
 
 def _bridge_row_steps(mp: Any) -> bool:
-    """Route the text step and the text conditioning step through per-row bridges, inert outside a batched call:
-    inside one (``_ROW_TEXT`` set) each row is encoded and conditioned alone, exactly as its own call would, and
-    the rows' conditioned embeddings are stacked for the denoiser."""
+    """Per-row text bridges (inert unless _ROW_TEXT is set): each row is encoded and conditioned alone, then stacked."""
     text_steps, cond_steps = [], []
     seen: set = set()
 
@@ -323,7 +318,6 @@ def _row_condition(original: Callable) -> Callable:
             row_kwargs["t5_attention_mask"] = t5_mask[i : i + 1, :n_t5]
             outs.append(original(components, **row_kwargs))
         if any(o.shape[1:] != outs[0].shape[1:] for o in outs):
-            # A row past the conditioner's minimum length keeps its own length.
             raise _AnimaRowsMismatch("rows condition to different text lengths")
         return torch.cat(outs, dim = 0)
 
@@ -332,7 +326,6 @@ def _row_condition(original: Callable) -> Callable:
 
 
 def _per_call_scaled(module: Any) -> Optional[str]:
-    """As diffusion_flux3._per_call_scaled (the same cached record)."""
     from .diffusion_flux3 import _per_call_scaled as scaled
     return scaled(module)
 
@@ -449,8 +442,6 @@ class _AnimaPipelineMixin:
             raise ValueError("Anima takes a text prompt (str) per image.")
         generators = list(generator) if isinstance(generator, (list, tuple)) else None
         negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
-        # One entry per image, each with its own generator and negative prompt; _rows_batch then runs them as ONE
-        # batched modular call (each row's text encoded alone) where it can.
         if len(prompts) > 1 or generators is not None:
             count = max(len(prompts), len(generators or ()))
             if len(prompts) == 1:
@@ -506,8 +497,6 @@ class _AnimaPipelineMixin:
             return out if isinstance(out, list) else [out]
 
         def run_rows(group: list, first: bool) -> list:
-            """The rows of ``group`` in ONE modular call: each row's text is encoded and conditioned alone (its own
-            call's embeddings), its noise drawn from its own generator, and the denoiser runs once per step for all."""
             kwargs = call_kwargs(group[0])
             kwargs["prompt"] = [calls[i][0] for i in group]
             kwargs["generator"] = [calls[i][1] for i in group]
@@ -561,10 +550,7 @@ class _AnimaPipelineMixin:
         generators: Optional[list],
         negative: Callable[[int], Any],
     ) -> list:
-        """Call indexes that share one batched modular call, in first-row order. Rows batch when each has its own
-        generator, there are no caller latents, the row bridges are installed and no denoiser layer takes its
-        activation scale from the whole call; they group by the conditioned length of their prompt and negative prompt
-        (the conditioner pads to its minimum, so only a row past it stands apart). Otherwise every call renders alone."""
+        """Call indexes per batched call, grouped by conditioned (prompt, negative) length; else one call each."""
         alone = [[i] for i in range(len(calls))]
         if len(calls) < 2 or latents is not None or generators is None or batch_rows_disabled():
             return alone

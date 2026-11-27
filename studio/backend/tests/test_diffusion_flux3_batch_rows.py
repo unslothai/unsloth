@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 runs the images of a list that share a text window as ONE batched modular call: one denoiser forward
-per step over every row, each row its own embeddings, noise and negative prompt. Real diffusers modular blocks over a
-tiny random FLUX.3 (Qwen3-VL encoder, Flux2 VAE, Flux3 DiT), CPU fp32."""
+"""FLUX.3 batched-row modular calls over a tiny random FLUX.3, CPU fp32."""
 
 import numpy as np
 import pytest
@@ -42,7 +40,6 @@ def _tiny_pipe(distilled: bool):
         pytest.skip(f"{REPO} not in the Hub cache: {exc}")
     torch.manual_seed(0)
     config = transformers.Qwen3VLConfig.from_pretrained(path)
-    # The text step stacks hidden states 4, 8, ..., 32.
     config.text_config.num_hidden_layers = 32
     text_encoder = transformers.Qwen3VLForConditionalGeneration(config).eval()
     processor = transformers.AutoProcessor.from_pretrained(path)
@@ -183,7 +180,6 @@ def test_the_kill_switch_and_unseeded_rows_render_one_by_one(distilled, monkeypa
     assert rows == [1] * STEPS * 3
     monkeypatch.delenv(f3.BATCH_ROWS_ENV)
     distilled._test_rows.clear()
-    # Caller latents are one tensor for the call: no per-row noise to keep apart.
     distilled(
         prompt = PROMPTS[:2],
         generator = [torch.Generator().manual_seed(s) for s in SEEDS[:2]],
@@ -236,7 +232,6 @@ def test_edit_rows_with_different_references_never_share_a_forward(distilled):
     assert rows == [1] * STEPS * 3
     solo, _ = _render(distilled, [PROMPTS[1]], [SEEDS[1]], image = refs[1])
     assert _maxabs(images[1], solo[0]) < 1e-4
-    # Two references of one canvas but different pixels: still one forward per row.
     _, rows = _render(distilled, PROMPTS[:2], SEEDS[:2], row_images = refs[:2])
     assert rows == [1] * STEPS * 2
 
@@ -278,7 +273,6 @@ def test_per_row_references_at_one_canvas_batch(distilled, monkeypatch):
     for i in range(3):
         solo, _ = _render(distilled, [PROMPTS[i]], [SEEDS[i]], image = refs[i])
         assert _maxabs(images[i], solo[0]) < 1e-4
-    # A neighbour's reference never reaches a row.
     swapped = list(refs)
     swapped[1] = _ref((250, 250, 0))
     again, rows = _render(distilled, PROMPTS, SEEDS, row_images = swapped)
@@ -301,7 +295,6 @@ def test_per_row_references_of_other_sizes_render_apart(distilled, monkeypatch):
 
 
 def test_klein_ships_a_g2c_pass_for_g4_only():
-    # Measured on an RTX PRO 6000 (Colab G4): a race win there may serve; any other card still needs its own verdict.
     from types import SimpleNamespace
 
     from core.inference import diffusion_batch_quality as quality

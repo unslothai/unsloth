@@ -205,8 +205,7 @@ class DiffusionFamily:
     fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
-    # True when the family's list call runs several images in ONE denoiser forward with each row its own computation
-    # (proved by the neighbour-invariance gates), False when it never does; None = not stated (the default rules).
+    # True: list call batches rows in one forward (neighbour-invariance proven); False: never; None: default rules.
     batched_forward: Optional[bool] = None
     # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
     cudnn_benchmark: bool = True

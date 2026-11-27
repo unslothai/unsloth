@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Anima runs the images of a list as ONE batched modular call: each row's text is encoded and conditioned alone
-(the conditioner pads every row to its minimum length), its noise comes from its own generator, and the denoiser runs
-one forward per step and CFG branch over every row. Real diffusers modular blocks over a tiny random Anima, CPU fp32."""
+"""Anima batched-row modular calls over a tiny random Anima, CPU fp32."""
 
 import numpy as np
 import pytest
@@ -135,7 +133,6 @@ def test_a_neighbour_never_changes_a_row(pipe, target):
     assert _maxabs(batched[target], again[target]) == 0.0
     neighbour = (target + 1) % 4
     prompts, seeds = list(PROMPTS), list(SEEDS)
-    # A different prompt of another text length, a different seed and negative, at the same batch shape.
     prompts[neighbour] = "a neon robot dancing"
     seeds[neighbour] = 99
     negatives = ["blurry"] * 4
