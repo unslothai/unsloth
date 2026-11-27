@@ -490,6 +490,32 @@ def test_dense_base_unwraps_modules_to_save(tmp_path):
         assert torch.equal(value, reference[key]), key
 
 
+def test_dense_base_keeps_float32_parameters(tmp_path):
+    # A bf16 model with parameters held in float32 (Qwen3.5's A_log / dt_bias): the base keeps them float32.
+    _new_gguf_path()
+    from safetensors.torch import load_file
+    from transformers import AutoModelForCausalLM
+
+    _write_llama_gguf(tmp_path / "tiny.gguf")
+    with gp.gguf_packed_load():
+        packed = AutoModelForCausalLM.from_pretrained(
+            tmp_path,
+            gguf_file = "tiny.gguf",
+            dtype = torch.bfloat16,
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+    norm = packed.model.layers[0].input_layernorm
+    norm.weight.data = norm.weight.data.float() + 1e-3  # not representable in bf16
+    out = gp.write_gguf_dense_base(packed, tmp_path / "base")
+    tensors = {}
+    for f in os.listdir(out):
+        if f.endswith(".safetensors"):
+            tensors.update(load_file(os.path.join(out, f)))
+    saved = tensors["model.layers.0.input_layernorm.weight"]
+    assert saved.dtype == torch.float32 and torch.equal(saved, norm.weight.data)
+    assert tensors["model.layers.0.self_attn.q_proj.weight"].dtype == torch.bfloat16
+
+
 def test_merged_16bit_save_of_an_unwrapped_packed_model(tmp_path):
     # After merge_and_unload the model is no PeftModel and its non-target linears are still packed: the
     # export writes dequantized weights, never the uint8 blocks.

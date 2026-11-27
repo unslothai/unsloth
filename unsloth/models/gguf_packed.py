@@ -1127,8 +1127,10 @@ def _base_state_items(model, dtype):
         elif getattr(tensor, "packed_format", None) == "gguf":
             value = tensor.dequantize(dtype = dtype)
         else:
+            # Unpacked tensors keep the dtype the model holds them in (A_log / dt_bias and other kept-float32
+            # parameters stay float32); only a float32 export widens the rest.
             value = tensor.detach()
-            if value.is_floating_point() and value.dtype != dtype:
+            if value.is_floating_point() and dtype == torch.float32 and value.dtype != dtype:
                 value = value.to(dtype)
         if name in seen:
             continue
