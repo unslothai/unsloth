@@ -1397,10 +1397,11 @@ class DiffusionTrainingStatusResponse(BaseModel):
     lora_path: Optional[str] = None
     # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
     ema_path: Optional[str] = None
-    # Catalog mirror path plus the family and base model, so the UI can deploy the adapter.
+    # Catalog mirror path plus the family, base model and trigger, so the UI can deploy the adapter.
     catalog_path: Optional[str] = None
     family: Optional[str] = None
     base_model: Optional[str] = None
+    instance_prompt: Optional[str] = None
     # Live throughput + peak VRAM (from the trainer's progress events).
     samples_per_second: Optional[float] = None
     peak_memory_gb: Optional[float] = None
