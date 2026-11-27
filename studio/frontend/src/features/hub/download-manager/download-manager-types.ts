@@ -15,8 +15,7 @@ export interface ManagedDownload {
   inventoryKind?: Exclude<InventoryHint["kind"], "dataset">;
   state: DownloadJobState;
   downloadedBytes: number;
-  /** False when the last poll held `downloadedBytes` instead of measuring it, so it belongs to
-   * the previous total. */
+  /** False if the last poll held `downloadedBytes`, so it belongs to the previous total. */
   measuredTransfer?: boolean;
   // Excludes `.incomplete` bytes so a partial cannot be marked complete.
   completedBytes: number;

@@ -153,8 +153,7 @@ class _FakeProcessor:
 
 
 def test_resolve_chat_eos_reads_vision_processor_template():
-    # Vision model: chat_template is on the processor, not the inner tokenizer; _resolve_chat_eos
-    # reads it there, resolves the id on the inner tokenizer, and repairs generation_config.
+    # Vision models keep chat_template on the processor; _resolve_chat_eos reads it there.
     from types import SimpleNamespace
 
     inner_tok = _FakeTokenizer(1, chat_template = "", token_ids = {"<end_of_turn>": 107})

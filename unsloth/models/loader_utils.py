@@ -4676,7 +4676,22 @@ def check_and_disable_bitsandbytes_loading(
     if inkling2_owns_modelopt_quantization(model_config):
         drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
         register_inkling2_expert_dequantization()
+        from .inkling2_packed import (
+            inkling2_packed_experts_enabled,
+            install_inkling2_packed_expert_loading,
+        )
+
+        if (
+            inkling2_packed_experts_enabled()
+        ):  # opt-in: the released NVFP4 / MXFP8 experts stay packed
+            install_inkling2_packed_expert_loading()
         return load_in_4bit, load_in_8bit, None
+    from .inkling2_packed import warn_if_inkling2_packed_experts_inert
+
+    # The flag only engages on the released checkpoint above: say so instead of silently loading NF4 experts.
+    warn_if_inkling2_packed_experts_inert(
+        model_config, model_name = model_name, load_in_4bit = load_in_4bit
+    )
     quant_method = get_quant_type(model_config)
     if quant_method is None:
         # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.

@@ -234,6 +234,42 @@ def test_dequantize_cast_keeps_rows_of_whole_blocks(name, rows):
     assert ex.row_aligned(raw, qtype) and not ex.row_aligned(raw[:, 1:], qtype)
 
 
+@pytest.mark.parametrize("name", TYPES)
+@pytest.mark.parametrize("cast_on_store", [True, False], ids = ["cpu_cuda_store", "mps_cast"])
+def test_no_op_sees_a_tensor_above_rank_4(monkeypatch, name, cast_on_store):
+    # Z-Image Q4_K_M's exact dequant ran 7x its stock one on an M5 Max (MPS); its Q6_K weights were the only rank-6
+    # path (Q2_K / Q3_K rank 5). Both _emit branches: MPS takes the scale * q one.
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class MaxRank(TorchDispatchMode):
+        rank = 0
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            for t in torch.utils._pytree.tree_leaves((args, kwargs, out)):
+                if isinstance(t, torch.Tensor):
+                    self.rank = max(self.rank, t.dim())
+            return out
+
+    if not cast_on_store:
+        monkeypatch.setattr(ex, "_CAST_ON_STORE", ())
+    qtype = getattr(T, name)
+    bs, sz = gguf.GGML_QUANT_SIZES[qtype]
+    raw = torch.from_numpy(_random_blocks(name, 3 * 5, seed = 7)).reshape(3, 5 * sz)
+    for dtype in (torch.float32, torch.bfloat16):
+        with MaxRank() as mode:
+            dense = ex.dequantize_cast(raw, qtype, dtype, ex._FUNCTIONS[name])
+        assert mode.rank <= 4, f"{name} {dtype}: rank {mode.rank}"
+        ref = _gguf_py(raw.reshape(-1, sz), qtype).reshape(3, 5 * bs)
+        assert _same(dense, ref.to(dtype))
+
+
 def test_install_replaces_only_the_fp16_types_and_uninstall_restores_them():
     table = gguf_utils.dequantize_functions
     before = dict(table)

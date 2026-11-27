@@ -175,6 +175,7 @@ def _probe(
     selected_executable: str,
     execution_kind: str,
     cancel_event = None,
+    egress_rules: bool = False,
 ) -> tuple[bool, str]:
     if sys.platform != "win32":
         return False, "MXC is enabled only for native Windows Unsloth"
@@ -243,6 +244,8 @@ def _probe(
             timeout_seconds = timeout,
             workdir = str(workdir),
             env = env,
+            egress_proxy = egress_rules,
+            egress_rules_probe = egress_rules,
         )
 
         # Production runs a cmd Terminal from a drive alias of its workdir, so the probe must too.
@@ -363,6 +366,7 @@ def probe(
     execution_kind: str = "python",
     force: bool = False,
     cancel_event = None,
+    egress_rules: bool = False,
 ) -> tuple[bool, str]:
     try:
         identity = mxc_runtime.installation_identity()
@@ -375,6 +379,7 @@ def probe(
         os.path.abspath(selected_executable),
         _executable_signature(selected_executable),
         mxc_policy.dacl_fallback_enabled(),
+        egress_rules,
     )
     while True:
         with _lock:
@@ -392,7 +397,12 @@ def probe(
                 return False, "MXC capability probe was cancelled"
 
     try:
-        result = _probe(selected_executable, execution_kind, cancel_event)
+        result = _probe(
+            selected_executable,
+            execution_kind,
+            cancel_event,
+            **({"egress_rules": True} if egress_rules else {}),
+        )
         with _lock:
             if generation == _generation and (cancel_event is None or not cancel_event.is_set()):
                 _cache[key] = result

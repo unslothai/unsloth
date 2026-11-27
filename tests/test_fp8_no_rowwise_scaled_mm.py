@@ -11,6 +11,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 
 from unsloth.kernels import fp8 as F8
 from unsloth.kernels import fp8_lora as FL
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 WINDOWS_MESSAGE = "Rowwise scaling is not currently supported on your device"
 # torch 2.10 Windows wheels (RTX 5090) get past that guard and fail inside cuBLASLt instead.
@@ -156,6 +157,8 @@ def test_other_rowwise_errors_still_raise(monkeypatch):
 def test_rowwise_probe_is_cached_per_device(windows, monkeypatch, hip):
     # The answer comes from the real probe on every build, ROCm included (no torch.version.hip shortcut).
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    if not hip:
+        drop_rocm_tag(monkeypatch, torch)
     device = torch.device("cpu")
     assert FL.rowwise_supported(device) is False
     assert windows == ["tensor", "row"]
@@ -351,6 +354,7 @@ def test_tensorwise_backend_keeps_dequant_for_decode_rows(windows):
 )
 def test_direct_route_takes_tensorwise(monkeypatch, rows, dtype, route):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "tensorwise")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
     monkeypatch.setattr(F8, "_FP8_TENSORWISE_ANY_ROWS_NUMEL", 0, raising = False)
@@ -404,6 +408,7 @@ def test_tensorwise_size_gate():
 )
 def test_direct_route_size_gate(monkeypatch, rows, N, K, route):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "tensorwise")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
     with FakeTensorMode(), torch.no_grad():

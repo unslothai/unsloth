@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 
@@ -46,8 +46,12 @@ async def upload_dataset(
     file: UploadFile | None = File(None),
     native_path_lease: str | None = Form(None, alias = "nativePathLease"),
     current_subject: str = Depends(get_current_subject),
+    json_columns: Annotated[bool, Form()] = False,
+    csv_delimiter: Annotated[Literal[",", ";"], Form()] = ",",
 ) -> UploadDatasetResponse:
-    return await local.upload_dataset_response(file, native_path_lease)
+    return await local.upload_dataset_response(
+        file, native_path_lease, json_columns = json_columns, csv_delimiter = csv_delimiter
+    )
 
 
 @router.get("/local", response_model = LocalDatasetsResponse)

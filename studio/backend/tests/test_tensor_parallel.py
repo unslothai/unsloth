@@ -1816,3 +1816,218 @@ class TestLegacyBuildLatchIsBinaryWide:
         assert gate != -1, "the binary-wide gate is gone"
         assert gate < load.find("healthy=_spawn_and_wait(cmd)")
         assert "extra_args=strip_split_mode_only(extra_args)" in load
+
+
+class TestTensorSplitUnsupportedArchitecture:
+    """llama.cpp keeps --split-mode tensor to an allow-list of architectures (#19515: Nemotron-H
+    MoE). The refusal is latched per build and architecture, so it costs one quick spawn once."""
+
+    _REJECTION = (
+        "llama_model_load: error loading model: LLAMA_SPLIT_MODE_TENSOR not implemented "
+        "for architecture 'nemotron_h_moe'"
+    )
+
+    @pytest.fixture(autouse = True)
+    def _clear(self):
+        LlamaCppBackend._tensor_split_unsupported_archs.clear()
+        LlamaCppBackend._tensor_split_abort_keys.clear()
+        yield
+        LlamaCppBackend._tensor_split_unsupported_archs.clear()
+        LlamaCppBackend._tensor_split_abort_keys.clear()
+
+    @staticmethod
+    def _harness(tmp_path, architecture):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_placement_harness_tensor_arch",
+            Path(__file__).resolve().parent / "test_llama_cpp_placement.py",
+        )
+        placement = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(placement)
+        backend, gguf = placement._backend(
+            tmp_path, vulkan = False, memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)]
+        )
+
+        def _read_metadata(_path):
+            backend._architecture = architecture
+
+        backend._read_gguf_metadata = _read_metadata
+        return backend, gguf
+
+    def _load(self, backend, gguf, **intent_kwargs):
+        """One load_model call against a child that refuses tensor mode for nemotron_h_moe."""
+        import subprocess
+        from unittest.mock import patch
+
+        real_popen = subprocess.Popen
+        spawns: list[list[str]] = []
+
+        def _refused(cmd) -> bool:
+            return (
+                backend._architecture == "nemotron_h_moe"
+                and "--split-mode" in cmd
+                and cmd[cmd.index("--split-mode") + 1] == "tensor"
+            )
+
+        def fake_popen(cmd, **kwargs):
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return real_popen(cmd, **kwargs)
+            cmd = list(cmd)
+            spawns.append(cmd)
+            refused = _refused(cmd)
+            if refused:
+                backend._stdout_lines = [
+                    self._REJECTION,
+                    "srv    server_run_i: exiting due to model loading error",
+                ]
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 123,
+                    "stdout": (),
+                    "returncode": 1 if refused else None,
+                    "poll": lambda _self, _r = refused: 1 if _r else None,
+                    "terminate": lambda _self: None,
+                    "wait": lambda _self, timeout = None: 1 if refused else 0,
+                    "kill": lambda _self: None,
+                },
+            )()
+
+        backend._wait_for_health = lambda timeout, **_kw: not _refused(spawns[-1])
+        error = None
+        with patch.object(subprocess, "Popen", side_effect = fake_popen):
+            try:
+                backend.load_model(
+                    GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", **intent_kwargs)
+                )
+            except BaseException as exc:  # noqa: BLE001
+                error = exc
+        return spawns, error
+
+    @staticmethod
+    def _mode(cmd):
+        return cmd[cmd.index("--split-mode") + 1] if "--split-mode" in cmd else None
+
+    def test_the_architecture_is_parsed_from_the_refusal(self):
+        assert LlamaCppBackend._tensor_split_unsupported_arch(self._REJECTION) == "nemotron_h_moe"
+        assert LlamaCppBackend._tensor_split_unsupported_arch("unknown model architecture") is None
+
+    def test_the_refusal_costs_one_spawn_and_reaches_the_route_fallback(self, tmp_path):
+        backend, gguf = self._harness(tmp_path, "nemotron_h_moe")
+        spawns, error = self._load(backend, gguf, tensor_parallel = True)
+
+        assert [self._mode(c) for c in spawns] == ["tensor"]
+        assert isinstance(error, RuntimeError)
+        assert "nemotron_h_moe" in str(error) and "layer split" in str(error)
+        assert LlamaCppBackend._tensor_split_arch_unsupported(
+            "/fake/llama-server", "nemotron_h_moe"
+        )
+
+    def test_the_next_tensor_request_launches_layer_split_and_says_why(self, tmp_path):
+        backend, gguf = self._harness(tmp_path, "nemotron_h_moe")
+        self._load(backend, gguf, tensor_parallel = True)
+
+        spawns, error = self._load(backend, gguf, tensor_parallel = True)
+
+        assert error is None
+        assert [self._mode(c) for c in spawns] == [None]
+        assert backend._tensor_parallel is False
+        # Recorded, so a later Apply with Tensor Parallelism on does not reload in a loop.
+        assert backend._arch_gate_dropped_tensor_parallel is True
+        assert "nemotron_h_moe" in (backend.last_load_warning or "")
+        assert "layer split" in backend.last_load_warning
+
+    def test_the_route_layer_retry_carries_the_notice(self, tmp_path):
+        """The route retries with tensor off and --split-mode layer; the user still learns why."""
+        backend, gguf = self._harness(tmp_path, "nemotron_h_moe")
+        self._load(backend, gguf, tensor_parallel = True)
+
+        spawns, error = self._load(
+            backend,
+            gguf,
+            tensor_parallel = False,
+            extra_args = ("--split-mode", "layer"),
+            preserve_multi_gpu_on_layer = True,
+        )
+
+        assert error is None
+        assert [self._mode(c) for c in spawns] == ["layer"]
+        assert "nemotron_h_moe" in (backend.last_load_warning or "")
+
+    def test_an_extras_tensor_mode_is_dropped_too(self, tmp_path):
+        backend, gguf = self._harness(tmp_path, "nemotron_h_moe")
+        self._load(backend, gguf, tensor_parallel = True)
+
+        spawns, error = self._load(backend, gguf, extra_args = ("--split-mode", "tensor"))
+
+        assert error is None
+        assert [self._mode(c) for c in spawns] == [None]
+
+    def test_a_plain_load_of_the_same_model_gets_no_notice(self, tmp_path):
+        backend, gguf = self._harness(tmp_path, "nemotron_h_moe")
+        self._load(backend, gguf, tensor_parallel = True)
+
+        _spawns, error = self._load(backend, gguf, tensor_parallel = False)
+
+        assert error is None
+        assert "Tensor parallelism" not in (backend.last_load_warning or "")
+        assert backend._arch_gate_dropped_tensor_parallel is False
+
+    def test_another_architecture_still_gets_tensor_mode(self, tmp_path):
+        LlamaCppBackend._record_tensor_split_unsupported_arch(
+            "/fake/llama-server", "nemotron_h_moe"
+        )
+        backend, gguf = self._harness(tmp_path, "qwen3")
+
+        spawns, error = self._load(backend, gguf, tensor_parallel = True)
+
+        assert error is None
+        assert [self._mode(c) for c in spawns] == ["tensor"]
+        assert "Tensor parallelism" not in (backend.last_load_warning or "")
+
+    def test_a_replaced_binary_is_asked_again(self, tmp_path):
+        """An update can add the architecture to the allow-list, so the mtime invalidates it."""
+        import os
+
+        binary = tmp_path / "llama-server"
+        binary.write_text("old")
+        LlamaCppBackend._record_tensor_split_unsupported_arch(str(binary), "nemotron_h_moe")
+        assert LlamaCppBackend._tensor_split_arch_unsupported(str(binary), "NEMOTRON_H_MOE")
+
+        binary.write_text("new")
+        os.utime(binary, ns = (time.time_ns() + 10**9, time.time_ns() + 10**9))
+
+        assert not LlamaCppBackend._tensor_split_arch_unsupported(str(binary), "nemotron_h_moe")
+
+    def test_the_kernel_image_respawn_keeps_the_notice(self, tmp_path, monkeypatch):
+        """The narrowed-GPU respawn re-prices only the memory notices; the layer split it serves
+        still owes the user the tensor-parallel explanation, in the response and in /status."""
+        import functools
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_fit_retry_harness_tensor_arch",
+            Path(__file__).resolve().parent / "test_fit_retry_gpu_mask.py",
+        )
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        monkeypatch.setattr(
+            harness, "GgufLoadIntent", functools.partial(GgufLoadIntent, tensor_parallel = True)
+        )
+        # The harness binary is not on disk, so it has no build key to latch against.
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_tensor_split_arch_unsupported",
+            classmethod(lambda _cls, _binary, _arch: True),
+        )
+
+        backend, launches, error = harness._load(
+            monkeypatch, tmp_path, returncodes = [1, None], outputs = [harness._NO_KERNELS]
+        )
+
+        assert error is None
+        assert [harness._mask(launch) for launch in launches] == ["0", "1"]
+        assert all(self._mode(launch[0]) != "tensor" for launch in launches)
+        assert "layer split" in (backend.last_load_warning or "")

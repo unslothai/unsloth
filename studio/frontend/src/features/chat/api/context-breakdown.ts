@@ -8,8 +8,8 @@ import {
   buildLocalTokenCountExtras,
   buildLocalTokenCountHistory,
   buildLocalTokenCountReasoning,
-  findLatestUserAudioBase64,
   findLatestUserVideoBase64,
+  hasUncountableChatAudio,
   messagesContainImage,
 } from "./chat-adapter";
 import { type ChatCountTokensResponse, countChatInputTokens } from "./chat-api";
@@ -76,7 +76,7 @@ function uncountable(
     return "Cannot count tokens for messages containing images.";
   }
   // A clip still in the composer is not part of the chat being counted.
-  if (findLatestUserAudioBase64(branch, false)) {
+  if (hasUncountableChatAudio(branch, false)) {
     return "Cannot count tokens for messages containing audio.";
   }
   if (findLatestUserVideoBase64(branch)) {

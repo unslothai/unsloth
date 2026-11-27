@@ -48,6 +48,23 @@ def test_single_frame_decode_and_encode_match_the_stock_walk():
         assert torch.allclose(e_got, e_want, atol = 1e-5, rtol = 1e-4)
 
 
+def test_encoder_stays_stock_and_only_the_decoder_is_folded():
+    """Only the decoder takes the 2D path; the encoder stays 3D."""
+    stock = _tiny_vae()
+    vae = copy.deepcopy(stock)
+    stock_encode = vae._encode
+    assert sf.install(vae) is True
+    assert vae._encode == stock_encode
+    assert "_encode" not in vars(vae)
+    assert vae._decode.__func__ is sf._fast_decode
+    seen = []
+    vae.encoder.register_forward_pre_hook(lambda m, i: seen.append(vae._unsloth_sf_gate.on))
+    x = torch.rand(1, 3, 1, 64, 64) * 2 - 1
+    with torch.no_grad():
+        assert torch.equal(vae.encode(x).latent_dist.mean, stock.encode(x).latent_dist.mean)
+    assert seen == [False]
+
+
 def test_multi_frame_and_tiled_calls_take_the_stock_path(monkeypatch):
     stock = _tiny_vae()
     fast = copy.deepcopy(stock)

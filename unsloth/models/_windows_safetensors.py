@@ -10,7 +10,24 @@ import os
 import platform
 import sys
 
+
 __all__ = ["patch_windows_safetensors_pread", "pread_backend_kwargs"]
+
+
+def _is_rocm_torch(torch):
+    # Inlined, not imported: tests load this file standalone. The +rocm version tag backs up a build that leaves
+    # torch.version.hip unset (the AMD SDK gfx1151 wheels checked so far set it).
+    if getattr(torch.version, "hip", None):
+        return True
+    # Never str() a TorchVersion (torch.__version__): Dynamo cannot trace its C str() under fullgraph. A plain str
+    # there (set by a caller or test) wins, else the plain-str torch.version.__version__.
+    version = getattr(torch, "__version__", None)
+    if type(version) is not str:
+        version = getattr(getattr(torch, "version", None), "__version__", None)
+    if type(version) is not str:
+        version = str(version or "")
+    return "rocm" in version.lower()
+
 
 PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 # private keyword: keep this shard on mmap (Studio's small-host route keeps an encoder paged from disk)
@@ -54,7 +71,7 @@ def _unified_memory_now() -> bool:
     if torch is None:
         return False
     try:
-        if getattr(torch.version, "hip", None) or not torch.cuda.is_initialized():
+        if _is_rocm_torch(torch) or not torch.cuda.is_initialized():
             return False
         count = torch.cuda.device_count()
         _UMA = count > 0 and all(

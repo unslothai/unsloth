@@ -67,8 +67,7 @@ def _diagnostic_tail(
     keep: int = 20,
     limit: int = 1500,
 ) -> str:
-    """Marked diagnostic lines come first, since a native abort prints its reason before a long
-    backtrace."""
+    """Marked lines come first: a native abort prints its reason before a long backtrace."""
     captured = list(lines)
     marked = [line for line in captured if any(m in line.lower() for m in _DIAGNOSTIC_MARKERS)]
     chosen: list[str] = []
@@ -236,7 +235,6 @@ def iter_sd_cpp_records(stream) -> Iterator[str]:
         records, pending = split_progress_records(pending)
         for rec in records:
             yield strip_ansi(rec)
-    # EOF: hand over any final line the child left unterminated.
     if pending:
         yield strip_ansi(pending)
 
@@ -437,8 +435,7 @@ def _identity_key(binary: str) -> Optional[tuple[str, int, int, int]]:
 
 
 def help_text_identifies_sd_cpp(help_text: str) -> bool:
-    """Identity, not capability; pre-banner builds (shipped as sd) match on their legacy option
-    signature."""
+    """Identity, not capability; pre-banner sd builds match on their legacy option signature."""
     return "stable-diffusion.cpp" in help_text.lower() or all(
         marker in help_text for marker in _LEGACY_HELP_MARKERS
     )
@@ -699,13 +696,18 @@ class SdCppEngine:
         env: Optional[dict[str, str]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        metal_vae_conv_direct: bool = False,
     ) -> Path:
         """Speed flags skip any offload flag; a set cancel_event kills the sd-cli process tree."""
         offload = list(offload or [])
         binary = self._require_binary()
         speed = speed_flags_without(
             native_speed_flags(
-                native_speed, [*offload, *(extra_args or ())], binary_accelerator(binary), binary
+                native_speed,
+                [*offload, *(extra_args or ())],
+                binary_accelerator(binary),
+                binary,
+                metal_vae_conv_direct,
             ),
             offload,
         )

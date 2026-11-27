@@ -28,8 +28,7 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "qwen-image": ("--qwen2vl",),
     "qwen-image-edit": ("--qwen2vl",),
     "qwen-image-layered": ("--qwen2vl",),
-    # 2.1 conditions on Qwen3-VL via --llm; --qwen2vl also enables Qwen2-VL's vision, the wrong
-    # door.
+    # 2.1 conditions on Qwen3-VL via --llm, not --qwen2vl (which enables Qwen2-VL's vision).
     "qwen-image-2.1": ("--llm",),
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
@@ -164,10 +163,9 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
-# Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
-# Read from the diffusion GGUF only (A100, Q8_0 DiT + Q4_K_M encoder: 1.57x); the env is process-wide, but prompt rows
-# stay below it. Drop the env once the pin carries fork patch 0016, the build's own Q8_0-only default.
+# Fork patch 0001: Q8_0-only BF16 dequant + cuBLAS for matmuls with >= N rows, not int8 MMQ
+# (k-quants are weight-error bound); Ada/Ampere/Orin keep MMQ (2x faster); env read only from
+# diffusion GGUF, process-wide, prompt rows stay below; drop once pin has fork patch 0016.
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -215,7 +213,7 @@ def quant_cublas_env(
 
 
 # Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only
-# (Metal VAE direct conv is opt-in, Apple Silicon only: ``metal_vae_conv_direct_decision``).
+# (Metal VAE direct conv, every mode, Apple Silicon only: ``metal_vae_conv_direct_decision``).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -227,23 +225,35 @@ def native_speed_flags(
     backend_args: Optional[Sequence[str]] = None,
     accelerator: Optional[str] = None,
     binary: Optional[str] = None,
+    metal_vae_conv_direct: bool = False,
 ) -> list[str]:
-    """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
-    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
+    """sd-cli speed flags for a native speed mode (empty for off / None, except the Metal VAE direct conv). Separate
+    from offload: ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
     ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None.
-    ``binary``: builds listing ``--conv-direct`` (master-963+) get rejected direct conv explicitly, since omitted = auto."""
+    ``binary``: builds listing ``--conv-direct`` (master-963+) get rejected direct conv explicitly, since omitted = auto.
+    ``metal_vae_conv_direct``: the family's VAE takes Metal direct conv by default (``sd_cpp_metal_vae_conv_direct``)."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
+    args = backend_args or ()
+    user_set = any(f in _CONV_DIRECT_FLAGS for f in args)
     if mode in ("", NATIVE_SPEED_OFF):
+        # sd.cpp's auto leaves the Metal VAE on im2col ("no implicit GEMM path"); only that one module changes.
+        if (
+            not user_set
+            and binary
+            and _runs_on_apple_metal(args)
+            and sd_cpp_supports_conv_direct_mode(binary)
+            and rejected_conv_direct_mode(args, accelerator, binary, metal_vae_conv_direct)
+            == METAL_VAE_CONV_DIRECT_MODE
+        ):
+            return ["--conv-direct", METAL_VAE_CONV_DIRECT_MODE]
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        args = backend_args or ()
         if not conv_direct_wanted(args, accelerator):
-            user_set = any(f in _CONV_DIRECT_FLAGS for f in args)
             if not user_set and binary and sd_cpp_supports_conv_direct_mode(binary):
                 return [
                     "--diffusion-fa",
                     "--conv-direct",
-                    rejected_conv_direct_mode(args, accelerator, binary),
+                    rejected_conv_direct_mode(args, accelerator, binary, metal_vae_conv_direct),
                 ]
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
@@ -293,9 +303,10 @@ def rejected_conv_direct_mode(
     backend_args: Sequence[str] = (),
     accelerator: Optional[str] = None,
     binary: Optional[str] = None,
+    metal_vae_conv_direct: bool = False,
 ) -> str:
-    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, ``off,vae=on`` for an opted-in Metal VAE on Apple
-    Silicon with the implicit GEMM Metal CONV_2D (``_metal_vae_conv_direct``), else ``off`` (also the kill switch).
+    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, ``off,vae=on`` for a Metal VAE on Apple Silicon
+    with the implicit GEMM Metal CONV_2D (``_metal_vae_conv_direct``), else ``off`` (also the kill switch).
     Module syntax shipped with ``--conv-direct`` itself (sd.cpp #2134)."""
     import os
 
@@ -303,7 +314,8 @@ def rejected_conv_direct_mode(
     if forced in ("0", "off", "false", "no"):
         return "off"
     if _runs_on_apple_metal(backend_args):
-        return "off,vae=on" if _metal_vae_conv_direct(backend_args, binary) else "off"
+        on = _metal_vae_conv_direct(backend_args, binary, metal_vae_conv_direct)
+        return METAL_VAE_CONV_DIRECT_MODE if on else "off"
     args = list(backend_args)
     diffusion = _diffusion_backend(
         [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
@@ -316,13 +328,11 @@ def rejected_conv_direct_mode(
 
 
 # Metal VAE direct conv: unslothai/stable-diffusion.cpp#103 (ggml patches 0072 / 0073) gives ggml-metal an implicit GEMM
-# CONV_2D. On a virtualized macos-15 M1 runner (Metal timings there are not hardware numbers), SD-Turbo VAE decode went
-# 512 px 12.3 -> 5.4 s and 1664 -> 640 MB of VAE compute buffer; 1024 px decoded untiled in 2.56 GB. No physical Apple
-# Silicon measurement exists yet, so this is OFF by default: ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT=1`` opts in, and
-# then only on an Apple Silicon Mac with a build known to carry the kernel. Intel Macs never get it (their Metal CONV_2D
-# was ~5x slower than im2col and tripped the GPU watchdog). ``=force`` skips the build check (source builds), still
-# Apple Silicon only. The denoiser always keeps im2col.
+# CONV_2D, which sd.cpp's own auto leaves on im2col. On by default for families setting ``sd_cpp_metal_vae_conv_direct``
+# (measured on an M5 Max: klein VAE 2.33 -> 0.84 s, 71.65 dB); ``=0`` turns it off, ``=1`` opts other families in,
+# ``=force`` skips the build check. Apple Silicon only: Intel Metal CONV_2D was ~5x slower and tripped the watchdog.
 METAL_VAE_CONV_DIRECT_ENV = "UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT"
+METAL_VAE_CONV_DIRECT_MODE = "off,vae=on"
 # Unsloth prebuilts carrying the implicit GEMM Metal CONV_2D. Every later sd.cpp master build (> 982) does too.
 METAL_IMPLICIT_GEMM_CONV_TAGS = frozenset({"master-982-0518b34-u9455ee1"})
 METAL_IMPLICIT_GEMM_CONV_MIN_BUILD = 983
@@ -344,33 +354,47 @@ def metal_implicit_gemm_conv(binary: Optional[str]) -> bool:
 
 
 def metal_vae_conv_direct_decision(
-    backend_args: Sequence[str] = (), binary: Optional[str] = None
+    backend_args: Sequence[str] = (),
+    binary: Optional[str] = None,
+    family_default: bool = False,
 ) -> tuple[bool, str]:
-    """``(on, reason)`` for direct conv on a Metal VAE. Off unless opted in, on Apple Silicon, with the VAE on Metal and
-    a build carrying the implicit GEMM kernel (or ``force``)."""
+    """Direct conv on a Metal VAE: the family default or the opt-in, Apple Silicon, implicit GEMM build (or force)."""
     import os
 
     forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
     if forced in ("0", "off", "false", "no"):
         return False, "off: UNSLOTH_SD_CPP_CONV_DIRECT=0"
     opt = (os.environ.get(METAL_VAE_CONV_DIRECT_ENV) or "").strip().lower()
-    if opt not in ("1", "on", "true", "yes", "force"):
-        return False, f"off by default (set {METAL_VAE_CONV_DIRECT_ENV}=1 to opt in)"
+    if opt in ("0", "off", "false", "no"):
+        return False, f"off: {METAL_VAE_CONV_DIRECT_ENV}={opt}"
+    opted_in = opt in ("1", "on", "true", "yes", "force")
+    if not opted_in and not family_default:
+        return (
+            False,
+            f"off: not measured for this model's VAE (set {METAL_VAE_CONV_DIRECT_ENV}=1 to opt in)",
+        )
     if not apple_silicon_machine():
         return False, "off: not an Apple Silicon Mac"
     if (_vae_backend(backend_args, None) or "").strip().lower() == "cpu":
         return False, "off: VAE runs on the CPU"
     if opt != "force" and not metal_implicit_gemm_conv(binary):
         return False, "off: this sd.cpp build lacks the implicit GEMM Metal CONV_2D"
-    return True, "on: opted in, Apple Silicon, VAE on Metal"
+    return (
+        True,
+        f"on: {'opted in' if opted_in else 'default for this VAE'}, Apple Silicon, VAE on Metal",
+    )
 
 
 _METAL_VAE_CONV_LOGGED: set = set()
 
 
-def _metal_vae_conv_direct(backend_args: Sequence[str], binary: Optional[str]) -> bool:
+def _metal_vae_conv_direct(
+    backend_args: Sequence[str],
+    binary: Optional[str],
+    family_default: bool = False,
+) -> bool:
     """True when the VAE runs on Metal and should take direct conv (``metal_vae_conv_direct_decision``); logs once."""
-    on, reason = metal_vae_conv_direct_decision(backend_args, binary)
+    on, reason = metal_vae_conv_direct_decision(backend_args, binary, family_default)
     if reason not in _METAL_VAE_CONV_LOGGED:
         _METAL_VAE_CONV_LOGGED.add(reason)
         import logging
@@ -634,8 +658,7 @@ def sd_cpp_build_number(tag: Optional[str]) -> Optional[int]:
 
 @functools.lru_cache(maxsize = 8)
 def _installed_sd_cpp_tag(binary: str) -> Optional[str]:
-    """The release tag Studio's installer recorded next to ``binary`` (the binary sits at or a few levels under the
-    install root). None for a binary the installer did not place (``SD_CLI_PATH``, PATH, a source build)."""
+    """Installer's release tag beside binary; None for SD_CLI_PATH, PATH or source builds."""
     import json
     from pathlib import Path
 
@@ -754,9 +777,8 @@ GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 # The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
-# The committed "-1" is a placeholder (live server signatures compare on it); a launch swaps it for an explicit GiB
-# budget read before the spawn, so the 2 GiB reserve also covers the child's own CUDA context and cuBLAS workspaces.
-# Other negative values (UMA pinned-weight reserve) are applied by sd.cpp itself and never replaced.
+# Committed -1 is a placeholder (server signatures compare on it), swapped for a GiB budget at
+# launch; 2 GiB reserve covers the child's CUDA context and cuBLAS; other negatives pass through.
 GRAPH_CUT_BUDGET_RESERVE_BYTES = 2 << 30
 GRAPH_CUT_MIN_BUDGET_BYTES = 1 << 30
 GRAPH_CUT_RETRY_SCALE = 0.75
@@ -922,8 +944,7 @@ _ALLOCATION_FAILURE_MARKERS: tuple[str, ...] = (
     "failed to allocate",
     "backend buffer failed",
 )
-# sd.cpp fills free-512 MiB with cached weights, so each phase needs memory the last one released; half leaves it
-# unclaimed when the driver reports the release late (Windows may defer destroying allocations).
+# sd.cpp fills free-512 MiB with cached weights; half leaves room when Windows defers releases.
 IMAGE_VRAM_RETRY_SCALE = 0.5
 
 
@@ -1006,14 +1027,12 @@ _GGML_UNSUPPORTED_OP_MARKERS = ("unsupported op", "ggml_abort")
 
 
 def is_ggml_unsupported_op_abort(message: str) -> bool:
-    """Only this abort signature is retried on CPU; OOM kills, real bugs, and corrupt checkpoints
-    are not."""
+    """Only this abort is retried on CPU; OOM kills, real bugs and corrupt checkpoints are not."""
     text = (message or "").lower()
     return all(marker in text for marker in _GGML_UNSUPPORTED_OP_MARKERS)
 
 
-# Bare --vae-tiling on the CPU VAE = 256 px tiles (49 for 1024 px, ~3x slower, per-tile colour shift); take the
-# largest tile spare host RAM holds. FLUX.2 klein 4B 1024 px decode: 185 s at 256, 138 s at 512, 68 s whole.
+# Bare --vae-tiling on CPU = 256 px tiles (slower, colour shift); largest tile host RAM allows.
 CPU_VAE_TILE_ENV = "UNSLOTH_SD_CPP_VAE_TILE"
 CPU_VAE_TILE_SIZES = (1024, 768, 512)
 # Qwen-Image 2.1 measured 3889 MiB per 1024 px tile (worst family) + 30%.
@@ -1112,10 +1131,9 @@ def gpu_vae_tile_size(
     return None
 
 
-# The text encoder follows the VAE onto the card when the card has room: its weights stay in host RAM and sd.cpp
-# segments the encoder to the live free VRAM (prefetching the next segment), then evicts it for the denoiser. On a
-# 2 vCPU T4 the 7.7 GB BF16 Qwen3-4B encoder of FLUX.2 klein took the request from 133 to 56 s; with 7.6 GB free it
-# ran in segments at a 6.2 GB peak. Below this much free VRAM (after the card reserve) the encoder stays on the CPU.
+# The text encoder follows the VAE onto the card when there is room, its weights staying in host
+# RAM; sd.cpp segments it to live free VRAM, prefetching the next segment, then evicts it for the
+# denoiser; below GPU_TE_MIN_FREE_MIB free VRAM (after the card reserve) it stays on CPU.
 GPU_TE_ENV = "UNSLOTH_SD_CPP_TE_GPU"
 GPU_TE_MIN_FREE_MIB = 6000
 
@@ -1206,8 +1224,7 @@ _LORA_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
 
 
 def strip_lora_tags(prompt: str) -> str:
-    """Removes every tag sd-cli would parse, to a fixed point so a split tag cannot reassemble, plus any dangling
-    ``<lora:`` that could pair with a tag appended after it."""
+    """Strips LoRA tags to a fixed point so split ones cannot rejoin, plus any dangling <lora:."""
     out, prev = prompt, None
     while prev != out:
         prev = out
@@ -1233,7 +1250,6 @@ def build_sd_cpp_command(
         raise ValueError("diffusion_model path is required")
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
-    # A --mask without --init-img is invalid (inpaint needs a source image), so reject it here.
     if params.mask and not params.init_img:
         raise ValueError("init_img is required when mask is set (inpaint needs a source image)")
 
@@ -1313,8 +1329,7 @@ def build_sd_cpp_command(
     return cmd
 
 
-# References are already sized. sd.cpp's "max" leaves a short edge <= 2048 untouched; its default
-# "match" is not idempotent after the 32 px snap, so it could resize them again. Pre-#2177 builds ignore it.
+# Refs are pre-sized; use max (match is not idempotent after the snap); pre-#2177 ignores it.
 H3_SIZED_REF_IMAGE_ARGS = "ref_image_size=max"
 
 
@@ -1484,6 +1499,7 @@ def build_sd_cpp_server_command(
     extra_args: Optional[list[str]] = None,
     accelerator: Optional[str] = None,
     rng: Optional[str] = None,
+    metal_vae_conv_direct: bool = False,
 ) -> list[str]:
     """Those dir flags all point at ``scratch_dir``, which must exist: sd-server fails on a missing dir."""
     if not files.diffusion_model:
@@ -1527,7 +1543,8 @@ def build_sd_cpp_server_command(
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
     speed = speed_flags_without(
-        native_speed_flags(native_speed, backend_args, accelerator, binary), offload
+        native_speed_flags(native_speed, backend_args, accelerator, binary, metal_vae_conv_direct),
+        offload,
     )
     cmd += with_module_flash_attn([*offload, *speed], binary)
     cmd += placement

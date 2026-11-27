@@ -398,6 +398,7 @@ import {
 } from "../utils/context-truncation";
 import {
   createThinkTagTracker,
+  deltaReasoningText,
   extractDeltaText,
   markLiteralThinkTags,
   parseAssistantContent,
@@ -2042,33 +2043,46 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
   });
 }
 
-/** Every clip on the newest user message, in the order it was attached. */
-function latestUserAudioClips(messages: RunMessages): string[] {
-  messages = messages.map(modelVisibleMessage);
+function userAudioClips(message: RunMessage): string[] {
+  message = modelVisibleMessage(message);
   const clips: string[] = [];
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (!message || message.role !== "user") continue;
-
-    for (const part of message.content ?? []) {
-      const base64 = extractAudioPartBase64(part);
-      if (base64) clips.push(base64);
-    }
-
-    if ("attachments" in message) {
-      for (const attachment of message.attachments ?? []) {
-        for (const part of attachment.content ?? []) {
-          const base64 = extractAudioPartBase64(part);
-          if (base64) clips.push(base64);
-        }
+  for (const part of message.content ?? []) {
+    const base64 = extractAudioPartBase64(part);
+    if (base64) clips.push(base64);
+  }
+  if ("attachments" in message) {
+    for (const attachment of message.attachments ?? []) {
+      for (const part of attachment.content ?? []) {
+        const base64 = extractAudioPartBase64(part);
+        if (base64) clips.push(base64);
       }
     }
-
-    // Only the newest user message: audio_base64 switches the backend onto the audio path, so a
-    // stale clip would hijack text follow-ups.
-    break;
   }
   return clips;
+}
+
+function latestUserAudioClips(messages: RunMessages): string[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") return userAudioClips(message);
+  }
+  return [];
+}
+
+function previousAudioTurn(messages: RunMessages, includePendingAudio: boolean) {
+  if (findLatestUserAudioBase64(messages, includePendingAudio)) return undefined;
+  let skippedCurrent = false;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    if (!skippedCurrent) {
+      skippedCurrent = true;
+      continue;
+    }
+    const clips = userAudioClips(message);
+    if (clips.length) return { id: message.id, clips };
+  }
+  return undefined;
 }
 
 export function findLatestUserAudioBase64(
@@ -2082,6 +2096,26 @@ export function findLatestUserAudioBase64(
     ? useChatRuntimeStore.getState().pendingAudioBase64
     : null;
   return pendingAudio ?? undefined;
+}
+
+/** Counting cannot price current audio or the earlier recording replayed by an audio GGUF. */
+export function hasUncountableChatAudio(
+  messages: RunMessages,
+  includePendingAudio = true,
+): boolean {
+  if (findLatestUserAudioBase64(messages, includePendingAudio)) return true;
+  const state = useChatRuntimeStore.getState();
+  const checkpoint = state.params.checkpoint;
+  if (
+    !isServedByLlamaCpp({
+      loadedIsGguf: state.loadedIsGguf,
+      activeGgufVariant: state.activeGgufVariant,
+      activeNativePathToken: state.activeNativePathToken,
+      checkpoint,
+    }) ||
+    !state.models?.find((model) => model.id === checkpoint)?.hasAudioInput
+  ) return false;
+  return previousAudioTurn(pruneOutboundHistory(messages, true), false) !== undefined;
 }
 
 /** Clips after the first, for extra_audio_base64. Undefined when empty so text turns stay durable. */
@@ -5448,6 +5482,17 @@ export function createOpenAIStreamAdapter(
         externalSelection?.modelId,
       );
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
+      const isGgufForCompaction = isServedByLlamaCpp({
+        loadedIsGguf: runtime.loadedIsGguf,
+        activeGgufVariant: runtime.activeGgufVariant,
+        activeNativePathToken: runtime.activeNativePathToken,
+        checkpoint: params.checkpoint,
+      });
+      const activeModel = runtime.models.find((m) => m.id === params.checkpoint);
+      const replayAudio =
+        isGgufForCompaction && activeModel?.hasAudioInput
+          ? previousAudioTurn(survivingMessages, !queuedRunSettings && !continuation)
+          : undefined;
       const { messages: renderedMessages, sandboxAttachments } =
         supportsStudioToolsForThisTurn &&
         studioLocalCodeTools.includes("python")
@@ -5461,6 +5506,21 @@ export function createOpenAIStreamAdapter(
             replayReasoning,
             isGeminiApiProviderType(externalProvider?.providerType),
           );
+          const [turn] = serialized;
+          if (replayAudio && message.id === replayAudio.id && turn?.role === "user") {
+            const parts =
+              typeof turn.content === "string"
+                ? [{ type: "text" as const, text: turn.content }]
+                : turn.content ?? [];
+            turn.content = [
+              ...parts,
+              ...replayAudio.clips.map((data) => ({
+                type: "input_audio" as const,
+                input_audio: { data },
+                studio_replay: true as const,
+              })),
+            ];
+          }
           return isExternalRequest
             ? withProviderCompaction(message, serialized, {
                 providerType: toExternalBackendProviderType(
@@ -5730,14 +5790,11 @@ export function createOpenAIStreamAdapter(
         }
       }
       // Media attached before a model loaded skipped the add-time check; recorded audio is not counted.
-      const answeringModel = runtime.models.find(
-        (m) => m.id === params.checkpoint,
-      );
       const attachedMediaReason = attachedMediaUnavailableReason({
-        activeModel: answeringModel,
+        activeModel,
         checkpoint: params.checkpoint,
         modelLabel:
-          answeringModel?.name ||
+          activeModel?.name ||
           externalModelLabel(params.checkpoint) ||
           params.checkpoint,
         audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
@@ -5796,16 +5853,6 @@ export function createOpenAIStreamAdapter(
         abortSignal.addEventListener("abort", forwardAbort, { once: true });
       }
 
-      const activeModel = runtime.models.find(
-        (m) => m.id === params.checkpoint,
-      );
-      // Same owner the settings panel asks, so body and panel agree; a catalog row can be replaced.
-      const isGgufForCompaction = isServedByLlamaCpp({
-        loadedIsGguf: runtime.loadedIsGguf,
-        activeGgufVariant: runtime.activeGgufVariant,
-        activeNativePathToken: runtime.activeNativePathToken,
-        checkpoint: params.checkpoint,
-      });
       // Use the backend's report: an external id leaves it describing the resident local model.
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
@@ -8349,29 +8396,7 @@ export function createOpenAIStreamAdapter(
                 codexRoundToolCallIds = [];
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content; wrap it inline as <think>.
-              const rawReasoning = (
-                chunk.choices?.[0]?.delta as
-                  | { reasoning_content?: unknown }
-                  | undefined
-              )?.reasoning_content;
-              // OpenRouter ships reasoning as delta.reasoning_details[] whatever the provider; same wrap.
-              const rawReasoningDetails = (
-                chunk.choices?.[0]?.delta as
-                  | { reasoning_details?: unknown }
-                  | undefined
-              )?.reasoning_details;
-              const reasoningFromDetails = Array.isArray(rawReasoningDetails)
-                ? rawReasoningDetails
-                    .map((part) => {
-                      if (!part || typeof part !== "object") return "";
-                      const text = (part as { text?: unknown }).text;
-                      return typeof text === "string" ? text : "";
-                    })
-                    .join("")
-                : "";
-              const reasoning =
-                (typeof rawReasoning === "string" ? rawReasoning : "") +
-                reasoningFromDetails;
+              const reasoning = deltaReasoningText(chunk.choices?.[0]?.delta);
               if (
                 !capturedGeminiThoughtPart &&
                 isGeminiApiProviderType(externalProvider?.providerType) &&

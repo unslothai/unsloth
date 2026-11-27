@@ -24,7 +24,6 @@ def _speed_mode_description(class_name: str) -> str:
 
 
 def _video_unset() -> tuple[str, str]:
-    # video.py resolves an unset speed_mode with dense_default = SPEED_DEFAULT for every kind.
     src = (_BACKEND / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
     assert 'speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT' in src
     return (

@@ -86,8 +86,7 @@ def safetensors_prequant_supported() -> bool:
     return True
 
 
-# Torchao subclasses for schemes added to its safetensors allowlist after the 0.16 floor (0.16 lists
-# neither, 0.17 lists both); fp8 and int8 are in every release at the floor.
+# Subclasses for schemes allowlisted after 0.16 (0.17 lists both); fp8, int8 in 0.16 and later.
 _SCHEME_SUBCLASS = {"nvfp4": "NVFP4Tensor", "mxfp8": "MXTensor"}
 
 
@@ -129,9 +128,7 @@ def plain_safetensors_supported() -> bool:
 
 
 def _unviewed(tensor: Any) -> Any:
-    """``tensor`` as a base-less alias of the same storage (no copy). safetensors hands back views of one whole-file
-    mapping; a view keeps that base alive through ``.data =`` (which is how a streamed buffer is re-pointed at its
-    pinned copy), so one buffer would keep the full file mapped for the life of the model."""
+    """Base-less no-copy alias of the storage; a re-pointed .data cannot pin the file mapping."""
     if getattr(tensor, "_base", None) is None or type(tensor).__name__ != "Tensor":
         return tensor
     import torch
@@ -407,7 +404,6 @@ def _header_without_unconstructible_fields(
             dropped.append(name)
             header = pruned
     if dropped:
-        # Worth saying out loud: the artifact was built by a newer torchao than this one.
         print(
             f"note: {path} carries {', '.join(sorted(set(dropped)))} from a newer torchao; "
             f"the field is inert here and was ignored",

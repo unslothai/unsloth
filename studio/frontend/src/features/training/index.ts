@@ -39,6 +39,7 @@ export { drafterEligible } from "./lib/drafter-config";
 export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export {
+  type DatasetImportOptions,
   DatasetFormatError,
   aiAssistMapping,
   checkDatasetFormat,

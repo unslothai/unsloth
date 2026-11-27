@@ -31,6 +31,10 @@ from ..device_type import (
 from ..bnb_availability import native_kernels_ready
 from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
+from .fp8 import _is_transposed_view as _nvfp4_is_transposed_view
+
+# Kill switch for the traced NVFP4 base GEMM routing in matmul_lora (0: the dense-dequantize order).
+_NVFP4_TRACED_OPAQUE = os.environ.get("UNSLOTH_NVFP4_TRACED_OPAQUE", "1") != "0"
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
@@ -1558,9 +1562,9 @@ def _quant_state_dtype(quant_state):
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
 _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
-# Rows from which bnb gemm_4bit replaces the GEMV. Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B): batch 4
-# 13-30% faster at equal NLL vs fp32; batch 2 ~40% slower (host bound), batch 3 a tie.
-_GEMV_ROWS_BNB_FROM_BY_ARCH = {(7, 5): 4}
+# Rows from which bnb gemm_4bit replaces the GEMV (default: above the cap). T4 used it from 4 rows until the
+# GEMV dequantized each tile once for all rows: Colab T4 Llama-3.2-3B decode at 4 rows, 115 vs 92 tok/s.
+_GEMV_ROWS_BNB_FROM_BY_ARCH = {}
 _GEMV_ROWS_BNB_FROM = {}
 
 
@@ -2260,6 +2264,19 @@ def matmul_lora(
     elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
         # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
         out = _int4_matmul(X, W, W_quant, out = out)
+    elif (
+        type(W_quant) is NVFP4QuantState
+        and _is_compiling()
+        and not _nvfp4_is_transposed_view(W)
+        and _NVFP4_TRACED_OPAQUE
+        # NVFP4Linear_matmul has no jvp / vmap rule: torch.func and forward-mode AD keep the dense decode.
+        and not (_functorch_active() or _forward_ad_active())
+    ):
+        # Traced forward: decode inside the opaque NVFP4 op. A dense weight as a graph intermediate is saved by
+        # AOTAutograd for backward in every layer (+2 GB peak at Qwen3-1.7B); the LoRA term is added below.
+        out = nvfp4_linear(X, W, W_quant.scale, W_quant.global_scale)
+        if out.dtype != dtype:
+            out = out.to(dtype)
     elif _is_packed_state(W_quant) and not (
         lora_first and getattr(type(W_quant), "_unsloth_fp8_dgrad", False)
     ):

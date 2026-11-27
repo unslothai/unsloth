@@ -12,6 +12,7 @@ import sys
 import types
 
 import pytest
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 torch = pytest.importorskip("torch")
 
@@ -123,6 +124,7 @@ def test_band_kernel_self_check_oom_is_not_cached(monkeypatch):
     monkeypatch.setitem(sys.modules, "unsloth.kernels.large_head_attention", lh)
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: False)
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     hidden = types.SimpleNamespace(is_cuda = True, device = torch.device("cuda", 0))
     assert M._band_kernel_ready(layer, hidden) is False
     assert "_unsloth_band_kernel_ready" not in layer.__dict__
@@ -181,6 +183,7 @@ def _large_head(monkeypatch):
     monkeypatch.setattr(LH, "_dense_intervals", lambda B, S, causal, device: (None, None))
     monkeypatch.setattr(LH, "_self_check", lambda device, dtype, head_dim = 512: True)
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     return LH
 
 

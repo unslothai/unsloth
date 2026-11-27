@@ -50,7 +50,7 @@ export const en = {
     scope: "Show on",
     scopeNewChat: "New chat page",
     scopeChats: "Chats",
-    scopeAll: "All pages",
+    scopeAll: "All pages (everything)",
     positionValue: "Horizontal {x}%, vertical {y}%",
     newChat: "New chat preview",
     conversation: "Conversation preview",
@@ -4471,6 +4471,8 @@ export const en = {
       unsupportedFileType: "Unsupported file type",
       uploadOneFileType: "Upload one {types} file.",
       datasetUploaded: "Dataset uploaded",
+      importPandasJson: "Import .json as pandas columns",
+      importSemicolonCsv: "Use semicolon delimiter for .csv",
       evalDatasetUploaded: "Eval dataset uploaded",
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:

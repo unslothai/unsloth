@@ -173,7 +173,7 @@ def test_legacy_stem_escaped_to_the_base_model_drive(monkeypatch, tmp_path):
     harness = _run(monkeypatch, tmp_path, legacy_stem, _EXPORT_DIR)
 
     assert harness.quantize_calls
-    escaped = harness.quantize_calls[0]["output"]
+    escaped = harness.quantize_calls[0]["output"].removesuffix(".tmp")
     assert escaped == r"D:\Models\Merged Models\MyModel.Q5_K_M.gguf"
     assert ntpath.dirname(escaped) != _EXPORT_DIR + "_gguf"
 
@@ -189,7 +189,7 @@ def test_trailing_separator_no_longer_yields_a_hidden_gguf(monkeypatch, tmp_path
     harness = _run(monkeypatch, tmp_path, stem, export_dir, flavour = posixpath)
 
     assert harness.quantize_calls
-    out = harness.quantize_calls[0]["output"]
+    out = harness.quantize_calls[0]["output"].removesuffix(".tmp")
     assert posixpath.basename(out) == "MyModel.Q5_K_M.gguf"
     assert not posixpath.basename(out).startswith(".")
     assert posixpath.dirname(out) == export_dir + "_gguf"

@@ -18,6 +18,7 @@ from real_accelerator import (
 torch = pytest.importorskip("torch")
 safetensors_torch = pytest.importorskip("safetensors.torch")
 import safetensors  # noqa: E402
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 _MODULE_PATH = Path(__file__).resolve().parent.parent / "unsloth" / "models" / "_uma_safetensors.py"
 
@@ -262,6 +263,8 @@ def test_cuda_target_keeps_the_clone_on_rocm_or_keep_mmap(uma, force_uma, monkey
     calls = []
     force_uma(True)
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    if not hip:
+        drop_rocm_tag(monkeypatch, torch)
     fake_mu = _install_fake_modeling_utils(monkeypatch, _recording_open(calls))
     uma.patch_unified_memory_safetensors_load()
     kwargs = {"_unsloth_keep_mmap": True} if keep else {}

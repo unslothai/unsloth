@@ -35,12 +35,14 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
+from .onthefly_quant import onthefly_lowbit_load
 from .fsdp2_load import sharded_load_env as fsdp2_sharded_load_env
 from .float8_training import (
     convert_model_to_float8_training,
     mark_fp8_lora,
     resolve_float8_training,
     resolve_fp8_lora,
+    int8_lora_from_env,
 )
 from .mistral_format import (
     MistralFormatRedirect,
@@ -198,6 +200,7 @@ from ._utils import (
     _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
     block_swap_shaped,
+    snapshot_residual_lora_load,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -645,7 +648,11 @@ def _adapter_vocab_rows(adapter_name, **hub_kwargs):
     for key, shape in (_adapter_weight_shapes(adapter_name, **hub_kwargs) or {}).items():
         if len(shape) != 2:
             continue
-        key = key.replace(".base_layer.", ".").replace(".lora_B.", ".")
+        key = (
+            key.replace(".base_layer.", ".")
+            .replace(".token_adapter.", ".")
+            .replace(".lora_B.", ".")
+        )
         if key.endswith(_ADAPTER_VOCAB_SUFFIXES):
             rows.append(shape[0])
         elif key.endswith("lora_embedding_A") or ".lora_embedding_A." in key:
@@ -1365,6 +1372,7 @@ class FastLanguageModel(FastLlamaModel):
         return get_mtp_head(model, *args, **kwargs)
 
     @staticmethod
+    @onthefly_lowbit_load
     @tensor_parallel_env_load
     @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
@@ -2270,6 +2278,7 @@ class FastLanguageModel(FastLlamaModel):
                     lora_config = load_config,
                     loading_adapter = True,
                 ),
+                snapshot_residual_lora_load(load_config),
             ):
                 model = PeftModel.from_pretrained(
                     model,
@@ -2316,6 +2325,8 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        if fp8_lora is None and fp8_request in (None, False):
+            fp8_lora = int8_lora_from_env(model, qat_scheme = qat_scheme)
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
@@ -2378,6 +2389,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @onthefly_lowbit_load
     @tensor_parallel_env_load
     @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
@@ -2746,6 +2758,9 @@ class FastModel(FastBaseModel):
             if float8_training is not None:
                 converted = convert_model_to_float8_training(model, float8_training)
                 print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
+            if qat_scheme is not None:
+                print("Unsloth: Applying QAT to mitigate quantization degradation")
+                model = FastModel._prepare_for_qat(model, qat_scheme)
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
@@ -3096,16 +3111,21 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             elif not (load_in_4bit and _bnb_compatible_quant):
-                # Only upcast MoE biases for MXFP4, not BnB.
+                # Only upcast MoE biases for MXFP4, not BnB. In place: a bias expert parallel loading already cut to
+                # this rank keeps its Parameter and the cut's mark (a new Parameter would leave the block unshardable).
                 register_custom_dtype(
                     "all;None;None;"
                     "x = 'gate_up_proj_bias'\n"
-                    "if hasattr(module, x): "
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    "if hasattr(module, x) and isinstance(getattr(module, x), torch.nn.Parameter): "
+                    "getattr(module, x).data = getattr(module, x).data.to(torch.float32)\n"
+                    "elif hasattr(module, x): "
+                    "setattr(module, x, getattr(module, x).to(torch.float32))\n"
                     ""
                     "x = 'down_proj_bias'\n"
-                    "if hasattr(module, x): "
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    "if hasattr(module, x) and isinstance(getattr(module, x), torch.nn.Parameter): "
+                    "getattr(module, x).data = getattr(module, x).data.to(torch.float32)\n"
+                    "elif hasattr(module, x): "
+                    "setattr(module, x, getattr(module, x).to(torch.float32))\n"
                     ""
                     ";"
                 )
@@ -3844,6 +3864,7 @@ class FastModel(FastBaseModel):
                         lora_config = load_config,
                         loading_adapter = True,
                     ),
+                    snapshot_residual_lora_load(load_config),
                 ):
                     model = PeftModel.from_pretrained(
                         model,
@@ -3903,6 +3924,10 @@ class FastModel(FastBaseModel):
             print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if fp8_lora is None and float8_training is None:
+            fp8_lora = int8_lora_from_env(
+                model, full_finetuning = full_finetuning, qat_scheme = qat_scheme
+            )
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 

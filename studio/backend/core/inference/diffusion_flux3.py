@@ -41,9 +41,8 @@ FLUX3_COMPONENT_FOLDERS = {
 }
 
 
-# The prompt upsampler step Diffusers main puts first in both auto block graphs since huggingface/diffusers#15058
-# (2026-10-16). It needs the separate ~19 GB Qwen3.5-9B upsampler, which Studio never loads, and would otherwise run
-# on every call (its text-to-image branch has no trigger input), so it is dropped, as its docstring prescribes.
+# Diffusers main puts this step first in both auto block graphs (huggingface/diffusers#15058); needs
+# ~19 GB Qwen3.5-9B upsampler Studio never loads, and would run every call, so it's dropped.
 FLUX3_PROMPT_UPSAMPLER_STEP = "prompt_upsampler"
 
 
@@ -243,9 +242,8 @@ def flux3_family_blocks_mismatch(
 
 
 def flux3_blocks_class(index: dict, transformer: Any = None) -> str:
-    """The block graph a checkpoint runs. The loaded denoiser decides first: a flow-map DiT (it has the target-time
-    embedder) runs the distilled graph, a CFG DiT the base graph, whatever repo supplied the companions (a single
-    file or GGUF of one variant may sit on the other variant's base). Else the index names it."""
+    """The loaded denoiser decides first: flow-map DiT (has target_timestep_embedder) runs distilled
+    graph, CFG DiT the base, whatever repo gave companions; else the index names it."""
     flow_map = None
     if transformer is not None:
         if hasattr(transformer, "target_timestep_embedder"):
@@ -526,8 +524,7 @@ class _Flux3KleinPipelineMixin:
             raise ValueError("FLUX.3 takes a text prompt (str) per image.")
         generators = generator if isinstance(generator, (list, tuple)) else None
         negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
-        # The text encoder sizes its window per prompt, so the blocks take ONE prompt per call. A batch of
-        # distinct prompts, or one prompt with a generator per image, runs as one call per image.
+        # One prompt per call (text encoder sizes per prompt); batches run one call per image.
         if len(prompts) > 1 or generators is not None:
             count = max(len(prompts), len(generators or ()))
             if len(prompts) == 1:

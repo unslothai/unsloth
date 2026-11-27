@@ -96,8 +96,7 @@ test("the trigger's suffix keeps the space in its ' - ' separator", () => {
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",
   );
-  // A blockified flex item drops the leading space of its text, so the separator is its own
-  // span that preserves white space.
+  // Blockified flex items drop leading space; the separator gets its own whitespace-pre span.
   assert.match(
     selector,
     /\{subtitle \? <span className="whitespace-pre"> - <\/span> : null\}\s*\{currentModel\.descriptionSuffix\}/,

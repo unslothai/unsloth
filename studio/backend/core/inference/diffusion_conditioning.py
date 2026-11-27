@@ -56,8 +56,7 @@ def check_conditioned_fields(
 
 
 def check_output_size(fam: Any, width: int, height: int) -> None:
-    """Refuse an output size the loaded family cannot render as asked. A size the pipeline would
-    silently floor to its own grid is refused rather than changed behind the caller's back."""
+    """Refuse output sizes the family cannot render, or that the pipeline would silently floor."""
     multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
@@ -125,8 +124,7 @@ def omitted_txt2img_size(family_name: Optional[str]) -> Optional[tuple[int, int]
 
 
 def effective_reference_resolution(fam: Any, requested: Optional[int]) -> Optional[int]:
-    """The condition-image preprocessing resolution this call uses, or None for a family without
-    the control. Refuses a value the family does not list rather than rounding it."""
+    """Condition-image resolution, or None without the control; an unlisted value is refused."""
     allowed = tuple(getattr(fam, "reference_resolutions", ()) or ())
     if not allowed:
         if requested is not None:
@@ -176,8 +174,7 @@ def _decode_bounded(data: str, mode: str, budget: list[int], what: str) -> Any:
 
 
 def _to_source_geometry(img: Any, source: Any, what: str, resample: Any) -> Any:
-    """``img`` at the source's pixel size. Only a pure scale is accepted: a different aspect ratio
-    means the layer was drawn over another image."""
+    """``img`` at source size; only pure scale (other ratios: layer drawn over another image)."""
     if img.size == source.size:
         return img
     sw, sh = source.size
@@ -191,8 +188,7 @@ def _to_source_geometry(img: Any, source: Any, what: str, resample: Any) -> Any:
 
 
 def apply_localized_edit(source: Any, localized: LocalizedEdit, budget: list[int]) -> list[Any]:
-    """The images the localized edit contributes, source first: ``[marked_source]`` for annotate
-    and paint, ``[source, mask]`` for a separate mask. Alpha outside the marks is preserved."""
+    """Annotate/paint: [marked_source]; mask: [source, mask]; alpha outside the marks is kept."""
     from PIL import Image
 
     if localized.mode == "annotate":
@@ -225,8 +221,7 @@ def decode_condition_images(
     reference_images: Optional[Sequence[str]],
     localized: Optional[LocalizedEdit] = None,
 ) -> list[Any]:
-    """The ordered condition list: the (possibly marked) source, a separate mask if any, then every
-    reference in request order. More images than the family takes is refused, not truncated."""
+    """Ordered list: source, any mask, then references in request order; any excess is refused."""
     limit = int(getattr(fam, "max_condition_images", 4) or 4)
     mode = getattr(fam, "condition_image_mode", "RGB") or "RGB"
     refs = [r for r in (reference_images or []) if r]
@@ -260,8 +255,6 @@ def edit_takes_extra_images(fam: Any) -> bool:
 
 
 def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, Any]:
-    """What the UI may offer for ``fam`` given the ``workflows`` the active engine runs for it.
-    Localized editing is advertised only where the unified edit workflow itself is."""
     localized = bool(getattr(fam, "unified_edit", False)) and "edit" in workflows
     # The page's unified Edit form (Image 1 + extras, output sized from Image 1) fits a reference-edit family too.
     unified = localized or (bool(getattr(fam, "reference_edit", False)) and "edit" in workflows)

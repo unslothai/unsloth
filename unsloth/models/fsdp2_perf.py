@@ -71,7 +71,6 @@ def _device_free_bytes(device = None):
 
 
 def _resident_bytes(params, device):
-    """Bytes of `params` already stored on `device`."""
     if device is None:
         return 0
     target = torch.device(device)
@@ -148,8 +147,7 @@ def plan_fsdp2_layout(
     except ValueError:
         free_fraction = default_free_fraction
     model_bytes = layout.frozen_bytes + layout.trainable_bytes
-    # Fits = the whole model uses at most a fraction of one device; CPU offload keeps the sharded
-    # layout.
+    # Fits: the model uses at most a fraction of one device; CPU offload keeps sharded layout.
     forced = os.environ.get("UNSLOTH_FSDP2_LAYOUT", "auto").strip().lower()
     if fits is None and forced in ("fit", "sharded"):
         fits = forced == "fit"
@@ -242,8 +240,7 @@ def apply_fsdp2_prefetch(
     forward_depth = 1,
     backward_depth = 1,
 ):
-    """Explicit prefetch: forward gathers blocks i+1..i+forward_depth while i runs, backward gathers
-    i-1..i-backward_depth (NeMo Automodel defaults to forward 1 / backward 2)."""
+    """Prefetch i+1..i+forward_depth ahead, i-1..i-backward_depth behind (NeMo defaults 1 / 2)."""
     units = [u for u in units if hasattr(u, "set_modules_to_forward_prefetch")]
     for i, unit in enumerate(units):
         ahead = units[i + 1 : i + 1 + forward_depth]

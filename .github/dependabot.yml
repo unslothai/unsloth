@@ -2,8 +2,7 @@
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    # The "/" directory only scans .github/workflows; composite actions under .github/actions pin
-    # the same actions and must move in the same PR, or one action ends up with two SHAs.
+    # Path / scans only .github/workflows; .github/actions must move in one PR or SHAs diverge.
     directories:
       - "/"
       - "/.github/actions/*"
@@ -13,16 +12,14 @@ updates:
       # Semver cooldown knobs are rejected for github-actions; only default-days applies.
       default-days: 7
     groups:
-      # Sub-paths are separate Dependabot names, so a group must cover the whole action; first match
-      # wins.
+      # Groups must cover the whole action (sub-paths are separate names); first match wins.
       codeql-action:
         patterns: ["github/codeql-action*"]
       cache-action:
         patterns: ["actions/cache*"]
       actions:
         patterns: ["*"]
-        # One PR per action across both directories; tests/studio/
-        # test_actions_are_pinned_to_commits.py wants one SHA per action.
+        # One PR per action across both directories; a test requires one SHA per action.
         group-by: dependency-name
       actions-security:
         applies-to: security-updates
@@ -49,16 +46,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # pyproject.toml is a hand-kept matrix split by Python version or accelerator, and one version
-    # update rewrites every copy at once; version PRs stay off as for /studio/frontend, security PRs
-    # still open.
+    # Hand-kept pyproject.toml: one update rewrites every copy; version PRs off, security open.
     open-pull-requests-limit: 0
     cooldown:
       default-days: 7
-    # pyproject.toml pins torch and torchvision per CUDA extra and transformers, datasets and
-    # bitsandbytes via != exclusions; Dependabot rewrites whole specifiers (#13833 and 14469
-    # collapsed every cuXXX-torchYYY extra to torch==2.14.1), so move these by hand; advisories
-    # still show as alerts.
+    # pyproject.toml pins torch/torchvision per CUDA extra and transformers, datasets, bitsandbytes
+    # via != exclusions; Dependabot rewrites whole specifiers (#13833 and 14469 collapsed every
+    # cuXXX-torchYYY extra to torch==2.14.1), so move them by hand; advisories still alert.
     ignore:
       - dependency-name: "torch"
       - dependency-name: "torchvision"
@@ -67,8 +61,7 @@ updates:
       - dependency-name: "bitsandbytes"
       - dependency-name: "transformers"
       - dependency-name: "datasets"
-      # Also hand-kept: torchcodec per audio-torch extra (matched to each torch line), and
-      # huggingface-hub split by Python version (1.x needs 3.10+, 3.9 stays on 0.36.2).
+      # Hand-kept torchcodec (audio-torch extra); huggingface-hub 1.x on 3.10+, 0.36.2 on 3.9.
       - dependency-name: "torchcodec"
       - dependency-name: "huggingface-hub"
       # A major bump (huggingface-hub 2.x, pymupdf4llm 0.3 -> 1.x) needs its own review.
@@ -89,30 +82,23 @@ updates:
       default-days: 7
       semver-minor-days: 3
       semver-patch-days: 3
-    # gtk-rs GTK3 bindings are frozen at 0.18; newer glib/gdk-pixbuf break native_clipboard.rs.
-    # This also suppresses security PRs above 0.18, leaving alerts only.
+    # GTK3 held at 0.18: newer glib/gdk-pixbuf break native_clipboard.rs; security alerts only.
     ignore:
       - dependency-name: "glib"
         versions: [">= 0.19"]
       - dependency-name: "gdk-pixbuf"
         versions: [">= 0.19"]
-      # Same GTK3 family: the direct cairo-rs dep only turns on png for gtk's cairo-rs 0.18; a
-      # second cairo-rs (0.22) leaves gtk without png, so browser_capture.rs stops compiling
-      # (#13837).
+      # Same GTK3 family: the direct cairo-rs dep turns on png only for gtk's 0.18; a second
+      # cairo-rs (0.22) leaves gtk without png, so browser_capture.rs stops compiling (#13837).
       - dependency-name: "cairo-rs"
         versions: [">= 0.19"]
-      # gio is only used for the proxy resolver gtk already builds; 0.19+
-      # adds a second glib next to gtk's 0.18.
+      # gio: only the proxy resolver gtk builds; 0.19+ adds a second glib next to gtk's 0.18.
       - dependency-name: "gio"
         versions: [">= 0.19"]
-      # tauri-plugin-deep-link 2.6.2 builds rust-ini's ParseOption as a
-      # struct literal, and 0.21.3 added fields to it, so Linux stops
-      # compiling (E0063). Lift once deep-link builds against 0.21.3.
+      # deep-link 2.6.2 struct literal breaks rust-ini 0.21.3 (E0063, Linux); lift when fixed.
       - dependency-name: "rust-ini"
         versions: [">= 0.21.2"]
-      # windows-core must match the copy that webview2-com and tauri build on (see the Cargo.toml
-      # note); a lone bump adds a second copy beside webview2-com 0.62, so move it with
-      # webview2-com.
+      # Lone windows-core bumps add a second copy: move it with webview2-com 0.62 (Cargo.toml).
       - dependency-name: "windows-core"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:

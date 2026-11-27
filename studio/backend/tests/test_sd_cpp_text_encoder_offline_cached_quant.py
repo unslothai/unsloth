@@ -35,8 +35,7 @@ def _cache_file(
 
 @pytest.fixture
 def cache(monkeypatch, tmp_path):
-    """An isolated live cache root, with huggingface_hub's own root pointed at an empty dir so the shared HF cache on
-    this host cannot answer a lookup. The fetch resolves from the fake cache or raises the hub's local-miss error."""
+    """Isolated cache; hub root is an empty dir, so the shared HF cache cannot answer lookups."""
     import huggingface_hub.constants as hub_constants
     from huggingface_hub import try_to_load_from_cache
     from huggingface_hub.errors import LocalEntryNotFoundError
@@ -81,8 +80,7 @@ def _seed_klein_9b(live):
 
 
 def test_cache_only_load_reads_the_cached_earlier_quant(cache):
-    """Klein 9B loaded before the BF16 default fetched Qwen3-8B Q4_K_M. A background (cache-only) load must still
-    resolve it rather than fail on the uncached BF16 file."""
+    """Cache-only load must resolve the cached Q4_K_M rather than fail on uncached BF16."""
     live, _fetched = cache
     old = _seed_klein_9b(live)
     b = SdCppDiffusionBackend()
@@ -91,15 +89,13 @@ def test_cache_only_load_reads_the_cached_earlier_quant(cache):
         _klein_assets(b, "flux-2-klein-9b-Q4_K_M.gguf"), None, local_files_only = True
     )
     assert paths["llm"] == str(old)
-    # And the cache-only load's own specs already name the cached file.
     specs = _klein_assets(b, "flux-2-klein-9b-Q4_K_M.gguf", local_only = True)
     assert ("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf", "llm") in specs
     assert b._fetch_assets(specs, None, local_files_only = True)["llm"] == str(old)
 
 
 def test_fetch_falls_back_when_the_default_cannot_be_downloaded(cache):
-    """The specs still name BF16 (an online load wants it), but the Hub is unreachable: the fetch reads the cached
-    quant, cache-only, instead of raising the hub's local-miss error."""
+    """Specs name BF16 for online loads; with the Hub down, fetch reads the cached quant only."""
     live, fetched = cache
     old = _seed_klein_9b(live)
     b = SdCppDiffusionBackend()
@@ -136,8 +132,7 @@ def test_highest_cached_precision_wins_and_bf16_is_kept_when_cached(cache):
 
 
 def test_online_specs_and_explicit_override_are_unchanged(cache, monkeypatch):
-    """An online load still wants BF16 (fresh loads get the accuracy default), and an explicit
-    UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT is honoured, not swapped, even offline."""
+    """Online loads want BF16; an explicit UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT is kept offline."""
     live, _fetched = cache
     _seed_klein_9b(live)
     b = SdCppDiffusionBackend()

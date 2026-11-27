@@ -416,8 +416,7 @@ def _upright(image: Any, frame: Any) -> Any:
 
 
 def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) -> list:
-    """Frames land on that clock by whole-frame drop and duplicate, picked by presentation time so a variable-frame-rate
-    clip keeps even spacing; a clip already at ``fps`` passes through unchanged."""
+    """Drop or duplicate whole frames by presentation time for even VFR spacing; no-op at fps."""
     import collections
     import math
 

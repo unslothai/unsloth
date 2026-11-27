@@ -155,7 +155,10 @@ def _train(
     model_hook = None,
     **extra_args,
 ):
-    monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
+    if mode is None:
+        monkeypatch.delenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
     base = trainer_base or transformers.Trainer
     T = type("T", (base,), {})
     model = _model(dropout, arch)
@@ -165,7 +168,7 @@ def _train(
     if swap:
         model.get_base_model().model.layers._unsloth_block_swap = sw
     args = transformers.TrainingArguments(
-        output_dir = str(tmp_path / mode),
+        output_dir = str(tmp_path / str(mode)),
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 3,
         max_steps = steps,
@@ -1061,33 +1064,96 @@ def test_caller_side_modes_are_ineligible(ga, tmp_path, monkeypatch, kind):
     assert _windows(engine) == 0
 
 
-def test_off_by_default_with_an_opt_in_hint(ga, tmp_path, monkeypatch, capsys):
-    """Opt-in: with UNSLOTH_OFFLOAD_LAYER_MAJOR unset no window runs (one line says how to opt in), with 1 they do."""
+@pytest.mark.parametrize("stall, want", [(None, 0), (1.0, 0), (50.0, 2)])
+def test_default_is_auto_and_zero_stays_off(ga, tmp_path, monkeypatch, stall, want):
+    """UNSLOTH_OFFLOAD_LAYER_MAJOR unset (or empty) = auto: windows only after measured copy stalls; "0" is a hard
+    off whatever the stalls; every run bitwise equal to standard accumulation."""
     mod, engine = ga
-    assert mod._DEFAULT_MODE == "off"
-    monkeypatch.delenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", raising = False)
-    assert mod._mode() == "off"
-    monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", "")
-    assert mod._mode() == "off"
-    monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", "1")
-    assert mod._mode() == "on"
-    base = _train(mod, tmp_path, monkeypatch, "0")
-    capsys.readouterr()
-    real_setenv = monkeypatch.setenv
+    assert mod._DEFAULT_MODE == "auto"
+    for value, mode in (("", "auto"), ("0", "off"), ("off", "off"), ("1", "on"), ("auto", "auto")):
+        monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", value)
+        assert mod._mode() == mode, value
+    monkeypatch.delenv("UNSLOTH_OFFLOAD_LAYER_MAJOR")
+    assert mod._mode() == "auto"
+    engine.layer_major_stats(reset = True)
+    off = _train(mod, tmp_path, monkeypatch, "0", steps = 4, stall = 50.0)
+    assert _windows(engine) == 0
+    engine.layer_major_stats(reset = True)
+    run = _train(mod, tmp_path, monkeypatch, None, steps = 4, stall = stall)
+    assert _windows(engine) == want
+    _same(off, run)
+
+
+def test_auto_measures_the_standard_step_peak_in_its_probe_step(ga, tmp_path, monkeypatch):
+    """auto's second (measured) step also records each card's peak above the step's start; the decision step passes
+    it to _fits, which keeps the held layer inputs beside it."""
+    mod, engine = ga
+    calls, seen = [], []
     monkeypatch.setattr(
-        monkeypatch,
-        "setenv",
-        lambda k, v, *a: monkeypatch.delenv(k, raising = False)
-        if k == "UNSLOTH_OFFLOAD_LAYER_MAJOR"
-        else real_setenv(k, v, *a),
+        mod, "_peak_probe_start", lambda model: calls.append("start") or {"card": 1}
+    )
+    monkeypatch.setattr(
+        mod, "_peak_probe_end", lambda start: calls.append(("end", start)) or {"card": 7}
+    )
+    fits = mod._fits
+    monkeypatch.setattr(
+        mod, "_fits", lambda *a: seen.append(a[3] if len(a) > 3 else None) or fits(*a)
     )
     engine.layer_major_stats(reset = True)
-    run = _train(mod, tmp_path, monkeypatch, "unset")
-    monkeypatch.undo()
-    out = capsys.readouterr().out
-    assert _windows(engine) == 0
-    assert out.count("It is opt-in: set UNSLOTH_OFFLOAD_LAYER_MAJOR=1") == 1
-    _same(base, run)
+    _train(mod, tmp_path, monkeypatch, None, steps = 4, stall = 50.0)
+    assert calls == ["start", ("end", {"card": 1})]
+    assert seen == [{"card": 7}, {"card": 7}] and _windows(engine) == 2
+
+
+def test_auto_without_stall_stats_runs_after_the_measured_probe(ga, tmp_path, monkeypatch):
+    """UNSLOTH_OFFLOAD_STATS = 0 removes the stall measurement: auto still runs its two standard steps (the second
+    measures the step's peak for _fits), then windows."""
+    mod, engine = ga
+    monkeypatch.setattr(sys.modules[_Swap.__module__], "_TIMING", False, raising = False)
+    engine.layer_major_stats(reset = True)
+    off = _train(mod, tmp_path, monkeypatch, "0", steps = 4)
+    engine.layer_major_stats(reset = True)
+    run = _train(mod, tmp_path, monkeypatch, None, steps = 4)
+    assert _windows(engine) == 2
+    _same(off, run)
+
+
+def test_peak_probe_leaves_the_process_peak_counters_alone(ga, monkeypatch):
+    """The probe bounds the step's peak by the process-wide peak since its start; it never resets the counters that
+    other code (training summaries, notebooks) reports."""
+    mod, engine = ga
+    card = torch.device("cuda", 0)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(mod, "_cuda_devices", lambda model: [card])
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 100)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda device = None: 350)
+
+    def reset(*a, **k):
+        raise AssertionError("peak counters reset")
+
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", reset)
+    start = mod._peak_probe_start(None)
+    assert start == {card: 100}
+    assert mod._peak_probe_end(start) == {card: 250}
+
+
+def test_auto_declines_when_the_inputs_do_not_fit_beside_the_step_peak(ga, monkeypatch):
+    """Free VRAM just above the standard step's peak: the held layer inputs pass the 60% rule but not the room left
+    beside that peak, so the window is declined instead of running out of memory."""
+    mod, engine = ga
+    model = _model()
+    layers = model.get_base_model().model.layers
+    samples = [{"input_ids": torch.zeros(2, 2048, dtype = torch.long)} for _ in range(3)]
+    need = engine.boundary_bytes([2 * 2048] * 3, 64, len(layers), 4)
+    card = torch.device("cuda", 0)
+    usable = int(need / 0.6) * 2  # the 60% rule alone accepts
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(mod, "_usable_cuda_bytes", lambda device: usable)
+    assert mod._fits(model, layers, samples)[0] is True
+    assert mod._fits(model, layers, samples, {card: int(0.9 * usable) - need})[0] is True
+    ok, why = mod._fits(model, layers, samples, {card: int(0.9 * usable) - need + 1})
+    assert ok is False and "standard step" in why, why
 
 
 def test_only_known_setup_wrappers_may_shadow_trainer_methods(ga):

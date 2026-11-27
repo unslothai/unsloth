@@ -3,6 +3,7 @@
 
 import { useId } from "react";
 import { Button } from "@/components/ui/button";
+import { pickLabel } from "../page-models";
 
 export function RecommendedModelPicks({
   models,
@@ -34,7 +35,7 @@ export function RecommendedModelPicks({
             translate="no"
             onClick={() => onPick?.(model.id)}
           >
-            {model.name.replace(/-GGUF$/i, "")}
+            {pickLabel(model.name)}
           </Button>
         ))}
       </div>

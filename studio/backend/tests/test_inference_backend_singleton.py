@@ -22,8 +22,7 @@ _THREADS = 8
 
 @pytest.fixture
 def fresh_singleton(monkeypatch):
-    """Reset the module global and restore it afterwards. Set directly, not via
-    monkeypatch.setattr, so the getter's ``global`` write is what the test observes."""
+    """Set the global directly, not via monkeypatch, so the getter's global write is observed."""
     saved = orch._inference_backend
     orch._inference_backend = None
     try:
@@ -94,15 +93,13 @@ def test_concurrent_first_calls_build_exactly_one_orchestrator(fresh_singleton, 
 
 
 def test_warm_path_does_not_take_the_lock(fresh_singleton, stub_orchestrator):
-    """Once built, the getter must not serialize on the lock. Every request path reaches it,
-    so a single ``with`` around the whole body would funnel all of them through one mutex."""
+    """Once built, the getter must not take the lock, or every request serializes behind it."""
     first = orch.get_inference_backend()
     assert len(stub_orchestrator.built) == 1
 
     returned: list[object] = []
     with orch._inference_backend_lock:
-        # Lock held by this thread: a warm call from another must still return,
-        # which it can only do by skipping the lock.
+        # Lock held here: a warm call from another thread can return only by skipping it.
         t = threading.Thread(target = lambda: returned.append(orch.get_inference_backend()))
         t.start()
         t.join(timeout = 10)

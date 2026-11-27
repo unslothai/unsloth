@@ -78,7 +78,12 @@ Object.assign(globalThis, {
     querySelectorAll: (selector: string) =>
       selector.startsWith("[data-sonner-toast]") ? clickable : selector.startsWith("[data-radix") ? blocking : [],
   },
-  getComputedStyle: (element: FakeNode) => ({ backgroundColor: element.background, backgroundImage: "none" }),
+  getComputedStyle: (element: FakeNode & { position?: string; zIndex?: string }) => ({
+    backgroundColor: element.background,
+    backgroundImage: "none",
+    position: element.position ?? "static",
+    zIndex: element.zIndex ?? "auto",
+  }),
   CSS: { escape: (value: string) => value },
   DOMRect: class {
     constructor(x: number, y: number, width: number, height: number) {
@@ -556,5 +561,97 @@ test("a node around a layered page that starts painting later, with no class cha
   } finally {
     stop();
     wrapper.background = before;
+  }
+});
+
+test("the app under the dialog a layered page opens in is cut too, though no ancestor of it", async () => {
+  const backdrop = Object.assign(node("backdrop", "rgba(255, 255, 255, 0.8)", section), {
+    getBoundingClientRect: () => rect(0, 0, 1000, 800),
+  });
+  const dialog = Object.assign(node("dialog", "rgb(255, 255, 255)", backdrop), {
+    getAttribute: (name: string) => (name === "aria-modal" ? "true" : null),
+  });
+  const landing = Object.assign(node("landing", "rgba(0, 0, 0, 0)", section), {
+    getBoundingClientRect: () => rect(300, 0, 700, 800),
+  });
+  const sidebar = Object.assign(node("sidebar", "rgb(250, 250, 250)", html), {
+    getBoundingClientRect: () => rect(0, 0, 300, 800),
+  });
+  const toasts = node("toasts", "rgba(0, 0, 0, 0)", html);
+  Object.assign(backdrop, { previousElementSibling: landing });
+  Object.assign(section, { previousElementSibling: sidebar, nextElementSibling: toasts });
+  const parent = wrapper.parentElement;
+  Object.assign(wrapper, { parentElement: dialog });
+  useBrowserStore.getState().openUrl("https://project.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    assert.ok(dialog.attributes.has("data-native-hole"));
+    assert.deepEqual(
+      [landing, sidebar].map((element) => element.attributes.has("data-native-hole-mask")),
+      [true, true],
+      "the project page and the sidebar behind the dialog skip the page's rect",
+    );
+    assert.equal(landing.vars.get("--native-hole-x"), "200px");
+    assert.equal(sidebar.vars.get("--native-hole-x"), "500px");
+    assert.equal(toasts.attributes.has("data-native-hole-mask"), false, "what draws over it is left alone");
+  } finally {
+    stop();
+    Object.assign(wrapper, { parentElement: parent });
+    Object.assign(section, { previousElementSibling: undefined, nextElementSibling: undefined });
+  }
+  assert.equal(landing.attributes.has("data-native-hole-mask"), false, "closing the panel fills the hole");
+});
+
+test("the notification rail above the dialog a layered page opens in is not cut", async () => {
+  const backdrop = Object.assign(node("backdrop", "rgba(255, 255, 255, 0.8)", section), { position: "fixed", zIndex: "50" });
+  const dialog = Object.assign(node("dialog", "rgb(255, 255, 255)", backdrop), {
+    getAttribute: (name: string) => (name === "aria-modal" ? "true" : null),
+  });
+  const rail = Object.assign(node("rail", "rgba(0, 0, 0, 0)", html), { position: "fixed", zIndex: "9000" });
+  const sidebar = Object.assign(node("sidebar", "rgb(250, 250, 250)", html), { previousElementSibling: rail });
+  Object.assign(section, { previousElementSibling: sidebar });
+  const parent = wrapper.parentElement;
+  Object.assign(wrapper, { parentElement: dialog });
+  useBrowserStore.getState().openUrl("https://project.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    assert.ok(sidebar.attributes.has("data-native-hole-mask"));
+    assert.equal(rail.attributes.has("data-native-hole-mask"), false, "its cards stay visible over the page");
+  } finally {
+    stop();
+    Object.assign(wrapper, { parentElement: parent });
+    Object.assign(section, { previousElementSibling: undefined });
+  }
+});
+
+test("the resource monitor raised over the dialog a layered page opens in is not cut", async () => {
+  const backdrop = Object.assign(node("backdrop", "rgba(255, 255, 255, 0.8)", section), { position: "fixed", zIndex: "50" });
+  const dialog = Object.assign(node("dialog", "rgb(255, 255, 255)", backdrop), {
+    getAttribute: (name: string) => (name === "aria-modal" ? "true" : null),
+  });
+  const monitor = Object.assign(node("monitor", "rgba(0, 0, 0, 0)", html), { position: "fixed", zIndex: "9100" });
+  const sidebar = Object.assign(node("sidebar", "rgb(250, 250, 250)", html), {
+    position: "fixed",
+    zIndex: "10",
+    previousElementSibling: monitor,
+  });
+  Object.assign(section, { previousElementSibling: sidebar });
+  const parent = wrapper.parentElement;
+  Object.assign(wrapper, { parentElement: dialog });
+  useBrowserStore.getState().openUrl("https://project.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    assert.ok(sidebar.attributes.has("data-native-hole-mask"), "a fixed layer below the dialog is still cut");
+    assert.equal(monitor.attributes.has("data-native-hole-mask"), false, "its controls stay visible over the page");
+  } finally {
+    stop();
+    Object.assign(wrapper, { parentElement: parent });
+    Object.assign(section, { previousElementSibling: undefined });
   }
 });

@@ -370,7 +370,7 @@ export function LoadedModelsIndicator({
               onClick={() => {
                 if (!justDragged()) setCollapsed(false);
               }}
-              className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
+              className="menu-soft-surface menu-soft-edgeless glass-card pointer-events-auto relative flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
                 icon={cardState === "otherAccount" ? LockKeyIcon : SparkleIcon}
@@ -391,7 +391,7 @@ export function LoadedModelsIndicator({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[calc(268px*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg p-1 font-heading">
+        <div className="menu-soft-surface menu-soft-edgeless glass-card pointer-events-auto relative flex min-h-0 w-[calc(268px*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg p-1 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-2.5 pt-0.5">
             <HugeiconsIcon
               icon={SparkleIcon}

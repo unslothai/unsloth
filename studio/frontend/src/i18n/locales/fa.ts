@@ -4750,6 +4750,8 @@ export const fa = {
       unsupportedFileType: "نوع فایل پشتیبانی نمی‌شود",
       uploadOneFileType: "یک فایل {types} آپلود کنید.",
       datasetUploaded: "مجموعه‌داده آپلود شد",
+      importPandasJson: "وارد کردن .json به‌صورت ستون‌های pandas",
+      importSemicolonCsv: "استفاده از نقطه‌ویرگول به‌عنوان جداکننده برای .csv",
       evalDatasetUploaded: "مجموعه‌دادهٔ ارزیابی آپلود شد",
       uploadOneFileAtATime: "هر بار فقط یک فایل آپلود کنید",
       uploadSingleFileDescription:

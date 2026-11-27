@@ -533,13 +533,11 @@ class TestCrossPlatform:
 
 
 def test_the_status_route_reports_what_a_self_sizing_load_asked_for():
-    """The UI re-seeds its context pin from it, because the resolved window cannot say
-    whether anyone chose that length; without it a pin is invisible after a refresh."""
+    """Pin survives refresh via requested_context_length; resolved window hides a user choice."""
     route_src = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
         encoding = "utf-8"
     )
     assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
-    # The non-GGUF branch is covered by behaviour in test_non_gguf_reload_settings.py.
-    # The parent cannot recompute the group once the worker holds the model: it mirrors all.
+    # Parent cannot recompute the group once the worker holds the model, so it mirrors all.
     src = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text("utf-8")
     assert '"native_context_length",\n                "max_context_length",' in src

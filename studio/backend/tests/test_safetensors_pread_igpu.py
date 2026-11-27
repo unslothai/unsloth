@@ -129,12 +129,14 @@ def test_image_load_scope_engages_on_windows_igpu_only(monkeypatch, platform, ig
         keep = (),
         every_shard = False,
         integrated_cuda = False,
+        integrated_rocm = False,
     ):
         got.update(
             convert_to = convert_to,
             keep = keep,
             every_shard = every_shard,
             integrated_cuda = integrated_cuda,
+            integrated_rocm = integrated_rocm,
         )
         return "scope"
 
@@ -146,6 +148,7 @@ def test_image_load_scope_engages_on_windows_igpu_only(monkeypatch, platform, ig
         "keep": (),
         "every_shard": every,
         "integrated_cuda": False,
+        "integrated_rocm": False,
     }
 
 

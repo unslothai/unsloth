@@ -57,12 +57,27 @@ __all__ = [
 ]
 
 
+def _is_rocm_torch(torch):
+    # Inlined, not imported: tests load this file standalone. The +rocm version tag backs up a build that leaves
+    # torch.version.hip unset (the AMD SDK gfx1151 wheels checked so far set it).
+    if getattr(torch.version, "hip", None):
+        return True
+    # Never str() a TorchVersion (torch.__version__): Dynamo cannot trace its C str() under fullgraph. A plain str
+    # there (set by a caller or test) wins, else the plain-str torch.version.__version__.
+    version = getattr(torch, "__version__", None)
+    if type(version) is not str:
+        version = getattr(getattr(torch, "version", None), "__version__", None)
+    if type(version) is not str:
+        version = str(version or "")
+    return "rocm" in version.lower()
+
+
 # Read once: an environment lookup inside a compiled forward would be a guard on every call.
 _TRITON_ENABLED = HAS_TRITON and os.environ.get("UNSLOTH_MULTI_LORA_TRITON", "1") != "0"
 _COMPILE_STACKS_ENABLED = (
     HAS_TRITON
     and os.name != "nt"
-    and torch.version.hip is None
+    and not _is_rocm_torch(torch)
     and os.environ.get("UNSLOTH_MULTI_LORA_COMPILE_STACKS", "1") != "0"
     and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") not in ("1", "true", "True")
 )
@@ -880,7 +895,12 @@ def _peft_expert_in_axis(is_transposed: bool) -> int:
 
 
 def _expert_stack_shape(param) -> tuple[int, int, int]:
-    shape = getattr(param, "_original_shape", None) or tuple(param.shape)
+    shape = getattr(param, "_original_shape", None)
+    # FSDP2 sharded load: a local chunk recording the whole shape.
+    preload = getattr(param, "_unsloth_fsdp2_preload", None)
+    if shape is None and isinstance(preload, dict) and not preload.get("packed"):
+        shape = preload["shape"]
+    shape = shape or tuple(param.shape)
     if len(shape) != 3:
         raise ValueError(f"Expected a fused (experts, d1, d2) parameter, got shape {tuple(shape)}.")
     return tuple(int(x) for x in shape)

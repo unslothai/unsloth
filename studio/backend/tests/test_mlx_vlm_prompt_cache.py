@@ -900,7 +900,7 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx,
     store.store("t", ids[:512], _snapshot(range(9000, 9512)))
     fake_mx.clear()
     session, _cache, stored = _generate(store, language_model, ids + [1] * 300, honour_reuse = False)
-    assert session.reused_tokens == 1024 and stored
+    assert session.reused_tokens == 1024 and session.resumed_tokens == 0 and stored
     assert store.lookup("m", ids + [-1], limit = 256)[1] == 256
     # The declined offer is released, not copied: it would be declined again.
     assert len(store) == 3 and store.lookup("m", ids + [-1], limit = 1024)[1] == 256
@@ -1168,6 +1168,7 @@ def test_a_batched_row_resumes_and_banks_what_the_single_path_does(fake_mx, medi
         row = VLMBatchRowCache(batched, "m", make_cache, media_ids, media, step = STEP)
         prefix, cache = _prefill_row(row, prompt)
         assert prefix == session.reused_tokens and cache[0].keys.rows == prompt[:-1]
+        assert prefix == session.resumed_tokens
         assert set(batched._entries) == set(single._entries)
         assert batched._replays == single._replays
     entries, prefix = batched.lookup("m", prompts[-1] + [0], limit = 768)
@@ -1213,11 +1214,13 @@ def test_session_prefills_the_media_block_and_chains_from_it(fake_mx, caplog):
     generate = lambda n, **kw: _generate(store, language_model, _block_prompt(n), **kwargs, **kw)
     session, cache, stored = generate(500)
     assert session.reused_tokens == 100 and block.prefilled == 1 and stored
+    assert session.resumed_tokens == 0
     assert block.entries_at_prefill == 0 and session.produced_seconds > 0
     assert session.produced_tokens == 100 and cache[0].offset == 500 and len(fake_mx) == 3
     assert [len(item[1]) for item in store._entries] == [100, 356, 499]
     session, _cache, stored = generate(700)
     assert session.reused_tokens == 356 and block.prefilled == 1 and stored
+    assert session.resumed_tokens == 356
     assert session.produced_tokens == 0
     assert [len(item[1]) for item in store._entries] == [356, 612, 699]
     store.clear()

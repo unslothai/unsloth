@@ -523,6 +523,7 @@ def select(
     )
     if mlx is not None:
         return mlx, None
+    images = images or state_images
     if checkpoint.layout == GGUF:
         return _select_gguf(checkpoint, questions, preference or get_backend()), None
     preference = preference or get_backend()
@@ -2466,6 +2467,7 @@ def _route(
             get_backend() != "auto"
             or checkpoint.layout == GGUF
             or images
+            or state_images
             or exc.limit >= MAX_LENGTH
             or clef_unsupported_reason() is not None
             or not is_cached(checkpoint)
@@ -2475,7 +2477,7 @@ def _route(
         return _decide(checkpoint, state, questions, None)
     except Unavailable:
         # A llama-server that turned out not to serve decisions: Auto answers this request on PyTorch.
-        if not _is_native(target) or get_backend() != "auto" or images:
+        if not _is_native(target) or get_backend() != "auto" or images or state_images:
             raise
         retry, reason = select(checkpoint, images, questions, state_images = state_images)
         if retry == target:
@@ -2570,7 +2572,7 @@ def _decide_clef(checkpoint: Checkpoint, agent, state, questions) -> dict[str, A
 def _decide_native(checkpoint: Checkpoint, agent, state, questions, images) -> dict[str, Any]:
     from .native_worker import NativeContextOverflow, NativeError
     try:
-        result = agent.decide(state, questions, images)
+        result = agent.decide(state, questions, images, _state_has_images(state))
     except NativeContextOverflow:
         raise
     except NativeError as exc:

@@ -12,6 +12,7 @@ import types
 from pathlib import Path
 
 import pytest
+from torch.torch_version import TorchVersion
 import torch
 
 import core.inference.safetensors_pread as sp
@@ -64,6 +65,10 @@ def _stub_cuda(
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "get_device_properties", props)
     monkeypatch.setattr(torch.version, "hip", "6.4.0" if rocm else None)
+    # is_rocm_torch also reads the build tag, which a real ROCm wheel carries in __version__
+    monkeypatch.setattr(
+        torch, "__version__", TorchVersion("2.11.0+rocm7.13.0" if rocm else "2.11.0+cu130")
+    )
 
 
 @pytest.mark.parametrize(
@@ -93,6 +98,7 @@ def test_cuda_is_integrated_never_raises(monkeypatch):
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "get_device_properties", boom)
     monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch, "__version__", TorchVersion("2.11.0+cu130"))
     assert host_pinning.cuda_is_integrated("cuda") is False
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert host_pinning.cuda_is_integrated("cuda") is False
@@ -192,7 +198,7 @@ def test_integrated_cuda_reads_every_shard_through_pread(monkeypatch, tmp_path, 
     [
         ("linux", (False,), False, None),  # discrete NVIDIA
         ("win32", (False,), False, None),
-        ("linux", (True,), True, None),  # ROCm APU: left to its pending timing rerun
+        ("linux", (True,), True, None),  # ROCm APU with plenty of memory: its gate keeps mmap
         ("linux", (True,), False, "0"),  # explicit off wins
         ("win32", (True,), False, "0"),
     ],
@@ -203,6 +209,7 @@ def test_other_targets_keep_their_backend(monkeypatch, tmp_path, platform, integ
     if env is not None:
         monkeypatch.setenv(sp.PREAD_ENV, env)
     _stub_cuda(monkeypatch, integrated, rocm)
+    monkeypatch.setattr(sp, "host_memory", lambda: (100 * sp.GiB, 128 * sp.GiB))
     seen = _spy_backends(monkeypatch)
     with _image_scope("cuda"):
         _load_both(shards)

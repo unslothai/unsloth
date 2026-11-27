@@ -55,10 +55,9 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     assert set(mr.MLX_PACKAGES) <= set(cmd)
     assert "mlx-vlm>=0.6.4,<=0.8.1" in cmd
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
-    assert "mlx==0.32.4" in cmd
+    assert "mlx==0.32.5" in cmd
     assert "mlx-lm>=0.31.3,<=0.32.2" in cmd
-    # Look up by name, not prefix: startswith('mlx==') could only be checked on a pinned spec, so it
-    # passed vacuously once the pin was relaxed.
+    # Look up by name, not prefix: startswith('mlx==') passes vacuously once the pin relaxes.
     spec = mr._MLX_INSTALL_SPECS["mlx"]
     assert spec.startswith("=="), f"mlx must be pinned, not floored: got {spec}"
 
@@ -72,7 +71,7 @@ def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch)
     vlm = next(p for p in packages if p.startswith("mlx-vlm"))
     assert "<0.7.0" in vlm
     # mlx is pinned at both ends; intersecting it with an older release empties the range.
-    assert "mlx==0.32.4" in packages
+    assert "mlx==0.32.5" in packages
     assert "mlx-lm>=0.31.3,<=0.32.2" in packages
 
 
@@ -82,6 +81,22 @@ def test_install_keeps_an_older_zoos_mlx_lm(monkeypatch):
         mr, "_zoo_declared_specifier", lambda name: "==0.31.3" if name == "mlx-lm" else ""
     )
     assert "mlx-lm>=0.31.3,<=0.32.2,==0.31.3" in mr._install_packages()
+
+
+def test_install_takes_the_zoos_exact_mlx_pin(monkeypatch):
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "==0.32.4" if name == "mlx" else ""
+    )
+    packages = mr._install_packages()
+    assert "mlx==0.32.4" in packages and "mlx==0.32.5" not in packages
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: ">=0.22.0" if name == "mlx" else ""
+    )
+    assert "mlx==0.32.5" in mr._install_packages()
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "==0.32.2" if name == "mlx" else ""
+    )
+    assert "mlx==0.32.5" in mr._install_packages()
 
 
 def test_install_keeps_the_full_range_when_the_zoo_declares_nothing(monkeypatch):
@@ -162,6 +177,10 @@ def test_constraint_caps_datasets_when_its_metadata_is_missing(monkeypatch):
 
 def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     pytest.importorskip("transformers")
+    real_declared = mr._zoo_declared_specifier
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "" if name == "mlx" else real_declared(name)
+    )
     captured = {}
     created_paths = []
     real_args = mr._transformers_constraint_args

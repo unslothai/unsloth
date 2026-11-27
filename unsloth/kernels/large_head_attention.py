@@ -36,6 +36,21 @@ _SUPPORTED_HEAD_DIMS = (512,)
 _INT32_MAX = 2**31 - 1
 
 
+def _is_rocm_torch(torch):
+    # Inlined, not imported: tests load this file standalone. The +rocm version tag backs up a build that leaves
+    # torch.version.hip unset (the AMD SDK gfx1151 wheels checked so far set it).
+    if getattr(torch.version, "hip", None):
+        return True
+    # Never str() a TorchVersion (torch.__version__): Dynamo cannot trace its C str() under fullgraph. A plain str
+    # there (set by a caller or test) wins, else the plain-str torch.version.__version__.
+    version = getattr(torch, "__version__", None)
+    if type(version) is not str:
+        version = getattr(getattr(torch, "version", None), "__version__", None)
+    if type(version) is not str:
+        version = str(version or "")
+    return "rocm" in version.lower()
+
+
 def _fwd_configs():
     return [
         triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps = w, num_stages = s)
@@ -61,7 +76,7 @@ def _bwd_configs():
 
 
 @triton.autotune(configs = _fwd_configs(), key = ["HEAD_DIM", "G"])
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_fwd(
     Q,
     K,
@@ -142,7 +157,7 @@ def _lh_fwd(
     tl.store(LSE + off_bh.to(tl.int64) * S + offs_m, m_i + tl.log2(l_safe), mask = row_ok)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_pre(
     O,
     DO,
@@ -180,7 +195,7 @@ def _lh_bwd_pre(
 
 
 @triton.autotune(configs = _bwd_configs(), key = ["HEAD_DIM", "G"])
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_dq(
     Q,
     K,
@@ -262,7 +277,7 @@ def _lh_bwd_dq(
 
 
 @triton.autotune(configs = _bwd_configs(), key = ["HEAD_DIM", "G"])
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_dkdv(
     Q,
     K,
@@ -396,7 +411,7 @@ def _tma_tile(
     return desc.load([b, h, row0, col0]).reshape(ROWS, HALF)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_fwd_tma(
     desc_q,
     desc_k,
@@ -464,7 +479,7 @@ def _lh_fwd_tma(
     tl.store(LSE + off_bh.to(tl.int64) * S + offs_m, m_i + tl.log2(l_safe), mask = row_ok)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_dq_tma(
     desc_q,
     desc_k,
@@ -531,7 +546,7 @@ def _lh_bwd_dq_tma(
     tl.store(out + HALF, (dq1 * sm_scale).to(DQ.dtype.element_ty), mask = row_ok[:, None])
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_dkdv_tma(
     desc_q,
     desc_k,
@@ -1435,7 +1450,7 @@ def _make_router(original):
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
-            and torch.version.hip is None
+            and not _is_rocm_torch(torch)
             and _shapes_qualify(query, key, value)
             and not _autocast_dtype_differs(query)
             and not _math_sdpa_requested()
@@ -1526,7 +1541,7 @@ _PATCHED = [False]
 def patch_large_head_attention(model = None):
     """Routes transformers' sdpa attention through the large head kernel when a call qualifies, else
     the previous sdpa; with a model, installs only if a module has head_dim > 256."""
-    if not _enabled() or not torch.cuda.is_available() or torch.version.hip is not None:
+    if not _enabled() or not torch.cuda.is_available() or _is_rocm_torch(torch):
         return False
     if model is not None:
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())

@@ -56,7 +56,6 @@ def test_only_the_vetted_families_carry_a_tip():
 def test_each_tip_is_short_and_names_unsloth_studio_in_full(name):
     hint = detect_family(name).prompt_hint
     assert hint and len(hint) <= 240
-    # One or two sentences.
     assert 1 <= len(re.findall(r"[.!?](?:\s|\"?$)", hint)) <= 2
     assert not re.search(r"(?<!Unsloth )\bStudio\b", hint)
 

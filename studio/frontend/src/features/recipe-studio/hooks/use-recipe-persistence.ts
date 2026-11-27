@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  BROWSER_ACCOUNT_KEY,
+  accountTransitionPending,
+  sameBrowserAccount,
+} from "@/lib/account-transition";
 import { useTimeFormat } from "@/lib/time-format";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { normalizeNonEmptyName } from "@/utils";
@@ -21,6 +26,9 @@ type PersistRecipeFn = (input: {
   id: string | null;
   name: string;
   payload: RecipePayloadResult["payload"];
+  keepalive?: boolean;
+  // Exit saves get no later chance, so they may also try a write whose answer was lost.
+  recover?: boolean;
 }) => Promise<{
   id: string;
   updatedAt: number;
@@ -184,8 +192,9 @@ function sanitizeSeedForShare(payload: unknown): unknown {
 // autosave never leaves the saved recipe pointing at deleted files.
 function drainQueuedUploadCleanups(
   savedPayload: RecipePayloadResult["payload"],
+  // A save that settles after its editor closed may only drain what was queued before it closed.
+  pending: readonly string[] = useRecipeStudioStore.getState().pendingUploadCleanups,
 ): void {
-  const pending = useRecipeStudioStore.getState().pendingUploadCleanups;
   if (pending.length === 0) {
     return;
   }
@@ -283,37 +292,116 @@ export function useRecipePersistence({
     resetRecipe,
   ]);
 
+  const latest = useRef({
+    ready: false,
+    recipeId,
+    onPersistRecipe,
+    name: normalizedWorkflowName,
+    payload: currentPayload,
+    signature: currentSignature,
+  });
+  useEffect(() => {
+    latest.current = {
+      ready: initialRecipeReady,
+      recipeId,
+      onPersistRecipe,
+      name: normalizedWorkflowName,
+      payload: currentPayload,
+      signature: currentSignature,
+    };
+  });
+  const savedRef = useRef({
+    saved: "",
+    failed: null as string | null,
+    seq: 0,
+    applied: 0,
+    outstanding: 0,
+    uncertain: false,
+  });
+  const inFlight = useRef<{ signature: string; done: Promise<void> } | null>(
+    null,
+  );
+  // Null while open; once closed, the upload queue as it stood then.
+  const closedQueue = useRef<readonly string[] | null>(null);
+
+  useEffect(() => {
+    savedRef.current.saved = savedSignature;
+  }, [savedSignature]);
+
+  const runSave = useCallback(
+    (
+      name: string,
+      payload: RecipePayloadResult["payload"],
+      signature: string,
+      keepalive: boolean,
+      recover = keepalive,
+    ): Promise<void> => {
+      const { recipeId: id, onPersistRecipe: persist } = latest.current;
+      const seq = ++savedRef.current.seq;
+      savedRef.current.outstanding += 1;
+      setSaveLoading(true);
+      const done: Promise<void> = persist({ id, name, payload, keepalive, recover })
+        .then(
+          (result) => {
+            if (seq < savedRef.current.applied) {
+              return;
+            }
+            savedRef.current.applied = seq;
+            savedRef.current.uncertain = false;
+            setLastSavedAt(result.updatedAt);
+            savedRef.current.failed = null;
+            setFailedSignature(null);
+            savedRef.current.saved = signature;
+            setSavedSignature(signature);
+            // A newer save still unsettled may reference uploads this older payload dropped.
+            if (seq === savedRef.current.seq) {
+              drainQueuedUploadCleanups(payload, closedQueue.current ?? undefined);
+            }
+          },
+          (error: unknown) => {
+            // A newer save already landed, so this content is superseded, not rejected.
+            if (seq < savedRef.current.applied) {
+              return;
+            }
+            console.error("Save recipe failed:", error);
+            // An HTTP refusal carries a status; anything else may have landed unseen.
+            if (typeof (error as { status?: unknown } | null)?.status !== "number") {
+              savedRef.current.uncertain = true;
+            }
+            savedRef.current.failed = signature;
+            setFailedSignature(signature);
+            toastError(
+              "Save failed",
+              error instanceof Error ? error.message : "Could not save recipe.",
+            );
+          },
+        )
+        .finally(() => {
+          if (inFlight.current?.done === done) inFlight.current = null;
+          // Idle (and so free to clean uploads) only once every overlapping save has settled.
+          if (--savedRef.current.outstanding === 0) setSaveLoading(false);
+        });
+      inFlight.current = { signature, done };
+      return done;
+    },
+    [],
+  );
+
   const persistRecipe = useCallback(async (): Promise<void> => {
-    if (saveLoading) {
+    if (inFlight.current) {
       return;
     }
     const nextName = normalizeNonEmptyName(workflowName, "Unnamed");
     if (nextName !== workflowName) {
       setWorkflowName(nextName);
     }
-
-    setSaveLoading(true);
-    try {
-      const result = await onPersistRecipe({
-        id: recipeId,
-        name: nextName,
-        payload: currentPayload,
-      });
-      setLastSavedAt(result.updatedAt);
-      setFailedSignature(null);
-      setSavedSignature(buildSignature(nextName, currentPayload));
-      drainQueuedUploadCleanups(currentPayload);
-    } catch (error) {
-      console.error("Save recipe failed:", error);
-      setFailedSignature(buildSignature(nextName, currentPayload));
-      toastError(
-        "Save failed",
-        error instanceof Error ? error.message : "Could not save recipe.",
-      );
-    } finally {
-      setSaveLoading(false);
-    }
-  }, [currentPayload, onPersistRecipe, recipeId, saveLoading, workflowName]);
+    await runSave(
+      nextName,
+      currentPayload,
+      buildSignature(nextName, currentPayload),
+      false,
+    );
+  }, [currentPayload, runSave, workflowName]);
 
   useEffect(() => {
     if (!isDirty || saveLoading || failedSignature === currentSignature) {
@@ -324,6 +412,46 @@ export function useRecipePersistence({
     }, 800);
     return () => window.clearTimeout(timeoutId);
   }, [currentSignature, failedSignature, isDirty, persistRecipe, saveLoading]);
+
+  useEffect(() => {
+    // Another tab may switch accounts first; its tokens must never carry this account's recipe.
+    const account = window.localStorage.getItem(BROWSER_ACCOUNT_KEY);
+    closedQueue.current = null;
+    const flush = (keepalive: boolean, unloading = keepalive): void => {
+      const { ready, name, payload, signature } = latest.current;
+      const { saved, failed, uncertain } = savedRef.current;
+      const running = inFlight.current;
+      // Compare with what the save in flight will leave stored: undoing it still needs a save.
+      const settled = running ? running.signature : saved;
+      // After a lost answer the server may hold other content, so even this one must be sent.
+      const current = !uncertain && (signature === settled || signature === failed);
+      if (!ready || !saved || current || running?.signature === signature) {
+        return;
+      }
+      if (accountTransitionPending() || !sameBrowserAccount(account)) {
+        return;
+      }
+      // Only an unloading page sends on top of the save in flight; a hidden one may come back.
+      if (running && !unloading) {
+        void running.done.then(() => flush(keepalive, false));
+        return;
+      }
+      void runSave(name, payload, signature, keepalive, true);
+    };
+    // A persisted pagehide enters the back/forward cache and may come back, like a hidden tab.
+    const onPageHide = (event: PageTransitionEvent) => flush(true, !event.persisted);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flush(true, false);
+    };
+    window.addEventListener("pagehide", onPageHide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      closedQueue.current = [...useRecipeStudioStore.getState().pendingUploadCleanups];
+      flush(false);
+    };
+  }, [runSave]);
 
   // Drain even when not dirty: a net-zero edit inside the debounce would otherwise leak the upload
   // dir. Drain skips uids the saved recipe still references.

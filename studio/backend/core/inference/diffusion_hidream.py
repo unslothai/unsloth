@@ -60,8 +60,7 @@ def hidream_te4_kwargs(
             mode = normalize_te_quant(te_quant_mode)
             denied = getattr(precision, "_te_family_denied", None)
             allowed = not (callable(denied) and denied(getattr(fam, "name", None), mode))
-            # fp8 (the hosted fp8 file, else a dense load and cast) needs fp8 support; int8 takes the hosted int8
-            # ConvRot file, which Apple Silicon runs as plain tensors where fp8 does not.
+            # fp8 needs fp8 support; int8 ConvRot file runs as plain tensors on Apple Silicon.
             fp8_engages = (
                 mode in (TE_QUANT_FP8, "int8")
                 and te_quant_supported(target, TE_QUANT_FP8)
@@ -97,8 +96,7 @@ def hidream_te4_kwargs(
                 logger = logger,
                 # The int8 file carries no lm_head; the pipeline reads hidden states only.
                 trim_lm_head = scheme == "int8",
-                # The Llama TE4 lives in its own standalone repo (config at the root), and the pipeline needs hidden
-                # states/attentions from its forward.
+                # Standalone TE4 repo: config at root; pipeline needs hidden states/attentions.
                 config_subfolder = "",
                 config_overrides = {
                     "output_hidden_states": True,
@@ -121,13 +119,15 @@ def hidream_te4_kwargs(
                 )
 
     logger.info("diffusion.hidream: loading Llama TE4 from %s", HIDREAM_LLAMA_REPO)
-    from .host_pinning import cuda_is_integrated
+    from .host_pinning import cuda_is_integrated, rocm_is_integrated
     from .safetensors_pread import pread_safetensors
 
     # loaded before the pipeline's own scope: a 16 GB bf16 Llama converted on Windows reads through pread too
     device = getattr(target, "torch_device", None)
     with pread_safetensors(
-        convert_to = dtype, integrated_cuda = device is not None and cuda_is_integrated(device)
+        convert_to = dtype,
+        integrated_cuda = device is not None and cuda_is_integrated(device),
+        integrated_rocm = device is not None and rocm_is_integrated(device),
     ):
         text_encoder_4 = LlamaForCausalLM.from_pretrained(
             HIDREAM_LLAMA_REPO,

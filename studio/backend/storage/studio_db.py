@@ -5352,6 +5352,13 @@ def fork_chat_thread(
             """,
             fork_messages,
         )
+        conn.execute(
+            "INSERT INTO chat_thread_summaries "
+            "(thread_id, covered_digest, covered_messages, summary, model, manual, created_at) "
+            "SELECT ?, covered_digest, covered_messages, summary, model, manual, created_at "
+            "FROM chat_thread_summaries WHERE thread_id = ?",
+            (new_thread_id, source_thread_id),
+        )
         for row in ancestry:
             _replace_chat_attachment_inventory(
                 conn,

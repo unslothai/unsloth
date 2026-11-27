@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio errors safe to show clients verbatim, which safe_error_detail would flatten; they hold no
-path or user input, so the route passes them through."""
+"""Audio errors safe to show verbatim (no paths or user input); safe_error_detail would flatten them."""
 
 from __future__ import annotations
 

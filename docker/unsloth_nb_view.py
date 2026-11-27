@@ -72,9 +72,7 @@ def clean_section(title):
 
 
 def parse_readme(readme_path):
-    """Ordered (section_label, filename) pairs, filename urldecoded. Dedup is per
-    (section, file), not global: the README deliberately cross-lists a notebook so
-    every header becomes a populated folder."""
+    """Ordered (section, filename) pairs, urldecoded; dedup per section (README cross-lists)."""
     with open(readme_path, "r", encoding = "utf-8") as f:
         text = f.read()
 
@@ -150,8 +148,7 @@ def build_view(
     if _OTHER in by_section and _OTHER not in order:
         order.append(_OTHER)
 
-    # keyed on DEST/nb, the only place our links point, so a user's own shortcut
-    # elsewhere survives the rebuild
+    # Keyed on DEST/nb (where our links point), so a user's own shortcut survives the rebuild.
     nb_real = os.path.realpath(nb_dir)
     _clear_view(view, nb_real)
     _makedirs(view)
@@ -178,9 +175,7 @@ def build_view(
 
 
 def _points_into(link, nb_real):
-    """The ownership test for cleanup: our links all point into DEST/nb, so a user's
-    own symlink resolves outside it and survives. realpath resolves a broken link's
-    path string too, so stale links still count as ours."""
+    """Links into DEST/nb are ours; realpath resolves broken links, so stale ones count."""
     try:
         target = os.path.realpath(link)
     except OSError:
@@ -189,8 +184,7 @@ def _points_into(link, nb_real):
 
 
 def _clear_view(path, nb_real):
-    # VIEW is also JupyterLab's landing dir, so unlink only symlinks we own and rmdir
-    # only emptied folders; the VIEW root is never removed
+    # VIEW is JupyterLab's landing dir: unlink only our links, rmdir emptied dirs, keep root.
     if os.path.islink(path) or not os.path.isdir(path):
         return
     for root, dirs, files in os.walk(path, topdown = False):

@@ -125,8 +125,15 @@ export type TranslateChunk = {
 // Hy-MT2 1.8B drops whole paragraphs from passages near 1,600 characters; 1,000 keeps them.
 export const TRANSLATE_CHUNK_CHARS = 1000;
 
-const SENTENCE_END = /[.!?;。！？；…]["'”’)\]]*\s+|[。！？；]/g;
-const LINE_END = /[.!?;。！？；…]["'”’)\]]*[^\S\n]*\n\s*|\n\s*\n\s*/g;
+const CLOSE = String.raw`["'”’)\]」』）]*`;
+const SENTENCE_END = new RegExp(
+  String.raw`[.!?;。！？；…]${CLOSE}\s+|[。！？；]${CLOSE}`,
+  "g",
+);
+const LINE_END = new RegExp(
+  String.raw`[.!?;。！？；…]${CLOSE}[^\S\n]*\n\s*|\n\s*\n\s*`,
+  "g",
+);
 const MID_LINE_END = new RegExp(
   `(?<!^[^\\S\\n]*\\d+)(?:${SENTENCE_END.source})`,
   "gm",
@@ -235,4 +242,34 @@ export function restoreChunkWhitespace(
   );
   const trail = chunk.text.slice(chunk.text.trimEnd().length);
   return lead + translated.trim() + trail + chunk.after;
+}
+
+const UNSPACED = String.raw`[\p{Script=Han}\u3000-\u30ff\uff00-\uffef]`;
+const CLOSERS = String.raw`["'”’)\]…—]*`;
+const UNSPACED_END = new RegExp(`${UNSPACED}${CLOSERS}$`, "u");
+const UNSPACED_GAP = new RegExp(`(${UNSPACED}${CLOSERS})[^\\S\\n]+$`, "u");
+const UNSPACED_START = new RegExp(`^${UNSPACED}`, "u");
+// `$`-anchored regexes scan the whole string, and this runs per streamed token.
+const TAIL = 64;
+
+/** Re-spaces a passage boundary for the target script, unless the source put a space between Chinese or Japanese text. */
+export function joinPassage(
+  output: string,
+  piece: string,
+  previous: TranslateChunk | undefined,
+  current: TranslateChunk,
+): string {
+  const head = output.slice(0, Math.max(0, output.length - TAIL));
+  const tail = output.slice(head.length);
+  const before = previous ? (previous.text + previous.after).slice(-TAIL) : "";
+  if (UNSPACED_START.test(piece))
+    return UNSPACED_GAP.test(before) && UNSPACED_START.test(current.text)
+      ? output + piece
+      : head + tail.replace(UNSPACED_GAP, "$1") + piece;
+  const gap =
+    UNSPACED_END.test(before) &&
+    /\S$/.test(tail) &&
+    /^\S/.test(piece) &&
+    !UNSPACED_END.test(tail);
+  return output + (gap ? " " : "") + piece;
 }

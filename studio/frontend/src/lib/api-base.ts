@@ -71,9 +71,8 @@ export function desktopSignedMediaPath(url: string): string | null {
   return apiBase && /^\/(?:api|v1)\/[^?#]+\/file-signed\?token=[^&#]+$/.test(url) ? url : null
 }
 
-// A backend link without a signed token: a plain navigation carries no Authorization header, so it 401s.
-// Leading segments are a proxy's root_path, which the chat tools keep in the URLs they return.
-// isStudioUrl resolves as fetch does: "/\\evil/api/x" and tab or newline spellings are another host.
+// Unsigned links 401: navigation has no Authorization header; leading segments are a proxy
+// root_path; isStudioUrl resolves like fetch: backslash, tab or newline spellings are other hosts.
 export function protectedBackendPath(url: string): string | null {
   return /^(?:\/[^/?#]+)*?\/(?:v1|api)\/[^?#]+(?:\?[^#]*)?$/.test(url) &&
     !/\/file-signed\?/.test(url) &&
@@ -82,9 +81,8 @@ export function protectedBackendPath(url: string): string | null {
     : null
 }
 
-// The media a reply image may load with the session: gallery files and video frames. Other routes can forward
-// their query to a third party (the Hub relay) or act on it, so an image naming one is never fetched.
-// The first /api or /v1 segment is the backend's, so a relay path that nests one cannot pass.
+// Gallery files and video frames load with the session; an image naming a route that forwards or
+// acts on the query (the Hub relay) is never fetched; nested /api or /v1 cannot pass.
 export function protectedBackendMediaPath(url: string): string | null {
   const path = protectedBackendPath(url)
   if (path === null) return null
@@ -97,8 +95,7 @@ export function protectedBackendMediaPath(url: string): string | null {
     : null
 }
 
-// Signed gallery media (the URL's token is the credential, no session is sent): a plain <img> may load it.
-// Image generation with response_format=url returns these, relative or absolute.
+// Signed gallery media: the URL token is the credential, no session; a plain img may load it.
 export function isSignedGalleryMediaUrl(url: string): boolean {
   if (!isStudioUrl(url)) return false
   const page = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
