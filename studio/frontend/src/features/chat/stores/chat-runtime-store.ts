@@ -1551,7 +1551,8 @@ function acknowledgeThreadFields(threadId: string, written: PendingThreadFields)
   settleThreadFields(threadId, written);
   if (!canUseStorage()) return;
   try {
-    localStorage.setItem(THREAD_SETTINGS_REVISION_KEY, crypto.randomUUID());
+    // Not randomUUID: Studio on a LAN address is not a secure context.
+    localStorage.setItem(THREAD_SETTINGS_REVISION_KEY, `${Date.now()}-${Math.random()}`);
   } catch {
     // Reopening the thread still reads its persisted settings.
   }

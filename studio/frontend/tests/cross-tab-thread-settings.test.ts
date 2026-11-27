@@ -351,3 +351,19 @@ test("tab-close keepalive preserves an edit that fits once within the 64 KiB bro
     `pagehide sent ${Buffer.byteLength(JSON.stringify(body))} bytes for a ${prompt.length}-byte prompt`,
   );
 });
+
+test("an acknowledged write signals other tabs without a secure context", async () => {
+  threadRows.reset();
+  threadRows.rows.set(THREAD, { systemPrompt: "before", temperature: 0.5 });
+  const tab = await start("insecure-context");
+  const original = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  Object.defineProperty(globalThis, "crypto", { value: {}, configurable: true });
+  try {
+    browser.store.delete("unsloth_chat_thread_settings_revision");
+    params(tab, { temperature: 1.1 });
+    await tab.mod.awaitThreadScopedSettingsWrite(THREAD);
+    assert.ok(browser.store.get("unsloth_chat_thread_settings_revision"));
+  } finally {
+    if (original) Object.defineProperty(globalThis, "crypto", original);
+  }
+});
