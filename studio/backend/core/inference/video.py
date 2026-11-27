@@ -6451,6 +6451,98 @@ def _ltx25_denoise_price_mib(
         return None
 
 
+def video_denoise_required_mib(
+    *,
+    floor_mib: int,
+    denoise_mib: Optional[int] = None,
+    measured_extra_mib: Optional[int] = None,
+) -> int:
+    """MiB the denoise phase needs: the co-resident floor plus its headroom (``denoise_mib`` when priced, else the base
+    overhead), or the recorded peak with margin and slack when that asks for less (as ``video_offload_shortfall_message``)."""
+    required = int(floor_mib) + (
+        DEFAULT_BASE_OVERHEAD_MIB if denoise_mib is None else max(0, int(denoise_mib))
+    )
+    if measured_extra_mib is not None and measured_extra_mib > 0:
+        from .video_stream_residency import MEASURED_PEAK_MARGIN, MEASURED_SLACK_MIB
+        required = min(
+            required,
+            int(floor_mib) + int(measured_extra_mib * MEASURED_PEAK_MARGIN) + MEASURED_SLACK_MIB,
+        )
+    return required
+
+
+def apply_request_prefetch_depth(
+    pipe: Any,
+    *,
+    floor_mib: int,
+    available_mib: int,
+    denoise_mib: Optional[int] = None,
+    measured_extra_mib: Optional[int] = None,
+    logger: Any = None,
+) -> Optional[int]:
+    """Pick this request's prefetch depth for every streamed denoiser and apply it; the depth, or None when nothing
+    streams through the shared prefetcher. The floor prices one group ahead; a memory-tight request (the budget left
+    after the residents cannot hold a second group ahead beside the denoise headroom) runs one ahead, every other
+    request the built depth (2). ``UNSLOTH_DIFFUSION_PREFETCH_DEPTH`` always wins."""
+    try:
+        from .diffusion_offload_prefetch import (
+            module_prefetchers,
+            prefetch_depth_override,
+            set_request_prefetch_depth,
+            streamed_group_mib,
+            tight_prefetch_depth,
+        )
+
+        pfs = []
+        for name in _VIDEO_DENOISER_ATTRS:
+            pfs.extend(module_prefetchers(getattr(pipe, name, None)))
+        if not pfs:
+            return None
+        planned = max(int(getattr(pf, "_unsloth_base_depth", pf.depth)) for pf in pfs)
+        required = video_denoise_required_mib(
+            floor_mib = floor_mib, denoise_mib = denoise_mib, measured_extra_mib = measured_extra_mib
+        )
+        largest = streamed_group_mib(pfs)
+        depth = tight_prefetch_depth(
+            available_mib = int(available_mib),
+            required_mib = required,
+            largest_group_mib = largest,
+            planned_depth = planned,
+        )
+        if set_request_prefetch_depth(pfs, depth) and logger is not None:
+            logger.info(
+                "diffusion.memory: prefetching %d group(s) ahead for this request (%d MiB available)",
+                depth,
+                int(available_mib),
+            )
+        if prefetch_depth_override() is not None:
+            source = "env"
+        else:
+            source = "tight" if depth < planned else "built"
+        try:
+            pipe._unsloth_request_prefetch = {
+                "depth": int(depth),
+                "built_depth": int(planned),
+                # what each prefetcher runs now: a CUDA-graph slot ring keeps its built depth
+                "running_depths": sorted(int(pf.depth) for pf in pfs),
+                "source": source,
+                "available_mib": int(available_mib),
+                "required_mib": int(required),
+                "largest_group_mib": int(largest),
+            }
+        except Exception:  # noqa: BLE001 - a pipe that takes no attributes reports nothing
+            pass
+        return depth
+    except Exception:  # noqa: BLE001 - the prefetchers keep their depth
+        return None
+
+
+def request_prefetch_status(pipe: Any) -> Optional[dict]:
+    """The prefetch depth the last request picked (``apply_request_prefetch_depth``), or None when nothing streams."""
+    info = getattr(pipe, "_unsloth_request_prefetch", None) if pipe is not None else None
+    return dict(info) if isinstance(info, dict) else None
+
+
 def video_offload_shortfall_message(
     *,
     family: str,
@@ -7580,6 +7672,16 @@ class VideoBackend:
                 # Planned as the load will run: the dense denoiser the adapters merge into.
                 kwargs["transformer_quant"] = video_lora.dense_transformer_quant(
                     fam, kwargs.get("transformer_quant"), kwargs.get("loras")
+                )
+                # An H3 side-branch LoRA on the modulation / time embedder needs the released denoiser: decided
+                # here, from the resolved adapters, so the plan and skip_transformer_weights stage its shards.
+                kwargs["transformer_quant"] = video_lora.planned_side_branch_quant(
+                    fam,
+                    kwargs.get("transformer_quant"),
+                    kwargs.get("loras"),
+                    hf_token = kwargs.get("hf_token"),
+                    local_files_only = local_files_only,
+                    cancel_event = cancel_event,
                 )
             else:
                 kwargs.pop("loras", None)
@@ -10117,6 +10219,10 @@ class VideoBackend:
             if lora_refusal:
                 raise ValueError(lora_refusal)
             transformer_quant = video_lora.dense_transformer_quant(fam, transformer_quant, loras)
+            # Cache only (a plan downloads nothing); an adapter not cached yet plans the released denoiser.
+            transformer_quant = video_lora.planned_side_branch_quant(
+                fam, transformer_quant, loras, hf_token = hf_token
+            )
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -11119,6 +11225,9 @@ class VideoBackend:
                 cancel_event = self._cancel_event if _load_token is not None else None,
                 local_files_only = local_files_only,
                 expert_pair = bool(getattr(fam, "is_moe", False)),
+            )
+            transformer_quant = video_lora.side_branch_transformer_quant(
+                fam, transformer_quant, baked_loras
             )
         from .video_minimax_h3 import is_h3_native
 
@@ -14283,7 +14392,23 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
-        if baked_loras:
+        if baked_loras and video_lora.side_branch_enabled(fam):
+            # Unmerged: the denoiser's weights (bf16 or hosted int8 codes) stay as released and every adapted Linear
+            # adds its low-rank branch, so the update is never rounded into a 16-bit or 8-bit weight.
+            adapted = video_lora.attach_side_branch_(
+                getattr(pipe, denoiser_component),
+                [(e[1], e[2]) for e in baked_loras],
+                label = f"{fam.label} denoiser",
+                family = getattr(fam, "name", None),
+            )
+            video_lora.mark_baked(pipe, tuple(e[:3] for e in baked_loras), lora_specs)
+            logger.info(
+                "video.lora_side_branch: %d adapter(s) on %d layer(s) of the %s denoiser, weights unmerged",
+                len(baked_loras),
+                adapted,
+                transformer_quant_engaged or "bf16",
+            )
+        elif baked_loras:
             # Into the released bf16 denoiser, before the forward patch, placement, streaming or compile.
             if transformer_quant_engaged is not None:
                 raise ValueError(
@@ -17053,28 +17178,11 @@ class VideoBackend:
                         if batch_rows > 1
                         else None
                     )
-                    shortfall = video_offload_shortfall_message(
-                        family = fam.name,
-                        floor_mib = request_floor_mib,
-                        available_mib = int(available_bytes // (1024 * 1024)),
-                        placement = f"'{state.offload_policy}' offload",
-                        width = width,
-                        height = height,
-                        frames = frames,
-                        decode_floor_mib = request_decode_floor_mib,
-                        measured_extra_mib = video_stream_residency.measured_extra_mib(
-                            calibration, int(width) * int(height) * int(frames) * batch_rows
-                        ),
-                        decode_mib = _video_tiled_decode_mib(
-                            state,
-                            width = width,
-                            height = height,
-                            frames = frames,
-                            available_mib = int(available_bytes // (1024 * 1024)),
-                            device = device_obj,
-                            decode_floor_mib = request_decode_floor_mib,
-                        ),
-                        denoise_mib = batch_denoise_mib
+                    request_measured_mib = video_stream_residency.measured_extra_mib(
+                        calibration, int(width) * int(height) * int(frames) * batch_rows
+                    )
+                    request_denoise_mib = (
+                        batch_denoise_mib
                         if batch_denoise_mib is not None
                         else _ltx25_denoise_price_mib(
                             state,
@@ -17087,7 +17195,36 @@ class VideoBackend:
                             or bool(references),
                             cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
                             fps = out_fps,
+                        )
+                    )
+                    apply_request_prefetch_depth(
+                        state.pipe,
+                        floor_mib = request_floor_mib,
+                        available_mib = int(available_bytes // (1024 * 1024)),
+                        denoise_mib = request_denoise_mib,
+                        measured_extra_mib = request_measured_mib,
+                        logger = logger,
+                    )
+                    shortfall = video_offload_shortfall_message(
+                        family = fam.name,
+                        floor_mib = request_floor_mib,
+                        available_mib = int(available_bytes // (1024 * 1024)),
+                        placement = f"'{state.offload_policy}' offload",
+                        width = width,
+                        height = height,
+                        frames = frames,
+                        decode_floor_mib = request_decode_floor_mib,
+                        measured_extra_mib = request_measured_mib,
+                        decode_mib = _video_tiled_decode_mib(
+                            state,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            available_mib = int(available_bytes // (1024 * 1024)),
+                            device = device_obj,
+                            decode_floor_mib = request_decode_floor_mib,
                         ),
+                        denoise_mib = request_denoise_mib,
                     )
                     if shortfall is not None:
                         if batch_rows > 1:
@@ -19115,6 +19252,7 @@ class VideoBackend:
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "render_engagement": _render_engagement(getattr(state, "pipe", None)),
+            "request_prefetch": request_prefetch_status(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 

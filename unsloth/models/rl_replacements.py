@@ -806,6 +806,32 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
     )
 
 
+def _unsloth_dpo_is_vision_model(model, processing_class):
+    # TRL 0.22 picks its vision path from MODEL_FOR_VISION_2_SEQ only, which on transformers 4.x leaves out
+    # image-text-to-text models such as Gemma3: their image rows went through the text tokenizer and datasets.map
+    # raised ArrowInvalid. Such a model counts as vision only when it is paired with an image processor.
+    from transformers.models.auto import modeling_auto
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}):
+        return True
+    if model_type not in getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}):
+        return False
+    return (
+        getattr(processing_class, "image_processor", None) is not None
+        and getattr(processing_class, "tokenizer", None) is not None
+    )
+
+
+def dpo_trainer_vision_model_detection(function_name, function):
+    if function_name != "__init__":
+        return function
+    return function.replace(
+        "self.is_vision_model = model.config.model_type in MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.keys()",
+        "self.is_vision_model = _unsloth_dpo_is_vision_model(model, processing_class)",
+    )
+
+
 def dpo_trainer_prepare_dataset(function_name, function):
     if function_name != "_prepare_dataset":
         return function
@@ -930,6 +956,8 @@ def dpo_trainer_reference_snapshot(function_name, function):
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_model_detection)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_is_vision_model))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
