@@ -1239,42 +1239,6 @@ function Install-UnslothStudio {
         return $tag
     }
 
-    # One bounded HTTP GET: -Offset/-Length is a byte range, -Suffix the last N bytes, neither the whole body. $null on any
-    # failure, and on a server that ignores the range (a 200 for a range would download the whole wheel).
-    function Invoke-WoaHttpBytes {
-        param([string]$Uri, [long]$Offset = -1, [long]$Length = 0, [long]$Suffix = 0, [long]$MaxBytes = 1048576)
-        if (-not $Uri) { return $null }
-        $response = $null
-        try {
-            $req = [System.Net.WebRequest]::Create($Uri)
-            $req.UserAgent = 'unsloth-installer'
-            $req.Timeout = 20000
-            $req.ReadWriteTimeout = 20000
-            $ranged = $false
-            if ($Suffix -gt 0) { $req.AddRange(-$Suffix); $ranged = $true }
-            elseif ($Offset -ge 0 -and $Length -gt 0) { $req.AddRange($Offset, $Offset + $Length - 1); $ranged = $true }
-            $response = $req.GetResponse()
-            $status = [int]$response.StatusCode
-            if ($ranged -and $status -ne 206) { return $null }
-            if (-not $ranged -and $status -ne 200) { return $null }
-            $total = -1
-            $contentRange = [string]$response.Headers['Content-Range']
-            if ($contentRange -match '/(\d+)\s*$') { $total = [long]$Matches[1] }
-            $stream = $response.GetResponseStream()
-            $buffer = New-Object System.IO.MemoryStream
-            $chunk = New-Object byte[] 65536
-            while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
-                $buffer.Write($chunk, 0, $read)
-                if ($buffer.Length -gt $MaxBytes) { return $null }
-            }
-            return @{ Bytes = $buffer.ToArray(); Total = $total }
-        } catch {
-            return $null
-        } finally {
-            if ($response) { try { $response.Close() } catch {} }
-        }
-    }
-
     # The torch specifier in a wheel's METADATA ("" when it names none, or only under a marker).
     function Get-WoaMetadataTorchRequirement {
         param([string]$Metadata)
@@ -1291,71 +1255,43 @@ function Install-UnslothStudio {
         return ($clauses -join ',')
     }
 
-    # The torch requirement a companion wheel declares, read from the index's PEP 658 metadata file when it serves one,
-    # else from the wheel's own METADATA by ranged reads (a few KB, never the wheel). "" when it cannot be read; memoised.
+    # The torch requirement a companion wheel declares: the index's PEP 658 metadata file when it serves one, else the
+    # wheel's own METADATA (the wheel is a few MB). "" when it cannot be read; memoised.
     function Get-WoaWheelTorchRequirement {
         param([string]$WheelUrl, [bool]$HasCoreMetadata = $false)
         if (-not $WheelUrl) { return "" }
         if ($null -eq $script:WoaWheelTorchRequirementCache) { $script:WoaWheelTorchRequirementCache = @{} }
         if ($script:WoaWheelTorchRequirementCache.ContainsKey($WheelUrl)) { return $script:WoaWheelTorchRequirementCache[$WheelUrl] }
         $answer = ""
+        $tmp = $null
         try {
+            $tmp = [System.IO.Path]::GetTempFileName()
             $metadata = $null
             if ($HasCoreMetadata) {
-                $got = Invoke-WoaHttpBytes -Uri "$WheelUrl.metadata"
-                if ($got) { $metadata = [System.Text.Encoding]::UTF8.GetString($got.Bytes) }
+                try {
+                    Invoke-WebRequest -Uri "$WheelUrl.metadata" -OutFile $tmp -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
+                    if ((Get-Item -LiteralPath $tmp).Length -le 1048576) { $metadata = [System.IO.File]::ReadAllText($tmp, [System.Text.Encoding]::UTF8) }
+                } catch { $metadata = $null }
             }
             if ($null -eq $metadata) {
-                $u16 = { param($b, $o) [int]$b[$o] -bor ([int]$b[$o + 1] -shl 8) }
-                $u32 = { param($b, $o) [long]$b[$o] -bor ([long]$b[$o + 1] -shl 8) -bor ([long]$b[$o + 2] -shl 16) -bor ([long]$b[$o + 3] -shl 24) }
-                $tail = Invoke-WoaHttpBytes -Uri $WheelUrl -Suffix 65558
-                if (-not $tail -or $tail.Total -lt 0) { throw "no tail" }
-                $t = $tail.Bytes
-                $eocd = -1
-                for ($i = $t.Length - 22; $i -ge 0; $i--) {
-                    if ($t[$i] -eq 0x50 -and $t[$i + 1] -eq 0x4b -and $t[$i + 2] -eq 0x05 -and $t[$i + 3] -eq 0x06) { $eocd = $i; break }
-                }
-                if ($eocd -lt 0) { throw "no end of central directory" }
-                $cdSize = & $u32 $t ($eocd + 12)
-                $cdOffset = & $u32 $t ($eocd + 16)
-                # Zip64 or an implausible directory: not worth parsing for one line.
-                if ($cdOffset -eq 0xFFFFFFFF -or $cdSize -le 0 -or $cdSize -gt 4194304) { throw "unsupported directory" }
-                $tailStart = $tail.Total - $t.Length
-                if ($cdOffset -ge $tailStart) {
-                    $cd = [byte[]]$t[($cdOffset - $tailStart)..($cdOffset - $tailStart + $cdSize - 1)]
-                } else {
-                    $got = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $cdOffset -Length $cdSize -MaxBytes 4194304
-                    if (-not $got) { throw "no directory" }
-                    $cd = $got.Bytes
-                }
-                $entry = $null
-                $p = 0
-                while ($p + 46 -le $cd.Length -and (& $u32 $cd $p) -eq 0x02014b50) {
-                    $nameLen = & $u16 $cd ($p + 28)
-                    $name = [System.Text.Encoding]::UTF8.GetString($cd, $p + 46, $nameLen)
-                    if ($name -match '^[^/]+\.dist-info/METADATA$') {
-                        $entry = @{ Method = (& $u16 $cd ($p + 10)); Size = (& $u32 $cd ($p + 20)); Offset = (& $u32 $cd ($p + 42)) }
-                        break
+                Invoke-WebRequest -Uri $WheelUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+                Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                $zip = [System.IO.Compression.ZipFile]::OpenRead($tmp)
+                try {
+                    $entry = $null
+                    foreach ($e in $zip.Entries) {
+                        if ($e.FullName -match '^[^/]+\.dist-info/METADATA$') { $entry = $e; break }
                     }
-                    $p += 46 + $nameLen + (& $u16 $cd ($p + 30)) + (& $u16 $cd ($p + 32))
-                }
-                if (-not $entry -or $entry.Size -gt 1048576 -or $entry.Method -notin @(0, 8)) { throw "no METADATA" }
-                $head = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $entry.Offset -Length 30
-                if (-not $head -or $head.Bytes.Length -lt 30 -or (& $u32 $head.Bytes 0) -ne 0x04034b50) { throw "no local header" }
-                $start = $entry.Offset + 30 + (& $u16 $head.Bytes 26) + (& $u16 $head.Bytes 28)
-                $body = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $start -Length $entry.Size
-                if (-not $body -or $body.Bytes.Length -ne $entry.Size) { throw "short METADATA" }
-                if ($entry.Method -eq 0) {
-                    $metadata = [System.Text.Encoding]::UTF8.GetString($body.Bytes)
-                } else {
-                    $inflate = New-Object System.IO.Compression.DeflateStream((New-Object System.IO.MemoryStream(, $body.Bytes)), [System.IO.Compression.CompressionMode]::Decompress)
-                    $reader = New-Object System.IO.StreamReader($inflate, [System.Text.Encoding]::UTF8)
+                    if (-not $entry -or $entry.Length -gt 1048576) { throw "no METADATA" }
+                    $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
                     try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
-                }
+                } finally { $zip.Dispose() }
             }
             $answer = Get-WoaMetadataTorchRequirement -Metadata $metadata
         } catch {
             $answer = ""
+        } finally {
+            if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
         }
         $script:WoaWheelTorchRequirementCache[$WheelUrl] = $answer
         return $answer
