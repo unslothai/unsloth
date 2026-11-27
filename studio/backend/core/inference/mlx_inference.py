@@ -5067,8 +5067,7 @@ def _spliced_columns(model):
 
 
 def _embedded_columns(model, inputs):
-    """Columns ``get_input_embeddings`` fills for prepared inputs, read off the unevaluated graph;
-    None if unbuildable."""
+    """Embedding width of prepared inputs, read off the unevaluated graph; None if unbuildable."""
     rest = {
         k: v for k, v in inputs.items() if k not in ("input_ids", "pixel_values", "attention_mask")
     }
@@ -6731,8 +6730,7 @@ class MLXInferenceBackend:
         audio = None,
         videos = None,
     ):
-        """Prompt length as the processor expands media (as mlx-vlm's server does), or as the model
-        splices images, else None."""
+        """Prompt length with media expanded or images spliced, else None."""
         if not (images or audio or videos):
             return None
         try:
@@ -6777,8 +6775,7 @@ class MLXInferenceBackend:
         return columns or counted
 
     def _measure_media_splice(self):
-        """Whether this model fills an image's features in place of one placeholder id (FastVLM), so
-        its prompts are wider than the processor's ids; measured once per load on a blank image."""
+        """Whether images splice wider than their ids (FastVLM); probed once per load."""
         from PIL import Image
 
         self._media_splices = None
