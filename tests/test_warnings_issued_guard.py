@@ -1,35 +1,9 @@
-"""transformers 5.1 dropped `warnings_issued`; eight trl trainers still write it.
-
-`PreTrainedModel.__init__` set `self.warnings_issued = {}` up to and including
-transformers 5.0.0. From 5.1.0 the name does not appear in modeling_utils.py at
-all. trl did not follow, and does this unconditionally at the top of
-`__init__` in grpo, dpo, online_dpo, kto, orpo, cpo, rloo and experimental bco:
-
-    model.warnings_issued["estimate_tokens"] = True
-
-With the attribute gone, nn.Module.__getattr__ raises before the trainer is
-built:
-
-    AttributeError: 'Qwen2ForCausalLM' object has no attribute 'warnings_issued'
-
-Measured on Colab at transformers 5.13.1 + trl 0.25.1 running NeMo-Gym-Sudoku.
-
-unsloth already guards it, but only inside the source it GENERATES for the
-compiled trainer (`models/rl.py`), so the guard exists exactly when that
-generation succeeds. When it fails, unsloth falls back to trl's own class and
-the write is unguarded again, which is the gap the `trainer.py` wrapper closes.
-
-Not UNSLOTH_COMPILE_DISABLE=1, despite the obvious guess: measured with a fresh
-cache, that mode still writes `unsloth_compiled_cache/UnslothGRPOTrainer.py`
-with the guard in it, and `trl.GRPOTrainer` is still the generated class.
-
-trainer.py is loaded by AST here, not imported: importing `unsloth.trainer`
-drags in GPU init, and none of this logic needs a GPU.
-"""
+"""transformers 5.1 dropped warnings_issued but trl still writes it unguarded; trainer.py wraps it."""
 
 import ast
 import dataclasses
 import inspect
+import os
 from functools import wraps
 from pathlib import Path
 
@@ -48,6 +22,7 @@ def _load(*names):
     missing = set(names) - {n.name for n in wanted}
     assert not missing, f"not found in trainer.py: {sorted(missing)}"
     ns = {
+        "os": os,
         "torch": torch,
         "inspect": inspect,
         "dataclasses": dataclasses,
@@ -70,9 +45,6 @@ class _Bare(torch.nn.Module):
     """A module with no `warnings_issued`, exactly like transformers >= 5.1."""
 
 
-# ---- the behaviour ---------------------------------------------------------
-
-
 def test_a_module_without_the_attribute_gets_a_dict():
     m = _Bare()
     with pytest.raises(AttributeError):
@@ -89,8 +61,7 @@ def test_the_dict_is_writable_the_way_trl_writes_it():
 
 
 def test_each_model_gets_its_own_dict():
-    """A shared class-level dict would suppress the warning globally, which is
-    a behaviour change rather than a compatibility fix."""
+    """A shared class-level dict would silence the warning globally: a behaviour change."""
     a, b = _Bare(), _Bare()
     GUARD(a)
     GUARD(b)
@@ -99,9 +70,7 @@ def test_each_model_gets_its_own_dict():
 
 
 def test_an_existing_dict_is_left_exactly_as_it_was():
-    """This is the whole backwards-compatibility claim: on transformers 4.x and
-    5.0, where the attribute is already a dict, the guard must be a no-op --
-    same object, same contents, nothing rebound."""
+    """On transformers 4.x and 5.0 it is already a dict, so the guard must not rebind it."""
     m = _Bare()
     original = {"estimate_tokens": True, "other": 1}
     m.warnings_issued = original
@@ -133,14 +102,9 @@ def test_running_twice_is_idempotent():
     assert m.warnings_issued == {"estimate_tokens": True}
 
 
-# ---- what it deliberately does not touch -----------------------------------
-
-
 @pytest.mark.parametrize("value", [None, "Qwen/Qwen2.5-1.5B", 7, object()])
 def test_non_modules_are_left_alone_without_raising(value):
-    """trl accepts a repo id string and builds the model itself. Attaching an
-    attribute to whatever was passed is not this function's job, and it must
-    never be the thing that raises."""
+    """trl accepts repo id strings, so the guard must leave non-modules alone and never raise."""
     GUARD(value)
     assert not hasattr(value, "warnings_issued")
 
@@ -154,10 +118,7 @@ def test_a_model_that_refuses_the_assignment_does_not_raise():
                 raise RuntimeError("no")
             super().__setattr__(name, value)
 
-    GUARD(_Locked())  # must not propagate
-
-
-# ---- through the real wrapper, against a trl-shaped trainer ----------------
+    GUARD(_Locked())
 
 
 @dataclasses.dataclass
@@ -204,8 +165,7 @@ def _wrapped():
 
 
 def test_the_unwrapped_trainer_reproduces_the_reported_failure():
-    """Without this, the tests below could pass against a bug that no longer
-    exists and nobody would notice."""
+    """Without this, the tests below could pass against a bug that no longer exists."""
     with pytest.raises(AttributeError, match = "warnings_issued"):
         _FakeTrainer(_Bare())
 
@@ -221,8 +181,7 @@ def test_the_wrapper_fixes_it_for_a_keyword_model():
 
 
 def test_the_wrapper_fixes_it_on_the_args_rebuilding_path():
-    """`new_init` has a second branch that rebuilds the config when `args` is
-    passed. The guard must be reached from both, not just the short one."""
+    """new_init's args-rebuilding branch must reach the guard too, not only the short path."""
     t = _wrapped()(_Bare(), args = _FakeConfig())
     assert t.model.warnings_issued == {"estimate_tokens": True}
 
@@ -231,9 +190,6 @@ def test_no_model_at_all_still_reaches_the_wrapped_init():
     """The guard must not swallow, or pre-empt, trl's own argument errors."""
     with pytest.raises(AttributeError):
         _wrapped()()
-
-
-# ---- the source, so the fix cannot be half-applied -------------------------
 
 
 def _new_init_body():
@@ -260,13 +216,12 @@ def test_the_guard_runs_before_the_wrapped_init():
 
 
 def test_the_guard_is_outside_the_version_branch():
-    """`new_init` only rebuilds the config when `args` is in kwargs. A guard
-    nested in that branch would miss every positional-args call."""
+    """Keep the guard outside the args-in-kwargs branch, or positional-args calls skip it."""
     ns = ast.parse(SRC)
     found = []
     for node in ast.walk(ns):
         if isinstance(node, ast.FunctionDef) and node.name == "new_init":
-            for stmt in node.body:  # top level of new_init only
+            for stmt in node.body:
                 for sub in ast.walk(stmt):
                     if (
                         isinstance(sub, ast.Call)
@@ -277,23 +232,14 @@ def test_the_guard_is_outside_the_version_branch():
 
 
 def test_the_generated_compiled_guard_is_still_there():
-    """This change adds a second guard on the eager path. It must not have been
-    made by moving the compiled one, which would regress the default path."""
+    """Eager path gets its own guard; moving the compiled one would regress the default path."""
     rl = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
     assert "warnings_issued_check" in rl
     assert "model.warnings_issued = {}" in rl
 
 
-# ---- the upstream facts this rests on --------------------------------------
-
-
 def test_trl_still_writes_the_attribute_unconditionally():
-    """If trl ever guards it themselves, the guard becomes a no-op.
-
-    trl 1.x already did: the main trainers dropped the write, and the three
-    experimental ones that kept it wrap it in `if hasattr(model, ...)`. So this
-    is a signal, not a requirement -- asserting it would fail the whole file on
-    every supported trl >= 1.0."""
+    """A signal, not a requirement: asserting trl still writes it would fail the file on trl >= 1.0."""
     trl = pytest.importorskip("trl")
     grpo = Path(trl.__file__).parent / "trainer" / "grpo_trainer.py"
     if not grpo.exists():
@@ -304,9 +250,8 @@ def test_trl_still_writes_the_attribute_unconditionally():
 
 
 def test_the_installed_transformers_tells_us_which_side_of_5_1_we_are_on():
-    """Not an assertion about which version is installed -- a check that the
-    two possible worlds behave as claimed. 4.x/5.0 ship the attribute and the
-    guard is a no-op; 5.1+ do not and the guard is what makes trl work."""
+    """Checks both possible worlds behave as claimed rather than which version is installed: 4.x/5.0
+    ship warnings_issued and 5.1+ do not, where the guard makes trl work."""
     transformers = pytest.importorskip("transformers")
     import transformers.modeling_utils as mu
 
@@ -319,15 +264,7 @@ def test_the_installed_transformers_tells_us_which_side_of_5_1_we_are_on():
 
 
 def test_every_trl_trainer_that_writes_it_goes_through_the_wrapper():
-    """The guard only helps trainers `_patch_trl_trainer` actually wraps, and
-    that loop's rule is "XTrainer and XConfig both exist in trl.trainer" -- not
-    an explicit list. Eight trainers write the attribute; measured on trl
-    0.25.1 all eight satisfy the rule. A future trl that ships a writer without
-    a matching Config would slip through silently.
-
-    Only UNGUARDED writers outside trl.experimental count: trl 1.x's sdft / ssd
-    / sdpo trainers already test `hasattr(model, "warnings_issued")` first and
-    are not exported from `trl.trainer`, so they need no wrapper."""
+    """Wrapper rule is XTrainer and XConfig in trl.trainer; a writer without a Config would slip through."""
     trl = pytest.importorskip("trl")
     import trl.trainer
 
@@ -363,14 +300,10 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-# ---- the kwargs the wrapper exists to move -------------------------------
-#
-# A real trl config, not a stand-in: `new_init` branches on isinstance(TrainingArguments), so a plain dataclass takes
-# the other branch and the tests would pass against the bug.
+# A real trl config: new_init branches on isinstance(TrainingArguments).
 def _sft_config():
     pytest.importorskip("trl")
-    # Not `trl.SFTConfig`: on Apple Silicon `import unsloth` rebinds that name to
-    # the MLX training config. The defining module still holds the real one.
+    # Not `trl.SFTConfig`: on Apple Silicon `import unsloth` rebinds it to the MLX config.
     from trl.trainer.sft_config import SFTConfig
     return SFTConfig
 
@@ -400,12 +333,13 @@ def _rl_config_compat():
     return module
 
 
-def _wrapped_recording(trainer_base = None):
-    config_class = _sft_config()
+def _wrapped_recording(trainer_base = None, config_class = None):
+    config_class = config_class or _sft_config()
     ns = _load(
         "_ensure_warnings_issued",
         "_resolve_trainer_params",
         "_route_unknown_trainer_kwargs",
+        "_config_family",
         "_backwards_compatible_trainer",
     )
     if "trl" not in ns:
@@ -427,11 +361,10 @@ def _wrapped_recording(trainer_base = None):
 
 
 def test_config_kwargs_reach_the_config_the_caller_passed(tmp_path):
-    """Settings that used to be trainer kwargs have to end up on the config.
-    They were computed and then dropped whenever `args` was given."""
+    """Trainer kwargs were dropped whenever args was given, so they must land on the config."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
-    assert config.packing is False and config.max_length != 2048
+    assert not config.packing and config.max_length != 2048
 
     trainer = Trainer(
         model = _Bare(),
@@ -448,8 +381,7 @@ def test_config_kwargs_reach_the_config_the_caller_passed(tmp_path):
 
 
 def test_the_callers_own_config_object_is_the_one_used(tmp_path):
-    """Reinitialising re-triggers trl's mutually exclusive checks, so the values
-    have to be set rather than a new config built."""
+    """Rebuilding re-runs trl's mutually exclusive checks, so set values on the given config."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
 
@@ -506,8 +438,7 @@ def test_a_field_trl_renamed_is_carried_across_to_the_new_name(tmp_path, capsys)
 
 
 def test_the_explicitly_supplied_new_name_beats_the_renamed_old_one(tmp_path, capsys):
-    """Migrating over an explicit new name would silently train with the opposite
-    setting. Covers both branches: the caller's config, and the rebuilt one."""
+    """Migrating over an explicit new name would silently train with the opposite setting."""
     Trainer, config_class = _wrapped_recording()
     fields = {f.name for f in dataclasses.fields(config_class)}
     if "use_liger_kernel" not in fields or "use_liger_loss" in fields:
@@ -592,9 +523,8 @@ def test_trainer_kwargs_still_go_to_the_trainer(tmp_path):
 
 
 def test_auto_packing_wraps_inside_the_backwards_compatible_wrapper():
-    """Auto-packing reads `packing` off the config to block VLMs, custom collators
-    and the blocklist, so it has to wrap first and see the moved value. Wrapped
-    last it decides on the old one, and the block is undone right after."""
+    """Auto-packing reads packing off the config to block VLMs, collators and the blocklist, so it
+    must wrap first to see the moved value; wrapped last, the block is undone right after."""
     for node in ast.walk(ast.parse(SRC)):
         if isinstance(node, ast.FunctionDef) and node.name == "_patch_trl_trainer":
             body = ast.get_source_segment(SRC, node)
@@ -608,8 +538,7 @@ def test_auto_packing_wraps_inside_the_backwards_compatible_wrapper():
 
 
 def test_auto_packing_failure_still_leaves_the_wrapper_installed():
-    """Going first, a raise here would skip the wrapping loop and drop pre-0.13
-    compatibility, so the call has to be guarded."""
+    """Guard the call: a raise would skip the wrapping loop and drop pre-0.13 compatibility."""
     for node in ast.walk(ast.parse(SRC)):
         if isinstance(node, ast.FunctionDef) and node.name == "_patch_trl_trainer":
             guarded = any(
@@ -620,3 +549,46 @@ def test_auto_packing_failure_still_leaves_the_wrapper_installed():
             assert guarded, "_patch_sft_trainer_auto_packing must be wrapped in try/except"
             return
     raise AssertionError("_patch_trl_trainer not found")
+
+
+def test_a_plain_training_arguments_keeps_the_moved_kwargs(tmp_path):
+    """Rebuilding drops attributes set on args: packing, text field and length must survive."""
+    from transformers import TrainingArguments
+
+    Trainer, config_class = _wrapped_recording()
+    args = TrainingArguments(output_dir = str(tmp_path), report_to = [], hub_token = "hf_FAKE")
+
+    trainer = Trainer(
+        model = _Bare(),
+        args = args,
+        packing = True,
+        max_length = 4096,
+        dataset_text_field = "body",
+    )
+
+    seen = trainer.args
+    if not isinstance(seen, config_class):
+        # What trl's SFTTrainer does with a plain TrainingArguments.
+        rebuilt = seen.to_dict()
+        rebuilt["hub_token"] = seen.hub_token
+        seen = config_class(**rebuilt)
+    assert (seen.packing, seen.max_length, seen.dataset_text_field) == (True, 4096, "body")
+    assert seen.hub_token == "hf_FAKE"
+    assert seen.output_dir == str(tmp_path)
+
+
+def test_an_instance_of_the_displaced_trl_config_is_not_rebuilt(tmp_path):
+    """Displaced trl configs are not rebuilt; GRPOConfig rebuilds re-raise post-init checks."""
+    pristine = _sft_config()
+
+    class Patched(pristine):
+        _unsloth_patched_rl_config = True
+
+    Patched.__name__ = pristine.__name__
+    Trainer, _ = _wrapped_recording(config_class = Patched)
+    config = pristine(output_dir = str(tmp_path), report_to = [], bf16 = False)
+
+    trainer = Trainer(model = _Bare(), args = config, packing = True)
+
+    assert trainer.args is config
+    assert trainer.args.packing is True

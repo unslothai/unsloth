@@ -8,6 +8,7 @@ import {
   readFastApiError,
 } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
+import { takeSseFrame } from "@/lib/sse-framing";
 
 const DEFAULT_BASE = "/api/data-recipe";
 
@@ -133,18 +134,15 @@ export type SeedInspectRequest = {
 };
 
 export type SeedInspectUploadRequest = {
-  // Legacy single-file
   filename?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   content_base64?: string;
-  // Multi-file
   // biome-ignore lint/style/useNamingConvention: api schema
   block_id?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   file_ids?: string[];
   // biome-ignore lint/style/useNamingConvention: api schema
   file_names?: string[];
-  // Shared
   // biome-ignore lint/style/useNamingConvention: api schema
   preview_size?: number;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -167,6 +165,8 @@ export type SeedInspectResponse = {
   subset?: string | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   resolved_paths?: string[] | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  total_rows?: number | null;
 };
 
 export type ValidateError = {
@@ -213,8 +213,7 @@ async function parseErrorResponse(response: Response): Promise<string> {
       // biome-ignore lint/style/useNamingConvention: api schema
       raw_detail?: string;
     };
-    // Use ||, not ??: an array detail is truthy but not nullish, and
-    // formatFastApiDetail returns null when it cannot flatten the value.
+    // Use ||, not ??: formatFastApiDetail returns null when it cannot flatten the value.
     const formatted = formatFastApiDetail(parsed.detail);
     if (formatted) return formatted;
     if (typeof parsed.message === "string" && parsed.message)
@@ -306,13 +305,13 @@ export async function createRecipeJob(
 export async function getRecipeJobStatus(
   jobId: string,
 ): Promise<JobStatusResponse> {
-  return getJson<JobStatusResponse>(`/jobs/${jobId}/status`);
+  return getJson<JobStatusResponse>(`/jobs/${encodeURIComponent(jobId)}/status`);
 }
 
 export async function getRecipeJobAnalysis(
   jobId: string,
 ): Promise<Record<string, unknown>> {
-  return getJson<Record<string, unknown>>(`/jobs/${jobId}/analysis`);
+  return getJson<Record<string, unknown>>(`/jobs/${encodeURIComponent(jobId)}/analysis`);
 }
 
 export async function getRecipeJobDataset(
@@ -325,7 +324,7 @@ export async function getRecipeJobDataset(
   const limit = options?.limit ?? 20;
   const offset = options?.offset ?? 0;
   return getJson<JobDatasetResponse>(
-    `/jobs/${jobId}/dataset?limit=${limit}&offset=${offset}`,
+    `/jobs/${encodeURIComponent(jobId)}/dataset?limit=${limit}&offset=${offset}`,
   );
 }
 
@@ -347,15 +346,10 @@ export async function downloadRecipeJobDataset(
   if (options?.filename) {
     params.set("filename", options.filename);
   }
-  // Minted over authFetch: it refreshes an expired session and surfaces an unexportable run
-  // before the save dialog opens. The server names the file, since a JSONL is zipped only when
-  // the artifact has images.
   const { path, filename } = await getJson<{ path: string; filename: string }>(
-    `/jobs/${jobId}/download-url?${params.toString()}`,
+    `/jobs/${encodeURIComponent(jobId)}/download-url?${params.toString()}`,
   );
-  // The same base every other call here uses, so a repointed VITE_DATA_DESIGNER_API is honoured.
-  // Its trailing slash is dropped: authFetch survives the // via FastAPI's redirect, but the
-  // native downloader refuses every 3xx, and only after the save location has been chosen.
+  // Drop the trailing slash: the native downloader refuses every 3xx redirect.
   const base = DATA_DESIGNER_API_BASE.replace(/\/+$/, "");
   return { url: apiUrl(`${base}${path}`), filename };
 }
@@ -363,14 +357,14 @@ export async function downloadRecipeJobDataset(
 export async function cancelRecipeJob(
   jobId: string,
 ): Promise<JobStatusResponse> {
-  return postJson<JobStatusResponse>(`/jobs/${jobId}/cancel`, {});
+  return postJson<JobStatusResponse>(`/jobs/${encodeURIComponent(jobId)}/cancel`, {});
 }
 
 export async function publishRecipeJob(
   jobId: string,
   payload: PublishRecipeJobRequest,
 ): Promise<PublishRecipeJobResponse> {
-  return postJson<PublishRecipeJobResponse>(`/jobs/${jobId}/publish`, payload);
+  return postJson<PublishRecipeJobResponse>(`/jobs/${encodeURIComponent(jobId)}/publish`, payload);
 }
 
 export async function inspectSeedDataset(
@@ -414,7 +408,7 @@ export async function streamRecipeJobEvents(options: {
 
   const response = await openStreamResponse(
     authFetch,
-    `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
+    `${DATA_DESIGNER_API_BASE}/jobs/${encodeURIComponent(options.jobId)}/events${query}`,
     { headers, signal: options.signal },
   );
   if (!response.ok) {
@@ -437,14 +431,15 @@ export async function streamRecipeJobEvents(options: {
         break;
       }
       buffer += decoder.decode(value, { stream: true });
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
+      for (
+        let frame = takeSseFrame(buffer);
+        frame;
+        frame = takeSseFrame(buffer)
+      ) {
+        const rawEvent = frame.event;
+        buffer = frame.remainder;
 
         if (rawEvent.startsWith("retry:")) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
@@ -452,11 +447,9 @@ export async function streamRecipeJobEvents(options: {
         if (parsed) {
           options.onEvent(parsed);
         }
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
     }
   } finally {
-    // Release the stream lock now instead of leaking the reader until GC.
     try {
       await reader.cancel();
     } catch {
@@ -464,8 +457,6 @@ export async function streamRecipeJobEvents(options: {
     }
   }
 }
-
-// NOTE: preview endpoints removed from harness.
 
 type UnstructuredFileUploadResponse = {
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -477,8 +468,7 @@ type UnstructuredFileUploadResponse = {
   error?: string;
 };
 
-/** A desktop drop, redeemed server-side: Tauri hands the webview a path, never
- * a File, so the bytes never cross the bridge. */
+/** A desktop drop, redeemed server-side so the bytes never cross the Tauri bridge. */
 export interface NativeUnstructuredUpload {
   nativePathLease: string;
   name: string;

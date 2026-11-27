@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,10 +27,10 @@ class _Files:
 
     def __init__(self) -> None:
         self.ranges: list[str | None] = []
-        # Bytes each successive response sends before closing the connection; None sends it all.
+        # bytes each response sends before closing; None sends it all
         self.cut_after: list[int | None] = []
         self.ignore_range = False
-        # Answers a Range request with 206 from byte 0, as a broken cache might.
+        # answers a Range request with 206 from byte 0, as a broken cache might
         self.wrong_range = False
         self.status: int | None = None
         files = self
@@ -112,13 +114,13 @@ def test_files_land_whole_with_progress_over_the_model(files, tmp_path):
     assert not list(tmp_path.glob("*.partial"))
     percents = _percents(events)
     assert percents == sorted(percents) and percents[-1] == 99
-    # One event per percent, over the whole model; lemond's pull then brings the 100.
+    # one event per percent; lemond's pull then brings the 100
     assert len(events) <= 100 + 2
     assert {event["bytes_total"] for event in events} == {len(WEIGHTS) + len(CONFIG)}
 
 
 def test_a_dropped_connection_continues_from_the_byte_it_reached(files, tmp_path):
-    files.cut_after = [None, 1 << 20, 5000]  # config.json whole, then the weights in three goes
+    files.cut_after = [None, 1 << 20, 5000]
     list(ff.download_files(files.model(tmp_path)))
     assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
     assert files.ranges == [None, None, f"bytes={1 << 20}-", f"bytes={(1 << 20) + 5000}-"]
@@ -137,12 +139,17 @@ def test_an_interrupted_download_resumes_in_the_next_one(files, tmp_path):
 
     events = list(ff.download_files(model))
     assert files.ranges[-1] == f"bytes={kept}-"
-    assert events[0]["percent"] == (len(CONFIG) + kept) * 100 // model.total
+    assert [(e["event"], e["file"]) for e in events[:2]] == [
+        ("verifying", "config.json"),
+        ("verifying", "model.q4nx"),
+    ]
+    assert events[2]["event"] == "progress"
+    assert events[2]["percent"] == (len(CONFIG) + kept) * 100 // model.total
     assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
 
 
 def test_a_prefix_fastflowlm_left_under_the_final_name_is_continued(files, tmp_path):
-    # A killed `flm pull` leaves this, and FastFlowLM would then take the model as complete.
+    # a killed `flm pull` leaves this, and FastFlowLM would take the model as complete
     (tmp_path / "config.json").write_bytes(CONFIG)
     (tmp_path / "model.q4nx").write_bytes(WEIGHTS[:4096])
     list(ff.download_files(files.model(tmp_path)))
@@ -158,8 +165,7 @@ def test_a_server_that_ignores_range_sends_the_file_again(files, tmp_path):
 
 
 def test_refetching_the_same_prefix_is_not_progress(files, tmp_path):
-    # A server that ignores Range and drops every connection early restarts the file each time,
-    # never passing the byte already reached; that must count as stalled, not loop forever.
+    # a server ignoring Range restarts the file each time; must count as stalled, not loop
     (tmp_path / "config.json").write_bytes(CONFIG)
     (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
     files.ignore_range = True
@@ -173,7 +179,6 @@ def test_a_restart_that_passes_the_furthest_byte_is_progress(files, tmp_path):
     (tmp_path / "config.json").write_bytes(CONFIG)
     (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
     files.ignore_range = True
-    # Four stalls, a restart that gets past byte 4096, then four more stalls before it lands.
     files.cut_after = [1000] * 4 + [6000] + [1000] * 4
     list(ff.download_files(files.model(tmp_path)))
     assert len(files.ranges) == 10
@@ -201,7 +206,8 @@ def test_a_complete_file_drops_a_leftover_partial(files, tmp_path):
     (tmp_path / "config.json").write_bytes(CONFIG)
     (tmp_path / "model.q4nx").write_bytes(WEIGHTS)
     (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
-    assert list(ff.download_files(files.model(tmp_path))) == []
+    events = list(ff.download_files(files.model(tmp_path)))
+    assert [event["event"] for event in events] == ["verifying", "verifying"]
     assert not (tmp_path / "model.q4nx.partial").exists()
 
 
@@ -295,3 +301,157 @@ def test_the_file_list_comes_from_fastflowlm_manifests(tmp_path):
     )
     assert ff.read_model_files(flm, tmp_path / "flm", "gemma3:4b") is None
     assert ff.read_model_files(None, tmp_path / "flm", "llama3.2:1b") is None
+
+
+def test_the_model_card_repo_comes_from_fastflowlm_model_list(tmp_path):
+    flm = tmp_path / "flm.exe"
+    url = "https://huggingface.co/FastFlowLM/{}"
+    (tmp_path / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {"0.6b": {"url": url.format("Qwen3-0.6B-NPU2")}},
+                    "qwen3.5": {
+                        "9b": {"url": url.format("Qwen3.5-9B-NPU2/resolve/flm_q4k_high_precision")}
+                    },
+                    "llama3.2": {"1b": {"url": url.format("Llama-3.2-1B-NPU2/")}},
+                    "mirror": {"1b": {"url": "https://example.com/FastFlowLM/Mirror-1B-NPU2"}},
+                    "tree": {"1b": {"url": url.format("Tree-1B-NPU2/tree/main")}},
+                    "branch": {"1b": {"url": url.format("Branch-1B-NPU2/resolve/release%2Fv2")}},
+                },
+            }
+        )
+    )
+    assert ff.read_model_repo(flm, "qwen3:0.6b") == ("FastFlowLM/Qwen3-0.6B-NPU2", None)
+    assert ff.read_model_repo(flm, "qwen3.5:9b") == (
+        "FastFlowLM/Qwen3.5-9B-NPU2",
+        "flm_q4k_high_precision",
+    )
+    assert ff.read_model_repo(flm, "llama3.2:1b") == ("FastFlowLM/Llama-3.2-1B-NPU2", None)
+    assert ff.read_model_repo(flm, "mirror:1b") == (None, None)
+    assert ff.read_model_repo(flm, "tree:1b") == (None, None)
+    assert ff.read_model_repo(flm, "branch:1b") == ("FastFlowLM/Branch-1B-NPU2", "release/v2")
+    assert ff.read_model_repo(flm, "gemma3:4b") == (None, None)
+    assert ff.read_model_repo(flm, "no-size") == (None, None)
+    assert ff.read_model_repo(None, "qwen3:0.6b") == (None, None)
+    assert ff.read_model_repo(tmp_path / "elsewhere" / "flm.exe", "qwen3:0.6b") == (None, None)
+
+
+def test_too_little_free_space_fails_before_any_request(files, tmp_path, monkeypatch):
+    (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[: 1 << 20])
+    needed = len(CONFIG) + len(WEIGHTS) - (1 << 20)
+    monkeypatch.setattr(
+        ff.shutil, "disk_usage", lambda path: ff.shutil._ntuple_diskusage(10**12, 0, needed - 1)
+    )
+    with pytest.raises(ff.FlmDownloadError, match = r"needs 0\.0 GB more and only 0\.0 GB is free"):
+        list(ff.download_files(files.model(tmp_path)))
+    assert files.ranges == []
+    assert (tmp_path / "model.q4nx.partial").stat().st_size == 1 << 20
+
+
+def test_a_full_disk_mid_download_says_so_and_keeps_the_partial(files, tmp_path, monkeypatch):
+    real_open = open
+
+    class _Full:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.handle.close()
+
+        def write(self, chunk):
+            if self.handle.tell() >= 4096:
+                raise OSError(ff.errno.ENOSPC, "No space left on device")
+            return self.handle.write(chunk[:4096])
+
+    def _open(
+        path,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
+        handle = real_open(path, mode, *args, **kwargs)
+        return (
+            _Full(handle)
+            if "b" in mode and mode != "rb" and str(path).endswith("q4nx.partial")
+            else handle
+        )
+
+    monkeypatch.setattr(ff, "open", _open, raising = False)
+    with pytest.raises(ff.FlmDownloadError, match = "Out of disk space while downloading model.q4nx"):
+        list(ff.download_files(files.model(tmp_path)))
+    assert (tmp_path / "model.q4nx.partial").stat().st_size == 4096
+
+
+def test_cancel_stops_at_the_next_chunk_and_the_next_download_resumes(files, tmp_path):
+    model = files.model(tmp_path)
+    cancel = threading.Event()
+    with pytest.raises(ff.FlmDownloadCancelled):
+        for event in ff.download_files(model, cancel = cancel):
+            if event["file"] == "model.q4nx" and event["bytes_downloaded"] > len(CONFIG):
+                cancel.set()
+    kept = (tmp_path / "model.q4nx.partial").stat().st_size
+    assert 0 < kept < len(WEIGHTS)
+    list(ff.download_files(model))
+    assert files.ranges[-1] == f"bytes={kept}-"
+    assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
+
+
+def test_cancel_also_stops_a_rehash(files, tmp_path):
+    (tmp_path / "config.json").write_bytes(CONFIG)
+    (tmp_path / "model.q4nx").write_bytes(WEIGHTS)
+    cancel = threading.Event()
+    with pytest.raises(ff.FlmDownloadCancelled):
+        for event in ff.download_files(files.model(tmp_path), cancel = cancel):
+            if event["event"] == "verifying" and event["file"] == "model.q4nx":
+                cancel.set()
+    assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
+
+
+def _hold_lock_in_another_process(folder: Path) -> subprocess.Popen:
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from core.inference import flm_files as ff; "
+            "held = ff._acquire_lock(ff.FlmModelFiles(Path(sys.argv[1]), ())); "
+            "print('held', flush=True); sys.stdin.read()",
+            str(folder),
+        ],
+        cwd = Path(ff.__file__).parents[2],
+        stdin = subprocess.PIPE,
+        stdout = subprocess.PIPE,
+        text = True,
+    )
+    assert holder.stdout.readline().strip() == "held"
+    return holder
+
+
+def test_a_second_process_is_refused_and_a_dead_ones_lock_does_not_block(files, tmp_path):
+    holder = _hold_lock_in_another_process(tmp_path)
+    try:
+        # not holder.pid: a venv's python.exe on Windows is a launcher for the real one
+        with pytest.raises(ff.FlmDownloadError, match = r"already downloading .*\(PID \d+\)") as busy:
+            list(ff.download_files(files.model(tmp_path)))
+        assert f"(PID {os.getpid()})" not in str(busy.value)
+        assert files.ranges == []
+    finally:
+        holder.kill()
+        holder.wait()
+    # the OS dropped the dead process's lock; its PID is still written in the file
+    list(ff.download_files(files.model(tmp_path)))
+    assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
+
+
+def test_one_process_cannot_run_the_same_model_twice(files, tmp_path):
+    model = files.model(tmp_path)
+    first = ff.download_files(model)
+    next(first)
+    with pytest.raises(ff.FlmDownloadError, match = rf"already downloading .*\(PID {os.getpid()}\)"):
+        list(ff.download_files(model))
+    list(first)
+    list(ff.download_files(model))

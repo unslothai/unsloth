@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(
     reason = "needs CUDA and UNSLOTH_TEST_LLAMA_SERVER",
 )
 REPORT = os.environ.get("UNSLOTH_TEST_GGUF_REPORT")
-TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 TINY_MODERNBERT = "hf-internal-testing/tiny-random-ModernBertModel"
 QUESTIONS = {
     "outage": {"type": "noul", "instructions": "Is a service down?"},

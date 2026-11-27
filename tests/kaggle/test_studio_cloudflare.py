@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The quick tunnel: the one assertion here that reaches the public internet.
-
-Because it does, what it claims is narrow and what it refuses to claim is
-written down.
-
-Three rules, and the third is the one that makes opening a public URL from a CI
-machine defensible at all: the tunnel must REFUSE an unauthenticated request.
-Without it this check would prove that anyone holding the URL can drive
-inference on the box, and call that a pass.
-
-Two details are load-bearing rather than stylistic:
-
-* `--host 0.0.0.0`. Studio raises a quick tunnel for WILDCARD binds only; on
-  127.0.0.1 there is nothing to publish, no URL is printed, and a working
-  feature reads as a broken one.
-* the negative lookahead on `api.trycloudflare.com`. That host appears in
-  cloudflared's own FAILURE lines ("failed to request quick Tunnel: Post
-  https://api.trycloudflare.com/tunnel"), so a naive match extracts a URL from
-  the message that says there is no URL. Studio's own matcher carries the same
-  lookahead, and this one is checked against both strings.
-"""
+"""The tunnel must refuse unauthenticated requests, or anyone holding the URL can drive inference."""
 
 from __future__ import annotations
 
@@ -54,10 +34,7 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def _flat(text: str) -> str:
-    """Whitespace-stripped, because the repo's formatter reflows an argument
-    list to one entry per line and a guard matching the unformatted spelling
-    goes red on a reformat rather than on a regression. That has happened three
-    times in this payload now."""
+    """Whitespace-stripped, so a reformat of the argument list does not break the guard."""
     return "".join(text.split())
 
 
@@ -68,8 +45,7 @@ def test_it_binds_a_wildcard_or_there_is_nothing_to_publish():
 
 
 def test_the_url_matcher_rejects_cloudflareds_own_failure_host():
-    """Executed, not eyeballed. The failure line contains a trycloudflare URL
-    and means the opposite of a tunnel."""
+    """The failure line contains a trycloudflare URL, so the URL matcher must reject it."""
     body = _body()
     literal = re.search(r"re\.search\((r\"[^\"]+\")", body)
     assert literal, "no URL matcher found"
@@ -90,8 +66,7 @@ def test_the_tunnel_must_actually_serve():
 
 
 def test_an_unauthenticated_request_through_the_tunnel_must_be_refused():
-    """The rule that makes opening the URL defensible. Asserted structurally so
-    a message rewrite cannot satisfy it."""
+    """Unauthenticated tunnel requests must be refused; that makes opening the URL defensible."""
     func = _func("assert_cloudflare")
     unauth = [
         n
@@ -109,18 +84,14 @@ def test_an_unauthenticated_request_through_the_tunnel_must_be_refused():
 
 
 def test_the_no_tunnel_excuse_is_narrow():
-    """Reported-not-failed applies ONLY when nothing was published, because
-    then there is nothing to have gone wrong with. Once a URL exists, every
-    rule above is live."""
+    """The no-tunnel excuse is reported, not failed, only while no URL was published."""
     func = _func("assert_cloudflare")
     excuses = [
         n for n in ast.walk(func) if isinstance(n, ast.If) and ast.unparse(n.test) == "url is None"
     ]
     assert excuses, "the excuse branch is gone or is no longer gated on the URL"
     for node in excuses:
-        # node.body only. Walking the whole If would sweep in the `else`
-        # branch, which is where every real failure lives, and the guard would
-        # then fail on correct code -- it did, the first time this was written.
+        # node.body only: the else branch holds the real failures.
         appended = [
             n
             for stmt in node.body
@@ -137,8 +108,7 @@ def test_the_no_tunnel_excuse_is_narrow():
 
 
 def test_the_public_url_is_registered_as_a_secret():
-    """It is a live public route to this machine and the artifact is read by
-    people who are not running it."""
+    """The public URL is a live route into this machine and the artifact is read by others."""
     body = _body()
     assert "self.secrets.add(url)" in body
     assert '"unsloth_cloudflare.log",' in _body(
@@ -157,7 +127,6 @@ def test_the_child_is_always_torn_down():
 
 
 def test_it_can_be_switched_off():
-    """The only assertion here that reaches the public internet should be
-    refusable without editing the payload."""
+    """The only public-internet check should be switchable via --no-cloudflare-check."""
     assert '"--no-cloudflare-check"' in SRC
     assert "self.args.cloudflare_check" in _body("execute")

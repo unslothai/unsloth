@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Load the GRPO hidden-states forward wrapper out of ``unsloth/models/rl.py``.
-
-Same trick as ``_grpo_dispatch_source``: lift the module-level defs with ``ast``
-rather than importing ``unsloth``, so the tests stay CPU-only and import-free
-while still tracking the shipped code.
-"""
+"""Lift the GRPO hidden-states forward wrapper from unsloth/models/rl.py via ast; tests stay CPU-only."""
 
 from __future__ import annotations
 
@@ -31,12 +26,13 @@ WRAPPER_NAMES = (
     "_replace_outputs_logits",
     "_minimise_logits_kwarg",
     "_drop_spare_hidden_states",
+    "_cp_last_hidden_state_only",
     "_install_grpo_hidden_states_forward_wrapper",
     "_grpo_pre_head_hidden_divisor",
     "_grpo_hidden_states_reproduce_logits",
+    "_grpo_head_input_match_is_decisive",
 )
 
-# present only once the per-call degradation fix has landed
 OPTIONAL_NAMES = ("_note_grpo_hidden_states_success",)
 
 CONSTANT_NAMES = (
@@ -46,6 +42,7 @@ CONSTANT_NAMES = (
     "_UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR",
     "_UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR",
     "_UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR",
+    "_UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR",
 )
 
 
@@ -79,7 +76,7 @@ def load_rl_wrapper(names = WRAPPER_NAMES):
         "inspect": inspect,
         "logger": logging.getLogger("unsloth-repro"),
         "torch": torch,
-        # rl.py imports these at module level; None skips the one-time head check, which needs zoo.
+        # None skips the one-time head check, which needs zoo.
         "detect_logit_transforms": None,
     }
     replacements = SOURCE_PATH.with_name("rl_replacements.py")
@@ -87,7 +84,12 @@ def load_rl_wrapper(names = WRAPPER_NAMES):
         node
         for node in ast.parse(replacements.read_text(encoding = "utf-8")).body
         if isinstance(node, ast.FunctionDef)
-        and node.name in ("_unsloth_get_model_config", "_unsloth_text_configs")
+        and node.name
+        in (
+            "_unsloth_get_model_config",
+            "_unsloth_text_configs",
+            "_unsloth_forward_returns_hidden_states",
+        )
     ]
     exec(
         compile(ast.Module(body = config_helpers, type_ignores = []), str(replacements), "exec"),

@@ -34,9 +34,7 @@ from pathlib import Path
 EVIDENCE_PREFIX = "STUDIO_GPU_EVIDENCE_B64 "
 _CHUNK_RE = re.compile(r"^(\d+)/(\d+)\s+(\S+)$")
 
-# A tar member is trusted only as far as its name. Absolute paths and ``..``
-# are refused rather than sanitised, because a bundle that contains one is not
-# a bundle this payload wrote.
+# Members with absolute paths or `..` are refused, not sanitised.
 MAX_MEMBER_BYTES = 20_000_000
 
 
@@ -58,8 +56,7 @@ def iter_text(path: Path):
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        # Kernels have returned valid JSON that is not a notebook (`[]`, or a
-        # non-object cell); raising here fails the job after the verdict posted.
+        # Valid JSON may not be a notebook; raising here would fail the job after the verdict posted.
         if not isinstance(nb, dict):
             continue
         for cell in nb.get("cells") or []:
@@ -86,17 +83,8 @@ def iter_text(path: Path):
 
 
 def collect_chunks(streams) -> tuple[dict[int, str], int]:
-    """{index: chunk} and the declared total, from any number of streams.
-
-    The same chunk arrives twice, because the executed notebook and Kaggle's
-    kernel log are two copies of one stdout. Either copy can be cut off mid
-    line, and a cut only ever shortens: the survivor is a prefix of the whole
-    chunk, and it still parses as ``i/n <payload>``. Overwriting on every
-    sighting therefore let a truncated second copy replace a complete first
-    one, and the reassembled bundle then failed base64 or tar validation with
-    every chunk index present -- evidence lost with the complete source on
-    disk. So a later sighting is taken only when it EXTENDS what is held.
-    """
+    """Returns {index: chunk} and the declared total; a repeated chunk replaces the held one only
+    when it extends it, since a cut copy is always a prefix of the whole chunk."""
     chunks: dict[int, str] = {}
     total = 0
     for text in streams:
@@ -162,8 +150,6 @@ def main() -> int:
 
     missing = [i for i in range(1, total + 1) if i not in chunks]
     if missing:
-        # A bundle reassembled from a truncated log decodes to something, and that something is not the evidence.
-        # Report rather than guess.
         print(
             f"[evidence] {len(missing)} of {total} chunks are missing "
             f"(first: {missing[0]}), so the bundle is incomplete and is not "

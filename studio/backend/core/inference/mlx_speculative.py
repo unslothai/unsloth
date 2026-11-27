@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which drafter an MLX load speculates with: ``speculative_type`` and ``spec_draft_model`` resolved
-against the target's own MTP head and the companion drafters already in the local Hugging Face cache."""
+"""Resolves MLX speculative_type and spec_draft_model to the target's MTP head or cached drafters."""
 
 from __future__ import annotations
 
@@ -38,7 +37,6 @@ DRAFTER_NOT_FOUND = "drafter_not_found"
 DRAFTER_INCOMPATIBLE = "drafter_incompatible"
 DRAFTER_NO_MEMORY = "drafter_no_memory"
 RUNTIME_ERROR = "runtime_error"
-KV_QUANT = "kv_quant"
 AUTO_CONTEXT_COST = "auto_context_cost"
 
 
@@ -200,11 +198,7 @@ def _cached_repos():
 
 
 def cached_drafters(target_name: str, target_config: dict) -> list:
-    """``(repo, source, named)`` for each cached drafter with weights whose config fits the target's shape.
-
-    ``named`` drafters carry the target's model name and come first, in auto's order; the rest fit
-    by shape alone (another generation or fine-tune of the same architecture) and follow.
-    """
+    """Drafters named for the target come first, then same-architecture ones that fit by shape alone."""
     from utils.utils import hf_cache_snapshot_dir_for_repo
 
     target, found = _alnum(target_name), []
@@ -244,15 +238,44 @@ def _named_companion(spec_draft_model: str) -> Optional[DrafterSource]:
     return None if kind is None else DrafterSource(_reported(kind), str(snapshot), False)
 
 
+def _bundled_companion(model_dir: Optional[str]) -> Optional[DrafterSource]:
+    """A drafter checkpoint shipped inside the target's, at ``draft/`` (Ollama's Gemma 4 assistants)."""
+    if not model_dir:
+        return None
+    path = os.path.join(model_dir, "draft")
+    config = _read_config(path)
+    kind = companion_kind(config)
+    if kind is None or not _fits(kind, config, _read_config(model_dir)) or not _has_weights(path):
+        return None
+    return DrafterSource(_reported(kind), path, False)
+
+
 def has_builtin_head(model_dir: Optional[str]) -> bool:
     if not model_dir:
         return False
     try:
-        from mlx_vlm.speculative.drafters.mtp_split import detect_mtp_splitter
-        return detect_mtp_splitter(Path(model_dir)) is not None
+        try:
+            # Also finds heads MLX conversions keep under the language model (``language_model.mtp.*``).
+            from unsloth_zoo.mlx.speculative import has_native_mtp_head
+        except ImportError:
+            from mlx_vlm.speculative.drafters.mtp_split import detect_mtp_splitter
+            return detect_mtp_splitter(Path(model_dir)) is not None
+        return has_native_mtp_head(model_dir)
     except Exception as exc:
         logger.debug("MLX speculative: no MTP splitter check for %s: %s", model_dir, exc)
         return False
+
+
+def _builtin_head_kind(model_dir: str) -> str:
+    """``dspark`` for a bundled head mlx-vlm builds as a DSpark drafter (Inkling 2's ``mtp.safetensors``), else ``mtp``."""
+    try:
+        from mlx_vlm.speculative.drafters.mtp_split import get_mtp_splitter
+        splitter = get_mtp_splitter(source_config = _read_config(model_dir))
+    except Exception as exc:
+        logger.debug("MLX speculative: no MTP splitter for %s: %s", model_dir, exc)
+        return "mtp"
+    output = str(getattr(splitter, "output_model_type", ""))
+    return "dspark" if output.endswith("_dspark") else "mtp"
 
 
 def resolve_speculation(
@@ -263,7 +286,8 @@ def resolve_speculation(
     target_name: str,
     allowed = None,
 ) -> SpecResolution:
-    """The drafters an MLX load tries: a named ``spec_draft_model``, then cached companions (any kind under auto) and the built-in head, in ``_COMPANION_ORDER``."""
+    """The drafters an MLX load tries: a named ``spec_draft_model``, then the built-in head, a companion bundled in the
+    checkpoint and cached companions (any kind under auto, in ``_COMPANION_ORDER``)."""
     mode = mlx_spec_mode(speculative_type)
     if mode == "off":
         return SpecResolution(mode)
@@ -283,17 +307,30 @@ def resolve_speculation(
     companions = discover_companions(
         target_name, _read_config(model_dir) if model_dir else {}, allowed
     )
+    bundled = _bundled_companion(model_dir)
     companions = [
-        source for source in companions if (auto or source.kind == kind) and source not in sources
+        source
+        for source in ([bundled] if bundled else []) + companions
+        if (auto or source.kind == kind) and source not in sources
     ]
-    if kind == "mtp" and has_builtin_head(model_dir):
-        companions.insert(0, DrafterSource("mtp", str(model_dir), True))
+    # Under ``mtp`` (and so auto) the checkpoint's own head of either kind; under ``dspark`` only a DSpark head.
+    if kind in ("mtp", "dspark") and has_builtin_head(model_dir):
+        head = _builtin_head_kind(model_dir)
+        if kind in ("mtp", head):
+            companions.insert(0, DrafterSource(head, str(model_dir), True))
     sources += companions
     if not sources and auto:
         return SpecResolution(mode, reason = reason)
     if not sources and reason is None:
         reason = DRAFTER_NOT_FOUND
     return SpecResolution(mode, tuple(sources), copies = True, reason = reason)
+
+
+def offload_drafter(speculative_type, spec_draft_model, **where) -> Optional[tuple]:
+    """``(path, builtin)`` of the drafter a load tries first, for an auto offload plan to make room for.
+    ``where`` as ``resolve_speculation`` takes it."""
+    sources = resolve_speculation(speculative_type, spec_draft_model, **where).sources
+    return (sources[0].path, sources[0].builtin) if sources else None
 
 
 def speculates_on_route(
@@ -312,10 +349,8 @@ _MAX_COPY = 16
 _EXACT_HEAD_DEPTH = 3  # MTP heads and assistants chain a forward per drafted token
 
 
-def speculation_refusal(*, kv_quant: bool, distributed: bool, lora: bool) -> Optional[str]:
+def speculation_refusal(*, distributed: bool, lora: bool) -> Optional[str]:
     """The reason an MLX load cannot speculate at all, or None."""
-    if kv_quant:
-        return KV_QUANT
     if distributed or lora:
         return RUNTIME_ERROR
     try:
@@ -366,35 +401,58 @@ def build_draft(
     resolution: SpecResolution,
     *,
     fits,
+    stretch = None,
     draft_n_max: Optional[int] = None,
+    fast_verify: Optional[bool] = None,
 ) -> tuple:
     """``(draft, kind, reason, context)`` for the first source ``fits`` accepts that builds, else copies
-    alone when the mode allows. ``reason`` names a passed-over choice, so a substitute never attaches silently."""
+    alone when the mode allows. ``reason`` names a passed-over choice, so a substitute never attaches silently.
+    A chosen mode with none that fits attaches an unfit source ``stretch`` (its fit under MLX's own cap) admits.
+    ``fast_verify`` is None under a zoo without it, whose factories take no such argument."""
     from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter
 
     if _carries_encoder_state(target):
         logger.info("MLX speculative decoding: %s carries encoder state", type(target).__name__)
         return None, None, None if resolution.mode == "auto" else RUNTIME_ERROR, None
-    reason = resolution.reason
-    for source in resolution.sources:
-        ok, context = fits(source)
-        if not ok:
-            if resolution.mode != "auto":
-                reason = DRAFTER_NO_MEMORY
-            elif ok is not None:  # priced, and the drafter would shrink it
-                reason = AUTO_CONTEXT_COST
-            continue
+    reason, incompatible, unfit = resolution.reason, False, []
+    decision = {} if fast_verify is None else {"fast_verify": fast_verify}
+
+    def build(source):
+        nonlocal reason, incompatible
         try:
             drafter = (native_mtp_drafter if source.builtin else companion_drafter)(
-                source.path, target
+                source.path, target, **decision
             )
             if drafter is None:
                 raise ValueError("no MTP splitter knows this checkpoint")
+            return drafter
         except Exception as exc:
             logger.warning("MLX drafter %s (%s) not attached: %s", source.path, source.kind, exc)
-            reason = DRAFTER_INCOMPATIBLE
+            reason, incompatible = DRAFTER_INCOMPATIBLE, True
+
+    for source in resolution.sources:
+        ok, context = fits(source)
+        if ok:
+            if (drafter := build(source)) is not None:
+                return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
+        elif resolution.mode != "auto":
+            reason = DRAFTER_NO_MEMORY
+            unfit.append(source)
+        elif ok is not None:  # priced, and the drafter would shrink it
+            reason = AUTO_CONTEXT_COST
+    # Priced one at a time, so the last source stretch admitted is the one that attaches.
+    for source in unfit if stretch else ():
+        ok, context = stretch(source)
+        if ok is False:
             continue
-        return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
+        logger.warning(
+            "MLX drafter %s (%s) fits only in the prompt cache's share; attaching it as chosen",
+            source.path,
+            source.kind,
+        )
+        if (drafter := build(source)) is not None:
+            reason = DRAFTER_INCOMPATIBLE if incompatible else resolution.reason
+            return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
     if resolution.copies and resolution.mode != "auto":  # auto copies only alongside a drafter
         return _draft(None, True, draft_n_max), "ngram", reason, None
     return None, None, reason, None

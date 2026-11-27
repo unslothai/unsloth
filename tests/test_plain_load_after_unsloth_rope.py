@@ -57,7 +57,7 @@ rotary = model.model.rotary_emb
 assert isinstance(rotary, LlamaRotaryEmbedding), type(rotary)
 expected = rotary._unsloth_recompute_inv_freq().float()
 torch.testing.assert_close(rotary.inv_freq.detach().cpu().float(), expected)
-cos = rotary.multi_gpu_cos_cached[torch.cuda.current_device()].float().cpu()
+cos = rotary.get_cached(device_index = torch.cuda.current_device())[0].float().cpu()
 freqs = torch.outer(torch.arange(cos.shape[0], dtype = torch.float32), expected)
 torch.testing.assert_close(cos, torch.cat((freqs, freqs), -1).cos(), atol = 1e-3, rtol = 0)
 """

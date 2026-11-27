@@ -42,9 +42,6 @@ SOURCE_FIXTURE = (
     / "mcp_argument_echo_server.py"
 )
 MCP_PYTHON = os.environ.get("STUDIO_MCP_PYTHON", sys.executable)
-# Each step below is a handful of 15 s actions and at most two 30 s connection probes; a
-# hosted runner does one in a few seconds. Past its budget the run stops, naming the step,
-# instead of the steps after it waiting out their own timeouts.
 STEP_BUDGET_S = step_budget_s(150)
 _watchdog = None
 
@@ -167,8 +164,7 @@ def screenshot(dialog, name: str) -> None:
 def delay_real_response(seconds: float):
     def handler(route):
         response = route.fetch()
-        # Kept: the delay is the fixture. It holds the decode response back so the loading
-        # state is on screen long enough to be asserted and captured.
+        # The delay is the fixture: it keeps the loading state on screen to assert.
         time.sleep(seconds)
         route.fulfill(response = response)
 
@@ -182,8 +178,6 @@ def hold_next_request(page, pattern: str) -> list:
 
 
 def release_request(page, held: list) -> None:
-    # Until the route has actually caught the request, instead of 50 ms. The assertion below
-    # still decides.
     try:
         wait_until(lambda: held, timeout_s = 10, what = "the held request", interval_s = 0.02, page = page)
     except TimeoutError:
@@ -196,8 +190,6 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     step("open /chat with the seeded session")
     page.goto(BASE + "/hub", wait_until = "domcontentloaded")
     page.goto(BASE + "/chat", wait_until = "domcontentloaded")
-    # Until the app has either shown the composer's MCP control (signed in) or bounced to a
-    # sign-in form, instead of a fixed second; the URL check below decides which.
     page.get_by_role("button", name = "MCP servers").or_(
         page.locator("#password, #new-password")
     ).first.wait_for(state = "visible", timeout = 30_000)
@@ -249,7 +241,6 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     dialog.get_by_role("button", name = "Close").click()
     step("arguments persist across a reload and an edit")
     page.reload(wait_until = "domcontentloaded")
-    # open_dialog's first click waits for the control; the fixed 500 ms after the reload is gone.
     dialog = open_dialog(page)
     row = row_for(dialog, "Playwright argument echo")
     row.get_by_role("button", name = "Edit server").click()
@@ -398,8 +389,7 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     composer.click()
     preset = page.get_by_role("menuitem", name = "Unsloth Docs")
     expect(preset).to_be_enabled()
-    # Kept: lets a list refresh the menu opening may have started go out before the route
-    # below starts holding the next GET, so the one it holds is the preset's own.
+    # Let a menu-triggered list refresh go out first, so the held GET is the preset's own.
     page.wait_for_timeout(250)
     held_list: list = []
 
@@ -432,7 +422,7 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     page.unroute("**/api/mcp/servers/", hold_first_list)
     expect(preset).to_be_enabled(timeout = 10_000)
     preset.click()
-    # Kept: a "nothing more may happen" window; the second click must add one PUT and no POST.
+    # A "nothing more may happen" window: the second click must add one PUT and no POST.
     page.wait_for_timeout(500)
     assert writes.count("POST") == 1
     assert writes.count("PUT") == 1
@@ -503,8 +493,6 @@ def main() -> int:
         "})();"
     )
     global _watchdog
-    # The whole run keeps the absolute WALL_TIMEOUT_S it always had (the total cap); steps
-    # starting do not extend it.
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
         label = "mcp-arguments",

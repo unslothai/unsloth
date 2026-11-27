@@ -104,9 +104,7 @@ test("a failed current key is refreshed even while its prior rows are fresh", ()
 });
 
 test("a stamp from the future is refreshed, not reused", () => {
-  // `Date.now()` follows the system clock, so a stamp can end up in the future after an
-  // NTP correction, a VM resume or a user editing the clock. A negative age must not read
-  // as "younger than the window", or the picker stops scanning for the length of the skew.
+  // Date.now() can jump backwards (NTP, VM resume), so a negative age must not read as fresh.
   assert.equal(
     inventoryRefreshDecision(
       {
@@ -125,8 +123,6 @@ test("a stamp from the future is refreshed, not reused", () => {
 });
 
 test("a zero max age always refreshes, even after the clock steps backwards", () => {
-  // refreshIfOlderThan(0) means "refresh unconditionally"; a future stamp must not turn it
-  // into a no-op.
   for (const refreshedAt of [NOW - 1, NOW, NOW + 60_000]) {
     assert.equal(
       inventoryRefreshDecision(
@@ -166,33 +162,26 @@ test("the revalidation stamp tracks both ends of a confirmed empty inventory", (
       ...over,
     });
 
-  // A forced second look at an inventory already seen empty is the confirmation.
   assert.equal(call({}), NOW);
 
-  // Rows came back, so the inventory is not empty: the stamp must be cleared, or a later
-  // FIRST empty scan inside the window reads as already confirmed and the picker settles
-  // on "no models" after one look.
+  // Rows came back, so the stamp must clear or a later first empty scan reads as confirmed.
   assert.equal(call({ rowCount: 3 }), null);
   assert.equal(
     call({ rowCount: 3, previous: { ...emptyPrev, revalidatedAt: NOW - 1_000 } }),
     null,
   );
 
-  // First empty scan after a populated one is an observation, not a confirmation.
   assert.equal(
     call({ previous: { ...emptyPrev, rowCount: 4, revalidatedAt: null } }),
     null,
   );
-  // Not forced, unready or previously failed: carry, never stamp.
   assert.equal(call({ force: false }), null);
   assert.equal(call({ previous: { ...emptyPrev, ready: false } }), null);
   assert.equal(call({ previous: { ...emptyPrev, error: "scan failed" } }), null);
-  // A key change drops the previous confirmation.
   assert.equal(
     call({ previous: { ...emptyPrev, key: "other", revalidatedAt: NOW - 10 } }),
     null,
   );
-  // Same key, nothing decisive: carry what was there.
   assert.equal(
     call({ force: false, previous: { ...emptyPrev, revalidatedAt: NOW - 500 } }),
     NOW - 500,

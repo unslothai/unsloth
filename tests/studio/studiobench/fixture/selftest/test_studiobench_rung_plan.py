@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The rung plan invariant that the whole upper ladder rests on.
-
-The streamed tail must be the SAME SIZE at every rung. When it grew with the rung instead, the
-stream took 811 seconds at 1M against a 135-second film, so the ten slots labelled "after the
-reply is complete" all ran mid-generation. Nothing crashed and a full table was printed; the
-labels were just false. A property that fails silently and prints numbers anyway is exactly the
-kind that needs a test rather than a comment.
-"""
+"""The streamed tail must be the same size at every rung, or the post-reply slots run mid-stream."""
 
 from __future__ import annotations
 
@@ -24,7 +17,6 @@ from studiobench.fixture.corpus import (  # noqa: E402
     plan_rung,
 )
 
-# The field cadence: 24 characters every 73 ms.
 FIELD_CHARS_PER_SEC = 24 / 0.073
 
 
@@ -39,15 +31,9 @@ def test_the_streamed_tail_never_exceeds_the_declared_size():
 
 
 def test_stream_duration_is_rung_independent():
-    """The property the film depends on: the OPENING stream drains in the same time at every rung.
-
-    The opening turn is the one the film's slots are timed against. The follow-ups are separate
-    events sent later by `send_turn`, so folding them in here would measure a quantity no slot
-    depends on and would fail on the 1K rung, which legitimately streams only once.
-    """
+    """Only the opening stream is measured; follow-ups are sent later, and the 1K rung streams just once."""
     seconds = {r: p.streamed_chars / FIELD_CHARS_PER_SEC for r, p in _plans().items()}
     assert max(seconds.values()) < 20.0, seconds
-    # 1K is legitimately shorter: the whole rung is smaller than one tail.
     big = {r: s for r, s in seconds.items() if r != "1K"}
     assert max(big.values()) - min(big.values()) < 5.0, big
 
@@ -82,9 +68,7 @@ def test_the_stream_drains_before_the_first_after_generation_slot():
 def test_during_generation_slots_actually_fall_during_generation():
     from studiobench.scene.schedule import SCENES
 
-    # The SHORTEST stream on the ladder above 1K, since a slot has to be inside every rung's stream to
-    # deserve the name. The OPENING turn only: the follow-ups are sent later by `send_turn`, so a slot
-    # that must fall during generation has to fall inside the first stream, not their sum.
+    # Opening turn only: follow-ups are sent later, so during-generation slots must fit the first.
     shortest = min(p.streamed_chars for r, p in _plans().items() if r != "1K") / FIELD_CHARS_PER_SEC
     for name, scene in SCENES.items():
         during = [s for s in scene.slots if s.action == "scroll_during_generation"]
@@ -94,17 +78,7 @@ def test_during_generation_slots_actually_fall_during_generation():
 
 
 def test_stop_opens_only_after_the_tail_has_drained():
-    """Stop owns its own turn now; opening it mid-stream would truncate the measured reply.
-
-    HELD TO THE DECLARED CEILING RATHER THAN TO THE CURRENT CORPUS. This used to take the worst
-    drain the frozen corpus happened to produce, which made a scene's packing a function of the
-    corpus contents: the 1M rung streamed recycled text while the manifest was sized at exactly
-    the top rung's seeded target, the observed worst came in low, and the fast film sat at 18.2 s
-    against a real ceiling of 18.25 s without anything failing. Re-freezing the corpus moved the
-    observed number and the film that had been out of bounds all along was the thing that broke.
-    `STREAM_TAIL_CHARS` is the bound the plans are actually held to, one test above, so it is the
-    bound a schedule has to clear -- and it does not move when the corpus is re-frozen.
-    """
+    """Stop must not open mid-stream; plans are held to the declared STREAM_TAIL_CHARS, not the corpus"""
     from studiobench.scene.schedule import SCENES
 
     worst = STREAM_TAIL_CHARS / FIELD_CHARS_PER_SEC
@@ -131,23 +105,12 @@ def test_the_ladder_is_strictly_increasing_in_seeded_mass():
     assert len(set(masses)) == len(masses)
 
 
-# Actions that need a SETTLED reply. The action bar's More and Copy buttons are not rendered while
-# a turn is streaming, select-all copies a moving target, and delete is hidden on a running
-# message. Each reports an honest `NOT RUN`, which is why this was invisible until somebody
-# counted: on a 36 job sweep the fast film recorded `message_menu: NOT RUN -- no More button` on
-# 312 of 312 attempts, and the four actions it silently stopped exercising include the one
-# carrying the largest measured effect in this codebase (1,164.9 ms to 60.7 ms).
+# These actions are not rendered or meaningful while a turn streams; they report NOT RUN.
 SETTLED_ACTIONS = ("message_menu", "copy_markdown", "select_all_copy", "delete_message")
 
 
 def test_settled_actions_open_after_the_follow_up_drains():
-    """A slot needing a finished reply must clear the follow-up turn the preceding send started.
-
-    Only films used at a rung that actually sends follow-ups are checked. Below
-    MULTI_TURN_MIN_CHARS a rung is single-turn, `send_turn` reports an exhausted queue, and there
-    is no follow-up stream to wait for -- so holding the quick film to this bar would be asserting
-    against a stream that never exists.
-    """
+    """Settled slots must wait for the follow-up stream; only multi-turn rungs have one to wait for."""
     from studiobench.__main__ import TIER_RUNGS
     from studiobench.fixture.corpus import FOLLOW_UP_CHARS, MULTI_TURN_MIN_CHARS
     from studiobench.scene.schedule import SCENES
@@ -163,24 +126,9 @@ def test_settled_actions_open_after_the_follow_up_drains():
         last_send = None
         for slot in sorted(scene.slots, key = lambda s: s.t_start_ms):
             if slot.action == "send_turn":
-                # THE LATEST THE SEND CAN FIRE, not the earliest. The drain starts when the send actually happens,
-                # and a send slot is a WINDOW: the action may legitimately begin anywhere inside its own budget,
-                # which is what it does when the slot before it overran.
-                # Measured from the start instead, this check reported 1,538 ms of margin on the fast film where
-                # 38 ms existed, and CI then failed the way the arithmetic says it must: `reasoning_toggle`
-                # overran its 3,500 ms budget by 934 ms, `send_turn` was pushed 1,373 ms late but stayed inside
-                # its own budget so nothing recorded a miss, the send-to-menu gap collapsed from a nominal 5,300
-                # ms to 3,691 ms, and `message_menu` found a reply still streaming and recorded NOT RUN. Every
-                # slot was individually within budget and the film was still unrunnable.
-                # Its own budget is 1,500 ms.
-                # The same defect the rest of this branch is about, in the check rather than the instrument: a
-                # quantity computed at a moment whose meaning is not the one the reader assumes.
+                # Latest the send can fire: a slot may start anywhere in its budget if the prior overran.
                 last_send = slot.t_start_ms + slot.budget_ms
             elif slot.action in SETTLED_ACTIONS and last_send is not None:
-                # The slot's WINDOW, not its start. A slot may open a little before the follow-up finishes and
-                # wait inside its own budget: the quick film opens `message_menu` at 4.5 s against a 4.56 s drain
-                # and it runs, because it has 3 s to wait in. What is fatal is a window that CLOSES before the
-                # reply settles, which is what the first fast film did.
-                # A 1.7 s gap plus a 0.8 s budget against a 4.6 s drain.
+                # Fatal only if the slot's window closes before the reply settles.
                 window_end = (slot.t_start_ms + slot.budget_ms - last_send) / 1000.0
                 assert window_end >= drain_s, (name, slot.action, window_end, drain_s)

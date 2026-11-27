@@ -1,19 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# scripts/uninstall.ps1 must remove the same ~/.unsloth artifacts as scripts/uninstall.sh.
-#
-# The two uninstallers are maintained separately, so a prebuilt added to the
-# POSIX side (whisper.cpp, the node/whisper install locks) silently keeps
-# leaking on native Windows until someone notices. setup.ps1 installs
-# whisper.cpp under %USERPROFILE%\.unsloth\whisper.cpp exactly like setup.sh,
-# and a single surviving zero-byte lock keeps the empty-dir prune of
-# ~/.unsloth from running, so the whole tree stays on disk.
-#
-# The uninstaller body kills processes and writes to the registry, so it cannot
-# be executed here; this asserts PARITY of the artifact list instead, plus that
-# uninstall.ps1 still parses.
-#
+# uninstall.ps1 must remove the same ~/.unsloth artifacts as uninstall.sh; one leftover lock
+# blocks the ~/.unsloth prune. The body cannot run here, so this asserts list parity.
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_prebuilt_parity.ps1
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +16,6 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
-# uninstall.ps1 must parse (a syntax error would make every Windows uninstall a no-op).
 $tokens = $null; $errors = $null
 [System.Management.Automation.Language.Parser]::ParseFile($ps1Path, [ref]$tokens, [ref]$errors) | Out-Null
 Check "uninstall.ps1 parses" ($null -eq $errors -or $errors.Count -eq 0)
@@ -36,21 +24,17 @@ if ($errors -and $errors.Count -gt 0) { $errors | ForEach-Object { Write-Host " 
 $shText  = Get-Content -LiteralPath $shPath -Raw
 $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
 
-# Every `_remove_path "$HOME/.unsloth/<name>"` in the POSIX uninstaller. Only
-# direct children: nested paths are removed with their parent.
+# Only direct children: nested paths are removed with their parent.
 $shArtifacts = [regex]::Matches($shText, '_remove_path\s+"\$HOME/\.unsloth/([^"/]+)"') |
     ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
 Check "found the POSIX artifact list" ($shArtifacts.Count -ge 5)
 
-# WSL-only helpers have no native-Windows counterpart.
 $wslOnly = @("librocdxg", "rocm-smoketest")
 foreach ($artifact in $shArtifacts) {
     if ($wslOnly -contains $artifact) { continue }
     Check "uninstall.ps1 removes ~/.unsloth/$artifact" ($ps1Text -match [regex]::Escape($artifact))
 }
 
-# Every install lock uninstall.sh removes from ~/.unsloth, uninstall.ps1 removes too (the lock
-# list and the stale-lock pattern alike): one surviving lock blocks the ~/.unsloth prune.
 $shLocks = [regex]::Matches($shText, '_remove_lock_file\s+"\$HOME/\.unsloth/\.([^"/]+)\.install\.lock"') |
     ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
 Check "found the POSIX lock list" ($shLocks -contains "audio.cpp")
@@ -60,17 +44,13 @@ foreach ($lock in $shLocks) {
     Check "uninstall.ps1 sweeps stale .$lock.install.lock" (".$lock.install.lock.stale.123" -match $stalePattern)
 }
 
-# audio.cpp's model link farm beside the Hugging Face hub cache goes on both sides.
 Check "uninstall.sh removes the audio.cpp link farm"  ($shText  -match 'unsloth-audiocpp-links')
 Check "uninstall.ps1 removes the audio.cpp link farm" ($ps1Text -match 'unsloth-audiocpp-links')
 
-# The stale-lock sweep must exist on both sides: a crash between the rename and
-# the unlink in install_node_prebuilt.py strands a `.stale.<pid>` file, and that
-# alone blocks the ~/.unsloth prune.
+# A crash in install_node_prebuilt.py can strand a `.stale.<pid>` lock, blocking the prune.
 Check "uninstall.sh sweeps stale install locks"  ($shText  -match '\.install\.lock\.stale\.')
 Check "uninstall.ps1 sweeps stale install locks" ($ps1Text -match '\.install\.lock\.stale\.')
 
-# The prune must stay conditional on the dir being empty, so user content is kept.
 Check "uninstall.ps1 prunes ~/.unsloth only when empty" `
     ($ps1Text -match 'Get-ChildItem -LiteralPath \$defaultUnslothHome')
 

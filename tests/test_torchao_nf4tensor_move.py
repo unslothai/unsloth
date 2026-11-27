@@ -12,23 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""torchao 0.18.0 moved nf4tensor; torchtune still imports the old path.
-
-torchao 0.18.0 relocated `torchao/dtypes/nf4tensor.py` under
-`quantization/quantize_/workflows/nf4/`. torchtune imports the old path and
-xcodec2 imports torchtune, so every Llasa TTS notebook died one cell after a
-green install with ModuleNotFoundError. Pinning torchao below 0.18 fixes those
-notebooks; aliasing the module fixes anyone importing the old path, anywhere,
-on the new torchao.
-
-Built like the vLLM tokenizer stub beside it: a meta path finder APPENDED after
-the real ones, so an older torchao that still ships the module wins, and
-resolution is lazy so `import unsloth` pays nothing.
-
-The layouts are real package trees written to tmp_path and imported in a
-SUBPROCESS. Stubbing `sys.modules` would test the stub; this tests the import
-machinery, where appended-versus-inserted actually matters.
-"""
+"""Old nf4tensor path aliased by a meta path finder appended last, so a torchao that ships it wins."""
 
 import subprocess
 import sys
@@ -67,11 +51,7 @@ def _make_torchao(root: Path, *, old: bool, new: bool):
 
 
 def _run(root: Path, body: str):
-    """Import the fix in a subprocess with `root` first on sys.path.
-
-    Loaded by file path, not as `unsloth.import_fixes`, so one function does
-    not trigger unsloth's full GPU init.
-    """
+    """Loads import_fixes by file path in a subprocess, so unsloth's full GPU init never runs."""
     script = textwrap.dedent(f"""
         import sys, importlib.util
         sys.path.insert(0, {str(root)!r})
@@ -117,8 +97,7 @@ def test_without_the_fix_that_import_fails(tmp_path):
 
 
 def test_an_older_torchao_still_gets_its_own_module(tmp_path):
-    """Appended, not inserted at 0: on torchao < 0.18 the real module must
-    win, or the fix silently swaps out working code."""
+    """Appended last; on torchao < 0.18 the real module must win or working code gets swapped."""
     _make_torchao(tmp_path, old = True, new = True)
     r = _run(
         tmp_path,
@@ -132,8 +111,7 @@ def test_an_older_torchao_still_gets_its_own_module(tmp_path):
 
 
 def test_neither_layout_still_raises(tmp_path):
-    """An empty alias would turn a clear ModuleNotFoundError into an
-    AttributeError later."""
+    """An empty alias would turn a clear ModuleNotFoundError into a later AttributeError."""
     _make_torchao(tmp_path, old = False, new = False)
     r = _run(
         tmp_path,
@@ -166,11 +144,7 @@ def test_it_is_idempotent(tmp_path):
 
 
 def test_no_torchao_means_no_finder(tmp_path):
-    """Nothing installed: do not append a finder that can never fire.
-
-    site-packages is pruned from sys.path first, because an empty tmp_path is
-    not enough when this venv really has torchao.
-    """
+    """No finder is appended without torchao; site-packages is pruned, as tmp_path cannot hide torchao."""
     r = _run(
         tmp_path,
         """
@@ -211,10 +185,8 @@ def test_it_is_wired_into_the_init_sequence():
 
 
 def test_the_real_environment_is_left_alone():
-    """On a torchao that still ships the old path the fix must be a no-op
-    rather than redirecting a working import."""
-    # In a child: once anything in this session has imported unsloth the alias is registered, so an in-process check
-    # would read the new layout as old.
+    """With torchao still shipping the old path, the fix must not redirect a working import."""
+    # Run in a child: once unsloth is imported the alias makes the new layout read as old.
     p = subprocess.run(
         [
             sys.executable,
@@ -255,10 +227,7 @@ if __name__ == "__main__":
 
 
 def test_the_relocated_module_keeps_its_own_specification(tmp_path):
-    """create_module() returns the module torchao ships, and module_from_spec
-    then overwrites that shared object's __spec__ with the alias's. Left alone,
-    find_spec reports the old name for the new module and reload runs the alias
-    loader's no-op exec_module instead of the file."""
+    """The shipped module must keep its own __spec__, or reload runs the alias's no-op loader."""
     _make_torchao(tmp_path, old = False, new = True)
     r = _run(
         tmp_path,
@@ -279,9 +248,7 @@ def test_the_relocated_module_keeps_its_own_specification(tmp_path):
 
 
 def test_the_mlx_branch_installs_the_alias_too():
-    """The MLX branch never reaches _gpu_init.py, the only other caller, so
-    Apple Silicon xcodec2 would still die on the old path. Checked at source
-    level because the branch only runs when mlx is importable."""
+    """MLX skips _gpu_init.py: xcodec2 dies on old path; checked from source since mlx-only."""
     import ast
 
     src = (ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")

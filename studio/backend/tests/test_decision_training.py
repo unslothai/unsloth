@@ -157,8 +157,7 @@ def _config(base, dataset, **overrides):
     }
 
 
-# The worker imports unsloth; CI installs unsloth_zoo only for the step that runs this file.
-# Apple Silicon trains with MLX, through unsloth_zoo's decision module.
+# Worker imports unsloth; CI installs unsloth_zoo only in this step; Apple Silicon uses MLX.
 _WORKER = "unsloth_zoo.mlx.decision" if sys.platform == "darwin" else "unsloth_zoo"
 needs_worker = pytest.mark.skipif(
     importlib.util.find_spec("unsloth_zoo") is None or importlib.util.find_spec(_WORKER) is None,
@@ -398,6 +397,7 @@ def test_all_invalid_rows_are_an_error_and_save_nothing(base, studio_home):
     events = _train(_config(base, _dataset(studio_home, rows)))
 
     assert "No usable decisions" in _of(events, "error")[0]["error"]
+    assert "Loading decision model..." not in [e["message"] for e in _of(events, "status")]
     assert not _of(events, "complete")
     assert not outputs_root().exists() or not any(outputs_root().iterdir())
 
@@ -455,7 +455,7 @@ def test_stop_while_preparing_decisions_ends_the_run(base, studio_home):
     events = _train(
         _config(base, _dataset(studio_home, rows)),
         False,
-        lambda event: event.get("message") == "Preparing decisions...",
+        lambda event: event.get("message") == "Preparing decision rows...",
     )
 
     assert _of(events, "complete")[-1]["status_message"] == "Training cancelled"
@@ -675,6 +675,22 @@ def test_arrow_merged_criteria_are_not_trained_as_options(tmp_path):
     assert not warnings
 
 
+def test_jsonl_rows_keep_unicode_separators_inside_strings(tmp_path):
+    from core.training.decision_trainer import _read_local_rows
+
+    rows = [
+        {"state": "one\u2028two\u2029three\u0085four", "gold": "a"},
+        {"state": "plain", "gold": "b"},
+    ]
+    path = tmp_path / "decisions.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii = False) for row in rows) + "\n",
+        encoding = "utf-8",
+    )
+
+    assert _read_local_rows([str(path)], None, lambda message: None) == rows
+
+
 def _load(should_stop = lambda: False, **config):
     from core.training.decision_trainer import _load_rows
 
@@ -758,6 +774,51 @@ def test_a_stop_during_the_s3_download_cancels_the_run(monkeypatch):
         _load(lambda: True, s3_config = {"bucket": "b"})
 
 
+def test_s3_audio_rows_keep_their_clips_after_the_download_is_cleaned_up(monkeypatch, tmp_path):
+    import shutil
+    from types import SimpleNamespace
+
+    from core.training import s3_dataset
+
+    clips = [tmp_path / "a.wav", tmp_path / "b.wav", tmp_path / "c.wav"]
+    for index, clip in enumerate(clips):
+        clip.write_bytes(b"RIFF" + bytes([index]))
+    manifest = tmp_path / "rows.jsonl"
+    rows = [
+        {**_row(0), "audio": {"bytes": None, "path": str(clips[0])}},
+        {**_row(1), "audio": [{"bytes": None, "path": str(clips[1])}]},
+        # A plain path string, as the S3 rewrite leaves a manifest's usual audio cell.
+        {**_row(2), "audio": str(clips[2])},
+        _row(3),
+    ]
+    manifest.write_text("\n".join(json.dumps(row) for row in rows), encoding = "utf-8")
+    copy = tmp_path / "download"
+    copy.mkdir()
+    shutil.copy(manifest, copy)
+
+    def download(s3_config, cancel_callback):
+        return SimpleNamespace(
+            files = [str(copy / "rows.jsonl")], cleanup = lambda: [clip.unlink() for clip in clips]
+        )
+
+    monkeypatch.setattr(s3_dataset, "prepare_s3_dataset_download", download)
+    loaded, _, _ = _load(s3_config = {"bucket": "b"})
+    assert [
+        loaded[0]["audio"]["bytes"],
+        loaded[1]["audio"][0]["bytes"],
+        loaded[2]["audio"]["bytes"],
+    ] == [b"RIFF\x00", b"RIFF\x01", b"RIFF\x02"]
+    assert "audio" not in loaded[3]
+    assert not any(clip.exists() for clip in clips)
+    # A slice reads only the clips of the rows it keeps.
+    for index, clip in enumerate(clips):
+        clip.write_bytes(b"RIFF" + bytes([index]))
+    read, read_bytes = [], Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda path: read.append(path.name) or read_bytes(path))
+    loaded, _, _ = _load(s3_config = {"bucket": "b"}, dataset_slice_start = 1, dataset_slice_end = 1)
+    assert [row["audio"][0]["bytes"] for row in loaded] == [b"RIFF\x01"] and read == ["b.wav"]
+
+
 def test_other_accounts_reach_only_the_configured_fine_tune(studio_home, client):
     from utils.account_context import AccountContext, bind_account, reset_account
     from utils.paths import outputs_root
@@ -839,3 +900,31 @@ def test_held_out_decisions_count_every_clef_question():
     laya = [{"row": 0}, {"row": 1}]
     clef = [{"row": 0, "labels": [0, 1, 2]}, {"row": 1, "labels": [1]}]
     assert (_decision_count(laya), _decision_count(clef)) == (2, 4)
+
+
+@pytest.mark.parametrize(
+    "model_type, mlx, zoo_d1, head",
+    [
+        ("lfm3_omni", True, True, "d1"),
+        ("lfm3_vl", True, True, "d1"),
+        ("lfm3", True, True, "clef"),
+        ("qwen3_5", True, True, "clef"),
+        ("lfm3_omni", False, True, "clef"),
+        ("lfm3_vl", True, False, "clef"),
+    ],
+)
+def test_lfm3_vision_and_omni_train_as_a_d1_on_mlx(
+    tmp_path, monkeypatch, model_type, mlx, zoo_d1, head
+):
+    from core.training import decision_trainer
+
+    monkeypatch.setattr(decision_trainer, "_is_mlx", lambda: mlx)
+    monkeypatch.setattr(decision_trainer, "_zoo_trains_d1", lambda: zoo_d1)
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
+    assert decision_trainer._lm_decision_head(str(tmp_path), None) == head
+
+
+def test_an_unreadable_language_model_keeps_the_clef_head(tmp_path, monkeypatch):
+    from core.training import decision_trainer
+    monkeypatch.setattr(decision_trainer, "_is_mlx", lambda: True)
+    assert decision_trainer._lm_decision_head(str(tmp_path), None) == "clef"

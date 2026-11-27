@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 <#
-    Source scan of setup.ps1's "install blocked" reporting (#9928): llama.cpp exit 3
-    must not name a process (WinError 5 is also an unreadable ACL), and a Node kept
-    on exit 0 must relay the installer's repair lines.
+    Source scan of setup.ps1's "install blocked" reporting: llama.cpp exit 3 must not name
+    a process, and a Node kept on exit 0 must relay the installer's repair lines.
 #>
 
 BeforeAll {
@@ -16,8 +15,7 @@ BeforeAll {
     $script:SetupText = Get-Content -Raw -LiteralPath $script:SetupPs1
     $script:NodeInstaller = Get-Content -Raw -LiteralPath (Join-Path (Split-Path -Parent $script:SetupPs1) 'install_node_prebuilt.py')
 
-    # These are inline installer flow, not functions, so Get-FunctionSource cannot
-    # reach them; slice from the marker to the first close at the marker's depth.
+    # Inline installer flow, not functions, so slice from the marker to its closing brace.
     function Get-BlockSource {
         param(
             [Parameter(Mandatory)][string]$Path,
@@ -46,8 +44,7 @@ BeforeAll {
         -Marker '$whisperExit -eq 3' -ClosePattern '^\s*\}\s*(elseif|else)\b'
     $script:LocalLinkBusy = Get-BlockSource -Path $script:SetupPs1 `
         -Marker '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' -ClosePattern '^\s*\}\s*$'
-    # The whole if/elseif chain on the Node installer's exit code, and nothing after it. Anchored on the chain,
-    # not on reading $LASTEXITCODE: the mirror retry (#11786) sits between the two and closes first.
+    # Anchored on the exit-code chain: the mirror retry between them closes first.
     $script:NodeExit = Get-BlockSource -Path $script:SetupPs1 `
         -Marker '$nodeExit -eq 3' -ClosePattern '^\s*\}\s*$'
 }

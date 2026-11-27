@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Coarse per-IP sliding-window rate limit for the public ``/p`` preview chat.
-
-A signed link stops ref guessing, but anyone with a link can still drive GPU
-generation. This bounds sustained abuse from a single source. In-process and
-single-worker only (like the login limiter in ``routes/auth.py``); Unsloth runs as
-one uvicorn process, so a shared store isn't needed.
-"""
+"""Per-IP sliding-window rate limit for the public /p preview chat; in-process, single-worker only."""
 
 from __future__ import annotations
 
@@ -31,9 +25,8 @@ def _prune(bucket: deque, now: float) -> None:
 
 
 def _evict_aged(now: float) -> None:
-    """Drop only buckets that have fully aged out. Never evict an active bucket:
-    evicting a throttled key would reset its counter, so a flood of distinct keys
-    could cycle the table and clear a victim's (or its own) limit."""
+    """Drops only fully aged-out buckets; evicting an active one would reset a throttled key's
+    counter, so a flood of distinct keys could cycle the table and clear limits."""
     for key in list(_buckets.keys()):
         _prune(_buckets[key], now)
         if not _buckets[key]:
@@ -49,9 +42,7 @@ def check_rate_limit(key: str) -> int:
             if len(_buckets) >= _MAX_BUCKETS:
                 _evict_aged(now)
             if len(_buckets) >= _MAX_BUCKETS:
-                # Table is full of currently-active clients. Fail closed: deny the
-                # new key rather than evict a live bucket (which would hand out a
-                # rate-limit reset). Pathological only (>= _MAX_BUCKETS live IPs).
+                # Table full of live clients: fail closed rather than evict (an eviction resets the limit).
                 return max(1, int(_WINDOW_SECONDS))
             bucket = _buckets[key] = deque()
         _prune(bucket, now)

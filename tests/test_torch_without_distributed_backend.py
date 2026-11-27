@@ -92,7 +92,7 @@ def test_accelerate_dtensor_check_without_backend(accelerate_dtensor, no_backend
     assert other.model_has_dtensor.__wrapped__ is accelerate_dtensor
     assert import_fixes.fix_accelerate_dtensor_check_without_torch_distributed() is True
     assert other.model_has_dtensor.__wrapped__ is accelerate_dtensor
-    # accelerate releases before huggingface/accelerate#4250 raise here; later ones return False.
+    # accelerate before huggingface/accelerate#4250 raises here; later returns False.
     assert unpatched in ("raises", False)
 
 

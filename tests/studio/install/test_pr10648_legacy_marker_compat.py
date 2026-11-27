@@ -1,38 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Old installs meeting the marker fast paths, and new markers meeting old installers.
-
-``studio update`` now skips re-validating a prebuilt llama.cpp / whisper.cpp / Node tree
-when the marker on disk carries enough evidence to say the install is already the one this
-run would produce. Every user upgrading into that code has a marker written by an Unsloth
-that recorded none of it, so the two directions this pins are:
-
-  * BACKWARDS. A marker written by a released, pre-fast-path Unsloth must ALWAYS fall
-    through to the full path -- the fast path may not read an absent key as agreement --
-    and it must fall through exactly ONCE, because the full path backfills the missing
-    evidence onto the marker it kept. An old install that never backfills pays the full
-    re-validation (13-63 s on macOS) on every update forever, which is the bug the fast
-    path exists to fix; an old install that is WRONGLY trusted keeps a tree this run
-    would have replaced, which is worse.
-  * FORWARDS. A user who downgrades, or who runs an older Studio out of another
-    checkout, hands a released installer a marker full of keys it has never heard of.
-    The new keys are additive, so the old reader must ignore them and still keep the
-    install rather than refuse and re-download it.
-
-The old markers here are not hand-written shapes. The released tags in this repository
-are checked out read-only with ``git show``, loaded in a subprocess whose ``PYTHONPATH``
-holds nothing but that tag's own modules, and asked to write a marker with their OWN
-writer -- so what the current readers are fed is the exact bytes that shipped. The
-hand-written corpus is still covered: ``ALL_SHAPES`` from
-``test_keep_install_backcompat_9979`` is imported rather than re-derived, so the twelve
-historical shapes and one real captured install are asserted here too.
-
-Linux-only in what it touches: platforms are simulated through ``HostInfo`` (never
-through ``os.name``, which changes pathlib underneath the install trees), no network,
-no GPU. The subprocesses are read-only against the repository and write only under
-``tmp_path``.
-"""
+"""Old markers must take the full path exactly once; new keys must not make old readers refuse."""
 
 import dataclasses
 import json
@@ -45,8 +14,7 @@ import pytest
 
 _TEST_DIR = Path(__file__).resolve().parent
 if str(_TEST_DIR) not in sys.path:
-    # The canonical corpus lives beside this file; pytest's prepend import mode puts this
-    # directory on sys.path too, but not necessarily before this module body runs.
+    # Prepend import mode may not put this dir on sys.path before the module body runs.
     sys.path.insert(0, str(_TEST_DIR))
 
 from _pr10648_helpers import PACKAGE_ROOT, git, llama_host  # noqa: E402
@@ -61,7 +29,6 @@ NDP = _load("studio_install_node_prebuilt_pr10648_legacy", "install_node_prebuil
 CORE = WSP.core
 
 
-# ── The released tags whose markers are replayed here ──
 LEGACY_TAGS = (
     "v0.1.800-beta",
     "v0.1.802-beta",
@@ -79,8 +46,7 @@ _LEGACY_MODULES = (
 
 _SENTINEL = "@@PR10648-RESULT@@"
 
-# Runs inside the legacy subprocess. Everything it needs is introspected from the tag's own
-# dataclasses, so a tag whose fields differ still gets a marker its own writer produced.
+# Runs inside the legacy subprocess; introspects the tag's own dataclasses.
 _LEGACY_DRIVER = r'''
 import dataclasses
 import json
@@ -214,16 +180,11 @@ main()
 
 
 def _extract_legacy_tree(tag: str, destination: Path) -> "Path | None":
-    """``git show`` a released tag's installers into *destination*, or None if it is absent.
-
-    The four installer modules plus the ``backend.utils.prebuilt`` package they import at
-    module scope -- roughly 600 KB, against 46 MB for the whole ``studio`` tree.
-    """
+    """Extracts a released tag's installer modules and prebuilt package via git show; None if absent."""
     destination.mkdir(parents = True, exist_ok = True)
     wanted = [f"studio/{name}" for name in _LEGACY_MODULES]
     wanted += ["studio/backend/__init__.py", "studio/backend/utils/__init__.py"]
-    # prebuilt_core imports this too, and PYTHONPATH below is REPLACED with this tree.
-    # ls-tree, not a bare append: the tags predating it must resolve rather than skip.
+    # PYTHONPATH below is REPLACED; ls-tree so tags predating auth_safe.py resolve.
     optional = git("ls-tree", "-r", "--name-only", tag, "studio/backend/utils/auth_safe.py")
     if optional.returncode == 0:
         wanted += [
@@ -254,8 +215,7 @@ class LegacyRunFailed(RuntimeError):
 def _run_legacy(tree: Path, op: str, spec: dict) -> dict:
     """Run the driver against one legacy tree, with only that tree importable."""
     environment = dict(os.environ)
-    # Replaced, not prepended: the caller's PYTHONPATH points at the CURRENT studio/, and
-    # inheriting it would let the legacy modules import today's prebuilt_core.
+    # Replaced, not prepended, or legacy modules would import today's prebuilt_core.
     environment["PYTHONPATH"] = str(tree)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     proc = subprocess.run(
@@ -276,14 +236,12 @@ def _run_legacy(tree: Path, op: str, spec: dict) -> dict:
     )
 
 
-# ── The install this scenario describes, in each component's dialect ──
 LLAMA_REPO = "unslothai/llama.cpp"
 LLAMA_UPSTREAM_TAG = "b10698"
 LLAMA_RELEASE_TAG = "b10698-mix-67dfc8b"
 LLAMA_ASSET = "app-b10698-mix-67dfc8b-linux-x64-vulkan.tar.gz"
 LLAMA_GGML_TREE = "0034c6eb"
-# Vulkan on a GPU-less Linux box: no CUDA runtime scan, no ROCm probe and no torch
-# preference read, so host_profile is a pure function of the HostInfo constructed here.
+# GPU-less Vulkan box: host_profile is a pure function of this HostInfo.
 LLAMA_CHOICE = {
     "repo": LLAMA_REPO,
     "tag": LLAMA_UPSTREAM_TAG,
@@ -348,8 +306,7 @@ def _fill(cls, wanted: dict):
 
 
 LINUX = llama_host(ILP.HostInfo)
-# Spelled out again as a plain dict: the legacy subprocess builds its own tag's HostInfo by
-# field name, so this is data crossing a process boundary rather than a second factory.
+# The legacy subprocess builds its own HostInfo by field name from this dict.
 LLAMA_HOST_KWARGS = {
     "system": "Linux",
     "machine": "x86_64",
@@ -433,13 +390,7 @@ def _legacy(legacy_markers: dict, tag: str) -> dict:
 
 @pytest.fixture(autouse = True)
 def _offline(monkeypatch):
-    """No fast-path assertion here may be bought with a network call.
-
-    Every scenario pins the release tag, which is the shape of the check that resolves
-    without any lookup; anything reaching a resolver is a test that stopped testing the
-    fast path. Also clears the full-check escape hatch, which would turn every fast path
-    below into an unconditional False and make the suite pass vacuously.
-    """
+    """Forbids network lookups and clears the full-check hatch, which would force every fast path False."""
 
     def refuse(*args, **kwargs):
         raise AssertionError("the marker fast path must not reach the network")
@@ -510,12 +461,7 @@ def _llama_fast_path(
     published_repo = LLAMA_REPO,
     release_tag = LLAMA_RELEASE_TAG,
 ) -> bool:
-    """The pre-check as ``install_prebuilt`` calls it, with the release pinned.
-
-    A pinned release is what ``_expected_release_tag_without_plan`` answers outright, so
-    nothing here resolves anything: the verdict is decided purely by the marker and the
-    tree, which is what these tests are about.
-    """
+    """Pre-check with the release pinned, so no release lookup runs and only marker and tree decide."""
     return ILP.existing_install_current_without_plan(
         install_dir,
         llama_tag = "latest",
@@ -567,17 +513,11 @@ def _whisper_selection():
     return _fill(CORE.InstallSelection, CURRENT_WHISPER_SELECTION)
 
 
-# ── Backwards compatibility: an old marker is never trusted ──
 @pytest.mark.parametrize("tag", LEGACY_TAGS)
 def test_a_llama_marker_from_a_released_unsloth_never_takes_the_fast_path(
     tmp_path, legacy_markers, tag
 ):
-    """Upgrading into this code with a llama.cpp install from any shipped release.
-
-    The marker was written by that release's own ``write_prebuilt_metadata`` and records
-    no ``host_profile``, no ``runtime_files`` and no ``runtime_sha256``. Reading any of
-    those absences as agreement would keep a tree this run never verified.
-    """
+    """Old llama markers lack host_profile, runtime_files and runtime_sha256; absence is not agreement."""
     marker = _legacy(legacy_markers, tag)["markers"]["llama"]
     assert "host_profile" not in marker["marker"], tag
     assert "runtime_files" not in marker["marker"], tag
@@ -591,17 +531,10 @@ def test_a_llama_marker_from_a_released_unsloth_never_takes_the_fast_path(
     ids = [shape[0] for shape in CORPUS.ALL_SHAPES],
 )
 def test_no_shipped_llama_marker_shape_reaches_the_fast_path(tmp_path, name, marker, backend):
-    """The twelve marker shapes that have shipped, plus one captured from a real install.
-
-    ``UNSLOTH_PREBUILT_INFO.json`` is append-only with no version field, so "the key is
-    missing" is the only signal an old shape gives. Each of these describes a tree that is
-    perfectly healthy -- the full path keeps it -- so the fast path refusing them is the
-    ONLY thing forcing the one re-validation that backfills the new evidence.
-    """
+    """Shipped llama marker shapes are healthy but lack the new keys, so the fast path must decline them."""
     install_dir = CORPUS.build_install(tmp_path, host = LINUX, marker = marker, payload_backend = backend)
     assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True, name
-    # The shape's own release and repo, so the tag comparison AGREES and the verdict turns
-    # on the evidence the shape does not carry rather than on a release mismatch.
+    # Same release and repo, so the verdict turns on missing evidence, not a release mismatch.
     assert (
         _llama_fast_path(
             install_dir,
@@ -616,12 +549,7 @@ def test_no_shipped_llama_marker_shape_reaches_the_fast_path(tmp_path, name, mar
 def test_a_whisper_marker_from_a_released_unsloth_never_takes_the_fast_path(
     tmp_path, legacy_markers, tag
 ):
-    """Upgrading into this code with a whisper.cpp install from any shipped release.
-
-    ``fingerprint_coverage`` is what lets a no-network check recompute the fingerprint and
-    tell a whole marker from a ``release_tag`` edited over an old binary. No released
-    marker carries it, so all of them must recompute to None and take the full path.
-    """
+    """Old whisper markers lack fingerprint_coverage, so they recompute to None and take the full path."""
     marker = _legacy(legacy_markers, tag)["markers"]["whisper"]
     assert "fingerprint_coverage" not in marker["marker"], tag
     assert CORE.marker_install_fingerprint(marker["marker"]) is None, tag
@@ -633,12 +561,7 @@ def test_a_whisper_marker_from_a_released_unsloth_never_takes_the_fast_path(
 def test_a_node_marker_from_a_released_unsloth_never_skips_the_version_probe(
     tmp_path, legacy_markers, tag
 ):
-    """Upgrading into this code with a managed Node runtime from any shipped release.
-
-    ``node_version_checked`` is the record that stands in for spawning a 110 MB
-    interpreter. No released marker has one, so the recorded-runtime fast path must
-    decline every one of them and let the spawn happen.
-    """
+    """Old node markers lack node_version_checked, so the fast path declines them and node is spawned."""
     marker = _legacy(legacy_markers, tag)["markers"]["node"]
     assert "node_version_checked" not in marker["marker"], tag
     install_dir = _node_install(tmp_path, marker["text"])
@@ -646,18 +569,9 @@ def test_a_node_marker_from_a_released_unsloth_never_skips_the_version_probe(
     assert NDP._recorded_runtime_matches(install_dir, NODE_HOST, meta, NODE_VERSION) is False
 
 
-# ── Each new key on its own is what an old marker is missing ──
 @pytest.mark.parametrize("key", ["host_profile", "runtime_files", "runtime_sha256"])
 def test_a_llama_marker_missing_one_new_key_is_not_read_as_agreement(tmp_path, key):
-    """Isolates the guard the released markers above rely on, one key at a time.
-
-    Those markers are missing all three at once, so on their own they cannot show WHICH
-    absence is doing the work -- and a fast path that only refused them because of, say,
-    the fingerprint would silently start trusting a hand-edited marker the day a backfill
-    added that one key. Start from a marker this code wrote, which the fast path accepts,
-    and remove exactly one key: each must be enough on its own to send the run back to
-    the full path.
-    """
+    """Each new llama marker key, missing alone, must force the full path rather than read as agreement."""
     install_dir = _current_llama_install(tmp_path)
     assert _llama_fast_path(install_dir) is True
 
@@ -669,11 +583,8 @@ def test_a_llama_marker_missing_one_new_key_is_not_read_as_agreement(tmp_path, k
 
 
 def test_a_whisper_marker_missing_fingerprint_coverage_is_not_read_as_agreement(tmp_path):
-    """The one key that decides whisper's fast path, isolated the same way.
-
-    Without it the fingerprint cannot be recomputed, so a ``release_tag`` edited over an
-    old binary would read as current. Every pre-PR whisper marker lacks it.
-    """
+    """Without fingerprint_coverage the fingerprint cannot be recomputed, so an edited release_tag
+    passes."""
     install_dir = _whisper_install(tmp_path, marker_text = None)
     WSP.write_prebuilt_metadata(install_dir, _whisper_selection())
     assert _whisper_fast_path(install_dir) is True
@@ -685,11 +596,8 @@ def test_a_whisper_marker_missing_fingerprint_coverage_is_not_read_as_agreement(
 
 
 def test_a_node_marker_missing_node_version_checked_is_not_read_as_agreement(tmp_path):
-    """The record that stands in for the node spawn must not be inferable from anything else.
-
-    ``node_binary`` and ``npm_cli`` can be present (an install this code wrote) while the
-    version record is not, and the spawn still has to happen.
-    """
+    """node_binary and npm_cli present does not imply node_version_checked; the spawn still has to
+    happen."""
     install_dir = _node_install(tmp_path, marker_text = None)
     NDP.write_metadata(install_dir, version = NODE_VERSION, asset = NODE_ASSET, sha256 = NODE_SHA256)
     NDP.record_runtime_verification(
@@ -703,11 +611,7 @@ def test_a_node_marker_missing_node_version_checked_is_not_read_as_agreement(tmp
 
 
 def test_the_full_check_env_var_puts_a_current_install_back_on_the_slow_path(tmp_path, monkeypatch):
-    """The workaround a user needs when a skip is wrong for reasons nothing on disk shows.
-
-    Both components gate on the same variable, so a support answer is one instruction and
-    not two. Asserted for llama and whisper together for that reason.
-    """
+    """Full-check variable sends llama and whisper to the slow path, so support gives one instruction."""
     llama_dir = _current_llama_install(tmp_path / "llama")
     whisper_dir = _whisper_install(tmp_path / "whisper", marker_text = None)
     WSP.write_prebuilt_metadata(whisper_dir, _whisper_selection())
@@ -719,7 +623,6 @@ def test_the_full_check_env_var_puts_a_current_install_back_on_the_slow_path(tmp
     assert _whisper_fast_path(whisper_dir) is False
 
 
-# ── Backwards compatibility: the full path is paid exactly once ──
 def _newest_loadable_tag(legacy_markers: dict) -> str:
     for tag in reversed(LEGACY_TAGS):
         if "markers" in legacy_markers[tag]:
@@ -730,14 +633,7 @@ def _newest_loadable_tag(legacy_markers: dict) -> str:
 def test_an_old_llama_install_pays_the_full_path_once_and_is_fast_afterwards(
     tmp_path, legacy_markers
 ):
-    """The property every existing user gets: update once slowly, then quickly forever.
-
-    The full path reuses the bundle it found and calls ``sync_marker_selection``, which is
-    the only place that catches an old marker up to the evidence the no-network check
-    needs. Without the backfill an old install would re-validate on every single update --
-    the very cost the fast path was added to remove -- and nothing else in the tree would
-    look wrong.
-    """
+    """Full path backfills via sync_marker_selection, so old installs are fast after one update."""
     tag = _newest_loadable_tag(legacy_markers)
     marker = _legacy(legacy_markers, tag)["markers"]["llama"]
     install_dir = _llama_install(tmp_path, marker["text"])
@@ -755,8 +651,7 @@ def test_an_old_llama_install_pays_the_full_path_once_and_is_fast_afterwards(
     backfilled = ILP.load_prebuilt_metadata(install_dir)
     assert isinstance(backfilled.get("host_profile"), dict)
     assert backfilled.get("runtime_files")
-    # The fingerprint the released installer wrote must still be the one this code
-    # recomputes from the marker's own fields, or the backfill has rewritten history.
+    # The released fingerprint must still recompute, or the backfill has rewritten history.
     assert backfilled["install_fingerprint"] == marker["marker"]["install_fingerprint"]
     assert ILP._marker_install_fingerprint(backfilled) == backfilled["install_fingerprint"]
 
@@ -766,12 +661,7 @@ def test_an_old_llama_install_pays_the_full_path_once_and_is_fast_afterwards(
 def test_the_backfilled_llama_marker_still_refuses_a_tree_whose_bytes_moved(
     tmp_path, legacy_markers
 ):
-    """The fast path that an old install earns must still be a real check.
-
-    ``runtime_files`` replaces actually starting llama-server, so a backfilled marker that
-    answered True for any tree would have swapped a 5 s probe for no probe at all. Rewrite
-    one recorded binary and the same call has to fail closed.
-    """
+    """A backfilled runtime_files record must still fail closed when a recorded binary's bytes change."""
     tag = _newest_loadable_tag(legacy_markers)
     marker = _legacy(legacy_markers, tag)["markers"]["llama"]
     install_dir = _llama_install(tmp_path, marker["text"])
@@ -794,18 +684,12 @@ def test_the_backfilled_llama_marker_still_refuses_a_tree_whose_bytes_moved(
 def test_an_old_whisper_install_pays_the_full_path_once_and_is_fast_afterwards(
     tmp_path, legacy_markers
 ):
-    """The same once-only cost for dictation: whisper.cpp installs from any shipped release.
-
-    The full path keeps the bundle and settles the marker, which is where
-    ``fingerprint_coverage`` (and the os/arch tokens) are written onto a marker that
-    predates them.
-    """
+    """Old whisper markers take the full path once, which writes fingerprint_coverage and os/arch tokens."""
     tag = _newest_loadable_tag(legacy_markers)
     marker = _legacy(legacy_markers, tag)["markers"]["whisper"]
     install_dir = _whisper_install(tmp_path, marker["text"])
     selection = _whisper_selection()
-    # If this ever fails the fingerprint formula itself moved, and the settle below would
-    # silently decline -- leaving every old install on the full path forever.
+    # If the formula moved, the settle silently declines and old installs stay on the full path.
     assert selection.fingerprint() == marker["marker"]["install_fingerprint"]
 
     assert _whisper_fast_path(install_dir) is False
@@ -821,13 +705,8 @@ def test_an_old_whisper_install_pays_the_full_path_once_and_is_fast_afterwards(
 def test_an_old_node_install_spawns_node_once_and_never_again(
     tmp_path, legacy_markers, monkeypatch
 ):
-    """``node -v`` on a 110 MB runtime, on every update, to re-derive a constant.
-
-    The first call after upgrading has to pay it, because the released marker records
-    nothing about the binary; the second must not. The npm probe is deliberately still
-    paid each time -- npm-cli.js only bootstraps thousands of other files -- so only the
-    node spawn is counted here.
-    """
+    """Node's version is probed once after upgrade and recorded; the npm probe still runs on every
+    update."""
     tag = _newest_loadable_tag(legacy_markers)
     marker = _legacy(legacy_markers, tag)["markers"]["node"]
     install_dir = _node_install(tmp_path, marker["text"])
@@ -864,11 +743,7 @@ def test_an_old_node_install_spawns_node_once_and_never_again(
 def test_a_replaced_node_binary_is_probed_again_after_the_record_was_written(
     tmp_path, legacy_markers, monkeypatch
 ):
-    """The record earned above must not outlive the bytes it describes.
-
-    A repaired or hand-swapped node in an existing install has to be re-probed, or the
-    fast path would keep reporting a version nothing on disk still reports.
-    """
+    """A replaced node binary must be re-probed; a recorded version must not outlive its bytes."""
     tag = _newest_loadable_tag(legacy_markers)
     marker = _legacy(legacy_markers, tag)["markers"]["node"]
     install_dir = _node_install(tmp_path, marker["text"])
@@ -887,18 +762,12 @@ def test_a_replaced_node_binary_is_probed_again_after_the_record_was_written(
     assert NDP._recorded_runtime_matches(install_dir, NODE_HOST, meta, NODE_VERSION) is False
 
 
-# ── Forwards compatibility: a new marker read by a released installer ──
 @pytest.mark.parametrize("tag", LEGACY_TAGS)
 def test_a_marker_written_today_is_still_read_by_every_released_unsloth(
     tmp_path, legacy_markers, tag
 ):
-    """Downgrading, or running an older Studio from a second checkout, over one install.
-
-    The fast path's keys are additive, so a released installer must ignore them and still
-    keep the install. If an old reader instead refuses, a user who ever opens an older
-    Studio gets a full re-download of llama.cpp, whisper.cpp and Node -- and gets it back
-    again the next time they open the new one.
-    """
+    """Released installers must ignore the new additive marker keys and keep the install, not re-
+    download."""
     entry = _legacy(legacy_markers, tag)
 
     llama_dir = _llama_install(tmp_path / "current", marker = None)

@@ -1,9 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# install.sh gives new Linux x86_64 cu130 Python 3.13 installs torch 2.13 (the only route the
-# prebuilt-wheels-cu13 release covers) while an existing 2.4-2.14 install keeps its release.
-# Helpers are extracted from install.sh and sourced; the venv python is a stub.
+# New Linux x86_64 cu130 Python 3.13 installs get torch 2.13; existing 2.4-2.14 installs keep theirs.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 _FUNC_FILE=$(mktemp)
 {
-    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin _dir_has_entries; do
+    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _cu130_torch213_host_ok _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin _dir_has_entries; do
         sed -n "/^${fn}()/,/^}/p" "$INSTALL_SH"
         echo ""
     done
@@ -23,11 +21,15 @@ unset UNSLOTH_TORCH_UPGRADE
 
 VENV_DIR=$(mktemp -d)
 mkdir -p "$VENV_DIR/bin"
-# Answers the version probe (-c) with $1 and runs anything else (the PyPI gate) on a real python.
+# Answers the GIL probe with $2 (default gil-enabled), the version probe (-c) with $1, and runs
+# anything else (the PyPI gate) on a real python.
 _stub_python() {
-    printf '#!/bin/sh\nif [ "$1" = "-c" ]; then echo %s; else exec python3 "$@"; fi\n' "$1" > "$VENV_DIR/bin/python"
+    printf '#!/bin/sh\ncase "$2" in *Py_GIL_DISABLED*) echo %s; exit 0 ;; esac\nif [ "$1" = "-c" ]; then echo %s; else exec python3 "$@"; fi\n' "${2:-gil-enabled}" "$1" > "$VENV_DIR/bin/python"
     chmod +x "$VENV_DIR/bin/python"
 }
+# The host's glibc minor; empty = not a readable glibc (musl).
+GLIBC_MINOR=35
+_uv_glibc_minor() { [ -n "$GLIBC_MINOR" ] || return 1; echo "$GLIBC_MINOR"; }
 CU130="https://download.pytorch.org/whl/cu130"
 _pypi_fixture() {
     printf '{"info": {"requires_dist": ["numpy", "%s", "torchvision"]}}' "$1" > "$VENV_DIR/pypi.json"
@@ -35,7 +37,7 @@ _pypi_fixture() {
 }
 _pypi_fixture "torch<2.15.0,>=2.4.0"
 
-echo "=== route: only cu130 + Linux/WSL + x86_64 + Python 3.13 ==="
+echo "=== route: only cu130 + Linux/WSL + x86_64/aarch64 + Python 3.13 ==="
 _stub_python 3.13
 OS=linux; _ARCH=x86_64
 assert_eq "linux x86_64 cu130 py3.13"      "yes" "$(_cu130_torch213_route "$CU130")"
@@ -49,12 +51,31 @@ done
 OS=macos
 assert_eq "macOS never"                    "no" "$(_cu130_torch213_route "$CU130")"
 OS=linux; _ARCH=aarch64
-assert_eq "aarch64 never (no wheels)"      "no" "$(_cu130_torch213_route "$CU130")"
+assert_eq "linux aarch64 cu130 py3.13"     "yes" "$(_cu130_torch213_route "$CU130")"
+_ARCH=armv7l
+assert_eq "32-bit ARM never"               "no" "$(_cu130_torch213_route "$CU130")"
 _ARCH=x86_64
 for py in 3.11 3.12 3.14; do
     _stub_python "$py"
     assert_eq "Python $py never (cp313 wheels only)" "no" "$(_cu130_torch213_route "$CU130")"
 done
+_stub_python 3.13 gil-disabled
+assert_eq "free-threaded 3.13 never (no cp313t torch 2.13)" "no" "$(_cu130_torch213_route "$CU130")"
+assert_eq "free-threaded 3.13 keeps the preservation window" "yes" "$(_cu130_torch213_platform "$CU130")"
+_stub_python 3.13
+for minor in 28 31 34; do
+    GLIBC_MINOR=$minor
+    for arch in x86_64 aarch64; do
+        _ARCH=$arch
+        assert_eq "glibc 2.$minor $arch never (wheels need 2.35)" "no" "$(_cu130_torch213_route "$CU130")"
+        assert_eq "glibc 2.$minor $arch keeps the preservation window" "yes" "$(_cu130_torch213_platform "$CU130")"
+    done
+done
+GLIBC_MINOR=""
+assert_eq "musl / unreadable glibc never"  "no" "$(_cu130_torch213_route "$CU130")"
+GLIBC_MINOR=39
+assert_eq "glibc 2.39 aarch64"             "yes" "$(_cu130_torch213_route "$CU130")"
+GLIBC_MINOR=35; _ARCH=x86_64
 rm -f "$VENV_DIR/bin/python"
 assert_eq "no venv python never"           "no" "$(_cu130_torch213_route "$CU130")"
 
@@ -85,11 +106,10 @@ _UVCFG="$VENV_DIR/uv.toml"; printf '[[index]]\nurl = "https://mirror.example/sim
 assert_eq "uv.toml index keeps the old window" "no" "$(UV_CONFIG_FILE="$_UVCFG" _cu130_torch213_route "$CU130")"
 
 echo "=== preservation never waits on PyPI; only a fresh home takes 2.13 ==="
-# Runs install.sh's own block (route, kept pin, new-install default) with substep stubbed.
 _PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"$/p' "$INSTALL_SH"; echo fi)
 assert_eq "block found in install.sh" "yes" "$(printf '%s' "$_PRESERVE_BLOCK" | grep -q _CU130_NEW_INSTALL_ROUTE && echo yes)"
 substep() { :; }
-_CU130_TORCH_CEILING="2.15.0"; _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"; SKIP_TORCH=false; TORCH_INDEX_URL="$CU130"
+_CU130_TORCH_CEILING="2.15.0"; _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"; SKIP_TORCH=false; TORCH_INDEX_URL="$CU130"; PACKAGE_NAME="unsloth"
 _run_block() {  # $1 existing-install flag, $2 previous torch version
     _EXISTING_INSTALL="$1"; _PREV_TORCH_VER="$2"
     TORCH_CONSTRAINT="torch>=2.4,<2.12.0"; TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
@@ -114,6 +134,11 @@ for gate in unreachable capped open; do
 done
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.11.0+cu130"; unset UNSLOTH_TORCH_UPGRADE
 assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.13" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+PACKAGE_NAME="unsloth-fork"; _run_block false ""; PACKAGE_NAME="unsloth"
+assert_eq "--package other than unsloth: fresh home keeps the old default" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
+assert_eq "--package other than unsloth: window still wide" "torch>=2.4,<2.15.0" "$_PRESERVE_TORCH_CONSTRAINT"
+PACKAGE_NAME="Unsloth"; _run_block false ""; PACKAGE_NAME="unsloth"
+assert_eq "--package Unsloth is unsloth" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
 for gate in unreachable capped; do
     case "$gate" in
         unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;
@@ -135,7 +160,6 @@ assert_eq "legacy layout records its torch before migrating" "yes" \
     "$(grep -q '"\$STUDIO_HOME"/.venv/lib/python\*/site-packages/torch/version.py' "$INSTALL_SH" && echo yes)"
 
 echo "=== a home with any earlier environment is an existing install ==="
-# install.sh's own detection block; the legacy branches that run an interpreter are not reached here.
 _DETECT_BLOCK=$(awk '/^_EXISTING_INSTALL=false$/{p=1} p&&/^if \[ "\$SKIP_TORCH" = true \] && \[ "\$MAC_INTEL" = true \]/{exit} p' "$INSTALL_SH")
 assert_eq "detection block found in install.sh" "yes" "$(printf '%s' "$_DETECT_BLOCK" | grep -q _EXISTING_INSTALL=true && echo yes)"
 _detect() (  # $1 home; prints existing flag and recorded torch

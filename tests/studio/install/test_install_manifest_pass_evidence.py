@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The evidence the idempotent dependency pass records and reads back.
-
-Every skip in install_python_stack.py is gated on three things: the previous run
-recorded that it did this exact work, the inputs are byte-identical, and a cheap
-on-disk check of the OUTPUT still passes. This file covers the pieces of that in
-install_manifest.py -- the additive manifest keys, the digests, the constraint
-check and the sidecar predicate -- because a false "already done" here is an
-install nobody can tell apart from a finished one.
-"""
+"""Evidence the dependency pass records to justify its skips; a false 'already done' looks finished."""
 
 from __future__ import annotations
 
@@ -45,14 +37,8 @@ def _load_module():
 im = _load_module()
 
 
-# -- digests -------------------------------------------------------------------
-
-
 def test_pass_inputs_are_a_superset_of_the_tracked_requirements() -> None:
-    """The pass reads more files than verify_install fingerprints, and they stay two lists:
-    verify_install compares the whole `requirement_files` dict, so widening THAT one reports
-    every install in the field as `studio_install_requirements_changed`.
-    """
+    """Keep PASS_INPUT_FILES apart: widening tracked list makes every install look changed."""
     assert im.PASS_INPUT_FILES[: len(im.TRACKED_REQUIREMENT_FILES)] == (
         im.TRACKED_REQUIREMENT_FILES
     )
@@ -87,9 +73,6 @@ def test_a_one_byte_edit_changes_the_digest(tmp_path: pathlib.Path) -> None:
     before = im.digest_file(target)
     target.write_text("structlog \n", encoding = "utf-8")
     assert im.digest_file(target) != before
-
-
-# -- additive manifest keys ----------------------------------------------------
 
 
 def _payload(root: pathlib.Path) -> dict:
@@ -165,8 +148,7 @@ def test_update_manifest_merges_without_touching_the_rest(tmp_path: pathlib.Path
 
 
 def test_update_manifest_never_creates_one(tmp_path: pathlib.Path) -> None:
-    """The manifest's presence means the install finished; a post-manifest probe
-    must not be able to claim that on its own."""
+    """The manifest means the install finished; a probe run after it must not create one."""
     assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
     assert not (tmp_path / im.MANIFEST_NAME).exists()
 
@@ -174,10 +156,7 @@ def test_update_manifest_never_creates_one(tmp_path: pathlib.Path) -> None:
 def test_update_manifest_merges_into_the_manifest_it_replaces(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
-    """The caller spends minutes gathering this evidence (the MLX probe waits up to 180 s).
-    If a second updater removed the manifest and finished a new pass in that time, merging
-    into a copy read before the probe would put the old pass's fields back -- including
-    no_torch and the torch flavour, which a later update acts on."""
+    """Merge into the manifest as it is at write time; an early copy would restore a stale pass's fields."""
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest", no_torch = True)
     assert _payload(tmp_path)["no_torch"] is True
     real_lock = im._manifest_lock
@@ -185,8 +164,7 @@ def test_update_manifest_merges_into_the_manifest_it_replaces(
 
     @contextlib.contextmanager
     def _lock_with_a_peer_ahead_of_us(root = None):
-        # The second updater got there first: it removed the manifest, ran its pass and wrote
-        # a new one. Everything it did is complete before this call takes the lock.
+        # The second updater already removed, re-passed and rewrote the manifest before this takes the lock.
         if not done:
             done.append(1)
             assert im.remove_manifest(root = tmp_path) is True
@@ -204,8 +182,7 @@ def test_update_manifest_merges_into_the_manifest_it_replaces(
 
 
 def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path) -> None:
-    """The writers serialise against another PROCESS, not just another thread: setup.sh,
-    setup.ps1, the installer and the CLI are separate processes on one venv."""
+    """Locks must span processes: setup.sh, setup.ps1, installer and CLI share one venv."""
     order = tmp_path / "order.txt"
     child_code = "\n".join(
         [
@@ -239,11 +216,7 @@ def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path)
 def test_the_advisory_write_declines_rather_than_publish_unserialised(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
-    """A peer holding the lock past the timeout is mid-pass. write_manifest and
-    remove_manifest must still go ahead there (failing an install is worse), but this one
-    merges evidence a probe gathered minutes ago: publishing beside that peer risks putting
-    its removed completion marker back over a half-built venv, and losing the evidence costs
-    one probe."""
+    """Advisory merge declines past the lock timeout: a peer mid-pass could have its marker revived."""
     monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 0.3)
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     before = _payload(tmp_path)
@@ -265,7 +238,6 @@ def test_the_advisory_write_declines_rather_than_publish_unserialised(
         assert (tmp_path / "held").exists(), "the child never took the lock"
         assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
         assert _payload(tmp_path) == before
-        # The two that must never fail an install still do their work.
         assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
         assert im.remove_manifest(root = tmp_path) is True
     finally:
@@ -282,16 +254,14 @@ def test_a_symlink_on_the_lock_name_is_not_followed(tmp_path: pathlib.Path) -> N
     with im._manifest_lock(tmp_path) as locked:
         assert locked is False
     assert not elsewhere.exists(), "the symlink's target was created"
-    # ...and the writers still work, unserialised, as they did before the lock existed.
     assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
 
 
 def test_a_filesystem_without_locking_is_not_waited_out(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
-    """Some NFS and SMB mounts answer immediately that they do not implement locking. Only
-    contention is worth waiting out; retrying that answer would cost the whole deadline on
-    every manifest write."""
+    """Some NFS and SMB mounts answer at once that locking is unsupported; only contention is worth
+    waiting out, since retrying would cost the whole deadline on every write."""
     fcntl = pytest.importorskip("fcntl")
     monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 5.0)
 
@@ -306,10 +276,7 @@ def test_a_filesystem_without_locking_is_not_waited_out(
 
 
 def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatch) -> None:
-    """A process suspended or stopped while holding the lock must not stop every later
-    update: after the wait the writer goes ahead unserialised, which is what shipped before
-    the lock existed. Windows does this on its own (msvcrt's LK_LOCK gives up); POSIX flock
-    waits forever unless asked not to."""
+    """A stuck lock holder must not wedge later updates: after the wait, writers proceed unserialised."""
     monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 0.3)
     holder = "\n".join(
         [
@@ -333,7 +300,6 @@ def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatc
             pass
         waited = time.monotonic() - started
         assert waited < 10, f"waited {waited:.1f}s on a peer that never lets go"
-        # ...and the writers still answer while that peer holds it.
         assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     finally:
         child.kill()
@@ -341,8 +307,7 @@ def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatc
 
 
 def test_every_manifest_writer_takes_the_lock() -> None:
-    """A writer outside it reintroduces the race the lock exists for, and nothing in the
-    payloads themselves would show it."""
+    """A writer outside the lock reintroduces the race, and the payloads would not show it."""
     source = pathlib.Path(im.__file__).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     writers = {
@@ -359,8 +324,7 @@ def test_every_manifest_writer_takes_the_lock() -> None:
 
 
 def test_a_root_that_cannot_hold_a_lock_still_writes(tmp_path: pathlib.Path, monkeypatch) -> None:
-    """This module has to run inside a half-built venv and on filesystems that cannot lock.
-    Unserialised is the behaviour that shipped before; failing the install is not."""
+    """Half-built venvs and no-lock filesystems must still write, unserialised as before."""
 
     def _no_open(*_args, **_kwargs):
         raise OSError("no lock file here")
@@ -377,10 +341,7 @@ def test_a_root_that_cannot_hold_a_lock_still_writes(tmp_path: pathlib.Path, mon
 def test_remove_manifest_keeps_the_live_one_when_the_parked_name_cannot_be_cleared(
     tmp_path: pathlib.Path,
 ) -> None:
-    """setup.ps1 reads True here as permission to replace pip, torch and triton, and the
-    dependency pass refuses to run behind a parked copy it cannot clear. Dropping the live
-    manifest first would put that refusal after the mutations, on a venv that can no longer
-    verify, and every later update would stop at the same place."""
+    """Keep the live manifest if the parked copy cannot be cleared, so refusal precedes mutation."""
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     live = tmp_path / im.MANIFEST_NAME
     # A directory on the reserved name refuses both the rename and the unlink, on every OS.
@@ -391,7 +352,6 @@ def test_remove_manifest_keeps_the_live_one_when_the_parked_name_cannot_be_clear
     assert im.remove_manifest(root = tmp_path) is False
     assert live.exists(), "the venv must still verify when the pass cannot be entered"
 
-    # Cleared, the same call parks as usual.
     (blocked / "keep.txt").unlink()
     blocked.rmdir()
     assert im.remove_manifest(root = tmp_path) is True
@@ -401,9 +361,8 @@ def test_remove_manifest_keeps_the_live_one_when_the_parked_name_cannot_be_clear
 def test_remove_manifest_refuses_an_unclearable_parked_copy_with_no_live_manifest(
     tmp_path: pathlib.Path,
 ) -> None:
-    """An interrupted run already took the live manifest. Nothing is parked by this call, so
-    a surviving copy is that dead run's, and answering True would send setup.ps1 into its
-    pip/torch mutations ahead of the refusal the pass makes on exactly that path."""
+    """With no live manifest, a surviving parked copy belongs to a dead run, so remove_manifest must
+    return False; True would send setup.ps1 into pip/torch mutations."""
     blocked = tmp_path / im.PREVIOUS_MANIFEST_NAME
     blocked.mkdir()
     (blocked / "keep.txt").write_text("x", encoding = "utf-8")
@@ -424,8 +383,7 @@ def test_a_dead_runs_parked_copy_does_not_outlive_the_next_invalidation(
 
 
 def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.Path) -> None:
-    """The ordinary case the fallback must not punish: a leftover file from a run that died
-    is replaced, not treated as an obstruction."""
+    """The fallback must not punish a leftover file from a dead run; it is replaced."""
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
     assert im.remove_manifest(root = tmp_path) is True
@@ -435,15 +393,12 @@ def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX file modes")
 def test_the_manifest_keeps_the_mode_it_had(tmp_path: pathlib.Path) -> None:
-    """It used to be written through Path.write_text, so it carried the umask default and
-    anything else on the machine could read it. mkstemp creates at 0600, and silently
-    narrowing a file other tooling may read is a change nobody asked for."""
+    """Keep the umask-default mode; mkstemp's 0600 would silently narrow a file others read."""
     previous = os.umask(0o022)
     try:
         im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
         live = tmp_path / im.MANIFEST_NAME
         assert stat.S_IMODE(live.stat().st_mode) == 0o644
-        # ...and a mode the user tightened stays tightened.
         os.chmod(live, 0o600)
         assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
         assert stat.S_IMODE(live.stat().st_mode) == 0o600
@@ -470,7 +425,6 @@ def test_two_writers_do_not_share_a_temp_file(tmp_path: pathlib.Path) -> None:
         assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
     assert len(seen) == 2 and seen[0] != seen[1], seen
     assert all(name.startswith(im.MANIFEST_NAME + ".") for name in seen)
-    # Neither copy outlives its writer.
     assert not list(tmp_path.glob("*.tmp"))
     assert _payload(tmp_path)["mlx_health"] == {"ok": True}
 
@@ -478,9 +432,8 @@ def test_two_writers_do_not_share_a_temp_file(tmp_path: pathlib.Path) -> None:
 def test_update_manifest_does_not_recreate_one_removed_while_it_worked(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
-    """A peer running an older build of this module removes the manifest without taking the
-    lock. Writing it back would put a completion marker over the venv that peer is part-way
-    through rebuilding."""
+    """An older peer build removes the manifest without taking the lock; writing it back would mark
+    a venv still being rebuilt as complete, so it must not be recreated."""
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     live = tmp_path / im.MANIFEST_NAME
     real_read = im.read_manifest
@@ -510,10 +463,7 @@ def test_update_manifest_survives_a_corrupt_manifest(tmp_path: pathlib.Path) -> 
 
 
 def test_update_manifest_cannot_shadow_a_field_verify_install_reads(tmp_path: pathlib.Path) -> None:
-    """The same guard write_manifest applies to `extra`, on the merge path. This one merges
-    into a manifest that already means "the install finished", so a caller able to rewrite
-    `package_version` or `prefix` leaves a file that validates and describes nobody's install.
-    """
+    """update_manifest must reject extra keys shadowing verify_install fields, as write_manifest does."""
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     before = _payload(tmp_path)
     assert (
@@ -531,7 +481,6 @@ def test_update_manifest_cannot_shadow_a_field_verify_install_reads(tmp_path: pa
     after = _payload(tmp_path)
     for key in ("schema", "package_version", "requirement_files", "prefix", "steps_total"):
         assert after[key] == before[key], key
-    # The additive key it was actually called for still lands.
     assert after["mlx_health"] == {"ok": True}
 
 
@@ -545,10 +494,7 @@ def test_update_manifest_with_only_protected_keys_writes_nothing(tmp_path: pathl
 
 
 def test_both_writers_refuse_the_same_keys() -> None:
-    """One constant, because two copies of this list is how the two writers would drift. Every
-    key write_manifest sets from its own arguments is in it, the optional three included:
-    absent means "unknown", and only a build that knew the answer may write one.
-    """
+    """One shared key list so both writers refuse the same keys; optional keys are absent, not guessed."""
     for key in (
         "schema",
         "completed_at_ms",
@@ -566,7 +512,6 @@ def test_both_writers_refuse_the_same_keys() -> None:
         assert key in im.PROTECTED_MANIFEST_KEYS, key
     source = MODULE_PATH.read_text(encoding = "utf-8")
     assert source.count("PROTECTED_MANIFEST_KEYS: Tuple[str, ...] = (") == 1
-    # Both writers, and no third spelling of the rule.
     assert source.count("key not in PROTECTED_MANIFEST_KEYS") == 1
     assert source.count("or key in PROTECTED_MANIFEST_KEYS") == 1
 
@@ -583,12 +528,8 @@ def test_an_optional_field_cannot_be_invented_by_evidence(tmp_path: pathlib.Path
     assert "no_torch" not in _payload(tmp_path)
 
 
-# -- constraints ---------------------------------------------------------------
-
-
 def test_an_absent_distribution_does_not_violate_a_constraint(tmp_path: pathlib.Path) -> None:
-    """A constraints file never asks for an install, so nothing to install is
-    nothing to repair -- otherwise every pass would run forever."""
+    """Constraints never ask for an install, so an absent package cannot be a violation."""
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("nonexistent-dist-xyz<2\n", encoding = "utf-8")
     assert im.violated_constraints(constraints, installed = {}) == []
@@ -611,13 +552,9 @@ def test_an_unpinned_or_unreadable_constraints_file_reports_nothing(tmp_path: pa
 
 
 def test_the_shipped_constraints_file_parses() -> None:
-    """Not an assertion about this machine's venv, only that the real file is
-    readable by the parser the skip gate relies on."""
+    """Not about this venv; only that the shipped constraints file parses for the skip gate."""
     real = REPO_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
     assert isinstance(im.violated_constraints(real, installed = {}), list)
-
-
-# -- sidecar predicate ---------------------------------------------------------
 
 
 def _sidecar(
@@ -690,8 +627,7 @@ def test_an_unpinned_name_only_has_to_be_present(sidecar: pathlib.Path) -> None:
 
 
 def test_metadata_without_its_package_tree_is_not_current(sidecar: pathlib.Path) -> None:
-    """The failure mode the version check alone cannot see: an interrupted pip
-    leaves METADATA behind and takes the module with it."""
+    """An interrupted pip leaves METADATA but takes the module, which a version check misses."""
     import shutil
 
     shutil.rmtree(sidecar / "transformers")
@@ -710,9 +646,8 @@ def test_a_truncated_recorded_file_forces_a_rebuild(sidecar: pathlib.Path) -> No
 def test_the_file_check_kill_switch_reaches_the_setup_predicate(
     sidecar: pathlib.Path, monkeypatch, value
 ) -> None:
-    """The runtime honours UNSLOTH_SKIP_SIDECAR_FILE_CHECK so a false positive can be
-    turned off without a release; a setup-side scan that ignored it would be the one
-    path left that still wipes the sidecar. Package and version checks still apply."""
+    """Runtime honours UNSLOTH_SKIP_SIDECAR_FILE_CHECK to switch off a false positive without a
+    release; setup's scan must too, or it wipes the sidecar. Package and version checks apply."""
     (sidecar / "transformers" / "__init__.py").write_bytes(b"")
     monkeypatch.setenv(im.SIDECAR_FILE_CHECK_ENV, value)
     assert im.sidecar_is_current(sidecar, PINS) == (True, "")
@@ -730,9 +665,8 @@ def test_a_non_true_kill_switch_value_changes_nothing(
 
 
 def test_a_pinned_package_without_a_record_forces_a_rebuild(sidecar: pathlib.Path) -> None:
-    """pip and uv write RECORD last: a pinned dist-info without one is an interrupted
-    install whose payload the size check cannot see. The optional package is not held
-    to it, since its own top-up clears a recordless dist-info."""
+    """pip and uv write RECORD last, so a pinned dist-info without one is an interrupted install;
+    the optional package is exempt, since its top-up clears a recordless dist-info."""
     (sidecar / "hf_xet-1.4.2.dist-info" / "RECORD").unlink()
     (sidecar / "hf_xet" / "__init__.py").write_bytes(b"")
     ok, reason = im.sidecar_is_current(sidecar, PINS)
@@ -779,8 +713,7 @@ def test_an_extension_built_for_another_interpreter_is_rejected(
 
 
 def test_a_tag_in_a_directory_name_says_nothing_about_the_binary(sidecar: pathlib.Path) -> None:
-    """Wiping several hundred MB over a directory name is the false positive this
-    check must not have."""
+    """A tag in a directory name says nothing about the binary, so it must not trigger a wipe."""
     _sidecar(sidecar, "regex", "2024.1.1", files = ("__init__.py", "regex.cp312.libs/libhelper.so"))
     assert im.sidecar_is_current(sidecar, PINS) == (True, "")
 
@@ -819,11 +752,7 @@ def _module_dist(
 
 
 def test_a_module_only_distribution_is_current(sidecar: pathlib.Path) -> None:
-    """six installs six.py and nothing else, so there is no directory named after it.
-
-    Called stale, `sidecar_is_current` deletes and refetches a healthy several-hundred-MB
-    tree on every single update -- for a pin that is satisfied.
-    """
+    """A module-only dist like six has no directory; calling it stale refetches it on every update."""
     _module_dist(sidecar, "six", "1.17.0")
     assert im.sidecar_is_current(sidecar, ("six==1.17.0",)) == (True, "")
     assert im.sidecar_is_current(sidecar, ("six",)) == (True, "")
@@ -840,8 +769,7 @@ def test_a_module_only_distribution_still_answers_on_its_version(sidecar: pathli
 def test_a_module_only_distribution_whose_module_is_gone_is_not_current(
     sidecar: pathlib.Path,
 ) -> None:
-    """The case the directory probe was there for, on the path that replaces it: an
-    interrupted pip leaves the METADATA and takes the module with it."""
+    """Interrupted pip leaves METADATA but takes the module; the new check must still flag it."""
     _module_dist(sidecar, "six", "1.17.0")
     (sidecar / "six.py").unlink()
     current, reason = im.sidecar_is_current(sidecar, ("six==1.17.0",))
@@ -849,24 +777,20 @@ def test_a_module_only_distribution_whose_module_is_gone_is_not_current(
 
 
 def test_an_import_name_that_matches_neither_spelling_is_current(sidecar: pathlib.Path) -> None:
-    """pillow -> PIL. Neither `pillow` nor `pillow` with dashes swapped is on disk, and
-    guessing the mapping is not something an installer can do."""
+    """Neither pillow nor its dash-swapped form is on disk; the PIL mapping is never guessed."""
     _module_dist(sidecar, "pillow", "11.0.0", modules = ("PIL/__init__.py", "PIL/Image.py"))
     assert im.sidecar_is_current(sidecar, ("pillow==11.0.0",)) == (True, "")
 
 
 def test_a_console_script_alone_does_not_prove_the_payload_arrived(sidecar: pathlib.Path) -> None:
-    """pip records ../../bin/hf and uv records bin/hf, and neither is inside the tree the
-    training worker puts on sys.path. Believing them fails CLOSED on a real sidecar."""
+    """pip and uv record console scripts outside sys.path; trusting them fails closed."""
     _module_dist(sidecar, "toolonly", "1.0", modules = ("bin/toolonly",))
     current, reason = im.sidecar_is_current(sidecar, ("toolonly==1.0",))
     assert current is False and "directory missing" in reason
 
 
 def test_a_distribution_with_no_record_at_all_is_not_current(sidecar: pathlib.Path) -> None:
-    """No directory and no RECORD to fall back to leaves nothing that says the files
-    landed, and the answer has to be the one that repairs rather than the one that
-    ships a sidecar the worker cannot import."""
+    """No package dir and no RECORD is no evidence the files landed, so it is not current."""
     dist_info = sidecar / "ghost-1.0.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
@@ -877,9 +801,8 @@ def test_a_distribution_with_no_record_at_all_is_not_current(sidecar: pathlib.Pa
 
 
 def test_a_pinned_sidecar_package_with_no_record_is_rebuilt(sidecar: pathlib.Path) -> None:
-    """An absent RECORD used to say nothing about damage, since the answer costs a
-    several-hundred-MB refetch; but pip and uv write RECORD last, so a pinned package
-    without one is an interrupted install whose payload the size check cannot see."""
+    """A pinned package without RECORD is rebuilt: pip and uv write RECORD last, so its absence
+    marks an interrupted install that the size check cannot see."""
     (sidecar / "transformers-5.3.0.dist-info" / "RECORD").unlink()
     ok, reason = im.sidecar_is_current(sidecar, PINS)
     assert ok is False
@@ -889,9 +812,6 @@ def test_a_pinned_sidecar_package_with_no_record_is_rebuilt(sidecar: pathlib.Pat
 def test_the_scan_is_bounded(sidecar: pathlib.Path) -> None:
     """No installer wraps this in a timeout, so a stalled mount must not wedge setup."""
     assert im.sidecar_is_current(sidecar, PINS, budget_seconds = 0.0)[0] is True
-
-
-# -- the CLI shim both shells call ---------------------------------------------
 
 
 def _shim(*args: str):
@@ -918,10 +838,8 @@ def test_the_shim_reports_the_reason_and_exits_1(sidecar: pathlib.Path) -> None:
 
 
 def test_the_shim_marks_its_own_output(sidecar: pathlib.Path) -> None:
-    """An install_manifest.py predating the shim has no __main__ block at all, so
-    running it exits 0 with no output. Both shells require the marker line before
-    believing exit 0, or that silence reads as "current" and no sidecar is ever
-    rebuilt again."""
+    """Shells need the marker line before trusting exit 0; a pre-shim install_manifest.py exits 0
+    silently."""
     assert im._SIDECAR_CLI_MARKER == "sidecar:"
     for args in ((), ("sidecar",), ("nonsense",), ("sidecar", str(sidecar))):
         result = _shim(*args)
@@ -937,10 +855,7 @@ def test_the_shim_refuses_what_it_does_not_implement() -> None:
 def test_an_absent_tiktoken_is_optional_but_a_present_one_is_held_to_its_record(
     sidecar: pathlib.Path,
 ) -> None:
-    """Absence is what is optional: a sidecar without tiktoken is current, and setup's
-    top-up adds it. Present, tiktoken's RECORD is held to the disk like every other
-    package's, since a file it names that is not there is a tokenizer that fails at
-    import. A required package's RECORD is held to the disk too."""
+    """An absent tiktoken is fine (setup tops it up); a present one must match its RECORD on disk."""
     import shutil
 
     (sidecar / "tiktoken" / "__init__.py").unlink()
@@ -957,10 +872,7 @@ def test_an_absent_tiktoken_is_optional_but_a_present_one_is_held_to_its_record(
 def test_write_manifest_never_raises_on_a_payload_json_cannot_encode(
     tmp_path: pathlib.Path,
 ) -> None:
-    """`extra` is caller-composed and the docstring promises this never raises. It is the last
-    act of a pass that has already installed everything, so a TypeError out of json.dumps
-    would end the update with no manifest, which every reader takes for a half-built install.
-    """
+    """write_manifest never raises on unencodable extra: a missing manifest reads as half-built."""
     assert (
         im.write_manifest(
             root = tmp_path,
@@ -1028,7 +940,6 @@ def test_the_pass_lock_reads_as_contended_only_while_a_peer_holds_it(
             assert uncontended is False
     finally:
         child.wait(timeout = 30)
-    # And the moment it lets go, the next pass is free to trust its evidence again.
     with im.pass_lock(tmp_path) as uncontended:
         assert uncontended is True
 
@@ -1115,9 +1026,8 @@ def test_the_presence_check_answers_blocked_when_it_cannot_look(tmp_path: pathli
     ],
 )
 def test_the_presence_check_reads_the_errno_itself(monkeypatch, code, expected) -> None:
-    """Not Path.exists(): 3.13 raises EACCES out of it and 3.14 returns False (gh-101357), so
-    it means "absent" on one interpreter and "unknown" on the other. Only the four pathlib
-    treated as absent before 3.14 are absent here; anything else is a marker still in place."""
+    """Not Path.exists(): 3.13 raises EACCES, 3.14 returns False (gh-101357); only the four errnos
+    pathlib treated as absent before 3.14 are absent here; anything else is a marker."""
 
     def refuse(self, *args, **kwargs):
         raise OSError(code, os.strerror(code))

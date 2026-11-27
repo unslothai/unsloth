@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Unsloth's generated TRL configs may only move the defaults Unsloth means to move.
-
-A stale override drifts silently when TRL changes its own default (top_k after trl#4695, data_seed via the seed rewrite).
-"""
+"""Unsloth's TRL config overrides must cover only intended defaults, since stale ones drift silently."""
 
 from __future__ import annotations
 
@@ -19,8 +16,9 @@ import pytest
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed", allow_module_level = True)
 
-# Fields Unsloth changes on purpose (rl.py replacements, extra_args, or TRL deriving them from those).
 INTENDED = {
+    # transformers 5.23 renamed gradient_checkpointing_kwargs; the old name is now its alias.
+    "activation_checkpointing_kwargs",
     "auto_find_batch_size",
     "beta",
     "bf16",
@@ -39,6 +37,7 @@ INTENDED = {
     "loss_type",
     "num_generations",
     "optim",
+    "packing",
     "padding_free",
     "per_device_eval_batch_size",
     "per_device_train_batch_size",
@@ -48,6 +47,7 @@ INTENDED = {
     "steps_per_generation",
     "torch_empty_cache_steps",
     "vllm_importance_sampling_correction",
+    "vllm_importance_sampling_mode",
     "vllm_mode",
     "warmup_ratio",
     "warmup_steps",
@@ -74,13 +74,11 @@ def _pristine(cls):
     return cls
 
 
-# Unsloth refuses GRPO below this TRL (unsloth/models/rl.py): it crashes on the first step there.
 GRPO_TRL_FLOOR = "0.20.0"
 
 
 def _skip_if_trl_is_the_mlx_shim(trl):
-    # On Apple Silicon unsloth swaps trl.SFTConfig for an MLX alias (and stubs trl itself when it is
-    # absent), so there are no TRL config defaults to compare against.
+    # On Apple Silicon unsloth swaps trl.SFTConfig for an MLX alias, so there are no TRL defaults.
     if getattr(getattr(trl, "SFTConfig", None), "__name__", "") == "_MLXSFTConfig":
         pytest.skip("trl is unsloth's MLX shim on this platform")
 
@@ -136,6 +134,20 @@ def test_only_intended_defaults_differ_from_trl(name):
         and not _same(getattr(ours, f.name, None), getattr(theirs, f.name, None))
     }
     assert not moved, f"{name} defaults moved away from TRL's (unsloth, trl): {moved}"
+
+
+@pytest.mark.parametrize("name", ["SFTConfig", "GRPOConfig"])
+def test_activation_checkpointing_kwargs_carry_the_reentrant_pin(name):
+    """Both checkpointing kwargs names hold Unsloth's use_reentrant=True pin, so neither is a silent drift."""
+    cls = _config_cls(name)
+    if cls is None or _pristine(cls) is cls:
+        pytest.skip(f"Unsloth does not patch {name} on this TRL")
+    ours = cls(output_dir = "unused")
+    if not getattr(ours, "gradient_checkpointing", False):
+        pytest.skip(f"{name} does not turn gradient checkpointing on by default")
+    assert ours.gradient_checkpointing_kwargs.get("use_reentrant") is True
+    if hasattr(ours, "activation_checkpointing_kwargs"):
+        assert ours.activation_checkpointing_kwargs == ours.gradient_checkpointing_kwargs
 
 
 @pytest.mark.parametrize("name", ["GRPOConfig", "RLOOConfig", "OnlineDPOConfig"])

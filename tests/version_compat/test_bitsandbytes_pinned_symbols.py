@@ -14,12 +14,7 @@ from tests.version_compat._fetch import fetch_text, first_match, function_params
 
 
 def _super_init_call(source: str, class_name: str) -> ast.Call | None:
-    """The ``super().__init__(...)`` Call node inside ``class_name``'s __init__.
-
-    Parsed rather than grepped: a substring search over the class body also sees the
-    names quoted in the legacy_kwargs table, so it passes whether or not the real call
-    uses keywords.
-    """
+    """Found by AST, not grep: a substring search also matches the legacy_kwargs table's quoted names."""
     for node in ast.walk(ast.parse(source)):
         if not (isinstance(node, ast.ClassDef) and node.name == class_name):
             continue
@@ -52,19 +47,17 @@ def first_match_signature(src: str, class_name: str) -> str | None:
     return None
 
 
-# pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
+# pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0.
 BNB_TAGS = [
     "0.45.5",
-    "0.47.0",  # skip 0.46.0 (broken)
-    "0.49.2",  # skip 0.48.0 (broken)
+    "0.47.0",
+    "0.49.2",
     "main",
 ]
 
-# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", BNB_TAGS)
 
 
-# bnb.functional dequantize_4bit / quantize_4bit: the public 4-bit surface unsloth kernels call into.
 def test_bnb_functional_4bit(tag: str):
     candidates = [
         "bitsandbytes/functional.py",
@@ -80,7 +73,7 @@ def test_bnb_functional_4bit(tag: str):
     )
 
 
-# bnb.nn.Linear4bit / Params4bit: peft + unsloth isinstance-check these; renaming breaks 4-bit LoRA.
+# peft + unsloth isinstance-check these; renaming breaks 4-bit LoRA.
 def test_bnb_nn_linear4bit_classes(tag: str):
     candidates = [
         "bitsandbytes/nn/modules.py",
@@ -104,8 +97,6 @@ def test_bnb_nn_linear4bit_classes(tag: str):
     )
 
 
-# Coverage extension (2026-05):
-# Top-level export: unsloth/kernels/utils.py + zoo vllm_utils.py call bnb.matmul_4bit(...).
 def test_bnb_matmul_4bit_top_level(tag: str):
     src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")
     if src is None:
@@ -261,17 +252,7 @@ def test_bnb_version_parseable(tag: str):
 
 
 def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
-    """QGaLoreAdamW8bit must not pass percentile_clipping / block_wise by position.
-
-    bitsandbytes 0.50.0 removed both from Optimizer2State.__init__ (PR #1871), so positions
-    10 and 11 became max_unorm and skip_zeros. Arity still matched, nothing raised, and the
-    optimiser silently received max_unorm=100 / skip_zeros=True. Since Q-GaLore zeroes
-    p.data before the update, param_norm was 0, the unorm clip scaled every update to 0 and
-    projected parameters stopped moving entirely.
-
-    Checked here rather than at runtime because the failure is invisible on the installed
-    version alone: it needs the signature from a version the test environment does not have.
-    """
+    """Pass percentile_clipping and block_wise by keyword; bnb 0.50 shifted their positions silently."""
     src = fetch_text(
         "bitsandbytes-foundation/bitsandbytes",
         tag,
@@ -292,8 +273,7 @@ def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
     call = _super_init_call(caller, "QGaLoreAdamW8bit")
     assert call is not None, "could not find QGaLoreAdamW8bit's super().__init__ call"
 
-    # "adam" and params are positional on purpose; everything after them must be a keyword,
-    # because bitsandbytes reorders the tail of this signature between minors.
+    # Everything after 'adam' and params must be keyword: bitsandbytes reorders the signature tail.
     positional = [a for a in call.args if not isinstance(a, ast.Starred)]
     extra = positional[2:]
     assert not extra, (

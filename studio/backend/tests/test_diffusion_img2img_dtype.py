@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU-only unit tests for the image-conditioned VAE encode dtype guard.
-
-Image Transform on a bf16 denoiser whose text encoder settled on fp32 died with ``Input type
-(float) and bias type (c10::BFloat16) should be the same``: ``prepare_latents`` casts the upload
-to ``prompt_embeds[0].dtype`` and feeds it straight to ``vae.encode``, so neither the denoiser
-dtype nor the VAE's own gets a say. ``_make_vae_encode_dtype_safe`` closes that gap at the
-encoder boundary. No GPU, no diffusers.
-"""
+"""VAE encode casts image uploads to the VAE's dtype, not the prompt dtype, or bf16 fails."""
 
 from __future__ import annotations
 
@@ -38,19 +31,17 @@ class _RecordingVae:
 def test_encode_input_is_cast_to_the_vae_dtype():
     import torch
 
-    # The reported crash: fp32 image tensor (text-encoder dtype) into a bf16 VAE.
     vae = _RecordingVae(dtype = torch.bfloat16)
     pipe = types.SimpleNamespace(vae = vae)
     DiffusionBackend._make_vae_encode_dtype_safe(pipe)
     out = vae.encode(torch.zeros(1, 3, 64, 64, dtype = torch.float32))
     assert vae.seen_dtype == torch.bfloat16
-    assert out == "latents"  # the wrapper is transparent
+    assert out == "latents"
 
 
 def test_encode_input_is_cast_the_other_direction_too():
     import torch
 
-    # The mirror mismatch (bf16 image into an fp32 / force_upcast VAE) is the same bug.
     vae = _RecordingVae(dtype = torch.float32)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
     vae.encode(torch.zeros(1, 3, 64, 64, dtype = torch.bfloat16))
@@ -71,7 +62,6 @@ def test_matching_dtype_is_left_alone_and_extra_args_pass_through():
 def test_non_tensor_input_passes_through_untouched():
     import torch
 
-    # Some callers hand encode a list of tensors or a distribution; never guess, just forward.
     vae = _RecordingVae(dtype = torch.bfloat16)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
     vae.encode(["not", "a", "tensor"])
@@ -81,7 +71,7 @@ def test_non_tensor_input_passes_through_untouched():
 def test_wrapping_is_idempotent():
     import torch
 
-    # generate() runs this on every image-conditioned call, so stacking wrappers would leak depth.
+    # generate() calls this on every image-conditioned call, so wrapping must not stack.
     vae = _RecordingVae(dtype = torch.bfloat16)
     pipe = types.SimpleNamespace(vae = vae)
     DiffusionBackend._make_vae_encode_dtype_safe(pipe)
@@ -93,7 +83,7 @@ def test_wrapping_is_idempotent():
 def test_dtype_is_read_at_call_time_not_wrap_time():
     import torch
 
-    # _align_vae_dtype (and a txt2img decode) re-cast the VAE, so a wrap-time snapshot goes stale.
+    # The VAE is re-cast later, so its dtype must be read at call time, not wrap time.
     vae = _RecordingVae(dtype = torch.bfloat16)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
     vae._dtype = torch.float32
@@ -104,7 +94,6 @@ def test_dtype_is_read_at_call_time_not_wrap_time():
 def test_missing_vae_and_broken_probe_are_no_ops():
     import torch
 
-    # Best-effort: a missing VAE, or one whose parameters() raises, must never become a 500.
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace())
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = None))
 
@@ -114,6 +103,67 @@ def test_missing_vae_and_broken_probe_are_no_ops():
 
     vae = _BrokenVae(dtype = torch.bfloat16)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
-    # The probe fails inside the call, so the tensor is forwarded as it arrived.
     vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float32))
     assert vae.seen_dtype == torch.float32
+
+
+def _encoder(conv_dtype, other_dtypes = ()):
+    weight = types.SimpleNamespace(dtype = conv_dtype)
+
+    class _Encoder:
+        conv_in = types.SimpleNamespace(weight = weight)
+
+        def parameters(self):
+            yield weight
+            for dtype in other_dtypes:
+                yield types.SimpleNamespace(dtype = dtype)
+
+    return _Encoder()
+
+
+def test_encode_follows_conv_in_when_the_vae_probe_fails():
+    # #16375: under offload the VAE parameter walk can fail; the layer that eats the image still says fp32.
+    import torch
+
+    class _BrokenVae(_RecordingVae):
+        def parameters(self):
+            raise RuntimeError("meta device")
+
+    vae = _BrokenVae(dtype = torch.float32)
+    vae.encoder = _encoder(torch.float32)
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float32
+
+
+def test_encode_follows_conv_in_over_an_earlier_mismatched_vae_weight():
+    import torch
+
+    vae = _RecordingVae(dtype = torch.float16)  # first VAE weight is half, the encoder runs fp32
+    vae.encoder = _encoder(torch.float32)
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float32
+
+
+def test_a_half_conv_in_keeps_half_input_beside_fp32_norm_weights():
+    import torch
+
+    vae = _RecordingVae(dtype = torch.float16)
+    vae.encoder = _encoder(torch.float16, other_dtypes = (torch.float32,))
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float16
+
+
+def test_an_unreadable_dtype_leaves_the_input_alone():
+    import torch
+
+    class _OpaqueVae(_RecordingVae):
+        def parameters(self):
+            raise RuntimeError("meta device")
+
+    vae = _OpaqueVae(dtype = torch.float16)
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float16

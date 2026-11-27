@@ -1,18 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The CPU-only fake-train modules must not spoof torch for the whole session.
-
-`test_trl_fake_train_cpu.py` and `test_trl_padding_free_max_length.py` pretend
-this process has no GPU: eager `torch.compile`, `torch.accelerator.is_available`
-answering False, and every `device = "cuda"` allocation rewritten to CPU. Done at
-module scope that outlives the module, and pytest imports every selected file
-during collection, so a GPU test running later in the same process gets CPU
-tensors out of `torch.randn(..., device = "cuda")`, its CUDA autocast never
-applies, and it passes without having tested anything. CI runners have no GPU, so
-they skip such tests and never notice; local GPU verification is what breaks.
-
-Both checks below fail against the import-time version of those patches.
-"""
+"""Import-time torch patches leak into later GPU tests in the same pytest session, so scope them."""
 
 from __future__ import annotations
 
@@ -28,8 +16,7 @@ import pytest
 _HERE = Path(__file__).resolve().parent
 _GUARDED = ("test_trl_fake_train_cpu.py", "test_trl_padding_free_max_length.py")
 
-# Imported in a subprocess: the whole point is that importing these modules must
-# not touch torch, and doing it in this process would be the damage itself.
+# Subprocess: importing in this process would be the damage itself.
 _PROBE = r"""
 import importlib.util, sys
 from pathlib import Path
@@ -104,11 +91,7 @@ def _rooted_at_torch(node):
 
 
 def test_no_version_compat_module_patches_torch_at_import_time():
-    """The static half, so a new module cannot reintroduce the leak.
-
-    Cheap and GPU-free, unlike the subprocess above, and it covers every file in
-    the directory rather than the two known offenders.
-    """
+    """Static check of every version_compat module, so a new file cannot reintroduce the leak."""
     offenders = []
     for path in sorted(_HERE.glob("test_*.py")):
         if path.name == Path(__file__).name:

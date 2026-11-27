@@ -4,6 +4,7 @@
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { runAudio } from "../api";
+import { reportAudioFailure } from "../audio-failure-actions";
 import {
   type AudioOptionSpec,
   type AudioOptionValues,
@@ -19,6 +20,7 @@ import {
   effectiveMusicMode,
   musicBlocker,
   reloadNotice,
+  runMusicTakes,
   variationsFor,
   withWaitingEdit,
 } from "../music/music-policy";
@@ -242,20 +244,29 @@ export function useMusicGeneration({
     generateAbort.current = controller;
     updateGenerationPhase("generating");
     try {
-      const response = await runAudio(request, controller.signal);
-      updateGenerationPhase("finishing");
-      await showRunResult({
-        response,
-        text: request.text || request.music?.lyrics || "",
-        workflow: "music",
-        refreshGallery,
-        selectClip,
-        setFallbackClip,
-        setSelectedId,
+      await runMusicTakes({
+        request,
+        count: variations,
+        how: rule.variations?.how ?? null,
+        signal: controller.signal,
+        run: (take) => runAudio(take, controller.signal),
+        onStatus: setRunStatus,
+        onTake: (response) =>
+          showRunResult({
+            response,
+            text: request.text || request.music?.lyrics || "",
+            workflow: "music",
+            refreshGallery,
+            selectClip,
+            setFallbackClip,
+            setSelectedId,
+          }),
       });
+      updateGenerationPhase("finishing");
       if (reloads) await refreshStatus();
     } catch (error) {
       if (!controller.signal.aborted) {
+        reportAudioFailure(error);
         updateGenerationPhase("finishing");
         const message =
           error instanceof Error ? error.message : "Music generation failed.";

@@ -88,8 +88,7 @@ def test_w8a8_and_weight_only_key_apart():
 
 
 def test_runtime_quantise_and_prequant_scale_dtype_key_apart():
-    # A v2 hosted checkpoint stores fp32 scales; a runtime quantise or a v1 file carries bf16 ones. Different
-    # epilogue graph, so different key.
+    # v2 hosted stores fp32 scales; runtime quantise or v1 bf16 scales need a different key.
     a, b = _int8(), _int8()
     w = b[0].weight
     if type(w).__name__ != "Int8Tensor":
@@ -123,16 +122,36 @@ def test_an_instance_forward_swap_keys_apart():
 @pytest.mark.parametrize("name,default", sorted(cc._GRAPH_SWITCHES.items()))
 @pytest.mark.parametrize("quant", ["int8", None])
 def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, default, quant):
+    if default == "protect":
+        from core.inference import diffusion_nvfp4_protect as pr
+
+        # an sm_100-class card, whose unset default is auto
+        monkeypatch.setattr(pr, "default_model_spec", lambda device = None: "auto")
     m = _int8() if quant else _model()
     k0 = _key(m, quant)
+    rows = default.partition(":")[2] if default.startswith(("rows:", "count:")) else None
     for same in (
         ("",)
         + (() if default == "raw" else ("auto",))
         + ((default,) if default in ("on", "off") else ())
+        + ((rows,) if rows else ())
     ):
         monkeypatch.setenv(name, same)
         assert _key(m, quant) == k0, same
-    flipped = {"on": "0", "off": "1", "auto": "0", "raw": "torchao", "raw:auto": "torchao"}[default]
+    if default.startswith("count:"):
+        # 0 is a real value here (no dense channels), not an off word.
+        flipped = "0"
+    elif rows:
+        flipped = "1"
+    else:
+        flipped = {
+            "on": "0",
+            "off": "1",
+            "auto": "0",
+            "raw": "torchao",
+            "raw:auto": "torchao",
+            "protect": "all",
+        }[default]
     monkeypatch.setenv(name, flipped)
     assert _key(m, quant) != k0
     assert name in cc.model_fingerprint(transformer = m, quant = quant, **_FP_KW)["switches"]
@@ -202,13 +221,23 @@ def test_a_bundle_saved_for_one_variant_is_a_miss_for_the_other(monkeypatch, tmp
     cc.restore(again)
 
 
-def test_protect_steps_auto_is_not_its_default(monkeypatch):
+@pytest.mark.parametrize("default", ["auto", ""])
+def test_protect_steps_key_apart_only_off_the_cards_default(monkeypatch, default):
+    """sm_100-class cards default to auto, others to off: the unset run shares its card's default bundle."""
+    from core.inference import diffusion_nvfp4_protect as pr
+
+    monkeypatch.setattr(pr, "default_model_spec", lambda device = None: default)
     m = _int8()
     k0 = _key(m)
-    monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "auto")
-    assert _key(m) != k0
     monkeypatch.setenv("UNSLOTH_NVFP4_BACKEND", "auto")
-    assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "auto"}
+    keys = {}
+    for value in ("auto", "off", "0"):
+        monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", value)
+        keys[value] = _key(m)
+        same = value == (default or "off")
+        assert (keys[value] == k0) is same, value
+        assert cc.graph_switches() == ({} if same else {"UNSLOTH_NVFP4_PROTECT_STEPS": value})
+    assert len(set(keys.values())) == 3
 
 
 def test_a_dequantizing_weight_property_is_never_read():
@@ -251,3 +280,24 @@ def test_per_row_and_per_tensor_scales_key_apart():
     per_tensor = cc._tensor_signature(FakeFp8([64, 256], (1,)))
     assert per_row != per_tensor
     assert "block_size=1,full" in per_row and "block_size=full,full" in per_tensor
+
+
+def _stored_fp8(fmt):
+    from core.inference.diffusion_native_quant import NATIVE_FP8, native_linear_class
+
+    m = _model()
+    lin = m[0]
+    fp8 = getattr(torch, fmt)
+    w = lin.weight.detach().float()
+    scale = w.abs().amax(dim = 1, keepdim = True) / torch.finfo(fp8).max
+    m[0] = native_linear_class()(lin, NATIVE_FP8, codes = (w / scale).to(fp8), scale = scale)
+    return m
+
+
+def test_stored_fp8_formats_key_apart_and_each_keys_stable():
+    """E4M3 and E5M2 codes decode through different integer graphs, so they never share a bundle."""
+    e4, e5 = _stored_fp8("float8_e4m3fn"), _stored_fp8("float8_e5m2")
+    assert e4[0].fp8_format == "float8_e4m3fn" and e5[0].fp8_format == "float8_e5m2"
+    assert _key(e4, "fp8") != _key(e5, "fp8")
+    assert _key(e4, "fp8") == _key(_stored_fp8("float8_e4m3fn"), "fp8")
+    assert _key(e5, "fp8") == _key(_stored_fp8("float8_e5m2"), "fp8")

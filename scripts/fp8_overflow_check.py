@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Empirically check that fp8 dynamic quant with fast accumulation does not overflow.
-
-Hooks every quantised Linear's output during a real Z-Image generation and reports the
-global max |output| and any non-finite (Inf/NaN) count, for use_fast_accum True vs False.
-The concern fast_accum raises is accumulation *precision*, not overflow (the accumulator
-stays FP32-range and torchao's dynamic per-row scale keeps FP8 inputs <= 448); this proves
-it on the real model, including Z-Image's large (~9e5) activation peaks. Run on one CUDA GPU.
-"""
+"""Verifies fp8 use_fast_accum does not overflow on real Z-Image: max |output| and non-finite counts."""
 
 from __future__ import annotations
 

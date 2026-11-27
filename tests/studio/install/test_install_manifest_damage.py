@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The payload scan behind `studio_install_damaged`.
-
-Both directions: real damage has to be seen, and the trees our own setup
-rewrites must not be mistaken for it, since a false positive repairs a healthy
-venv on every run.
-"""
+"""Payload scan for studio_install_damaged: real damage is seen, our own rewritten trees are not."""
 
 import csv
 import io
@@ -74,9 +69,6 @@ def _healthy(site_packages: Path):
     ]
 
 
-# ----------------------------------------------------------------- true positives
-
-
 def test_a_healthy_install_reports_nothing(site_packages):
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
@@ -116,12 +108,8 @@ def test_the_findings_respect_the_limit(site_packages):
     assert len(install_manifest.damaged_payload_files(PKG, limit = 3)) == 3
 
 
-# ---------------------------------------------------------------- false positives
-
-
 def test_a_regenerated_frontend_dist_is_not_damage(site_packages):
-    """The wheel ships the bundle, so its files are in RECORD, and setup's own
-    `npm run build` rehashes every one of them."""
+    """npm run build rehashes every bundle file RECORD lists, so a regenerated dist is fine."""
     dist_info, rows = _healthy(site_packages)
     old = _write(site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js", "x\n")
     index = _write(site_packages / "studio/frontend/dist/index.html", "<html>old</html>\n")
@@ -188,8 +176,7 @@ def test_a_larger_file_is_not_damage(site_packages):
 
 
 def test_an_absent_record_in_a_dist_info_is_damage(site_packages):
-    """uv and pip write RECORD last, so a managed wheel install without one was
-    interrupted, and every truncation of its payload is invisible to the size check."""
+    """pip and uv write RECORD last; missing RECORD means interrupted, hiding any truncation."""
     _dist(site_packages)
     _write(site_packages / PKG / "__init__.py", "x = 1\n")
     assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}: RECORD is missing"]
@@ -209,6 +196,7 @@ def test_an_unreadable_file_is_not_damage(site_packages):
         os.chmod(target, 0o644)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "a Windows file name cannot hold a line break")
 def test_a_quoted_line_break_in_a_recorded_name_is_not_damage(site_packages):
     """RECORD is CSV: a quoted field may hold a newline that splitlines breaks."""
     dist_info = _dist(site_packages)
@@ -234,9 +222,6 @@ def test_an_unreadable_environment_reports_undamaged(monkeypatch):
     assert install_manifest.damaged_payload_files(PKG) == []
 
 
-# ------------------------------------------------------------- verify_install wiring
-
-
 def _complete_install(tmp_path, monkeypatch, site_packages):
     """A manifest and requirements that make every metadata check pass."""
     req_root = tmp_path / "requirements"
@@ -260,13 +245,11 @@ def test_a_damaged_payload_invalidates_an_otherwise_complete_install(
     state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
     assert state["ok"] is False
     assert state["reason"] == "studio_install_damaged"
-    # The deps walk still succeeded; only the payload is at fault.
     assert state["deps_ok"] is True
 
 
 def test_the_scan_is_off_unless_asked_for(tmp_path, monkeypatch, site_packages):
-    """Default off: an external CLI can load a newer copy of this module out of
-    the venv it drives, and cannot decline a scan it does not expect."""
+    """Off by default: an external CLI can load a newer module copy it cannot decline a scan."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
@@ -300,17 +283,12 @@ def test_the_scan_runs_last_and_diverts_no_existing_reason(tmp_path, monkeypatch
     assert state["reason"] == "studio_install_incomplete"
 
 
-# ------------------------------------------------------- who asks for the scan
-
-
 def test_the_installers_ask_for_the_scan():
-    """They import this module from their own directory, so unlike an external
-    CLI they can never be skewed against it."""
+    """Installers import it from their own dir, so they can never be skewed, unlike the CLI."""
     repo = Path(__file__).resolve().parents[3]
     for name in ("studio/setup.sh", "studio/setup.ps1"):
         text = (repo / name).read_text(encoding = "utf-8")
         assert "'deep': True" in text, f"{name} stopped asking for the scan"
-        # and it must survive an older module that has no such keyword
         assert "inspect.signature" in text, f"{name} lost its older-tree fallback"
 
 
@@ -326,19 +304,17 @@ def test_the_desktop_boot_path_does_not_ask_for_the_scan():
     assert "_install_state(deep = True)" in cli
 
 
-# ------------------------------------------------- damage the first pass missed
-
-
 def test_a_package_directory_replaced_by_a_file_is_damage(site_packages):
-    """NotADirectoryError is an OSError but not a FileNotFoundError, so the
-    generic arm read a payload replaced by a quarantine stub as healthy."""
+    """NotADirectoryError is not a FileNotFoundError, so a quarantine stub passed as healthy."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     import shutil
 
     shutil.rmtree(site_packages / PKG)
     (site_packages / PKG).write_text("quarantined", encoding = "utf-8")
-    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}/__init__.py is not reachable"]
+    # Windows reports a file in the middle of a path as a missing path, not ENOTDIR; damage either way.
+    reason = "is missing" if sys.platform == "win32" else "is not reachable"
+    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}/__init__.py {reason}"]
 
 
 def test_the_companion_distribution_is_scanned_too(site_packages):
@@ -367,7 +343,6 @@ def test_scan_paths_points_the_scan_at_another_venv(tmp_path, site_packages):
 
     assert install_manifest.damaged_payload_files(PKG, scan_paths = [str(other)]) == []
     (other / PKG / "__init__.py").unlink()
-    # This interpreter's own tree is healthy and must not be the one answered for.
     healthy_info, rows = _healthy(site_packages)
     _record(healthy_info, rows)
     assert install_manifest.damaged_payload_files(PKG) == []
@@ -431,14 +406,12 @@ def test_the_budget_is_checked_before_every_stat(site_packages, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", slow_stat)
     install_manifest.damaged_payload_files(PKG, budget_seconds = 5.0)
-    # The lower bound keeps the patched stat honest: unpatched the clock never moves, and the upper
-    # bound alone passes a scan that ignored the budget.
+    # Lower bound proves the patched stat ran; the upper bound alone passes a scan ignoring the budget.
     assert 5.0 <= clock["now"] <= 6.0
 
 
 def test_the_cli_hands_over_the_managed_venvs_own_paths():
-    """RECORD rows resolve against the distribution that declared them, so
-    without this the foreign branch scans the CLI's own tree, or nothing."""
+    """RECORD rows resolve against the declaring distribution, so scan_paths must be passed."""
     repo = Path(__file__).resolve().parents[3]
     deps = (repo / "unsloth_cli" / "_studio_deps.py").read_text(encoding = "utf-8")
     assert 'kwargs["scan_paths"] = paths' in deps
@@ -447,8 +420,7 @@ def test_the_cli_hands_over_the_managed_venvs_own_paths():
 
 
 def test_a_quarantined_console_script_is_damage(tmp_path, site_packages):
-    """Skipping every parent-relative row meant the `unsloth` command could be
-    gone, tree intact, while the deep check called the install healthy."""
+    """Skipping parent-relative rows let a missing unsloth command pass the deep check."""
     venv = site_packages.parent
     (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
     dist_info = _dist(site_packages)
@@ -480,8 +452,7 @@ def test_a_parent_relative_row_outside_a_venv_is_skipped(site_packages):
 
 
 def test_a_vanished_companion_is_damage(tmp_path, monkeypatch, site_packages):
-    """No dist-info leaves the RECORD scan nothing to walk, and no check above
-    ever looked at the companion's version."""
+    """No dist-info means no RECORD to walk, and nothing checked the companion's version."""
     dist_info = _dist(site_packages, name = "unsloth", version = VER)
     size = _write(site_packages / "unsloth" / "__init__.py", "x = 1\n")
     _record(dist_info, [["unsloth/__init__.py", "sha256=x", size]])
@@ -621,6 +592,26 @@ def test_a_launcher_with_nothing_staged_beside_it_is_still_damage(site_packages)
     assert install_manifest.damaged_payload_files(PKG) == ["../Scripts/unsloth.exe is missing"]
 
 
+def test_a_launcher_restored_from_an_older_copy_is_not_damage(site_packages):
+    """#16897: an update restored an older uv trampoline, shorter than RECORD says."""
+    launcher = _launcher_case(site_packages)
+    launcher.write_bytes(b"MZ")
+    assert install_manifest.damaged_payload_files(PKG) == []
+
+
+def test_another_shortened_console_script_is_still_damage(site_packages):
+    """Only the launcher the update restores loses its size check."""
+    venv = site_packages.parent
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
+    dist_info = _dist(site_packages)
+    size = _write(venv / "Scripts" / "demo.exe", "MZ binary\n")
+    _record(dist_info, [["../Scripts/demo.exe", "sha256=b", size]])
+    (venv / "Scripts" / "demo.exe").write_bytes(b"MZ")
+    assert install_manifest.damaged_payload_files(PKG) == [
+        f"../Scripts/demo.exe is 2 bytes, expected {size}"
+    ]
+
+
 def test_an_unrelated_sibling_does_not_excuse_a_missing_file(site_packages):
     """Only the three names `_recover_missing_launcher` reads count."""
     launcher = _launcher_case(site_packages)
@@ -658,8 +649,7 @@ def _installer_helper_probe() -> str:
 
     repo = Path(__file__).resolve().parents[3]
     setup = (repo / "studio" / "setup.sh").read_text(encoding = "utf-8")
-    # Anchored on the probe itself, not on the `if !` that used to precede it: the same
-    # probe now lives in _setup_install_is_verified, which two callers share.
+    # Anchored on the probe itself, which _setup_install_is_verified shares between two callers.
     match = re.search(
         r'"\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"', setup, re.S
     )
@@ -677,21 +667,14 @@ def _installer_helper_probe() -> str:
     ids = ["absent-keeps-the-fast-path", "truncated-forces-repair", "raises-forces-repair"],
 )
 def test_an_unimportable_helper_forces_the_dependency_pass(tmp_path, contents, expected):
-    """The one file whose damage silences every check that follows it.
-
-    Absent keeps the old escape: telling it from an old tree needs a RECORD walk
-    here, and the CLI reports it as studio_install_manifest_missing anyway.
-    """
+    """An unimportable helper forces the dependency pass, as its damage hides later checks."""
     import subprocess
 
     script_dir = tmp_path / "studio"
     script_dir.mkdir()
     if contents is not None:
         (script_dir / "install_manifest.py").write_text(contents, encoding = "utf-8")
-    # -I -S so `script_dir` is the ONLY place install_manifest can come from.
-    # The probe imports it off sys.path, and an install_manifest reachable from site-packages or PYTHONPATH satisfies
-    # that import even when the directory under test is empty: the "absent" case then falls through to a real
-    # verify_install against whatever tree the runner happens to have, and answers about that instead.
+    # -I -S: only script_dir supplies install_manifest, else site-packages answers 'absent'.
     result = subprocess.run(
         [sys.executable, "-I", "-S", "-c", _installer_helper_probe(), str(script_dir)],
         capture_output = True,

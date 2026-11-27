@@ -1,34 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Coverage for the native-Linux system-ROCm library prepend (PR #7233).
-
-#7233 fixed the segfault-on-launch class of AMD reports (#7208, #7310, #6276 and
-the native-Linux half of #7307): a prebuilt llama.cpp ships its own libggml-hip /
-HIP runtime, and on a bare-metal ROCm box that bundled runtime can disagree with
-the host amdkfd driver, so the server dies the moment a model is loaded. The fix
-prepends the *system* ROCm lib dirs ahead of the bundle on LD_LIBRARY_PATH.
-
-It landed as two hand-copied helpers, one in the installer (validation-time) and
-one in the serve-time launcher:
-
-  studio/install_llama_prebuilt.py  _bundled_hip_present / _native_linux_system_rocm_lib_dirs
-  studio/backend/core/inference/llama_cpp.py   same two, "mirrors" comment only
-
-and shipped with no tests at all: the WSL sibling helper added earlier has
-TestWslSystemRocmLibDirs / TestBinaryEnvWslOrdering / TestLlamaCppRuntimeWslOrdering,
-the native-Linux one has nothing. Every gate here is a false-positive risk that
-would silently reorder LD_LIBRARY_PATH for users the fix was never meant to touch
-(WSL, NVIDIA hosts, macOS, containers without /dev/kfd), so each gate gets a test,
-and both copies are run against the same fake host and required to agree.
-
-llama_cpp.py cannot be imported from the test suite (module-level structlog /
-backend imports), so its two helpers are lifted out with ast and exec'd standalone.
-"""
+"""System ROCm lib dirs go before the bundled HIP runtime on LD_LIBRARY_PATH, or the server segfaults."""
 
 import ast
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -56,8 +34,7 @@ def _load_prebuilt_module():
 
 
 def _extract_functions(path: Path, names) -> dict:
-    """exec just the named top-level functions out of a module that is too
-    heavy to import."""
+    """Extracts only the named top-level functions from a module too heavy to import."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     found = {n.name for n in wanted}
@@ -118,14 +95,9 @@ def _call(
     present,
     platform = "linux",
 ):
-    """Run one copy of the helper against a fake host.
-
-    sys.platform is patched inside the call rather than in a fixture: pytest's own
-    tmp_path factory branches on it, so a session-wide patch breaks the fixture on
-    a Windows test host."""
+    """Patches sys.platform inside the call, not in a fixture: pytest's tmp_path branches on it."""
     with patch.object(sys, "platform", platform):
-        # isdir too: the llvm probe requires a directory, so a fake host that only answers exists() would report every
-        # nested llvm dir as missing.
+        # isdir too: the llvm probe requires a directory.
         with (
             patch("os.path.exists", _fake_exists(present)),
             patch("os.path.isdir", _fake_exists(present)),
@@ -134,8 +106,7 @@ def _call(
 
 
 class TestBundledHipPresent:
-    """The prepend only makes sense when the prebuilt actually bundles HIP; a
-    CPU or CUDA build must be left alone."""
+    """Prepend only when the prebuilt bundles HIP; CPU or CUDA builds must be left alone."""
 
     @pytest.mark.parametrize(
         "where", ["studio/install_llama_prebuilt.py", "studio/backend/core/inference/llama_cpp.py"]
@@ -194,8 +165,7 @@ class TestNativeLinuxGates:
             assert self._run(impl, bundle_dir, self._HOST | {"/dev/dxg"}) == [], where
 
     def test_no_op_without_amdkfd(self, bundle_dir):
-        """No /dev/kfd: NVIDIA host, CPU host, or a container without the AMD
-        device node. Prepending system ROCm there would be pure breakage."""
+        """Without /dev/kfd (NVIDIA, CPU, container), prepending system ROCm is pure breakage."""
         present = {"/opt/rocm/lib/libhsa-runtime64.so"}
         for where, impl in _impls().items():
             assert self._run(impl, bundle_dir, present) == [], where
@@ -232,8 +202,7 @@ class TestNativeLinuxRootResolution:
     _run = staticmethod(_call)
 
     def test_env_roots_take_precedence_over_opt_rocm(self, bundle_dir, monkeypatch):
-        """A user with a side-by-side ROCm (HIP_PATH) must get theirs first: the
-        one matching their driver, not whatever /opt/rocm happens to be."""
+        """HIP_PATH beats /opt/rocm, so a side-by-side ROCm matching the driver is used first."""
         monkeypatch.setenv("HIP_PATH", "/usr/local/rocm7")
         present = {
             "/dev/kfd",
@@ -266,8 +235,7 @@ class TestNativeLinuxRootResolution:
             assert self._run(impl, bundle_dir, present) == ["/opt/rocm/lib64"], where
 
     def test_nested_llvm_runtime_follows_system_rocm_lib(self, bundle_dir):
-        """#7446: libamd_comgr depends on ROCm's versioned LLVM runtime, which is
-        installed below lib/llvm/lib rather than directly in lib."""
+        """7446: libamd_comgr needs ROCm's LLVM under lib/llvm/lib, not directly in lib."""
         present = {
             "/dev/kfd",
             "/opt/rocm/lib/libhsa-runtime64.so",
@@ -280,9 +248,7 @@ class TestNativeLinuxRootResolution:
             ], where
 
     def test_lib64_host_still_finds_llvm_under_lib(self, bundle_dir):
-        """ROCm puts LLVM under <root>/lib/llvm even where HSA lives in lib64, so
-        deriving the llvm dir from the HSA dir alone would miss it and leave
-        libamd_comgr binding to the bundle's libLLVM."""
+        """LLVM sits in <root>/lib/llvm even with HSA in lib64; deriving it from HSA misses it."""
         present = {
             "/dev/kfd",
             "/opt/rocm/lib64/libhsa-runtime64.so",
@@ -318,15 +284,13 @@ class TestNativeLinuxRootResolution:
         (root / "lib" / "llvm").mkdir()
         (root / "lib" / "llvm" / "lib").write_text("not a directory")
         real_exists = os.path.exists
-        # Pin both device nodes: a WSL test host really has /dev/dxg, which would
-        # take the WSL early-return and make this pass for the wrong reason.
+        # A WSL test host really has /dev/dxg, which would take the WSL early return.
         pinned = {"/dev/kfd": True, "/dev/dxg": False}
 
         def _exists(p):
             return pinned.get(str(p), None) if str(p) in pinned else real_exists(p)
 
-        # A test host may itself have a real /opt/rocm (the default candidate), so assert on the bogus entry rather than
-        # on the whole list.
+        # The test host may have a real /opt/rocm, so assert on the bogus entry only.
         for where, impl in _impls().items():
             with (
                 patch.object(sys, "platform", "linux"),
@@ -377,10 +341,7 @@ class TestHelperParity:
 
 
 def _function_ast(path: Path, name: str) -> ast.FunctionDef:
-    """The function's executable body, with docstring and type annotations
-    stripped: llama_cpp.py quotes its annotations ('list[str]') for the
-    older-typing lint and documents itself as mirroring the installer. Neither is
-    drift; the code is."""
+    """Strips docstrings and annotations from the AST, so only code differences count as drift."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
@@ -488,14 +449,19 @@ class TestLlamaCppRuntimeNativeOrdering:
 
     def test_prepends_before_binary_dir(self):
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
-        idx_helper = source.find("lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))")
-        idx_binary = source.find("lib_dirs.append(binary_dir)")
+        idx_helper = source.find("_native_linux_system_rocm_lib_dirs(binary_dir)")
         assert (
             idx_helper != -1
         ), "serve-time launcher must call the native-Linux helper with binary_dir"
-        assert idx_binary != -1
+        # #14933 holds the result in a local so it can drop it when it hides the GPU.
+        call = source[source.rfind("\n", 0, idx_helper) : source.find("\n", idx_helper)]
+        held = re.match(r"\s*(\w+)\s*=\s*_native_linux_system_rocm_lib_dirs", call)
+        extend = f"lib_dirs.extend({held.group(1)})" if held else "lib_dirs.extend("
+        idx_extend = source.find(extend, idx_helper)
+        idx_binary = source.find("lib_dirs.append(binary_dir)", idx_helper)
+        assert idx_extend != -1 and idx_binary != -1
         assert (
-            idx_helper < idx_binary
+            idx_helper < idx_extend < idx_binary
         ), "system ROCm must be searched before the bundled HIP runtime"
 
     def test_dxg_detection_stays_on_the_wsl_branch(self):
@@ -503,7 +469,7 @@ class TestLlamaCppRuntimeNativeOrdering:
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
         idx_wsl = source.find("lib_dirs.extend(_wsl_system_rocm_lib_dirs())")
         idx_dxg = source.find('env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")', idx_wsl)
-        idx_native = source.find("lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))")
+        idx_native = source.find("_native_linux_system_rocm_lib_dirs(binary_dir)")
         assert idx_wsl != -1 and idx_dxg != -1 and idx_native != -1
         assert idx_wsl < idx_dxg < idx_native, (
             "HSA_ENABLE_DXG_DETECTION must be decided from the WSL dirs alone, before the "

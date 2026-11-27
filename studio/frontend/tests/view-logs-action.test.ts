@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The "View logs" route a failure offers, and the request that carries it. */
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -12,6 +10,7 @@ import {
   pendingLogRequestKey,
   useSettingsDialogStore,
 } from "../src/features/settings/stores/settings-dialog-store.ts";
+import * as managedLogTarget from "../src/features/settings/lib/managed-engine-log-target.ts";
 import { en } from "../src/i18n/locales/en.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -46,6 +45,7 @@ test("the action opens Logs on the family that failed", () => {
   const { viewLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": {
       translate: (key: string) => {
         translated.push(key);
@@ -57,11 +57,10 @@ test("the action opens Logs on the family that failed", () => {
   });
 
   const action = viewLogsAction("llama-server");
-  // The owner gets one; the non-owner case has its own test below.
   assert.ok(action, "an owner must be offered the action");
   assert.equal(action.label, "t(settings.debugging.viewLogs)");
   assert.deepEqual(translated, ["settings.debugging.viewLogs"]);
-  // The key has to exist in the shipped catalogue, or the label renders as the raw key.
+  // The key must exist in the shipped catalogue or the raw key renders.
   const shipped = "settings.debugging.viewLogs"
     .split(".")
     .reduce<unknown>(
@@ -86,6 +85,7 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
   const { loadFailureLogFamily } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (k: string) => k },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },
@@ -96,7 +96,6 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
     loadFailureLogFamily(true, true, RUNNER_LOG),
     "diffusion-server",
   );
-  // A Transformers or MLX load has no runner at all.
   for (const notGguf of [false, undefined] as const) {
     for (const diffusion of [true, false, undefined] as const) {
       assert.equal(
@@ -112,6 +111,7 @@ test("a load whose diagnostic names no runner log has none to open", () => {
   const { loadFailureLogFamily } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (k: string) => k },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },
@@ -167,12 +167,13 @@ test("the exact log the diagnostic named is carried, and wins over family recenc
   const { viewLogsAction, failureLogPath } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (k: string) => k },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },
   });
 
-  // The wording llama_cpp.py appends, and treats as a diagnostics marker.
+  // The wording llama_cpp.py appends and treats as a diagnostics marker.
   const diagnostic =
     "llama-server failed to start\n\nllama-server output:\n  ggml_abort\n\n" +
     "Full log: /home/u/.unsloth/studio/logs/llama-server/llama-1765000000-port-8080.log";
@@ -188,9 +189,30 @@ test("the exact log the diagnostic named is carried, and wins over family recenc
   assert.ok(pathAction);
   pathAction.onClick();
   assert.equal(store.getState().logSourcePathRequested, path);
-  // Cleared with the family, so a later visit cannot land on a stale file.
   store.getState().consumeLogFamilyRequest();
   assert.equal(store.getState().logSourcePathRequested, null);
+});
+
+test("a managed failure action still opens the original attempt after a retry", () => {
+  reset();
+  const { managedEngineFailureLogsAction } = loadWithStubs<
+    typeof import("../src/features/settings/lib/view-logs-action.ts")
+  >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
+    "@/i18n": { translate: (key: string) => key },
+    "../stores/settings-dialog-store": { useSettingsDialogStore: store },
+    "@/features/auth/account-session": { isAccountOwner: () => true },
+  });
+  const detail = {
+    code: "managed_engine_load_failed",
+    log_family: "sglang",
+    log_path: "/logs/sglang/sglang-first.log",
+  };
+  const failed = managedEngineFailureLogsAction(detail);
+  assert.ok(failed);
+  store.getState().openLogs("sglang", "/logs/sglang/sglang-next.log");
+  failed.onClick();
+  assert.equal(store.getState().logSourcePathRequested, detail.log_path);
 });
 
 test("the Logs panel clears the request once it has consumed it", () => {
@@ -199,7 +221,6 @@ test("the Logs panel clears the request once it has consumed it", () => {
   assert.equal(store.getState().logFamilyRequested, "server");
   store.getState().consumeLogFamilyRequest();
   assert.equal(store.getState().logFamilyRequested, null);
-  // Still on the tab: consuming the request must not close or navigate the dialog.
   assert.equal(store.getState().activeTab, "debugging");
   assert.equal(store.getState().open, true);
 });
@@ -220,6 +241,7 @@ test("an account that cannot open Logs is offered no action at all", () => {
   const { viewLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (k: string) => k },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => false },
@@ -232,7 +254,6 @@ test("an account that cannot open Logs is offered no action at all", () => {
     assert.equal(viewLogsAction(family), undefined, family);
     assert.equal(viewLogsAction(family, "/some/log.log"), undefined, family);
   }
-  // And nothing was requested as a side effect of asking.
   assert.equal(store.getState().logFamilyRequested, null);
   assert.equal(store.getState().open, false);
 });
@@ -243,11 +264,9 @@ test("an older in-flight refresh does not consume a newer request", async () => 
   );
   reset();
 
-  // What the older fetch captured: nothing pending.
   const capturedByOlderFetch = pendingLogRequestKey(store.getState());
   assert.equal(capturedByOlderFetch, NO_PENDING_LOG_REQUEST);
 
-  // The click lands while that fetch is still out.
   store.getState().openLogs("llama-server", "/logs/llama-failed.log");
   const nowPending = pendingLogRequestKey(store.getState());
   assert.notEqual(
@@ -265,30 +284,11 @@ test("an older in-flight refresh does not consume a newer request", async () => 
     new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
     "utf8",
   );
-  // A stale response must bail before touching ANY state, the source list included.
-  assert.match(
-    tabSrc,
-    /if \(seq < appliedSourceFetchRef\.current\) return;\s*setSources\(result\.sources\);/,
-  );
-
-  const tab = await readFile(
-    new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
-    "utf8",
-  );
-  for (const needle of [
-    "const requestedFor = pendingLogRequestKey(",
-    "pendingLogRequestKey(dialog) === requestedFor",
-    "if (fromFailure && stillTheSameRequest)",
-    "if (fromFailure && !stillTheSameRequest) return;",
-    // An older response (e.g. a 404 reselect) never overrides a newer selection.
-    "const seq = ++sourceFetchSeqRef.current;",
-    "appliedSourceFetchRef.current = seq;",
-  ]) {
-    assert.ok(
-      tab.includes(needle),
-      `the panel no longer guards consumption on the request it fetched for: ${needle}`,
-    );
-  }
+  const guard = tabSrc.indexOf("pendingLogRequestKey(dialog) !== requestedFor");
+  const apply = tabSrc.indexOf("setSources(result.sources)");
+  assert.ok(guard >= 0 && guard < apply);
+  assert.match(tabSrc.slice(0, apply), /seq < appliedSourceFetchRef\.current\s*\|\|/);
+  assert.match(tabSrc.slice(guard, apply), /\) return;/);
 });
 
 test("only a generation failure the server logged offers its log", () => {
@@ -296,6 +296,7 @@ test("only a generation failure the server logged offers its log", () => {
   const { generationFailureLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
+    "./managed-engine-log-target": managedLogTarget,
     "@/i18n": { translate: (key: string) => key },
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },
@@ -312,7 +313,6 @@ test("only a generation failure the server logged offers its log", () => {
     assert.equal(store.getState().logFamilyRequested, "server");
     reset();
   }
-  // Client-input refusals are answered with their own text and never logged.
   assert.equal(
     generationFailureLogsAction("negative_prompt is not supported by this family."),
     undefined,

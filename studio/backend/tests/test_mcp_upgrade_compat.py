@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an existing Studio install keeps when the MCP session cache stops being
-stdio-only: the close entry point, the session-cap environment variable, and the
-fastmcp surface this code actually depends on.
-
-Studio declares fastmcp>=3.0.2 with no upper bound and no lockfile, so a released
-install resolves to whatever is newest. Anything asserted about fastmcp here is
-asserted against the installed version, not a mock.
-"""
+"""Studio's fastmcp>=4.1.5,<5 has no lockfile, so these check the installed version."""
 
 from __future__ import annotations
 
@@ -28,27 +21,14 @@ LEGACY_ENV = "UNSLOTH_STUDIO_MAX_STDIO_MCP_SESSIONS"
 ENV = "UNSLOTH_STUDIO_MAX_MCP_SESSIONS"
 
 
-# --------------------------------------------------------------------------
-
-# Entry points an old install may still call
-# --------------------------------------------------------------------------
-
-
 def test_the_old_close_name_still_works():
-    """close_stdio_sessions had no underscore, so treat it as callable from
-    outside this module even though nothing in-repo does."""
+    """close_stdio_sessions stays public for outside callers, though nothing in-repo uses it."""
     assert mcp_client.close_stdio_sessions is mcp_client.close_mcp_sessions
-    mcp_client.close_stdio_sessions()  # must not raise on an empty cache
+    mcp_client.close_stdio_sessions()
 
 
 def test_the_old_close_name_takes_the_same_arguments():
     mcp_client.close_stdio_sessions("https://mcp.example.test/mcp", None)
-
-
-# --------------------------------------------------------------------------
-
-# Session cap: the name changed, the setting must not
-# --------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse = True)
@@ -62,8 +42,7 @@ def test_unset_falls_back_to_the_default():
 
 
 def test_a_deployment_that_set_the_legacy_name_keeps_its_value(monkeypatch):
-    """The cap now covers HTTP too, but silently reverting someone's tuning to 32
-    would be a worse surprise than the name being stale."""
+    """The legacy env name is stale, but resetting a tuned value to 32 would be worse."""
     monkeypatch.setenv(LEGACY_ENV, "7")
     assert mcp_client._max_sessions_from_env() == 7
 
@@ -91,12 +70,6 @@ def test_the_cap_never_drops_below_one(monkeypatch, raw, expected):
     assert mcp_client._max_sessions_from_env() == expected
 
 
-# --------------------------------------------------------------------------
-
-# The fastmcp surface this module relies on
-# --------------------------------------------------------------------------
-
-
 def test_the_transports_this_code_builds_still_exist():
     from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
     for cls in (StdioTransport, SSETransport, StreamableHttpTransport):
@@ -104,9 +77,8 @@ def test_the_transports_this_code_builds_still_exist():
 
 
 def test_only_stdio_answers_the_liveness_probe():
-    """_transport_dead is the reason the HTTP idle recheck exists. If a future
-    fastmcp gives the HTTP transports a real probe, this test fails and the
-    recheck can become cheaper."""
+    """_transport_dead answers only for stdio; if a future fastmcp probes HTTP too, this test fails
+    so the recheck can get cheaper."""
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     for cls in (StreamableHttpTransport, SSETransport):
         transport = cls(url = "https://x.test/mcp")
@@ -118,7 +90,20 @@ def test_only_stdio_answers_the_liveness_probe():
 def test_the_installed_fastmcp_meets_the_declared_floor():
     version = importlib.metadata.version("fastmcp")
     major, minor, *_ = (int(part) for part in version.split(".")[:2])
-    assert (major, minor) >= (3, 0), f"fastmcp {version} is below the declared >=3.0.2"
+    assert (major, minor) >= (4, 1), f"fastmcp {version} is below the declared >=4.1.5"
+
+
+def test_the_middleware_hooks_tool_access_overrides_still_exist():
+    """StudioToolAccess hides turned-off tools and prompts through these four hooks."""
+    from fastmcp.exceptions import PromptError
+    from fastmcp.server.middleware import Middleware
+
+    from studio_mcp.tool_access import StudioToolAccess
+
+    for hook in ("on_list_tools", "on_call_tool", "on_list_prompts", "on_get_prompt"):
+        assert callable(getattr(Middleware, hook, None)), hook
+        assert hook in vars(StudioToolAccess), hook
+    assert issubclass(PromptError, Exception)
 
 
 def test_tool_errors_are_still_distinguishable_from_transport_errors():
@@ -129,21 +114,13 @@ def test_tool_errors_are_still_distinguishable_from_transport_errors():
     assert mcp_client._is_tool_error(RuntimeError("stream closed")) is False
 
 
-# --------------------------------------------------------------------------
-
-# Rows written by an older Studio
-# --------------------------------------------------------------------------
-
-
 def test_a_row_without_use_oauth_is_treated_as_non_oauth():
-    """The column was backfilled by an ALTER on an existing table, so old rows
-    can read as None rather than 0."""
+    """Old rows backfilled by ALTER can read use_oauth as None rather than 0."""
     assert bool({"url": "https://x.test/mcp"}.get("use_oauth")) is False
 
 
 def test_header_identity_survives_a_rewritten_headers_dict():
-    """A row re-saved with the same headers in another key order must not look
-    like a different server and drop the live session."""
+    """Same headers in another key order must not make a re-saved row drop the live session."""
     a = mcp_client._headers_key({"Authorization": "Bearer x", "X-Trace": "1"})
     b = mcp_client._headers_key({"X-Trace": "1", "Authorization": "Bearer x"})
     assert a == b

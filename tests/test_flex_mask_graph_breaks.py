@@ -83,6 +83,39 @@ def test_compiled_flex_mask_has_no_graph_breaks_and_matches_eager():
     assert not _elements(traced, 200)[0, 100:160, :100].any()
 
 
+@needs_new_signature
+def test_a_wrapper_forwarding_by_position_keeps_the_compiled_path():
+    """unsloth_zoo wraps the registered flex mask builder above this one and forwards `bound.args`,
+    i.e. by position; the patch must still drop the `fast_all` branch, or fullgraph tracing breaks."""
+    fix_transformers_flex_mask_graph_breaks()
+    interface = masking_utils.ALL_MASK_ATTENTION_FUNCTIONS
+    registered = interface["flex_attention"]
+    ours = registered
+    while ours is not None and not getattr(ours, _FLEX_MASK_PATCH_FLAG, False):
+        ours = getattr(ours, "__wrapped__", None)
+    assert ours is not None, "the flex mask patch is not in the registered chain"
+    signature = inspect.signature(ours)
+
+    def positional(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        return ours(*bound.args, **bound.kwargs)
+
+    interface.register("flex_attention", positional)
+    try:
+        config = _config()
+        compiled = torch.compile(_build, backend = "eager", fullgraph = True, dynamic = True)
+        attention_mask = torch.tensor([[1] * 300, [1] * 250 + [0] * 50])
+        embeds = torch.zeros(2, 300, 16)
+        eager = _build(config, embeds, attention_mask)
+        traced = compiled(config, embeds, attention_mask)
+        assert torch.equal(eager.to_dense(), traced.to_dense())
+        assert torch.equal(_elements(eager, 300), _elements(traced, 300))
+    finally:
+        interface.register("flex_attention", registered)
+        torch._dynamo.reset()
+
+
 def test_probe_reads_only_value_branching_builders():
     def branches(
         batch_size,

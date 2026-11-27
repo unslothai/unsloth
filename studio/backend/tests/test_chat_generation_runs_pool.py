@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The reused connection behind the durable-run write path.
-
-Opening a connection costs ~50x what the query costs, so this module keeps one per thread per
-database. These are the properties that make that safe to do; each fails if the reuse in
-``chat_generation_runs_db._connect`` is removed or mis-keyed.
-"""
+"""Reuses one connection per thread per database for durable-run writes; opening one is costly."""
 
 import gc
 import os
@@ -89,8 +84,7 @@ def test_an_unfinished_transaction_is_rolled_back_before_reuse():
 
 
 def test_two_accounts_never_share_a_cached_connection():
-    """Two accounts resolve to two databases, so a handle cached under one account id must never be
-    handed to the other."""
+    """Two accounts, two databases: a handle cached for one must never be handed to the other."""
     paths = {}
     handles = {}
     for account in (ALICE, BOB):
@@ -133,8 +127,7 @@ def test_switching_account_does_not_write_to_the_previous_database():
 
 
 def test_each_thread_gets_its_own_connection():
-    """sqlite connections here are created with check_same_thread = True, so a handle shared
-    across threads would raise ProgrammingError on use."""
+    """Per thread: check_same_thread = True makes a shared handle raise ProgrammingError."""
     seen = {}
 
     def grab(name):
@@ -205,10 +198,7 @@ def test_append_events_still_persists_through_a_reused_connection():
 
 
 def test_an_idle_connection_on_another_LIVE_thread_is_closed_by_a_global_discard():
-    """Account retirement renames the account directory from a request thread, while the SSE loop
-    parks its connections on a 32 thread pool of its own. Windows refuses the rename while any file
-    underneath is open, so an idle handle on a worker that is still alive has to be closed from
-    here. The worker is held alive deliberately: a thread that exits releases its own entry."""
+    """Global discard must close idle handles on live threads, since Windows refuses the account rename."""
     parked = {}
     parked_ready = threading.Event()
     may_exit = threading.Event()
@@ -235,11 +225,7 @@ def test_an_idle_connection_on_another_LIVE_thread_is_closed_by_a_global_discard
 
 
 def test_a_short_lived_threads_connection_is_released_when_it_exits():
-    """The lease sweeper reconciles each account on a FRESH daemon thread every 60 seconds
-    (_sweep_in_daemon_thread). Its pooled entry can never be borrowed again once that thread is
-    gone, so holding it strongly would leak one sqlite handle per sweep until the process runs out
-    of file descriptors. The registry is weak, and the entry closes its connection when collected.
-    """
+    """Registry is weak, so a short-lived sweep thread's connection closes on collection, not leaks."""
     parked = {}
 
     def park():
@@ -315,8 +301,7 @@ def test_closing_the_keeper_drops_the_pool_even_when_there_was_no_keeper():
 
 
 def test_a_connection_in_use_during_a_global_discard_is_closed_on_return():
-    """Yanking a handle mid query would fail that caller, so the borrower closes it instead of
-    parking it back into a pool that has moved on."""
+    """Yanking an in-use handle fails its caller, so it is closed on return, not re-pooled."""
     borrowed = runs_db._connect()
     underlying = borrowed._conn
     runs_db._discard_all_pooled()
@@ -327,15 +312,7 @@ def test_a_connection_in_use_during_a_global_discard_is_closed_on_return():
 
 
 def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
-    """Retirement invalidates every account's pool from an unrelated thread.
-
-    The interleaving is forced rather than hoped for: the entry's key compares equal via a probe
-    that, mid-comparison, lets another thread run _discard_all_pooled. That comparison sits between
-    the generation check and the idle-to-busy transition. Holding _pool_lock across both makes the
-    other thread block until the borrow is marked busy, so the handle survives; without the lock it
-    is closed underneath the borrow and the next query raises ProgrammingError, aborting a live
-    generation belonging to an account nobody deleted.
-    """
+    """A global discard racing a borrow must wait for it, or the borrowed handle is closed mid-query."""
     primed = runs_db._connect()
     underlying = primed._conn
     primed.close()
@@ -353,8 +330,6 @@ def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
         def __eq__(self, other):
             worker = threading.Thread(target = invalidate)
             worker.start()
-            # Long enough that an unlocked borrow really does lose the handle, short enough that the
-            # locked one is not slowed: with the lock held the worker cannot get past its acquire.
             worker.join(timeout = 2.0)
             return str(self) == str(other)
 
@@ -373,10 +348,7 @@ def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
 
 
 def test_a_connection_whose_migration_lost_the_lock_is_not_pooled():
-    """_prepare_connection deliberately returns without marking the path ready when the ALTER loses
-    to another writer, so the NEXT call retries. Caching such a connection would skip that next call
-    for the life of the thread: the lease columns would stay missing, progress updates would keep
-    degrading, and reconcile_runs(stale_after_ms=...) would keep reaping nothing."""
+    """Do not pool a connection whose migration lost the lock; the next call must retry the ALTER."""
     runs_db.reset_connection_pool_for_tests()
     runs_db.reset_schema_state_for_tests()
 
@@ -401,7 +373,6 @@ def test_a_connection_whose_migration_lost_the_lock_is_not_pooled():
         runs_db._prepare_connection = real_prepare
         runs_db.reset_connection_pool_for_tests()
 
-    # And once it does complete, pooling resumes.
     third = runs_db._connect()
     underlying = third._conn
     third.close()
@@ -413,17 +384,12 @@ def test_a_connection_whose_migration_lost_the_lock_is_not_pooled():
 
 
 def test_a_handle_prepared_across_an_invalidation_is_not_pooled():
-    """_prepare_connection opens a real connection, so an invalidation can land while it runs, and
-    the new handle is not in the registry yet to be caught by it. Registering it under the new
-    generation would make a connection the invalidator meant to close look freshly pooled, and
-    retirement renames the account roots immediately after invalidating. The uncached path always
-    closed, so leaving this one open would be a regression rather than an inherited gap."""
+    """A handle prepared across an invalidation must not be pooled; the invalidator cannot see it."""
     runs_db.reset_connection_pool_for_tests()
     real_prepare = runs_db._prepare_connection
 
     def prepare_then_invalidate():
         conn, migrated = real_prepare()
-        # Exactly the window: prepared, not yet registered.
         runs_db._discard_all_pooled()
         return conn, migrated
 
@@ -441,9 +407,8 @@ def test_a_handle_prepared_across_an_invalidation_is_not_pooled():
 
 
 def test_the_registry_does_not_grow_with_every_short_lived_thread():
-    """The sweeper adds a pooled entry per account per minute on a fresh daemon thread. The entry
-    itself is collected, but a dead weakref left behind would accumulate for the life of the
-    process and lengthen every later scan. Insert and unregister prune."""
+    """A sweeper on a fresh daemon thread adds a pooled entry per account each minute; dead weakrefs
+    would accumulate and slow every scan, so insert and unregister prune them."""
     runs_db.reset_connection_pool_for_tests()
 
     def park():

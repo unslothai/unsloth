@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Image generation: the smallest run that can still be wrong in a visible way.
-
-256x256 at 2 steps, because the claim is that the path executes rather than
-that the picture is good.
-
-"Nothing errored" is not the check, and that is the whole design. A diffusion
-pipeline that fails part-way still writes a gallery record and still answers
-200; a pipeline whose weights never loaded produces a FLAT frame, which is a
-perfectly valid PNG. So the verdict is read off the downloaded file:
-
-* the PNG magic, so the download endpoint is serving an image rather than a
-  JSON error with a 200 on it;
-* the size out of the IHDR chunk, not out of the gallery record -- the record
-  repeats what was ASKED for and the file says what was MADE;
-* not-one-flat-colour, on decoded extrema where PIL is available and on a
-  compressed-size floor where it is not.
-"""
+"""A flat frame is a valid PNG, so the verdict is read off the downloaded file, not the record."""
 
 from __future__ import annotations
 
@@ -59,8 +43,7 @@ def _png(width: int, height: int, payload: bytes) -> bytes:
 
 
 def test_the_assertion_exists_and_is_off_by_default():
-    """Last priority, and it pulls a diffusion checkpoint the rest of the
-    payload has no use for. A dispatch that wants it says so."""
+    """Off by default: it pulls a diffusion checkpoint the rest of the payload does not need."""
     assert _body()
     assert "self.assert_image_generation()" in _body("execute")
     assert '"--image-generation",' in SRC
@@ -74,17 +57,14 @@ def test_the_run_is_the_smallest_the_schema_allows():
 
 
 def test_the_size_is_read_from_the_file_and_not_from_the_record():
-    """The gallery record repeats what was asked for. Comparing the request
-    against itself is the vacuity this rule exists against."""
+    """The gallery record repeats the request, so read the size from the PNG IHDR bytes."""
     body = _body()
     assert 'int.from_bytes(png[16:20], "big")' in body
     assert 'int.from_bytes(png[20:24], "big")' in body
 
 
 def test_the_ihdr_offsets_are_right():
-    """Executed against a PNG built here, because an off-by-four in a
-    fixed-offset parse reads a plausible number out of the wrong bytes and
-    every other rule still passes."""
+    """Off-by-four IHDR offsets read a plausible size, so check them on a PNG built here."""
     blob = _png(256, 256, zlib.compress(b"\x00" * 16))
     assert int.from_bytes(blob[16:20], "big") == 256
     assert int.from_bytes(blob[20:24], "big") == 256
@@ -94,9 +74,7 @@ def test_the_ihdr_offsets_are_right():
 
 
 def test_a_flat_image_is_a_failure():
-    """A pipeline whose weights never loaded returns a uniform frame, and a
-    uniform frame is a valid PNG of exactly the right size. Every other rule
-    here passes on it."""
+    """Unloaded weights yield a flat frame that passes other rules, so flat images must fail."""
     func = _func("assert_image_generation")
     assert any(
         isinstance(n, ast.If) and ast.unparse(n.test) == "flat" for n in ast.walk(func)
@@ -120,9 +98,7 @@ def test_the_bytes_are_fetched_raw_rather_than_through_the_json_client():
 
 
 def test_the_pipeline_is_unloaded_in_a_finally():
-    """A diffusion pipeline is the largest single thing this payload puts on a
-    T4. Left resident, it takes the card from whatever runs next and that
-    failure lands on the wrong assertion."""
+    """Unload the diffusion pipeline in a finally, or it keeps the T4 from whatever runs next."""
     func = _func("assert_image_generation")
     finals = "\n".join(
         ast.unparse(n) for t in ast.walk(func) if isinstance(t, ast.Try) for n in t.finalbody
@@ -141,13 +117,7 @@ def test_a_load_or_generate_error_is_a_failure_rather_than_a_skip():
 
 
 def test_it_runs_while_the_server_is_still_up():
-    """`assert_chat_ui` ends by clicking Stop server and asserting the port
-    closes, so every request after it is refused at the socket.
-
-    On kernel unsloth-probe-studio-full2-815a0c this assertion reported
-    `URLError: Connection refused` and read as a broken image path on a server
-    that had simply been shut down. Ordering, not the image pipeline.
-    """
+    """Image generation must run before the UI phase, which stops the server for good."""
     run = _body("execute")
     image_at = run.index("self.assert_image_generation()")
     ui_at = run.index("self.assert_chat_ui()")
@@ -158,15 +128,7 @@ def test_it_runs_while_the_server_is_still_up():
 
 
 def test_the_load_is_WAITED_ON_rather_than_assumed_synchronous():
-    """`images/load` answers 200 having only ACCEPTED the request.
-
-    On kernel unsloth-probe-studio-r3-0b85d4 `load_status` was 200 and
-    `generate_status` was 409 with "No diffusion model is loaded." -- an
-    assertion failing on its own impatience. The wait reads `images/status`
-    for `loaded`, and carries `images/load-progress` alongside so a download
-    that stalls or errors is reported as that rather than as a broken
-    generation.
-    """
+    """images/load only accepts the request, so wait on images/status for loaded before generating."""
     body = _body()
     assert "/api/inference/images/status" in body
     assert "/api/inference/images/load-progress" in body
@@ -180,9 +142,7 @@ def test_the_load_is_WAITED_ON_rather_than_assumed_synchronous():
 
 
 def test_a_load_that_never_finishes_fails_rather_than_generating_anyway():
-    """The refusal branch. Falling through to `generate` after the deadline
-    reports a 409 under the generation's name, which sends the reader after the
-    wrong component -- which is exactly what happened."""
+    """Generating after the deadline reports a 409 under the wrong component's name."""
     func = _func("assert_image_generation")
     src = ast.get_source_segment(SRC, func) or ""
     marker = "never reported loaded within"

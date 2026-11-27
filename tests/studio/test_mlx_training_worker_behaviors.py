@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import ast
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKER = REPO_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
@@ -95,8 +98,7 @@ def test_mlx_dora_decided_before_load_and_merged_into_peft_kwargs():
     assert (
         min(merged_at) < first_wrap
     ), "peft_kwargs must be updated before get_peft_model is called"
-    # Store/Del only: string-bound names (import aliases, `case` captures)
-    # and the merge's own line are outside this check.
+    # Store/Del only: string-bound names and the merge's own line are out of scope.
     rebound = [
         node.lineno
         for node in ast.walk(fn)
@@ -129,11 +131,61 @@ def test_send_aliases_status_message_to_message():
     assert 'kwargs["message"] = sm' in src or 'kwargs["message"]=sm' in src
 
 
+class _Rows:
+    """The slice of `datasets.Dataset` the helper uses: len() and select()."""
+
+    def __init__(self, n):
+        self.rows = list(range(n))
+
+    def __len__(self):
+        return len(self.rows)
+
+    def select(self, indices):
+        out = _Rows(0)
+        out.rows = [self.rows[i] for i in indices]
+        return out
+
+
+def _slice_dataset_rows():
+    backend = str(REPO_ROOT / "studio" / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from core.training.dataset_bounds import slice_dataset_rows
+
+    return slice_dataset_rows
+
+
+def test_mlx_slice_goes_through_the_shared_helper():
+    """Since #17303 the MLX path slices through dataset_bounds.slice_dataset_rows."""
+    tree = ast.parse(WORKER.read_text(encoding = "utf-8"))
+    fn = _find_func(tree, "_run_mlx_training")
+    assert fn is not None
+    calls = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "slice_dataset_rows"
+    ]
+    assert calls, "_run_mlx_training no longer slices through slice_dataset_rows"
+    args = [ast.unparse(a) for a in calls[0].args]
+    assert args[1:] == ["slice_start", "slice_end"], args
+
+
 def test_slice_uses_inclusive_end_and_handles_zero():
-    src = WORKER.read_text(encoding = "utf-8")
-    assert "min(end + 1, len(ds))" in src or "min(end+1, len(ds))" in src
-    assert "slice_start if slice_start is not None else 0" in src
-    assert "slice_end if slice_end is not None else len(ds) - 1" in src
+    slice_rows = _slice_dataset_rows()
+    ds = _Rows(5)
+    # Inclusive end; a 0 start or end is a row number, not "unset".
+    assert slice_rows(ds, 1, 3)[0].rows == [1, 2, 3]
+    assert slice_rows(ds, 0, 0)[0].rows == [0]
+    assert slice_rows(ds, None, 0)[0].rows == [0]
+    # Unset bounds cover the dataset; an end past the last row clamps to it.
+    assert slice_rows(ds, None, None)[0].rows == [0, 1, 2, 3, 4]
+    assert slice_rows(ds, 2, None)[0].rows == [2, 3, 4]
+    assert slice_rows(ds, 3, 99)[0].rows == [3, 4]
+    # A start past the last row is refused instead of training on nothing.
+    with pytest.raises(ValueError, match = "past the last row"):
+        slice_rows(ds, 5, None)
 
 
 def test_poll_stop_returns_on_broken_pipe():

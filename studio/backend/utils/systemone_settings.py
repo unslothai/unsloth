@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from typing import Any
 
@@ -64,16 +65,18 @@ def runtime_unavailable_reason() -> str | None:
     try:
         from importlib.util import find_spec
         if find_spec("torch") is None:
-            return "The Decision API needs PyTorch, which this Studio install does not include."
+            return "The Decision API needs PyTorch, which this Unsloth install does not include."
     except Exception:
         pass
     return None
 
 
 def llama_cpp_only(name: Any) -> bool:
-    """A GGUF-only catalog entry: llama.cpp serves it without PyTorch."""
+    """A catalog entry served without PyTorch: a GGUF by llama.cpp, an MLX-only entry by unsloth-zoo's MLX engine."""
     from core.systemone.catalog import CHECKPOINTS
-    return getattr(CHECKPOINTS.get(name), "layout", None) == "gguf"
+
+    entry = CHECKPOINTS.get(name)
+    return getattr(entry, "layout", None) == "gguf" or getattr(entry, "backend", None) == "mlx"
 
 
 def get_enabled() -> bool:
@@ -99,7 +102,13 @@ def get_device() -> str:
     if device_locked():
         return "gpu" if _env(ENV_DEVICE).lower() in ("gpu", "auto") else "cpu"
     stored = _owner_setting(DEVICE_KEY)
-    return stored if stored in DEVICES else "cpu"
+    if stored in DEVICES:
+        return stored
+    from utils.hardware.hardware import DeviceType, get_device as detected_device
+
+    # Only where unloading gives all of Laya's memory back: its own process, or MLX.
+    gpu = (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX)
+    return "gpu" if detected_device() in gpu else "cpu"
 
 
 def clef_device() -> str:
@@ -207,34 +216,45 @@ def gpu_available() -> bool:
 
 
 _LLAMA_GPU_CACHE: list = []  # [(monotonic time, (binary, mtime), answer)]
+_LLAMA_GPU_REFRESH = threading.Lock()
 
 
 def _llama_cpp_has_gpu() -> bool:
-    """Without torch the detector reports CPU: ask the installed llama-server for its GPUs.
-
-    Cached 60 s per binary path and mtime, so a switched or reinstalled build is probed again.
-    """
+    """Asks llama-server for its GPUs without torch; past 60 s, answers from cache and re-probes in the background."""
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
         from core.systemone.native_worker import resolve_binary
 
         binary = resolve_binary()
         if not binary:
             return False
         key = (binary, os.stat(binary).st_mtime_ns)
-        if (
-            _LLAMA_GPU_CACHE
-            and _LLAMA_GPU_CACHE[0][1] == key
-            and time.monotonic() - _LLAMA_GPU_CACHE[0][0] < 60
-        ):
-            return _LLAMA_GPU_CACHE[0][2]
-        # The binary's own devices: a CPU-only build exposes none even with a GPU present.
-        answer = bool(
-            LlamaCppBackend._enumerated_gpu_devices(
-                binary, LlamaCppBackend._llama_server_env_for_binary(binary)
-            )
-        )
+        if _LLAMA_GPU_CACHE and _LLAMA_GPU_CACHE[0][1] == key:
+            checked, _, answer = _LLAMA_GPU_CACHE[0]
+            if time.monotonic() - checked >= 60 and _LLAMA_GPU_REFRESH.acquire(blocking = False):
+                threading.Thread(target = _refresh_llama_gpu, args = (binary, key), daemon = True).start()
+            return answer
+        return _probe_llama_gpu(binary, key)
     except Exception:
         return False
+
+
+def _probe_llama_gpu(binary: str, key: tuple) -> bool:
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    # The binary's own devices: a CPU-only build exposes none even with a GPU present.
+    answer = bool(
+        LlamaCppBackend._enumerated_gpu_devices(
+            binary, LlamaCppBackend._llama_server_env_for_binary(binary)
+        )
+    )
     _LLAMA_GPU_CACHE[:] = [(time.monotonic(), key, answer)]
     return answer
+
+
+def _refresh_llama_gpu(binary: str, key: tuple) -> None:
+    try:
+        _probe_llama_gpu(binary, key)
+    except Exception:
+        pass
+    finally:
+        _LLAMA_GPU_REFRESH.release()

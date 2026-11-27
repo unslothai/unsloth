@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""On Windows, sentencepiece is never imported.
-
-The point is not that transformers reports it unavailable, it is that the compiled extension
-is never handed to the Windows loader. A code integrity policy refuses by reputation, one file
-at a time, and the refusal is a Bad Image dialog: any probe that asks whether this machine
-would refuse the file has already produced the thing being avoided.
-"""
+"""Never hand the compiled sentencepiece extension to the Windows loader, not even to probe it."""
 
 import importlib.util
 import os
@@ -57,9 +51,7 @@ def _studio_guard():
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(DISABLE_SENTENCEPIECE_VARIABLE, raising = False)
-    # The rule declines once transformers is imported, and the test session has imported it.
-    # Removed here so each test states its own starting point; the one test that wants it
-    # present puts it back.
+    # The rule declines once transformers is imported, which the session already did.
     monkeypatch.delitem(sys.modules, "transformers", raising = False)
     yield
 
@@ -68,8 +60,7 @@ def _clean(monkeypatch):
     "platform,expected", [("win32", True), ("linux", False), ("darwin", False)]
 )
 def test_the_default_is_windows_only(platform, expected, monkeypatch):
-    """WSL reports linux and is deliberately in the second group: App Control does not enforce
-    over ELF binaries in the guest, so there is no extension for it to refuse there."""
+    """WSL reports linux and stays enabled: App Control does not enforce over ELF binaries."""
     monkeypatch.setattr(sys, "platform", platform)
     assert sentencepiece_should_be_disabled() is expected
 
@@ -90,8 +81,7 @@ def test_a_falsy_flag_opts_windows_back_in(value, monkeypatch):
 
 @pytest.mark.parametrize("value", ["maybe", "2", "", "   ", "disable"])
 def test_an_unrecognised_value_is_the_platform_default(value, monkeypatch):
-    """This runs at the top of the process. A typo in an environment variable must not be
-    fatal, and must not silently mean the opposite of what was typed."""
+    """A typo in the environment variable must not be fatal, nor silently mean the opposite."""
     monkeypatch.setenv(DISABLE_SENTENCEPIECE_VARIABLE, value)
     monkeypatch.setattr(sys, "platform", "win32")
     assert sentencepiece_should_be_disabled() is True
@@ -107,8 +97,7 @@ def test_it_installs_the_sentinel_and_the_import_then_fails_like_an_absent_packa
     assert sys.modules["sentencepiece"] is None
 
     with pytest.raises(ImportError):
-        # ModuleNotFoundError, which is an ImportError, so every `try/except ImportError`
-        # already in transformers handles it as "not installed".
+        # ModuleNotFoundError subclasses ImportError, so transformers treats it as absent.
         import sentencepiece  # noqa: F401
 
 
@@ -120,8 +109,7 @@ def test_nothing_happens_off_windows(monkeypatch):
 
 
 def test_an_already_imported_sentencepiece_is_left_alone(monkeypatch):
-    """Replacing a live module would break whoever is holding a reference to it, and by this
-    point the extension has already loaded, so there is nothing left to prevent."""
+    """Replacing a live module breaks existing references; the extension is already loaded."""
     sentinel = object()
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "sentencepiece", sentinel)
@@ -130,14 +118,7 @@ def test_an_already_imported_sentencepiece_is_left_alone(monkeypatch):
 
 
 def test_it_declines_once_transformers_is_imported(monkeypatch):
-    """Installing it late is worse than not installing it at all.
-
-    transformers reads availability from find_spec during its own import and caches it, so a
-    sentinel added afterwards only makes the two disagree: it reports the package available
-    and the import then fails. Measured on 4.57.6, unsloth/gemma-2-2b-it loads with the rule
-    applied in time and without the rule at all, and raises ModuleNotFoundError with the rule
-    applied afterwards. Whoever imported transformers first keeps the ordinary behaviour.
-    """
+    """transformers caches find_spec availability on import, so a late sentinel makes them disagree."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delitem(sys.modules, "sentencepiece", raising = False)
     monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
@@ -156,8 +137,7 @@ def test_it_declines_once_transformers_is_imported(monkeypatch):
 
 
 def test_a_sentinel_installed_in_time_survives_a_later_transformers_import(monkeypatch):
-    """The late check must not undo the ordinary case, where the rule ran first and
-    transformers was imported after it."""
+    """The late check must not undo the rule when it ran first and transformers came after."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "sentencepiece", None)
     monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
@@ -174,9 +154,8 @@ def test_calling_it_twice_is_stable(monkeypatch):
 
 
 def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
-    """Studio's parent must not import unsloth: that runs unsloth/__init__.py, whose GPU branch
-    pulls torch, Triton, transformers and the model stack into a long-lived process built to
-    stay light, and can open a competing GPU context. So it calls Studio's own copy instead."""
+    """Studio's parent must not import unsloth: unsloth/__init__.py's GPU branch pulls torch, Triton
+    and transformers into a light process and can open a competing GPU context."""
     source = MAIN.read_text(encoding = "utf-8")
     assert "from unsloth.import_fixes import" not in source
     assert "import unsloth\n" not in source
@@ -185,8 +164,7 @@ def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
     guard = source.index("from utils.sentencepiece_guard import")
     assert guard > marker
 
-    # Real import statements only. Matching the bare word finds the surrounding comments,
-    # which say nothing about execution order.
+    # Real imports only: the bare word also matches comments.
     imports = [
         m.start()
         for m in re.finditer(r"^\s*(?:import transformers|from transformers)", source, re.M)
@@ -207,9 +185,7 @@ def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
     ],
 )
 def test_the_two_spellings_agree(platform, env, expect_disabled, monkeypatch):
-    """The package helper and Studio's copy, driven through the same cases. Compared by
-    behaviour rather than by source text, which would pass on two implementations that had
-    quietly stopped agreeing."""
+    """Compares the two copies by behaviour; source text would pass even if they had diverged."""
     monkeypatch.setattr(sys, "platform", platform)
     if env is None:
         monkeypatch.delenv(DISABLE_SENTENCEPIECE_VARIABLE, raising = False)
@@ -222,21 +198,14 @@ def test_the_two_spellings_agree(platform, env, expect_disabled, monkeypatch):
     assert studio.DISABLE_SENTENCEPIECE_VARIABLE == DISABLE_SENTENCEPIECE_VARIABLE
     assert studio.sentencepiece_should_be_disabled() is expect_disabled
 
-    # A stub sys, because the real one already has sentencepiece imported by the test session,
-    # and the rule correctly declines to replace a live module. Running it against the real
-    # sys.modules would test the fixture, not the rule.
+    # Stub sys: the real one already holds sentencepiece, which the rule won't replace.
     monkeypatch.setattr(studio, "sys", types.SimpleNamespace(platform = platform, modules = {}))
     assert studio.disable_sentencepiece_on_windows() is expect_disabled
     assert (studio.sys.modules.get("sentencepiece", "absent") is None) is expect_disabled
 
 
 def _run_shared_entrypoint(tmp_path, env):
-    """Drive the workers' shared spawn entrypoint against a stand-in worker module.
-
-    The stand-in records, at its own module scope, what the interpreter looked like when the
-    entrypoint imported it. That is the moment under test: the real worker modules import
-    transformers from there onwards.
-    """
+    """Runs the shared spawn entrypoint against a stand-in worker recording interpreter state at import."""
     (tmp_path / "sentencepiece_entrypoint_probe.py").write_text(
         textwrap.dedent(
             """
@@ -273,20 +242,14 @@ def _run_shared_entrypoint(tmp_path, env):
 
 
 def test_the_shared_worker_entrypoint_installs_it_before_the_worker_module(tmp_path):
-    """Every Studio worker is a spawned interpreter that inherits no sys.modules, and each one
-    imports transformers (version activation, fast-path hooks) long before it imports unsloth.
-    A sentinel installed after that leaves transformers reporting sentencepiece available while
-    importing it fails, which breaks tokenizer loads that work either without the rule or with
-    it applied in time. So the shared entrypoint installs it before the worker module."""
+    """Workers import transformers before unsloth, so the shared entrypoint installs the sentinel first."""
     out = _run_shared_entrypoint(tmp_path, {**os.environ, DISABLE_SENTENCEPIECE_VARIABLE: "1"})
     assert "SENTINEL AT IMPORT True" in out.stdout, (out.stdout, out.stderr[-2000:])
-    # The captured cache environment still lands first: the rule reads the environment.
     assert "ENV APPLIED yes" in out.stdout, (out.stdout, out.stderr[-2000:])
 
 
 def test_the_shared_worker_entrypoint_leaves_it_alone_when_not_asked(tmp_path):
-    """The same entrypoint where the rule does not apply: off Windows and without the flag, a
-    worker still gets the real package."""
+    """Off Windows and without the flag, the shared worker still gets the real package."""
     env = {k: v for k, v in os.environ.items() if k != DISABLE_SENTENCEPIECE_VARIABLE}
     out = _run_shared_entrypoint(tmp_path, env)
     expected = "SENTINEL AT IMPORT " + str(sys.platform == "win32")

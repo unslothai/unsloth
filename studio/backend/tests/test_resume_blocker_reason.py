@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A provenance-blocked resume must not be reported as a checkpoint problem.
-
-``can_resume_run`` gained a provenance clause in this rework, so it now returns False for
-runs whose checkpoint is entirely intact -- most realistically after the pinned model
-snapshot is evicted from the HF cache. The start route answered every False with
-
-    "Resume checkpoint must belong to a stopped or errored run with complete saved
-     trainer state."
-
-which points the user at trainer state that is fine. ``exact_resume_resource_requirements``
-already raises with the precise reason; it was being discarded.
-"""
+"""A provenance-blocked resume must not get the checkpoint message; the exact blocker reason is used."""
 
 import pytest
 
@@ -34,11 +23,7 @@ def _config(**overrides):
 
 @pytest.fixture
 def resources_available(monkeypatch):
-    """Satisfy the exact-resource check so a test can isolate the status logic.
-
-    Without this the requirements check raises "model revision was not attested" for any
-    synthetic config, which is correct behaviour but masks what these cases are about.
-    """
+    """Stubs the exact-resource check, which rejects any synthetic config as an unattested revision."""
     from core.training import provenance as provenance_mod
     monkeypatch.setattr(provenance_mod, "exact_resume_resource_requirements", lambda config: None)
 
@@ -112,11 +97,7 @@ def test_the_two_helpers_cannot_disagree(resources_available):
 
 
 def test_the_start_route_prefers_the_provenance_reason():
-    """Wiring contract: the generic checkpoint text must not be the only answer.
-
-    Kept narrow -- it asserts the blocker is consulted in the resume rejection branch and
-    that its result overrides the default, which is exactly what regressed.
-    """
+    """The start route must let the provenance reason override the generic checkpoint text."""
     import inspect
 
     from routes import training as training_routes

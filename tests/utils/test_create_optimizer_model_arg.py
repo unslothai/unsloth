@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
-# transformers 5.x passes model positionally when optimizer creation is delayed (FSDP);
-# 4.x passes nothing. The override must satisfy both.
+# transformers 5.x passes model positionally when optimizer creation is delayed (FSDP); 4.x
+# passes nothing. The override must satisfy both.
 
 import inspect
 
@@ -47,12 +46,11 @@ def test_create_optimizer_does_not_raise_typeerror_on_a_positional_model():
         if "positional argument" in message and "create_optimizer" in message:
             pytest.fail(f"create_optimizer rejected a positional model: {message}")
     except Exception:
-        pass  # reached the body and failed on the fake self: the expected outcome
+        pass  # reached the body and failed on the fake self: expected
 
 
 def test_q_galore_refuses_a_model_with_no_projectable_parameters():
-    """FSDP1 hands back 1-D views, which match nothing, so the run must not quietly
-    downgrade to ordinary AdamW."""
+    """FSDP1 hands back 1-D views matching nothing, so the run must not quietly drop to AdamW."""
     import torch
     import torch.nn as nn
     from types import SimpleNamespace
@@ -102,8 +100,7 @@ def test_q_galore_still_builds_when_parameters_are_projectable():
 
 
 def test_embedding_lr_is_rejected_when_wrapping_hid_the_embeddings():
-    """FSDP renames parameters, so the modules_to_save match finds nothing and the
-    requested embedding LR would be dropped in silence."""
+    """FSDP renames them, so modules_to_save matches nothing and embedding LR is silently lost."""
     import torch
     import torch.nn as nn
     from unsloth.trainer import _create_unsloth_optimizer
@@ -124,16 +121,14 @@ def test_embedding_lr_is_rejected_when_wrapping_hid_the_embeddings():
 
 
 def test_embedding_lr_without_embeddings_is_still_fine_off_the_delayed_path():
-    """The pre-existing behaviour: a model that simply does not train its embeddings is
-    ordinary, and must not start raising."""
+    """A model that does not train its embeddings is ordinary and must not start raising."""
     import torch
     import torch.nn as nn
     from unsloth.trainer import _create_unsloth_optimizer
 
     plain = nn.Linear(8, 8, bias = False)
     optimizer = _create_unsloth_optimizer(plain, torch.optim.AdamW, {"lr": 1e-3}, 5e-5)
-    # Asserted by meaning rather than by group index: empty groups are dropped, so
-    # there is no embedding group at all, and the one weight trains at the ordinary lr.
+    # Empty groups are dropped, so assert by meaning, not group index.
     groups = optimizer.param_groups
     assert [p for group in groups for p in group["params"]] == [plain.weight]
     assert all(group["lr"] == 1e-3 for group in groups), groups

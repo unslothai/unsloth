@@ -17,7 +17,6 @@ type LayoutOptions = {
   configs?: Record<string, NodeConfig>;
 };
 
-/** Pipeline rank for logical flow; lower = earlier. */
 function getPipelineRank(config: NodeConfig | undefined): number {
   if (!config) {
     return 2;
@@ -60,12 +59,7 @@ function getEdgeWeight(edgeType: string | undefined): number {
   return 3;
 }
 
-/**
- * Build phantom edges between disconnected data-pipeline nodes so dagre
- * respects pipeline rank order even when blocks aren't wired together.
- * Groups by rank, then inserts invisible edges from the last node of rank N
- * to the first of rank N+1 when no real edge already connects them.
- */
+/** Invisible edges between rank N and N+1 so dagre keeps pipeline order for unwired blocks. */
 function buildPhantomEdges(
   nodes: Node[],
   edges: Edge[],
@@ -96,7 +90,6 @@ function buildPhantomEdges(
       continue;
     }
 
-    // One phantom edge: last node in current rank to first in next.
     phantoms.push({
       id: `phantom-${ranks[i]}-${ranks[i + 1]}`,
       source: currentIds[currentIds.length - 1],
@@ -123,7 +116,6 @@ export function getLayoutedElements<TNode extends Node>(
     configs,
   } = options;
 
-  // With configs, filter infra and aux nodes out of dagre.
   const hasConfigs = configs && Object.keys(configs).length > 0;
   const dataNodes = hasConfigs
     ? nodes.filter((n) => !(isInfraNode(n.id, configs) || isAuxNode(n.id)))
@@ -140,7 +132,6 @@ export function getLayoutedElements<TNode extends Node>(
       )
     : edges;
 
-  // Phantom edges enforce rank ordering for disconnected nodes.
   const phantomEdges = hasConfigs
     ? buildPhantomEdges(dataNodes, dataEdges, configs)
     : [];
@@ -169,7 +160,6 @@ export function getLayoutedElements<TNode extends Node>(
 
   dagre.layout(graph);
 
-  // Position map from dagre results (data nodes only).
   const layoutedPositions = new Map<string, { x: number; y: number }>();
   for (const node of dataNodes) {
     const pos = graph.node(node.id);
@@ -181,7 +171,6 @@ export function getLayoutedElements<TNode extends Node>(
     });
   }
 
-  // Data nodes get dagre positions; infra/aux keep original.
   const layoutedNodes = nodes.map((node) => {
     const position = layoutedPositions.get(node.id);
     if (!position) {

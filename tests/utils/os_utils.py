@@ -6,10 +6,7 @@ import importlib
 
 
 def _missing_dependency(message):
-    """Skip under pytest, since exiting at import time aborts the whole session.
-
-    Returns under a plain script so the caller can still print its install
-    guidance before exiting; skipping first keeps that out of a test run."""
+    """Under pytest, skip rather than exit, since exiting at import time aborts the whole session."""
     if "pytest" in sys.modules:
         import pytest
         pytest.skip(message, allow_module_level = True)
@@ -19,15 +16,7 @@ TRUTHY = ("1", "true", "yes", "on")
 
 
 def require_opt_in(env_var, reason):
-    """Gate a module-level script so `pytest` skips it instead of executing it.
-
-    Files under tests/saving are standalone scripts: the whole body runs at
-    import, so pytest *collection* alone downloads checkpoints, trains and
-    pushes to the Hub, and any failure surfaces as a collection ERROR that
-    interrupts the entire run. Call this before the heavy imports so the module
-    is a visible SKIP unless ``env_var`` is truthy. Running the file directly
-    (``python tests/saving/...py``) is unaffected.
-    """
+    """Call before heavy imports, or pytest collection executes the whole script (training, Hub pushes)."""
     if os.environ.get(env_var, "").strip().lower() in TRUTHY:
         return
     if "pytest" in sys.modules:
@@ -88,7 +77,6 @@ def check_package_installed(package_name, package_manager = None):
 def require_package(package_name, executable_name = None):
     """Require a package to be installed; skip the module under pytest if not."""
 
-    # Executable in PATH is the most reliable signal
     if executable_name:
         if shutil.which(executable_name):
             print(f"✓ {executable_name} is available")
@@ -125,10 +113,6 @@ def require_package(package_name, executable_name = None):
 
     print(f"\nPlease install the required package and run the script again.")
     sys.exit(1)
-
-
-# Usage
-# require_package("ffmpeg", "ffmpeg")
 
 
 def require_python_package(

@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A vLLM server that never starts must stop SyntheticDataKit, not be ignored.
-
-`Meta_Synthetic_Data_Llama3_2_(3B).ipynb` on a Colab T4 lost its vLLM server at
-import time:
-
-    ImportError: cannot import name 'ProcessorMixin' from 'transformers'
-
-`SyntheticDataKit.__init__` printed the tails and `return`ed, so the notebook
-received a fully constructed object with no server behind it. `ingest`,
-`create` and `save-as` then each printed "VLLM server not available", wrote
-nothing, and still exited 0, because a `!` shell line does not raise on a
-non-zero status. The first thing that actually stopped the notebook was, five
-cells and fourteen error messages later:
-
-    FileNotFoundError: File data/final/arxiv_org_0_qa_pairs_ft.json does not
-    exist
-
-which names a file no step had ever been in a position to write, and points at
-`pd.read_json` rather than at the server.
-
-These drive the readiness path directly with fakes: no GPU, no vLLM, no
-network. `chunk_data` is covered separately in test_synthetic_chunk_data.py.
-"""
+"""A vLLM server that never starts must stop SyntheticDataKit, not leave a kit without one."""
 
 import re
 import threading
@@ -89,8 +67,7 @@ class _FakeProcess:
         return self._returncode
 
 
-# Every kit built here, kept alive past the end of the test that made it so the fixture below, and not the dying test
-# frame, decides when it is collected.
+# Kept alive so the fixture, not the dying test frame, decides when each kit is collected.
 _LIVE_KITS = []
 
 
@@ -105,20 +82,7 @@ def _kit(stdout_capture, stderr_capture, process):
 
 @pytest.fixture(autouse = True)
 def _retire_kits_without_reaping_a_server():
-    """Stop `__del__` running a real server teardown against a fake process.
-
-    `SyntheticDataKit.__del__` calls `cleanup()`, which ends in
-    `for _ in range(10): torch.cuda.empty_cache(); gc.collect()`. Ten full
-    collections cost about 3s per test when this file runs alone, but scale with
-    the live heap: inside the whole repo suite they cost about 40s per test, which
-    is why 15 of the 16 slowest tests in the suite are in this file.
-
-    None of these tests have a server to reap, and none of them assert on
-    `cleanup()`. `cleanup()` returns immediately when `vllm_process` is absent, so
-    dropping the attribute retires the kit without the collections. The teardown
-    the tests do care about, `terminate_tree` on the failure path, is asserted
-    inside the tests themselves and is untouched.
-    """
+    """Drops vllm_process so __del__ skips cleanup()'s slow gc loops; no test here has a server to reap."""
     yield
     while _LIVE_KITS:
         kit = _LIVE_KITS.pop()
@@ -183,8 +147,7 @@ def test_a_silent_server_raises_on_the_timeout():
 
 
 def test_a_dead_server_is_noticed_long_before_the_timeout():
-    """The old code waited on the readiness event alone, so a server that died
-    in twenty seconds still burned the full twenty-minute default."""
+    """Readiness alone let a server that died early burn the full twenty-minute default."""
     kit = _kit(
         _FakeCapture(ready = False, closed = True),
         _FakeCapture(),
@@ -221,8 +184,7 @@ def test_readiness_arriving_late_is_still_success():
 
 
 def test_readiness_wins_over_a_process_that_then_exits():
-    """The ready line is checked first, so a server that prints it and exits a
-    moment later is not misreported as never having started."""
+    """Ready is checked before exit, so a server that prints it then exits counts as started."""
     kit = _kit(_FakeCapture(ready = True), _FakeCapture(), _FakeProcess(returncode = 1))
     assert kit._await_vllm_server(timeout = 30, poll_interval = 0.01) is None
 
@@ -236,9 +198,6 @@ def test_the_message_says_what_the_user_should_do_next():
     assert "FileNotFoundError" in message
 
 
-# --- the readiness probe --------------------------------------------------
-
-
 def test_check_vllm_status_is_false_when_nothing_is_listening(monkeypatch):
     import requests
 
@@ -250,8 +209,7 @@ def test_check_vllm_status_is_false_when_nothing_is_listening(monkeypatch):
 
 
 def test_check_vllm_status_swallows_a_read_timeout(monkeypatch):
-    """Only ConnectionError was caught, so a stalled server left the readiness
-    loop as an unrelated traceback."""
+    """Only ConnectionError was caught, so a stalled server's ReadTimeout went uncaught."""
     import requests
 
     def _timeout(*args, **kwargs):
@@ -290,8 +248,7 @@ def test_check_vllm_status_is_false_on_a_non_200(monkeypatch):
 
 
 def test_the_failure_path_is_not_a_bare_return_any_more():
-    """Guards the shape of the bug: printing and returning handed the caller a
-    kit with no server, which is what let the notebook run on for five cells."""
+    """Printing and returning gave a kit with no server; a notebook ran on for five cells."""
     import inspect
 
     source = inspect.getsource(SyntheticDataKit.__init__)
@@ -299,13 +256,7 @@ def test_the_failure_path_is_not_a_bare_return_any_more():
     assert not re.search(r"terminate_tree\(self\.vllm_process\)\s*\n\s*return", source)
 
 
-# Both waits bound work by ELAPSED time.
-
-
-# --- the timeout is a deadline, not a number of laps ----------------------
-# Both waits bound work by ELAPSED time. Attempt counts and flat poll intervals
-# only agree with that when each attempt is instant, which is exactly what the
-# failing cases below are not.
+# Waits are bounded by elapsed time; attempt counts only agree when attempts are instant.
 class _RecordingCapture(_FakeCapture):
     """Remembers every timeout it was asked to wait for."""
 
@@ -333,13 +284,13 @@ def test_no_single_wait_outruns_the_callers_timeout():
 
 
 def test_a_short_timeout_returns_promptly():
-    """The wall clock, not just the arithmetic."""
+    """Checks the wall clock, not just arithmetic: an uncapped lap waits a whole poll interval."""
     kit = _kit(_FakeCapture(ready = False), _FakeCapture(), _FakeProcess())
     started = time.monotonic()
     with pytest.raises(RuntimeError):
-        kit._await_vllm_server(timeout = 0.05, poll_interval = 1.0)
+        kit._await_vllm_server(timeout = 0.05, poll_interval = 10.0)
     elapsed = time.monotonic() - started
-    assert elapsed < 0.5, f"took {elapsed:.2f}s to honour a 0.05s timeout"
+    assert elapsed < 5.0, f"took {elapsed:.2f}s to honour a 0.05s timeout"
 
 
 def test_the_whole_timeout_is_still_used_when_it_is_long():
@@ -353,8 +304,7 @@ def test_the_whole_timeout_is_still_used_when_it_is_long():
 
 
 def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
-    """Each request gets 5 seconds, so counting to 100 with a 1 second sleep
-    spent up to ten minutes against a message promising 100 seconds."""
+    """100 attempts of a 5s request plus a 1s sleep could run ten minutes, not 100 seconds."""
     clock = {"now": 0.0}
     monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
     # each health check burns its full 5s request timeout, then the 1s sleep
@@ -362,7 +312,7 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
 
     calls = {"n": 0}
 
-    def stalled_check(port = 8000):
+    def stalled_check(port = 8000, host = "localhost"):
         calls["n"] += 1
         clock["now"] += 5.0
         return False
@@ -380,11 +330,7 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
 
 
 def test_an_unbounded_timeout_is_a_wait_not_a_type_error():
-    """`timeout = None` is a legal call meaning wait as long as it takes.
-
-    Deadline arithmetic on `None` raised `TypeError` seconds after vLLM was
-    spawned, losing both the wait asked for and the child started.
-    """
+    """timeout=None must mean wait without limit, not a TypeError from deadline arithmetic after spawn."""
     kit = _kit(
         _FakeCapture(ready = False, ready_after = 0.05),
         _FakeCapture(),
@@ -428,7 +374,7 @@ def test_the_metrics_wait_accepts_an_unbounded_timeout():
     """Same arithmetic, same fix, pinned so the helper is not left half done."""
     calls = {"n": 0}
 
-    def check(port = 8000):
+    def check(port = 8000, host = "localhost"):
         calls["n"] += 1
         return calls["n"] >= 3
 

@@ -16,6 +16,21 @@ from models.inference import LoadRequest, ValidateModelRequest
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
+NO_ENGINE = (
+    "NVFP4 models run on the vLLM or SGLang engine.\nThose need Linux or Windows with an "
+    "NVIDIA GPU. On this computer, try a GGUF or MLX build of this model instead."
+)
+
+
+@pytest.fixture(autouse = True)
+def _host_without_engines():
+    with patch(
+        "core.inference.engine_install.support_reason",
+        return_value = "Managed engines currently require Linux x86_64 or Windows x64.",
+    ):
+        yield
+
+
 def _load_route_module():
     spec = importlib.util.spec_from_file_location(
         "inference_route_nvfp4_error",
@@ -98,9 +113,7 @@ def test_nvfp4_mlx_metadata_error_is_replaced_with_short_message(exception_type,
     )
 
     assert error.status_code == 500
-    assert error.detail == (
-        "We are working on supporting NVFP4 inference. For now it is not supported"
-    )
+    assert error.detail == NO_ENGINE
     assert "quantization metadata" not in error.detail
 
 
@@ -131,9 +144,7 @@ def test_nvfp4_validation_error_is_replaced_with_short_message(exception_type, n
     )
 
     assert error.status_code == 400
-    assert error.detail == (
-        "We are working on supporting NVFP4 inference. For now it is not supported"
-    )
+    assert error.detail == NO_ENGINE
     assert "quantization metadata" not in error.detail
 
 
@@ -152,3 +163,62 @@ def test_unrelated_validation_error_keeps_existing_message(native, expected_deta
 
     assert error.status_code == 400
     assert error.detail == expected_detail
+
+
+_MLX_NVFP4_ERROR = (
+    "Unsloth: 'unsloth/Qwen3.6-35B-A3B-NVFP4-Fast' has per-module MLX quantization metadata "
+    "{'config_groups': {'group_1': {'format': 'nvfp4-pack-quantized'}}}"
+)
+
+
+@pytest.mark.parametrize(
+    "platform, reason, engine_message",
+    [
+        ("cuda", None, True),
+        ("rocm", None, False),
+        ("cuda", "Checking for a supported NVIDIA GPU.", False),
+    ],
+)
+def test_nvfp4_points_at_the_engines_only_where_they_run(platform, reason, engine_message):
+    inference_route = _load_route_module()
+    with (
+        patch("core.inference.engine_install.support_reason", return_value = reason),
+        patch("core.inference.engine_install.gpu_platform", return_value = platform),
+    ):
+        detail = inference_route._unsupported_quantization_detail(_MLX_NVFP4_ERROR)
+    if engine_message:
+        assert detail == inference_route._NVFP4_ENGINE_MESSAGE
+        assert "Settings > System > More engines" in detail
+    else:
+        assert detail == NO_ENGINE
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "{'config_groups': {'group_0': {'format': 'float-quantized'}}}",
+        "{'quant_method': 'fp8', 'weight_block_size': [128, 128]}",
+        "{'quant_method': 'modelopt', 'quant_algo': 'FP8'}",
+    ],
+)
+def test_fp8_gets_the_same_message_naming_fp8(metadata):
+    inference_route = _load_route_module()
+    msg = f"Unsloth: 'x' has per-module MLX quantization metadata {metadata}, but requested {{}}"
+    assert inference_route._unsupported_quantization_detail(msg) == NO_ENGINE.replace(
+        "NVFP4", "FP8"
+    )
+
+
+def test_a_mixed_nvfp4_checkpoint_is_named_nvfp4():
+    inference_route = _load_route_module()
+    msg = (
+        "Unsloth: 'x' has per-module MLX quantization metadata {'config_groups': {'group_0': "
+        "{'format': 'float-quantized'}, 'group_1': {'format': 'nvfp4-pack-quantized'}}}"
+    )
+    assert inference_route._unsupported_quantization_detail(msg) == NO_ENGINE
+
+
+def test_other_per_module_metadata_keeps_its_own_error():
+    inference_route = _load_route_module()
+    msg = "Unsloth: 'x' has per-module MLX quantization metadata {'format': 'pack-quantized', 'type': 'int'}"
+    assert inference_route._unsupported_quantization_detail(msg) is None

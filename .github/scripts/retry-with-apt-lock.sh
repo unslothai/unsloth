@@ -1,72 +1,22 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-# Run a command that talks to apt, bounded per attempt and retried.
-# GitHub's Azure apt mirror stalls on these runners. Observed repeatedly in one
-# day: `playwright install --with-deps` sat in apt's download loop three times,
-# and `Linux deps` (a bare `apt-get update && apt-get install`) sat there for 28
-# minutes before anyone noticed. An unbounded apt step is not slow, it is silent:
-# it spends the job's whole timeout-minutes, GitHub scores the result as
-# "cancelled" rather than a failure, prints no reason, and skips every step after
-# it. A shard then reports nothing about its subject because a mirror hiccuped.
-# Two things make the retry actually work, and both were learned the hard way:
-#   1. The apt locks, PLURAL. apt runs as root, so killing the attempt leaves the
-#      apt-get child alive holding a lock, and the next attempt dies two seconds
-#      later with "Could not get lock". A retry that cannot succeed is worse than
-#      none: it buries the real reason under a second, different failure. So wait
-#      for the locks, then take them -- the holder is our own orphan and the
-#      runner is disposable.
-#      There are four, and which one matters depends on what apt was doing.
-#      Waiting on only /var/lib/dpkg/lock-frontend is how the first version of
-#      this shipped, and it made the retry useless for exactly the case it was
-#      written for: `apt-get update` takes /var/lib/apt/lists/lock and nothing
-#      else, so the wait saw a free lock, retried immediately, and produced
-#        E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2420 (apt-get)
-#      twice in a row in under two seconds. Three attempts, one real one.
-#   2. `set -e`. GitHub runs `run:` blocks as `bash -e`, so a bare failing
-#      command aborts the step then and there. A retry loop written as
-#      `timeout ... ; rc=$?` never reaches its second attempt: the step exits 124
-#      with no output at all, which is exactly how the first version of this
-#      shipped and why it is a script now rather than eight inline copies.
-#   3. apt's own timeouts, which is the part that makes the retry meaningful
-#      rather than merely survivable. Reading the logs of the four stalls above:
-#        04:47:02  Get:5 https://archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
-#        05:16:29  ##[error]The operation was canceled.
-#      Twenty-nine minutes of silence, mid-fetch of a 126 kB index file. Two of
-#      the four hung on that same file. What happened before it is the other half
-#      of the story: azure.archive.ubuntu.com was `Ign:`d four times over thirty
-#      seconds, so apt had already failed over through /etc/apt/apt-mirrors.txt to
-#      the public archive, which is not provisioned for this fleet.
-#      apt did not consider any of that an error. `Acquire::http::Timeout`
-#      defaults to 120s AND is an idle timeout, so a connection that is open and
-#      trickling never trips it -- apt will wait out the heat death of the
-#      universe for a socket that is technically still alive. Cutting the timeout
-#      to 20s with internal retries turns a 29-minute hang into a ~1 minute
-#      failure, which matters for a reason beyond speed: the wall-clock kill below
-#      is what orphans the dpkg lock in the first place, so an apt that fails on
-#      its own is an apt we never have to kill.
-#      Deliberately NOT pinning a mirror. The evidence does not support it: in one
-#      stall Azure was dead and the public archive hung, in another Azure was
-#      serving fine and the transfer stalled at a 13.6 MB package. Neither is
-#      reliably better, and the mirrorlist failover is already the right mechanism
-#      -- it just needs to be allowed to give up.
+# Run an apt-using command with a per-attempt timeout, retries and apt fail-fast settings.
+# Waits for and clears all four apt locks an orphaned attempt may hold.
 # Usage:
 #   bash .github/scripts/retry-with-apt-lock.sh apt-get update
-#   bash .github/scripts/retry-with-apt-lock.sh apt-get install -y foo bar
 #   bash .github/scripts/retry-with-apt-lock.sh python -m playwright install --with-deps chromium
 # Environment:
 #   RETRY_ATTEMPTS         attempts before giving up   (default 3)
 #   RETRY_ATTEMPT_TIMEOUT  seconds per attempt         (default 480)
 #   APT_ACQUIRE_TIMEOUT    seconds apt waits on a stalled transfer (default 20)
 #   APT_ACQUIRE_RETRIES    apt's own internal retries  (default 3)
-# Deliberately no `set -e`: this script reads exit codes itself, and -e would
-# abort it on the very first failing attempt -- the bug described above.
+# No `set -e`: this script reads exit codes itself.
 set -uo pipefail
 
 ATTEMPTS="${RETRY_ATTEMPTS:-3}"
 ATTEMPT_TIMEOUT="${RETRY_ATTEMPT_TIMEOUT:-480}"
-# Every lock apt takes. dpkg's two cover install/configure, lists covers `update`,
-# and archives covers the download cache; an orphan can be holding any of them.
+# dpkg's two locks cover install, lists covers update, archives covers the download cache.
 APT_LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock"
 APT_TIMEOUT="${APT_ACQUIRE_TIMEOUT:-20}"
 APT_RETRIES="${APT_ACQUIRE_RETRIES:-3}"
@@ -77,16 +27,9 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-# Best effort: a runner without fuser still retries, it just cannot wait on the
-# lock. Reported once rather than silently, so a retry that fails on a held lock
-# is explicable.
 have_fuser() { command -v fuser > /dev/null 2>&1; }
 
-# Make apt give up on a dead transfer instead of waiting on it forever. Written
-# before the first attempt rather than baked into the runner image so it applies
-# to `playwright install --with-deps` too, which shells out to apt without ever
-# naming it. Best effort throughout: a runner where this cannot be written still
-# runs the command, just without the fast failure.
+# Applied globally so `playwright install --with-deps`, which calls apt indirectly, fails fast too.
 configure_apt_fail_fast() {
   [ -d /etc/apt/apt.conf.d ] || return 0
   conf="Acquire::Retries \"${APT_RETRIES}\";
@@ -100,8 +43,7 @@ Acquire::ftp::Timeout \"${APT_TIMEOUT}\";"
   echo "apt configured to fail fast: ${APT_TIMEOUT}s transfer timeout, ${APT_RETRIES} internal retries"
 }
 
-# Held locks, as a single string. Absent files are not locks, and `fuser` on one
-# is an error rather than an answer, so they are skipped rather than waited on.
+# `fuser` on an absent file is an error, so missing lock files are skipped.
 held_apt_locks() {
   held=""
   for lock in $APT_LOCKS; do
@@ -133,22 +75,106 @@ release_apt_locks() {
   sleep 5
 }
 
+# GitHub's Ubuntu images send apt through mirror+file:$APT_MIRRORS with azure.archive.ubuntu.com
+# first. apt fails over only on errors: a mirror trickling at a few KB/s (runner-images #14823)
+# never trips Acquire::*::Timeout, so every retry downloads from the same slow node.
+# This measures each mirror once and puts the fastest first; a failed attempt demotes the leader.
+APT_MIRRORS="${APT_MIRRORS_FILE:-/etc/apt/apt-mirrors.txt}"
+MIRROR_PROBE_SECONDS="${APT_MIRROR_PROBE_SECONDS:-5}"
+
+mirror_urls() {
+  grep -vE '^[[:space:]]*(#|$)' "$APT_MIRRORS" 2> /dev/null | awk '{print $1}'
+}
+
+# bytes/s fetched from a mirror in MIRROR_PROBE_SECONDS; 0 when unreachable. curl prints the rate
+# even when --max-time cuts the transfer, which is exactly the slow case being measured.
+probe_mirror() {
+  speed="$(curl -sS -o /dev/null --max-time "$MIRROR_PROBE_SECONDS" -w '%{speed_download}' \
+    "${1%/}/dists/${2}/main/binary-${3}/Packages.gz" 2> /dev/null)"
+  speed="${speed%%.*}"
+  case "$speed" in '' | *[!0-9]*) speed=0 ;; esac
+  printf '%s' "$speed"
+}
+
+# Rewrites APT_MIRRORS with the given URLs in order, priority:1 first.
+write_mirrors() {
+  body=""
+  n=0
+  for url in "$@"; do
+    n=$((n + 1))
+    body="${body}${url}	priority:${n}
+"
+  done
+  if ! printf '%s' "$body" | sudo tee "$APT_MIRRORS" > /dev/null 2>&1; then
+    echo "::warning::could not rewrite ${APT_MIRRORS}; apt keeps its mirror order"
+    return 1
+  fi
+}
+
+# Once per job: later helper calls in the same job reuse the order (and any demotion).
+MIRROR_MARKER="${RUNNER_TEMP:-/tmp}/unsloth-apt-mirror-ranked"
+
+prefer_fast_apt_mirror() {
+  [ "${APT_PREFER_FAST_MIRROR:-1}" = "1" ] || return 0
+  [ -f "$APT_MIRRORS" ] && command -v curl > /dev/null 2>&1 || return 0
+  [ -e "$MIRROR_MARKER" ] && return 0
+  : > "$MIRROR_MARKER" 2> /dev/null || true
+  urls="$(mirror_urls)"
+  [ -n "$urls" ] || return 0
+  codename="$(. /etc/os-release 2> /dev/null && printf '%s' "${VERSION_CODENAME:-}")"
+  arch="$(dpkg --print-architecture 2> /dev/null || echo amd64)"
+  [ -n "$codename" ] || return 0
+  # The global archive carries every amd64 pocket, so it is a valid fallback beside any
+  # *.archive.ubuntu.com mirror. ports.ubuntu.com (arm64) has no such twin and is left alone.
+  if printf '%s\n' "$urls" | grep -q 'archive\.ubuntu\.com/ubuntu' \
+    && ! printf '%s\n' "$urls" | grep -qE '^https?://archive\.ubuntu\.com/ubuntu/?$'; then
+    urls="$(printf '%s\nhttp://archive.ubuntu.com/ubuntu/' "$urls")"
+  fi
+  ranked=""
+  for url in $urls; do
+    speed="$(probe_mirror "$url" "$codename" "$arch")"
+    echo "apt mirror ${url}: $((speed / 1024)) KB/s"
+    ranked="${ranked}${speed} ${url}
+"
+  done
+  # shellcheck disable=SC2046  # one URL per word
+  write_mirrors $(printf '%s' "$ranked" | sort -k1,1nr -s | awk '{print $2}') \
+    && echo "apt mirror order: $(mirror_urls | tr '\n' ' ')"
+}
+
+# After a failed attempt the leading mirror goes last, so the retry does not reuse it.
+demote_apt_mirror() {
+  [ "${APT_PREFER_FAST_MIRROR:-1}" = "1" ] && [ -f "$APT_MIRRORS" ] || return 0
+  urls="$(mirror_urls)"
+  [ "$(printf '%s\n' "$urls" | wc -l)" -gt 1 ] || return 0
+  first="$(printf '%s\n' "$urls" | head -n 1)"
+  # shellcheck disable=SC2046
+  write_mirrors $(printf '%s\n' "$urls" | tail -n +2) "$first" \
+    && echo "apt mirror ${first} moved last for the retry"
+}
+
+# A timed-out attempt can leave apt-get running under sudo (timeout signals sudo, not its
+# grandchildren), still holding the dpkg lock and still downloading from the slow mirror.
+stop_orphaned_apt() {
+  sudo pkill -TERM -x apt-get > /dev/null 2>&1 || true
+  sudo pkill -TERM -x apt > /dev/null 2>&1 || true
+  sleep 2
+  sudo dpkg --configure -a > /dev/null 2>&1 || true
+}
+
+prefer_fast_apt_mirror
 configure_apt_fail_fast
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
   rc=0
-  # `|| rc=$?` keeps this exempt from any -e a caller may have set, and records
-  # the status instead of ending the script.
+  # `|| rc=$?` stays exempt from any caller -e.
   timeout --signal=TERM --kill-after=30 "$ATTEMPT_TIMEOUT" "$@" || rc=$?
   if [ "$rc" -eq 0 ]; then
     [ "$attempt" -gt 1 ] && echo "::notice::succeeded on attempt ${attempt}"
     exit 0
   fi
 
-  # 124 is timeout's own "I killed it"; 137 is SIGKILL landing after
-  # --kill-after. Anything else is the command itself refusing, and saying "did
-  # not finish" about a two-second exit sends the next reader looking for a
-  # stall that never happened.
+  # 124 is timeout's kill and 137 is SIGKILL after --kill-after; anything else is the command.
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     reason="did not finish within ${ATTEMPT_TIMEOUT}s"
   else
@@ -157,6 +183,10 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   echo "::warning::attempt ${attempt}/${ATTEMPTS} of '$*' ${reason}"
 
   [ "$attempt" -ge "$ATTEMPTS" ] && break
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    stop_orphaned_apt
+  fi
+  demote_apt_mirror
   release_apt_locks
 done
 

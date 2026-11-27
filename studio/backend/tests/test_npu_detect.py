@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux NPU detection over a fake /sys tree.
-
-The values are the ones the AMD DevLab Strix Halo runner reported (amdxdna 2.25 DKMS,
-firmware 1.1.2.65)."""
+"""Linux NPU detection over a fake /sys tree, with real amdxdna 2.25 and firmware 1.1.2.65 values."""
 
 from __future__ import annotations
 
@@ -14,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from utils.hardware import npu
+from utils.npu_runtime_config import FLM_BINARY_ENV, LEMONADE_ARCHIVE_ENV
 
 
 def _device(
@@ -78,9 +76,30 @@ def test_only_xdna2_is_supported(tmp_path, monkeypatch, device, supported):
     monkeypatch.setattr(
         npu, "_linux_probe", lambda: probe(tmp_path / "devices", tmp_path / "module")
     )
+    monkeypatch.setenv(npu.ENABLE_ENV, "1")
     info = npu.detect_amd_npu()
     assert info["present"] is True
     assert info["supported"] is supported
+
+
+@pytest.mark.parametrize(
+    "value, enabled",
+    [(None, True), ("", True), ("1", True), ("0", False), ("false", False), (" Off ", False)],
+)
+def test_an_xdna2_npu_is_on_unless_the_flag_turns_it_off(tmp_path, monkeypatch, value, enabled):
+    _device(tmp_path, "0000:c4:00.1", "1022", "17f0", driver = "amdxdna")
+    probe = npu._linux_probe
+    monkeypatch.setattr(npu.sys, "platform", "linux")
+    monkeypatch.setattr(
+        npu, "_linux_probe", lambda: probe(tmp_path / "devices", tmp_path / "module")
+    )
+    if value is None:
+        monkeypatch.delenv(npu.ENABLE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(npu.ENABLE_ENV, value)
+    info = npu.detect_amd_npu()
+    assert info["present"] is True and info["family"] == "XDNA2"
+    assert info["enabled"] is enabled and info["supported"] is enabled
 
 
 def test_detection_never_raises(monkeypatch):
@@ -89,4 +108,32 @@ def test_detection_never_raises(monkeypatch):
 
     monkeypatch.setattr(npu.sys, "platform", "linux")
     monkeypatch.setattr(npu, "_linux_probe", broken)
-    assert npu.detect_amd_npu() == {"present": False, "error": "sysfs", "supported": False}
+    monkeypatch.delenv(npu.ENABLE_ENV, raising = False)
+    assert npu.detect_amd_npu() == {
+        "present": False,
+        "error": "sysfs",
+        "enabled": True,
+        "supported": False,
+    }
+
+
+def test_custom_runtime_allows_probe_and_respects_disable_flag(monkeypatch):
+    monkeypatch.setattr(npu.sys, "platform", "win32")
+    monkeypatch.setattr(npu, "_windows_probe", lambda: {"present": False})
+    monkeypatch.setenv(FLM_BINARY_ENV, "custom-flm.exe")
+    monkeypatch.setenv(npu.ENABLE_ENV, "1")
+
+    assert npu.detect_amd_npu() == {"present": False, "enabled": True, "supported": True}
+
+    monkeypatch.setenv(npu.ENABLE_ENV, "0")
+    assert npu.detect_amd_npu() == {"present": False, "enabled": False, "supported": False}
+
+
+def test_supported_windows_npu_needs_no_runtime_override(monkeypatch):
+    monkeypatch.setattr(npu.sys, "platform", "win32")
+    monkeypatch.setattr(npu, "_windows_probe", lambda: {"present": True, "family": "XDNA2"})
+    monkeypatch.delenv(FLM_BINARY_ENV, raising = False)
+    monkeypatch.delenv(LEMONADE_ARCHIVE_ENV, raising = False)
+    monkeypatch.setenv(npu.ENABLE_ENV, "1")
+
+    assert npu.detect_amd_npu()["supported"]

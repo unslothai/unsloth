@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The live progress SSE must not time out during the pre-first-step phase.
-
-A large model load / dataset tokenization can keep a run at step 0 for longer
-than the stall timeout. Treating that as a stall ends the live stream and makes a
-healthy run look frozen, so the timeout must apply only once the run is stepping.
-"""
+"""Stall timeout applies only once stepping; a long load at step 0 must not end the live stream."""
 
 import asyncio
 import sys
@@ -76,7 +71,6 @@ class _FakeRequest:
 
 
 class _ReconnectRequest:
-    # Reconnect carrying the last step the client already received.
     headers = {"last-event-id": "10"}
 
     async def is_disconnected(self):
@@ -105,8 +99,7 @@ def _fast_short_timeout(monkeypatch):
 
 
 def test_prep_phase_does_not_time_out_before_first_step(monkeypatch, _fast_short_timeout):
-    # Step 0 for many polls (far past the timeout), then the run ends. Pre-step
-    # this is preparation, not a stall: no error event may be emitted.
+    # Pre-step, a long step 0 is preparation, not a stall.
     backend = _Backend(active_polls = 20, step_history = [], live_step = 0)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
@@ -120,8 +113,6 @@ def test_prep_phase_does_not_time_out_before_first_step(monkeypatch, _fast_short
 
 
 def test_stall_after_first_step_still_times_out(monkeypatch, _fast_short_timeout):
-    # Emits a live step (so seen_live_step becomes True) then stays put: a genuine
-    # post-step stall that must still trigger the timeout error.
     backend = _Backend(active_polls = 100, step_history = [1, 2], live_step = 5)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
@@ -131,10 +122,7 @@ def test_stall_after_first_step_still_times_out(monkeypatch, _fast_short_timeout
 
 
 def test_reconnect_to_stepped_run_still_times_out(monkeypatch, _fast_short_timeout):
-    # Client reconnects at step 10 (Last-Event-ID) to a run that already stepped
-    # then hangs (only heartbeats): the post-step stall timeout must still fire.
-    # Without seeding seen_live_step from the resume point it resets to False and
-    # never times out for this client.
+    # A reconnect after steps must seed seen_live_step from the resume point.
     backend = _Backend(active_polls = 100, step_history = [10], live_step = 10)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 

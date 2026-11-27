@@ -1,17 +1,4 @@
-"""The transformers-5 config fix, demonstrated against a real transformers 5.
-
-transformers 5.x turns `PretrainedConfig` subclasses into dataclasses. vLLM's
-`configs/deepseek_vl2.py` declares `vision_config: VisionEncoderConfig` with no
-default, and a dataclass will not accept a non-default field after an inherited
-default one ("TypeError: non-default argument 'vision_config' follows default
-argument"). That fires while importing `vllm.transformers_utils.configs`, taking
-down `import vllm` and with it `import unsloth`.
-
-The other tests for this fix assert on source text; this one reproduces the
-failing shape and checks the outcome, so it catches the fix silently ceasing to
-work. No vLLM install needed: the config class above IS the reproduction. Skips
-on transformers 4.x, where configs are not dataclasses.
-"""
+"""Transformers 5 makes configs dataclasses, so a non-default field after a default breaks vLLM."""
 
 import pytest
 
@@ -76,8 +63,7 @@ def test_the_failure_is_real_without_the_fix(unpatched):
             f"transformers {transformers.__version__} passes kw_only=True "
             f"(5.5.1+), so the ordering rule this fix works around is gone"
         )
-    # The ordering rule only exists between 5.4.0 and 5.5.0: 5.0.0 to 5.3.x are 5.x but do not dataclass-ify configs at
-    # all (no `__init_subclass__`), so nothing raises there and the premise below does not apply.
+    # The ordering rule only exists in 5.4.0-5.5.0; 5.0-5.3 do not dataclass-ify configs.
     if not _transformers_needs_bare_annotation_fix():
         pytest.skip(
             f"transformers {transformers.__version__} does not apply the "
@@ -88,8 +74,7 @@ def test_the_failure_is_real_without_the_fix(unpatched):
 
 
 def test_the_fix_stands_down_when_transformers_handles_it():
-    """kw_only=True fixed this upstream, so patching anyway would be an untested
-    monkey patch. >= 5.5.1 covers both branches (5.5.1 on 5.5, 5.6.0 on main)."""
+    """kw_only=True upstream since 5.5.1 (5.6.0 on main), so patching there would be untested."""
     from unsloth.import_fixes import (
         _transformers_configs_are_kw_only,
         fix_transformers5_bare_annotation_configs,

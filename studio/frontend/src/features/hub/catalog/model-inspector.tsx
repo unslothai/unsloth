@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable } from "@/features/model-picker";
+import {
+  isServedByMlx,
+  useVllmAvailable,
+  useVllmPlatform,
+} from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -9,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
 import {
   type UnslothSupport,
   classifyUnslothSupport,
@@ -26,20 +31,21 @@ import { cn, formatCompact } from "@/lib/utils";
 import {
   Calendar03Icon,
   CalendarAdd01Icon,
-  Copy01Icon,
   CpuIcon,
   CubeIcon,
   Database02Icon,
   Download01Icon,
   FavouriteIcon,
   InternetIcon,
+  LayerIcon,
   LayersLogoIcon,
-  LibraryIcon,
+  LibrariesIcon,
   LicenseIcon,
+  LinkSquare02Icon,
   PackageIcon,
-  RamMemoryIcon,
-  Share05Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo } from "react";
@@ -49,8 +55,16 @@ import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   type HubModelRunSelection,
   hubModelRunsOnAudioPage,
+  isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
+import {
+  fp8MayRunDequantized,
+  hasMlxCardTag,
+  isMlxId,
+  namedOrTaggedMlx,
+} from "../lib/format-filters";
+import { useHubPageUrl } from "../lib/hub-page-url";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -69,7 +83,7 @@ import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
 
-function ViewRepositoryButton({
+export function ViewRepositoryButton({
   repoId,
   isDataset,
 }: {
@@ -79,12 +93,12 @@ function ViewRepositoryButton({
   const online = useOnlineStatus();
   const hfEndpoint = useHfEndpoint();
   const hubName = useHubName();
-  const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
+  const url = useHubPageUrl(`${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`);
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
     <HugeiconsIcon
-      icon={Share05Icon}
+      icon={LinkSquare02Icon}
       strokeWidth={1.75}
       className="size-[calc(13px*var(--ui-space-scale,1))]"
     />
@@ -125,7 +139,7 @@ function ViewRepositoryButton({
   );
 }
 
-function CopyRepoButton({ repoId }: { repoId: string }) {
+export function CopyRepoButton({ repoId }: { repoId: string }) {
   const { copied, copy } = useCopyFeedback();
 
   const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -157,7 +171,7 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
   );
 }
 
-function StatRow({
+export function StatRow({
   label,
   value,
   icon,
@@ -187,11 +201,11 @@ function StatRow({
   );
 }
 
-function StatGrid({ children }: { children: React.ReactNode }) {
+export function StatGrid({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-wrap items-center gap-1.5">{children}</div>;
 }
 
-function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
+export function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
   return <div className="max-w-[calc(680px*var(--ui-space-scale,1))] pt-3">{children}</div>;
 }
 
@@ -223,7 +237,7 @@ function StatusChip({
   );
 }
 
-function BaseModelSearchChip({
+export function BaseModelSearchChip({
   baseModel,
   searchTerm,
   onSearchHub,
@@ -235,7 +249,7 @@ function BaseModelSearchChip({
   const content = (
     <>
       <HugeiconsIcon
-        icon={LayersLogoIcon}
+        icon={LayerIcon}
         strokeWidth={1.75}
         className="size-3.5 shrink-0 text-muted-foreground"
       />
@@ -278,14 +292,17 @@ function ModelStatusChips({
   chatOnly,
   unslothSupport,
   vramInfo,
+  fp8DequantOnly = false,
 }: {
   isDataset: boolean;
   isGguf: boolean;
   chatOnly: boolean;
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
+  /** An FP8 checkpoint this torch build may run only by dequantizing per-channel FP8 to 16-bit. */
+  fp8DequantOnly?: boolean;
 }) {
-  // The Images/Video pages run these, so they are not "unsupported" to a user even though chat cannot load them.
+  // Images/Video pages run these, so they are not unsupported even though chat cannot.
   const showUnsupported =
     !isDataset &&
     unslothSupport.status === "unsupported" &&
@@ -295,7 +312,9 @@ function ModelStatusChips({
   // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported && !showVllm;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showChatOnly && !showVram && !showVllm) return null;
+  const showFp8Dequant = !isDataset && !isGguf && fp8DequantOnly && !showUnsupported;
+  if (!showUnsupported && !showChatOnly && !showVram && !showVllm && !showFp8Dequant)
+    return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -335,11 +354,11 @@ function ModelStatusChips({
           >
             This model may not be supported yet.
             {unslothSupport.reason && (
-              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+              <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
                 {unslothSupport.reason}
               </span>
             )}
-            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
               Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
@@ -361,7 +380,7 @@ function ModelStatusChips({
             it from the chat model picker and choose vLLM as the Inference
             engine in its run settings.
             {unslothSupport.reason && (
-              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+              <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
                 {unslothSupport.reason}
               </span>
             )}
@@ -382,8 +401,29 @@ function ModelStatusChips({
           >
             This device has no supported GPU or usable MLX, so only GGUF models
             can run here.
-            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
               Still downloadable to your Hugging Face cache.
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {showFp8Dequant && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="FP8 may run via dequant" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            This torch build has no row-wise FP8 GEMM, so a per-channel FP8
+            checkpoint runs via dequant to 16-bit here: it loads, without the
+            FP8 speed or memory saving.
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
+              Block-scaled FP8 checkpoints keep their own FP8 kernel.
             </span>
           </TooltipContent>
         </Tooltip>
@@ -401,7 +441,7 @@ function ModelStatusChips({
             className="tooltip-compact max-w-xs"
           >
             Estimated 4-bit memory load is around {vramInfo.est} GB.
-            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
               {vramDetail}
             </span>
           </TooltipContent>
@@ -415,15 +455,15 @@ export type ModelInspectorRuntime = {
   isActive: boolean;
   activeGgufVariant: string | null;
   isLoadingThisModel: boolean;
-  minMemory: string | null;
   vramInfo: {
     est: number;
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
-  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
 };
 
 export type ModelInspectorActions = {
@@ -460,11 +500,12 @@ export const ModelInspector = memo(function ModelInspector({
     isActive,
     activeGgufVariant,
     isLoadingThisModel,
-    minMemory,
     vramInfo,
     gpuGb,
     gpuCount,
+    audioCppCardGb,
     systemRamGb,
+    unifiedLoadBudgetGb,
   } = runtime;
   const {
     onInventoryChange,
@@ -474,17 +515,18 @@ export const ModelInspector = memo(function ModelInspector({
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const checkpointQuantDequantOnly = useGpuInfo().checkpointQuantDequantOnly;
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const mlxInference = usePlatformStore((s) => s.mlxInference);
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
     token: hfToken || undefined,
   });
-  // Inventory rows are snapshots; the download manager is the live source of
-  // truth. When a download is in flight, route through the download-aware section
-  // so progress/cancel stays visible across refreshes.
+  // Inventory rows are snapshots; route active downloads through the download-aware section.
   const activeDownloadRepoId = model?.hubRepoId ?? null;
   const hasActiveHubDownload = useDownloadManagerStore((state) =>
     activeDownloadRepoId
@@ -511,6 +553,7 @@ export const ModelInspector = memo(function ModelInspector({
   const supportLibraryName = model?.libraryName;
   const supportQuantMethod = model?.quantMethod;
   const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unslothSupport = useMemo<UnslothSupport>(() => {
     return classifyUnslothSupport({
       modelId: supportModelId,
@@ -520,9 +563,11 @@ export const ModelInspector = memo(function ModelInspector({
       deviceType,
       quantMethod: supportQuantMethod,
       vllmAvailable,
+      vllmPlatform,
     });
   }, [
     vllmAvailable,
+    vllmPlatform,
     deviceType,
     supportLibraryName,
     supportModelId,
@@ -537,7 +582,7 @@ export const ModelInspector = memo(function ModelInspector({
   if (!model) {
     return (
       <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 py-16 text-center">
-        <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
+        <div className="inline-flex size-12 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
         <div className="space-y-1">
@@ -568,7 +613,7 @@ export const ModelInspector = memo(function ModelInspector({
     model.downloadsAllTime != null ? (
       <>
         Downloads (30 days)
-        <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+        <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
           {formatCompact(model.downloadsAllTime)} all time
         </span>
       </>
@@ -588,17 +633,43 @@ export const ModelInspector = memo(function ModelInspector({
   const audioPage =
     mediaPage === undefined && hubModelRunsOnAudioPage(model, mediaTask);
   const runsOnMediaRuntime = mediaPage !== undefined || audioPage;
+  // A precision folder downloads as it loads, so it need not be on device.
+  const isMlx =
+    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
+  // A local folder has no hubRepoId: classify it as its inventory row does (inventoryRowFormat).
+  const runsAsMlx =
+    isMlx ||
+    (!model.isGguf &&
+      model.isLocal &&
+      namedOrTaggedMlx({
+        names: [model.path ?? "", model.title, model.displayId],
+        omlx: model.localSource === "omlx",
+      }));
+  const mlxRunsHere =
+    runsAsMlx &&
+    isServedByMlx(false, deviceType, chatOnlyReason, mlxInference);
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,
     mediaRuntime: runsOnMediaRuntime,
     nonGgufRuntimeAvailable:
-      !chatOnlyMeasured && unslothSupport.status !== "unsupported",
+      (!chatOnlyMeasured || mlxRunsHere) &&
+      unslothSupport.status !== "unsupported",
   });
   const runAction =
     runEligible && onRun
       ? (selection: HubModelRunSelection) =>
           onRun(selection, audioPage ? "audio" : mediaPage)
+      : undefined;
+  const precisionRunAction =
+    isMlx &&
+    onRun &&
+    !isDataset &&
+    !isEmbeddingOnly(model) &&
+    !runsOnMediaRuntime &&
+    (!chatOnlyMeasured || mlxRunsHere) &&
+    unslothSupport.status !== "unsupported"
+      ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
 
   const languages = parseLanguageTags(model.tags);
@@ -612,7 +683,7 @@ export const ModelInspector = memo(function ModelInspector({
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            className="size-[calc(60px*var(--ui-space-scale,1))] rounded-[18px] text-ui-19"
+            className="size-[calc(60px*var(--ui-space-scale,1))] rounded-lg text-ui-19"
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -650,7 +721,12 @@ export const ModelInspector = memo(function ModelInspector({
           {!isDataset && (
             <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
               <HugeiconsIcon
-                icon={CubeIcon}
+                icon={
+                  model.pipelineTag === "text-to-speech" ||
+                  model.pipelineTag === "text-to-audio"
+                    ? TextToSpeechIcon
+                    : CubeIcon
+                }
                 strokeWidth={1.75}
                 className="size-3 text-muted-foreground"
               />
@@ -702,7 +778,7 @@ export const ModelInspector = memo(function ModelInspector({
               modelId={model.id}
               displayName={model.title}
               repoId={model.hubRepoId}
-              sourceLabel={model.sourceLabel}
+              sourceLabel={model.owner === model.sourceLabel ? "" : model.sourceLabel}
               source={model.localSource ?? "custom"}
               path={model.path ?? model.displayId}
               isGguf={model.isGguf}
@@ -719,6 +795,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoading={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
@@ -749,12 +826,21 @@ export const ModelInspector = memo(function ModelInspector({
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
+              unifiedLoadBudgetGb={
+                runsOnMediaRuntime ? null : unifiedLoadBudgetGb
+              }
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onRun={runAction}
               runPending={runConfigPending}
               onChange={onInventoryChange}
+              isMlx={isMlx}
+              onRunPrecision={precisionRunAction}
+              onRunCheckpoint={mediaPage === "images" && onRun && model.hubRepoId
+                ? (checkpointFilename) => onRun({ checkpointFilename }, "images")
+                : undefined}
             />
           )}
         </InspectorDownloadSlot>
@@ -762,7 +848,7 @@ export const ModelInspector = memo(function ModelInspector({
 
       <div className="pb-5 pt-5">
         {selectionHiddenByFilters && (
-          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
             Current selection is hidden by the active filters or search.
           </p>
         )}
@@ -802,13 +888,10 @@ export const ModelInspector = memo(function ModelInspector({
             <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
           )}
           {libraryLabel && (
-            <StatRow label="Library" value={libraryLabel} icon={LibraryIcon} />
-          )}
-          {!isDataset && (
             <StatRow
-              label="Memory"
-              value={minMemory ?? "N/A"}
-              icon={RamMemoryIcon}
+              label="Library"
+              value={libraryLabel}
+              icon={LibrariesIcon}
             />
           )}
           {isDataset && datasetSize?.numRows != null && (
@@ -850,9 +933,20 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
-          chatOnly={chatOnly}
+          chatOnly={chatOnly && !mlxRunsHere}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
+          fp8DequantOnly={
+            !isDataset &&
+            fp8MayRunDequantized(
+              {
+                id: model.hubRepoId ?? model.id,
+                isGguf: model.isGguf,
+                quantMethod: model.quantMethod,
+              },
+              checkpointQuantDequantOnly,
+            )
+          }
         />
       </div>
 

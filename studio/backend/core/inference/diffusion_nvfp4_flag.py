@@ -10,7 +10,10 @@ from typing import Iterable, Optional
 
 NVFP4_DIFFUSION_ENV = "UNSLOTH_NVFP4_DIFFUSION"
 
-# Flip to True once the hosted *-NVFP4 repos are public.
+# Off until the hosted *-NVFP4 repos are public. Runtime NVFP4 stays behind it too: every reviewed gate record
+# (nvfp4_gate_record.json) is a hosted per-layer checkpoint on B200 flashinfer, nothing gates a whole-model runtime
+# build, and FLUX.2 klein 4B's runtime build on a G4 (sm120, 16 renders) scored LPIPS-vgg 0.30 vs bf16 against fp8's
+# 0.15: +0.15 (CI95 0.13..0.17), three times the gate's 0.05 bar over fp8.
 NVFP4_DIFFUSION_DEFAULT = False
 
 NVFP4_SCHEME = "nvfp4"
@@ -62,7 +65,7 @@ def nvfp4_disabled_message(control: str = "transformer_quant") -> str:
     """The refusal a request naming NVFP4 gets while the switch is off."""
     return (
         f"{control}='nvfp4' could not be used: NVFP4 is disabled in this build. Pick another "
-        f"precision, or set {NVFP4_DIFFUSION_ENV}=1 on the Studio backend to enable it."
+        f"precision, or set {NVFP4_DIFFUSION_ENV}=1 on the Unsloth backend to enable it."
     )
 
 
@@ -82,7 +85,7 @@ def nvfp4_checkpoint_disabled_message() -> str:
     """The refusal a load or plan of an NVFP4 checkpoint gets while the switch is off."""
     return (
         "model_path could not be used: it is an NVFP4 checkpoint and NVFP4 is disabled in this "
-        f"build. Pick another model, or set {NVFP4_DIFFUSION_ENV}=1 on the Studio backend to "
+        f"build. Pick another model, or set {NVFP4_DIFFUSION_ENV}=1 on the Unsloth backend to "
         "enable it."
     )
 

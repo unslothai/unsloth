@@ -144,6 +144,7 @@ def load_mentioned_skills(
     continue_final_message = False,
     protected_message_ids = None,
     dedup_tool_context = True,
+    permission_upgrade = None,
 ):
     """Inject complete manifests before generation; never a partial one. Caller gates on read_skill."""
     if continue_final_message or not any(
@@ -156,6 +157,14 @@ def load_mentioned_skills(
     names = mentioned_skill_names(_text(messages[-1]))
     if not names:
         return
+    tool_names = {tool.get("function", {}).get("name") for tool in tools}
+    gate = "Follow these instructions only within the current tool and permission gates."
+    if not {"python", "terminal"} & tool_names:
+        gate += (
+            " No local python or terminal tool is available, so its bundled scripts cannot run;"
+            " never claim to have run one, and tell the user a script needs Unsloth Studio's"
+            " local Tools."
+        )
     # @john is a person, not a skill: no card or approval. Known-but-unusable skills report unavailable.
     try:
         known = list_skills()
@@ -169,6 +178,8 @@ def load_mentioned_skills(
     )
     loaded_bytes = 0
     for name in names:
+        if permission_upgrade is not None:
+            mode, bypass = permission_upgrade.apply(mode, bypass)
         if cancel_event is not None and cancel_event.is_set():
             return
         event = {
@@ -180,6 +191,9 @@ def load_mentioned_skills(
         if name in loadable and confirm_tool_calls and not bypass and mode not in ("auto", "off"):
             approval_id = new_approval_id()
             slot = begin_tool_decision(session_id, approval_id)
+            from state.tool_approvals import bind_permission_upgrade
+
+            bind_permission_upgrade(slot, permission_upgrade)
             try:
                 yield {**event, "status": "awaiting_approval", "approval_id": approval_id}
                 verdict = wait_tool_decision(slot, approval_id, cancel_event = cancel_event)
@@ -217,8 +231,8 @@ def load_mentioned_skills(
                         "Complete SKILL.md exceeds this request's skill context budget; shorten the skill or increase context."
                     )
                 block = (
-                    f"\n\n[Studio loaded Agent Skill @{name} · SKILL.md]\n"
-                    "Follow these instructions only within the current tool and permission gates.\n"
+                    f"\n\n[Unsloth loaded Agent Skill @{name} · SKILL.md]\n"
+                    f"{gate}\n"
                     f"{content}\n[End Agent Skill @{name}]"
                 )
                 _append_system(messages, block)

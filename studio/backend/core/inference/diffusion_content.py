@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a single-file diffusion checkpoint IS (DiT of which family / text encoder / VAE / LoRA /
-ControlNet), from the safetensors or GGUF header only: no torch, no weight bytes, cached per
-(path, size, mtime). ComfyUI and diffusers layouts, bare or under a container prefix.
-
-Same-architecture variants (FLUX.1 dev / Krea / Kontext, Qwen-Image / 2512 / Edit / Edit-2509,
-klein distilled / base, Z-Image base / Turbo, HiDream full / dev / fast, LTX-2 / 2.3,
-HunyuanVideo-1.5 480p / 720p, Wan A14B high / low noise) have identical keys: the file name decides.
-"""
+"""Checkpoint parts from the header alone (no torch, no weight bytes); same-arch variants share
+keys, so the file name decides"""
 
 from __future__ import annotations
 
@@ -38,18 +32,18 @@ SAME_ARCH_VARIANTS: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({"qwen-image", "qwen-image-edit"}),
     "qwen-image-edit": frozenset({"qwen-image-edit"}),
     "hunyuanvideo-1.5": frozenset({"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"}),
+    # A name naming neither keeps the header's A14B answer.
+    "wan2.2-t2v-a14b": frozenset({"wan2.2-t2v-a14b", "wan2.1-t2v-14b"}),
 }
 
-_VIDEO_FAMILIES = frozenset(
-    {
-        "ltx-2",
-        "wan2.2-ti2v-5b",
-        "wan2.2-t2v-a14b",
-        "hunyuanvideo-1.5",
-        "hunyuanvideo-1.5-720p",
-        "minimax-h3",
-    }
-)
+
+def _video_family_names() -> frozenset[str]:
+    from .video_families import _FAMILIES
+    return frozenset(fam.name for fam in _FAMILIES)
+
+
+# Every video registry name; the registries are torch-free.
+_VIDEO_FAMILIES = _video_family_names()
 
 _MAX_SAFETENSORS_HEADER = 128 * 1024 * 1024
 _MAX_GGUF_TENSORS = 1 << 20
@@ -148,6 +142,45 @@ def _gguf_skip(f, vtype: int) -> bool:
     return True
 
 
+COMFY_GGUF_QUANT_PREFIX = "comfy.gguf.quant."
+
+
+def gguf_comfy_quant_declared(path: Optional[str]) -> bool:
+    """True when a GGUF declares ComfyUI per-layer quant formats (int8 ConvRot: rotated weights + scales).
+    stable-diffusion.cpp's GGUF reader ignores them and aborts on the scale shapes. Fail-open on unreadable files."""
+    try:
+        with open(str(path), "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return False
+            magic, version, _n_tensors, n_kv = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or version < 2 or n_kv > _MAX_GGUF_KV:
+                return False
+            prefix = COMFY_GGUF_QUANT_PREFIX.encode()
+            for _ in range(n_kv):
+                key = _gguf_read_str(f)
+                vt = f.read(4)
+                if key is None or len(vt) < 4:
+                    return False
+                if key.startswith(prefix):
+                    return True
+                if not _gguf_skip(f, struct.unpack("<I", vt)[0]):
+                    return False
+    except (OSError, struct.error):
+        return False
+    return False
+
+
+def sd_cpp_gguf_refusal(path: Optional[str]) -> Optional[str]:
+    if not path or not str(path).lower().endswith(".gguf") or not gguf_comfy_quant_declared(path):
+        return None
+    return (
+        f"{Path(str(path)).name} is a ComfyUI-quantized GGUF (per-layer int8 ConvRot weights), which the native "
+        "stable-diffusion.cpp engine cannot run. Pick a standard GGUF quant from the same repo (for example "
+        "Q4_K_M, Q6_K or Q8_0)."
+    )
+
+
 def _read_gguf_header(path: str) -> Optional[tuple[dict[str, list[int]], dict]]:
     with open(path, "rb") as f:
         head = f.read(24)
@@ -199,6 +232,8 @@ _DIT_PREFIXES = (
     "model.model.",
     "model.",
     "transformer.",
+    # Anima (Cosmos-Predict2 reference checkpoints).
+    "net.",
     "",
 )
 
@@ -239,6 +274,19 @@ def _any(keys, pattern: str) -> bool:
     return any(rx.search(k) for k in keys)
 
 
+LTX25_VARIANT = "ltx-2.5"
+
+
+def is_ltx25_dit_keys(keys) -> bool:
+    """LTX-2.5 DiT: keyframe position embedding, or block 0 video FFN without bias (every 2.0 / 2.3 file has it)."""
+    names = set(keys)
+    if "keyframes_abs_pos_embedding" in names:
+        return True
+    ff = "transformer_blocks.0.ff.net.0.proj"
+    has_weight = any(k == f"{ff}.weight" or k.startswith(f"{ff}.weight") for k in names)
+    return has_weight and f"{ff}.bias" not in names
+
+
 def _dit(family: Optional[str], what: str, layout: str) -> CheckpointInfo:
     return CheckpointInfo(ROLE_DIT, family, family_page(family), what, layout)
 
@@ -254,6 +302,19 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         if width == 6144 or "guidance_in" in tops:
             return _dit("flux.2-dev", "a FLUX.2 [dev] diffusion transformer", layout)
         return _dit("flux.2-klein", "a FLUX.2 [klein] diffusion transformer", layout)
+
+    if "distilled_guidance_layer" in tops and (
+        {"double_blocks", "single_blocks"} <= tops
+        or {"transformer_blocks", "single_transformer_blocks"} <= tops
+    ):
+        layout = "diffusers" if "transformer_blocks" in tops else "comfy"
+        if any(t.startswith("nerf") for t in tops):
+            return _dit(
+                None,
+                "a Chroma1-Radiance (pixel-space) diffusion transformer (not supported)",
+                layout,
+            )
+        return _dit("chroma", "a Chroma diffusion transformer", layout)
 
     if "double_blocks" in tops and "single_blocks" in tops and "vector_in" in tops:
         in_ch = _dim(s, "img_in.weight", 1)
@@ -293,6 +354,18 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             "diffusers" if "time_caption_embed" in tops else "comfy",
         )
 
+    if {
+        "layers",
+        "text_embedder",
+        "shared_block_modulation",
+        "video_embedder",
+        "video_head_modulation",
+    } <= tops:
+        return _dit("moss-image", "a MOSS-Image diffusion transformer", "comfy")
+
+    if {"blocks", "llm_adapter", "x_embedder", "t_embedder", "final_layer"} <= tops:
+        return _dit("anima", "an Anima diffusion transformer", "comfy")
+
     if {"txtfusion", "tmlp", "first"} <= tops:
         return _dit("krea-2", "a Krea-2 diffusion transformer", "comfy")
     if {"text_fusion", "time_mod_proj", "transformer_blocks"} <= tops:
@@ -313,6 +386,16 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         or "av_cross_attn_audio_scale_shift" in tops
         or "audio_caption_projection" in tops
     ):
+        if is_ltx25_dit_keys(keys):
+            # Its own family: the LTX-2 assembly cannot build this DiT (no FFN bias), so the name never routes it there.
+            return CheckpointInfo(
+                ROLE_DIT,
+                LTX25_VARIANT,
+                family_page(LTX25_VARIANT),
+                "an LTX-2.5 audio-video diffusion transformer",
+                "diffusers" if "proj_in" in tops else "comfy",
+                LTX25_VARIANT,
+            )
         return _dit(
             "ltx-2",
             "an LTX-2 audio-video diffusion transformer",
@@ -337,11 +420,17 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         if in_ch == 16 and width == 5120:
             return _dit(
                 "wan2.2-t2v-a14b",
-                "a Wan 14B text-to-video diffusion transformer (one A14B expert)",
+                "a Wan 14B text-to-video diffusion transformer (Wan2.1 T2V-14B or one Wan2.2 A14B expert)",
                 layout,
             )
+        if in_ch == 16 and width == 1536:
+            return _dit("wan2.1-t2v-1.3b", "a Wan2.1 T2V-1.3B diffusion transformer", layout)
         if in_ch == 36:
-            return _dit(None, "a Wan image-to-video diffusion transformer (not supported)", layout)
+            return _dit(
+                None,
+                "a Wan image-to-video diffusion transformer (not supported yet: image-to-video is coming)",
+                layout,
+            )
         return _dit(None, "a Wan diffusion transformer of an unsupported size", layout)
 
     if (
@@ -623,11 +712,15 @@ def refusal_for(path: str, page: str) -> Optional[str]:
             f"(diffusion_models/, unet/ or checkpoints/) instead."
         )
     if info.role == ROLE_DIT and not info.family:
-        return f"'{name}' is {info.what}, which Studio cannot load."
+        return f"'{name}' is {info.what}, which Unsloth cannot load."
     if info.role == ROLE_DIT and info.family and info.page and info.page != page:
         other = "Video" if info.page == PAGE_VIDEO else "Image"
         return f"'{name}' is {info.what} ({info.family}); load it from the {other} page."
     return None
+
+
+def is_ltx25_checkpoint(path: str) -> bool:
+    return inspect_checkpoint(path).variant == LTX25_VARIANT
 
 
 def resolve_family_with_content(
@@ -635,10 +728,13 @@ def resolve_family_with_content(
     path: Optional[str],
     page: str,
     name_vetoed: bool = False,
+    file_family: Optional[str] = None,
 ) -> tuple[Optional[str], bool]:
     """(family, decided_by_content). Non-DiT / other page -> None; a same-architecture name variant
     keeps the name, else the header wins; no supported header family -> the name. A name the variant
-    guard refused (``...-inpaint``) stays refused."""
+    guard refused (``...-inpaint``) stays refused. ``file_family``, the family the checkpoint's own file
+    name implies, outranks ``name_family`` (which may come from a repo or folder) among same-architecture
+    variants."""
     if not path:
         return name_family, False
     info = inspect_checkpoint(path)
@@ -651,7 +747,10 @@ def resolve_family_with_content(
         return None, True
     if info.page != page:
         return None, True
-    if name_family and name_family in SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family})):
+    variants = SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family}))
+    if file_family and file_family in variants:
+        return file_family, False
+    if name_family and name_family in variants:
         return name_family, False
     if name_vetoed and name_family is None:
         return None, False

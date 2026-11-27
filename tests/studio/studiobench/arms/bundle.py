@@ -1,36 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bundle-variant arms, and the refusal that keeps them from being skipped quietly.
-
-Three hypotheses cannot be tested by injecting script into a shipped build, because they are
-about what React does internally rather than about what the DOM does. They need a dist that was
-COMPILED differently, built once in CI and shipped as an ARMPACK next to the benchmark.
-
-  FROZEN ELEMENTS      The retained prefix is re-emitted as the same element objects on every
-                       render. If cost is driven by React allocating and cloning per child, this
-                       removes the allocation while keeping the fibre count identical.
-  PREFIX FOLD          The retained prefix is collapsed behind one memo boundary, so an update
-                       anywhere below reaches one child instead of hundreds of siblings. This is
-                       the closest thing to the proposed fix, measured before it is written.
-  FIBRE-FREE TWIN      The retained prefix is re-emitted as IDENTICAL MARKUP through
-                       `dangerouslySetInnerHTML`, so the DOM is unchanged and the fibres are gone.
-
-THE FIBRE-FREE TWIN IS NOT OPTIONAL AND IT IS NOT ONE ARM AMONG THREE. In the shipping build the
-number of fibres and the number of DOM nodes move together: every message is both. Every arm that
-removes messages removes both at once, so "cost proportional to fibres" and "cost proportional to
-DOM nodes" predict the identical result on every one of them. They are UNIDENTIFIABLE. The twin
-is the only arm in the whole design that moves one without the other: same nodes, same bytes, same
-pixels, no fibres. Without it, no amount of ablation can tell the two hypotheses apart, and a
-report that names one of them is guessing.
-
-WHY THE HARD REFUSAL. An armpack that does not match the install cannot be used: the arms are
-compiled against a specific dist, and running them against a different one measures the version
-difference. The tempting behaviour is to skip those arms and print the rest, which produces a
-report that looks complete and silently omits the only arm that could have distinguished the two
-live hypotheses. So this module prints ABLATION ARMS NOT AVAILABLE FOR THIS BUILD and exits that
-plane of the experiment. The runtime-knob plane still runs; it is the bundle plane that stops.
-"""
+"""Fibre-free twin is required: fibres and DOM nodes move together, so only it can tell them apart."""
 
 from __future__ import annotations
 
@@ -236,13 +207,7 @@ def discover_armpack(
     *,
     required_arms: Sequence[Arm] = BUNDLE_ARMS,
 ) -> ArmpackResolution:
-    """Find an armpack whose target digest matches this install, or refuse.
-
-    Matching is on the DIST DIGEST, not on a version string. Two installs claiming the same
-    Unsloth version can ship different dists (a local build, a patched install, a different
-    Node version producing a different chunk split), and an armpack built against one of them
-    measures the build difference when run against the other.
-    """
+    """Matches on the dist digest, not the version string, since one version can ship different dists."""
 
     searched: list[str] = []
     candidates: list[ArmpackManifest] = []

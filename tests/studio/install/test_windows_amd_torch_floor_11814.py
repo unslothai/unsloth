@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""unslothai/unsloth#11814: every Windows AMD family gets the torch 2.11 floor.
-
-install.ps1 keeps a venv's existing torch release on reinstall (Get-PreviousTorchPin)
-unless the arch has a ROCm floor to veto it. With the floor on five arches only, a
-gfx103X-all venv from an earlier install stayed on 2.10.0+rocm7.13.0, whose _grouped_mm
-access-violates on an RX 6500 XT and takes `import unsloth` down with it. What this file
-pins: the Windows-routed RDNA arches all carry the 2.11 trio in the python repair map, the
-two PowerShell installers carry the same keys with the same specs, and the 2.11-allowlist
-leaves agree with the family map for those arches.
-"""
+"""Every Windows AMD family gets the torch 2.11 floor, so reinstalls cannot keep a 2.10 ROCm build."""
 
 import importlib.util
 import re
@@ -68,16 +59,14 @@ class TestPythonRepairMap:
 
     @pytest.mark.parametrize("gfx", _RDNA_WINDOWS_ARCHES)
     def test_the_family_leaf_is_in_the_211_allowlist(self, gfx):
-        """The stale/mismatch checks key on the family leaf, the install on the arch: a
-        floor in one and not the other reinstalls every update or never repairs."""
+        """Stale checks key on the leaf, install on the arch: a floor must be in both places."""
         leaf = stack_mod._GFX_TO_AMD_INDEX_ARCH[gfx].lower()
         assert (
             leaf in stack_mod._ROCM_GFX_TORCH211_LEAVES
         ), f"{gfx} -> {leaf} not in the 2.11 allowlist"
 
     def test_cdna_stays_bare(self):
-        """gfx908 / gfx90a: no Windows wheels, unmeasured; Linux reaches them via the
-        floored rocm7.2 index. Deliberately not in the allowlist."""
+        """gfx908/gfx90a: no Windows wheels, unmeasured; Linux uses the floored rocm7.2 index."""
         assert "gfx908" not in stack_mod._ROCM_GFX_TORCH211_LEAVES
         assert "gfx90a" not in stack_mod._ROCM_GFX_TORCH211_LEAVES
         assert "gfx908" not in stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""UNSLOTH_STUDIO_PORT moves Studio off 8000 inside the container.
-
-Every place that named the port (the CLI launch, the JupyterLab port guard, the ready
-summary and its health probe, the in-place updater's health wait) reads the variable,
-and the image sets the default so a bare docker run keeps 8000.
-"""
+"""Each port reference (launch, Jupyter guard, summary, health probes) reads UNSLOTH_STUDIO_PORT."""
 
 from __future__ import annotations
 
@@ -133,7 +128,8 @@ def test_the_ready_summary_and_its_health_probe_use_the_port(tmp_path: Path):
 def test_the_updater_waits_on_the_port():
     body = UPDATE.read_text(encoding = "utf-8")
     assert '_port="${UNSLOTH_STUDIO_PORT:-8000}"' in body
-    assert '"http://127.0.0.1:${_port}/api/health"' in body
+    assert '"${_scheme}://127.0.0.1:${_port}/api/health"' in body
+    assert '[ -n "${UNSLOTH_STUDIO_SSL_KEYFILE:-}" ] && _scheme=https' in body
     assert "answering on port ${_port}" in body
 
 

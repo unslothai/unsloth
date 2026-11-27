@@ -30,7 +30,6 @@ def _find_typer_option_default(source: str, func_name: str, long_option: str):
             )
             if not is_typer_option:
                 continue
-            # First positional is the default; the rest are flags.
             if not default.args:
                 continue
             flags = [

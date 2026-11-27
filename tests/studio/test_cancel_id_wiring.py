@@ -1,9 +1,4 @@
-"""Wiring tests for the per-run cancel_id field.
-
-A thread-scoped session_id is unsafe as a cancel key (a late stop POST can match
-a later run on the same thread); cancel_id is a fresh per-generation UUID sent in
-both the completion payload and the /api/inference/cancel body. Verifies the
-field on backend/frontend types and the chat-adapter.ts generation + wiring."""
+"""cancel_id is a per-run UUID; a thread-scoped session_id would let a late stop hit a later run."""
 
 from __future__ import annotations
 
@@ -45,9 +40,7 @@ def test_chat_completion_request_has_cancel_id_field():
 
 
 def test_cancel_route_matches_cancel_id_exclusively_when_present():
-    # A stale POST with cancel_id AND session_id must not cancel a later run via session_id;
-    # the handler must early-return through an exclusive-cancel_id path (atomic helper, or a keys list with ONLY
-    # cancel_id).
+    # A stale POST with cancel_id and session_id must not cancel a later run via session_id.
     for node in ast.walk(ast.parse(ROUTES_SRC)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "cancel_inference":
             break
@@ -129,7 +122,7 @@ def test_chat_adapter_sends_cancel_id_in_abort_cancel_post():
 
 
 def test_abort_cancel_post_uses_plain_fetch_with_manual_auth_header():
-    # authFetch redirects to login on 401, kicking the user out mid-stop if the token expired.
+    # authFetch redirects to login on 401, kicking the user out mid-stop.
     start = ADAPTER_SRC.find("const onAbortCancel")
     assert start >= 0, "onAbortCancel handler missing"
     rest = ADAPTER_SRC[start:]

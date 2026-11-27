@@ -13,6 +13,27 @@ ROOT = Path(__file__).parents[2]
 LOADER = ROOT / "unsloth/models/loader.py"
 
 
+def _mapper_function(name):
+    """A plain function from mapper.py, run for real (importing unsloth would pull in torch)."""
+    path = ROOT / "unsloth/models/mapper.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    scope = {}
+    exec(compile(ast.Module(body = [node], type_ignores = []), str(path), "exec"), scope)
+    return scope[name]
+
+
+# The -bf16 repo check moved into mapper.py in #18061; the blocks below call it.
+bf16_repo_loads_16bit = _mapper_function("bf16_repo_loads_16bit")
+
+
+def _is_bf16_check(test):
+    text = ast.unparse(test)
+    return text.startswith("bf16_repo_loads_16bit(") or text.startswith(
+        "model_name.lower().endswith"
+    )
+
+
 def _loader(cls):
     tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
     node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls)
@@ -28,8 +49,6 @@ def test_reports_actual_repo_after_mapping_and_capability_normalization(cls, exa
     start = next(
         i for i, n in enumerate(function.body) if ast.unparse(n) == "old_model_name = model_name"
     )
-    # Stop before provider downloads/config probes. This executes the production
-    # mapping and reporting statements, not a second implementation of the mapper.
     end = next(
         i
         for i in range(start, len(function.body))
@@ -43,6 +62,7 @@ def test_reports_actual_repo_after_mapping_and_capability_normalization(cls, exa
         return "org/resolved-unsloth-bnb-4bit"
 
     scope = dict(
+        fast_inference = False,
         model_name = "org/requested",
         use_exact_model_name = exact,
         load_in_4bit = True,
@@ -56,6 +76,7 @@ def test_reports_actual_repo_after_mapping_and_capability_normalization(cls, exa
         _strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-unsloth-bnb-4bit"),
         _prefer_legacy_lowercase_cache = lambda name, *a: name,
         on_model_resolved = reports.append,
+        bf16_repo_loads_16bit = bf16_repo_loads_16bit,
         os = os,
         kwargs = {},
         revision = None,
@@ -81,15 +102,12 @@ def test_adapter_base_resolution_updates_report_before_base_config_load(cls):
     block = next(
         n for n in function.body if isinstance(n, ast.If) and ast.unparse(n.test) == "is_peft"
     )
-    # The first three statements select, map and normalize the adapter's base.
-    # Include the notification that must follow, stopping before precision setup.
     end = next(
-        i
-        for i, n in enumerate(block.body)
-        if isinstance(n, ast.If) and ast.unparse(n.test).startswith("model_name.lower().endswith")
+        i for i, n in enumerate(block.body) if isinstance(n, ast.If) and _is_bf16_check(n.test)
     )
     reports = []
     scope = dict(
+        fast_inference = False,
         peft_config = SimpleNamespace(base_model_name_or_path = "org/base"),
         use_exact_model_name = False,
         load_in_4bit = True,
@@ -100,6 +118,7 @@ def test_adapter_base_resolution_updates_report_before_base_config_load(cls):
         get_model_name = lambda *a, **k: "org/base-unsloth-bnb-4bit",
         _prefer_legacy_lowercase_cache = lambda name, *a: name,
         on_model_resolved = reports.append,
+        bf16_repo_loads_16bit = bf16_repo_loads_16bit,
         kwargs = {},
     )
     module = ast.Module(body = block.body[:end], type_ignores = [])
@@ -139,7 +158,7 @@ def test_training_forwards_observer_through_each_loader_and_retry():
             "self.load_model",
         )
     ]
-    assert len(calls) == 9
+    assert len(calls) == 10
     for call in calls:
         assert any(
             k.arg == "on_model_resolved" and ast.unparse(k.value) == "on_model_resolved"
@@ -160,6 +179,7 @@ def test_stripped_prequant_base_can_use_the_legacy_lowercase_cache(cls):
     )
     reports = []
     scope = dict(
+        fast_inference = False,
         model_name = "Org/Requested",
         use_exact_model_name = False,
         load_in_4bit = True,
@@ -173,6 +193,7 @@ def test_stripped_prequant_base_can_use_the_legacy_lowercase_cache(cls):
         _strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-unsloth-bnb-4bit"),
         _prefer_legacy_lowercase_cache = lambda name, *a: name.lower(),
         on_model_resolved = reports.append,
+        bf16_repo_loads_16bit = bf16_repo_loads_16bit,
         os = os,
         kwargs = {"local_files_only": True},
         revision = None,

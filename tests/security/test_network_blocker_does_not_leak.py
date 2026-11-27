@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The offline guard must not outlive the suite that asked for it.
-
-`tests/security/conftest.py` replaces `socket.socket`. It was session-scoped: a
-directory conftest limits WHICH tests a fixture applies to, but a session-scoped
-one still tears down at session end, so the patch stayed installed for
-everything after. `security` sorts before `version_compat` and `vllm_compat`,
-whose pinned-symbol checks fetch upstream sources, so a full run lost about 1300
-of them to `RuntimeError: network access blocked by tests/security/conftest.py`
--- each passing alone, which reads as upstream drift rather than as a fixture.
-"""
+"""The offline socket patch must not be session-scoped, or it leaks into later suites."""
 
 from __future__ import annotations
 
@@ -73,8 +64,7 @@ def test_loopback_is_still_allowed():
 
 
 def test_the_original_socket_is_what_gets_restored():
-    """Teardown must hand back the real class, not another blocker: nesting two
-    installs and restoring in the wrong order would leave the patch behind."""
+    """Restore the real class, not a blocker; wrong-order restores of nested installs leak."""
     import tests.security.conftest as C
     assert (
         not issubclass(socket.socket, C._BlockedSocket) or socket.socket is C._BlockedSocket
@@ -82,11 +72,7 @@ def test_the_original_socket_is_what_gets_restored():
 
 
 def test_the_finalizer_really_restores_the_original():
-    """Drive the fixture's own generator, so teardown is observed.
-
-    Every assertion above runs while the fixture is still active, so emptying
-    the `finally` leaves them all green while the cross-suite leak returns.
-    """
+    """Drives the fixture's own generator, so a removed finally restore is caught."""
     import tests.security.conftest as C
 
     # From `_BlockedSocket`'s base, not live: `socket.socket` here is already the blocker, so reading it would compare
@@ -94,24 +80,20 @@ def test_the_finalizer_really_restores_the_original():
     real = C._BlockedSocket.__bases__[0]
     assert real is not C._BlockedSocket
 
-    # Stand the guard down first: the fixture captures whatever is installed when it starts, so driving it from
-    # under itself would "restore" the blocker.
+    # Drop the guard first, or the fixture captures the blocker as the original to restore.
     outer, socket.socket = socket.socket, real
     try:
         generator = C.network_blocker.__wrapped__()
         next(generator)
         assert socket.socket is C._BlockedSocket, "setup did not install the guard"
-        next(generator, None)  # run the finally
+        next(generator, None)
         assert socket.socket is real, "teardown did not hand the original back"
     finally:
         socket.socket = outer
 
 
 def test_a_later_suite_gets_a_working_socket_back(tmp_path):
-    """The original bug in miniature, in a nested pytest run: the security
-    suite first, an ordinary test after it, and the second must see a real
-    socket. A regression fails here rather than 1300 tests away.
-    """
+    """A security test run before an ordinary one must not leave the second without a real socket."""
     import subprocess
     import sys
     import textwrap

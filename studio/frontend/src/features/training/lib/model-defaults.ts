@@ -38,9 +38,8 @@ function toStringArray(value: unknown): string[] | undefined {
   return result.length > 0 ? result : undefined;
 }
 
-// The spellings studio/backend/core/training/trainer.py accepts, so a file means the same thing to
-// the picker as it does to the trainer. A quoted "false" read as "leave it at the default" is how a
-// config asking for no checkpointing ended up training with Unsloth GC.
+// The spellings studio/backend/core/training/trainer.py accepts; a quoted "false" must mean no
+// checkpointing.
 const GRADIENT_CHECKPOINTING_ALIASES = new Map<
   string,
   TrainingConfigState["gradientCheckpointing"]
@@ -63,12 +62,11 @@ function toGradientCheckpointing(
   // Shipped YAML may decode this value as a boolean.
   if (typeof value === "boolean") return value ? "true" : "none";
   if (typeof value !== "string") return undefined;
-  // Blank means absent here too, so it keeps whatever is selected.
   const resolved = GRADIENT_CHECKPOINTING_ALIASES.get(
     value.trim().toLowerCase(),
   );
   if (resolved === undefined) return undefined;
-  // On Mac, map "unsloth" → "mlx" since Unsloth GC is GPU-only
+  // On Mac, map "unsloth" to "mlx" since Unsloth GC is GPU-only.
   if (
     resolved === "unsloth" &&
     usePlatformStore.getState().deviceType === "mac"
@@ -129,10 +127,8 @@ export function mapBackendModelConfigToTrainingPatch(
   if (warmupSteps !== undefined) {
     patch.warmupSteps = warmupSteps;
   } else {
-    // Ten shipped model_defaults express warmup as a ratio and set no warmup_steps, default.yaml
-    // among them, so reading only warmup_steps left every one of them on the generic UI default.
-    // Materialize with ceil, the way TrainingArguments.get_warmup_steps does, so a small ratio such
-    // as an imported 0.03 over 10 steps asks for warmup and gets it instead of zero.
+    // Shipped defaults (default.yaml among them) set warmup_ratio, not warmup_steps; ceil like
+    // TrainingArguments.get_warmup_steps so a small ratio still warms up.
     const warmupRatio = toNumber(training?.warmup_ratio);
     if (warmupRatio !== undefined && maxSteps !== undefined && maxSteps > 0) {
       patch.warmupSteps = Math.ceil(warmupRatio * maxSteps);
@@ -182,8 +178,7 @@ export function mapBackendModelConfigToTrainingPatch(
     if (raw == null) {
       patch.visionImageSize = null;
     } else {
-      // Mirror studio/backend/models/training.py:_check_vision_image_size: drop anything outside
-      // [_MIN_VISION_IMAGE_SIZE, _MAX_VISION_IMAGE_SIZE] so the UI never shows a rejected value.
+      // Mirrors studio/backend/models/training.py:_check_vision_image_size bounds.
       const n = toNumber(raw);
       if (n !== undefined && Number.isInteger(n) && n >= 256 && n <= 2048) {
         patch.visionImageSize = n;

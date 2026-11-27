@@ -167,7 +167,6 @@ def test_a_matching_load_shares_the_resident_without_a_reload(monkeypatch, share
     assert sees_resident(accounts["alice"]) and sees_resident(accounts["bob"])
     assert run_as(accounts["alice"], inference._openai_model_objects) != []
     assert sees_resident(accounts["unsloth"])
-    # A repeat load by the same account is one membership.
     reuse_load(monkeypatch, accounts["alice"])
     assert access._resident_sharers["chat"] == {
         accounts["alice"].account_id,
@@ -177,7 +176,6 @@ def test_a_matching_load_shares_the_resident_without_a_reload(monkeypatch, share
 
 def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, accounts):
     reuse_load(monkeypatch, accounts["alice"])
-    # Bob is mid-generation: alice's share release must not be a gpu_busy refusal.
     with run_as(accounts["bob"], active_generations.ActiveGeneration, threading.Event()):
         with client_for(accounts["alice"]) as client:
             left = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
@@ -186,12 +184,51 @@ def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, ac
     assert sees_resident(accounts["bob"])
     assert not sees_resident(accounts["alice"])
     assert status_for(accounts["alice"]) == {"loaded": [], "loading": [], "yours": False}
-    # The last sharer's unload is a real teardown and clears the set.
     with client_for(accounts["bob"]) as client:
         gone = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
     assert gone.status_code == 200, gone.text
     assert shared.unloaded
     assert "chat" not in access._resident_sharers
+
+
+def test_a_sharer_leaving_mid_chat_is_refused_unless_forced_and_stops_only_its_chat(
+    monkeypatch, shared, accounts
+):
+    reuse_load(monkeypatch, accounts["alice"])
+    alice_run, bob_run = threading.Event(), threading.Event()
+    with (
+        run_as(accounts["alice"], active_generations.ActiveGeneration, alice_run),
+        run_as(accounts["bob"], active_generations.ActiveGeneration, bob_run),
+    ):
+        with client_for(accounts["alice"]) as client:
+            refused = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
+            assert refused.status_code == 409, refused.text
+            assert sees_resident(accounts["alice"])
+            forced = client.post(
+                "/api/inference/unload",
+                json = {"model_path": RESIDENT, "force_cancel_active": True},
+            )
+    assert forced.status_code == 200, forced.text
+    assert alice_run.is_set()
+    assert not bob_run.is_set()
+    assert not shared.unloaded
+    assert not sees_resident(accounts["alice"])
+    assert sees_resident(accounts["bob"])
+
+
+def test_a_forced_unload_naming_another_model_stops_no_shared_chat(monkeypatch, shared, accounts):
+    reuse_load(monkeypatch, accounts["alice"])
+    alice_run = threading.Event()
+    with run_as(accounts["alice"], active_generations.ActiveGeneration, alice_run):
+        with client_for(accounts["alice"]) as client:
+            response = client.post(
+                "/api/inference/unload",
+                json = {"model_path": "someone/stale-gguf", "force_cancel_active": True},
+            )
+    assert response.status_code == 200, response.text
+    assert not alice_run.is_set()
+    assert not shared.unloaded
+    assert sees_resident(accounts["alice"])
 
 
 def test_a_replacement_starts_the_sharers_afresh(monkeypatch, shared, accounts):

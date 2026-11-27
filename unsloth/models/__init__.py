@@ -18,6 +18,8 @@ from .qwen3_moe import FastQwen3MoeModel
 from .granite import FastGraniteModel
 from .sentence_transformer import FastSentenceTransformer
 from .decision import *
+from .diffusion import *
+from .diffusion_trainer import *
 
 try:
     from .falcon_h1 import FastFalconH1Model
@@ -25,6 +27,13 @@ except:
     # falcon_h1 absent before transformers 4.53.0; skip
     pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
+from .speculative import get_mtp_head
+
+try:
+    from .speculative import UnslothMTPTrainer, MTPTrainingArguments
+    from .speculative import UnslothDSparkTrainer, DSparkTrainingArguments, Qwen3DSparkDrafter
+except ImportError:
+    pass
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
 from .rl import PatchFastRL, vLLMSamplingParams
 from .lora_init import patch_peft_calibration_eager as _patch_peft_calibration_eager

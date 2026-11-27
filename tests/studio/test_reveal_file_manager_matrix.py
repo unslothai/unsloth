@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every platform branch of ``reveal_in_file_manager``, and how each one fails.
-
-``test_reveal_file_manager.py`` beside this covers WSL and native Linux; this
-completes the matrix with macOS, native Windows, and the failure modes once a
-branch is chosen. Launchers are stubbed and argv asserted exactly, since what
-breaks a path here is a space, comma or non-ASCII splitting one argument in two.
-"""
+"""Argv is asserted exactly: a space, comma or non-ASCII character can split one path into two args."""
 
 from __future__ import annotations
 
@@ -54,28 +48,25 @@ except Exception as exc:
     pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level = True)
 
 
-# Characters that get split into two argv elements by string-built commands.
+# Characters that string-built commands split into two argv elements.
 _AWKWARD_NAME = "rapport final, v2 (draft) — 90% ✅"
 
 
 @pytest.fixture()
 def spawned(monkeypatch):
-    """Record what would have been launched, and launch nothing.
-
-    ``startfile`` is Windows-only, so ``raising = False`` installs it rather
-    than replacing it, which is what exercises that branch from Linux.
-    """
+    """Installs os.startfile with raising=False, since it is Windows-only, so that branch runs on Linux."""
     calls = types.SimpleNamespace(run = [], popen = [], startfile = [], popen_error = None)
 
     def fake_run(cmd, **kwargs):
         calls.run.append(list(cmd))
-        return types.SimpleNamespace(stdout = "C:\\converted\n")
+        # Non-zero: no FileManager1 on the bus, so native Linux falls back to xdg-open.
+        return types.SimpleNamespace(stdout = "C:\\converted\n", returncode = 1)
 
     def fake_popen(cmd, **kwargs):
         if calls.popen_error is not None:
             raise calls.popen_error
         calls.popen.append(cmd if isinstance(cmd, str) else list(cmd))
-        return types.SimpleNamespace()
+        return types.SimpleNamespace(wait = lambda timeout = None: 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -102,7 +93,6 @@ def native_linux(monkeypatch):
     monkeypatch.setattr(path_utils, "_IS_WSL", False)
 
 
-# ---------------------------------------------------------------------------
 def test_macos_reveals_a_file_with_open_dash_r(macos, spawned, tmp_path):
     """``open -R`` selects the file in its enclosing folder; plain ``open``
     would hand the file to whichever application claims the extension."""
@@ -113,8 +103,7 @@ def test_macos_reveals_a_file_with_open_dash_r(macos, spawned, tmp_path):
 
 
 def test_macos_opens_a_directory_rather_than_revealing_it(macos, spawned, tmp_path):
-    """``open -R`` on a directory shows its PARENT with it selected, which for
-    a sandbox is the root holding every other chat's."""
+    """open -R on a directory shows its parent, the sandbox root holding every other chat's."""
     path_utils.reveal_in_file_manager(tmp_path)
     assert spawned.popen == [["open", str(tmp_path)]]
 
@@ -127,7 +116,6 @@ def test_macos_keeps_an_awkward_name_in_one_argument(macos, spawned, tmp_path):
     assert len(spawned.popen[0]) == 2
 
 
-# ---------------------------------------------------------------------------
 def test_windows_selects_a_file_in_explorer(windows, spawned, tmp_path):
     target = tmp_path / "report.csv"
     target.write_text("a,b\n")
@@ -154,17 +142,13 @@ def test_windows_never_waits_on_explorer_or_reads_its_exit_code(windows, spawned
 
 
 def test_windows_keeps_a_comma_in_the_path_out_of_the_select_flag(windows, spawned, tmp_path):
-    """``/select,`` is comma-delimited and a filename may contain one: the path is
-    passed quoted after the flag, the documented form, so Explorer reads it whole."""
+    """A comma in a filename would split /select, so the path is passed quoted after the flag."""
     target = tmp_path / "q3, final.csv"
     target.write_text("a,b\n")
     path_utils.reveal_in_file_manager(target)
     assert spawned.popen == [f'explorer /select,"{target}"']
 
 
-# ---------------------------------------------------------------------------
-# WSL and native Linux -- the fallback chain
-# ---------------------------------------------------------------------------
 def test_wsl_falls_back_to_xdg_open_when_wslpath_times_out(monkeypatch, spawned, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(os, "name", "posix")
@@ -193,7 +177,7 @@ def test_wsl_falls_back_to_xdg_open_when_wslpath_fails(monkeypatch, spawned, tmp
 
 def test_native_linux_opens_a_directory_directly(native_linux, spawned, tmp_path):
     path_utils.reveal_in_file_manager(tmp_path)
-    assert spawned.run == []
+    assert [cmd[0] for cmd in spawned.run] == ["gdbus", "dbus-send"]
     assert spawned.popen == [["xdg-open", str(tmp_path)]]
 
 
@@ -206,8 +190,7 @@ def test_native_linux_keeps_an_awkward_name_in_one_argument(native_linux, spawne
 
 
 def test_a_deeply_nested_path_is_passed_through_whole(native_linux, spawned, tmp_path):
-    """Sandbox names are derived, but a project workspace can sit arbitrarily
-    deep under a home the user chose."""
+    """Workspaces can sit arbitrarily deep under the user's home, so the path must pass whole."""
     target = tmp_path.joinpath(*[f"level_{i}" for i in range(40)])
     target.mkdir(parents = True)
     path_utils.reveal_in_file_manager(target)
@@ -239,9 +222,7 @@ def test_a_broken_symlink_launches_nothing_anywhere(host, spawned, tmp_path, req
 
 
 class _VanishesAfterTheGuard:
-    """There for the existence guard, gone by the branch. The two are separate
-    stats, and a chat deleted or migrated in between is what the endpoint's own
-    tests already simulate one layer up."""
+    """Exists for the existence guard but is gone by the branch: the two are separate stats."""
 
     def __init__(self, real: Path) -> None:
         self._real = real
@@ -269,8 +250,7 @@ class _VanishesAfterTheGuard:
 def test_a_target_that_vanishes_after_the_guard_never_opens_its_parent(
     native_linux, spawned, tmp_path
 ):
-    """The parent of a sandbox is the root holding every other chat's, so the
-    Linux fallback must fail closed rather than widen to it."""
+    """The parent of a sandbox holds every other chat, so the Linux fallback must fail closed."""
     root = tmp_path / "sandbox"
     (root / "thread-1").mkdir(parents = True)
     with pytest.raises(FileNotFoundError):
@@ -279,9 +259,8 @@ def test_a_target_that_vanishes_after_the_guard_never_opens_its_parent(
 
 
 class _SwappedForAFile:
-    """A checked directory replaced by a regular file before the open. A tool
-    runs inside its own sandbox and can do this, and the file branch names the
-    parent on every platform."""
+    """A checked directory replaced by a regular file before the open; a tool inside its own sandbox
+    can do this, and the file branch names the parent on every platform."""
 
     def __init__(self, real: Path) -> None:
         self._real = real
@@ -308,10 +287,7 @@ class _SwappedForAFile:
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp_path, request):
-    """``expect_dir`` is what the sandbox route passes, since a sandbox's parent
-    is the root holding every other chat's. A real file on disk, not a fake:
-    the one ``lstat`` leaves no gap between check and use for a fake to sit in,
-    which is the property under test."""
+    """A real file, not a fake, so the lstat check and the use have no gap for a fake to sit in."""
     request.getfixturevalue(host)
     root = tmp_path / "sandbox"
     root.mkdir(parents = True)
@@ -324,8 +300,7 @@ def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_a_sandbox_swapped_for_a_directory_symlink_is_refused(host, spawned, tmp_path, request):
-    """``is_dir()`` follows links, so a sandbox replaced by one would pass a
-    naive check and open the TARGET. The guard asks for the link's own type."""
+    """is_dir() follows links and would open the target; the guard checks the link's own type."""
     request.getfixturevalue(host)
     elsewhere = tmp_path / "somewhere-else"
     elsewhere.mkdir()
@@ -358,8 +333,7 @@ def test_a_symlinked_cache_entry_is_still_revealed_without_expect_dir(
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_the_same_swap_is_still_revealed_without_expect_dir(host, spawned, tmp_path, request):
-    """The cached-model reveal points at a real file, so the flag is opt-in and
-    the default behaviour is unchanged."""
+    """The cached-model reveal points at a real file, so the flag is opt-in; default unchanged."""
     request.getfixturevalue(host)
     target = tmp_path / "model.gguf"
     path_utils.reveal_in_file_manager(_SwappedForAFile(target))
@@ -367,10 +341,7 @@ def test_the_same_swap_is_still_revealed_without_expect_dir(host, spawned, tmp_p
 
 
 def test_a_missing_launcher_is_reported_as_a_missing_launcher(native_linux, spawned, tmp_path):
-    """``xdg-open`` is absent on a headless host, and ``Popen`` then raises
-    ``FileNotFoundError`` for the LAUNCHER just as for a missing target. The
-    helper cannot tell them apart, so this pins the payload as the launcher,
-    which is what lets the route answer 500 rather than "no folder"."""
+    """A missing xdg-open must surface as the launcher in FileNotFoundError, so the route answers 500."""
     spawned.popen_error = FileNotFoundError(2, "No such file or directory", "xdg-open")
     with pytest.raises(FileNotFoundError) as caught:
         path_utils.reveal_in_file_manager(tmp_path)

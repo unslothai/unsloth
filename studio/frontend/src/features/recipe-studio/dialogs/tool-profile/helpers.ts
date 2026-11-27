@@ -61,7 +61,7 @@ export function toApiProvider(
   }
   return {
     // biome-ignore lint/style/useNamingConvention: api schema
-    provider_type: "streamable_http",
+    provider_type: provider.provider_type,
     name: provider.name.trim(),
     endpoint: provider.endpoint?.trim() ?? "",
     // biome-ignore lint/style/useNamingConvention: api schema

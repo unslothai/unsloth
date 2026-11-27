@@ -73,6 +73,18 @@ test("the Unix selection reaches every generated command", () => {
   assert.match(commands.remoteSetup, /^export UNSLOTH_STUDIO_URL=/);
 });
 
+test("VS Code takes the model flags like the other agents", () => {
+  assert.equal(
+    buildAgentShellCommands(
+      "http://127.0.0.1:8888",
+      "unix",
+      "vscode",
+      "--model unsloth/Qwen3-4B-GGUF --gguf-variant Q4_K_M",
+    ).primary,
+    "unsloth start vscode --model unsloth/Qwen3-4B-GGUF --gguf-variant Q4_K_M",
+  );
+});
+
 test("the Windows selection reaches every generated command", () => {
   const commands = buildAgentShellCommands(
     REMOTE_STUDIO,

@@ -14,18 +14,14 @@ import {
 
 export const CHAT_IMPORT_ACCEPT = ".json,.jsonl,.ndjson,.csv,.md,.markdown";
 
-/** Where imported chats land: a project (null for none), optionally filed in a section. */
 export interface ChatImportTarget {
   projectId: string | null;
   sectionId?: string;
-  /** Named in the toast; "Recents" when there is no project or section. */
   name?: string;
 }
 
-// One import at a time, whichever menu started it.
 let running = false;
 
-/** Imports a file, counting up in a toast; the chats are filed in the target's section. */
 export async function runChatImport(source: ImportSource, target: ChatImportTarget): Promise<void> {
   running = true;
   const toastId = toast.loading("Importing chats...");
@@ -49,7 +45,6 @@ export async function runChatImport(source: ImportSource, target: ChatImportTarg
       return;
     }
     if (imported === 0) {
-      // Nothing was created, so however the count is phrased this is a failure.
       toast.error("Import failed.", {
         id: toastId,
         description: `${failed} conversation${failed === 1 ? "" : "s"} could not be saved.`,
@@ -80,7 +75,6 @@ export function isChatImportRunning(): boolean {
   return running;
 }
 
-/** Asks for a file (the native picker in the desktop app), then imports it into the target. */
 export async function pickAndImportChats(target: ChatImportTarget): Promise<void> {
   if (running) return;
   if (!isTauri) {

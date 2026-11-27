@@ -117,7 +117,6 @@ mod tests {
         objc2::exception::throw(unsafe { Retained::cast_unchecked::<Exception>(exception) });
     }
 
-    /// Stands in for tao's `extern "C"` override. Without the catch, this aborts the test.
     extern "C" fn tao_send_event(send_event: SendEvent) {
         unsafe {
             dispatch(

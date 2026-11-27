@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The AppImage E2E's fake backend has to admit the headers the real one admits.
-
-`AppImage model download E2E` stands up a fixture backend for the webview to talk to.
-Its CORS preflight used to answer with a hand-written list of three header names. The
-real backend does not: studio/backend/main.py runs CORSMiddleware with
-`allow_headers = ["*"]`. A fixed list is therefore a second copy of the product's
-policy, and on 2026-08-28 it drifted -- #8879 began sending X-Unsloth-Timezone and
-X-Unsloth-Timezone-Offset-Minutes on every authFetch, the list still named three
-headers, and the browser rejected the preflight for every authed request in the test.
-
-The visible symptom was nothing like the cause: the row for the model under test
-rendered "Unsloth isn't running -- please relaunch it." (a fetch TypeError, tagged by
-asTransportFailure), the request log showed no such request because it was never sent,
-and the run failed as "Timed out waiting for the Q4_K_M quantization" while
-/api/health kept answering. Roughly three runs in four, as a hard gate on every PR.
-
-So these tests read the header names out of the frontend source rather than restating
-them, and assert the fixture would admit them.
-"""
+"""The fake backend's CORS preflight must admit the headers the frontend sends, not a fixed list."""
 
 from __future__ import annotations
 
@@ -109,8 +91,7 @@ def test_the_fixture_echoes_rather_than_naming_headers():
         "the fixture's preflight no longer echoes the requested headers, so it has gone "
         "back to a hand-written list that will drift from the backend again"
     )
-    # Comments stripped first: the block deliberately names the two headers when
-    # explaining what drifted, and that history is worth keeping. Only code counts.
+    # Comments stripped first: the block names both headers when explaining the drift.
     code = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
     for name in frontend_request_headers():
         assert name not in code, (

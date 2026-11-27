@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { pinKey, pinnedQuantEntries } from "../src/features/model-picker/components/model-selector/pinned-models.ts";
 import { ggufVariantsMatchForPicker, modelIdsMatchForPicker } from "../src/features/model-picker/components/model-selector/row-identity.ts";
 
@@ -68,8 +68,6 @@ for (const task of [null, "text-generation", "image-text-to-text", "text-to-imag
       const usePinnedModelsStore = { getState: () => ({ pinned, togglePinned, unpinRepo }) };
       const reconcile = compile(helperFunction("reconcileGgufPinsAfterDelete"), {
         fetchCachedGgufInventory: async () => ({ cached: [{ repo_id: repoId }], scan_confirmed: true }),
-        // A media quant survives only in the inactive copy. Whole-row controls
-        // also retain a second copy, where media previously cleared all repo pins.
         listGgufVariants: async () => ({ variants: chat || wholeRepo ? [{ quant: surviving, downloaded: true, partial: false }] : [] }),
         usePinnedModelsStore, pinnedQuantEntries, modelIdsMatchForPicker, ggufVariantsMatchForPicker,
       });
@@ -89,6 +87,13 @@ for (const task of [null, "text-generation", "image-text-to-text", "text-to-imag
         reconcileGgufPinsAfterDelete: async (...args: unknown[]) => { reconciliations++; assert.equal(args[1], "hf_fixture_token"); await reconcile(...args); },
         onDeleteVariant: async () => {}, deleteCachedModel: async () => {}, deleteCachedDataset: async () => {},
         refreshCachedLists: () => {}, prunePinnedQuantValidation: () => {}, setRefreshKey: () => {},
+        // Memoized On Device rows reach the picker's callbacks through its actions holder.
+        actions: {
+          get: () => ({
+            hfToken: "hf_fixture_token", togglePinned, unpinRepo,
+            refreshCachedLists: () => undefined, prunePinnedQuantValidation: () => undefined,
+          }),
+        },
       });
       await callback();
       assert.deepEqual(pinned, !chat && wholeRepo ? [] : [repoId, pinKey(repoId, surviving)]);

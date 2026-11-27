@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Refuse new interactive yes/no prompts in the installer and setup scripts.
-
-#7016 added `Open Unsloth Studio in your default browser after launch?
-[Y/n]` and had to be reverted in #8040: extra questions stall a piped
-install and persist an answer nobody can find again. The only preference
-setup may ask about is whether to start Unsloth when it finishes.
-
-Allowlist, not a ban: every prompt in the tree is listed in
-`APPROVED_PROMPTS` with its reason, so a new one fails with instructions
-instead of landing quietly. Two passes catch it: literal `[Y/n]` markers,
-and interactive read sites (shell `read` and `select`, `Read-Host` and
-the console reads, `input()`, `set /p`) for a marker built from a
-variable, as #7016's was. Text only, so it runs on every platform in the
-parity matrix.
-"""
+"""Extra installer prompts stall piped installs; each must be listed in APPROVED_PROMPTS."""
 
 from __future__ import annotations
 
@@ -26,9 +12,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# What a user runs to install, update or remove Unsloth.
-# Everything these launch in turn is scanned too (`unsloth studio update` runs setup.sh, which builds whisper.cpp;
-# install.sh fetches and runs the WSL bootstrap), since a question down there stalls the same install.
+# Entry points a user runs; everything they launch (setup.sh, WSL bootstrap) is scanned too.
 ENTRY_POINTS = (
     "install.sh",
     "install.ps1",
@@ -45,6 +29,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
     "studio/install_audio_cpp_prebuilt.py",
+    "studio/install_hnsw_prebuilt.py",
     "studio/install_lemonade_prebuilt.py",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
@@ -55,13 +40,13 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
     "studio/nvidia_probe.py",
-    # install_python_stack runs this one with sys.executable.
+    "studio/precompile_bytecode.py",
     "studio/backend/requirements/single-env/patch_metadata.py",
     "studio/systemd/install_user_service.sh",
+    "studio/launchd/install_user_agent.sh",
 )
 
-# Every question these scripts may ask, keyed by (script, normalised question) because line numbers move and wording
-# does not. Do NOT add an entry just to turn a build green: decide the prompt is wanted first.
+# Keyed by (script, normalised question), not line number; never add one just to pass CI.
 APPROVED_PROMPTS: dict[tuple[str, str], str] = {
     ("install.sh", "start unsloth studio now?"): (
         "The one sanctioned preference prompt: launch Unsloth after install."
@@ -83,27 +68,23 @@ _MARKER = re.compile(
     r"\[\s*[yn]\s*/\s*[yn]\s*\]|\(\s*[yn]\s*/\s*[yn]\s*\)|\byes\s*/\s*no\b", re.IGNORECASE
 )
 
-# Anything that blocks waiting on a human. `-p` is matched as an option word, not anchored on whitespace: it may be
-# bundled (`read -rp`) or follow `read` directly. The scan stops at `;|&`, since a `mkdir -p` later on the line is
-# another command.
+# `-p` may be bundled (`read -rp`); the scan stops at `;|&` so a later `mkdir -p` is not matched.
 _POSIX_READ = re.compile(
     r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)"
     r"(?:-[a-zA-Z]*p(?=[\s\"']|$)|[^\n;|&]*?(?:<\s*/dev/tty|\s-[a-zA-Z]*p(?=[\s\"']|$)))"
 )
 
-# An unredirected `read` takes the terminal it inherited, so it blocks too. Loop and pipeline reads are fed by the
-# `done < ...` or the pipe: data, not questions. Options then variable names to end of line, in command position, so
-# the word `read` in a heredoc of prose is not a prompt.
+# An unredirected `read` blocks on the inherited terminal; loop/pipeline reads are fed data.
+# Command position only, so the word `read` in a prose heredoc is not a prompt.
 _BARE_READ = re.compile(
     r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*!?\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
-    # No variable name at all is valid: the answer lands in $REPLY.
+    # No variable name is valid: the answer lands in $REPLY.
     r"read(?:\s+(?:-[a-zA-Z0-9]+|[\d.]+|\"\"|''))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
     r"(?:\s*(?:;|\|\||&&).*)?\s*(?:#.*)?$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
 
-# `select reply in Yes No` is the other builtin that blocks for an answer; its question is the PS3 assignment above it,
-# which the nearby scan already reads.
+# `select` also blocks; its question is the PS3 assignment the nearby scan already reads.
 _SELECT = re.compile(r"(?:^|[;&(])\s*select\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s")
 
 _PWSH_READ = re.compile(
@@ -111,34 +92,26 @@ _PWSH_READ = re.compile(
     re.IGNORECASE,
 )
 
-# The Python helpers setup runs, and the batch launcher.
 _PY_READ = re.compile(
     r"(?<![.\w])(?:input|getpass)\s*\(|getpass\.getpass\s*\("
     r"|click\.confirm\s*\(|sys\.stdin(?:\.buffer)?\.read(?:line)?\s*\("
 )
-# In command position: starting the line or a `&`-joined command, after `do`, or as the body of a single-line `if`.
-# Echoing the word `choice` is not a prompt. `pause` asks nothing but waits for a keypress, which stalls setup just
-# the same.
+# `pause` asks nothing but still waits for a keypress, which stalls setup the same way.
 _BAT_READ = re.compile(
     r"(?:^\s*|[&(]\s*|\bdo\s+)@?\s*(?:set\s+/p\b|choice\b|pause\b)"
     r"|^\s*@?\s*(?:if|else)\b.*?\s(?:set\s+/p\b|choice\b|pause\b)",
     re.IGNORECASE,
 )
 
-# A helper filename, with or without its `scripts/` prefix: sibling invocations such as "$SCRIPT_DIR/build_deps.sh"
-# carry no prefix. Resolved against the repo before it counts, so a name that is not a real script is ignored.
 _HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
-# An f-string field that calls something.
 _FIELD = re.compile(r"\{[^}]*\(")
 
-# `<# ... #>` opened and closed on one line.
 _INLINE_BLOCK = re.compile(r"<#.*?#>", re.DOTALL)
 
-# `@' ... '@` is literal, unlike the expandable `@" ... "@`. The uninstaller prints its help from one and install.ps1
-# embeds source in the other.
+# `@' ... '@` is literal, unlike the expandable `@" ... "@`.
 _HERESTRING_OPEN = re.compile(r"@'\s*$")
 _HERESTRING_CLOSE = re.compile(r"^\s*'@")
 
@@ -147,8 +120,7 @@ _REGEXY = re.compile(r"\\|\(\?|\^|\$\(|\[0|\{[0-9]|\.\*|\|")
 
 _ESCAPE = re.compile(r"\\[nrte]")
 
-# A conversion or variable becomes a placeholder rather than vanishing, so wording
-# spliced into the middle of an approved question cannot normalise back onto it.
+# Placeholder rather than removal, so wording spliced into an approved question cannot match it.
 _SUBSTITUTION = re.compile(r"%[-#0 +]*\d*(?:\.\d+)*[sdfxbq%]|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
 _TRAILING_SUBSTITUTION = re.compile(r"(?:\s*<var>)+$")
 
@@ -160,9 +132,7 @@ def _is_comment(line: str) -> bool:
 
 
 def _blank_strings(line: str, script: str = "") -> str:
-    """Blank quoted text so a message naming an input API is not one. A string that
-    still executes is kept: a `$(...)` in a double-quoted shell or PowerShell string,
-    a field in an f-string. Single quotes and a missing f prefix are literal."""
+    """Blank quoted text except executed $(...) and f-string fields; messages are not prompts."""
 
     def keep(match: re.Match) -> str:
         text = match.group(0)
@@ -183,26 +153,21 @@ def _is_interactive_read(
     *,
     loop_input: bool = False,
 ) -> bool:
-    """A read that waits on a person: a prompt option, /dev/tty, `select`, `input()`,
-    `set /p`, or plain inherited stdin. Redirected and loop reads consume a file, not
-    a person. Quoted text is blanked first, so a message naming `Read-Host` is not
-    one."""
+    """Waiting on a person, not a file: /dev/tty, select, input(), set /p, or inherited stdin."""
     code = _blank_strings(line, script)
     if script.endswith(".ps1"):
         return bool(_PWSH_READ.search(code))
     if script.endswith(".py"):
         return bool(_PY_READ.search(code))
     if script.endswith(".bat"):
-        # `set /p version=<VERSION.txt` reads the file, not the user, but the redirection belongs to that command alone.
+        # `set /p version=<VERSION.txt` reads the file; the redirect is that command's alone.
         return any("<" not in part and _BAT_READ.search(part) for part in code.split("&"))
     if _POSIX_READ.search(code) or _SELECT.search(code):
         return True
-    # Inside a file-fed loop only a bare read consumes the file: an explicit /dev/tty or -p read above overrode it and
-    # still waits on the terminal.
+    # In a file-fed loop only a bare read consumes the file; /dev/tty or -p reads still wait.
     if loop_input:
         return False
-    # Per command: in `read -r reply; echo done | tee log` the pipe is the echo's. `||` is a fallback, not a pipeline,
-    # and leaves the read on the terminal.
+    # Per command: `||` is a fallback, not a pipeline, and leaves the read on the terminal.
     for command in code.split(";"):
         piped = "|" in command.replace("||", "")
         if "<" not in command and not piped and _BARE_READ.search(command):
@@ -210,8 +175,7 @@ def _is_interactive_read(
     return False
 
 
-# `<<EOF`, not the `<<<` here-string, and not inside a quoted string: install.sh prints a shell-profile marker
-# containing `# <<< Unsloth ... <<<`.
+# Not `<<<` nor inside a string: install.sh prints a `# <<< Unsloth ... <<<` profile marker.
 _HEREDOC = re.compile(r"<<(?!<)-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
 _INTERPRETER = re.compile(r"\b(?:python[0-9.]*|node|perl|ruby|osascript)\b[^<]*<<")
 
@@ -228,15 +192,12 @@ def _blank_heredocs(lines: list[str]) -> list[str]:
                 out[start:index] = [""] * (index - start)
                 terminator = ""
             continue
-        # Openers come from code: not from a string, not from an inline comment.
         code = _blank_strings(line).split("#")[0]
         match = _HEREDOC.search(code)
-        # `python - <<PY` runs its body. Blanking that would hide real code, which is the one thing worse than
-        # scanning it as shell.
+        # `python - <<PY` runs its body, so it must stay visible to the scan.
         if match and not _INTERPRETER.search(code):
             terminator, start = match.group(1), index + 1
-    # An unterminated opener was not one. Blanking to EOF would silently blind the scan for the rest of the file,
-    # prompts included.
+    # An unterminated opener was not one; blanking to EOF would hide every later prompt.
     return out
 
 
@@ -252,16 +213,14 @@ def _redirected_loop_bodies(lines: list[str]) -> set[int]:
             if not opened:
                 continue
             start = opened.pop()
-            # Only stdin feeds them: `done | tee` pipes the output away, and `done 3<config` opens a spare descriptor.
+            # Only stdin feeds them: `done | tee` and `done 3<config` do not.
             if re.search(r"(?<![1-9])<", line):
                 inside.update(range(start, index))
     return inside
 
 
 def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
-    """Strip triple-quoted regions from a Python line, returning what is left and the
-    delimiter still open. A docstring showing an `input()` example documents the
-    script, it does not prompt."""
+    """Strips triple-quoted text; an input() in a docstring documents the script, not a prompt."""
     while True:
         if delimiter:
             end = line.find(delimiter)
@@ -272,7 +231,7 @@ def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
         opener = min((i for i in (line.find('"""'), line.find("'''")) if i != -1), default = -1)
         if opener == -1:
             return line, ""
-        # An f-string field executes, so this one is code, not documentation.
+        # An f-string field executes, so this is code, not documentation.
         if "f" in line[max(0, opener - 2) : opener].lower():
             return line, ""
         head, delimiter = line[:opener], line[opener : opener + 3]
@@ -294,12 +253,10 @@ def blank_comments(source: str, script: str) -> str:
     in_herestring = False
     for index, line in enumerate(source.splitlines()):
         if powershell and in_block:
-            # Code can follow the terminator on the same line.
             lines.append(line.split("#>", 1)[1] if "#>" in line else "")
             in_block = "#>" not in line
             continue
-        # A comment naming a delimiter is not one: reading it as an opener would blank the rest of the file and take
-        # every prompt in it out of the scan.
+        # A comment naming a delimiter must not open a block, or the rest of the file is blanked.
         if _is_comment(line) or (batch and re.match(r"\s*(?:REM\b|::)", line, re.IGNORECASE)):
             lines.append("")
             continue
@@ -323,7 +280,6 @@ def blank_comments(source: str, script: str) -> str:
                 continue
         lines.append(line)
     if in_block or in_docstring:
-        # Unterminated, so it was never a comment or a docstring. Put the lines back.
         original = source.splitlines()
         lines[opened + 1 :] = original[opened + 1 :]
     return "\n".join(lines)
@@ -343,8 +299,7 @@ def _quoted_strings(line: str) -> list[str]:
 
 
 def normalise_question(text: str) -> str:
-    """Reduce a prompt string to a stable allowlist key: drop the marker and edge
-    punctuation, placeholder the substitutions, then lowercase."""
+    """Reduce a prompt to an allowlist key: drop marker, placeholder substitutions, lowercase."""
     text = _MARKER.sub(" ", text)
     text = _ESCAPE.sub(" ", text)
     text = _SUBSTITUTION.sub("<var>", text)
@@ -360,9 +315,7 @@ def _looks_like_question(text: str) -> bool:
 
 
 def _nearby_questions(lines: list[str], index: int, *, direction: int) -> list[str]:
-    """Readable questions around `lines[index]`, nearest first. Walk back (-1) from a
-    read site to the `printf` that drew it, forward (+1) from a bare `[Y/n]` hint
-    assigned into a variable and interpolated below (the #7016 shape)."""
+    """Nearest questions first: -1 is the printf before a read, +1 a [Y/n] hint (#7016 shape)."""
     candidates = list(_quoted_strings(lines[index]))
     for step in range(1, 9):
         neighbour = index + direction * step
@@ -384,10 +337,7 @@ def _nearby_questions(lines: list[str], index: int, *, direction: int) -> list[s
 
 
 def _questions_for_read(lines: list[str], index: int) -> list[str]:
-    """Allowlist keys for a read site. Every question in reach, not just the nearest:
-    one read can serve a branch each, and validating only the closest lets the other
-    branch through. Falls back to the read line so an unlabelled prompt still has to
-    be allowlisted rather than ignored."""
+    """Every nearby question counts, not just the closest, since one read can serve several branches."""
     return _nearby_questions(lines, index, direction = -1) or [
         f"<unlabelled read: {normalise_question(lines[index])}>"
     ]
@@ -463,8 +413,7 @@ def test_no_unapproved_interactive_prompts(script: str):
 
 
 def test_approved_prompts_all_still_exist():
-    """Delete a prompt, delete its entry: a stale one waves through a future prompt
-    that happens to reuse the wording."""
+    """Stale entries let a future prompt with the same wording pass; delete with the prompt."""
     live = set()
     for script in SCANNED_SCRIPTS:
         source = (REPO_ROOT / script).read_text(encoding = "utf-8")
@@ -516,22 +465,17 @@ def test_every_installer_script_is_scanned():
 
 
 def test_helpers_the_installers_invoke_are_scanned():
-    """Naming the helpers by hand only ever covers the ones we thought of, so read
-    them back out instead: whatever the installers reach, the guard scans. Every
-    scanned script is a source, not just the entry points, so a helper that grows
-    a helper of its own is caught as soon as the first one is listed here."""
+    """Scanned helpers are read from the installers' own calls, not a hand-kept list."""
     referenced = set()
     for script in SCANNED_SCRIPTS:
         path = REPO_ROOT / script
         source = blank_comments(path.read_text(encoding = "utf-8"), script)
         for match in _HELPER_REF.finditer(source):
-            # Below the script that names it, below the repo, or in scripts/, by full path and by name so a URL still
-            # resolves to the local copy. What resolves nowhere is a filename in a message, not an invocation.
+            # Unresolvable names are filenames in messages, not invocations.
             reference = match.group(1).replace("\\", "/")
             name = reference.rsplit("/", 1)[-1]
             if name == "__init__.py":
-                # A presence marker (tiktoken/__init__.py), not a helper they run; by name alone it
-                # would resolve to studio/__init__.py.
+                # A presence marker, not a helper; by name it would resolve to studio/__init__.py.
                 continue
             for candidate in (
                 path.parent / reference,
@@ -551,9 +495,8 @@ def test_helpers_the_installers_invoke_are_scanned():
 
 
 def test_the_workflow_runs_for_every_scanned_script():
-    """A scanned script whose path filter is missing is only checked on the PR that
-    registers it. Read the filters back rather than keeping two lists in step by
-    hand. Parsed with a regex, not yaml: the parity runner installs pytest only."""
+    """Read the path filters back: a scanned script missing one is only checked on the PR that
+    registers it; regex, not yaml, since the parity runner installs pytest only."""
     workflow = (REPO_ROOT / ".github/workflows/cross-platform-parity-ci.yml").read_text(
         encoding = "utf-8"
     )
@@ -563,8 +506,6 @@ def test_the_workflow_runs_for_every_scanned_script():
         if collecting is not None and entry:
             collecting.append(entry.group(1))
             continue
-        # A comment or a blank line inside the list does not end it. Treating one as the end dropped every filter
-        # after it, so this guard passed while reading nothing.
         if collecting is not None and (not line.strip() or line.strip().startswith("#")):
             continue
         if collecting:
@@ -593,7 +534,7 @@ def test_the_workflow_runs_for_every_scanned_script():
                 included = not negated
         return included
 
-    # Each event on its own: a filter present only on push leaves pull requests bare.
+    # Each event separately: a filter only on push leaves pull requests bare.
     for patterns in blocks:
         uncovered = sorted(script for script in SCANNED_SCRIPTS if not covered(script, patterns))
         assert not uncovered, (
@@ -652,17 +593,14 @@ def test_detects_read_dash_p():
     ),
 )
 def test_detects_read_dash_p_without_a_marker(read_line: str):
-    """`-p` carries the prompt itself, so there is no marker and only the read pass
-    stands between these and a stalled install. Bundling is the usual bash
-    spelling, so it must not hinge on a space before `-p`."""
+    """-p prompts carry no marker: only the read pass catches them, bundled flags included."""
     assert [question for _, _, question in find_prompts("studio/setup.sh", read_line + "\n")] == [
         "build llama.cpp with cuda support?",
     ]
 
 
 def test_ignores_dash_p_belonging_to_a_later_command():
-    """`mkdir -p` after a non-interactive read is not a prompt: matching it fails CI
-    on an ordinary installer edit."""
+    """`mkdir -p` after a non-interactive read is not a prompt; matching it would fail CI."""
     source = (
         'read -r _line < "$config_file"; mkdir -p "$_dest"\n'
         'while IFS= read -r _root; do mkdir -p "$_root"; done < "$manifest"\n'
@@ -679,8 +617,7 @@ def test_detects_powershell_read_host():
 
 
 def test_detects_powershell_console_readline():
-    """Read-Host is the usual spelling, but the console reads block just as hard and
-    can carry their question in a variable, out of the marker pass's reach."""
+    """Read-Host is usual, but console reads block too; their question may sit in a variable."""
     source = (
         'Write-Host "  Install desktop shortcuts? $_hint" -NoNewline\n'
         "$reply = [Console]::ReadLine()\n"
@@ -692,8 +629,7 @@ def test_detects_powershell_console_readline():
 
 @pytest.mark.parametrize("read_line", ("read -r _reply", "read _reply", "  read -r _reply"))
 def test_detects_a_bare_read_from_inherited_stdin(read_line: str):
-    """The commonest prompt of all: a question printed with no marker, answered by a
-    read with no redirection. It takes the terminal the installer inherited."""
+    """Printed question with no marker, answered by a bare read: takes the inherited terminal."""
     source = f'printf "  Continue with installation? "\n{read_line}\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
@@ -701,8 +637,7 @@ def test_detects_a_bare_read_from_inherited_stdin(read_line: str):
 
 
 def test_detects_a_bare_read_with_a_fallback():
-    """`|| reply=n` is the house style for an EOF default, and a fallback is not a
-    pipeline: the read still takes the terminal."""
+    """A `|| reply=n` EOF fallback is not a pipeline, so the read still takes the terminal."""
     source = 'printf "  Continue with installation? "\nread -r _reply || _reply=n\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
@@ -729,8 +664,7 @@ def test_detects_an_assignment_prefixed_read():
 
 
 def test_a_comment_naming_a_delimiter_opens_nothing():
-    """The heredoc lesson applied to the other two languages: reading a delimiter out
-    of a comment blanks the rest of the file and takes every prompt in it with it."""
+    """A delimiter named in a comment blanks the rest of the file and hides every prompt in it."""
     python_source = '# opening delimiter is """\nprint("  Enable telemetry? ")\n_reply = input()\n'
     assert [
         question for _, _, question in find_prompts("studio/install_python_stack.py", python_source)
@@ -784,8 +718,7 @@ def test_a_spare_descriptor_on_the_done_is_not_stdin():
 
 
 def test_ignores_code_shaped_text_in_a_literal_string():
-    """Single quotes do not expand in PowerShell, and a plain Python string has no
-    fields. Keeping those would fail CI on a diagnostic message."""
+    """Single quotes and plain Python strings do not expand; flagging them fails CI."""
     assert find_prompts("install.ps1", "Write-Host 'Example: $(Read-Host \"Q?\")'\n") == []
     assert (
         find_prompts("studio/install_python_stack.py", "print(\"Example: {input('Q?')}\")\n") == []
@@ -816,8 +749,7 @@ def test_ignores_a_command_documented_in_a_heredoc():
 
 
 def test_a_here_string_does_not_open_a_heredoc():
-    """`<<<` is a here-string, and install.sh prints one inside a profile marker.
-    Reading it as a heredoc blanked the rest of the file, prompts included."""
+    """A `<<<` here-string is not a heredoc; reading it as one blanked the rest of the file."""
     source = (
         "printf '# <<< Unsloth marker <<<\\n'\nprintf \"  Enable telemetry? \"\nread -r _reply\n"
     )
@@ -862,8 +794,7 @@ def test_detects_a_negated_read():
 
 
 def test_an_interpreter_heredoc_is_not_blanked():
-    """`python - <<PY` runs its body. Hiding real code is worse than reading it as
-    shell, which still leaves the marker pass looking at it."""
+    """An interpreter heredoc runs its body, so hiding it is worse than reading it as shell."""
     source = 'python - <<PY\nprint("Enable telemetry? [Y/n]")\nPY\n'
     questions = [question for _, _, question in find_prompts("install.sh", source)]
     assert "enable telemetry?" in questions
@@ -1009,8 +940,7 @@ def test_detects_a_select_loop():
 
 
 def test_interpolation_cannot_rewrite_an_approved_question():
-    """Splicing new wording into an approved prompt is a new question. A substitution
-    at the end is only the marker hint, so that one still normalises away."""
+    """Spliced wording is a new question; a trailing substitution is only the marker hint."""
     assert normalise_question("Start Unsloth Studio %s now? [Y/n]") == (
         "start unsloth studio <var> now?"
     )
@@ -1033,8 +963,7 @@ def test_detects_powershell_console_read():
 
 
 def test_validates_every_question_a_read_can_ask():
-    """One read serving a branch each: approving the nearest question would wave the
-    other one through under an allowlisted key."""
+    """Each branch has its own question: one allowlisted key must not wave the other through."""
     source = (
         'if [ "$_telemetry" = ask ]; then\n'
         '    printf "  Enable telemetry? [Y/n] "\n'

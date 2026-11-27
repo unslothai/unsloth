@@ -1,5 +1,4 @@
-"""Regression test for unslothai/unsloth#1013: run_attention must downcast DoRA's
-fp32 q/k/v for FlashAttention while leaving already-16bit tensors untouched."""
+"""#1013: downcast DoRA's fp32 q/k/v under autocast; keep an fp32 model (no autocast) fp32 via SDPA."""
 
 import torch
 import unsloth  # noqa: F401
@@ -7,12 +6,36 @@ import unsloth  # noqa: F401
 from unsloth.utils import attention_dispatch as ad
 
 
-def _run(monkeypatch, qkv_dtype, backend):
+def _autocast_bf16(monkeypatch):
+    # DoRA trains under autocast; CPU CI cannot enter CUDA autocast, so fake its state.
+    monkeypatch.setattr(torch, "is_autocast_enabled", lambda *a: True)
+    monkeypatch.setattr(torch, "get_autocast_dtype", lambda *a: torch.bfloat16, raising = False)
+
+
+def _spy_sdpa(monkeypatch, captured):
+    real = ad.scaled_dot_product_attention
+
+    def spy(Q, K, V, *args, **kwargs):
+        captured["dtype"] = Q.dtype
+        captured["sdpa"] = True
+        return real(Q, K, V, *args, **kwargs)
+
+    monkeypatch.setattr(ad, "scaled_dot_product_attention", spy)
+
+
+def _run(
+    monkeypatch,
+    qkv_dtype,
+    backend,
+    autocast = True,
+):
     captured = {}
+    if autocast:
+        _autocast_bf16(monkeypatch)
+    _spy_sdpa(monkeypatch, captured)
 
     def _check(Q):
         captured["dtype"] = Q.dtype
-        # Mirror the real kernel constraint so an unfixed dispatch fails loudly.
         if Q.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError("FlashAttention only support fp16 and bf16 data type")
 
@@ -35,7 +58,7 @@ def _run(monkeypatch, qkv_dtype, backend):
     seq_info = None
     if backend == ad.FLASH_VARLEN:
         cu = torch.tensor([0, q_len], dtype = torch.int32)
-        seq_info = (None, cu, q_len)
+        seq_info = (torch.tensor([q_len], dtype = torch.int32), cu, q_len)
 
     config = ad.AttentionConfig(
         backend = backend,
@@ -60,7 +83,6 @@ def _run(monkeypatch, qkv_dtype, backend):
 
 
 def test_dense_flash_downcasts_fp32_qkv(monkeypatch):
-    # fp32 DoRA output must be downcast to a flash-compatible dtype.
     assert _run(monkeypatch, torch.float32, ad.FLASH_DENSE) in (torch.bfloat16, torch.float16)
 
 
@@ -69,15 +91,20 @@ def test_varlen_flash_downcasts_fp32_qkv(monkeypatch):
 
 
 def test_bf16_qkv_left_untouched(monkeypatch):
-    # Standard LoRA path (already bf16) must not be altered.
     assert _run(monkeypatch, torch.bfloat16, ad.FLASH_DENSE) == torch.bfloat16
 
 
-def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
-    # Same #1013 fp32 downcast, but for the xformers backend. On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass
-    # op is capability-rejected and only its flash-2 op runs (fp16/bf16 only), so fp32 must be downcast there too or the
-    # op raises.
+def _run_xformers(
+    monkeypatch,
+    qkv_dtype,
+    fp32_unsupported,
+    autocast = True,
+):
+    # On sm_100+ only xformers' fp16/bf16 flash-2 op runs, so fp32 must be downcast.
     captured = {}
+    if autocast:
+        _autocast_bf16(monkeypatch)
+    _spy_sdpa(monkeypatch, captured)
 
     def fake_xformers_attention(
         Q,
@@ -87,12 +114,11 @@ def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
         **kwargs,
     ):
         captured["dtype"] = Q.dtype
-        # Mirror the flash-2 op's real dtype constraint so an unfixed dispatch fails loudly.
         if fp32_unsupported and Q.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError("no operator found for memory_efficient_attention with fp32")
         return torch.zeros_like(Q)
 
-    monkeypatch.setattr(ad, "_XFORMERS_FP32_UNSUPPORTED", fp32_unsupported, raising = False)
+    monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: fp32_unsupported)
     monkeypatch.setattr(ad, "xformers_attention", fake_xformers_attention, raising = False)
     monkeypatch.setattr(
         ad, "build_xformers_block_causal_mask", lambda *a, **k: object(), raising = False
@@ -120,10 +146,72 @@ def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
 
 
 def test_xformers_downcasts_fp32_qkv_on_sm100_plus(monkeypatch):
-    # sm_100+ (fp32 op gone): fp32 DoRA output must be downcast, else the flash-2 op raises.
     assert _run_xformers(monkeypatch, torch.float32, True) in (torch.bfloat16, torch.float16)
 
 
 def test_xformers_leaves_fp32_qkv_below_sm100(monkeypatch):
-    # Below sm_100 the cutlass op handles fp32 natively, so it must be passed through as-is.
     assert _run_xformers(monkeypatch, torch.float32, False) == torch.float32
+
+
+def test_fp32_model_dense_flash_keeps_fp32_via_sdpa(monkeypatch):
+    assert _run(monkeypatch, torch.float32, ad.FLASH_DENSE, autocast = False) == torch.float32
+
+
+def test_fp32_model_varlen_flash_keeps_fp32_via_sdpa(monkeypatch):
+    assert _run(monkeypatch, torch.float32, ad.FLASH_VARLEN, autocast = False) == torch.float32
+
+
+def test_fp32_model_xformers_sm100_keeps_fp32_via_sdpa(monkeypatch):
+    assert _run_xformers(monkeypatch, torch.float32, True, autocast = False) == torch.float32
+
+
+def test_fp32_model_sdpa_matches_fp32_reference(monkeypatch):
+    monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
+    torch.manual_seed(0)
+    Q, K, V = (torch.randn(1, 2, 16, 8) for _ in range(3))
+    config = ad.AttentionConfig(backend = ad.XFORMERS, n_kv_heads = 2, n_groups = 1)
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = 16,
+        kv_seq_len = 16,
+        n_heads = 2,
+        head_dim = 8,
+        requires_grad = False,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    out = ad.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+    ref = torch.nn.functional.scaled_dot_product_attention(Q, K, V, is_causal = True).transpose(1, 2)
+    assert out.dtype == torch.float32
+    torch.testing.assert_close(out.reshape(ref.shape), ref, atol = 1e-6, rtol = 1e-6)
+
+
+def test_fp32_cached_multi_token_query_keeps_causal_flash(monkeypatch):
+    # Unmasked SDPA is not causal for q_len < kv_seq_len, so this call must stay on flash.
+    captured = {}
+    _spy_sdpa(monkeypatch, captured)
+
+    def fake_flash_dense(Q, K, V, **kwargs):
+        captured["flash"] = kwargs.get("causal")
+        return torch.zeros_like(Q)
+
+    monkeypatch.setattr(ad, "flash_attn_func", fake_flash_dense, raising = False)
+    Q = torch.randn(1, 2, 4, 8)
+    K, V = torch.randn(1, 2, 8, 8), torch.randn(1, 2, 8, 8)
+    config = ad.AttentionConfig(
+        backend = ad.FLASH_DENSE, n_kv_heads = 2, n_groups = 1, flash_dense_kwargs = {"causal": True}
+    )
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 8,
+        n_heads = 2,
+        head_dim = 8,
+        requires_grad = False,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    ad.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+    assert captured.get("flash") is True and "sdpa" not in captured

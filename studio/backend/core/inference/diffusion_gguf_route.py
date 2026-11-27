@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Let a GGUF pick whose memory plan offloads load the cached hosted int8 / fp8 checkpoint under that offload.
-
-Only a pre-quantised checkpoint, never a dense bf16 build; ``auto`` takes it only when cached and only for GGUFs less
-accurate than it. Device eligibility (CUDA bf16) is the caller's.
-"""
+"""Under offload, auto uses a cached pre-quantised int8/fp8 checkpoint only for GGUFs less accurate
+than it; never a dense bf16 build; device eligibility is the caller's."""
 
 from __future__ import annotations
 

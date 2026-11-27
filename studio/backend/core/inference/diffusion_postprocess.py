@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""diffusers' ``postprocess(output_type="pil")`` uint8 conversion on the device instead of numpy on the host.
-
-Stock runs ``(x * 255).round().astype("uint8")`` over host float32 copies, which stalls under host load. Same IEEE ops
-on clamped [0, 1] values, so bit-identical; anything else takes the stock path. Kill switch:
-``UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS=0``.
-"""
+"""Device-side uint8 postprocess for output_type pil, bit-identical to stock numpy; other cases take
+the stock path; NaN raises instead of saving blank"""
 
 from __future__ import annotations
 
@@ -14,7 +10,13 @@ import os
 from typing import Any, Optional
 
 DEVICE_POSTPROCESS_ENV = "UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS"
+STRIP_UINT8_ENV = "UNSLOTH_DIFFUSION_UINT8_STRIPS"
+_STRIP_BYTES = 32 << 20
 _MARK = "_unsloth_device_postprocess"
+NAN_IMAGE_MESSAGE = (
+    "The decoded image contains NaN values and would be saved as a blank image. The model or VAE overflowed at this "
+    "resolution and precision; try a smaller resolution or another quant of this model."
+)
 
 
 def disabled() -> bool:
@@ -67,10 +69,35 @@ def to_pil_on_device(
     return [Image.fromarray(pixels[i]) for i in range(pixels.shape[0])]
 
 
+def has_nan(image: Any) -> bool:
+    import torch
+    return (
+        isinstance(image, torch.Tensor)
+        and image.is_floating_point()
+        and image.device.type != "meta"
+        and bool(torch.isnan(image).any())
+    )
+
+
+def _strips_disabled() -> bool:
+    return (os.environ.get(STRIP_UINT8_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
 def uint8_hwc(image: Any) -> Any:
     """Values must lie in [0, 1]: the uint8 cast of anything else is undefined."""
     import torch
-    return (image.float() * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+
+    if _strips_disabled() or image.ndim != 4:
+        return (image.float() * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+    batch, channels, height, width = image.shape
+    out = torch.empty((batch, height, width, channels), dtype = torch.uint8, device = image.device)
+    rows = max(1, _STRIP_BYTES // max(1, batch * channels * width * 4))
+    for start in range(0, height, rows):
+        piece = image[:, :, start : start + rows].to(torch.float32, copy = True)
+        piece.mul_(255).round_()
+        out[:, start : start + rows].copy_(piece.permute(0, 2, 3, 1))
+        del piece
+    return out
 
 
 def install(pipe: Any, logger: Any = None) -> bool:
@@ -91,6 +118,9 @@ def install(pipe: Any, logger: Any = None) -> bool:
         output_type: str = "pil",
         do_denormalize: Optional[list] = None,
     ) -> Any:
+        if output_type != "latent" and has_nan(image):
+            # Stock casts NaN to 0, a blank image that looks like a finished render.
+            raise RuntimeError(NAN_IMAGE_MESSAGE)
         if output_type == "pil":
             try:
                 out = to_pil_on_device(processor, image, do_denormalize)

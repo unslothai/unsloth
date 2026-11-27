@@ -2,9 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 # See /studio/LICENSE.AGPL-3.0
 #
-# Show-NpmRegistryHint in studio/setup.ps1: a local npm errno gets a local hint, not
-# "registry.npmjs.org looks blocked". #8725's EACCES came from the HTTP socket
-# (FetchError), so it gets the "OS refused node's connection" variant.
+# Show-NpmRegistryHint: a local npm errno gets a local hint, not "registry looks blocked";
+# a socket EACCES (FetchError) gets the "OS refused node's connection" variant.
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'Get-FunctionSource.ps1')

@@ -111,7 +111,7 @@ def test_activation_quantization_passes_the_gradient_straight_through(mode):
     out = _run(mode)
     assert out["patched"]
     assert out["has_grad_fn"]
-    assert out["same_forward"]  # the quantized forward is untouched
+    assert out["same_forward"]
     assert out["grad_err"] < 1e-5  # dX = dY @ W, as if the activation were not quantized
 
 

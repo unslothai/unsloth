@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HunyuanVideo-1.5 original (ComfyUI) layout -> diffusers names, for ``load_comfy_quant_transformer`` (diffusers has
-no single-file converter for it). Row-only reshapes keep int8 / fp8 codes and per-row scales exact: fused qkv
-projections split by thirds, ``final_layer.adaLN_modulation.1`` swaps ``[shift; scale]`` to ``[scale; shift]``.
-Torch-free."""
+"""HunyuanVideo-1.5 ComfyUI to diffusers names; torch-free; row-only reshapes keep quant codes and
+per-row scales exact"""
 
 from __future__ import annotations
 
