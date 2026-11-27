@@ -1888,6 +1888,8 @@ const COMPOSER_SCROLL_GAP_PX = 8;
 // The scroll-to-bottom row follows the spacer in flow; 28px until it renders.
 const SCROLL_BUTTON_ROW_PX = 28;
 const SCROLL_BUTTON_GAP_PX = 14;
+// Written on the viewport (the mask reads them there) and registered inherits:false in index.css:
+// on an ancestor they would restyle every message on each composer resize frame.
 const THREAD_COMPOSER_VARS = [
   "--thread-composer-clip",
   "--thread-composer-bottom",
@@ -2729,8 +2731,7 @@ const ThreadComposerDock: FC<{
     const dock = dockRef.current;
     const inner = dockInnerRef.current;
     const viewport = childWithClass(dock?.parentElement, "aui-thread-viewport");
-    const root = viewport?.parentElement;
-    if (!dock || !inner || !viewport || !root) return;
+    if (!dock || !inner || !viewport) return;
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const syncComposerClip = () => {
@@ -2738,7 +2739,7 @@ const ThreadComposerDock: FC<{
         ? null
         : dock.querySelector<HTMLElement>(".unsloth-composer-surface");
       if (!surface) {
-        for (const name of THREAD_COMPOSER_VARS) root.style.removeProperty(name);
+        for (const name of THREAD_COMPOSER_VARS) viewport.style.removeProperty(name);
         return;
       }
       const box = viewport.getBoundingClientRect();
@@ -2752,7 +2753,7 @@ const ThreadComposerDock: FC<{
         getComputedStyle(surface).borderTopLeftRadius,
         "calc(2px * var(--ui-space-scale, 1))",
       ];
-      THREAD_COMPOSER_VARS.forEach((name, i) => root.style.setProperty(name, values[i]));
+      THREAD_COMPOSER_VARS.forEach((name, i) => viewport.style.setProperty(name, values[i]));
     };
     const apply = () => {
       // May fire before the gutter's observer, which would leave the composer a scrollbar off-centre.
@@ -2788,7 +2789,7 @@ const ThreadComposerDock: FC<{
     return () => {
       resizeObserver.disconnect();
       viewport.removeEventListener(THREAD_GUTTER_CHANGE_EVENT, apply);
-      for (const name of THREAD_COMPOSER_VARS) root.style.removeProperty(name);
+      for (const name of THREAD_COMPOSER_VARS) viewport.style.removeProperty(name);
     };
   }, [threadIsEmpty]);
 

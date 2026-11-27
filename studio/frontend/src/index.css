@@ -6984,14 +6984,40 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
+/* The composer dock writes these on the viewport on every resize frame (composer easing, sidebar,
+   panels). Unregistered, they would inherit, and each write would restyle every message row;
+   inherits:false keeps it to the viewport, their only reader (the mask below). Unset still takes the
+   var(..., 0px) fallback. Engines without @property keep the inherited behaviour. */
+@property --thread-composer-clip {
+	syntax: "*";
+	inherits: false;
+}
+@property --thread-composer-bottom {
+	syntax: "*";
+	inherits: false;
+}
+@property --thread-composer-left {
+	syntax: "*";
+	inherits: false;
+}
+@property --thread-composer-right {
+	syntax: "*";
+	inherits: false;
+}
+@property --thread-composer-radius {
+	syntax: "*";
+	inherits: false;
+}
+@property --thread-composer-fade {
+	syntax: "*";
+	inherits: false;
+}
 /* Masks the thread only inside the composer's rounded box; side strips and top-corner layers keep text beside it. */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
-  --clip: var(--thread-composer-clip, 0px);
   --fade: var(--thread-composer-fade, 0px);
   --radius: var(--thread-composer-radius, 0px);
-  --below: var(--thread-composer-bottom, 0px);
   mask-image:
-    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--clip)), transparent calc(100% - var(--clip) + var(--fade))),
+    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--thread-composer-clip, 0px)), transparent calc(100% - var(--thread-composer-clip, 0px) + var(--fade))),
     linear-gradient(#000, #000),
     linear-gradient(#000, #000),
     linear-gradient(#000, #000),
@@ -7000,17 +7026,17 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-size:
     100% 100%,
     min(var(--thread-scrollbar-gutter, 10px), var(--classic-scrollbar-width, 0px)) 100%,
-    var(--thread-composer-left, 0px) calc(var(--clip) - var(--below)),
-    var(--thread-composer-right, 0px) calc(var(--clip) - var(--below)),
+    var(--thread-composer-left, 0px) calc(var(--thread-composer-clip, 0px) - var(--thread-composer-bottom, 0px)),
+    var(--thread-composer-right, 0px) calc(var(--thread-composer-clip, 0px) - var(--thread-composer-bottom, 0px)),
     var(--radius) var(--radius),
     var(--radius) var(--radius);
   mask-position:
     0 0,
     right,
-    left 0 bottom var(--below),
-    right 0 bottom var(--below),
-    left var(--thread-composer-left, 0px) bottom calc(var(--clip) - var(--radius)),
-    right var(--thread-composer-right, 0px) bottom calc(var(--clip) - var(--radius));
+    left 0 bottom var(--thread-composer-bottom, 0px),
+    right 0 bottom var(--thread-composer-bottom, 0px),
+    left var(--thread-composer-left, 0px) bottom calc(var(--thread-composer-clip, 0px) - var(--radius)),
+    right var(--thread-composer-right, 0px) bottom calc(var(--thread-composer-clip, 0px) - var(--radius));
 }
 /* Compare's model bars take the wash; the page-colour pane fade would read as a band. */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .compare-pane-header {
