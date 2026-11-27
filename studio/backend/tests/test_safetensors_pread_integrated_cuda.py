@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A media load whose target is an integrated NVIDIA GPU (DGX Spark, RTX Spark: unified memory) reads every safetensors
-shard through ``pread``, transformers and diffusers components alike, on Windows and Linux. Discrete NVIDIA, CPU,
-ROCm and an explicit ``UNSLOTH_SAFETENSORS_PREAD=0`` keep the previous backend; safetensors without the backend
-keyword stays mapped. The device is stubbed through ``torch.cuda.get_device_properties(i).is_integrated``. CPU only."""
+"""Integrated NVIDIA targets read every safetensors shard (transformers and diffusers) through ``pread``; CPU only."""
 
 from __future__ import annotations
 
@@ -55,8 +52,6 @@ def _stub_cuda(
     integrated = (True,),
     rocm = False,
 ):
-    """``integrated[i]``: whether CUDA device i reports ``is_integrated``."""
-
     def props(index = None):
         i = 0 if index is None else int(getattr(index, "index", index) or 0)
         flag = 1 if integrated[i] else 0
@@ -122,8 +117,7 @@ def test_pread_wanted_integrated_cuda(monkeypatch, platform, env, integrated_cud
 
 
 def _spy_backends(monkeypatch):
-    """(library, backend) per shard open: transformers' safe_open, and the safetensors.safe_open diffusers reaches
-    (``safetensors.torch.load_file`` for the stock read, the scope's own pread read)."""
+    """(library, backend) per shard open."""
     seen = []
     real_tf = modeling_utils.safe_open
 
@@ -159,7 +153,6 @@ def _shards(tmp_path, dtype = torch.bfloat16):
 
 
 def _load_both(shards):
-    """One transformers shard read (lazy slices, as transformers does) and one diffusers shard read."""
     with modeling_utils.safe_open(
         str(shards["text_encoder"]), framework = "pt", device = "cpu"
     ) as handle:
@@ -189,7 +182,6 @@ def test_integrated_cuda_reads_every_shard_through_pread(monkeypatch, tmp_path, 
     assert seen == [("transformers", "pread"), ("diffusers", "pread")]
     expected = torch.arange(64 * 64, dtype = torch.float32).reshape(64, 64).to(torch.bfloat16)
     assert torch.equal(te, expected) and torch.equal(dit, expected)
-    # restored: the next read outside the scope is the stock one
     assert mlu.load_state_dict.__module__ == "diffusers.models.model_loading_utils"
     assert not hasattr(mlu.load_state_dict, "__wrapped__")
 
@@ -296,7 +288,6 @@ def test_diffusers_without_backend_stays_mapped(monkeypatch):
 
 
 def test_every_media_scope_passes_its_target():
-    # each pread scope of a load that knows its target says whether that target is an integrated NVIDIA GPU
     sites = {}
     for rel in (
         "core/inference/diffusion.py",

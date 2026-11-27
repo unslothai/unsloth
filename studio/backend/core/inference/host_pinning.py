@@ -79,9 +79,7 @@ def xpu_is_integrated() -> bool:
 
 
 def cuda_is_integrated(device: Any = None) -> bool:
-    """Whether ``device`` (default: the current CUDA device) is an integrated NVIDIA GPU by
-    ``get_device_properties(index).is_integrated`` (DGX Spark, RTX Spark, Jetson). False on ROCm (an AMD APU is
-    classified apart), on a non-CUDA device and on any error. Never raises."""
+    """Integrated NVIDIA GPU (DGX Spark, Jetson); False on ROCm (APUs classified apart) and on any error."""
     try:
         import torch
 

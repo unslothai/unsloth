@@ -8221,7 +8221,6 @@ class VideoBackend:
 
             from .diffusion_families import pinned_repo_revision
 
-            # an integrated NVIDIA target reads every shard through pread (unified memory), on any OS
             try:
                 _ordinal = kwargs.get("gpu_ordinal")
                 _target = (

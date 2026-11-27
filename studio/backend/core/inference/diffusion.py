@@ -4962,8 +4962,7 @@ def _converted_shards_pread(
 ) -> Any:
     """Windows: transformers components converted to ``dtype`` read through ``pread`` (no copy-on-write commit for the
     stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped. An Intel
-    iGPU reads every shard through ``pread`` (#17137); so does a load whose target ``device`` is an integrated NVIDIA
-    GPU, on any OS and diffusers components included."""
+    iGPU, or an integrated NVIDIA target ``device`` (any OS, diffusers too), reads every shard through ``pread``."""
     from .host_pinning import cuda_is_integrated, xpu_is_integrated
     from .safetensors_pread import pread_safetensors, pread_wanted
 
@@ -4976,7 +4975,6 @@ def _converted_shards_pread(
 
 
 def _load_device(target: Any, device: Any = None) -> Any:
-    """The device a load places weights on: the resolved target's (indexed) device, else ``device``."""
     return getattr(target, "torch_device", None) or device
 
 

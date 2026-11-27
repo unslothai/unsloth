@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows converting loads, and every load onto an integrated NVIDIA GPU, use pread instead of mmap;
-UNSLOTH_SAFETENSORS_PREAD=0|1."""
+"""Windows converting loads and integrated NVIDIA loads use pread instead of mmap; UNSLOTH_SAFETENSORS_PREAD=0|1."""
 
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 _lock = threading.Lock()
 _depth = 0
 _original: Any = None
-# diffusers' ``load_state_dict`` (by module) the scope replaced, restored when the last scope closes
 _diffusers_original: dict[Any, Any] = {}
 _DIFFUSERS_LOADERS = ("diffusers.models.model_loading_utils", "diffusers.models.modeling_utils")
 # per load thread, so concurrent media loads never share rules: (target dtype or None = fp32-only video rule, kept dirs,
@@ -31,8 +29,7 @@ def _active_rules() -> tuple[tuple[Optional[str], frozenset[str], bool, bool], .
 
 
 def pread_wanted(integrated_cuda: bool = False) -> bool:
-    """Explicit ``UNSLOTH_SAFETENSORS_PREAD`` wins; else Windows, or any OS when the load targets an integrated NVIDIA
-    GPU (unified memory: a mapped shard and its device copy are both host RAM; DGX Spark 19.6 s mmap vs 0.84 s pread)."""
+    """Env wins; else Windows or an integrated NVIDIA target (DGX Spark 19.6 s mmap vs 0.84 s pread)."""
     value = (os.environ.get(PREAD_ENV) or "").strip().lower()
     if value in ("0", "off", "false", "no"):
         return False
@@ -65,7 +62,7 @@ def pread_available() -> bool:
 
 def _backend_for(filename: Any, diffusers: bool = False) -> Optional[str]:
     """ "pread", "keep" (a component the small-host route loads at its stored dtype) or None (caller's default).
-    ``diffusers``: a diffusers model shard, read through ``pread`` only under an integrated-CUDA rule."""
+    Diffusers shards use ``pread`` only under an integrated-CUDA rule."""
     from pathlib import Path
 
     from .diffusion_small_host import _safetensors_bytes_by_dtype
@@ -131,8 +128,7 @@ def _with_pread_state_dict(load_state_dict: Any) -> Any:
         signature = None
 
     def _plain_shard(checkpoint_file: Any, args: tuple, kwargs: dict) -> Optional[Any]:
-        # the per-shard call diffusers makes: a .safetensors file onto the host, mmap allowed, no DDUF archive
-        # (0.40 orders the parameters (file, dduf_entries, disable_mmap, map_location), 0.42 drops dduf_entries)
+        # only a plain .safetensors shard, mmap allowed, no DDUF (0.42 drops dduf_entries, so bind by name)
         if signature is None or not isinstance(checkpoint_file, (str, os.PathLike)):
             return None
         try:
@@ -162,9 +158,7 @@ def _with_pread_state_dict(load_state_dict: Any) -> Any:
                 with safe_open(
                     str(checkpoint_file), framework = "pt", device = location, backend = "pread"
                 ) as handle:
-                    get_all = getattr(
-                        handle, "get_tensors", None
-                    )  # what ``safetensors.torch.load_file`` returns
+                    get_all = getattr(handle, "get_tensors", None)
                     if callable(get_all):
                         return get_all()
                     return {name: handle.get_tensor(name) for name in handle.keys()}
@@ -209,10 +203,8 @@ def pread_safetensors(
     """Route ``transformers.modeling_utils.safe_open`` of fp32 shards, and with ``convert_to`` of every shard stored in
     another dtype outside the ``keep`` component dirs, through ``pread``; yields whether it did. ``every_shard`` reads
     same-dtype shards through ``pread`` too: on an integrated GPU the device copy is host commit, and a mapped shard
-    stays charged until its last tensor has moved. ``integrated_cuda`` (the load targets an integrated NVIDIA GPU)
-    implies ``every_shard``, wants ``pread`` on any OS (``pread_wanted``) and covers diffusers model shards too: on
-    unified memory a mapped shard faults in page by page while its tensors are copied into the same RAM (RTX Spark
-    1.8x - 2.2x faster, DGX Spark 19.6 s vs 0.84 s). Nests; a concurrent load in another thread only gets the same
+    stays charged until its last tensor has moved. ``integrated_cuda`` implies ``every_shard`` on any OS and covers
+    diffusers shards too. Nests; a concurrent load in another thread only gets the same
     bytes through another backend."""
     global _depth, _original
     installed = False
