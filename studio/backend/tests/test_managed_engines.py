@@ -1533,7 +1533,6 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
 
     active(isolated)
     if nvcc:
-        # The pip nvcc as link_cuda_home links it, so cuda/ becomes CUDA_HOME.
         (isolated / "vllm" / "env-prior" / "cuda" / "bin").mkdir(parents = True)
         (isolated / "vllm" / "env-prior" / "cuda" / "bin" / "nvcc").touch()
     monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
@@ -1597,7 +1596,6 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         assert library_path == str(driver)
         env_dir = install.installed("vllm")["path"]
         assert flashinfer_base == env_dir
-        # vLLM counts FlashInfer as missing unless nvcc is on PATH.
         first = [env_dir + "/cuda/bin", env_dir + "/bin"] if nvcc else [env_dir + "/bin"]
         assert path.split(os.pathsep)[: len(first)] == first
         assert visible == ",".join(map(str, gpu_ids))

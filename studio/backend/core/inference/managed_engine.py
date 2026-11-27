@@ -92,8 +92,7 @@ def _point_tls_at_studio_ca_bundle(child_env: dict[str, str]) -> None:
 
 
 def _apply_cuda_environment(env: dict[str, str], info: dict, separator: str) -> None:
-    """CUDA_HOME, and its bin/ first on PATH so both name the same nvcc: without flashinfer-cubin,
-    which the engines omit, vLLM 0.30 counts FlashInfer as missing unless nvcc is on PATH."""
+    """CUDA_HOME, with its bin/ first on PATH: vLLM 0.30 without flashinfer-cubin needs nvcc on PATH for FlashInfer."""
     from .engine_install import cuda_environment
 
     cuda = cuda_environment(info)
