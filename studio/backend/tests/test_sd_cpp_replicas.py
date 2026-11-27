@@ -458,3 +458,48 @@ def test_a_dead_primary_takes_its_replicas_with_the_load(monkeypatch, tmp_path):
     rig.wait(lambda: rig.servers[1].stopped)
     rig.wait(lambda: b._stopping_servers == 0)
     assert b._replicas is None and not bk._tree_in_use(b)
+
+
+class _AccountCall(_Call):
+    def __init__(self, b, prompt, account_id):
+        super().__init__(b, prompt)
+        self.account_id = account_id
+
+    def run(self):
+        from utils.account_context import AccountContext, run_as
+        run_as(AccountContext(self.account_id, self.account_id), super().run)
+
+
+def test_stop_and_account_retire_reach_a_render_on_a_replica(monkeypatch, tmp_path):
+    from core.inference import diffusion_engine_router
+
+    b, rig = _auto_load(monkeypatch, tmp_path)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", b)
+    first = _AccountCall(b, "a", "acct-a")
+    first.start()
+    rig.wait(lambda: len(rig.entered) == 1)
+    second = _AccountCall(b, "b", "acct-b")
+    second.start()
+    rig.wait(lambda: len(rig.entered) == 2)
+    assert rig.entered[1][0] is rig.servers[1]
+    assert bk.generation_in_flight()
+    # Retiring acct-b stops its render on the replica, and only that one.
+    assert diffusion_engine_router.cancel_generation_for_account("acct-b") is True
+    second.join(5)
+    assert isinstance(second.error, RuntimeError) and "cancelled" in str(second.error)
+    assert first.is_alive()
+    # A foreign account's replica render blocks an account-scoped unload as a primary render does.
+    third = _AccountCall(b, "c", "acct-c")
+    third.start()
+    rig.wait(lambda: len(rig.entered) == 3 and rig.entered[2][0] is rig.servers[1])
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+
+    monkeypatch.setattr(
+        "hub.services.models.account_access.require_resident_control", lambda *a, **k: None
+    )
+    with pytest.raises(GpuBusyForAnotherAccountError):
+        b.unload(expected_account = "acct-a")
+    # Stop with no account scope stops every render, the replica's included.
+    assert b.cancel_generate() is True
+    first.join(5), third.join(5)
+    assert all(isinstance(c.error, RuntimeError) for c in (first, third))

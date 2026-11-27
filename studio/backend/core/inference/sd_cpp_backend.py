@@ -6252,9 +6252,10 @@ class SdCppDiffusionBackend:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
 
-                if (
-                    self._active_generate_cancel is not None
-                    and self._active_generate_account != expected_account
+                if any(
+                    b._active_generate_cancel is not None
+                    and b._active_generate_account != expected_account
+                    for b in (self, *self._replica_backends())
                 ):
                     raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
                 require_resident_control(
