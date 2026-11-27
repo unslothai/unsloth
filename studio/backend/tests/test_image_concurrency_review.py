@@ -148,7 +148,7 @@ def test_minimax_h3_image_never_batches():
 
 
 def test_moss_image_never_batches():
-    """Its forward runs every layer once per sample: a streamed batch of B pays B weight streams for no gain."""
+    """Without a load that runs layer-major on a card with a measured verdict, MOSS renders alone."""
     from core.inference.diffusion import coalesce_prompt_key
 
     family = types.SimpleNamespace(name = "moss-image")
