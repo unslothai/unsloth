@@ -227,3 +227,18 @@ def test_compiled_fullgraph_no_breaks():
     out = compiled(x)
     assert sum(counters["graph_break"].values()) == 0
     assert torch.equal(out, eager)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_nan_rows_propagate(dtype):
+    """A NaN in one row of x / dY makes that output row NaN (as the 16-bit GEMM does) and leaves the others finite."""
+    M, N, K = 512, 256, 512
+    x, w, dy = _inputs(M, N, K, dtype, seed = 3)
+    wq, ws = IL.quantize_weight(w)
+    x[7, 11] = float("nan")
+    dy[9, 3] = float("nan")
+    IL.clear_int8_lora_cache()
+    y = IL.int8_lora_fwd(x, wq, ws)
+    dx = IL.int8_lora_dgrad(dy, wq, ws, None, None)
+    assert torch.isnan(y[7]).all() and torch.isfinite(torch.cat([y[:7], y[8:]])).all()
+    assert torch.isnan(dx[9]).all() and torch.isfinite(torch.cat([dx[:9], dx[10:]])).all()

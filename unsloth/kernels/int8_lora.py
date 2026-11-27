@@ -141,12 +141,14 @@ if triton is not None:
         g = tl.arange(0, G)
         H = tl.load(h_ptr + g[:, None] * G + g[None, :])
         amax = tl.zeros((BLOCK_M,), dtype = tl.float32)
+        nans = tl.zeros((BLOCK_M,), dtype = tl.int32)
         for k0 in range(0, K, G):
             x = tl.load(
                 x_ptr + rows[:, None] * stride_x + (k0 + g)[None, :], mask = rmask[:, None], other = 0.0
             )
             xr = tl.dot(x, H)
             amax = tl.maximum(amax, tl.max(tl.abs(xr), axis = 1))
+            nans += tl.sum((xr != xr).to(tl.int32), axis = 1)
         amax = tl.maximum(amax, 1e-30)
         mul = 127.0 / amax
         for k0 in range(0, K, G):
@@ -159,7 +161,8 @@ if triton is not None:
             tl.store(
                 q_ptr + rows[:, None] * K + (k0 + g)[None, :], y.to(tl.int8), mask = rmask[:, None]
             )
-        tl.store(s_ptr + rows, amax * INV_SCALE, mask = rmask)
+        # tl.max drops NaN: a NaN row scale makes the whole output row NaN, as the 16-bit GEMM would.
+        tl.store(s_ptr + rows, tl.where(nans > 0, float("nan"), amax * INV_SCALE), mask = rmask)
 
     @triton.jit(do_not_specialize = ["N"])
     def _int8_rowq_kernel(
@@ -175,11 +178,14 @@ if triton is not None:
         row = tl.program_id(0).to(tl.int64)
         offs = tl.arange(0, BLOCK)
         amax = tl.zeros((BLOCK,), dtype = tl.float32)
+        nans = tl.zeros((BLOCK,), dtype = tl.int32)
         for n0 in range(0, N, BLOCK):
             mask = n0 + offs < N
             x = tl.load(x_ptr + row * stride_x + n0 + offs, mask = mask, other = 0.0).to(tl.float32)
             c = tl.load(c_ptr + n0 + offs, mask = mask, other = 0.0)
-            amax = tl.maximum(amax, tl.abs(x * c))
+            xc = x * c
+            amax = tl.maximum(amax, tl.abs(xc))
+            nans += (xc != xc).to(tl.int32)
         rmax = tl.maximum(tl.max(amax, axis = 0), 1e-30)
         mul = 127.0 / rmax
         for n0 in range(0, N, BLOCK):
@@ -189,7 +195,7 @@ if triton is not None:
             y = tl.extra.cuda.libdevice.rint(x * c * mul)
             y = tl.minimum(tl.maximum(y, -127.0), 127.0)
             tl.store(q_ptr + row * N + n0 + offs, y.to(tl.int8), mask = mask)
-        tl.store(s_ptr + row, rmax / 127.0)
+        tl.store(s_ptr + row, tl.where(tl.sum(nans, axis = 0) > 0, float("nan"), rmax / 127.0))
 
     @triton.jit(do_not_specialize = ["M"])
     def _int8_mm_kernel(
