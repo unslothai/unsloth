@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Raised from the API call itself so every caller is covered. Images/Video pages and the loaded
-// models indicator listen, since they would otherwise miss releases and loads made elsewhere.
+// Raised in the API so every caller notifies; Images, Video and the models indicator listen.
 
 export const MODEL_EJECTED_EVENT = "unsloth:model-ejected";
 export const MODEL_LIFECYCLE_EVENT = "unsloth:model-lifecycle";

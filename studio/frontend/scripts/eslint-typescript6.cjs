@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Imported first by eslint.config.js so CLI and editors both get it; typescript-eslint needs the
-// TypeScript JS API, which TypeScript 7 lacks, so require('typescript') gets the TypeScript 6 copy
-// from @typescript/typescript6. Drop once typescript-eslint supports TS 7.
+// Imported first by eslint.config.js for CLI and editors; require('typescript') gets TS 6 from
+// @typescript/typescript6 (TS 7 lacks the JS API); drop once typescript-eslint supports TS 7.
 
 const Module = require("node:module");
 const path = require("node:path");

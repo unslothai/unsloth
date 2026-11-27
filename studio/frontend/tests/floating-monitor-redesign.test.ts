@@ -43,7 +43,6 @@ test("unified memory is one Memory row, not a RAM bar and a VRAM bar of the same
 test("the card drags from its background, and controls and resize edges keep their pointer", () => {
   assert.match(floatingMonitor, /event\.target\.closest\(BACKGROUND_DRAG_EXCLUDED\)/);
   assert.match(floatingMonitor, /\[role="button"\], \[data-testid="floating-monitor-resize"\]/);
-  // The grip stays.
   assert.match(floatingMonitor, /data-testid="floating-monitor-drag-handle"/);
 });
 

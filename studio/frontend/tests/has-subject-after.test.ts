@@ -41,7 +41,6 @@ const SRC = path.resolve(import.meta.dirname, "../src");
  * holds the thread); utilities by class token, hand-written rules by selector
  */
 const ALLOWED_TAILWIND = new Set<string>([
-  // Chat model controls (a notice beside the picker) and the composer's files panel.
   "max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!ml-0",
   "max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0",
   "max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2",
@@ -91,7 +90,6 @@ const ALLOWED_SELECTORS = new Set<string>([
   ".composer-pill-btn:has(>.composer-pill-glyph[role=button]):hover .composer-pill-x",
   ".aui-composer-root:has(.unsloth-files-panel[data-dragging=true]) .aui-composer-drop-overlay",
   ".unsloth-files-panel-row:has(>.unsloth-files-panel-strip:hover)>.unsloth-files-panel-show-all",
-  // Sonner toasts (index.css): only inside a toast.
   "[data-sonner-toast][data-styled=true]:not(:has([data-title])) [data-icon]",
   "[data-sonner-toast][data-styled=true][data-multiline]:not(:has([data-title])) [data-icon]",
   "[data-sonner-toast][data-styled=true]:has([data-button]) [data-icon]",

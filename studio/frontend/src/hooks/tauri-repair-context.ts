@@ -6,8 +6,7 @@ import { createContext, useContext } from "react";
 export type TauriRepairController = {
   /** Reruns the bundled installer over the managed environment, then restarts the backend. */
   repairInstall: () => Promise<void>;
-  /** Attached to a terminal-started backend: startRepair would switch to the repair screen before
-   * start_managed_repair refuses, so the consumer hides itself. */
+  /** Terminal-started backend: startRepair would switch screens before refusing, so hide it. */
   isExternalServer: boolean;
 };
 

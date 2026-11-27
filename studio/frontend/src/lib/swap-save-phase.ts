@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// While an Images or Video load POST is pending, load-progress says only that the chat context is
-// saving for this load; other phases describe the previous model, so ready or null is not the end.
+// Pending Images/Video load: only the saving phase is current; ready or null is not the end.
 
 export const SAVING_CHAT_CONTEXT = "saving_chat_context";
 
-/** Calls onSaving on each tick that reports the save, and ignores every other phase.
- *  stop() is idempotent and drops a read still in flight. */
+/** onSaving fires per saving tick; stop() is idempotent and drops an in-flight read. */
 export function watchSavingPhase(
   read: (signal: AbortSignal) => Promise<{ phase: unknown }>,
   onSaving: () => void,

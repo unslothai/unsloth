@@ -10,8 +10,7 @@ export const PAYLOAD_SHOW_ALL_MAX_CHARS = 1_000_000;
 const ENDS_IN_HIGH_SURROGATE = /[\uD800-\uDBFF]$/;
 const STARTS_WITH_LOW_SURROGATE = /^[\uDC00-\uDFFF]/;
 
-// Head and tail, as SGLang's request log cuts: agent prompts put the long system prompt
-// first and the turn being answered last, so a head-only cut showed only instructions.
+// Keeps head and tail like SGLang's request log: a head-only cut hid the turn being answered.
 export function payloadPreview(
   body: string,
   limit: number = PAYLOAD_PREVIEW_CHARS,

@@ -42,8 +42,7 @@ function ScrollLockSideCar({ removeScrollBar }: { removeScrollBar?: boolean }): 
   return null;
 }
 
-// The library's defaults, spelled out: JSX does not apply its `defaultProps` (React 19), and Radix
-// passes none of these, so without them the lock would never engage.
+// JSX ignores defaultProps (React 19) and Radix passes none, so the lock would never engage.
 const RemoveScrollLock = forwardRef<HTMLElement, IRemoveScrollProps>(function RemoveScroll(
   { enabled = true, removeScrollBar = true, inert = false, ...props },
   ref,

@@ -19,8 +19,7 @@ export type SandboxUploadResult = {
 };
 
 /**
- * Put one file into a chat's sandbox folder, at its root. A taken name is refused with a 409
- * unless `overwrite`, so a second upload never silently replaces what a tool wrote.
+ * Uploads to sandbox root; a taken name gets 409 unless overwrite, protecting tool-written files.
  */
 export async function uploadToSandbox(
   sessionId: string,

@@ -12,8 +12,7 @@ import {
 
 export type PickerFitStatus = GgufFitClass | VramFitStatus | "offload";
 
-/** Presentation and filters may offer offloadable media without changing Auto's preferred
- * resident artifact. A host pool is already GPU-addressable RAM, never a second allowance. */
+/** Listing offloadable media keeps Auto's pick; a host pool is never a second allowance. */
 export function curatedPickerFit(
   repoId: string,
   catalog: CatalogGroup[],

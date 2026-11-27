@@ -95,8 +95,7 @@ export function storeAuthTokens(
     }
     window.dispatchEvent(new Event(AUTH_SESSION_STORED_EVENT));
   } else if (!localStorage.getItem(AUTH_SESSION_MARK_KEY)) {
-    // Backfill the key for pre-existing sessions so a later sign-out has something to remove (and
-    // fire a storage event). Not a new session, so no epoch bump.
+    // Backfills the mark for pre-existing sessions so sign-out can remove it; no epoch bump.
     localStorage.setItem(
       AUTH_SESSION_MARK_KEY,
       `${Date.now()}.${Math.random()}`,
