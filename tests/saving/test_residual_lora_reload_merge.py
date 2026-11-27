@@ -66,6 +66,9 @@ def test_both_loader_paths_are_covered():
 def test_merged_save_after_reload_keeps_trained_weights(tmp_path, monkeypatch, path, init):
     # CPU merge math on every host: the check is the arithmetic, not an accelerator copy.
     monkeypatch.setattr(saving_utils, "_active_merge_device", lambda: "cpu", raising = False)
+    monkeypatch.setattr(
+        saving_utils, "DEVICE_TYPE", "cpu", raising = False
+    )  # a CUDA torch with no visible GPU
     torch.manual_seed(0)
     config = LlamaConfig(
         vocab_size = 64,

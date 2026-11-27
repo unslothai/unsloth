@@ -9192,8 +9192,12 @@ def snapshot_residual_lora_load(config):
     """Wrap PeftModel.from_pretrained: PEFT re-runs a residual init there, then overwrites its factors with the saved
     weights. Snapshot them in between, or a merged save adds the adapter to the original, unrewritten weight."""
     init = getattr(config, "init_lora_weights", None)
-    # A LoRA-GA init cannot be re-run at load time.
-    if not isinstance(init, str) or init in CONVERT_ON_SAVE_LORA_WEIGHTS:
+    # LoRA-GA cannot be re-run at load time: its adapters are saved relative to the original base instead.
+    if (
+        not isinstance(init, str)
+        or init.split("_niter_")[0] not in RESIDUAL_INIT_LORA_WEIGHTS
+        or init in CONVERT_ON_SAVE_LORA_WEIGHTS
+    ):
         yield
         return
     from peft import PeftModel
