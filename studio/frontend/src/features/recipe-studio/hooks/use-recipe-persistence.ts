@@ -391,7 +391,7 @@ export function useRecipePersistence({
   }, [currentSignature, failedSignature, isDirty, persistRecipe, saveLoading]);
 
   useEffect(() => {
-    const flush = (keepalive: boolean): void => {
+    const flush = (keepalive: boolean, unloading = keepalive): void => {
       const { ready, name, payload, signature } = latest.current;
       const { saved, failed } = savedRef.current;
       const running = inFlight.current;
@@ -400,16 +400,16 @@ export function useRecipePersistence({
       if (!ready || !saved || signature === settled || signature === failed) {
         return;
       }
-      // An unloading page cannot wait, so it sends now on top of the save in flight.
-      if (running && !keepalive) {
-        void running.done.then(() => flush(false));
+      // Only an unloading page sends on top of the save in flight; a hidden one may come back.
+      if (running && !unloading) {
+        void running.done.then(() => flush(keepalive, false));
         return;
       }
       void runSave(name, payload, signature, keepalive);
     };
     const onPageHide = () => flush(true);
     const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") flush(true);
+      if (document.visibilityState === "hidden") flush(true, false);
     };
     window.addEventListener("pagehide", onPageHide);
     document.addEventListener("visibilitychange", onVisibilityChange);

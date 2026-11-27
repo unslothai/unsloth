@@ -596,3 +596,17 @@ test("two recovery copies never exceed the keepalive budget together", async () 
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { text: "y".repeat(40 * 1024) });
 });
+
+test("hiding the page during a save sends the newer edit only after it lands", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  await s.hide();
+  assert.equal(s.server.puts.length, 1);
+  await s.server.release();
+  assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 200]);
+  assert.equal(s.server.puts[1].keepalive, true);
+  assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
+  assert.deepEqual(s.errors, []);
+});
