@@ -382,9 +382,12 @@ def _sft(
     if abort_once:
         # One out-of-memory error in the window's decoder backward (after the loss parts ran): the step is
         # retried the standard way.
+        # Injected inside the layer body (module forward hooks from outside the trusted packages are refused).
         armed = [True]
+        mlp = model.get_base_model().model.layers[1].mlp
+        real = mlp.forward
 
-        def oom(module, args, out):
+        def oom(*args, **kwargs):
             if (
                 armed[0]
                 and torch.is_grad_enabled()
@@ -392,8 +395,9 @@ def _sft(
             ):
                 armed[0] = False
                 raise torch.OutOfMemoryError("simulated")
+            return real(*args, **kwargs)
 
-        model.get_base_model().model.layers[1].register_forward_hook(oom)
+        mlp.forward = oom
     trainer.train()
     weights = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
     logs = [
@@ -1027,15 +1031,33 @@ def test_caller_side_modes_are_ineligible(ga, tmp_path, monkeypatch, kind):
     assert _windows(engine) == 0
 
 
-def test_default_mode_flips_to_opt_in_only(ga, tmp_path, monkeypatch):
+def test_off_by_default_with_an_opt_in_hint(ga, tmp_path, monkeypatch, capsys):
+    """Opt-in: with UNSLOTH_OFFLOAD_LAYER_MAJOR unset no window runs (one line says how to opt in), with 1 they do."""
     mod, engine = ga
-    monkeypatch.setattr(mod, "_DEFAULT_MODE", "off")
+    assert mod._DEFAULT_MODE == "off"
     monkeypatch.delenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", raising = False)
+    assert mod._mode() == "off"
+    monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", "")
     assert mod._mode() == "off"
     monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", "1")
     assert mod._mode() == "on"
-    monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", "")
-    assert mod._mode() == "off"
+    base = _train(mod, tmp_path, monkeypatch, "0")
+    capsys.readouterr()
+    real_setenv = monkeypatch.setenv
+    monkeypatch.setattr(
+        monkeypatch,
+        "setenv",
+        lambda k, v, *a: monkeypatch.delenv(k, raising = False)
+        if k == "UNSLOTH_OFFLOAD_LAYER_MAJOR"
+        else real_setenv(k, v, *a),
+    )
+    engine.layer_major_stats(reset = True)
+    run = _train(mod, tmp_path, monkeypatch, "unset")
+    monkeypatch.undo()
+    out = capsys.readouterr().out
+    assert _windows(engine) == 0
+    assert out.count("It is opt-in: set UNSLOTH_OFFLOAD_LAYER_MAJOR=1") == 1
+    _same(base, run)
 
 
 def test_only_known_setup_wrappers_may_shadow_trainer_methods(ga):
@@ -1048,3 +1070,119 @@ def test_only_known_setup_wrappers_may_shadow_trainer_methods(ga):
     assert mod._instance_overrides(stub) is None
     stub._prepare_inputs = types.MethodType(transformers.Trainer._prepare_inputs, stub)
     assert mod._instance_overrides(stub) == "_prepare_inputs"
+
+
+# ---------------------------------------------------------------- round 5 review fixes (each fails without its fix)
+def test_a_stop_request_keeps_the_step_standard(ga, tmp_path, monkeypatch):
+    """A callback asking the epoch to stop at a step's start: Transformers runs that one micro-batch, then leaves."""
+    mod, engine = ga
+
+    class Stop(transformers.TrainerCallback):
+        done = False
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            # Once: the next epoch's steps then carry whatever the stopped step accumulated.
+            if state.global_step == 1 and not self.done:
+                self.done = True
+                control.should_epoch_stop = True
+
+    _with_init(monkeypatch, lambda self: self.add_callback(Stop()))
+    # 4 steps per epoch; max_steps 6 runs into the second epoch after the stop.
+    a = _train(mod, tmp_path, monkeypatch, "0", steps = 6)
+    engine.layer_major_stats(reset = True)
+    b = _train(mod, tmp_path, monkeypatch, "1", steps = 6)
+    assert _windows(engine) >= 1  # the steps before the stop
+    _same(a, b)
+
+
+def test_optimizers_with_a_train_hook_are_ineligible(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    seen = []
+
+    class Hooked(torch.optim.AdamW):
+        def train(self):
+            seen.append(any(p.grad is not None for g in self.param_groups for p in g["params"]))
+
+    a = _train(
+        mod,
+        tmp_path,
+        monkeypatch,
+        "0",
+        trainer_kwargs = {"optimizer_cls_and_kwargs": (Hooked, {"lr": 1e-2})},
+    )
+    first, seen[:] = list(seen), []
+    engine.layer_major_stats(reset = True)
+    b = _train(
+        mod,
+        tmp_path,
+        monkeypatch,
+        "1",
+        trainer_kwargs = {"optimizer_cls_and_kwargs": (Hooked, {"lr": 1e-2})},
+    )
+    assert _windows(engine) == 0 and seen == first
+    _same(a, b)
+
+
+def test_untrusted_forward_hooks_are_ineligible(ga, tmp_path, monkeypatch, capsys):
+    mod, engine = ga
+
+    def hook(model):
+        emb = model.get_base_model().model.embed_tokens
+        emb.register_forward_hook(lambda module, args, out: out * (1 + 0.01 * torch.rand(())))
+
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", model_hook = hook)
+    assert _windows(engine) == 0
+    assert "forward hook on" in capsys.readouterr().out
+    # The hooks transformers / PEFT install (input-grad hook) are trusted: windows still run.
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1")
+    assert _windows(engine) == 2
+
+
+def test_instance_training_step_overrides_keep_no_prefetched_batch(ga, tmp_path, monkeypatch):
+    import gc
+    import types
+    import weakref
+
+    mod, engine = ga
+    refs = []
+    real = transformers.Trainer.get_batch_samples
+
+    def recording(self, *args, **kwargs):
+        out = real(self, *args, **kwargs)
+        refs[:] = [weakref.ref(b["input_ids"]) for b in out[0]]
+        return out
+
+    monkeypatch.setattr(transformers.Trainer, "get_batch_samples", recording)
+
+    def standalone(
+        self,
+        model,
+        inputs,
+        num_items_in_batch = None,
+    ):
+        model.train()
+        loss = model(**inputs).loss / self.args.gradient_accumulation_steps
+        loss.backward()
+        return loss.detach()
+
+    alive = []
+
+    class AtEnd(transformers.TrainerCallback):
+        def on_train_end(self, args, state, control, **kwargs):
+            gc.collect()
+            alive.append(sum(r() is not None for r in refs))
+
+    def install(self):
+        self.training_step = types.MethodType(standalone, self)
+        self.add_callback(AtEnd())
+
+    _with_init(monkeypatch, install)
+    _train(mod, tmp_path, monkeypatch, "0")
+    _train(mod, tmp_path, monkeypatch, "1")
+    # Still inside train() (on_train_end): no more micro-batches alive than standard accumulation keeps (its own
+    # loop locals on some transformers versions).
+    assert refs and len(alive) == 2 and alive[1] == alive[0], alive
+    assert "_unsloth_layer_major_batch" not in _LAST[0].__dict__
+    _LAST.clear()

@@ -10,11 +10,11 @@ Trainer.training_step runs the N micro-batches of the step together through unsl
 through the trainer's own training_step: same shapes, loss, num_items_in_batch normalisation and accumulation order,
 so losses and gradients match standard accumulation bitwise.
 
-UNSLOTH_OFFLOAD_LAYER_MAJOR: "auto" (default) turns it on, for the standard dense decoders in _AUTO_LAYERS (each
-proven bitwise against standard accumulation), after two steps whose swap copies stalled the GPU for more than 5% of
-the swapped layers' time (always on with UNSLOTH_OFFLOAD_STATS = 0, which removes the measurement); "1" whenever
-eligible, for any decoder; "0" never. Every refusal below applies to both. Without an active block swap nothing here
-runs.
+Opt-in, off by default (_DEFAULT_MODE). UNSLOTH_OFFLOAD_LAYER_MAJOR: "1" runs a window whenever eligible, for any
+decoder; "auto" only for the standard dense decoders in _AUTO_LAYERS (each proven bitwise against standard
+accumulation), after two steps whose swap copies stalled the GPU for more than 5% of the swapped layers' time (always
+on with UNSLOTH_OFFLOAD_STATS = 0, which removes the measurement); "0" or unset: never. Every refusal below applies to
+both. Without an active block swap nothing here runs.
 """
 
 import copy
@@ -40,9 +40,13 @@ except Exception:  # unsloth_zoo without layer-major windows
     run_layer_major = None
 
 _TLS = threading.local()
-# With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "auto" (the allowlisted decoders below, after measured copy stalls), or
-# "off" to make windows opt-in only (UNSLOTH_OFFLOAD_LAYER_MAJOR=1).
-_DEFAULT_MODE = "auto"
+# With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "off", so windows are opt-in (UNSLOTH_OFFLOAD_LAYER_MAJOR=1, or "auto" for
+# the allowlisted decoders below after measured copy stalls).
+_DEFAULT_MODE = "off"
+# Packages whose module forward hooks are trusted to be deterministic and order-independent across micro-batches
+# (input-grad hooks, block swap, gradient checkpointing owners, transformers' own hooks). A hook from anywhere else (a
+# user's) could draw random numbers or keep state the window would reorder, so it keeps the step standard.
+_TRUSTED_HOOK_PACKAGES = ("unsloth", "unsloth_zoo", "transformers", "peft", "accelerate", "torch")
 _AUTO_STALL = 0.05
 _AUTO_PROBE_STEPS = 2
 _DROPOUT_KEYS = (
@@ -264,12 +268,62 @@ def _auto_layers_ok(model, layers):
     return True, None
 
 
+def _hook_package(fn):
+    while isinstance(fn, functools.partial):
+        fn = fn.func
+    fn = getattr(fn, "__func__", fn)
+    module = getattr(fn, "__module__", None) or getattr(type(fn), "__module__", "") or ""
+    return module.split(".")[0]
+
+
+def _untrusted_forward_hooks(model):
+    """A module forward (pre-)hook, anywhere in the model, whose function does not come from a trusted package."""
+    from torch.nn.modules import module as nn_module
+
+    if getattr(nn_module, "_global_forward_pre_hooks", None) or getattr(
+        nn_module, "_global_forward_hooks", None
+    ):
+        return "global module forward hooks"
+    for name, module in model.named_modules():
+        for kind in ("_forward_pre_hooks", "_forward_hooks"):
+            for hook in getattr(module, kind, {}).values():
+                if _hook_package(hook) not in _TRUSTED_HOOK_PACKAGES:
+                    return f"a forward hook on {name or 'the model'} ({_hook_package(hook) or 'unknown'})"
+    return None
+
+
+def _optimizer_train_hook(trainer):
+    """An optimizer with a train() method: Trainer.training_step calls it before every micro-batch's forward
+    (schedule-free optimizers), which under a window runs before the previous micro-batch's decoder gradients."""
+    optimizer = getattr(trainer, "optimizer", None)
+    for _ in range(4):
+        if optimizer is None:
+            return False
+        if type(optimizer).__name__ == "AcceleratedOptimizer" and "train" not in vars(optimizer):
+            optimizer = getattr(optimizer, "optimizer", None)
+            continue
+        return callable(getattr(optimizer, "train", None))
+    return True
+
+
 def _window_blocker(
     trainer,
     model,
     layers = None,
 ):
     """Per step (they can appear after the first): what makes this step's micro-batches run the standard way."""
+    control = getattr(trainer, "control", None)
+    if control is not None and (
+        getattr(control, "should_epoch_stop", False)
+        or getattr(control, "should_training_stop", False)
+    ):
+        # The loop leaves after this micro-batch: a window would run the step's other micro-batches too.
+        return "the trainer was asked to stop the epoch or training"
+    if _optimizer_train_hook(trainer):
+        return "an optimizer with a per-micro-batch train() hook (schedule-free)"
+    found = _untrusted_forward_hooks(model)
+    if found is not None:
+        return found
     if _operator_modes_active():
         return "a TorchFunctionMode / TorchDispatchMode is active"
     device = _caller_autocast()
@@ -613,8 +667,24 @@ def patch_layer_major_gradient_accumulation(Trainer):
             and len(samples) > 1
             and _mode() != "off"
             and _trainer_ok(self)
+            and _instance_overrides(self) is None
         ):
             self._unsloth_layer_major_batch = (samples, items)
+        elif (
+            isinstance(samples, list)
+            and len(samples) > 1
+            and _mode() == "off"
+            and not os.environ.get("UNSLOTH_OFFLOAD_LAYER_MAJOR", "").strip()
+            and "opt-in hint" not in self.__dict__.get("_unsloth_layer_major_said", ())
+            and _block_swap_layers(getattr(self, "model", None) or torch.nn.Module())[1] is not None
+        ):
+            _say_once(
+                self,
+                "opt-in hint",
+                "Unsloth: offload_layers with gradient accumulation can run each step's micro-batches layer by "
+                "layer, fetching every swapped layer once per step instead of once per micro-batch. It is opt-in: "
+                "set UNSLOTH_OFFLOAD_LAYER_MAJOR=1.",
+            )
         return out
 
     @functools.wraps(training_step)
