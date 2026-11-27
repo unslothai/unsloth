@@ -2060,7 +2060,6 @@ function userAudioClips(message: RunMessage): string[] {
   return clips;
 }
 
-/** Only the newest user message can send a current-turn recording. */
 function latestUserAudioClips(messages: RunMessages): string[] {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -5482,7 +5481,6 @@ export function createOpenAIStreamAdapter(
         externalSelection?.modelId,
       );
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
-      // Use the loaded GGUF and model's input capability as the settings panel does.
       const isGgufForCompaction = isServedByLlamaCpp({
         loadedIsGguf: runtime.loadedIsGguf,
         activeGgufVariant: runtime.activeGgufVariant,
