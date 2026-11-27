@@ -139,6 +139,8 @@ class _PressureGate:
             use, reason = pressure_decision(load_bytes)
         self.pread = use
         reader = "pread" if use else "mmap"
+        if not use and sys.platform == "win32":
+            reason += "; Windows converting loads still read through pread"
         last_reader_decision = {"reader": reader, "reason": reason, "mode": mode}
         try:
             from loggers import get_logger
@@ -211,6 +213,9 @@ def _backend_for(filename: Any, diffusers: bool = False) -> Optional[str]:
         every, _ = _rule_reads_all(rule, path)
         if every:
             return "pread"
+        if len(rule) > 4 and rule[4] is not None and sys.platform != "win32":
+            # a ROCm integrated GPU's gate picked mmap: final for this rule (Windows keeps its commit rule below)
+            continue
         if to is None and stored.get("float32", 0) * 2 > sum(stored.values()):
             return "pread"
         if to is not None and dominant in ("bfloat16", "float16", "float32") and dominant != to:

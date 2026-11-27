@@ -268,3 +268,101 @@ def test_rocm_is_integrated(monkeypatch, hip, status, expected):
     assert host_pinning.rocm_is_integrated("cuda") is expected
     if hip:
         assert host_pinning.cuda_is_integrated("cuda") is False  # NVIDIA rule never sees a ROCm APU
+
+
+def _fp32_shard(tmp_path, name = "text_encoder"):
+    d = tmp_path / name
+    d.mkdir()
+    path = d / "model.safetensors"
+    save_file({"a": _expected("a").float(), "b": _expected("b").float()}, str(path))
+    return path
+
+
+def _open_through_transformers(seen, path):
+    with modeling_utils.safe_open(str(path), framework = "pt", device = "cpu") as handle:
+        got = {k: handle.get_tensor(k) for k in handle.keys()}
+    assert all(torch.equal(got[k], _expected(k).float()) for k in got)
+    return {backend for _, backend in seen}
+
+
+@requires_backend
+def test_rocm_ample_memory_converting_fp32_shard_stays_mapped(monkeypatch, tmp_path):
+    # Codex 4717831117: the gate's mmap must not fall through to the fp32 -> bf16 conversion predicate
+    _gpu(monkeypatch, "rocm", True, PLENTY)
+    sp.last_reader_decision = None
+    path = _fp32_shard(tmp_path)
+    seen = _spy(monkeypatch)
+    with diffusion._converted_shards_pread(torch.bfloat16, None, "cuda"):
+        backends = _open_through_transformers(seen, path)
+    assert backends <= MMAP, backends
+    assert sp.last_reader_decision["reader"] == "mmap"
+
+
+@requires_backend
+def test_rocm_ample_memory_fp32_video_shard_stays_mapped(monkeypatch, tmp_path):
+    # the video scope's fp32-only rule (convert_to None) must not override the gate either
+    _gpu(monkeypatch, "rocm", True, PLENTY)
+    sp.last_reader_decision = None
+    path = _fp32_shard(tmp_path, "transformer")
+    seen = _spy(monkeypatch)
+    with sp.pread_safetensors(integrated_cuda = False, integrated_rocm = True):
+        backends = _open_through_transformers(seen, path)
+    assert backends <= MMAP, backends
+    assert sp.last_reader_decision["reader"] == "mmap"
+
+
+@requires_backend
+@pytest.mark.parametrize("video", [False, True])
+def test_rocm_pressure_converting_and_video_fp32_shards_read_pread(monkeypatch, tmp_path, video):
+    _gpu(monkeypatch, "rocm", True, TIGHT)
+    sp.last_reader_decision = None
+    path = _fp32_shard(tmp_path)
+    seen = _spy(monkeypatch)
+    scope = (
+        sp.pread_safetensors(integrated_rocm = True)
+        if video
+        else diffusion._converted_shards_pread(torch.bfloat16, None, "cuda")
+    )
+    with scope:
+        backends = _open_through_transformers(seen, path)
+    assert backends == {"pread"} and sp.last_reader_decision["reader"] == "pread"
+
+
+@requires_backend
+@pytest.mark.parametrize("video", [False, True])
+def test_windows_discrete_conversion_rules_unchanged(monkeypatch, tmp_path, video):
+    # non-ROCm: the fp32 video rule and the converting rule still read through pread
+    _gpu(monkeypatch, "cuda", False, PLENTY, platform = "win32")
+    path = _fp32_shard(tmp_path)
+    seen = _spy(monkeypatch)
+    scope = (
+        sp.pread_safetensors()
+        if video
+        else diffusion._converted_shards_pread(torch.bfloat16, None, "cuda")
+    )
+    with scope:
+        backends = _open_through_transformers(seen, path)
+    assert backends == {"pread"}
+
+
+@requires_backend
+def test_integrated_nvidia_converting_fp32_shard_still_pread(monkeypatch, tmp_path):
+    _gpu(monkeypatch, "cuda", True, PLENTY)
+    path = _fp32_shard(tmp_path)
+    seen = _spy(monkeypatch)
+    with diffusion._converted_shards_pread(torch.bfloat16, None, "cuda"):
+        backends = _open_through_transformers(seen, path)
+    assert backends == {"pread"}
+
+
+@requires_backend
+def test_windows_rocm_ample_memory_keeps_the_commit_rule(monkeypatch, tmp_path):
+    # Windows converting loads read through pread for commit (#14513), as on main; the reason says so
+    _gpu(monkeypatch, "rocm", True, PLENTY, platform = "win32")
+    sp.last_reader_decision = None
+    path = _fp32_shard(tmp_path)
+    seen = _spy(monkeypatch)
+    with diffusion._converted_shards_pread(torch.bfloat16, None, "cuda"):
+        backends = _open_through_transformers(seen, path)
+    assert backends == {"pread"}
+    assert "Windows converting loads still read through pread" in sp.last_reader_decision["reason"]
