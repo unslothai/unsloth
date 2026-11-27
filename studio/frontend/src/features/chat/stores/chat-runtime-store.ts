@@ -5509,7 +5509,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     const savedFullAccess = (settings as { fullAccess?: unknown } | null | undefined)?.fullAccess;
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
-      // A freshly read row replaces the edits whose earlier writes failed.
       if (threadId !== null) retireFailedThreadFields(threadId);
       flushThreadScopedSettingsWrite();
       // Edits made while this chat's snapshot was in flight are kept and stored on the chat.
