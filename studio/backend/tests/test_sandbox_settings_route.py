@@ -560,9 +560,9 @@ def test_posix_status_carries_the_file_size_limit(host, posix, memory, file_size
     with _client(OWNER) as client:
         body = client.get("/sandbox").json()
     assert body["file_size"] == {
-        "limit_mb": 100,
-        "saved_mb": 100,
-        "default_mb": 100,
+        "limit_mb": 4096,
+        "saved_mb": 4096,
+        "default_mb": 4096,
         "min_mb": 1,
         "max_mb": 1024 * 1024,
         "locked_by_environment": False,
@@ -573,11 +573,11 @@ def test_saving_the_file_size_limit_shows_at_once(host, posix, memory, file_size
     calls, _saved = host
     with _client(OWNER) as client:
         for _ in range(2):
-            response = client.put("/sandbox", json = {"file_size_limit_mb": 4096})
+            response = client.put("/sandbox", json = {"file_size_limit_mb": 8192})
             assert response.status_code == 200, response.text
-            assert response.json()["file_size"]["limit_mb"] == 4096
-        assert client.get("/sandbox").json()["file_size"]["saved_mb"] == 4096
-    assert file_size == {"mb": 4096}
+            assert response.json()["file_size"]["limit_mb"] == 8192
+        assert client.get("/sandbox").json()["file_size"]["saved_mb"] == 8192
+    assert file_size == {"mb": 8192}
     assert memory == {}
     assert calls["invalidate"] == 0 and calls["revoke"] == 0
 
@@ -606,7 +606,7 @@ def test_an_environment_file_size_limit_is_shown_and_locked(
     with _client(OWNER) as client:
         body = client.get("/sandbox").json()["file_size"]
         assert body["limit_mb"] == 2048 and body["locked_by_environment"] is True
-        response = client.put("/sandbox", json = {"file_size_limit_mb": 4096})
+        response = client.put("/sandbox", json = {"file_size_limit_mb": 8192})
     assert response.status_code == 409
     assert sandbox_file_size_limit.FILE_SIZE_LIMIT_ENV in response.json()["detail"]
     assert file_size == {}
@@ -615,5 +615,5 @@ def test_an_environment_file_size_limit_is_shown_and_locked(
 def test_windows_has_no_file_size_limit(host, windows, memory, file_size):
     with _client(OWNER) as client:
         assert client.get("/sandbox").json()["file_size"] is None
-        assert client.put("/sandbox", json = {"file_size_limit_mb": 4096}).status_code == 409
+        assert client.put("/sandbox", json = {"file_size_limit_mb": 8192}).status_code == 409
     assert file_size == {}

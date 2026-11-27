@@ -10352,8 +10352,9 @@ def _cap_tool_memory(proc, pgid, sandboxed: bool) -> None:
 
 
 _SIGXFSZ = getattr(signal, "SIGXFSZ", None)
-# The shell's report of a SIGXFSZ kill (Linux strsignal, then macOS), EFBIG for writers that ignore the signal
-# (Python does), and bash refusing to raise the hard limit.
+# The shell's report of a SIGXFSZ kill (Linux strsignal, then macOS).
+_FILE_SIZE_KILLED_RE = re.compile(r"File ?size limit exceeded", re.IGNORECASE)
+# Plus EFBIG for writers that ignore the signal (Python does) and bash refusing to raise the hard limit.
 _FILE_SIZE_EXCEEDED_RE = re.compile(
     r"File ?size limit exceeded|File too large|ulimit: file size: cannot modify limit",
     re.IGNORECASE,
@@ -10361,13 +10362,18 @@ _FILE_SIZE_EXCEEDED_RE = re.compile(
 
 
 def _file_size_exceeded_note(proc, output: str, sandboxed: bool) -> str:
-    """Names the sandbox file size limit when a failed call ran into it, so the model stops retrying with ulimit:
-    the hard limit is set too, so nothing inside the sandbox can raise it."""
-    if not sandboxed or sys.platform == "win32" or _SIGXFSZ is None or proc.returncode == 0:
+    """Names the sandbox file size limit when a call ran into it, so the model stops retrying with ulimit: the hard
+    limit is set too, so nothing inside the sandbox can raise it. Exit 0 counts only for a reported SIGXFSZ kill
+    (`head -c 1G > f; ls` leaves a truncated file behind)."""
+    if not sandboxed or sys.platform == "win32" or _SIGXFSZ is None:
         return ""
-    if proc.returncode not in (-_SIGXFSZ, 128 + _SIGXFSZ) and not _FILE_SIZE_EXCEEDED_RE.search(
-        output or ""
-    ):
+    hit = (
+        _FILE_SIZE_KILLED_RE.search(output or "")
+        if proc.returncode == 0
+        else proc.returncode in (-_SIGXFSZ, 128 + _SIGXFSZ)
+        or _FILE_SIZE_EXCEEDED_RE.search(output or "")
+    )
+    if not hit:
         return ""
     limit_mb = _sandbox_fsize_bytes // (1024 * 1024)
     return (

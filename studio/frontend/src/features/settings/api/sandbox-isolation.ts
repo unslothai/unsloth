@@ -283,7 +283,7 @@ function fileSizeFromApi(
   return {
     limitMb: fileSize.limit_mb ?? fileSize.saved_mb,
     savedMb: fileSize.saved_mb,
-    defaultMb: fileSize.default_mb ?? 100,
+    defaultMb: fileSize.default_mb ?? 4096,
     minMb: fileSize.min_mb ?? 1,
     maxMb: fileSize.max_mb ?? 1048576,
     lockedByEnvironment: fileSize.locked_by_environment ?? false,

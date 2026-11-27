@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Sandbox file size limit (RLIMIT_FSIZE, macOS and Linux): a present env var wins, then the saved value, then 100 MB."""
+"""Sandbox file size limit (RLIMIT_FSIZE, macOS and Linux): a present env var wins, then the saved value, then 4 GB."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from typing import Any
 
 FILE_SIZE_LIMIT_ENV = "UNSLOTH_STUDIO_SANDBOX_FSIZE_MB"
 FILE_SIZE_LIMIT_SETTING_KEY = "sandbox_file_size_limit_mb"
-DEFAULT_FILE_SIZE_LIMIT_MB = 100
+# 100 MB until #19853: debug builds (swift build, cargo, C++) link binaries past it.
+DEFAULT_FILE_SIZE_LIMIT_MB = 4096
 MIN_FILE_SIZE_LIMIT_MB = 1
 # 1 TiB: past this a build has bigger problems than the sandbox.
 MAX_FILE_SIZE_LIMIT_MB = 1024 * 1024
