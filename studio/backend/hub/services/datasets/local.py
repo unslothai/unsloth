@@ -631,18 +631,18 @@ def _finish_upload(
                     except OverflowError:
                         # Python versions that store this as C long cap it at 2 GiB on Windows.
                         csv.field_size_limit(2**31 - 1)
-                try:
-                    _convert_semicolon_csv(
-                        partial_path, converted_path, max_bytes, max_label, csv_delimiter
-                    )
-                except UnicodeDecodeError:
-                    # Excel's regional "CSV (semicolon)" export writes the ANSI code page.
-                    _convert_semicolon_csv(
-                        partial_path, converted_path, max_bytes, max_label, csv_delimiter, "cp1252"
-                    )
+                _convert_semicolon_csv(
+                    partial_path, converted_path, max_bytes, max_label, csv_delimiter
+                )
             finally:
                 csv.field_size_limit(field_limit)
         return _publish_upload(converted_path, stored_path)
+    except UnicodeDecodeError as exc:
+        # The ANSI code page depends on the exporting locale, so a guessed one would publish mojibake.
+        raise HTTPException(
+            status_code = 400,
+            detail = "Invalid semicolon CSV. The file is not UTF-8; save it from Excel as CSV UTF-8.",
+        ) from exc
     except (csv.Error, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = f"Invalid semicolon CSV. {exc}") from exc
     finally:
@@ -684,16 +684,9 @@ class _ByteCountingWriter:
         return self.file.write(data)
 
 
-def _convert_semicolon_csv(
-    partial_path,
-    converted_path,
-    max_bytes,
-    max_label,
-    delimiter,
-    encoding = "utf-8-sig",
-):
+def _convert_semicolon_csv(partial_path, converted_path, max_bytes, max_label, delimiter):
     with (
-        partial_path.open(encoding = encoding, newline = "") as source,
+        partial_path.open(encoding = "utf-8-sig", newline = "") as source,
         converted_path.open("wb") as target,
     ):
         # Excel also accepts a delimiter directive before the header.
