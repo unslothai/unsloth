@@ -50,6 +50,8 @@ function RecipeLoadState({
   );
 }
 
+const ALSO_BASE_LIMIT = 500;
+
 export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
   const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
@@ -133,20 +135,26 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       const bases = input.recover
         ? [...new Set([...(inFlight === undefined ? [] : [inFlight]), ...candidates, confirmed])]
         : [inFlight !== undefined ? inFlight : confirmed];
+      // Past every attempt that may have landed, even ones this save does not name as a base.
       const updatedAt = Math.max(
         Date.now(),
-        Math.max(confirmed ?? 0, inFlight ?? candidates[0] ?? 0) + 1,
+        Math.max(confirmed ?? 0, inFlight ?? 0, ...unansweredVersions.current) + 1,
       );
       inFlightVersion.current = updatedAt;
       try {
         // One conditional write: the server admits it on any listed base in a single statement.
-        const [baseUpdatedAt, ...alsoBase] = bases;
+        const [baseUpdatedAt, ...rest] = bases;
+        const alsoBase = rest.filter((v): v is number => v !== undefined);
+        // The API takes 500; past that (hundreds of failed saves) keep the newest and the confirmed.
+        if (alsoBase.length > ALSO_BASE_LIMIT) {
+          alsoBase.splice(ALSO_BASE_LIMIT - 1, alsoBase.length - ALSO_BASE_LIMIT);
+        }
         const record = await saveRecipe({
           id: input.id ?? recipeId,
           name: input.name,
           payload: input.payload,
           baseUpdatedAt,
-          alsoBaseUpdatedAt: alsoBase.filter((v): v is number => v !== undefined),
+          alsoBaseUpdatedAt: alsoBase,
           updatedAt,
           keepalive: input.keepalive,
           known: loadedRef.current ?? undefined,

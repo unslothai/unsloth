@@ -276,7 +276,7 @@ const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
 };
 
-function setup({ payload = { columns: ["a"] } as unknown } = {}) {
+function setup({ payload = { columns: ["a"] } as unknown, updatedAt = 2000 } = {}) {
   const timers = new Map<number, () => void>();
   let nextTimer = 1;
   const listeners = new Map<string, Set<(event?: unknown) => void>>();
@@ -307,7 +307,7 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
     name: "My recipe",
     payload,
     createdAt: 1000,
-    updatedAt: 2000,
+    updatedAt,
   });
   const errors: string[] = [];
   const uploads = { pending: [] as string[], removed: [] as string[] };
@@ -1056,4 +1056,27 @@ test("recovery keeps a landed version however many lost saves follow it", async 
   s.editor.unmount();
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { columns: ["u"] });
+});
+
+test("returning to the saved content after a lost hidden-page save still sends it on exit", async () => {
+  const s = setup();
+  await s.edit({ columns: ["b"] });
+  await s.hide();
+  await s.server.cancelOldest(true);
+  assert.deepEqual(s.server.stored.payload, { columns: ["b"] });
+  await s.edit({ columns: ["a"] });
+  s.editor.unmount();
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["a"] });
+});
+
+test("a later save never reuses the version of an unanswered one", async () => {
+  const s = setup({ updatedAt: Date.now() + 60_000 });
+  await s.edit({ columns: ["x"] });
+  await s.fireDebounce();
+  await s.server.cancelOldest(true);
+  await s.edit({ columns: ["y"] });
+  await s.fireDebounce();
+  const [lost, next] = s.server.puts;
+  assert.ok(next.body.updatedAt > lost.body.updatedAt);
 });

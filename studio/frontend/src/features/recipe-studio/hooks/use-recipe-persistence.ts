@@ -316,6 +316,7 @@ export function useRecipePersistence({
     seq: 0,
     applied: 0,
     outstanding: 0,
+    uncertain: false,
   });
   const inFlight = useRef<{ signature: string; done: Promise<void> } | null>(
     null,
@@ -346,6 +347,7 @@ export function useRecipePersistence({
               return;
             }
             savedRef.current.applied = seq;
+            savedRef.current.uncertain = false;
             setLastSavedAt(result.updatedAt);
             savedRef.current.failed = null;
             setFailedSignature(null);
@@ -362,6 +364,10 @@ export function useRecipePersistence({
               return;
             }
             console.error("Save recipe failed:", error);
+            // An HTTP refusal carries a status; anything else may have landed unseen.
+            if (typeof (error as { status?: unknown } | null)?.status !== "number") {
+              savedRef.current.uncertain = true;
+            }
             savedRef.current.failed = signature;
             setFailedSignature(signature);
             toastError(
@@ -413,11 +419,13 @@ export function useRecipePersistence({
     closedQueue.current = null;
     const flush = (keepalive: boolean, unloading = keepalive): void => {
       const { ready, name, payload, signature } = latest.current;
-      const { saved, failed } = savedRef.current;
+      const { saved, failed, uncertain } = savedRef.current;
       const running = inFlight.current;
       // Compare with what the save in flight will leave stored: undoing it still needs a save.
       const settled = running ? running.signature : saved;
-      if (!ready || !saved || signature === settled || signature === failed) {
+      // After a lost answer the server may hold other content, so even this one must be sent.
+      const current = !uncertain && (signature === settled || signature === failed);
+      if (!ready || !saved || current || running?.signature === signature) {
         return;
       }
       if (accountTransitionPending() || !sameBrowserAccount(account)) {

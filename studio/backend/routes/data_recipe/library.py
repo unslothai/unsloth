@@ -39,7 +39,8 @@ class SaveRecipeRequest(RecipeRecord):
     # The updatedAt the client last read; omitted for a brand-new recipe.
     baseUpdatedAt: int | None = _TIME_OPTIONAL
     # More versions the edit may build on; any one of them matching admits the write.
-    alsoBaseUpdatedAt: list[Annotated[int, _TIME]] = Field(default_factory = list, max_length = 64)
+    # Kept well under SQLite's 999 bound-parameter limit on builds before 3.32.
+    alsoBaseUpdatedAt: list[Annotated[int, _TIME]] = Field(default_factory = list, max_length = 500)
 
 
 class ExecutionRecord(BaseModel):
