@@ -1195,7 +1195,7 @@ class DeviceMemory:
     total_mib: Optional[int] = None
     # Metal's recommended working set when it bounds free / total (mps); None everywhere else.
     metal_working_set_mib: Optional[int] = None
-    # Which reading bounded free / total when it is not the driver's own (WINDOWS_COMMIT_CREDIT); None elsewhere.
+    # Non-driver reading that bounded free / total (WINDOWS_COMMIT_CREDIT), else None.
     credit_basis: Optional[str] = None
 
     @property
@@ -1515,7 +1515,6 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
 
 
 def _cuda_memory_reading(backend: str) -> tuple[Optional[int], Optional[int], str, Optional[str]]:
-    """(free MiB, total MiB, memory kind, credit basis); the basis is None unless a non-driver reading bounded the pair."""
     try:
         import torch
 
@@ -1550,15 +1549,8 @@ _WIN_IGPU_COMMIT_CAP_ENV = "UNSLOTH_DIFFUSION_WIN_IGPU_COMMIT_CAP"
 def _windows_integrated_commit_credit_mib(
     free_mib: int, total_mib: int
 ) -> Optional[tuple[int, int]]:
-    """Free / capacity of an integrated NVIDIA GPU on Windows, bounded by system commit; None keeps the default rule.
-
-    WDDM gives such a GPU (e.g. RTX Spark) a dedicated carve-out the OS does not see, plus shared OS RAM, and
-    mem_get_info reports both (109.5 GiB free on a 64 GB-visible machine). Every GPU byte, dedicated or shared, is
-    charged to system commit 1:1 while psutil's available RAM does not move, so commit is the binding limit:
-    free = min(cuda_free, commit available), capacity = min(cuda_total, commit limit). No reserve is taken here:
-    the planner already keeps _reserve_mib("unified_memory", capacity) of this free (_planner_reserve_mib), so
-    subtracting it again would reserve twice. Linux (DGX Spark / Jetson) never reaches this; any failed reading,
-    or UNSLOTH_DIFFUSION_WIN_IGPU_COMMIT_CAP=0, falls back to _unified_reclaimable_memory_mib."""
+    """Integrated NVIDIA GPU on Windows (RTX Spark): mem_get_info counts the WDDM carve-out plus shared RAM, all
+    charged to system commit 1:1, so cap free / capacity by commit. No reserve here: the planner already takes it."""
     if sys.platform != "win32":
         return None
     if os.environ.get(_WIN_IGPU_COMMIT_CAP_ENV, "1").strip().lower() in ("0", "false", "no", "off"):

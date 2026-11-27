@@ -3,9 +3,7 @@
 
 """Windows integrated NVIDIA GPU (RTX Spark): system commit, not mem_get_info or OS available RAM, bounds the credit.
 
-Readings measured on an RTX Spark Windows ARM64 machine: mem_get_info (109.52, 109.72) GiB, psutil available
-50.67 GiB (does not move as the GPU allocates), commit available 58.14 GiB (falls 1:1 with GPU allocations),
-commit limit 74,733 MB."""
+Fixture readings are from a real RTX Spark (Windows ARM64)."""
 
 from __future__ import annotations
 
@@ -105,7 +103,6 @@ def test_windows_integrated_gpu_is_bounded_by_commit(monkeypatch):
     assert memory.credit_basis == diffusion_memory.WINDOWS_COMMIT_CREDIT
     assert memory.as_public_dict()["credit_basis"] == "windows_commit"
 
-    # The planner keeps the unified reserve of the commit-capped capacity: ~58 GiB minus that, not 109.5 GiB.
     reserve = diffusion_memory._reserve_mib("unified_memory", COMMIT_LIMIT_MIB)
     budget = diffusion_memory._safe_device_budget_mib(memory)
     assert budget == COMMIT_AVAIL_MIB - reserve

@@ -369,8 +369,7 @@ def host_ram_capacity_mib() -> Optional[int]:
 def windows_commit_mib() -> Optional[tuple[int, int]]:
     """(commit available, commit limit) in MiB from GlobalMemoryStatusEx, or None off Windows or on any failure.
 
-    ullAvailPageFile / ullTotalPageFile are the system commit charge headroom and limit (RAM plus page file), not the
-    page file alone."""
+    ullAvailPageFile / ullTotalPageFile are system commit (RAM plus page file), not the page file alone."""
     import sys
 
     if sys.platform != "win32":
