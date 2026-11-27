@@ -3004,7 +3004,7 @@ type ChatRuntimeStore = {
   setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   setEditingMessageId: (id: string | null) => void;
-  clearCheckpoint: () => void;
+  clearCheckpoint: (options?: { persist?: boolean }) => void;
   setReasoningEnabled: (
     enabled: boolean,
     options?: { persist?: boolean },
@@ -5725,8 +5725,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   setEditingMessageId: (id) => set({ editingMessageId: id }),
-  clearCheckpoint: () => {
-    saveLastExternalCheckpoint(null);
+  clearCheckpoint: (options) => {
+    if (options?.persist !== false) saveLastExternalCheckpoint(null);
     const restoredEffort = pinHoldsLiveEffort()
       ? takeEffortDisplacedByPin()
       : null;
@@ -6852,5 +6852,17 @@ export function syncKeepModelsLoaded(mode: unknown): void {
   const keep = mode !== "off";
   if (useChatRuntimeStore.getState().keepModelsLoaded !== keep) {
     useChatRuntimeStore.getState().setKeepModelsLoaded(keep);
+  }
+}
+
+/** Forget the live and remembered picker selections when their connection was removed. */
+export function clearDeletedProviderSelection(providerId: string): void {
+  const saved = parseExternalModelId(loadLastExternalCheckpoint());
+  if (saved?.providerId === providerId) {
+    saveLastExternalCheckpoint(null);
+  }
+  const runtime = useChatRuntimeStore.getState();
+  if (parseExternalModelId(runtime.params.checkpoint)?.providerId === providerId) {
+    runtime.clearCheckpoint({ persist: false });
   }
 }

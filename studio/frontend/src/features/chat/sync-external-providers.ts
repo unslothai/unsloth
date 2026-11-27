@@ -46,6 +46,7 @@ import {
   learnCatalogModelCapabilities,
   loadNewModelChecksAt,
   newModelCheckOf,
+  parseExternalModelId,
   type NewModelCheckInterval,
   saveNewModelCheckAt,
   LEGACY_CUSTOM_PROVIDER_TYPE,
@@ -62,6 +63,7 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
+import { clearDeletedProviderSelection, useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   providerSavesInFlight,
   useExternalProvidersStore,
@@ -234,6 +236,7 @@ export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
   isCurrent?: () => boolean,
 ): Promise<ExternalProviderConfig[]> {
+  const selected = parseExternalModelId(useChatRuntimeStore.getState().params.checkpoint);
   const [registryRows, loadedConfigRows] = await Promise.all([
     listProviderRegistry(),
     listProviderConfigs(),
@@ -260,6 +263,11 @@ export async function syncExternalProvidersFromBackend(
 
   if (isCurrent && !isCurrent()) return existingProviders;
   pruneExternalProviderApiKeys(loadedConfigRows.map((config) => config.id));
+  // Check the full server list, including switched-off connections. The selection can
+  // outlive the provider in local storage if it was deleted before this tab opened.
+  if (selected && !loadedConfigRows.some((config) => config.id === selected.providerId)) {
+    clearDeletedProviderSelection(selected.providerId);
+  }
 
   const existingById = new Map<string, ExternalProviderConfig>();
   // Switched-off rows first, so a row in both lists keeps the caller's copy.
