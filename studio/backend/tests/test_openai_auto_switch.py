@@ -12374,6 +12374,33 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
     return backend, recorder
 
 
+def test_transformers_auto_switch_registers_image_swap_recipe(monkeypatch):
+    from core.inference import chat_media_swap
+    from models.inference import LoadResponse
+
+    llama, _ = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    orchestrator = inference_route._peek_inference_backend()
+    monkeypatch.setattr(chat_media_swap, "_transformers_load", None)
+    monkeypatch.setenv(chat_media_swap.SWAP_ENV, "1")
+
+    async def load(request, *_args, **_kwargs):
+        llama.is_loaded = False
+        orchestrator.active_model_name = request.model_path
+        orchestrator.models[request.model_path] = {}
+        orchestrator._proc = object()
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "Model B", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", load)
+    _run_hook("org/B-GGUF")
+
+    assert chat_media_swap.chat_can_swap()
+    assert chat_media_swap._transformers_load.launch.model_path == orchestrator.active_model_name
+    assert chat_media_swap._transformers_load.launch._advertised_id == "org/B-GGUF"
+    assert not chat_media_swap._transformers_load.extra["user_loaded"]
+
+
 def _chat_image_request(*urls):
     return _chat_request(
         model = "org/B-GGUF",

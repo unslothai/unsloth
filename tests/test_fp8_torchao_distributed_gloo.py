@@ -150,8 +150,7 @@ def _fsdp_case(native, rank, shard_frozen):
 
 
 def _other_torchao_llama(kind):
-    """A 256 wide llama whose MLP weights are torchao subclasses that store no float8: frozen NF4 (QLoRA)
-    or trainable int8 mixed precision training weights. Both implement FSDP2's all-gather hooks."""
+    """Llama; MLP weights are torchao subclasses with no float8: frozen NF4 or trainable int8."""
     import transformers
 
     torch.manual_seed(0)
@@ -368,8 +367,7 @@ def test_float8_training_weights_stay_with_ddp():
 
 
 def test_fsdp2_still_shards_frozen_nf4_weights():
-    # NF4Tensor stores uint8 / int8, not float8, and implements FSDP2's hooks: with shard_frozen each rank
-    # holds half the packed bytes (256 x 256 nf4 = 32768 bytes per weight), not a replicated copy.
+    # NF4Tensor is uint8/int8, not float8; shard_frozen gives each rank half the packed bytes.
     pytest.importorskip("torchao.quantization.quantize_.workflows.nf4.nf4_tensor")
     for rank, r in _run("fsdp_other", "nf4").items():
         assert r["wrap"] == "ok", (rank, r)
@@ -385,8 +383,7 @@ def test_fsdp2_shards_trainable_int8_mixed_precision_weights():
 
 
 def test_ddp_keeps_trainable_non_float8_torchao_weights():
-    # Only float8 storage is refused for DDP training: the int8 mixed precision training weight
-    # implements the flatten DDP's broadcast needs, and frozen NF4 is simply left out of the broadcast.
+    # DDP refuses only float8: trainable int8 is flattenable; frozen NF4 skips the broadcast.
     nf4 = pytest.importorskip("torchao.quantization.quantize_.workflows.nf4.nf4_tensor")
     int8 = pytest.importorskip("torchao.prototype.quantized_training.int8_mixed_precision")
     lu, _ = _ddp_helpers()

@@ -13177,13 +13177,19 @@ async def _maybe_auto_switch_model(
                             async def _switch_load(load_request: LoadRequest) -> None:
                                 nonlocal target_backend
                                 if not beside:
-                                    await _load_model_impl(
+                                    response = await _load_model_impl(
                                         load_request,
                                         fastapi_request,
                                         current_subject,
                                         current_request_counted = True,
                                         **load_internal_kw,
                                     )
+                                    if isinstance(response, LoadResponse) and not target_is_gguf:
+                                        from core.inference.chat_media_swap import (
+                                            remember_transformers_load,
+                                        )
+                                        load_request._advertised_id = override_id
+                                        remember_transformers_load(load_request, response, False)
                                     model_slots.mark_used(None)
                                     return
                                 await load_model_gated(
@@ -13519,13 +13525,16 @@ def _chat_fit_kwargs(
     credit_gb: Optional[dict] = None,
     mlx_need_mib: Optional[int] = None,
     mlx_credit_mib: int = 0,
+    *,
+    restoring_chat_swap: bool = False,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
     audio.cpp and native audio are priced from the placement estimate, an MLX load on Apple Silicon from
     ``mlx_need_mib``. A GGUF launch prices itself (it refuses a partial fit and load_model_gated makes room).
     Anything else has no estimate before launch: When they fit evicts first, Always tries the load and turns an
-    out-of-memory failure into its refusal. ``credit_gb`` is what the outgoing primary frees per GPU when this
+    out-of-memory failure into its refusal. A discrete GPU chat restored during an image swap tries its previous
+    placement beside the remaining media first. ``credit_gb`` is what the outgoing primary frees per GPU when this
     load replaces it.
     """
     if policy is None:
@@ -13552,7 +13561,8 @@ def _chat_fit_kwargs(
         from core.inference.gpu_residency import ChatNeed
         kwargs["need_mib"] = ChatNeed({0: int(mlx_need_mib)}, credit_mib = mlx_credit_mib)
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
-        policy == "fit" or (not config.is_gguf and _unified_metal_host())
+        (policy == "fit" and not restoring_chat_swap)
+        or (not config.is_gguf and _unified_metal_host())
     ):
         # Unified memory pages past the budget: Always gets no OOM to refuse on.
         kwargs["evict_first"] = True
@@ -13862,7 +13872,7 @@ async def load_model_for_preview(
                 prior_marker = _get_preview_resident()
                 loaded_ok = False
                 try:
-                    await _load_model_impl(
+                    response = await _load_model_impl(
                         request,
                         fastapi_request,
                         current_subject,
@@ -13877,6 +13887,9 @@ async def load_model_for_preview(
                         allow_gpu_owner_eviction = False,
                     )
                     loaded_ok = True
+                    if isinstance(response, LoadResponse):
+                        from core.inference.chat_media_swap import remember_transformers_load
+                        remember_transformers_load(request, response, False)
                 except (GpuOwnerBusyError, MultiModelAlwaysRefusal) as exc:
                     untrack_current_request(scope)
                     raise HTTPException(
@@ -19283,13 +19296,15 @@ async def load_model_gated(
     current_request_counted: bool = False,
     impl_kwargs: Optional[dict] = None,
     background: bool = False,
+    swap_gates_held: bool = False,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
     In-process callers (preview) must await THIS, not the route: the route's slow
     path returns a StreamingResponse nobody in-process drains, so awaiting it would
     return mid-load and hide a late failure in an unread body. This blocks until the
-    model is resident and raises the real exception.
+    model is resident and raises the real exception. A chat-image restore already
+    holds the model load, lifecycle and media admission gates.
     """
     if is_decision_api_model(request.model_path):
         raise HTTPException(
@@ -19337,7 +19352,7 @@ async def load_model_gated(
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the gate so idle auto-unload can't unload mid-load; auto-switch already holds it.
-        async with model_load_gate():
+        async with nullcontext() if swap_gates_held else model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
             replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
@@ -19351,7 +19366,7 @@ async def load_model_gated(
                 extra.llama._llama_update_in_progress = getattr(
                     _llama_cpp_backend, "_llama_update_in_progress", False
                 )
-            async with nullcontext() if new_slot else inference_lifecycle_gate():
+            async with nullcontext() if new_slot or swap_gates_held else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 if not new_slot:
                     # An auto-switch beside checked before this gate: this load replaces a loaded model.
@@ -19404,6 +19419,15 @@ async def load_model_gated(
                         measured = isinstance(exc, GpuMemoryShortError)
                         if not measured:
                             if extra is None and _ran_out_of_memory(exc):
+                                if (impl_kwargs or {}).get("restoring_chat_swap"):
+                                    from core.inference.gpu_residency import current_policy
+                                    if (
+                                        await asyncio.to_thread(current_policy) == "fit"
+                                        and not _unified_metal_host()
+                                    ):
+                                        # Retry the layout that already fit; real memory pressure still falls back to Fit.
+                                        impl_kwargs = {**impl_kwargs, "restoring_chat_swap": False}
+                                        continue
                                 await asyncio.to_thread(_refuse_oom_beside_media_under_always)
                             # A non-GGUF load reports no fit up front: its out-of-memory failure
                             # makes room the same way, one idle kept model at a time.
@@ -19452,7 +19476,11 @@ async def load_model_gated(
                         if await _free_for_chat(exc, evicted, media_only = True):
                             continue
                         # No chat may start on a victim between its pick and teardown.
-                        async with inference_lifecycle_gate() if new_slot else nullcontext():
+                        async with (
+                            inference_lifecycle_gate()
+                            if new_slot and not swap_gates_held
+                            else nullcontext()
+                        ):
                             _check_switch_precondition(fastapi_request)
                             _require_load_keeps_chat(fastapi_request, request)
                             victims = await asyncio.to_thread(
@@ -19498,7 +19526,11 @@ async def load_model_gated(
                             request = request.model_copy(
                                 update = {"alongside": False, "force_alongside": False}
                             )
-                            async with inference_lifecycle_gate() if new_slot else nullcontext():
+                            async with (
+                                inference_lifecycle_gate()
+                                if new_slot and not swap_gates_held
+                                else nullcontext()
+                            ):
                                 if background:
                                     await _wait_for_model_switch_idle(
                                         current_request_counted = current_request_counted
@@ -19551,6 +19583,9 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
+            if extra is None and isinstance(response, LoadResponse):
+                from core.inference.chat_media_swap import remember_transformers_load
+                remember_transformers_load(request, response, user_initiated)
             twin, survivor = (
                 await asyncio.to_thread(_served_twice, extra)
                 if new_slot and extra is not None
@@ -19628,6 +19663,7 @@ async def load_model_gated(
             current_request_counted = current_request_counted,
             impl_kwargs = impl_kwargs,
             background = background,
+            swap_gates_held = swap_gates_held,
         )
     finally:
         _replaces_its_repo.reset(token)
@@ -20352,6 +20388,7 @@ async def _load_model_impl(
     cache_environment: Optional[dict[str, str]] = None,
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
+    restoring_chat_swap: bool = False,
 ):
     from core.inference.npu_backend import is_npu_model_path
 
@@ -21138,6 +21175,7 @@ async def _load_model_impl(
                         outgoing_chat_gb,
                         mlx_need_mib = None if mlx_chat_need is None else mlx_chat_need[0],
                         mlx_credit_mib = mlx_credit_mib,
+                        restoring_chat_swap = restoring_chat_swap,
                     )
                 )
                 await asyncio.to_thread(
@@ -33901,6 +33939,17 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
+    from core.inference.chat_media_swap import request_image_model
+
+    if payload.image_generator and (
+        current_account().via_api_key
+        or account_access.account_scope() is not None
+        or not _loads_anything()
+        or payload.provider_id
+        or payload.provider_type
+    ):
+        raise HTTPException(status_code = 403, detail = "An image generator requires local owner chat.")
+    request_image_model.set(payload.image_generator)
     # Opt-in per request via UI_STREAM_EVENTS_HEADER; read once so every stream generator shares it.
     _ui_events = _ui_stream_events_enabled(request)
     # Seeded at stream start, so a tool already chatty past the window still gets a keepalive.
@@ -39049,14 +39098,19 @@ def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
     """(sandbox_dir, contained path) of a regular (not linked) file in the sandbox, or a 404."""
     import stat as _stat
 
-    sandbox_dir, path = _contained_sandbox_path(session_id, filename)
-    try:
-        entry = os.lstat(path)
-    except OSError:
-        raise HTTPException(status_code = 404, detail = "Not found") from None
-    if not _stat.S_ISREG(entry.st_mode):
-        raise HTTPException(status_code = 404, detail = "Not found")
-    return sandbox_dir, path
+    for _attempt in range(2):
+        sandbox_dir, path = _contained_sandbox_path(session_id, filename)
+        try:
+            entry = os.lstat(path)
+        except FileNotFoundError:
+            # The legacy sandbox move can finish between resolution and lstat.
+            continue
+        except OSError:
+            break
+        if _stat.S_ISREG(entry.st_mode):
+            return sandbox_dir, path
+        break
+    raise HTTPException(status_code = 404, detail = "Not found")
 
 
 def _unmoved_sandbox_file(root: str, path: str) -> str:
@@ -39218,6 +39272,55 @@ async def upload_sandbox_file(
     return saved
 
 
+_SANDBOX_DOWNLOAD_SECRET = _secrets.token_bytes(32)
+_SANDBOX_DOWNLOAD_TTL = 300
+
+
+def _sandbox_download_id(session_id: str, filename: str) -> str:
+    return _hashlib.sha256(json.dumps([session_id, filename]).encode()).hexdigest()
+
+
+def _sandbox_download_signature(payload: str) -> str:
+    return _hmac.new(_SANDBOX_DOWNLOAD_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
+
+
+def _sandbox_download_account(token: str, session_id: str, filename: str):
+    try:
+        target, expiration, signature = token.rsplit(".", 2)
+        payload = f"{target}.{expiration}"
+        if int(expiration) <= int(time.time()) or not _hmac.compare_digest(
+            signature.encode(), _sandbox_download_signature(payload).encode()
+        ):
+            return None
+    except ValueError:
+        return None
+    return media_link_account(target, _sandbox_download_id(session_id, filename))
+
+
+@router.post("/sandbox-download-link")
+async def create_sandbox_download_link(
+    session_id: str = Query(max_length = 4096),
+    filename: str = Query(max_length = 4096),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    from starlette.concurrency import run_in_threadpool
+
+    # The link redeems as the bare account, dropping the API caller's sandbox restrictions.
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Download links can only be created from the Unsloth UI.",
+        )
+    await run_in_threadpool(_sandbox_regular_file, session_id, filename)
+    target = media_link_target(_sandbox_download_id(session_id, filename))
+    payload = f"{target}.{int(time.time()) + _SANDBOX_DOWNLOAD_TTL}"
+    return JSONResponse(
+        {"token": f"{payload}.{_sandbox_download_signature(payload)}"},
+        headers = {"Cache-Control": "no-store"},
+    )
+
+
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
 async def serve_sandbox_file(
     session_id: str,
@@ -39225,6 +39328,7 @@ async def serve_sandbox_file(
     request: Request,
     token: Optional[str] = None,
     session: Optional[str] = None,
+    download_token: Optional[str] = None,
 ):
     """
     Serve a file a tool call created in this chat's sandbox.
@@ -39234,16 +39338,23 @@ async def serve_sandbox_file(
     or image/svg+xml would be same-origin script execution. nosniff plus a
     Content-Disposition filename is what makes serving them safe.
 
-    Accepts auth via an Authorization header or a query token. Unsloth uses an
-    authenticated fetch and object URL; query auth remains for older clients.
+    Accepts authenticated fetches, older query auth, and file-scoped download links.
     """
-    # ── Authentication (header or query param) ──────────────────
-    await _authenticate_header_or_query(request, token)
+    from starlette.concurrency import run_in_threadpool
+
+    # ── Authentication (header, query param, or download link) ──
+    account = None
+    if download_token is None:
+        await _authenticate_header_or_query(request, token)
+    else:
+        account = await run_in_threadpool(
+            _sandbox_download_account, download_token, session or session_id, filename
+        )
+        if account is None:
+            raise HTTPException(status_code = 401, detail = "Invalid or expired download link")
 
     # ── Filename sanitization + path containment ────────────────
     import stat as _stat
-
-    from starlette.concurrency import run_in_threadpool
 
     safe_filename = os.path.basename(filename)
 
@@ -39273,7 +39384,11 @@ async def serve_sandbox_file(
             raise
         return handle, info.st_size
 
-    handle, size = await run_in_threadpool(_open_checked)
+    handle, size = (
+        await run_in_threadpool(_open_checked)
+        if account is None
+        else await run_in_threadpool(run_as, account, _open_checked)
+    )
     head_only = getattr(request, "method", "GET").upper() == "HEAD"
     if head_only:
         # FastAPI adds no HEAD to GET routes; nothing is read since artifacts can be huge.
@@ -54917,7 +55032,18 @@ async def diffusion_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
-    status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
+    from core.inference.chat_media_swap import chat_can_swap
+
+    status_dict = {
+        **status_dict,
+        "load_id": load_id,
+        "resident_load_id": resident_load_id,
+        "chat_swap_available": not raw_status.get("loaded")
+        and not load_id
+        and _loads_anything()
+        and not account_access.resident_hidden("chat")
+        and chat_can_swap(),
+    }
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 
@@ -56340,6 +56466,8 @@ async def _batched_openai_images(
             expected_load = expected_load,
             **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
             **({"loras": loras} if loras else {}),
+            # Headless: no client polls generate-progress, so skip the per-step previewer.
+            **_live_preview_kwarg(backend.generate, False),
         ),
     )
 
@@ -56458,6 +56586,7 @@ async def _generate_openai_images(
                         **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                         # Only when set, so engines without the parameter keep their call shape.
                         **({"loras": loras} if loras else {}),
+                        **_live_preview_kwarg(backend.generate, False),
                     )
             break
         except DiffusionModelReplacedError:

@@ -6,11 +6,16 @@ BeforeAll {
     . (Join-Path $PSScriptRoot 'Get-FunctionSource.ps1')
     $script:SetupPs1 = Join-Path $PSScriptRoot '..\..\studio\setup.ps1'
     $script:InstallPs1 = Join-Path $PSScriptRoot '..\..\install.ps1'
-    foreach ($n in 'Test-SetupUacUnanswerable', 'Ensure-VCRedist', 'Get-CudaTorchInstallLabel') {
+    foreach ($n in 'Test-SetupProcessElevated', 'Test-SetupUacUnanswerable', 'Ensure-VCRedist', 'Get-CudaTorchInstallLabel') {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $n
         if (-not $src) { throw "setup.ps1 has no function $n" }
         . ([scriptblock]::Create($src))
     }
+    # The real probe answers for the process running the tests, and GitHub's Windows runners are
+    # elevated, so each test states it: $script:Elevated, $false unless the test sets it.
+    $script:RealElevatedProbe = ${function:Test-SetupProcessElevated}
+    $script:Elevated = $false
+    function Test-SetupProcessElevated { $script:Elevated }
     foreach ($n in 'Test-InstallUacUnanswerable', 'Write-Arm64ShellNotice', 'Get-ShellProcessArch') {
         $src = Get-FunctionSource -Path $script:InstallPs1 -Name $n
         if (-not $src) { throw "install.ps1 has no function $n" }
@@ -28,7 +33,10 @@ BeforeAll {
 }
 
 Describe 'Test-SetupUacUnanswerable' {
-    BeforeEach { foreach ($k in $script:EnvNames) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue } }
+    BeforeEach {
+        foreach ($k in $script:EnvNames) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
+        $script:Elevated = $false
+    }
     AfterAll { foreach ($k in $script:EnvNames) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue } }
 
     It 'UNSLOTH_NONINTERACTIVE=<Value> answers <Expected>' -ForEach @(
@@ -47,6 +55,24 @@ Describe 'Test-SetupUacUnanswerable' {
     It 'UNSLOTH_NONINTERACTIVE=0 wins over CI' {
         $env:CI = 'true'; $env:UNSLOTH_NONINTERACTIVE = '0'
         Test-SetupUacUnanswerable | Should -BeFalse
+    }
+
+    It 'an elevated run is never asked, even when unattended (<Var>=<Value>)' -ForEach @(
+        @{ Var = 'UNSLOTH_NONINTERACTIVE'; Value = '1' }, @{ Var = 'CI'; Value = 'true' }
+    ) {
+        Set-Item "Env:$Var" $Value
+        $script:Elevated = $true
+        Test-SetupUacUnanswerable | Should -BeFalse
+    }
+
+    It 'asks the elevation probe the tests pin, not the token directly' {
+        $src = Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-SetupUacUnanswerable'
+        $src | Should -Match 'if \(Test-SetupProcessElevated\) \{ return \$false \}'
+        $src | Should -Not -Match 'IsInRole'
+    }
+
+    It 'the real elevation probe answers a bool' {
+        & $script:RealElevatedProbe | Should -BeOfType ([bool])
     }
 
     It 'Unsloth Desktop (<Var>) keeps its own UAC flow' -ForEach @(

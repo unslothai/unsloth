@@ -1228,6 +1228,8 @@ class ContextParallelManager:
             _ACTIVE_MANAGER = previous
             self.packed_seq_lengths = None
             self.full_position_ids = None
+            # ulysses_deepseek: this step's gathered positions.
+            self._deepseek_full_position_ids = None
 
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
@@ -3109,9 +3111,8 @@ def _generation_share(trainer, prompts, args, kwargs, manager):
         generations = getattr(config, "num_generations_eval", None) or generations
     count = len(prompts)
     groups = count // generations if count % generations == 0 else 0
-    # Equal shares (TRL's in-_generate gathers need equal rows) of 2+ groups: a one-group share is unpadded,
-    # and unmasked batched decode can take a slower route (T4: 4 rows of one prompt took 2.4x 8 padded rows).
-    if groups < 2 * manager.size or groups % manager.size:
+    # Equal shares: TRL's metric gathers inside _generate need the same row count on every process.
+    if groups < manager.size or groups % manager.size:
         return None
     share = count // manager.size
     start = manager.mesh.get_local_rank() * share

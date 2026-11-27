@@ -128,7 +128,6 @@ def test_stand_in_marks_the_stack_for_the_skip():
             p.requires_grad_(False)
     plan = fp._plan(model, stacks, heads)
     assert plan is not None and plan[1] == 3, plan
-    # The same list once layers 0-2 are pipeline stand-ins: no cut.
     ctx = ppn._StageContext(3, LAYERS, False, True, False)
     originals = [stack[i] for i in range(3)]
     for i in range(3):

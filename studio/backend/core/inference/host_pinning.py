@@ -78,6 +78,20 @@ def xpu_is_integrated() -> bool:
         return False
 
 
+def cuda_is_integrated(device: Any = None) -> bool:
+    """Integrated NVIDIA GPU (DGX Spark, Jetson); False on ROCm (APUs classified apart) and on any error."""
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
+            return False
+        return device_integrated_status(device) is True
+    except Exception:  # noqa: BLE001 - unclassifiable: keep the discrete path
+        return False
+
+
 def host_pinning_allowed(device: Any = None) -> bool:
     return not device_is_integrated(device)
 

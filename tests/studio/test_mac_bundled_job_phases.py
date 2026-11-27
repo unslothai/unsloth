@@ -100,8 +100,7 @@ def test_the_uninstall_phase_runs_last(steps: list[dict]) -> None:
 
 
 def test_no_two_phases_bind_the_same_port(steps: list[dict]) -> None:
-    """A shared port is harmless only in step order; a leftover server makes a phase test the wrong
-    model."""
+    """A shared port is harmless only in step order; a leftover server tests the wrong model."""
     # Group by phase: one phase names its port in several steps.
     starts = _phase_starts(steps)
     by_phase: dict[str, set[int]] = defaultdict(set)
@@ -131,8 +130,7 @@ def test_no_two_phases_write_the_same_server_log(steps: list[dict]) -> None:
         for pattern in (r"--log (logs/[\w.\-]+)", r"> (?:\")?(logs/[\w.\-]+)"):
             for found in re.findall(pattern, script):
                 logs[found].add(_phase_of(starts, i))
-        # An invocation with no --log writes the default file; checked over the whole step since
-        # calls are backslash-continued.
+        # No --log writes the default file; calls span backslash lines, so scan the whole step.
         if "boot-studio-api-only.sh" in script and "--log" not in script:
             logs[default_log].add(_phase_of(starts, i))
 

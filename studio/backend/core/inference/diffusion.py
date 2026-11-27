@@ -4977,16 +4977,27 @@ def _image_cast_cached(cands: list, variant: Optional[str]) -> list:
     return cached_components(cands)
 
 
-def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
+def _converted_shards_pread(
+    dtype: Any,
+    small_host: Any,
+    device: Any = None,
+) -> Any:
     """Windows: transformers components converted to ``dtype`` read through ``pread`` (no copy-on-write commit for the
     stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped. An Intel
-    iGPU reads every shard through ``pread`` (#17137)."""
-    from .host_pinning import xpu_is_integrated
+    iGPU, or an integrated NVIDIA target ``device`` (any OS, diffusers too), reads every shard through ``pread``."""
+    from .host_pinning import cuda_is_integrated, xpu_is_integrated
     from .safetensors_pread import pread_safetensors, pread_wanted
 
     keep = tuple(small_host.storage_dtypes) if small_host is not None and small_host.engaged else ()
-    every = pread_wanted() and xpu_is_integrated()
-    return pread_safetensors(convert_to = dtype, keep = keep, every_shard = every)
+    integrated_cuda = device is not None and cuda_is_integrated(device)
+    every = integrated_cuda or (pread_wanted() and xpu_is_integrated())
+    return pread_safetensors(
+        convert_to = dtype, keep = keep, every_shard = every, integrated_cuda = integrated_cuda
+    )
+
+
+def _load_device(target: Any, device: Any = None) -> Any:
+    return getattr(target, "torch_device", None) or device
 
 
 # Reserved slot turn (a coalesced batch keeps its place), and whether a call is a follow-up pass (goes first).
@@ -11735,7 +11746,9 @@ class DiffusionBackend:
                                         else None
                                     )
                                     try:
-                                        with _converted_shards_pread(dtype, small_host):
+                                        with _converted_shards_pread(
+                                            dtype, small_host, _load_device(target)
+                                        ):
                                             pipe = pipeline_cls.from_pretrained(
                                                 _base_local_dir or fetch_base,
                                                 **pipe_kwargs,
@@ -12140,7 +12153,9 @@ class DiffusionBackend:
                                     pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
                                         small_host, dtype
                                     )
-                                with _converted_shards_pread(dtype, small_host):
+                                with _converted_shards_pread(
+                                    dtype, small_host, _load_device(target)
+                                ):
                                     pipe = pipeline_cls.from_pretrained(
                                         _base_local_dir or fetch_base,
                                         **pipe_kwargs,
@@ -12947,6 +12962,11 @@ class DiffusionBackend:
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
+                    try:
+                        from .diffusion_patch_embed import install_patch_embed_linear
+                        install_patch_embed_linear(pipe, target, logger = logger)
+                    except Exception as exc:  # noqa: BLE001 - the stock Conv3d patch embed stays
+                        logger.warning("diffusion.patch_embed_linear: not installed: %s", exc)
                     # Before the speed optims: the fused CUDA decoder replaces the up blocks with its own clone-free one.
                     from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
 
@@ -13028,7 +13048,7 @@ class DiffusionBackend:
                         )
                     from .diffusion_te_truncate import truncate_text_encoders
 
-                    truncate_text_encoders(pipe, logger = logger)
+                    truncate_text_encoders(pipe, logger = logger, family = fam.name)
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
                     te_outcome = quantize_text_encoders(
@@ -13208,6 +13228,9 @@ class DiffusionBackend:
 
                     skip_text_encoder_kv_cache(pipe, logger = logger)
                     select_final_hidden_state(pipe, logger = logger)
+                    from .diffusion_te_lean import lean_text_encode
+
+                    lean_text_encode(pipe, logger = logger)
                     from .diffusion_qwen_vl_mm_types import forward_mm_token_type_ids
 
                     forward_mm_token_type_ids(pipe, logger = logger)
@@ -14658,7 +14681,7 @@ class DiffusionBackend:
                 family = getattr(fam, "name", None),
             )
         )
-        with _converted_shards_pread(dtype, None):
+        with _converted_shards_pread(dtype, None, _load_device(target, device)):
             pipe = pipeline_cls.from_pretrained(
                 base_local_dir or base,
                 **pipe_kwargs,

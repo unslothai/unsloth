@@ -1681,6 +1681,30 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     return count
 
 
+def _has_unpriced_media(messages: list[dict]) -> bool:
+    """Audio or video, which every fit leaves uncounted; images are priced."""
+    from core.inference.context_window import _IMAGE_PART_TYPES, _UNPRICED_MEDIA_TYPES
+
+    uncounted = _UNPRICED_MEDIA_TYPES - _IMAGE_PART_TYPES
+    return any(
+        isinstance(part, dict) and part.get("type") in uncounted
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+
+
+def _with_transcript_link(messages: list[dict], thread_id: Optional[str]) -> list[dict]:
+    """The prompt as `_archive_and_recall` will send it, with the transcript link it adds."""
+    from core.inference import compaction_transcript
+    from core.rag import conversation_archive
+
+    if not thread_id or not conversation_archive.enabled():
+        return messages
+    path = compaction_transcript.path_for(thread_id)
+    return compaction_transcript.link_in_block(messages, path) if path else messages
+
+
 def _records_boundary(truncation: dict) -> bool:
     """Not the fits flag: a rescued fit still evicts, and skipping the save compacts silently. Saving is not replaying: sticky logic declines fits-false records."""
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
@@ -41632,13 +41656,12 @@ class LlamaCppBackend:
         )
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
-            for _ev in _auto["events"]:
-                yield _ev
             conversation.extend(_auto["messages"])
         _auto_satisfies_forced_choice = bool(_auto) and (
             tool_choice == "required" or forced_tool_name(tool_choice) == "search_knowledge_base"
         )
         # After the message, so the tool block heading the cached prompt stays put; a forced tool keeps its first call.
+        _mcp_auto = None
         if (
             mcp_match_exchange
             and mcp_match_exchange.get("messages")
@@ -41648,9 +41671,31 @@ class LlamaCppBackend:
                 continue_final_message and trailing_assistant_resume_kind(conversation) is not None
             )
         ):
-            for _ev in mcp_match_exchange["events"]:
-                yield _ev
-            conversation.extend(mcp_match_exchange["messages"])
+            _mcp_auto = mcp_match_exchange
+            conversation.extend(_mcp_auto["messages"])
+
+        _initial_searches_sent = False
+
+        def _initial_search_events():
+            nonlocal _initial_searches_sent
+            if not _initial_searches_sent:
+                _initial_searches_sent = True
+                for exchange in (_auto, _mcp_auto):
+                    if exchange:
+                        yield from exchange["events"]
+
+        _retry_whole_document = (
+            not _skip_autoinject
+            and context_overflow == "truncate_oldest"
+            and bool(self._effective_context_length)
+            and rag_scope
+            and rag_scope.get("thread_id")
+            and not rag_scope.get("kb_id")
+            and rag_scope.get("whole_doc") is not False
+            and (not (_auto and _auto.get("whole_document")) or _mcp_auto)
+        )
+        if not _retry_whole_document:
+            yield from _initial_search_events()
 
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -42133,6 +42178,7 @@ class LlamaCppBackend:
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop recost failed", exc_info = True)
             if iteration >= max_tool_iterations + _extra + _continuation_credits:
+                yield from _initial_search_events()
                 break
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -42144,6 +42190,7 @@ class LlamaCppBackend:
 
             active_tools = tool_controller.active_tools()
             if not active_tools:
+                yield from _initial_search_events()
                 _append_budget_exhausted_nudge = False
                 break
             from core.inference.chat_template_helpers import neutralize_tool_descriptions
@@ -42221,6 +42268,93 @@ class LlamaCppBackend:
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
                     _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
+                    _fit_recall_cap = float("inf")
+                    if (
+                        _retry_whole_document
+                        and not _initial_searches_sent
+                        and truncation
+                        and truncation.get("fits")
+                        and truncation.get("dropped_messages")
+                        and not _has_unpriced_media(conversation)
+                    ):
+                        try:
+                            old_ids = {id(message) for message in (_auto or {}).get("messages", ())}
+                            live_ids = {id(message) for message in conversation}
+                            if not (_auto and _auto.get("whole_document") and old_ids <= live_ids):
+                                base = [
+                                    message
+                                    for message in conversation
+                                    if id(message) not in old_ids
+                                ]
+                                refreshed = build_rag_autoinject(
+                                    base, rag_scope, whole_document_only = True
+                                )
+                                if refreshed:
+                                    # Keep the document search before the MCP search in the prompt and stream.
+                                    mcp_ids = {
+                                        id(message)
+                                        for message in (_mcp_auto or {}).get("messages", ())
+                                    }
+                                    at = next(
+                                        (
+                                            i
+                                            for i, message in enumerate(base)
+                                            if id(message) in mcp_ids
+                                        ),
+                                        len(base),
+                                    )
+                                    candidate = base[:at] + refreshed["messages"] + base[at:]
+                                    measured = _fit_count_tokens(
+                                        candidate, safe_tools, _reasoning_kw
+                                    )
+                                    # The ceilings bound what is sent, which carries the transcript link the fit leaves uncounted.
+                                    linked = _with_transcript_link(candidate, thread_id)
+                                    sent_tokens = (
+                                        measured
+                                        if linked is candidate
+                                        else _fit_count_tokens(linked, safe_tools, _reasoning_kw)
+                                    )
+                                    # The fit's own target, also on a replay: headroom, plus the recall reserve a rolling fit holds back.
+                                    budget = prompt_budget(
+                                        self._effective_context_length, _iteration_max_tokens
+                                    )
+                                    headroom_line = budget - int(
+                                        budget
+                                        * _effective_headroom_ratio(compaction_headroom_ratio)
+                                    )
+                                    reserve = (
+                                        _conversation_recall_reserve(thread_id)
+                                        if not truncation.get("checkpoint")
+                                        else 0
+                                    )
+                                    fitted_tokens = truncation["prompt_tokens_after"]
+                                    # Growth stays under the unfitted prompt, which admission already priced.
+                                    if measured <= fitted_tokens or sent_tokens <= min(
+                                        headroom_line - reserve,
+                                        truncation["prompt_tokens_before"],
+                                    ):
+                                        # A larger prompt leaves this fit's recall only the room under both ceilings.
+                                        if measured > fitted_tokens:
+                                            _fit_recall_cap = max(
+                                                0,
+                                                min(
+                                                    headroom_line,
+                                                    truncation["prompt_tokens_before"],
+                                                )
+                                                - sent_tokens,
+                                            )
+                                        _auto = refreshed
+                                        conversation = candidate
+                                        truncation["prompt_tokens_after"] = measured
+                                        # A forced name stays forced: this fit priced and worded the prompt for that one tool.
+                                        if tool_choice == "required":
+                                            _forced_choice_resolved = True
+                                            requested_choice = "auto"
+                        except Exception:
+                            logger.debug(
+                                "Whole-document retry after compaction failed", exc_info = True
+                            )
+                    yield from _initial_search_events()
                     if truncation and truncation.get("fits"):
                         # Before the recall injection, so both sides describe the same
                         # messages, priced by the fit with the catalogue and template.
@@ -42244,12 +42378,15 @@ class LlamaCppBackend:
                             # A rescued refusal may evict messages; archive them without recall.
                             recall_done = _conversation_recall_done or not truncation["fits"],
                             # Leave room for the answer appended on the next iteration.
-                            recall_budget_tokens = _retrieval_budget(
-                                self._effective_context_length,
-                                # As above: the cap this iteration will actually send.
-                                _iteration_max_tokens,
-                                truncation.get("prompt_tokens_after") or 0,
-                                reply_returns = True,
+                            recall_budget_tokens = min(
+                                _retrieval_budget(
+                                    self._effective_context_length,
+                                    # As above: the cap this iteration will actually send.
+                                    _iteration_max_tokens,
+                                    truncation.get("prompt_tokens_after") or 0,
+                                    reply_returns = True,
+                                ),
+                                _fit_recall_cap,
                             ),
                             count_tokens = lambda fitted: self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
@@ -42288,6 +42425,7 @@ class LlamaCppBackend:
                 except Exception as exc:
                     logger.warning("Could not preflight the rolling context window: %s", exc)
 
+            yield from _initial_search_events()
             payload = {
                 # Re-run each iteration: tool results may contain forged turns.
                 "messages": neutralize_control_markup_in_messages(

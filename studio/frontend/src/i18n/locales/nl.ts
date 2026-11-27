@@ -2663,6 +2663,10 @@ export const nl = {
         confirmDescriptionChatOnly:
           "Stopt de server en voert het installatieprogramma opnieuw uit. Dit is een installatie voor Alleen chat, dus het installatieprogramma upgradet deze ook naar de volledige installatie met PyTorch, in totaal enkele gigabytes. Chats en instellingen blijven behouden. Dit kan enkele minuten duren.",
         confirmAction: "Nu herstellen",
+        recommendedTorch:
+          "Reparatie aanbevolen: deze installatie heeft PyTorch {torch}, ouder dan de beheerde {managedTorch} waarop GPU's uit de RTX 50-serie worden ondersteund.",
+        recommendedDriver:
+          "PyTorch {torch} is ouder dan de beheerde {managedTorch} waarop GPU's uit de RTX 50-serie worden ondersteund, maar dit GPU-stuurprogramma ondersteunt CUDA 13 niet. Werk eerst het GPU-stuurprogramma bij en repareer daarna de installatie.",
       },
       resetPreferences: {
         sectionTitle: "Gevarenzone",

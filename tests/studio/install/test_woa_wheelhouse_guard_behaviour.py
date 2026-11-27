@@ -261,7 +261,6 @@ UV_CONFIG_CASES = [
         f'index-url = "{PYPI}"\n[pip]\nindex-url = "{CORP}"\n',
         False,
     ),
-    # A host that merely contains the name is not PyPI.
     ("lookalike_host", "uv.toml", 'index-url = "https://pypi.org.evil.com/simple"\n', False),
     # An inline `index = [...]` is not modelled, and unreadable resolves to "not PyPI".
     ("inline_index_array", "uv.toml", f'index = [{{ url = "{CORP}", default = true }}]\n', False),

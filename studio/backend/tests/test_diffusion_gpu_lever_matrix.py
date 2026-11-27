@@ -2721,6 +2721,8 @@ FUTURE_ARCH_EXCLUSIONS: dict = {
     "gfx1250.any.vae_upsample_fold": _NEEDS.format("gfx1250")
     + " (MIOpen fold measured on gfx1151)",
     "gfx1250.*.inductor_reduction_filter": _NEEDS.format("gfx1250"),
+    "gfx1250.*.rocm_weight_pitch": _NEEDS.format("gfx1250")
+    + " (Linear row pitch K + 64 is gated to gfx11xx, default-on only where measured: gfx1151)",
 }
 
 

@@ -34,7 +34,6 @@ CLAMPS = (
     "def load():\n    n_parallel = _mtp_clamped_slots\n",
     "async def load():\n    n_parallel = 1\n",
     "def load():\n    if mtp:\n        n_parallel = 1\n",
-    # Wrapped by the formatter and unmarked: still a clamp.
     "def load():\n    n_parallel = (\n        1\n    )\n",
     # A marker on the next statement does not excuse this one.
     "def load():\n    n_parallel = 1\n    x = 2  # allow-slot-clamp: elsewhere\n",

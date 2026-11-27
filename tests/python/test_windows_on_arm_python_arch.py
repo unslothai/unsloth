@@ -47,12 +47,10 @@ def _run(
     return result.stdout.strip()
 
 
-# Stubs the two host helpers so each case, not the test machine, drives the decision;
-# Get-HostMachineArch runs on real windows-11-arm hardware, and Get-PythonPlatformTag needs a
-# Windows interpreter for sysconfig.get_platform() to return win-arm64.
+# Host helpers are stubbed so each case drives the decision: Get-HostMachineArch runs on real
+# windows-11-arm hardware; Get-PythonPlatformTag needs a Windows interpreter to report win-arm64.
 def _preamble(host_arch: str, venv_tag: str) -> str:
-    # Verbatim from install.ps1, not a stub: both the fresh-selection path and the venv
-    # re-check call it, so a change to what the opt-out accepts has to move these cases too.
+    # Verbatim from install.ps1: both paths call it, so opt-out changes must move these cases.
     opt_out = _function("Test-Arm64PythonOptOut")
     return f"""
 $ErrorActionPreference = "Stop"
@@ -117,8 +115,7 @@ Write-Host ("MISMATCH=" + $mismatch)
 def test_the_opt_out_also_protects_an_existing_arm64_environment(
     tmp_path: Path, shell: str, value: str
 ):
-    """The opt-out is read here too, since Resolve-WindowsOnArmX64Python is skipped when x64 is
-    already found; a rebuild carries nothing over from the old venv."""
+    """Opt-out read here too: x64 resolver skipped when x64 is found; a rebuild reuses nothing."""
     venv_python = tmp_path / "python.exe"
     venv_python.write_text("", encoding = "utf-8")
     selected = '@{ Version = "3.13"; Path = "C:\\p\\python.exe"; Arch = "x86_64" }'
@@ -158,8 +155,7 @@ Write-Host ("MISMATCH=" + $mismatch)
 
 
 def test_both_arm64_opt_out_readers_go_through_one_helper():
-    """The fresh-selection path and the reuse re-check must read the opt-out the same way, or an
-    accepted value works in one and not the other."""
+    """Both opt-out readers go through one helper, or an accepted value works in only one path."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     assert source.count("function Test-Arm64PythonOptOut") == 1
     assert (
@@ -266,8 +262,7 @@ Write-Host ("PRESERVE=" + $script:StudioVenvRollbackPreserve)
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_an_ordinary_rollback_is_still_deleted_on_success(tmp_path: Path, shell: str):
-    """The preserve flag is opt-in and other rollbacks keep deleting; otherwise every reinstall
-    would leak a full environment for users who never asked to keep one."""
+    """Only the opt-in preserve flag keeps a rollback, else reinstalls leak an environment."""
     home = tmp_path / "studio"
     backup = home / "unsloth_studio.rollback.20260101000000.4242"
     backup.mkdir(parents = True)
@@ -308,8 +303,7 @@ def test_the_preserved_tree_leaves_the_swept_rollback_namespace():
     assert "unsloth_studio.arm64" not in sweep_block
 
 
-# The reinstall moves the venv to its rollback path before x64 selection, so the platform
-# tag must be read before that move.
+# Reinstall moves the venv to rollback before x64 selection, so the platform tag is read first.
 
 
 def test_the_platform_tag_is_read_before_the_rollback_move():
@@ -358,8 +352,7 @@ def test_a_moved_arm64_environment_is_still_detected(shell: str):
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_moved_x64_environment_is_not_mistaken_for_one(shell: str):
-    """The other half. A recorded tag that is not win-arm64 answers no, and so does no
-    recorded tag at all, which is the fresh-install case."""
+    """A recorded tag other than win-arm64 answers no, as does no tag on a fresh install."""
     out = _run(shell, _arch_mismatch_preamble("arm64", False, False, "win-arm64", "win-amd64"))
     assert out.splitlines()[-1] == "ANSWER=False", out
     out = _run(shell, _arch_mismatch_preamble("arm64", False, False, "win-arm64", ""))

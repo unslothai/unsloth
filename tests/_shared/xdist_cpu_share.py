@@ -14,8 +14,7 @@ import os
 from typing import MutableMapping, Optional
 
 THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")
-# Set by apply(): the share it gave each worker, or "explicit" when the caller had already
-# chosen a thread count. tests/test_xdist_torch_thread_cap.py reads it.
+# Set by apply(): worker's CPU share, or 'explicit' if threads were preset; a test reads it.
 MARKER = "UNSLOTH_TEST_XDIST_CPU_SHARE"
 CGROUP_ROOT = "/sys/fs/cgroup"
 

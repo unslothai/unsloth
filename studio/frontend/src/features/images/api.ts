@@ -37,6 +37,7 @@ export interface DiffusionResolvedControl {
 import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
 
 export interface DiffusionStatus {
+  chat_swap_available?: boolean;
   loaded: boolean;
   /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
   precision_options?: Record<string, string | null> | null;
@@ -444,6 +445,21 @@ export async function parseJson<T>(response: Response): Promise<T> {
     throw new Error(await readFastApiError(response));
   }
   return (await response.json()) as T;
+}
+
+export type ChatImageSwapSetting = { enabled: boolean; managed_by_env: boolean };
+
+export async function chatImageSwapSetting(
+  enabled?: boolean,
+  signal?: AbortSignal,
+): Promise<ChatImageSwapSetting> {
+  const options = enabled === undefined ? { signal } : {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+    signal,
+  };
+  return parseJson(await authFetch("/api/settings/chat-image-swap", options));
 }
 
 export async function getDiffusionStatus(
