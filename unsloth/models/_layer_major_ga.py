@@ -19,6 +19,7 @@ runs.
 
 import copy
 import functools
+import os
 import sys
 import threading
 from collections.abc import Mapping
@@ -39,10 +40,11 @@ except Exception:  # unsloth_zoo without layer-major windows
     run_layer_major = None
 
 _TLS = threading.local()
+# With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "auto" (the allowlisted decoders below, after measured copy stalls), or
+# "off" to make windows opt-in only (UNSLOTH_OFFLOAD_LAYER_MAJOR=1).
+_DEFAULT_MODE = "auto"
 _AUTO_STALL = 0.05
 _AUTO_PROBE_STEPS = 2
-# Trainer classes whose training_step / compute_loss run one model forward per micro-batch.
-_SAFE_TRAINERS = ("Trainer", "UnslothTrainer")
 _DROPOUT_KEYS = (
     "attention_dropout",
     "hidden_dropout",
@@ -63,6 +65,12 @@ _AUTO_LAYERS = {
     "Gemma2DecoderLayer": ("gemma2",),
     "Gemma3DecoderLayer": ("gemma3_text",),
 }
+
+
+def _mode():
+    if not os.environ.get("UNSLOTH_OFFLOAD_LAYER_MAJOR", "").strip():
+        return _DEFAULT_MODE
+    return layer_major_mode()
 
 
 def _say_once(trainer, key, message):
@@ -93,32 +101,120 @@ def _text_config(model):
 
 
 def _audited_trainer_classes():
-    """Classes whose training_step / compute_loss run one model forward per micro-batch: TRL's SFTTrainer chain."""
-    sft = getattr(sys.modules.get("trl.trainer.sft_trainer"), "SFTTrainer", None)
-    return set(getattr(sft, "__mro__", ()))
-
-
-def _is_unsloth_trainer(cls):
-    # Unsloth's own SFT trainers (unsloth.trainer, the generated unsloth_compiled_cache classes), not user subclasses.
-    module = getattr(cls, "__module__", "") or ""
-    return cls.__name__ in _SAFE_TRAINERS and (module.startswith("unsloth") or "Unsloth" in module)
+    """The exact trainer classes (identity) whose per-micro-batch methods are proven against standard accumulation:
+    TRL's SFTTrainer chain (Unsloth rebinds its generated SFT trainer there) and Unsloth's own UnslothTrainer."""
+    audited = set()
+    for module, name in (
+        ("trl.trainer.sft_trainer", "SFTTrainer"),
+        ("trl", "SFTTrainer"),
+        ("unsloth.trainer", "UnslothTrainer"),
+    ):
+        cls = sys.modules.get(module).__dict__.get(name) if module in sys.modules else None
+        if isinstance(cls, type):
+            audited.update(cls.__mro__)
+    return audited
 
 
 def _trainer_ok(trainer):
+    """Positive check: every class of the trainer above transformers.Trainer is an audited one (identity), or
+    overrides no Trainer attribute at all except __init__ (it may only add new methods)."""
     import transformers
 
+    base = transformers.Trainer
     audited = _audited_trainer_classes()
     for cls in type(trainer).__mro__:
-        if cls is transformers.Trainer:
+        if cls is base:
             return True
-        for name in ("training_step", "compute_loss"):
-            fn = cls.__dict__.get(name)
-            # Identity, not a marker: functools.wraps copies function attributes onto a user's override.
-            if fn is None or fn is vars(transformers.Trainer).get(name):
+        if cls in audited:
+            continue
+        for name in cls.__dict__:
+            if name.startswith("__") and name.endswith("__") and name != "__call__":
                 continue
-            if cls not in audited and not _is_unsloth_trainer(cls):
+            if hasattr(base, name):
                 return False
     return True
+
+
+# Instance-level method wrappers known to run outside every training step, so the window cannot reorder them, as
+# Unsloth's SFT trainer installs them: train (prepare_for_training_mode), _prepare_dataset (the one-shot packing
+# guard, unsloth/trainer.py) and _load_optimizer_and_scheduler (portable resume, unsloth/models/portable_resume.py).
+# Any other instance-level override keeps the step standard.
+_INSTANCE_OK = ("train", "_prepare_dataset", "_load_optimizer_and_scheduler")
+
+
+def _instance_overrides(trainer):
+    """Instance attributes shadowing a Trainer method (assigned wrappers), other than _INSTANCE_OK and read-only
+    training_step observers (UNSLOTH_BATCH_REPORT)."""
+    cls = type(trainer)
+    for name, value in trainer.__dict__.items():
+        attr = getattr(cls, name, None)
+        if (
+            not (callable(value) and callable(attr))
+            or isinstance(attr, type)
+            or name in _INSTANCE_OK
+        ):
+            continue
+        if (
+            name == "training_step"
+            and getattr(value, "_unsloth_layer_major_observer", None) is value
+        ):
+            continue
+        return name
+    return None
+
+
+def _operator_modes_active():
+    """TorchFunctionMode / TorchDispatchMode on the training thread (thread-local: the workers would not see them)."""
+    for probe in (
+        getattr(torch._C, "_len_torch_function_stack", None),
+        getattr(torch._C, "_len_torch_dispatch_stack", None),
+        getattr(getattr(torch, "_ops", None), "_len_torch_dispatch_stack_pre_dispatch", None),
+    ):
+        try:
+            if probe is not None and probe():
+                return True
+        except Exception:
+            return True
+    return False
+
+
+def _caller_autocast():
+    """Autocast entered around training_step (the trainer enters its own inside it)."""
+    for device in ("cuda", "cpu"):
+        try:
+            if torch.is_autocast_enabled(device):
+                return device
+        except TypeError:
+            if device == "cuda" and torch.is_autocast_enabled():
+                return device
+    return None
+
+
+def _dropout_modules(model):
+    """Dropout of any kind with p > 0 (the _DropoutNd family, or any class named like one): its draws would be
+    taken in another order across micro-batches."""
+    dropout_nd = getattr(torch.nn.modules.dropout, "_DropoutNd", torch.nn.Dropout)
+    for name, module in model.named_modules():
+        if isinstance(module, dropout_nd) or "dropout" in type(module).__name__.lower():
+            p = getattr(module, "p", None)
+            if not isinstance(p, (int, float)) or p > 0:
+                return f"{type(module).__name__}(p = {p}) in {name or 'the model'}"
+    return None
+
+
+def _compiled_in_layers(layers):
+    """torch.compile on a decoder layer or inside one, other than Unsloth's block compile (proven): module.compile()
+    takes the layer's checkpoint wrapper into the graph, and the window's extra no-grad specialisations can use up
+    the recompile budget the standard retry needs."""
+    optimized = getattr(getattr(torch, "_dynamo", None), "OptimizedModule", None)
+    for module in layers.modules():
+        if getattr(module, "_compiled_call_impl", None) is not None:
+            return True
+        if optimized is not None and isinstance(module, optimized):
+            return True
+        if hasattr(getattr(module, "forward", None), "_torchdynamo_orig_callable"):
+            return True
+    return False
 
 
 def _compiled(module):
@@ -174,6 +270,11 @@ def _window_blocker(
     layers = None,
 ):
     """Per step (they can appear after the first): what makes this step's micro-batches run the standard way."""
+    if _operator_modes_active():
+        return "a TorchFunctionMode / TorchDispatchMode is active"
+    device = _caller_autocast()
+    if device is not None:
+        return f"{device} autocast entered around training_step"
     if getattr(trainer, "compute_loss_func", None) is not None:
         # Called inside each micro-batch's loss part, which under a window runs with the step's first
         # micro-batch's accelerator sync state (and so on): standard accumulation keeps it exact.
@@ -196,13 +297,13 @@ def _window_blocker(
         return "module backward hooks"
     if layers is not None and _compiled_around(model, layers):
         return "torch.compile over the whole model"
-    state = trainer.__dict__
-    for name in ("training_step", "compute_loss"):
-        fn = state.get(name)
-        # The window bypasses instance-level wrappers for the micro-batches after the first; only read-only
-        # observers (UNSLOTH_BATCH_REPORT) are allowed.
-        if fn is not None and getattr(fn, "_unsloth_layer_major_observer", None) is not fn:
-            return f"an instance-level {name} wrapper"
+    if layers is not None and _compiled_in_layers(layers):
+        return "torch.compile on a decoder layer (other than Unsloth's block compile)"
+    # The window bypasses instance-level wrappers for the micro-batches after the first; only read-only observers
+    # (UNSLOTH_BATCH_REPORT's training_step) are allowed.
+    name = _instance_overrides(trainer)
+    if name is not None:
+        return f"an instance-level {name} wrapper"
     handler = getattr(trainer, "callback_handler", None)
     try:
         from transformers import TrainerCallback
@@ -261,9 +362,11 @@ def layer_major_ineligible(trainer, model, layers, swapper):
         if isinstance(value, (int, float)) and value > 0:
             return f"{key} = {value} (dropout draws differ by micro-batch order)"
     # Anywhere in the model (lora_dropout on the head too): the window reorders the draws across micro-batches.
-    for name, module in model.named_modules():
-        if isinstance(module, torch.nn.Dropout) and module.p > 0:
-            return f"dropout p = {module.p} in {name or type(module).__name__} (lora_dropout)"
+    found = _dropout_modules(model)
+    if found is not None:
+        return f"dropout {found}"
+    if getattr(args, "neftune_noise_alpha", None):
+        return "NEFTune embedding noise (random draws)"
     return None
 
 
@@ -380,7 +483,7 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
     samples, items = batch
     if len(samples) < 2 or samples[0] is not inputs or items is not num_items_in_batch:
         return None
-    mode = layer_major_mode() if run_layer_major is not None else "off"
+    mode = _mode() if run_layer_major is not None else "off"
     # After an evaluation the model is still in eval mode here; the trainer's training_step switches it back.
     if mode == "off" or (
         not getattr(model, "training", True) and not getattr(trainer, "is_in_train", False)
@@ -508,7 +611,7 @@ def patch_layer_major_gradient_accumulation(Trainer):
         if (
             isinstance(samples, list)
             and len(samples) > 1
-            and layer_major_mode() != "off"
+            and _mode() != "off"
             and _trainer_ok(self)
         ):
             self._unsloth_layer_major_batch = (samples, items)

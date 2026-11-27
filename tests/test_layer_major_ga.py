@@ -594,12 +594,16 @@ def test_compiled_models_are_ineligible(ga):
         else:
             base.model.forward = torch.compile(base.model.forward, backend = "eager")
         assert "torch.compile" in mod._window_blocker(stub, model, layers), how
-    # Compiled decoder layers themselves stay eligible (the window calls them; per-layer compile is bitwise).
-    model = _model()
-    layers = model.get_base_model().model.layers
-    for layer in layers:
-        layer.compile(backend = "eager")
-    assert mod._window_blocker(stub, model, layers) is None
+    # Compiled decoder layers or modules inside them: refused too (only Unsloth's block compile is proven).
+    for how in ("layer", "submodule"):
+        model = _model()
+        layers = model.get_base_model().model.layers
+        if how == "layer":
+            layers[1].compile(backend = "eager")
+        else:
+            attn = layers[2].self_attn
+            attn.forward = torch.compile(attn.forward, backend = "eager")
+        assert "decoder layer" in mod._window_blocker(stub, model, layers), how
 
 
 def test_compiled_model_trains_the_standard_way(ga, tmp_path, monkeypatch):
@@ -848,7 +852,7 @@ def test_dropout_outside_the_decoder_is_ineligible(ga, tmp_path, monkeypatch, ca
     engine.layer_major_stats(reset = True)
     _train(mod, tmp_path, monkeypatch, "1", model_hook = head_dropout)
     assert _windows(engine) == 0
-    assert "dropout p = 0.3" in capsys.readouterr().out
+    assert "Dropout(p = 0.3)" in capsys.readouterr().out
 
 
 def test_gradient_hooks_on_trainable_parameters_are_ineligible(ga, tmp_path, monkeypatch):
@@ -910,3 +914,137 @@ def test_an_abort_does_not_outlive_its_train_call(ga, tmp_path, monkeypatch):
     trainer.train()
     assert _windows(engine) == 2
     _LAST.clear()
+
+
+# ---------------------------------------------------------------- round 4: positive eligibility (each fails before)
+def test_prepare_inputs_overrides_are_ineligible(ga, tmp_path, monkeypatch):
+    """_prepare_inputs runs inside training_step under the current micro-batch's sync state; any Trainer method a
+    non-audited class overrides keeps the step standard."""
+    mod, engine = ga
+    seen = []
+
+    class Prep(transformers.Trainer):
+        def _prepare_inputs(self, inputs):
+            sync = self.accelerator.sync_gradients
+            seen.append(sync)
+            inputs = super()._prepare_inputs(inputs)
+            if sync:
+                inputs["labels"] = inputs["labels"].clone()
+                inputs["labels"][:, :2] = -100
+            return inputs
+
+    a = _train(mod, tmp_path, monkeypatch, "0", trainer_base = Prep)
+    first, seen[:] = list(seen), []
+    engine.layer_major_stats(reset = True)
+    b = _train(mod, tmp_path, monkeypatch, "1", trainer_base = Prep)
+    assert _windows(engine) == 0 and seen == first == [False, False, True] * 2
+    _same(a, b)
+
+
+def test_trainer_classes_are_matched_by_identity_not_name(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+
+    def training_step(self, model, inputs, *args, **kwargs):
+        inputs["input_ids"] = (inputs["input_ids"] + 1) % 256
+        return transformers.Trainer.training_step(self, model, inputs, *args, **kwargs)
+
+    Lookalike = type("UnslothTrainer", (transformers.Trainer,), {"training_step": training_step})
+    Lookalike.__module__ = "unsloth_finetune"
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", trainer_base = Lookalike)
+    assert _windows(engine) == 0
+
+
+@pytest.mark.parametrize("kind", ["Dropout1d", "AlphaDropout", "FeatureAlphaDropout"])
+def test_every_dropout_kind_is_ineligible(ga, tmp_path, monkeypatch, capsys, kind):
+    mod, engine = ga
+    if not hasattr(torch.nn, kind):
+        pytest.skip(kind)
+
+    def add(model):
+        emb = model.get_base_model().model.embed_tokens
+        emb.drop = getattr(torch.nn, kind)(0.3)
+        emb.register_forward_hook(lambda module, args, out: module.drop(out))
+
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", model_hook = add)
+    assert _windows(engine) == 0
+    assert f"{kind}(p = 0.3)" in capsys.readouterr().out
+
+
+def test_neftune_is_ineligible(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", neftune_noise_alpha = 5.0)
+    assert _windows(engine) == 0
+
+
+@pytest.mark.parametrize("kind", ["function_mode", "dispatch_mode", "autocast"])
+def test_caller_side_modes_are_ineligible(ga, tmp_path, monkeypatch, kind):
+    """Entered around training_step (here from callbacks): thread-local, so the workers would run without them."""
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    mod, engine = ga
+
+    class Passthrough(TorchDispatchMode):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            return func(*args, **(kwargs or {}))
+
+    class FunctionPassthrough(torch.overrides.TorchFunctionMode):
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            return func(*args, **(kwargs or {}))
+
+    class Enter(transformers.TrainerCallback):
+        ctx = None
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            if kind == "function_mode":
+                self.ctx = FunctionPassthrough()
+            elif kind == "dispatch_mode":
+                self.ctx = Passthrough()
+            else:
+                self.ctx = torch.autocast("cpu", dtype = torch.bfloat16, enabled = True)
+            self.ctx.__enter__()
+
+        def on_step_end(self, args, state, control, **kwargs):
+            self.ctx.__exit__(None, None, None)
+
+    _with_init(monkeypatch, lambda self: self.add_callback(Enter()))
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", steps = 1)
+    assert _windows(engine) == 0
+
+
+def test_default_mode_flips_to_opt_in_only(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    monkeypatch.setattr(mod, "_DEFAULT_MODE", "off")
+    monkeypatch.delenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", raising = False)
+    assert mod._mode() == "off"
+    monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", "1")
+    assert mod._mode() == "on"
+    monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", "")
+    assert mod._mode() == "off"
+
+
+def test_only_known_setup_wrappers_may_shadow_trainer_methods(ga):
+    import types
+
+    mod, engine = ga
+    stub = transformers.Trainer.__new__(transformers.Trainer)
+    stub.train = types.MethodType(transformers.Trainer.train, stub)
+    stub._prepare_dataset = lambda *a, **k: None
+    assert mod._instance_overrides(stub) is None
+    stub._prepare_inputs = types.MethodType(transformers.Trainer._prepare_inputs, stub)
+    assert mod._instance_overrides(stub) == "_prepare_inputs"
