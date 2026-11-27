@@ -8011,6 +8011,19 @@ function Test-UnparseableManagedTorchCache {
     return $trimmed -ieq $Managed.Trim().Replace('/', '\').TrimEnd('\')
 }
 
+# USER value is account-wide: a custom-home run must not repoint it at its own tree.
+function Test-TorchCacheMayPersist {
+    param([string]$Value, [string]$Persisted, [string]$StudioRoot, [bool]$HomeIsCustom)
+    if (-not $HomeIsCustom) { return $true }
+    if ([string]::IsNullOrWhiteSpace($Persisted)) { return $true }
+    $norm = { param($p) [Environment]::ExpandEnvironmentVariables($p).Trim().Replace('/', '\').TrimEnd('\') }
+    $p = & $norm $Persisted
+    if ($p -ieq (& $norm $Value)) { return $true }
+    $h = & $norm $StudioRoot
+    # StartsWith, not -like: a home holding [ or ] would read as a wildcard pattern.
+    return ([bool]$h -and ($p -ieq $h -or $p.StartsWith("$h\", [StringComparison]::OrdinalIgnoreCase)))
+}
+
 function Clear-UnparseableTorchCacheEnv {
     $managedTorchCache = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
     if (-not $StageRoot) {
@@ -8115,7 +8128,12 @@ if ($TorchCacheDir) {
     if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
     $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
     if (-not $StageRoot) {
-        [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        $_persistedTorchCache = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
+        if (Test-TorchCacheMayPersist $TorchCacheDir $_persistedTorchCache $StudioHome $StudioHomeIsCustom) {
+            [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        } else {
+            substep "kept the account's TORCHINDUCTOR_CACHE_DIR ($_persistedTorchCache): it belongs to another install, so $TorchCacheDir is used for this run only"
+        }
     }
     substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 }
