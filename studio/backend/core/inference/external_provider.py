@@ -1575,8 +1575,7 @@ def _apply_custom_reasoning_controls(
     if off:
         effort = "none"
     else:
-        # Unasked, medium: what Studio sent before a connection could choose its ladder, and the default
-        # OpenAI documents for its current models. A ladder without it leaves the level to the endpoint.
+        # A ladder without medium leaves an unasked level to the endpoint.
         effort = reasoning_effort or ("medium" if "medium" in levels else None)
     style = config["style"]
     if style == "reasoning_effort":

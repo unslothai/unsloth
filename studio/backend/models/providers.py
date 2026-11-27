@@ -23,15 +23,9 @@ from pydantic import (
 ProviderApiType = Literal["chat_completions", "responses", "systemone"]
 ProviderCompactionMode = Literal["summary", "rolling", "checkpoint"]
 
-# Weakest -> strongest effort rungs a Custom endpoint may opt into: the values OpenAI documents for
-# reasoning_effort, each model taking a subset (https://developers.openai.com/api/docs/guides/reasoning),
-# minus "none", which is the Off row and always offered. Claude's effort takes low through max, no minimal.
-# The same rungs as _REASONING_EFFORT_LEVELS in core/inference/external_provider.py and, in this order,
-# _REASONING_EFFORT_SCALE in core/inference/llama_cpp.py. Importing either would pull the inference stack
-# into this schema module, so the rungs are spelled out here and a test keeps the three in step.
+# Spelled out (importing core.inference here is circular); a test keeps it equal to _REASONING_EFFORT_SCALE minus "none".
 CustomReasoningEffortLevel = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
 CUSTOM_REASONING_EFFORT_LEVELS: tuple[str, ...] = get_args(CustomReasoningEffortLevel)
-# The ladder a Custom connection offered before it could choose one.
 DEFAULT_CUSTOM_REASONING_EFFORT_LEVELS = ("low", "medium", "high")
 CUSTOM_REASONING_EFFORT_STYLES = frozenset({"reasoning_effort", "reasoning"})
 
@@ -45,7 +39,7 @@ class ProviderReasoningConfig(BaseModel):
     style: Literal[
         "reasoning_effort", "reasoning", "thinking", "chat_template_kwargs.enable_thinking"
     ]
-    # Absent means DEFAULT_CUSTOM_REASONING_EFFORT_LEVELS. Only effort styles carry a ladder.
+    # None = DEFAULT_CUSTOM_REASONING_EFFORT_LEVELS.
     effort_levels: Optional[list[CustomReasoningEffortLevel]] = None
 
     @field_validator("effort_levels")
@@ -65,7 +59,7 @@ class ProviderReasoningConfig(BaseModel):
 
     @model_serializer(mode = "wrap")
     def _omit_default_levels(self, handler):
-        # Keep unset ladders off the wire and out of storage, so pre-ladder rows round-trip unchanged.
+        # Unset ladder stays out of storage so pre-ladder rows and old clients see the old shape.
         data = handler(self)
         if data.get("effort_levels") is None:
             data.pop("effort_levels", None)

@@ -2866,7 +2866,6 @@ export function ChatProvidersSettings({
                               <Checkbox
                                 id={`provider-reasoning-level-${level}`}
                                 checked={checked}
-                                // The ladder needs at least one rung.
                                 disabled={checked && selected.length === 1}
                                 onCheckedChange={(next) => setReasoningConfig({
                                   ...reasoningConfig,
