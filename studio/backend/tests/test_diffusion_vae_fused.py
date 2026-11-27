@@ -636,8 +636,7 @@ def test_fused_install_can_leave_an_encoder_stock(monkeypatch):
 
 
 def test_fused_install_leaves_the_qwen_image_encoder_stock(monkeypatch):
-    """Edits follow their input latents: the fused encoder moved Qwen-Image-Edit renders (LPIPS up to 0.195 against
-    a bit-identical rerun), so only the decoder is fused, whatever the caller asks."""
+    """Only the Qwen-Image decoder is fused, whatever the caller asks."""
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     torch.manual_seed(0)
@@ -648,8 +647,7 @@ def test_fused_install_leaves_the_qwen_image_encoder_stock(monkeypatch):
 
 
 def test_fused_install_leaves_the_wan_encoder_stock(monkeypatch):
-    """Wan 2.2 TI2V first-frame I2V follows the encoded frame: the fused encoder moved renders by 0.016 mean LPIPS
-    (0.025 max) against a bit-identical rerun, so only the decoder is fused, whatever the caller asks."""
+    """Only the Wan decoder is fused, whatever the caller asks."""
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     torch.manual_seed(0)

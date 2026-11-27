@@ -49,8 +49,7 @@ def test_single_frame_decode_and_encode_match_the_stock_walk():
 
 
 def test_encoder_stays_stock_and_only_the_decoder_is_folded():
-    """Edits follow their input latents through every step: a folded encoder's rounding moved Qwen-Image-Edit renders
-    (LPIPS up to 0.037 against a bit-identical rerun), so only the decoder takes the 2D path."""
+    """Only the decoder takes the 2D path; the encoder stays 3D."""
     stock = _tiny_vae()
     vae = copy.deepcopy(stock)
     stock_encode = vae._encode

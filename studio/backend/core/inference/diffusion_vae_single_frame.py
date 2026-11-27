@@ -125,8 +125,7 @@ def install(vae: Any, logger: Any = None) -> bool:
         vae._unsloth_sf_gate = gate
         vae._unsloth_stock_decode = vae._decode
         vae._decode = types.MethodType(_fast_decode, vae)
-        # Encoder stays 3D: edits follow their input latents through every step, and the 2D
-        # form's rounding moved Qwen-Image-Edit renders (LPIPS up to 0.037 vs a stock rerun).
+        # Encoder stays 3D: the 2D form's rounding moved Qwen-Image-Edit renders (up to 0.037 LPIPS).
         vae._unsloth_single_frame = True
     except Exception as exc:  # noqa: BLE001 - an optimisation: the stock VAE still decodes
         if logger is not None:

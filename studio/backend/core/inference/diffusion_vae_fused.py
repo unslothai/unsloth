@@ -1425,9 +1425,8 @@ def uninstall(vae: Any) -> None:
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
-# Encoder kept stock whatever the family asks: edits and I2V follow their input latents through every step, and
-# the fused encoder moved renders against a bit-identical rerun: Qwen-Image-Edit by up to 0.195 LPIPS, Wan 2.2
-# TI2V first-frame I2V by 0.016 mean LPIPS.
+# Encoder stays stock: edits / I2V follow their input latents, and fusing it moved Qwen-Image-Edit (0.195 LPIPS)
+# and Wan 2.2 TI2V I2V (0.016 mean) renders against a bit-identical rerun.
 _STOCK_ENCODER_VAES = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
 
