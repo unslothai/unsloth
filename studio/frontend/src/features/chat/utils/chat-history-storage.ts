@@ -951,8 +951,9 @@ export async function listStoredChatProjects(
 
 export async function getStoredChatProject(
   projectId: string,
+  args: { requireWorkspace?: boolean } = {},
 ): Promise<ProjectRecord | null> {
-  return getChatProject(projectId);
+  return getChatProject(projectId, args);
 }
 
 export async function createStoredChatProject(

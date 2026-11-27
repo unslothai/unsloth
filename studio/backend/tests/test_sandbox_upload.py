@@ -139,6 +139,46 @@ def test_route_lists_the_upload_and_maps_conflicts_and_the_cap(tools, monkeypatc
     assert not (Path(inference._sandbox_dir_for(session)) / "big.bin").exists()
 
 
+@pytest.mark.parametrize("missing", ["workspace", "sandbox"])
+def test_offline_project_upload_reports_recovery_without_recreating_storage(
+    tools, tmp_path, monkeypatch, missing
+):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from auth.authentication import get_current_subject
+    from routes import inference
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    project = studio_db.upsert_chat_project(
+        {"id": "offline-upload", "name": "Files", "createdAt": 1, "updatedAt": 1}
+    )
+    root = Path(project["rootPath"])
+    (root / "sandbox" / "keep.txt").write_text("original content")
+    absent = root if missing == "workspace" else root / "sandbox"
+    offline = tmp_path / "disconnected"
+    absent.rename(offline)
+    app = FastAPI()
+    app.include_router(inference.router, prefix = "/api/inference")
+    url = "/api/inference/sandbox/project-offline-upload/upload"
+    with TestClient(app) as client:
+        assert client.post(url, files = {"file": ("new.txt", b"new content")}).status_code == 401
+        app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+        response = client.post(url, files = {"file": ("new.txt", b"new content")})
+
+        assert response.status_code == 503, response.text
+        assert str(absent) in response.json()["detail"]
+        assert "Reconnect" in response.json()["detail"] and "restore" in response.json()["detail"]
+        assert not absent.exists()
+        assert not (Path(tools.sandbox_root()) / "project-offline-upload").exists()
+
+        offline.rename(absent)
+        recovered = client.post(url, files = {"file": ("new.txt", b"new content")})
+        assert recovered.status_code == 200, recovered.text
+        assert (root / "sandbox" / "new.txt").read_bytes() == b"new content"
+        assert (root / "sandbox" / "keep.txt").read_text() == "original content"
+
+
 def test_a_sandbox_file_named_upload_is_still_served():
     from routes.inference import router
 

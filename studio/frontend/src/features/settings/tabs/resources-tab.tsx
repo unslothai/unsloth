@@ -61,6 +61,7 @@ import { DeveloperModeSection } from "../components/developer-mode-section";
 import { EngineVersionsSection } from "../components/engine-versions-section";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
+import { ProjectsHomeSetting } from "../components/projects-home-setting";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
@@ -1443,6 +1444,7 @@ export function ResourcesTab() {
               {t("settings.resources.storage.changeAction")}
             </Button>
           </SettingsCardRow>
+          {isOwner ? <ProjectsHomeSetting /> : null}
           <CacheStorageRows cache={cache} />
         </SettingsCard>
       </SettingsSection>

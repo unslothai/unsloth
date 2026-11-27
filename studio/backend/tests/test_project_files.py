@@ -509,6 +509,59 @@ def test_routes_list_the_managed_folder_until_one_is_chosen(env):
         assert changes == {"repo": False, "branch": None, "changes": [], "truncated": False}
 
 
+@pytest.mark.parametrize("missing", ["root", "sandbox"])
+@pytest.mark.parametrize("endpoint", ["files", "files/search?q=keep", "changes"])
+def test_routes_report_an_offline_managed_workspace_without_recreating_it(env, missing, endpoint):
+    root = Path(env.project["rootPath"])
+    marker = root / "sandbox" / "keep.txt"
+    marker.write_text("original project contents")
+    absent = root if missing == "root" else root / "sandbox"
+    offline = absent.with_name(absent.name + "-offline")
+    absent.rename(offline)
+    before = studio_db.get_chat_project("p1")
+
+    with _routes() as client:
+        response = client.get(f"/api/chat/projects/p1/{endpoint}")
+
+        assert response.status_code == 503, response.text
+        detail = response.json()["detail"]
+        assert str(absent) in detail
+        assert "unavailable" in detail.lower()
+        assert "reconnect" in detail.lower() or "restore" in detail.lower()
+        assert not absent.exists()
+        assert studio_db.get_chat_project("p1") == before
+        assert (offline / marker.relative_to(absent)).read_text() == "original project contents"
+
+        offline.rename(absent)
+        restored = client.get(f"/api/chat/projects/p1/{endpoint}")
+        assert restored.status_code == 200, restored.text
+        assert marker.read_text() == "original project contents"
+
+
+@needs_git
+def test_routes_keep_a_linked_folder_usable_when_the_managed_root_is_offline(env):
+    _init_repo(env.repo)
+    _use_repo(env)
+    (env.repo / "main.py").write_text("print('changed')\n")
+    root = Path(env.project["rootPath"])
+    root.rename(root.with_name(root.name + "-offline"))
+
+    with _routes() as client:
+        listing = client.get("/api/chat/projects/p1/files")
+        assert listing.status_code == 200, listing.text
+        assert listing.json()["chosen"] is True
+        assert "main.py" in [entry["name"] for entry in listing.json()["entries"]]
+        found = client.get("/api/chat/projects/p1/files/search", params = {"q": "main"})
+        assert found.status_code == 200, found.text
+        assert found.json()["results"] == [{"path": "main.py", "name": "main.py"}]
+        changes = client.get("/api/chat/projects/p1/changes")
+        assert changes.status_code == 200, changes.text
+        assert changes.json()["repo"] is True
+        assert {"path": "main.py", "status": "modified"} in changes.json()["changes"]
+
+    assert not root.exists()
+
+
 def test_an_api_key_lists_the_managed_folder_not_the_chosen_one(env):
     from routes import chat_history
 

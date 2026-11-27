@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from pathlib import Path
+
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -8,7 +10,7 @@ from pydantic import ValidationError
 from auth import policy
 from routes import chat_history, models as models_route
 from storage import studio_db
-from utils import host_policy
+from utils import host_policy, project_workspace_settings
 from utils.account_context import OWNER, AccountContext, as_api_caller, run_as
 
 
@@ -89,3 +91,70 @@ def test_a_path_goes_through_the_browser_allowlist_and_the_folder_checks(
     with pytest.raises(HTTPException) as exc_info:
         chat_history._resolve_server_working_folder(str(home / ".ssh"))
     assert exc_info.value.status_code == 403
+
+
+@pytest.fixture
+def saved_project_home(local, monkeypatch, linkable_tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(linkable_tmp_path / "studio"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(linkable_tmp_path / "Documents"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    monkeypatch.setattr(
+        models_route, "_build_browse_allowlist", lambda *_a, **_k: [linkable_tmp_path.resolve()]
+    )
+    studio_db.upsert_chat_project({"id": "p1", "name": "Linked", "createdAt": 1, "updatedAt": 1})
+    home = linkable_tmp_path / "code" / "projects"
+    home.mkdir(parents = True)
+    project_workspace_settings.set_projects_home(str(home))
+    return home
+
+
+@pytest.mark.parametrize("reset", [False, True], ids = ["current", "former"])
+def test_server_path_accepts_an_unrelated_sibling_in_a_saved_project_home(
+    saved_project_home, reset
+):
+    candidate = saved_project_home / "repo"
+    candidate.mkdir()
+    if reset:
+        project_workspace_settings.set_projects_home(None)
+
+    saved = chat_history.set_project_working_folder(
+        "p1", chat_history.ChatProjectWorkingFolder(serverPath = str(candidate)), current_subject = "u"
+    )
+
+    assert saved.workingFolder == str(candidate)
+    assert saved.workingFolderStatus == "ok"
+
+
+@pytest.mark.parametrize("reset", [False, True], ids = ["current", "former"])
+def test_server_path_protects_saved_project_homes_and_live_or_orphaned_roots(
+    saved_project_home, reset
+):
+    from core.inference import tools
+
+    roots = []
+    for state in ("live", "pending-delete", "kept"):
+        managed = studio_db.upsert_chat_project(
+            {"id": state, "name": state, "createdAt": 1, "updatedAt": 1}
+        )
+        root = Path(managed["rootPath"])
+        roots.append(root)
+        if state != "live":
+            studio_db.delete_chat_project(state)
+            tools.record_orphaned_project(
+                state, str(root / "sandbox"), state == "pending-delete", str(root)
+            )
+    if reset:
+        project_workspace_settings.set_projects_home(None)
+
+    for candidate in (*roots, saved_project_home, saved_project_home.parent):
+        with pytest.raises(HTTPException) as caught:
+            chat_history.set_project_working_folder(
+                "p1",
+                chat_history.ChatProjectWorkingFolder(serverPath = str(candidate)),
+                current_subject = "u",
+            )
+        assert caught.value.status_code == 400
+        assert "Unsloth's own" in caught.value.detail
+    assert studio_db.get_chat_project("p1")["workingFolder"] is None

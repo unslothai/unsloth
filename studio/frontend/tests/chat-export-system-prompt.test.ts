@@ -34,16 +34,28 @@ import {
   ndjsonBody,
 } from "../src/features/chat/utils/ndjson.ts";
 import { unwrapPastedTextContent } from "../src/features/chat/utils/pasted-text.ts";
-import { composeChatInstructions } from "../src/features/chat/utils/agents-md.ts";
+import {
+  EMPTY_AGENTS_MD,
+  composeChatInstructions,
+} from "../src/features/chat/utils/agents-md.ts";
+import { formatApiErrorBody } from "../src/lib/format-fastapi-error.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 type Exporters = {
+  resolveChatInstructions: (
+    threadId: string,
+    systemPrompt: string,
+    systemVariables: string,
+    readThreadRecord?: () => Promise<ThreadRecord | undefined>,
+    opts?: { agentsMd?: boolean },
+  ) => Promise<string>;
   buildFineTuneJsonl: (format: string) => Promise<{ lines: string[] }>;
   exportConversationRawJsonl: (threadId: string) => Promise<void>;
   exportConversationMessagesJsonl: (threadId: string) => Promise<void>;
   exportConversationShareGPT: (threadId: string) => Promise<void>;
   exportConversationCsv: (threadId: string) => Promise<void>;
   exportConversationMarkdown: (threadId: string) => Promise<void>;
+  buildConversationMarkdownForThread: (threadId: string) => Promise<string | null>;
   buildThreadContent: (threadId: string, format: string) => Promise<string | null>;
   saveConversationAsProjectSource: (
     threadId: string,
@@ -54,6 +66,8 @@ type Exporters = {
 
 const DIALOG = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
 const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const CHAT_API = readSrc("features/chat/api/chat-api.ts");
+const STORAGE = readSrc("features/chat/utils/chat-history-storage.ts");
 
 function slice(source: string, startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker);
@@ -132,13 +146,16 @@ function loadExporters(
 ) {
   const javascript = ts.transpileModule(
     [
+      slice(CHAT_API, "function parseErrorText(", "export async function listModels("),
+      slice(CHAT_API, "export async function getChatProject(", "export async function getChatAgentsMd("),
+      slice(STORAGE, "export async function getStoredChatProject(", "export async function createStoredChatProject("),
       slice(ADAPTER, "function parseSystemVariablesMap(", "export const ThreadAutosaveHandle"),
       slice(ADAPTER, "async function resolveProjectInstructions(", "// Answered once per thread"),
       slice(ADAPTER, "export async function resolveProjectId(", "async function resolveSandboxSessionId("),
       slice(DIALOG, "function contentBlocksToText(", "/** A sidebar row as one markdown document."),
       slice(DIALOG, "async function buildThreadContent(", "function csvHeader("),
       slice(DIALOG, "// One JSONL line per conversation", "/** Download the fine-tuning JSONL"),
-      "globalThis.__exporters = { buildFineTuneJsonl, exportConversationRawJsonl, exportConversationMessagesJsonl, exportConversationShareGPT, exportConversationCsv, exportConversationMarkdown, buildThreadContent, saveConversationAsProjectSource };",
+      "globalThis.__exporters = { resolveChatInstructions, buildFineTuneJsonl, exportConversationRawJsonl, exportConversationMessagesJsonl, exportConversationShareGPT, exportConversationCsv, exportConversationMarkdown, buildConversationMarkdownForThread, buildThreadContent, saveConversationAsProjectSource };",
     ].join("\n"),
     {
       compilerOptions: {
@@ -154,8 +171,19 @@ function loadExporters(
     listStoredChatMessages: async (id: string) => turns(id),
     getStoredChatThread: async (id: string) =>
       THREADS.find((thread) => thread.id === id),
-    getStoredChatProject: async (id: string) => PROJECTS[id] ?? null,
+    formatApiErrorBody,
+    authFetch: async (url: string) => {
+      const path = new URL(url, "http://localhost").pathname;
+      const id = decodeURIComponent(path.slice("/api/chat/projects/".length));
+      const project = PROJECTS[id];
+      return new Response(JSON.stringify(project ?? { detail: "Project not found" }), {
+        status: project ? 200 : 404,
+      });
+    },
     composeChatInstructions,
+    agentsMdEditCount: () => 0,
+    getChatAgentsMd: async () => EMPTY_AGENTS_MD,
+    EMPTY_AGENTS_MD,
     useChatRuntimeStore: { getState: () => ({ activeProjectId: "openInComposer" }) },
     isThreadIncognito: () => false,
     settleThreadScopedSettingsForCopy: async () => {},
@@ -195,6 +223,118 @@ function loadExporters(
   } as Record<string, unknown>;
   vm.runInNewContext(javascript, context);
   return context.__exporters as Exporters;
+}
+
+test("an unavailable project workspace stops a model-bound instruction read with the server's recovery message", async () => {
+  const detail = "The project folder /Volumes/Projects/Billing is unavailable. Reconnect its drive or restore the folder, then try again.";
+  const requests: string[] = [];
+  const exporters = loadExporters(["support"], [], [], {
+    authFetch: async (url: string) => {
+      requests.push(url);
+      return new Response(JSON.stringify({ detail }), { status: 503 });
+    },
+  });
+
+  await assert.rejects(
+    exporters.resolveChatInstructions(
+      "support", "Keep this system prompt.", "", undefined, { agentsMd: true },
+    ),
+    { status: 503, message: detail },
+  );
+  assert.deepEqual(requests, ["/api/chat/projects/billing"]);
+});
+
+test("model-bound instructions keep project instructions and AGENTS.md when the workspace is available", async () => {
+  const requests: string[] = [];
+  const exporters = loadExporters(["support"], [], [], {
+    authFetch: async (url: string) => {
+      requests.push(url);
+      return new Response(JSON.stringify(PROJECTS.billing));
+    },
+    getChatAgentsMd: async () => ({ text: "Use local tools." }),
+  });
+
+  assert.equal(
+    await exporters.resolveChatInstructions(
+      "support", "Keep this system prompt.", "", undefined, { agentsMd: true },
+    ),
+    "<agents_md>\nUse local tools.\n</agents_md>\n\n" +
+      "<project_instructions>\nCite the refund policy.\n</project_instructions>\n\n" +
+      "Keep this system prompt.",
+  );
+  assert.deepEqual(requests, ["/api/chat/projects/billing"]);
+});
+
+test("exports and copy keep saved project instructions when its workspace is unavailable", async () => {
+  const downloads: string[] = [];
+  const requests: string[] = [];
+  const exporters = loadExporters(["support", "plain"], downloads, [], {
+    authFetch: async (url: string) => {
+      requests.push(url);
+      const metadataOnly =
+        new URL(url, "http://localhost").searchParams.get("require_workspace") === "false";
+      const body = metadataOnly ? PROJECTS.billing : {
+        detail: "The project folder is unavailable. Reconnect its drive or restore the folder, then try again.",
+      };
+      return new Response(JSON.stringify(body), { status: metadataOnly ? 200 : 503 });
+    },
+  });
+
+  const training = (await exporters.buildFineTuneJsonl("openai")).lines.map(
+    (line) => JSON.parse(line),
+  );
+  assert.equal(training[0].messages[0].content, SUPPORT_INSTRUCTIONS);
+  assert.equal(training[1].messages[0].role, "user");
+
+  const bulk = await exporters.buildThreadContent("support", "jsonl-raw");
+  assert.equal(JSON.parse(bulk ?? "").messages[0].content, SUPPORT_INSTRUCTIONS);
+
+  await exporters.exportConversationRawJsonl("support");
+  await exporters.exportConversationMessagesJsonl("support");
+  await exporters.exportConversationShareGPT("support");
+  await exporters.exportConversationCsv("support");
+  await exporters.exportConversationMarkdown("support");
+  assert.equal(JSON.parse(downloads[0]).messages[0].content, SUPPORT_INSTRUCTIONS);
+  assert.equal(JSON.parse(downloads[1].split("\n")[0]).content, SUPPORT_INSTRUCTIONS);
+  assert.equal(JSON.parse(downloads[2]).conversations[0].value, SUPPORT_INSTRUCTIONS);
+  assert.ok(downloads[3].includes(SUPPORT_INSTRUCTIONS));
+  assert.ok(downloads[4].includes(`## System\n\n${SUPPORT_INSTRUCTIONS}`));
+
+  // The copy chord uses this same Markdown builder without downloading a file.
+  const copied = await exporters.buildConversationMarkdownForThread("support");
+  assert.equal(copied, downloads[4]);
+  assert.equal(
+    await exporters.resolveChatInstructions(
+      "support", "", "", undefined, { agentsMd: false },
+    ),
+    "<project_instructions>\nCite the refund policy.\n</project_instructions>",
+  );
+  assert.ok(requests.length > 0);
+  assert.ok(requests.every(
+    (url) => url === "/api/chat/projects/billing?require_workspace=false",
+  ));
+});
+
+for (const failure of ["missing project", "other HTTP error", "network error"] as const) {
+  test(`project instruction lookup preserves the existing fallback for ${failure}`, async () => {
+    const exporters = loadExporters(["support"], [], [], {
+      authFetch: async () => {
+        if (failure === "network error") throw new TypeError("Failed to fetch");
+        return new Response(JSON.stringify({ detail: "Unavailable" }), {
+          status: failure === "missing project" ? 404 : 500,
+        });
+      },
+    });
+
+    for (const agentsMd of [false, true]) {
+      assert.equal(
+        await exporters.resolveChatInstructions(
+          "support", "Keep this system prompt.", "", undefined, { agentsMd },
+        ),
+        "Keep this system prompt.",
+      );
+    }
+  });
 }
 
 test("chat training data starts with the system prompt the chat ran with", async () => {

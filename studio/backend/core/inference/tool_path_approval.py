@@ -216,9 +216,6 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
     """Write-silent roots are where tool output lands; read-silent adds software and model libraries."""
     from utils.paths.storage_roots import (
         cache_root,
-        project_workspaces_root,
-        shared_project_workspaces_root,
-        shared_tmp_root,
         tmp_root,
         well_known_model_dirs,
     )
@@ -230,7 +227,7 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
             _legacy_sandbox_root,
             tmp_root,
             # Not the shared bases: they are ancestors of every account's private data.
-            project_workspaces_root,
+            _project_silent_roots,
             cache_root,
             # Studio downloads models here; credential files inside are caught by the sensitive-path check.
             lambda: _hf_cache_dirs(),
@@ -262,6 +259,35 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         )
     )
     return read_roots, write_roots
+
+
+def _project_silent_roots() -> "tuple[str, ...]":
+    """A saved home chooses where to create projects, not access to its other contents."""
+    from utils.account_context import is_owner_context
+    from utils.paths.storage_roots import documents_root, project_workspaces_root
+
+    if not is_owner_context():
+        return (str(project_workspaces_root()),)
+    override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
+    # Keep the pre-existing environment/default grants, independently of the UI setting.
+    roots = [
+        os.path.expanduser(override)
+        if override
+        else str(documents_root() / "Unsloth Studio" / "Projects")
+    ]
+    if not _studio_db_exists():
+        return tuple(roots)
+    from storage.studio_db import list_chat_project_root_paths
+    from utils.project_workspace_settings import owner_project_workspaces_roots
+
+    homes = tuple(
+        _normalized_fs_text(os.path.realpath(home)) for home in owner_project_workspaces_roots()
+    )
+    for root in list_chat_project_root_paths():
+        path = _normalized_fs_text(os.path.realpath(root))
+        if any(path.startswith(home.rstrip(os.sep) + os.sep) and path != home for home in homes):
+            roots.append(path)
+    return tuple(roots)
 
 
 def _hf_cache_dirs() -> "tuple[str, ...]":

@@ -44,6 +44,9 @@ def _sandbox_dir(project_id: str) -> str:
     project = ensure_chat_project_workspace(project_id)
     if not project:
         raise ProjectNotFound(project_id)
+    working_folder = available_project_working_folder(project)
+    if working_folder:
+        return working_folder
     root_path = project.get("rootPath")
     sandbox_path = project.get("sandboxPath")
     if not root_path or not sandbox_path:
@@ -53,7 +56,7 @@ def _sandbox_dir(project_id: str) -> str:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         raise ProjectNotFound(project_id)
-    return available_project_working_folder(project) or sandbox_real
+    return sandbox_real
 
 
 UNSAFE_NAME_CHARS = r"\\/:*?\"<>|\x00-\x1f\x7f"
