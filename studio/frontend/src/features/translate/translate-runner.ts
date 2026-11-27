@@ -489,12 +489,13 @@ export async function runTranslation(
       part += 1;
       onPhase({ kind: "translating", part, parts });
       const translated = await complete(chunk.text, (partial) =>
-        onOutput(joinPassage(output, partial, previous)),
+        onOutput(joinPassage(output, partial, previous, chunk)),
       );
       output = joinPassage(
         output,
         restoreChunkWhitespace(chunk, translated),
         previous,
+        chunk,
       );
       previous = chunk;
       onOutput(output);

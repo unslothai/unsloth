@@ -302,6 +302,7 @@ export async function translateTextList(
         joined,
         restoreChunkWhitespace(chunk, await complete(chunk.text)),
         previous,
+        chunk,
       );
       previous = chunk;
     }

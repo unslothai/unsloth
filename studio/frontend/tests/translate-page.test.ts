@@ -557,6 +557,7 @@ const translateEach = (
       output,
       restoreChunkWhitespace(chunk, translate(chunk.text)),
       previous,
+      chunk,
     );
     previous = chunk;
   }
@@ -625,6 +626,11 @@ test("passages of a long line read as one text in the target language", () => {
       Array(80).fill(`He said, “One.”`).join(" "),
     );
   }
+  const named = `${"word ".repeat(12)}x 田中 太郎 is here.`;
+  assert.equal(
+    translateEach(named, (text) => text, 66),
+    named,
+  );
   // A hard cut inside a long word or link of a spaced script stays glued.
   const link = `https://example.com/${"a".repeat(80)}`;
   assert.equal(
@@ -638,12 +644,15 @@ test("the runner and the image overlay join passages the same way", () => {
     const src = readText(`../src/features/translate/${file}`);
     assert.match(
       src,
-      /joinPassage\(\s*\w+,\s*restoreChunkWhitespace\(chunk, [^)]*\)\)?,\s*previous,?\s*\)/,
+      /joinPassage\(\s*\w+,\s*restoreChunkWhitespace\(chunk, [^)]*\)\)?,\s*previous,\s*chunk,?\s*\)/,
     );
     assert.match(src, /previous = chunk;/);
   }
   const runner = readText("../src/features/translate/translate-runner.ts");
-  assert.match(runner, /onOutput\(joinPassage\(output, partial, previous\)\)/);
+  assert.match(
+    runner,
+    /onOutput\(joinPassage\(output, partial, previous, chunk\)\)/,
+  );
 });
 
 test("a hard cut never lands inside a surrogate pair", () => {

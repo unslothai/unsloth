@@ -253,19 +253,22 @@ const UNSPACED_START = new RegExp(`^${UNSPACED}`, "u");
 // `$`-anchored regexes scan the whole string, and this runs per streamed token.
 const TAIL = 64;
 
-/** No space before Chinese or Japanese; one where `previous` ended in them and the target needs it. */
+/** Re-spaces a passage boundary for the target script, unless the source put a space between Chinese or Japanese text. */
 export function joinPassage(
   output: string,
   piece: string,
   previous: TranslateChunk | undefined,
+  current: TranslateChunk,
 ): string {
   const head = output.slice(0, Math.max(0, output.length - TAIL));
   const tail = output.slice(head.length);
+  const before = previous ? (previous.text + previous.after).slice(-TAIL) : "";
   if (UNSPACED_START.test(piece))
-    return head + tail.replace(UNSPACED_GAP, "$1") + piece;
+    return UNSPACED_GAP.test(before) && UNSPACED_START.test(current.text)
+      ? output + piece
+      : head + tail.replace(UNSPACED_GAP, "$1") + piece;
   const gap =
-    previous !== undefined &&
-    UNSPACED_END.test((previous.text + previous.after).slice(-TAIL)) &&
+    UNSPACED_END.test(before) &&
     /\S$/.test(tail) &&
     /^\S/.test(piece) &&
     !UNSPACED_END.test(tail);
