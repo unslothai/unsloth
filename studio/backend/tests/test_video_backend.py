@@ -8022,6 +8022,10 @@ def test_h3_reference_video_trim_uses_vfr_pts_relative_to_a_nonzero_stream_start
     assert float(np.asarray(frames[0]).mean()) == pytest.approx(25, abs = 8)
     assert float(np.asarray(frames[-1]).mean()) > 110
 
+    whole_frames, _, _ = decode_h3_reference_video(blob)
+    assert float(np.asarray(whole_frames[48]).mean()) == pytest.approx(100, abs = 8)
+    assert np.array_equal(np.asarray(whole_frames[48]), np.asarray(frames[36]))
+
 
 def test_h3_reference_video_trim_preserves_an_embedded_audio_timeline_offset():
     pytest.importorskip("av")
@@ -8042,6 +8046,13 @@ def test_h3_reference_video_trim_preserves_an_embedded_audio_timeline_offset():
     assert waveform is not None and waveform.shape == (2 * sample_rate, 2)
     assert np.max(np.abs(waveform[: sample_rate // 2])) == 0
     assert np.mean(np.abs(waveform[sample_rate // 2 :])) > 0.25
+
+    whole_frames, whole_audio, whole_rate = decode_h3_reference_video(blob)
+    assert len(whole_frames) == 96
+    assert whole_rate == 44_100
+    assert whole_audio.shape == (4 * whole_rate, 2)
+    assert np.max(np.abs(whole_audio[:whole_rate])) == 0
+    assert np.mean(np.abs(whole_audio[whole_rate:])) > 0.25
 
 
 @pytest.mark.parametrize("duration", [2.0, 15.0])
@@ -8292,14 +8303,14 @@ def test_h3_reference_video_ordinal_fallback_selects_the_same_frames_as_timestam
 
     from core.inference.video_minimax_h3 import (
         _decode_h3_video_trim_by_ordinal,
-        _decode_h3_video_trim_by_timestamp,
+        _decode_h3_video_by_timestamp,
     )
 
     blob = _frame_index_video()
 
     for start, end in ((2.0, 8.0), (2.02, 8.02)):
         ordinal, _ = _decode_h3_video_trim_by_ordinal(blob, av, (start, end))
-        timestamp, _ = _decode_h3_video_trim_by_timestamp(blob, av, (start, end))
+        timestamp, _, _ = _decode_h3_video_by_timestamp(blob, av, (start, end))
         assert len(ordinal) == len(timestamp) == round((end - start) * 24)
         assert _decoded_frame_index(ordinal[0]) == _decoded_frame_index(timestamp[0])
 

@@ -835,10 +835,9 @@ def decode_h3_reference_video(
 ) -> tuple[list, Optional[Any], Optional[int]]:
     """Decode one uploaded video to 24 fps frames plus its soundtrack, if it carries one.
 
-    Returns ``(frames, waveform, sample_rate)``. The frames land on MiniMax-H3's own 24 fps by
-    whole-frame drop and duplicate -- the selection ffmpeg's fps filter made in the reference
-    implementation, and the one the Diffusers blocks make from a declared rate -- so both
-    engines receive a stream that is already on the model's clock. The waveform is float32
+    Returns ``(frames, waveform, sample_rate)``. Both engines receive pictures sampled on
+    MiniMax-H3's 24 fps clock using presentation timestamps, with the declared frame rate
+    as a fallback for clips without usable timestamps. The waveform is float32
     ``(samples, channels)`` at the container's own rate; both engines resample it themselves.
     ``decode_audio=False`` avoids touching an embedded track that a replacement will supersede.
     """
@@ -846,16 +845,18 @@ def decode_h3_reference_video(
     import numpy as np
 
     trim = validate_h3_reference_trim(trim_start_seconds, trim_end_seconds)
-    video_timeline_start = None
-    if trim is None:
-        frames, duration, video_timeline_start = _decode_h3_video_without_trim(blob, av)
-    else:
-        try:
-            frames, video_timeline_start = _decode_h3_video_trim_by_timestamp(blob, av, trim)
-        except _H3MediaTimestampsUnavailable:
-            # Ordinal selection must restart because a seek makes frame zero keyframe-relative.
+    try:
+        frames, video_timeline_start, duration = _decode_h3_video_by_timestamp(blob, av, trim)
+    except _H3MediaTimestampsUnavailable:
+        # Ordinal selection must restart because a seek makes frame zero keyframe-relative.
+        if trim is None:
+            frames, duration, video_timeline_start = _decode_h3_video_without_trim(blob, av)
+        else:
             frames, video_timeline_start = _decode_h3_video_trim_by_ordinal(blob, av, trim)
-        duration = trim[1] - trim[0]
+            duration = trim[1] - trim[0]
+    else:
+        if trim is None:
+            trim = (0.0, duration)
     if not frames or duration + 1e-6 < H3_REF_VIDEO_MIN_SECONDS:
         raise ValueError(
             f"MiniMax-H3 reference videos run {H3_REF_VIDEO_MIN_SECONDS:g} to "
@@ -966,17 +967,39 @@ def _decode_h3_video_without_trim(blob: bytes, av: Any) -> tuple[list, float, Op
     return frames, decoded_count / source_fps, timeline_start
 
 
-def _decode_h3_video_trim_by_timestamp(
-    blob: bytes, av: Any, trim: tuple[float, float]
-) -> tuple[list, Optional[float]]:
-    """Select an explicit interval from presentation timestamps and stop at its endpoint."""
-    start, end = trim
+def _decode_h3_video_by_timestamp(
+    blob: bytes, av: Any, trim: Optional[tuple[float, float]]
+) -> tuple[list, Optional[float], float]:
+    """Select pictures on the media timeline and return the selected duration."""
+    whole_clip = trim is None
+    start, end = trim or (0.0, H3_REF_VIDEO_MAX_SECONDS)
     target_count = int(round((end - start) * H3_FPS))
+    too_long = (
+        f"MiniMax-H3 reference videos run {H3_REF_VIDEO_MIN_SECONDS:g} to "
+        f"{H3_REF_VIDEO_MAX_SECONDS:g} seconds; this one is longer than "
+        f"{H3_REF_VIDEO_MAX_SECONDS:g}s. Trim it first."
+    )
     with _open_reference_media(av, blob) as container:
         if not container.streams.video:
             raise ValueError("That reference file carries no video track.")
         stream = container.streams.video[0]
         timeline_start = _stream_start_seconds(stream)
+        stream_time_base = getattr(stream, "time_base", None)
+        duration_ticks = getattr(stream, "duration", None)
+        declared_duration = (
+            float(duration_ticks * stream_time_base)
+            if duration_ticks and stream_time_base
+            else None
+        )
+        if whole_clip and declared_duration is not None and declared_duration - 1e-6 > end:
+            raise ValueError(too_long)
+        source_fps = float(stream.guessed_rate or stream.average_rate or H3_FPS)
+        if source_fps <= 0:
+            source_fps = H3_FPS
+        # Broken timestamps must not turn a short reference into an unbounded decode.
+        max_source_frames = math.ceil(
+            end * max(source_fps, float(stream.average_rate or 0), H3_FPS) * 2
+        )
         if timeline_start is not None and start > 0:
             _seek_media(container, stream, timeline_start + start, label = "video")
 
@@ -999,7 +1022,9 @@ def _decode_h3_video_trim_by_timestamp(
             image, fitted_size = _fit_h3_video_frame(candidate, fitted_size)
             frames.extend([image] * (wanted - len(frames)))
 
-        for frame in container.decode(video = 0):
+        for decoded_count, frame in enumerate(container.decode(video = 0), 1):
+            if whole_clip and decoded_count > max_source_frames:
+                raise _H3MediaTimestampsUnavailable
             timestamp = _frame_timestamp_seconds(frame)
             if timestamp is None:
                 raise _H3MediaTimestampsUnavailable
@@ -1007,10 +1032,14 @@ def _decode_h3_video_trim_by_timestamp(
                 # Without a declared start or seek, the first frame is the timeline origin.
                 timeline_start = timestamp
             relative = timestamp - timeline_start
+            if whole_clip and relative - 1e-6 > end:
+                raise ValueError(too_long)
+            if last_relative is not None and relative < last_relative:
+                raise _H3MediaTimestampsUnavailable
             if candidate is not None:
                 _fill_until(relative)
-                if len(frames) >= target_count:
-                    return frames, timeline_start
+                if not whole_clip and len(frames) >= target_count:
+                    return frames, timeline_start, end - start
             candidate = frame
             last_relative = relative
             duration = getattr(frame, "duration", None)
@@ -1023,19 +1052,23 @@ def _decode_h3_video_trim_by_timestamp(
 
         if candidate is None or last_relative is None:
             raise ValueError("That reference video decoded to no frames in the selected range.")
-        declared_duration = getattr(stream, "duration", None)
-        stream_time_base = getattr(stream, "time_base", None)
-        source_end = (
-            float(declared_duration * stream_time_base)
-            if declared_duration is not None and stream_time_base is not None
-            else last_relative + (last_duration or 0.0)
-        )
+        source_end = declared_duration or (last_relative + (last_duration or 1 / source_fps))
+        if whole_clip:
+            if declared_duration is None and stream_time_base is not None:
+                # Coarse time bases round each frame timestamp and its duration independently.
+                nearest_frame_end = round(source_end * source_fps) / source_fps
+                if abs(source_end - nearest_frame_end) <= float(stream_time_base) + 1e-6:
+                    source_end = nearest_frame_end
+            if source_end - 1e-6 > end:
+                raise ValueError(too_long)
+            end = source_end
+            target_count = int(round(end * H3_FPS))
         if source_end + H3_REF_TRIM_COVERAGE_SLACK_SECONDS < end:
             raise ValueError("Reference video trim ends after the source video.")
         _fill_until(end)
         if len(frames) < target_count:
             raise ValueError("That reference video decoded to no frames in the selected range.")
-        return frames, timeline_start
+        return frames, timeline_start, end - start
 
 
 def _decode_h3_video_trim_by_ordinal(
