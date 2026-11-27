@@ -1103,6 +1103,7 @@ def test_fp8_load_sizing_follows_the_device(clean, kept, extra, want):
         ({}, None, "fsdp2"),  # the default 4bit flag keeps the 32 MiB of FP8 weights
         ({}, "1", "ddp"),  # UNSLOTH_FP8_TO_NF4=1 arms it without an explicit flag
         ({"load_in_4bit": True}, "0", "fsdp2"),  # turned off: FP8 kept
+        ({"load_in_4bit": True, "_kept": False}, None, "ddp"),  # NF4 needs no FP8 compute (A100)
         (
             {"load_in_4bit": True, "_quant": None},
             None,
@@ -1119,6 +1120,7 @@ def test_fp8_load_sizing_follows_the_device(clean, kept, extra, want):
         "default_flag",
         "env_force",
         "env_off",
+        "no_fp8_compute",
         "not_block_fp8",
         "packed_experts",
     ],
@@ -1135,9 +1137,10 @@ def test_fp8_to_nf4_load_is_sized_in_4bit(clean, kwargs, env, want):
         "_checkpoint_tensors",
         lambda name, **kw: [("model.layers.0.mlp.up_proj.weight", "F8_E4M3", (4096, 8192))],
     )
-    mp.setattr(auto, "_fp8_kept_on_load", lambda: True, raising = False)
+    mp.setattr(auto, "_fp8_kept_on_load", lambda: kept, raising = False)
     kwargs = dict(kwargs)
     quant = kwargs.pop("_quant", {"quant_method": "fp8", "weight_block_size": [128, 128]})
+    kept = kwargs.pop("_kept", True)
     stub = types.ModuleType("unsloth.models.fp8_to_nf4")
     stub.fp8_to_nf4_unavailable_reason = lambda: None
     stub.fp8_block_quantization_config = lambda config: quant

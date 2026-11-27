@@ -614,13 +614,16 @@ def resolve_for_load(loader, args, kwargs):
             raise ValueError("full finetuning a pre-quantized checkpoint dequantizes it; not sized")
         fp8 = "kept"
         if any(dt.startswith("F8") for _, dt, _ in tensors):
-            if load_in_16bit or full or not _fp8_kept_on_load():
+            # fp8 -> NF4 is armed before the device check and needs no FP8 compute.
+            if load_in_16bit or full:
                 fp8 = "dequantized"
             elif load_in_4bit and _fp8_to_nf4_armed(
                 explicit_4bit, lambda: _config(name, call, revision)
             ):
                 quantize_all = os.environ.get("UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT", "")
                 fp8 = "nf4_all" if quantize_all.strip().lower() in _TRUTHY else "nf4"
+            elif not _fp8_kept_on_load():
+                fp8 = "dequantized"
         weights, trainable = checkpoint_estimate(
             tensors,
             load_in_4bit = load_in_4bit and not load_in_16bit,
