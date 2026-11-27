@@ -457,6 +457,7 @@ def run_race(
     if guidance is not None:
         common["guidance"] = float(guidance)
     handles = tuple(getattr(state, "cuda_graphs", ()) or ())
+    canvas = canvas_token(width, height, guidance, steps, layout)
     report: dict = {"width": int(width), "height": int(height), "guidance": guidance, "sizes": {}}
 
     class _Aborted(Exception):
@@ -480,7 +481,7 @@ def run_race(
             raise _Aborted()
         start = clock()
         with (
-            cuda_graph.batch_rows(len(prompts), capture = capture),
+            cuda_graph.batch_rows(len(prompts), capture = capture, canvas = canvas),
             _graphs_bypassed(handles) if eager else _nullctx(),
             # generate() re-arms the graphs before every chunk; this scope keeps them bypassed through it.
             cuda_graph.forced_eager() if eager else _nullctx(),
@@ -535,6 +536,7 @@ def run_race(
                 arms = verdicts,
                 size = size,
                 layout = layout_token(layout),
+                graph_canvas = canvas,
                 t = time.time(),
             )
             if accuracy:
@@ -652,6 +654,40 @@ def _neighbour_check(solo, batch, prompts: list, seeds: list, *, eager: bool) ->
     }
 
 
+def canvas_token(width: Any, height: Any, guidance: Any, steps: Any, layout: Any) -> str:
+    """The race's shape identity (canvas, guidance, steps, prompt layout): labels the batched graphs it records."""
+    import json
+    return json.dumps(
+        {
+            "w": int(width),
+            "h": int(height),
+            "g": None if guidance is None else float(guidance),
+            "s": None if steps is None else int(steps),
+            "l": layout_token(layout),
+        },
+        sort_keys = True,
+    )
+
+
+def batched_graph_canvas(state: Any, size: int, canvas: Optional[str]) -> bool:
+    """Every step-graph handle holds a batch-``size`` graph labelled with ``canvas`` now (GraphedForward keys on tensor
+    shapes: a same-size graph of another canvas replays nothing for this one)."""
+    if canvas is None:
+        return False
+    for handle in getattr(state, "cuda_graphs", ()) or ():
+        if not hasattr(handle, "_batched"):
+            continue
+        batched = getattr(handle, "_batched", None) or {}
+        cache = getattr(handle, "cache", None) or {}
+        labels = getattr(handle, "_batched_canvas", None) or {}
+        if not any(
+            k in cache and int(v) == int(size) and canvas in (labels.get(k) or ())
+            for k, v in batched.items()
+        ):
+            return False
+    return True
+
+
 def batched_graph_sizes(state: Any) -> Optional[set]:
     """Batch sizes every step-graph handle of this load holds a graph for now; None when no handle constrains it.
 
@@ -687,10 +723,11 @@ def effective_verdict(
     state: Any,
     layout: Any = None,
 ) -> dict:
-    """The verdict as it applies now: one won on the graphed arm holds only while that batch-size graph exists (user
-    calls never record one) and for the prompt layout it was raced at (graphs key on tensor shapes, so another T5
-    bucket has no graph at the same canvas); otherwise the size is admitted only if the eager arm passed on its own.
-    An unknown ``layout`` cannot establish a matching graph."""
+    """The verdict as it applies now: one won on the graphed arm holds only while a batch-size graph recorded at its
+    own canvas exists (user calls never record one; graphs key on tensor shapes, so a same-size graph of another canvas
+    serves nothing here) and for the prompt layout it was raced at (another T5 bucket has no graph at the same canvas);
+    otherwise the size is admitted only if the eager arm passed on its own. An unknown ``layout`` cannot establish a
+    matching graph, nor can a verdict without ``graph_canvas``."""
     if not isinstance(verdict, dict) or verdict.get("arm") != "batched":
         return verdict
     held = batched_graph_sizes(state)
@@ -699,7 +736,11 @@ def effective_verdict(
     same_layout = verdict.get("layout") is not None and layout_token(layout) == verdict.get(
         "layout"
     )
-    if int(size) in held and same_layout:
+    if (
+        int(size) in held
+        and same_layout
+        and batched_graph_canvas(state, size, verdict.get("graph_canvas"))
+    ):
         return verdict
     eager = (verdict.get("arms") or {}).get("batched_eager")
     if isinstance(eager, dict):

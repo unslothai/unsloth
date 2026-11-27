@@ -2774,3 +2774,22 @@ def test_out_of_memory_recording_a_batch_falls_back_like_the_other_recorded_shap
     with cg.batch_rows(2, capture = True):
         handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
     assert used == [1] and handle.poisoned is False
+
+
+@side_stream
+def test_a_batched_graph_carries_the_race_canvas_it_recorded_and_replayed_at(stub_torch):
+    """The batch race labels its batched graphs with its canvas token; a same-shape replay under another race canvas
+    adds that label, a size-1 replay clears it with the batched mark, and a user's call never labels."""
+    handle = _armed()
+    with cg.batch_rows(2, capture = True, canvas = "c512"):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    [key] = list(handle._batched)
+    assert handle._batched_canvas[key] == {"c512"}
+    with cg.batch_rows(2):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle._batched_canvas[key] == {"c512"}
+    with cg.batch_rows(2, capture = True, canvas = "c512-steps8"):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle._batched_canvas[key] == {"c512", "c512-steps8"}
+    handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert key not in handle._batched and key not in handle._batched_canvas

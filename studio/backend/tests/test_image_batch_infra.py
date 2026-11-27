@@ -934,6 +934,7 @@ def test_a_graphed_verdict_admits_a_size_only_while_its_graph_exists(monkeypatch
         "promoted": True,
         "arm": "batched",
         "layout": race.layout_token(()),
+        "graph_canvas": "c",
         "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": False}},
     }
     both_win = {
@@ -942,7 +943,9 @@ def test_a_graphed_verdict_admits_a_size_only_while_its_graph_exists(monkeypatch
         "layout": race.layout_token(()),
         "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": True}},
     }
-    handle = types.SimpleNamespace(cache = {"k2": object()}, _batched = {"k2": 2})
+    handle = types.SimpleNamespace(
+        cache = {"k2": object()}, _batched = {"k2": 2}, _batched_canvas = {"k2": {"c"}}
+    )
     with_graph = types.SimpleNamespace(cuda_graphs = (handle,))
     without = types.SimpleNamespace(
         cuda_graphs = (types.SimpleNamespace(cache = {"k1": 1}, _batched = {}),)
@@ -1058,9 +1061,12 @@ def test_a_graphed_verdict_holds_only_for_the_prompt_layout_it_was_raced_at(monk
         "promoted": True,
         "arm": "batched",
         "layout": race.layout_token(("t5", 256)),
+        "graph_canvas": "c",
         "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": False}},
     }
-    handle = types.SimpleNamespace(cache = {"k2": object()}, _batched = {"k2": 2})
+    handle = types.SimpleNamespace(
+        cache = {"k2": object()}, _batched = {"k2": 2}, _batched_canvas = {"k2": {"c"}}
+    )
     state = types.SimpleNamespace(cuda_graphs = (handle,))
     assert race.effective_verdict(graphed_win, 2, state, layout = ("t5", 256))["promoted"] is True
     assert race.effective_verdict(graphed_win, 2, state, layout = ("t5", 512))["promoted"] is False
@@ -1193,3 +1199,66 @@ def test_block_graph_handles_never_count_a_graphed_winner_as_missing():
     step = types.SimpleNamespace(cache = {"k1": object()}, _batched = {})
     mixed = types.SimpleNamespace(cuda_graphs = (blocks, step))
     assert race.effective_verdict(graphed_win, 4, mixed, layout = ())["promoted"] is False
+
+
+def test_a_live_graph_at_one_canvas_never_admits_a_graphed_verdict_raced_at_another():
+    """After a restart, racing 512x512 records a live batch-2 graph; a persisted batch-2 verdict for 1024x1024 that won
+    only on the graphed arm must not ride it (graphs key on tensor shapes, so the 1024 batch runs eager): it falls back
+    to its own eager arm, which lost, and seeded joins stay off."""
+    layout = ("t5", 256)
+    small = race.canvas_token(512, 512, None, None, layout)
+    large = race.canvas_token(1024, 1024, None, None, layout)
+    assert small != large
+    graphed_win_large = {
+        "promoted": True,
+        "arm": "batched",
+        "layout": race.layout_token(layout),
+        "graph_canvas": large,
+        "neighbour_exact": True,
+        "replay_exact": True,
+        "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": False}},
+    }
+    live_small = types.SimpleNamespace(
+        cache = {"k512": object()}, _batched = {"k512": 2}, _batched_canvas = {"k512": {small}}
+    )
+    state = types.SimpleNamespace(cuda_graphs = (live_small,))
+    applied = race.effective_verdict(graphed_win_large, 2, state, layout = layout)
+    assert applied["promoted"] is False and applied["graph_missing"] is True
+    assert not race.seeded_join_ok(applied)
+    # The same verdict holds once a live batch-2 graph of its own canvas exists.
+    live_small._batched_canvas["k512"].add(large)
+    assert race.effective_verdict(graphed_win_large, 2, state, layout = layout)["promoted"] is True
+    # A verdict persisted before canvases were tracked proves no graph shape: only its eager arm counts.
+    legacy = {k: v for k, v in graphed_win_large.items() if k != "graph_canvas"}
+    assert race.effective_verdict(legacy, 2, state, layout = layout)["promoted"] is False
+
+
+def test_the_race_labels_its_batched_calls_and_verdicts_with_its_canvas(monkeypatch):
+    from core.inference import diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+    generate, clock, _ = _fake_generate(lambda rows: 1.0 if rows == 1 else 0.4 * rows)
+    seen = []
+
+    def traced(**kwargs):
+        seen.append(cg._BATCH_CANVAS.get())
+        return generate(**kwargs)
+
+    report = race.run_race(
+        traced,
+        types.SimpleNamespace(cuda_graphs = ()),
+        idle = lambda: True,
+        width = 1024,
+        height = 768,
+        guidance = 3.5,
+        steps = 4,
+        sizes = (2,),
+        repeats = 3,
+        accuracy = False,
+        layout = ("t5", 256),
+        clock = lambda: clock["t"],
+    )
+    want = race.canvas_token(1024, 768, 3.5, 4, ("t5", 256))
+    assert report["sizes"]["2"]["graph_canvas"] == want
+    assert want in seen and None in seen  # solo renders carry no canvas label
+    assert cg._BATCH_CANVAS.get() is None

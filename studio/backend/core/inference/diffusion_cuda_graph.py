@@ -66,13 +66,27 @@ _BATCH_ROWS: "contextvars.ContextVar[Optional[tuple]]" = contextvars.ContextVar(
 )
 
 
+_BATCH_CANVAS: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "unsloth_graph_batch_canvas", default = None
+)
+
+
 @contextlib.contextmanager
-def batch_rows(rows: int, *, capture: bool = False):
-    """Calls in this context carry ``rows`` requests; ``capture`` allows a new batched graph to record."""
+def batch_rows(
+    rows: int,
+    *,
+    capture: bool = False,
+    canvas: Optional[str] = None,
+):
+    """Calls in this context carry ``rows`` requests; ``capture`` allows a new batched graph to record. ``canvas`` (the
+    batch race's shape token) labels every batched graph this context records or replays, so a verdict raced at one
+    canvas is never satisfied by a same-size graph of another (graphs key on tensor shapes)."""
     token = _BATCH_ROWS.set((int(rows), bool(capture)))
+    canvas_token = _BATCH_CANVAS.set(None if canvas is None else str(canvas))
     try:
         yield
     finally:
+        _BATCH_CANVAS.reset(canvas_token)
         _BATCH_ROWS.reset(token)
 
 
@@ -1519,6 +1533,8 @@ class GraphedForward:
         }
         # Graph keys recorded inside a coalesced call -> its request count (batch_rows); every other key is size 1.
         self._batched: dict = {}
+        # Batched graph key -> the race canvas tokens it served (batch_rows ``canvas``); read only beside _batched.
+        self._batched_canvas: dict = {}
         # Why this load records no more batched graphs (an OOM recording one), else None.
         self._batched_off: Optional[str] = None
         self.valid_token: Any = None
@@ -2304,6 +2320,10 @@ class GraphedForward:
             self.cache[key] = entry
             if rows is not None:
                 self._batched[key] = rows[0]
+                canvas = _BATCH_CANVAS.get()
+                self.__dict__.setdefault("_batched_canvas", {})[key] = (
+                    set() if canvas is None else {canvas}
+                )
                 self.stats["batch_captures"] += 1
             if _has_reference(kwargs):
                 self.__dict__.setdefault("_edit_keys", set()).add(key)
@@ -2332,6 +2352,12 @@ class GraphedForward:
                 if now is None or now[0] <= 1:
                     # A size-1 call (true CFG has two rows too) replays this graph: it is a size-1 graph now.
                     self._batched.pop(key, None)
+                    getattr(self, "_batched_canvas", {}).pop(key, None)
+                elif _BATCH_CANVAS.get() is not None:
+                    # Same shapes at another race canvas (steps, guidance): this graph serves that one too.
+                    self.__dict__.setdefault("_batched_canvas", {}).setdefault(key, set()).add(
+                        _BATCH_CANVAS.get()
+                    )
 
         live: list = []
         _flatten((args, kwargs), live)
