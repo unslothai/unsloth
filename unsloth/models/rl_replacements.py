@@ -791,9 +791,8 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "        except Exception:\n"
         "            _unsloth_trl_pad = None\n"
         "        if all('image_grid_thw' in example for example in examples):\n"
-        # Flattened patch rows: concatenate along patches (what the vision tower and image_grid_thw expect),
-        # never pad per row into a (batch, patches, dim) block.
-        # Reuse TRL's right-padded rows; fall back to per-row conversion on any layout/dtype mismatch.
+        # Concatenate patch rows (vision tower + image_grid_thw layout), never a (batch, patches, dim) block;
+        # rows come from TRL's right-padded tensor, else are converted per row on any layout/dtype mismatch.
         "            _padded = output.get('pixel_values', None)\n"
         "            _rows = []\n"
         "            if isinstance(_padded, _unsloth_torch.Tensor) and _padded.dim() >= 2 and _padded.shape[0] == len(examples):\n"
