@@ -30921,7 +30921,7 @@ def _fit_external_context(
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = (anchors | cloud_compaction.request_reference_ids(messages)) or None,
+        anchor_ids = (anchors | cloud_compaction.request_reference_ids(messages, turn)) or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -31066,7 +31066,7 @@ def _plan_external_compaction(
             cut = cloud_compaction.tail_start(
                 plan.body, estimate_message_tokens_without_unpriced_media, 0, turn
             )
-        cut = cloud_compaction.keep_request_reference(plan.body, cut)
+        cut = cloud_compaction.keep_request_reference(plan.body, cut, turn)
         if cut > plan.covered:
             plan.cut = cut
             plan.to_summarise = plan.body[plan.covered : cut]
