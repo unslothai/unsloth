@@ -18644,6 +18644,13 @@ class DiffusionBackend:
             raise diffusion_batch_race.RaceRefused(
                 "this family's pipeline renders one image per forward"
             )
+        if getattr(state, "speed_deferred", False):
+            # The deferred profile engages on a load's third render: inside the race it would install graphs after
+            # the race snapshotted its handles (graph timings recorded as eager, no eager arm, batch graphs kept).
+            raise diffusion_batch_race.RaceRefused(
+                "this load's speed profile is still deferred (it engages on the third image); render a few images, "
+                "then race"
+            )
         if _race_adapters_active(getattr(state, "pipe", None)):
             # The race renders without loras, which generate() reads as none: it would unload or zero the adapters (or,
             # baked under streamed graphs, refuse mid-race), and verdicts are not keyed by adapter set.

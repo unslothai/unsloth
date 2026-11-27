@@ -486,6 +486,7 @@ def run_race(
     if guidance is not None:
         common["guidance"] = float(guidance)
     handles = tuple(getattr(state, "cuda_graphs", ()) or ())
+    configuration = _execution_configuration(state)
     canvas = canvas_token(width, height, guidance, steps, layout)
     report: dict = {"width": int(width), "height": int(height), "guidance": guidance, "sizes": {}}
 
@@ -614,9 +615,26 @@ def run_race(
             verdict["batched_graphs_dropped"] = _drop_batched(handles, size)
         if verdict.get("failed"):
             _release_cached()  # after the drop, so the batched pool's blocks go back too
+        if _execution_configuration(state) != configuration:
+            # The load changed how it runs under the race (a deferred speed profile engaged, graphs installed): this
+            # size's timings straddle two configurations. Persist nothing and drop what the new handles recorded.
+            for k in {int(x) for x in sizes}:
+                _drop_batched(tuple(getattr(state, "cuda_graphs", ()) or ()), k)
+            raise RaceRefused(
+                "the load's execution configuration changed during the race; race it again"
+            )
         if persist:
             verdict["persisted"] = record(state, width, height, guidance, size, verdict, steps)
     return report
+
+
+def _execution_configuration(state: Any) -> tuple:
+    """What a race's timings depend on that a render can change: the graph handles and the speed profile."""
+    return (
+        tuple(id(h) for h in (getattr(state, "cuda_graphs", ()) or ())),
+        tuple(getattr(state, "speed_optims", ()) or ()),
+        bool(getattr(state, "speed_deferred", False)),
+    )
 
 
 def _drop_batched(handles: Sequence[Any], size: int) -> int:

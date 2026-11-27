@@ -433,3 +433,47 @@ def test_an_adapter_free_load_still_races(monkeypatch):
     monkeypatch.setattr(race, "run_race", lambda *a, **k: called.append(k) or {"sizes": {}})
     engine.batch_race(width = 512, height = 512)
     assert called, "a zero-weight adapter is not an active selection"
+
+
+# ------------------------------------------------------------------------------------------- deferred speed profile
+
+
+def test_the_engine_refuses_to_race_while_the_speed_profile_is_still_deferred(monkeypatch):
+    """A fresh Auto load engages its speed profile on its third render: inside a race that would install graphs after
+    the race snapshotted its handles (graph timings saved as path eager, no eager arm, batch graphs left behind)."""
+    engine = _engine(offload_policy = "sequential", speed_deferred = True)
+    rendered = []
+    monkeypatch.setattr(engine, "generate", lambda **kw: rendered.append(kw) or {"images": []})
+    with pytest.raises(race.RaceRefused, match = "deferred"):
+        engine.batch_race(width = 512, height = 512)
+    assert rendered == []
+
+
+def test_a_race_whose_execution_configuration_changes_stops_and_persists_nothing_more(monkeypatch):
+    stored = {}
+    monkeypatch.setattr(
+        race, "record", lambda state, w, h, g, k, v, steps = None: stored.setdefault(k, v) is v
+    )
+    state = types.SimpleNamespace(cuda_graphs = (), speed_optims = ())
+    generate, clock, calls = _fake_generate(lambda rows: 1.0 + 0.5 * (rows - 1))
+
+    def engaging(**kw):
+        if len(calls) == 2:  # the third render engages a profile: graphs appear under the race
+            state.cuda_graphs = (
+                types.SimpleNamespace(set_bypass = lambda on: None, drop_batched = lambda k: 0),
+            )
+            state.speed_optims = ("compiled", "cuda_graph")
+        return generate(**kw)
+
+    with pytest.raises(race.RaceRefused, match = "changed"):
+        race.run_race(
+            engaging,
+            state,
+            idle = lambda: True,
+            width = 512,
+            height = 512,
+            sizes = (4, 2),
+            repeats = 3,
+            clock = lambda: clock["t"],
+        )
+    assert stored == {}, "no verdict is persisted for a measurement that straddled the change"
