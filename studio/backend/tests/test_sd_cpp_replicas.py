@@ -644,3 +644,29 @@ def test_replicas_priced_together_never_share_one_reading_of_the_host(monkeypatc
     assert len(rig.servers) == 2
     rig.gate.release(2)
     first.join(5), second.join(5)
+
+
+def test_a_second_failing_replica_is_retired_even_past_the_one_retry(monkeypatch):
+    from core.inference import sd_cpp_replicas as rp
+
+    retired, released = [], []
+    lanes = [types.SimpleNamespace(ordinal = o, server = object()) for o in (1, 2)]
+    for lane in lanes:
+        lane.backend = types.SimpleNamespace(
+            _generate_impl = lambda **kw: (_ for _ in ()).throw(RuntimeError("not enough VRAM"))
+        )
+    pool = object.__new__(rp.ReplicaPool)
+    pool.closed = False
+    pool._cond = threading.Condition()
+    pool._failovers = 0
+    order = iter(lanes)
+    monkeypatch.setattr(pool, "_acquire", lambda waiting, front: next(order), raising = False)
+    monkeypatch.setattr(pool, "_release", released.append, raising = False)
+    monkeypatch.setattr(
+        pool, "_retire", lambda lane, why: retired.append(lane.ordinal), raising = False
+    )
+    monkeypatch.setattr(rp, "_replica_failure", lambda exc, server: True)
+    with pytest.raises(RuntimeError, match = "VRAM"):
+        pool.run({})
+    # One retry only, but both failing servers leave the line.
+    assert retired == [1, 2] and pool._failovers == 1 and released == lanes

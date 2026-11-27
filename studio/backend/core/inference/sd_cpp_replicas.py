@@ -335,9 +335,12 @@ class ReplicaPool:
             try:
                 return lane.backend._generate_impl(**kwargs)
             except BaseException as exc:
-                if retried or self.closed or waiting.is_set() or not _replica_failure(exc, server):
+                if self.closed or waiting.is_set() or not _replica_failure(exc, server):
                     raise
+                # Retired even past the one retry, so later requests stop landing on a server that failed.
                 self._retire(lane, f"failed a render: {str(exc)[:300]}")
+                if retried:
+                    raise
                 with self._cond:
                     self._failovers += 1
                 logger.warning(
