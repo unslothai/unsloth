@@ -1915,6 +1915,67 @@ function Install-UnslothStudio {
         Write-StudioLine ""
     }
 
+    # The process arch, not the machine's: an x64 shell on Windows on ARM runs emulated.
+    function Get-ShellProcessArch {
+        $a = ""
+        try { $a = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() } catch { $a = "" }
+        if ([string]::IsNullOrWhiteSpace($a)) { $a = [string]$env:PROCESSOR_ARCHITECTURE }
+        switch ($a.ToLowerInvariant()) {
+            "arm64" { return "arm64" }
+            "x64" { return "x86_64" }
+            "amd64" { return "x86_64" }
+            "x86" { return "x86" }
+        }
+        return "unknown"
+    }
+
+    # Windows on ARM only. powershell.exe and cmd.exe are ARM64X, so a shell started from an
+    # emulated or elevated parent inherits both; explorer.exe hands the launch to the native,
+    # non-elevated desktop shell. x64 Windows never reaches the message.
+    function Write-Arm64ShellNotice {
+        param(
+            [Parameter(Mandatory = $true)][string]$HostArch,
+            [Parameter(Mandatory = $true)][string]$ProcessArch,
+            [Parameter(Mandatory = $true)][string]$Elevated
+        )
+        if ($HostArch -ne "arm64") { return }
+        $emulated = ($ProcessArch -ne "arm64" -and $ProcessArch -ne "unknown")
+        if (-not $emulated -and $Elevated -ne "true") { return }
+        if ($emulated) {
+            Write-StudioLine "  [WARNING] This PowerShell runs as an emulated $ProcessArch process on Windows on ARM." -ForegroundColor Yellow
+            Write-StudioLine "            Programs it starts inherit the emulation." -ForegroundColor Yellow
+        } else {
+            Write-StudioLine "  [WARNING] Windows on ARM: this PowerShell is elevated." -ForegroundColor Yellow
+        }
+        Write-StudioLine "            To install natively as your normal user, run this here, then paste the" -ForegroundColor Yellow
+        Write-StudioLine "            install command into the new window:" -ForegroundColor Yellow
+        Write-StudioLine "              explorer.exe `"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`"" -ForegroundColor Cyan
+        Write-StudioLine "            (or open Windows PowerShell from the Start menu, not 'Run as administrator')." -ForegroundColor Yellow
+        Write-StudioLine ""
+    }
+
+    # A UAC prompt nobody can answer blocks forever: winget's VC++ dependency for uv and setup's
+    # LongPathsEnabled each held an unattended Windows on ARM install. Unattended = no desktop,
+    # redirected stdin (the test that already skips "Start now?"), -NonInteractive, CI, or
+    # UNSLOTH_NONINTERACTIVE=1 (0 forces prompting). Never Desktop, never elevated (no prompt then).
+    function Test-InstallUacUnanswerable {
+        param([switch]$Tauri, [string]$Elevated = "unknown")
+        if ($Tauri -or $Elevated -eq "true") { return $false }
+        $opt = "$env:UNSLOTH_NONINTERACTIVE".Trim().ToLowerInvariant()
+        if ($opt -in @("1", "true", "yes")) { return $true }
+        if ($opt -in @("0", "false", "no")) { return $false }
+        $ci = "$env:CI".Trim().ToLowerInvariant()
+        if ($ci -and $ci -notin @("0", "false", "no")) { return $true }
+        if (-not [Environment]::UserInteractive) { return $true }
+        try { if ([Console]::IsInputRedirected) { return $true } } catch { }
+        try {
+            foreach ($_arg in [Environment]::GetCommandLineArgs()) {
+                if ("$_arg" -match '^[-/]noni') { return $true }
+            }
+        } catch { }
+        return $false
+    }
+
     function Get-CanonicalRootPath {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
@@ -1959,6 +2020,11 @@ function Install-UnslothStudio {
         $ElevationRoot = $UnslothRoot
     }
     Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
+    $script:InstallElevationState = Get-ElevationState
+    try {
+        Write-Arm64ShellNotice -HostArch (Get-HostMachineArch) -ProcessArch (Get-ShellProcessArch) -Elevated $script:InstallElevationState
+    } catch { }
+    $script:InstallUacUnanswerable = Test-InstallUacUnanswerable -Tauri:$TauriMode -Elevated $script:InstallElevationState
 
     # Whitespace-only == unset (matches the Python resolvers' .strip()).
     $envOverrideVar = $null
@@ -6568,14 +6634,19 @@ exit 0
             substep "installing uv package manager..."
         }
         if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
-            if (-not (Test-UvVersionOk)) {
-                try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            # winget pulls uv's VC++ runtime dependency through a UAC prompt; the release zip needs none.
+            if ($script:InstallUacUnanswerable) {
+                substep "unattended run: installing uv from its release archive (winget would wait on a UAC prompt)"
+            } else {
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                if (-not (Test-UvVersionOk)) {
+                    try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                }
+                $ErrorActionPreference = $prevEAP
+                Refresh-SessionPath
             }
-            $ErrorActionPreference = $prevEAP
-            Refresh-SessionPath
         }
         # winget unavailable or it didn't put uv on PATH: install the pinned
         # release directly (ARM64 runners, machines without the Store). A stale private uv is
@@ -11245,7 +11316,14 @@ sys.exit(2 if conflict else (0 if installed else 1))
             # Clear an inherited value: nothing here detected it.
             Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
         }
-        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
+        # setup.ps1 cannot see this shell's -NonInteractive; hand the decision down for its UAC steps.
+        $_hadNonInteractive = Test-Path Env:UNSLOTH_NONINTERACTIVE
+        if ($script:InstallUacUnanswerable -and -not $_hadNonInteractive) { $env:UNSLOTH_NONINTERACTIVE = "1" }
+        try {
+            Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
+        } finally {
+            if (-not $_hadNonInteractive) { Remove-Item Env:UNSLOTH_NONINTERACTIVE -ErrorAction SilentlyContinue }
+        }
         $setupExit = $script:ManagedUnslothCliExit
     } finally {
         if ($hadPreviousUnslothStudioHome) {

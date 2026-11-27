@@ -301,6 +301,8 @@ Describe 'elevation prompts across the rerun' {
         function substep { param([string]$Message) }
         function Write-StudioLine { param([string]$Text) }
         function Get-VcBuildCustomizationsDir { param($VsInstallPath, $Generator) $script:VsCustomDir }
+        # An attended run (CI sets CI=true): the unattended skip has its own suite.
+        function Test-SetupUacUnanswerable { $false }
     }
     AfterEach {
         Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue
