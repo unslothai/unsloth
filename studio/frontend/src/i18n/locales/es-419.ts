@@ -2661,6 +2661,10 @@ export const es419 = {
         confirmDescriptionChatOnly:
           "Detiene el servidor y vuelve a ejecutar el instalador. Esta es una instalación de solo chat, así que el instalador también la actualiza a la instalación completa con PyTorch, varios gigabytes en total. Se conservan los chats y la configuración. Puede tardar varios minutos.",
         confirmAction: "Reparar ahora",
+        recommendedTorch:
+          "Se recomienda reparar: esta instalación tiene PyTorch {torch}, anterior al {managedTorch} administrado con el que se admiten las GPU de la serie RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} es anterior al {managedTorch} administrado con el que se admiten las GPU de la serie RTX 50, pero este controlador de GPU no admite CUDA 13. Actualiza primero el controlador de GPU y luego repara la instalación.",
       },
       resetPreferences: {
         sectionTitle: "Zona de peligro",

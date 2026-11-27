@@ -2559,6 +2559,10 @@ export const sv = {
         confirmDescriptionChatOnly:
           "Stoppar servern och kör installationsprogrammet igen. Det här är en installation med endast chatt, så installationsprogrammet uppgraderar den även till den fullständiga installationen med PyTorch, flera gigabyte totalt. Chattar och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Reparera nu",
+        recommendedTorch:
+          "Reparation rekommenderas: den här installationen har PyTorch {torch}, äldre än den hanterade {managedTorch} som GPU:er i RTX 50-serien stöds på.",
+        recommendedDriver:
+          "PyTorch {torch} är äldre än den hanterade {managedTorch} som GPU:er i RTX 50-serien stöds på, men den här GPU-drivrutinen stöder inte CUDA 13. Uppdatera GPU-drivrutinen först och reparera sedan installationen.",
       },
       resetPreferences: {
         sectionTitle: "Riskzon",

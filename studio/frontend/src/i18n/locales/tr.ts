@@ -2619,6 +2619,10 @@ export const tr = {
         confirmDescriptionChatOnly:
           "Sunucuyu durdurur ve yükleyiciyi yeniden çalıştırır. Bu bir Yalnızca sohbet kurulumu olduğundan yükleyici onu PyTorch ile tam kuruluma da yükseltir; toplamda birkaç gigabayt. Sohbetler ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Şimdi onar",
+        recommendedTorch:
+          "Onarım önerilir: bu kurulumda PyTorch {torch} var; bu, RTX 50 serisi GPU'ların desteklendiği yönetilen {managedTorch} sürümünden eski.",
+        recommendedDriver:
+          "PyTorch {torch}, RTX 50 serisi GPU'ların desteklendiği yönetilen {managedTorch} sürümünden eski, ancak bu GPU sürücüsü CUDA 13'ü desteklemiyor. Önce GPU sürücüsünü güncelleyin, ardından kurulumu onarın.",
       },
       resetPreferences: {
         sectionTitle: "Tehlikeli bölge",
