@@ -275,7 +275,6 @@ test("an effort ladder drives the menu and the wire, and malformed ladders fail 
       ["xhigh", { reasoning_effort: "xhigh" }],
       ["high", { reasoning_effort: "high" }],
       ["none", { reasoning_effort: "none" }],
-      // Off a ladder without medium: no level, so the endpoint's own default applies.
       ["medium", {}],
     ] as const) {
       assert.deepEqual(

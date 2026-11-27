@@ -39,7 +39,6 @@ class ProviderReasoningConfig(BaseModel):
     style: Literal[
         "reasoning_effort", "reasoning", "thinking", "chat_template_kwargs.enable_thinking"
     ]
-    # None = DEFAULT_CUSTOM_REASONING_EFFORT_LEVELS.
     effort_levels: Optional[list[CustomReasoningEffortLevel]] = None
 
     @field_validator("effort_levels")

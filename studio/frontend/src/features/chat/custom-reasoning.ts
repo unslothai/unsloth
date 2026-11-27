@@ -26,7 +26,6 @@ export const DEFAULT_CUSTOM_REASONING_EFFORT_LEVELS: readonly CustomReasoningEff
 export type CustomReasoningConfig = {
   enabled: boolean;
   style: CustomReasoningStyle;
-  /** Absent = DEFAULT_CUSTOM_REASONING_EFFORT_LEVELS. */
   effort_levels?: CustomReasoningEffortLevel[];
 };
 

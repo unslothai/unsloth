@@ -329,7 +329,6 @@ def test_effort_levels_schema_and_persistence(harness, style):
     assert ProviderCreate(**PROVIDER, reasoning_config = ladder).model_dump()["reasoning_config"] == (
         config(style, levels = ["high", "xhigh"])
     )
-    # An unset ladder stays off the wire, so pre-ladder rows and clients see the old shape.
     plain = ProviderCreate(**PROVIDER, reasoning_config = config(style)).model_dump()
     assert "effort_levels" not in plain["reasoning_config"]
     created = h.api("POST", status = 201, **PROVIDER, base_url = h.url, reasoning_config = ladder)
@@ -354,7 +353,6 @@ def test_effort_levels_are_the_rungs_studio_already_sends():
 
 
 def endpoint_default(style):
-    """Thinking on with no level: the endpoint picks its own."""
     return {} if style == "reasoning_effort" else {"reasoning": {"enabled": True}}
 
 
@@ -363,7 +361,6 @@ def endpoint_default(style):
 def test_effort_levels_wire(harness, style, mode):
     cfg = config(style, levels = ["high", "xhigh", "max"])
     for controls, wire in [
-        # No medium to fall back on, so an unasked level is left to the endpoint.
         ({}, endpoint_default(style)),
         ({"enable_thinking": True}, endpoint_default(style)),
         ({"enable_thinking": False}, expected(style, "none")),
