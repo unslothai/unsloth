@@ -925,3 +925,33 @@ def test_a_verdict_is_keyed_by_the_card_topology(monkeypatch):
     two = race.topology(state)
     assert one != two and "split:cuda:0>cuda:1:text_encoder" in two
     assert race.load_key(state).endswith(two)
+
+
+def test_a_graphed_verdict_admits_a_size_only_while_its_graph_exists(monkeypatch):
+    """A verdict won on the graphed arm says nothing once that batch-size graph is gone (restart, LoRA reset, OOM):
+    the size is then admitted only if the eager arm passed on its own."""
+    graphed_win = {
+        "promoted": True,
+        "arm": "batched",
+        "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": False}},
+    }
+    both_win = {
+        "promoted": True,
+        "arm": "batched",
+        "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": True}},
+    }
+    handle = types.SimpleNamespace(cache = {"k2": object()}, _batched = {"k2": 2})
+    with_graph = types.SimpleNamespace(cuda_graphs = (handle,))
+    without = types.SimpleNamespace(
+        cuda_graphs = (types.SimpleNamespace(cache = {"k1": 1}, _batched = {}),)
+    )
+    assert race.effective_verdict(graphed_win, 2, with_graph)["promoted"] is True
+    assert race.effective_verdict(graphed_win, 2, without)["promoted"] is False
+    assert race.effective_verdict(both_win, 2, without)["promoted"] is True
+    assert not race.seeded_join_ok(
+        race.effective_verdict(dict(both_win, neighbour_exact = True), 2, without)
+    )
+    restarted = types.SimpleNamespace(cuda_graphs = (types.SimpleNamespace(cache = {}, _batched = {}),))
+    assert race.effective_verdict(graphed_win, 2, restarted)["promoted"] is False
+    no_graphs = types.SimpleNamespace(cuda_graphs = ())
+    assert race.effective_verdict(graphed_win, 2, no_graphs)["promoted"] is True

@@ -2542,7 +2542,7 @@ def test_a_size_one_capture_failure_still_poisons(stub_torch):
 def test_the_batched_pool_budget_refuses_a_recording(stub_torch, monkeypatch):
     handle = _armed()
     handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
-    handle.stats["pool_bytes"] = 512 * 2**20
+    handle.stats["size1_graph_bytes"] = 512 * 2**20
     monkeypatch.setenv(cg.BATCH_GRAPH_POOL_ENV, "600")
     with cg.batch_rows(2, capture = True):
         handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
@@ -2697,3 +2697,80 @@ def test_true_cfg_edits_at_new_reference_sizes_never_evict_the_text_to_image_gra
     replays, captures = handle.stats["replays"], handle.stats["captures"]
     t2i(9.0)
     assert handle.stats["replays"] == replays + 2 and handle.stats["captures"] == captures
+
+
+# ---------------------------------------------------------------- kernel / graph rule review (#19837)
+
+
+@side_stream
+def test_a_placement_change_forgets_the_batched_labels(stub_torch):
+    """A placement token change clears every graph: the batched labels go with them (no stale size-k bookkeeping)."""
+    handle = _armed()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert handle._batched
+    handle.placement = types.SimpleNamespace(
+        token = lambda: "moved", refusal = lambda stats: None, mode = "model"
+    )
+    handle.valid_token = "before"
+    handle._invalidate_for_placement("moved")
+    assert handle.cache == {} and handle._batched == {}
+
+
+@side_stream
+def test_a_graph_a_size_one_call_also_replays_is_not_a_batched_graph(stub_torch):
+    """Two requests without CFG and one request with true CFG can share a graph key (two rows either way): once a
+    size-1 call replays it, dropping the batched graphs (a lost race) must not take it away."""
+    handle = _armed()
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert sorted(handle._batched.values()) == [2]
+    handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)  # a size-1 true-CFG step, same shapes
+    assert handle.drop_batched(2) == 0 and len(handle.cache) == 1
+
+
+@side_stream
+def test_batched_admission_prices_the_size_one_graph_not_the_whole_pool(stub_torch, monkeypatch):
+    """need = the size-1 graph's own pool growth x k: a pool already holding other graphs does not make batch 4
+    look unaffordable."""
+    # The shared pool holds 5 GiB before the size-1 capture and 5 GiB + 256 MiB after it.
+    monkeypatch.setattr(cg, "_pool_bytes", lambda graph: 5 * 2**30 + 256 * 2**20)
+    monkeypatch.setattr(cg, "_pool_id_bytes", lambda pool: 5 * 2**30)
+    handle = _armed()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["size1_graph_bytes"] == 256 * 2**20
+    seen = []
+    monkeypatch.setattr(
+        cg, "_free_device_bytes", lambda index = None: seen.append(index) or 4 * 2**30
+    )
+    monkeypatch.setenv(cg.BATCH_GRAPH_POOL_ENV, "2048")
+    with cg.batch_rows(4, capture = True):
+        handle(_t((4, 4), device_index = 1), timestep = _t((4,), device_index = 1), return_dict = False)
+    assert (
+        handle.stats["batch_captures"] == 1
+    ), "1 GiB for batch 4 fits a 2 GiB budget and 4 GiB free"
+    assert seen == [1], "free memory is read on the card the call runs on"
+
+
+@side_stream
+def test_a_placed_load_records_no_batched_graph(stub_torch):
+    """Under an offload placement a failed batched recording would poison the whole load: no batched graphs there."""
+    handle = _armed()
+    handle.placement = types.SimpleNamespace(mode = "group")
+    assert handle._batched_refusal((2, True)) is not None
+
+
+@side_stream
+def test_out_of_memory_recording_a_batch_falls_back_like_the_other_recorded_shapes(
+    stub_torch, monkeypatch
+):
+    handle = _armed()
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    used = []
+    real = handle._eager_as_recorded
+    monkeypatch.setattr(handle, "_eager_as_recorded", lambda a, k: used.append(1) or real(a, k))
+    stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory")
+    with cg.batch_rows(2, capture = True):
+        handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
+    assert used == [1] and handle.poisoned is False

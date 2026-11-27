@@ -5234,9 +5234,10 @@ def _measured_sizes(
     from . import diffusion_batch_race
     from .image_request_batching import batch_max
     try:
-        return diffusion_batch_race.lookup(
+        found = diffusion_batch_race.lookup(
             state, width, height, guidance, range(2, batch_max() + 1), steps = steps
         )
+        return {k: diffusion_batch_race.effective_verdict(v, k, state) for k, v in found.items()}
     except Exception:  # noqa: BLE001 - no verdict: today's rules
         return {}
 

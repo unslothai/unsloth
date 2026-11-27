@@ -537,7 +537,8 @@ def run_race(
             break
         report["sizes"][str(size)] = verdict
         if not verdict.get("promoted"):
-            # A losing size never runs batched here: its graphs would only pin pool memory.
+            # A losing size never runs batched here: drop its graphs (their own pool returns to the card; under
+            # BATCH_POOL_ENV=shared they stay in the one pool for the next capture).
             dropped = 0
             for handle in handles:
                 drop = getattr(handle, "drop_batched", None)
@@ -583,6 +584,42 @@ def _neighbour_check(solo, batch, prompts: list, seeds: list, *, eager: bool) ->
         "replay_exact": bool(_same(pa[0], ps)) if pa else False,
         "replay_max_abs": _max_abs(pa[0], ps) if pa else None,
     }
+
+
+def batched_graph_sizes(state: Any) -> Optional[set]:
+    """Batch sizes every recording graph handle of this load holds a graph for now; None when the load has no graphs."""
+    handles = list(getattr(state, "cuda_graphs", ()) or ())
+    if not handles:
+        return None
+    held = None
+    for handle in handles:
+        batched = getattr(handle, "_batched", None) or {}
+        cache = getattr(handle, "cache", None) or {}
+        sizes = {int(v) for k, v in batched.items() if k in cache}
+        held = sizes if held is None else held & sizes
+    return held or set()
+
+
+def effective_verdict(verdict: dict, size: int, state: Any) -> dict:
+    """The verdict as it applies now: one won on the graphed arm holds only while that batch-size graph exists (user
+    calls never record one); otherwise the size is admitted only if the eager arm passed on its own."""
+    if not isinstance(verdict, dict) or verdict.get("arm") != "batched":
+        return verdict
+    held = batched_graph_sizes(state)
+    if held is None or int(size) in held:
+        return verdict
+    eager = (verdict.get("arms") or {}).get("batched_eager")
+    if isinstance(eager, dict):
+        # The neighbour check ran on the graphed arm: it vouches for nothing here, so no seeded joins either.
+        return dict(
+            verdict,
+            promoted = bool(eager.get("promoted")),
+            arm = "batched_eager",
+            graph_missing = True,
+            neighbour_exact = False,
+            replay_exact = False,
+        )
+    return dict(verdict, promoted = False, graph_missing = True)
 
 
 def seeded_join_ok(verdict: Optional[dict]) -> bool:
