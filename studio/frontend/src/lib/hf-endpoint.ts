@@ -19,12 +19,15 @@ const store = createStore<{
   /** Kept after a switch back: requests already queued for the adapter still go there. */
   modelScopeBase: string | null;
   proxyBases: readonly string[];
+  /** `/api/health`'s hf_endpoint: what this browser can open as a page, never a relay. */
+  webEndpoint: string;
 }>(() => ({
   endpoint: DEFAULT_HF_ENDPOINT,
   datasetsServer: DEFAULT_DATASETS_SERVER,
   source: "huggingface",
   modelScopeBase: null,
   proxyBases: [],
+  webEndpoint: DEFAULT_HF_ENDPOINT,
 }));
 
 /** Only checks it parses as http(s): `utils/hf_endpoint.py` already sanitised it, and a second
@@ -80,7 +83,18 @@ export function resetHfEndpoints(): void {
     source: "huggingface",
     modelScopeBase: null,
     proxyBases: [],
+    webEndpoint: DEFAULT_HF_ENDPOINT,
   });
+}
+
+export function setHubWebEndpoint(raw?: string | null): void {
+  const webEndpoint = usableEndpoint(raw);
+  if (webEndpoint) store.setState({ webEndpoint });
+}
+
+/** Base for links opened in a new tab: the relay refuses page loads without Studio's bearer token. */
+export function getHubWebEndpoint(): string {
+  return store.getState().webEndpoint;
 }
 
 export function getHfEndpoint(): string {

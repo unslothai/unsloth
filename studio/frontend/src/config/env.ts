@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
-import { setHfEndpoints } from "@/lib/hf-endpoint";
+import { setHfEndpoints, setHubWebEndpoint } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -317,6 +317,7 @@ async function readHealth(
         data.hub_source,
         { endpoint: hubProxy !== null, datasetsServer: datasetsProxy !== null },
       );
+      setHubWebEndpoint(data.hf_endpoint);
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }

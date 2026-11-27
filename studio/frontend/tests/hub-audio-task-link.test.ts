@@ -5,7 +5,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AUDIO_CPP_REPO } from "../src/features/audio/audio-cpp-catalog.ts";
-import { getHfEndpoint, resetHfEndpoints, setHfEndpoints } from "../src/lib/hf-endpoint.ts";
+import {
+  getHfEndpoint,
+  getHubWebEndpoint,
+  resetHfEndpoints,
+  setHfEndpoints,
+  setHubWebEndpoint,
+} from "../src/lib/hf-endpoint.ts";
 import { hubAudioTaskSearch, matchesHubAudioTask } from "../src/lib/hub-audio-task.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -57,25 +63,35 @@ test("a typed Hub search still keeps only the linked audio tasks", () => {
   );
 });
 
-test("Separate's Search Hub opens the audio.cpp repo on the configured Hub", () => {
+test("Separate's Search Hub opens the audio.cpp repo page", () => {
   const audioPage = readSrc("features/audio/audio-page.tsx");
   const selector = readSrc("features/model-picker/components/model-selector.tsx");
   assert.match(audioPage, /hubRepo=\{pageWorkflow === "separate" \? AUDIO_CPP_REPO : undefined\}/);
   assert.doesNotMatch(audioPage, /"audio-to-audio"|https:\/\/huggingface\.co\/\$\{AUDIO_CPP_REPO\}/);
-  assert.match(selector, /setOpen\(false\);\s*if \(hubRepo\) \{\s*openLink\(`\$\{getHfEndpoint\(\)\}\/\$\{hubRepo\}`\);\s*return;\s*\}/);
+  assert.match(selector, /setOpen\(false\);\s*if \(hubRepo\) \{\s*openLink\(`\$\{getHubWebEndpoint\(\)\}\/\$\{hubRepo\}`\);\s*return;\s*\}/);
   assert.match(selector, /audioTask:\s*hubCapability === "audio" && task \? \[task\]\.flat\(\)/);
-  assert.match(selector, /browseHubHint=\{hubRepo \? `Open \$\{hubRepo\} on \$\{hubName\}` : undefined\}/);
+  assert.match(selector, /browseHubHint=\{hubRepo \? `Open \$\{hubRepo\} in a new tab` : undefined\}/);
   const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
   assert.match(pickers, /aria-label="Search more models on the Hub"/);
   assert.match(pickers, /<TooltipContent>\{browseHubHint \?\? "Search all models"\}<\/TooltipContent>/);
 });
 
-test("a mirror-only install opens the repo on its mirror, not huggingface.co", () => {
+test("Separate's repo link opens a page this browser can load, never the relay", () => {
+  const link = () => `${getHubWebEndpoint()}/${AUDIO_CPP_REPO}`;
   try {
-    assert.equal(`${getHfEndpoint()}/${AUDIO_CPP_REPO}`, "https://huggingface.co/audio-cpp/audio.cpp-gguf");
-    setHfEndpoints("https://hf-mirror.example/");
-    assert.equal(`${getHfEndpoint()}/${AUDIO_CPP_REPO}`, "https://hf-mirror.example/audio-cpp/audio.cpp-gguf");
+    assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
+    // A reachable mirror: /api/health names it and the relay carries the API calls.
+    setHfEndpoints("http://studio.local/api/hub/proxy/abc123", null, "huggingface", { endpoint: true });
+    setHubWebEndpoint("https://hf-mirror.example/");
+    assert.equal(getHfEndpoint(), "http://studio.local/api/hub/proxy/abc123");
+    assert.equal(link(), "https://hf-mirror.example/audio-cpp/audio.cpp-gguf");
+    // A saved-only mirror seen from another host, or ModelScope: health reports huggingface.co.
+    setHubWebEndpoint("https://huggingface.co");
+    assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
+    setHubWebEndpoint("");
+    assert.equal(link(), "https://huggingface.co/audio-cpp/audio.cpp-gguf");
   } finally {
     resetHfEndpoints();
   }
+  assert.match(readSrc("config/env.ts"), /setHubWebEndpoint\(data\.hf_endpoint\);/);
 });
