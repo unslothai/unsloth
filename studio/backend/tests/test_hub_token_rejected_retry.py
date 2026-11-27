@@ -293,7 +293,7 @@ def test_hub_gguf_listing_retries_anonymously(monkeypatch):
             return SimpleNamespace(siblings = [SimpleNamespace(rfilename = GGUF, size = 1)])
 
     monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
-    monkeypatch.setattr(hub_gguf, "_env_offline", lambda: False)
+    monkeypatch.setattr(hub_gguf, "hf_env_offline", lambda: False)
     variants, _has_vision, _siblings = hub_gguf.list_gguf_variants(REPO, hf_token = OAUTH)
     assert [v.filename for v in variants] == [GGUF]
     assert calls == [OAUTH, False]
@@ -599,7 +599,6 @@ def test_the_gguf_sliding_window_config_is_read_without_a_refused_token(monkeypa
 
 
 def test_a_private_repo_after_a_public_recovery_is_reported_as_refused():
-    # A public adapter recovered anonymously, then a private base no one can read.
     calls = []
 
     def private(token):

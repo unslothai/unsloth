@@ -80,3 +80,10 @@ test("an explicit Transformers transfer keeps its serving engine", () => {
     /options\.engine === "transformers" \? undefined/,
   );
 });
+
+test("an audio.cpp folder download names its quant, not the folder twice", () => {
+  assert.match(
+    source,
+    /variant: isAudioCppFolderId\(model\)\s*\?\s*\(trackedVariants\.get\(key\) \?\? null\)\s*:\s*sttModelName\(model\),/,
+  );
+});

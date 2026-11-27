@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Jobs persisted before `inventoryKind` still carry `scopedFiles`, so hydration recovers the kind rather than giving a scoped GGUF a safetensors row after an update.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -42,7 +40,6 @@ store.set(
   JSON.stringify({
     state: {
       jobs: {
-        // Written before `inventoryKind` existed: a scoped GGUF embedding download.
         legacyGguf: persistedJob("org/embedder", "@rag-embedding", {
           scopedFiles: ["nomic-embed-text-v1.5.Q8_0.gguf"],
         }),
@@ -99,7 +96,6 @@ test("an explicitly stored kind still wins over the file list", () => {
 });
 
 test("a scoped job with no files stays unclassified", () => {
-  // Guessing here would publish a wrong row; backend adoption resolves it.
   assert.equal(
     job("org/unknown-scope", "@diffusion")?.inventoryKind,
     undefined,

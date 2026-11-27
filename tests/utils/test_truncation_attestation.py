@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A split that truncates its own rows may say so instead of being scanned.
-
-`pretokenized_within_cap` checks `max_length` by reading every row. On a
-lazily-tokenizing `with_transform` view -- what Unsloth's online tokenization
-produces -- reading a row is tokenizing it, so the scan runs the whole eager pass
-the view exists to avoid, inside `__init__` where nothing overlaps it.
-
-`_unsloth_truncated_to = N` is the escape: every row is already cut at N. Both
-copies of the scan (this module's and the one `rl.py` inlines into every
-generated trainer) must agree, so both run here; the inlined one is extracted
-from the codegen string and executed, the only way to test source that only
-exists as a string.
-"""
+"""A split may set _unsloth_truncated_to instead of a scan, since reading lazy rows tokenizes them."""
 
 from __future__ import annotations
 
@@ -39,6 +27,7 @@ def _load_rl_module():
     tree = ast.parse(source)
     wanted = {
         "_attested_within_cap",
+        "_arrow_within_cap",
         "pretokenized_within_cap",
         "splits_within_cap",
         "_SCAN_ROWS",
@@ -97,8 +86,7 @@ def test_an_attesting_split_is_believed_without_a_single_read():
 
 
 def test_a_split_attesting_a_wider_cap_is_refused():
-    """Truncated to 4096 proves nothing about a 2048 cap, and the refusal must
-    not silently fall through to a scan that would find the same answer."""
+    """A split truncated to 4096 proves nothing about a 2048 cap; refuse it rather than scan."""
     split = _Lazy(8, width = 4096, attest = 4096)
     assert rl.pretokenized_within_cap(split, 2048) is False
     assert split.reads == 0
@@ -122,8 +110,7 @@ def test_an_overlength_unattested_split_is_still_caught():
 
 @pytest.mark.parametrize("claim", [True, False, "2048", 2048.0, None, object()])
 def test_a_non_int_claim_is_not_an_attestation(claim):
-    """`True` is an `int` in Python and would read as a cap of 1. Anything that
-    is not a plain integer falls through to the scan."""
+    """True is an int and would read as cap 1; any non-int claim falls through to the scan."""
     split = _Lazy(4, width = 9000)
     if claim is not None:
         split._unsloth_truncated_to = claim
@@ -160,21 +147,12 @@ def test_splits_within_cap_honours_the_attestation_per_split():
     assert rl.splits_within_cap({"a": good, "b": bad}, 2048) is False
 
 
-# ------------------------------------------------- the copy rl.py inlines
-
-
 def _inlined_within_cap(cap):
-    """Build `_unsloth_within_cap` out of the codegen string and return it.
-
-    The generated trainer cannot import from `rl.py`, so the scan exists twice;
-    extracting and executing the literals is the only way to hold both copies to
-    the same verdict.
-    """
+    """Builds _unsloth_within_cap from rl.py's codegen literals; generated trainers cannot import rl.py."""
     source = RL_PATH.read_text(encoding = "utf-8")
     start = source.index('"    def _unsloth_within_cap(_ds):\\n"')
     end = source.index('"    def _unsloth_splits_within_cap(_ev):\\n"')
     body = "".join(re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE))
-    # Strip the indentation the literals carry for the generated `__init__`.
     body = textwrap.dedent(body.encode().decode("unicode_escape"))
     namespace = {"_unsloth_cap": cap}
     exec(body, namespace)
@@ -202,8 +180,7 @@ def test_the_inlined_copy_gives_the_same_verdict(attest, width, cap, expected, e
 
 
 def test_the_codegen_and_the_module_agree_on_the_attribute_name():
-    """A rename on one side and not the other is a silent no-op, not a failure:
-    the scan would simply never see an attestation again."""
+    """A one-sided rename is a silent no-op: the scan would never see an attestation again."""
     source = RL_PATH.read_text(encoding = "utf-8")
     assert rl._TRUNCATION_ATTESTATION_ATTR == "_unsloth_truncated_to"
     assert (
@@ -212,8 +189,7 @@ def test_the_codegen_and_the_module_agree_on_the_attribute_name():
 
 
 def test_studio_stamps_the_attribute_this_scan_reads():
-    """The producer and the consumer live in different packages; nothing but a
-    test ties the string they share together."""
+    """Producer and consumer live in different packages; only this test ties the shared string."""
     studio = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "online_tokenization.py"
     if not studio.exists():
         pytest.skip("studio backend not present in this checkout")
@@ -225,15 +201,8 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 
 
-# ------------------------------------------- the generated block must still parse
-
-
 def test_the_generated_max_length_block_is_valid_python():
-    """The block only exists as string literals, so a stray indent or unclosed
-    bracket stays invisible until a user gets a `SyntaxError` from a generated
-    trainer. Assemble and parse it, reading the literals off the source rather
-    than running the generator, which needs a TRL this install may not have.
-    """
+    """Parses the codegen block from source literals; a stray indent would surface only in user trainers."""
     import ast
 
     source = RL_PATH.read_text(encoding = "utf-8")
@@ -241,7 +210,7 @@ def test_the_generated_max_length_block_is_valid_python():
     end = source.index("            extra_args += max_length_check")
     literals = re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE)
     block = "".join(literals).encode().decode("unicode_escape")
-    # The generator emits this at one indent level inside the trainer's __init__.
+    # The generator emits this one indent level inside __init__.
     ast.parse(textwrap.dedent(block))
 
 

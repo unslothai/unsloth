@@ -1,20 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`image_upload` must not leave behind a menu it opened when it gives up.
-
-The composer's "Tools and attachments" menu is a modal Radix dropdown, which sets
-`pointer-events: none` on everything outside itself while it is open, and Radix opens it on
-pointerdown, so a click can open it and still time out. On 2026-09-25 that happened on #11887's
-studiobench run: `image_upload` reported "the attachments button could not be clicked:
-TimeoutError" and returned, the parity digest showed `[role="menu"]` open from that action on, and
-the next action failed with "button[aria-label="New chat"] was not clickable ... no point on the
-control hit-tests to it". CI passes `--allow-not-run image_upload`, so the failure it was excused
-for turned into one it was not: thread_reopen NOT RUN, and the job red.
-"""
+"""image_upload must close the composer menu it opened before giving up, or the next click is blocked."""
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -28,7 +19,6 @@ class _Keyboard:
 
     def press(self, key: str) -> None:
         self.pressed.append(key)
-        # Escape dismisses the top layer only.
         if key == "Escape" and self._page.menus and self._page.menu_closes_on_escape:
             self._page.menus.pop()
 
@@ -40,10 +30,22 @@ class _Button:
     def click(self, timeout = None) -> None:
         page = self._page
         if page.click_dismisses_open_menu:
-            page.menus.clear()  # a non-modal menu lets the outside pointerdown through and closes
+            page.menus.clear()
         if page.click_opens_menu:
             page.menus.append("attachments")  # Radix opens on pointerdown
         raise TimeoutError(f"Timeout {timeout}ms exceeded.")
+
+
+class _Chooser:
+    def __init__(self, page: "_Page") -> None:
+        self._page = page
+
+    @property
+    def value(self) -> "_Chooser":
+        return self
+
+    def set_files(self, _path) -> None:
+        self._page.attachments += 1
 
 
 class _Locator:
@@ -59,10 +61,7 @@ class _Locator:
 
 
 class _Page:
-    """The page calls `image_upload` makes up to and including a click that times out.
-
-    Open menus are a stack of identities, so a menu that replaced another is a different one.
-    """
+    """Stub page; open menus are a stack of identities, so a replaced menu counts as a different one."""
 
     def __init__(
         self,
@@ -71,7 +70,10 @@ class _Page:
         menu_closes_on_escape: bool = True,
         already_open: tuple = (),
         click_dismisses_open_menu: bool = False,
+        chooser_opens: bool = False,
     ) -> None:
+        self.chooser_opens = chooser_opens
+        self.attachments = 0
         self.click_opens_menu = click_opens_menu
         self.menu_closes_on_escape = menu_closes_on_escape
         self.click_dismisses_open_menu = click_dismisses_open_menu
@@ -81,6 +83,16 @@ class _Page:
 
     def locator(self, _selector: str) -> _Locator:
         return _Locator(self)
+
+    @contextlib.contextmanager
+    def expect_file_chooser(self, timeout = None):
+        chooser = _Chooser(self)
+        yield chooser
+        if not (self.chooser_opens and "attachments" in self.menus):
+            raise TimeoutError(
+                f'Timeout {timeout}ms exceeded while waiting for event "filechooser"'
+            )
+        self.menus.remove("attachments")  # picking "Add photos" closes the menu
 
     def evaluate(
         self,
@@ -94,7 +106,9 @@ class _Page:
             return any(menu not in self._before for menu in self.menus)
         if '[role="menu"]' in script:
             return bool(self.menus)  # a presence-only query
-        return 0  # the attachment count
+        if "menuItemByText" in script:
+            return None
+        return self.attachments  # the attachment count
 
     def wait_for_timeout(self, _ms) -> None:
         return None
@@ -117,12 +131,25 @@ def _upload(page: _Page):
     return image_upload(ctx)
 
 
+def test_a_click_that_opened_the_menu_and_timed_out_still_uploads():
+    """The menu opened on pointerdown and the bounded click timed out on the modal open."""
+    page = _Page(click_opens_menu = True, chooser_opens = True)
+    result = _upload(page)
+
+    assert result.ran is True, result.reason
+    assert result.expect_ok is True
+    assert result.expect["click_overran"] is True
+    assert page.attachments == 1
+    assert page.menus == []
+    assert page.keyboard.pressed == []
+
+
 def test_a_click_that_opened_the_menu_and_timed_out_closes_it():
     page = _Page(click_opens_menu = True)
     result = _upload(page)
 
     assert result.ran is False
-    assert "could not be clicked: TimeoutError" in result.reason
+    assert "the file chooser never opened" in result.reason
     assert page.menus == [], "the modal menu was left open over the next action"
     assert page.keyboard.pressed == ["Escape"]
     assert "closed the menu it opened" in result.reason

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`UNSLOTH_FORCE_CUSTOM_DTYPE` is parsed by two separately released packages.
-
-Both do `value.split(";", 4)` and assert at least four separators, and they ship on
-their own schedules, so changing the layout on one side breaks the other on skew. The
-hardening changed how the fields are INTERPRETED, not what they are; this pins the
-count, the positions, and the direction of the trust decision.
-"""
+"""Two packages split UNSLOTH_FORCE_CUSTOM_DTYPE on ';' and ship separately, so its layout is pinned."""
 
 from __future__ import annotations
 
@@ -73,9 +67,7 @@ def test_zoo_reader_still_parses_what_unsloth_writes():
         _, dtype, _, _, _ = value.split(";", 4)
         name = dtype.strip().removeprefix("torch.")
         resolved = _get_dtype(name)
-        # The oracle is torch, not the value under test.
-        # Deriving `expected` from `resolved` made this assertion tautological for every non-None dtype, so a separately
-        # released unsloth_zoo that started resolving `float16` to the wrong thing would still have passed.
+        # The oracle is torch, not the resolved value; deriving expected from it is tautological.
         if dtype.strip() == "None":
             expected = None
         else:
@@ -87,16 +79,15 @@ def test_zoo_reader_still_parses_what_unsloth_writes():
 
 
 def test_trust_decision_is_on_the_value_we_set(monkeypatch):
-    """Identical layout, different provenance. The two halves use different strings on
-    purpose, since the registry is never cleared."""
+    """The two halves use different strings on purpose, since the registry is never cleared."""
     template = _shipped_values()[0]
     checker, dtype, bnb, custom, execute = template.split(";", 4)
 
     inherited = ";".join([checker, dtype, bnb, custom, "import os; os.system('x')"])
     monkeypatch.setenv("UNSLOTH_FORCE_CUSTOM_DTYPE", inherited)
     value, trusted = trusted_custom_dtype()
-    assert value == inherited  # dtype fields still readable
-    assert not trusted  # code fields are not
+    assert value == inherited
+    assert not trusted
 
     ours = ";".join([checker, dtype, bnb, custom, "pass  # only this test sets this"])
     register_custom_dtype(ours)
@@ -138,7 +129,6 @@ def test_unset_variable_reads_as_empty_and_untrusted(monkeypatch):
 
 
 def test_no_producer_bypasses_the_registry():
-    """A direct os.environ write would set the variable without registering it, so
-    its own code fields would then be dropped as untrusted."""
+    """Direct os.environ writes skip registration; their code fields are dropped as untrusted."""
     assert 'os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]' not in LOADER
     assert "os.environ['UNSLOTH_FORCE_CUSTOM_DTYPE']" not in LOADER

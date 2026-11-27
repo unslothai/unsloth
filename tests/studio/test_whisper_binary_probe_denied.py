@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""An unreadable whisper.cpp install must read as engine-unavailable, not raise.
-
-setup.ps1 now leaves a denied `<STUDIO_HOME>/whisper.cpp` in place instead of
-aborting the run, so the backend is the first thing to probe it. `Path.is_file()`
-propagates EACCES, and `stt_status` does not catch it, so an unguarded probe turns
-into a 500 on the one endpoint that reports *both* dictation engines.
-"""
+"""A denied whisper.cpp install must read as unavailable; an unguarded probe turns into a 500."""
 
 from __future__ import annotations
 
@@ -24,8 +18,7 @@ SIDECAR = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "stt_ggml_si
 
 
 def _is_runnable():
-    """Exec the real function alone: importing the module pulls in the whole
-    backend (structlog, fastapi), which this check does not need."""
+    """Exec the function alone; importing the module pulls in the backend (structlog, fastapi)."""
     tree = ast.parse(SIDECAR.read_text(encoding = "utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "_is_runnable":
@@ -36,8 +29,7 @@ def _is_runnable():
 
 
 def _can_deny() -> bool:
-    """Probe rather than infer. Guessing from euid silently drops the only
-    behavioural test in any root container, which is most CI images."""
+    """Probe rather than infer from euid, or the only test vanishes in root CI containers."""
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         locked = Path(tmp) / "locked"

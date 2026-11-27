@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Real runtime, focus handling, footer, timestamp and stylesheet. Only message
-// data and the unrelated action handlers are fixtures; no backend is needed.
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -81,7 +79,7 @@ function User() {
             <button className="aui-branch-chevron-btn" aria-label="Previous">
               ‹
             </button>
-            <span className="font-mono tabular-nums">1/2</span>
+            <span className="aui-branch-picker-state font-mono tabular-nums">1/2</span>
             <button className="aui-branch-chevron-btn" aria-label="Next">
               ›
             </button>

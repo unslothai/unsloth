@@ -69,7 +69,8 @@ test("Generate anyway clicked during the refused run's cleanup waits for busy to
   assert.equal(shouldRunQueuedOversizedRetry({ queued: true, busy: null }), true);
   assert.equal(shouldRunQueuedOversizedRetry({ queued: false, busy: null }), false);
   const page = readSrc("features/images/images-page.tsx");
-  assert.match(page, /onClick: \(\) => setOversizedRetryQueued\(true\)/);
+  // The refused run already consumed Vary's one-shot: the retry gets it back, or it renders an unrelated image.
+  assert.match(page, /onClick: \(\) => \{\s*varyOnce\.current = vary;\s*setOversizedRetryQueued\(true\);/);
   assert.match(
     page,
     /shouldRunQueuedOversizedRetry\(\{ queued: oversizedRetryQueued, busy \}\)[\s\S]*?\}, \[oversizedRetryQueued, busy, handleGenerateWithRecall\]\);/,

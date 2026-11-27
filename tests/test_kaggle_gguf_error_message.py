@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The Kaggle 20GB message must only fire on failures that are about disk.
-
-It used to fire for every GGUF failure, so an unconvertible architecture, a
-missing tokenizer and a bad quant method all told the user to free up space.
-"""
+"""The Kaggle 20GB message fires only on disk-related GGUF failures, not on every conversion error."""
 
 import os
 import shutil
@@ -36,33 +32,16 @@ _Usage = namedtuple("_Usage", ("total", "used", "free"))
 
 @pytest.fixture
 def plenty_of_free_space(monkeypatch):
-    """State the premise the "not a disk problem" tests are written under.
-
-    `_gguf_failure_looks_like_disk` has a second, independent signal: a
-    filesystem with less than `_DISK_HEADROOM_BYTES` (2GiB) free is a disk
-    failure whatever the exception says. It probes `save_directory` and then
-    `os.getcwd()`, so on a host whose working directory is that full, every
-    "this is NOT a disk problem" test inverts and fails for a reason that has
-    nothing to do with the message it is asserting about.
-
-    Report ample space so the message is the only signal left, which is what
-    those tests are about ("a broken quantizer with 19GB free is not a disk
-    problem", save.py). The real threshold is left alone, so the comparison
-    still runs and a nonsensical headroom would still be caught.
-    """
+    """Report ample free space so the 2GiB headroom check cannot flip the not-a-disk-problem tests."""
     real_disk_usage = shutil.disk_usage
     ample = _Usage(total = 100 * 1024**3, used = 1 * 1024**3, free = 99 * 1024**3)
 
     def plenty(path):
-        # Keep the real failure modes; only the numbers are ours.
         real_disk_usage(path)
         return ample
 
     monkeypatch.setattr(shutil, "disk_usage", plenty)
     return ample
-
-
-# ---- failures that ARE about disk -----------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -107,9 +86,6 @@ def test_a_bad_quant_method_is_not_a_disk_problem():
     assert _looks_like_disk(exc, os.getcwd()) is False
 
 
-# ---- the guard must never be what raises ---------------------------------
-
-
 def test_a_nonexistent_directory_does_not_raise():
     assert _looks_like_disk(RuntimeError("boom"), "/definitely/not/a/real/path") in (True, False)
 
@@ -120,9 +96,6 @@ def test_none_directory_does_not_raise():
 
 def test_an_exception_with_no_message_does_not_raise():
     assert _looks_like_disk(RuntimeError()) in (True, False)
-
-
-# ---- the call site --------------------------------------------------------
 
 
 def test_the_kaggle_branch_is_gated_on_the_check():
@@ -149,7 +122,7 @@ def test_the_real_error_survives_either_way():
     assert (
         window.count("from e") >= 2
     ), "the original exception must be chained so the traceback survives"
-    # `{e}` is empty when the exception has no args, so the type-leading form counts too.
+    # `{e}` is empty for an exception with no args, so the type-leading form counts too.
     assert (
         "GGUF conversion failed: {e}" in window
         or "GGUF conversion failed: {_describe_exception(e)}" in window
@@ -158,9 +131,6 @@ def test_the_real_error_survives_either_way():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
-
-
-# ---- a converter killed by the OOM-killer ---------------------------------
 
 
 def test_sigkill_is_recognised_from_the_message():
@@ -183,10 +153,7 @@ def test_sigkill_is_recognised_from_the_returncode(code):
 
 
 def test_a_shell_wrapped_137_is_recognised():
-    """llama-quantize runs under `shell = True`, so /bin/sh reports a SIGKILLed
-    child as exit status 137 and never names the signal. unsloth_zoo then
-    re-raises a plain RuntimeError, dropping `returncode`, so the wording is
-    the only thing left."""
+    """With shell = True, a SIGKILLed child shows as exit 137, and the re-raise drops returncode."""
     from unsloth.save import _gguf_child_was_oom_killed
 
     exc = RuntimeError(
@@ -226,8 +193,7 @@ def test_an_implicit_context_is_inspected():
 
 
 def test_the_quantize_wrapper_chains_its_cause():
-    """The build-llama.cpp branch must chain too, else the 137 is unreachable
-    from the outer handler."""
+    """build-llama.cpp must chain too, else the 137 is unreachable from the outer handler."""
     src = Path(save.__file__).read_text(encoding = "utf-8")
     i = src.index("You might have to compile llama.cpp yourself")
     assert "from e" in src[i : i + 900]
@@ -247,8 +213,7 @@ def test_a_disk_failure_is_not_called_an_oom():
 
 
 def test_the_oom_branch_runs_before_the_kaggle_disk_branch():
-    """A SIGKILL on Kaggle with a full-ish disk would otherwise be reported as
-    a disk problem, which is the wrong advice."""
+    """A SIGKILL on Kaggle must not be reported as a disk problem; the OOM branch runs first."""
     import inspect
     from unsloth import save as _s
 
@@ -259,8 +224,7 @@ def test_the_oom_branch_runs_before_the_kaggle_disk_branch():
 
 
 def test_the_message_says_host_ram_not_gpu_or_disk():
-    """The whole point: SIGKILL names no resource, and the user's first guess
-    is usually VRAM."""
+    """SIGKILL names no resource; the first guess is VRAM, so the message must say host RAM."""
     import inspect
     from unsloth import save as _s
 
@@ -278,9 +242,6 @@ def test_it_chains_the_original():
     src = inspect.getsource(_s.unsloth_save_pretrained_gguf)
     i = src.index("_gguf_child_was_oom_killed(e)")
     assert "from e" in src[i : i + 900]
-
-
-# ---- the inner conversion/quantize branches are gated too ------------------
 
 
 def test_no_kaggle_disk_message_is_left_ungated():

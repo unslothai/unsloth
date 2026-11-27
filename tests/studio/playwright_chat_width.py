@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Check width presets against a running Studio with a saved conversation.
-
-BASE_URL is the disposable instance, STUDIO_NEW_PW (or STUDIO_PW) its password.
-
-CHAT_THREAD_ID is optional; without it this seeds its own thread. That is what
-lets CI run this at all: it measures a rendered assistant bubble, no CI step can
-hand one over, so before this no step ran it and the presets shipped ungated.
-Seeding costs no model, since the messages endpoint stores whatever roles it is
-given and the thread renders from that.
-
-Run with: python tests/studio/playwright_chat_width.py
-"""
+"""Checks width presets on a running Studio; seeds its own thread unless CHAT_THREAD_ID is given."""
 
 import os
 import sys
@@ -24,6 +13,7 @@ from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
+    follow_os_reduced_motion,
     install_wall_clock_watchdog,
     report_failing_step,
     step_budget_s,
@@ -33,9 +23,6 @@ from _playwright_robust import (  # noqa: E402
 BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8888")
 PASSWORD = os.environ.get("STUDIO_NEW_PW") or os.environ.get("STUDIO_PW", "")
 TIMEOUT_MS = 60_000
-# A step that runs past its budget stops the run with its name, instead of the next steps
-# waiting out their own timeouts. Sized on the waits each step chains at TIMEOUT_MS; a
-# hosted runner does each in seconds.
 STEP_BUDGET_S = step_budget_s(360)
 _watchdog = None
 
@@ -76,11 +63,7 @@ def api(
 
 
 def sign_in(page):
-    """Rotate the bootstrap password if the instance still has one, else log in.
-
-    Two branches, as in playwright_thread_scoped_settings.py: a fresh CI boot lands on
-    /change-password, a re-run against the same server on /login.
-    """
+    """Handles both starts: a fresh CI boot lands on /change-password, a re-run on /login."""
     page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = TIMEOUT_MS)
     try:
         page.locator("#new-password").wait_for(state = "visible", timeout = 15_000)
@@ -108,13 +91,7 @@ def sign_in(page):
 
 
 def seed_thread(page, token):
-    """A saved conversation carrying one user turn and one assistant turn.
-
-    The assistant turn is the point: only that role renders the
-    `.aui-assistant-message-root` every assertion below measures. Its text is long enough
-    to reach the column cap at every viewport tested, so a preset that fails to widen
-    reads as a narrower bubble rather than as one that was never wide enough to tell.
-    """
+    """One user and one assistant turn; the long assistant text reaches the column cap at every viewport."""
     thread_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
     api(
@@ -164,22 +141,27 @@ def seed_thread(page, token):
     return thread_id
 
 
+# The order appearance-custom-controls.tsx lists the chat width values in (standard, wide, full);
+# test_chat_width_driver_presets.py keeps the two in step. The names are only this driver's labels.
+CHAT_WIDTH_PRESETS = ("Standard", "Wide", "Full width")
+
+
 def check_widths(page):
     """Full must preserve the space available in Wide, including narrow panes."""
     thread_url = page.url
     measurements = {}
-    for preset in ("Standard", "Wide", "Full width"):
+    for index, preset in enumerate(CHAT_WIDTH_PRESETS):
         step(f"measure the {preset!r} preset across 7 viewports")
         page.set_viewport_size({"width": 1440, "height": 900})
         page.keyboard.press("Control+,")
-        page.get_by_role("dialog").get_by_role("button", name = "Appearance", exact = True).click()
+        page.get_by_role("dialog").get_by_role("button", name = "Chat", exact = True).click()
         page.get_by_role("combobox", name = "Chat width").click()
-        page.get_by_role("option", name = preset, exact = True).click()
+        # By position, not label: the option text is copy (#16408 renamed Standard to Default).
+        page.get_by_role("listbox").get_by_role("option").nth(index).click()
         page.keyboard.press("Escape")
         measurements[preset] = {}
         for width in (390, 768, 900, 1280, 1536, 1920, 2560):
             page.set_viewport_size({"width": width, "height": 900})
-            # Measure once both surfaces have reflowed to the new viewport, not 300 ms after it.
             wait_for_settled(page.locator(".aui-assistant-message-root"))
             wait_for_settled(page.locator(".unsloth-composer-shell"))
             measurements[preset][width] = page.evaluate(
@@ -210,10 +192,7 @@ def check_widths(page):
             assert full[surface] >= wide[surface] - 1, (width, surface, full, wide)
             assert wide[surface] >= standard[surface] - 1, (width, surface, wide, standard)
         assert not any(measurements[preset][width]["overflow"] for preset in measurements)
-    # The ordering above is >=, so three presets pinned to one width satisfy all of it and
-    # a setting that stopped working entirely would read as a pass. At the widest viewport
-    # they are separated by construction (appearance-custom-store.ts: 48rem, 72rem,
-    # max(72rem, 100% - 6rem)), so require that separation.
+    # The ordering above is >=, so also require the widest-viewport separation of the three presets.
     widest = max(measurements["Standard"])
     for surface in ("message", "composer"):
         standard = measurements["Standard"][widest][surface]
@@ -238,6 +217,7 @@ if __name__ == "__main__":
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport = {"width": 1440, "height": 900}, reduced_motion = "reduce")
+        follow_os_reduced_motion(page.context)
         step("sign in and seed a thread")
         token = sign_in(page)
         thread_id = os.environ.get("CHAT_THREAD_ID") or seed_thread(page, token)

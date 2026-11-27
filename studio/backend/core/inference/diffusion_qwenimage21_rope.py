@@ -1,25 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 RoPE in real arithmetic under ``torch.compile``, bit-identical to the complex form.
-
-Inductor cannot fuse complex multiply; ATen's fma placement differs per card (B200 vs A100), so
-``install`` probes the card and mirrors it via ``addcmul`` (one ``fma``). Kill switch:
-``UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0``.
-"""
+"""Real-arithmetic Qwen-Image-2.1 RoPE, bit-identical to the complex form (Inductor cannot fuse
+complex mul); kill UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0"""
 
 from __future__ import annotations
 
-import ast
 import functools
-import hashlib
 import inspect
-import io
 import os
-import textwrap
 import threading
-import tokenize
 from typing import Any, Optional
+
+from .diffusion_autoopt.patches import source_digest
+from .rocm_bf16 import is_rocm_torch
 
 REAL_ROPE_ENV = "UNSLOTH_DIFFUSION_Q21_REAL_ROPE"
 
@@ -27,7 +21,9 @@ _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 
 _FINGERPRINTS: dict[str, frozenset] = {
     "apply_rotary_emb_qwen": frozenset({"ba81dd3fc907c23a"}),
-    "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d"}),
+    # 0.41.0 splits heads by ``attn.heads``; main d42ebf9c by ``attn.inner_dim // attn.heads`` (tensor parallel),
+    # the same split whenever the projections hold every head, which is all Studio runs.
+    "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d", "4c3830595aef56a0"}),
 }
 
 _LOCK = threading.Lock()
@@ -40,34 +36,8 @@ def real_rope_disabled() -> bool:
     return (os.environ.get(REAL_ROPE_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-def _digest(fn: Any) -> Optional[str]:
-    """Source text, not ``ast.dump`` (varies across Python versions), minus docstrings/comments."""
-    try:
-        src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
-        tree = ast.parse(src)
-        comments = [
-            tok.start
-            for tok in tokenize.generate_tokens(io.StringIO(src).readline)
-            if tok.type == tokenize.COMMENT
-        ]
-    except (OSError, TypeError, SyntaxError, ValueError, tokenize.TokenError):
-        return None
-    lines = src.splitlines()
-    for row, col in comments:
-        lines[row - 1] = lines[row - 1][:col]
-    for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(getattr(body[0], "value", None), ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            for row in range(body[0].lineno, body[0].end_lineno + 1):
-                lines[row - 1] = ""
-    text = "\n".join(line.rstrip() for line in lines if line.strip())
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+# One fingerprint util for every patch module (diffusion_autoopt.patches); kept under this name for importers.
+_digest = source_digest
 
 
 def why_unsupported(module: Any) -> Optional[str]:
@@ -85,7 +55,7 @@ def _addcmul_lowering() -> tuple:
         import torch
         from torch._inductor import lowering
 
-        if getattr(torch.version, "hip", None):
+        if is_rocm_torch(torch):
             return False, False
         src = inspect.getsource(lowering.addcmul)
         return (
@@ -254,6 +224,23 @@ def install(logger: Any = None, device: Any = None) -> bool:
             "diffusion.qwenimage21: RoPE runs in real arithmetic inside the compiled blocks"
         )
     return True
+
+
+def probe_split_cards(cards: Any) -> tuple:
+    """A layer split runs its blocks on several cards, and the real-arithmetic wrapper reads each card's own probe
+    (an unprobed card keeps the complex form). Probes every card not yet probed; nothing when no install probed a
+    card (the patch is not in use). Returns the cards whose probe passed."""
+    if real_rope_disabled() or not _FUSION:
+        return ()
+    import torch
+
+    for index in cards:
+        if index not in _FUSION:
+            try:
+                _FUSION[index] = probe_fusion(torch.device("cuda", int(index)))
+            except Exception:  # noqa: BLE001 - that card keeps the complex form
+                _FUSION[index] = None
+    return tuple(index for index in cards if _FUSION.get(index) is not None)
 
 
 def uninstall() -> None:

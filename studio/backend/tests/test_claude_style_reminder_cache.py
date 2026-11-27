@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Claude's later system reminders must not invalidate a stable style prefix."""
+"""Claude's later system messages must not invalidate a stable system prefix."""
 
 import copy
 import os
@@ -19,6 +19,10 @@ REMINDER = (
     "Concise output style is active. Remember to follow the specific guidelines for this style."
 )
 STYLE = f"# Output Style: Concise\nUse short answers.\n\n{REMINDER}\n\nToday's date is fixed."
+
+
+def note(text):
+    return f"<system-reminder>\n{text}\n</system-reminder>"
 
 
 def converted(payload):
@@ -91,7 +95,8 @@ def test_nonredundant_system_instructions_are_preserved(initial, addition):
             ],
         }
     )
-    assert result[0]["content"] == initial + "\n\n" + addition
+    assert result[0]["content"] == initial
+    assert result[1] == {"role": "user", "content": f"Hello\n{note(addition)}"}
 
 
 @pytest.mark.parametrize("role", ["user", "assistant"])
@@ -105,8 +110,12 @@ def test_conversation_text_cannot_suppress_a_system_instruction(role):
             ],
         }
     )
-    assert result[0]["content"] == "Base instructions.\n\n" + REMINDER
-    assert result[1] == {"role": role, "content": STYLE}
+    if role == "user":
+        assert result[0]["content"] == "Base instructions."
+        assert result[1] == {"role": "user", "content": f"{STYLE}\n{note(REMINDER)}"}
+    else:
+        assert result[0]["content"] == "Base instructions.\n\n" + REMINDER
+        assert result[1:] == [{"role": "assistant", "content": STYLE}]
 
 
 def test_changed_style_definition_is_preserved():
@@ -121,4 +130,52 @@ def test_changed_style_definition_is_preserved():
             ],
         }
     )
-    assert result[0]["content"] == STYLE + "\n\n" + updated
+    assert result[0]["content"] == STYLE
+    assert result[1] == {"role": "user", "content": f"Hello\n{note(updated)}"}
+
+
+def claude_code_system(billing):
+    return [
+        {"type": "text", "text": f"x-anthropic-billing-header: {billing}"},
+        {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "Base instructions.", "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        (
+            "cc_version=2.1.312.492; cc_entrypoint=cli;",
+            "cc_version=2.1.312.9cc; cc_entrypoint=cli;",
+        ),
+        (
+            "cc_version=2.1.30.abc; cc_entrypoint=cli; cch=a1b2c;",
+            "cc_version=2.1.30.abc; cc_entrypoint=cli; cch=f9e8d;",
+        ),
+    ],
+)
+def test_claude_code_billing_header_does_not_reach_the_model(first, second):
+    messages = [{"role": "user", "content": "Hello"}]
+    before = converted({"system": claude_code_system(first), "messages": messages})
+    after = converted({"system": claude_code_system(second), "messages": messages})
+    assert before == after
+    assert before[0] == {"role": "system", "content": "You are Claude Code.\nBase instructions."}
+    header_only = converted({"system": claude_code_system(first)[:1], "messages": messages})
+    assert header_only == converted({"messages": messages})
+    flat = f"x-anthropic-billing-header: {first}\nYou are Claude Code.\nBase instructions."
+    expected = {"role": "system", "content": "You are Claude Code.\nBase instructions."}
+    assert converted({"system": flat, "messages": messages})[0] == expected
+    one_block = [{"type": "text", "text": flat}]
+    assert converted({"system": one_block, "messages": messages})[0] == expected
+
+
+def test_billing_text_later_in_the_prompt_is_kept():
+    text = "Quote: x-anthropic-billing-header: is a Claude Code line."
+    result = converted(
+        {
+            "system": [{"type": "text", "text": text}],
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+    )
+    assert result[0] == {"role": "system", "content": text}

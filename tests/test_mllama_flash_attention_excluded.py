@@ -65,9 +65,7 @@ def test_flash_entries_of_a_mapping_fall_back(monkeypatch):
     assert impl == {"": "sdpa", "vision_config": "eager"}
 
 
-# has_real_cuda(), not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py patches
-# the latter to True process-wide, which would un-skip this on a CPU-only box. The CUDA probe
-# rather than has_real_accelerator() because the body allocates on "cuda".
+# has_real_cuda(): the zoo CUDA spoof patches torch.cuda.is_available() True process-wide.
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_mllama_image_forward_runs_on_the_resolved_implementation(monkeypatch):
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
@@ -114,7 +112,7 @@ def test_mapping_entries_keep_the_backend_exclusions(monkeypatch):
 
 
 def test_mapping_fallback_is_applied_per_key(monkeypatch):
-    # A large-head VLM falls back to {"": sdpa, text_config: flex}; a dict request must not collapse it to sdpa.
+    # A large-head VLM falls back to {"": sdpa, text_config: flex}; a dict must not collapse it.
     if not hasattr(transformers, "Qwen2VLConfig"):
         pytest.skip("needs transformers with Qwen2-VL")
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration

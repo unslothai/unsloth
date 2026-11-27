@@ -54,6 +54,15 @@ test("the hover flyout answers the mouse only", () => {
   assert.match(hook, /isPointerHeadingInto\(exit, pointer, target\)/);
 });
 
+test("a hover timer that fires under a modal opened meanwhile leaves the flyout shut (#9244)", () => {
+  const hook = readSrc("hooks/use-hover-flyout.ts");
+  assert.match(
+    hook,
+    /setTimeout\(\(\) => \{\s*if \(!isBlockedByActiveModal\(trigger\)\) setOpen\(true\);\s*\}, intent\.openDelay\)/,
+  );
+  assert.doesNotMatch(hook, /setTimeout\(\(\) => setOpen\(true\)/);
+});
+
 test("the sidebar scopes nav tooltip intent to itself", () => {
   const sidebar = readSrc("components/app-sidebar.tsx");
   assert.match(sidebar, /<TooltipProvider \{\.\.\.NAV_TOOLTIP_INTENT\}>\s*<Sidebar\b/);

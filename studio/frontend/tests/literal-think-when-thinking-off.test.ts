@@ -95,14 +95,10 @@ test("recovery replay keeps literal think text when the turn stamped it", () => 
     stored,
   );
   assert.deepEqual(restoreCarriedPartsFromRaw(raw, [], { parseThink: false }), [
-    { type: "text", text: raw },
+    { type: "text", text: "Use <think>x</think> tags then <think>" },
   ]);
-  assert.equal(
-    restoreCarriedPartsFromRaw(raw, carried).some(
-      (part) => part.type === "reasoning",
-    ),
-    true,
-  );
+  // Saved text parts are already parsed, so their tags stay literal even with think parsing on.
+  assert.deepEqual(restoreCarriedPartsFromRaw(raw, carried), stored);
 });
 
 test("a recovery before the first client save reads the choice from the request", () => {

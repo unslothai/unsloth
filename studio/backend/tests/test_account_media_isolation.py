@@ -97,8 +97,8 @@ def test_gallery_object_routes_do_not_resolve_another_accounts_ids(kind, account
         assert client.patch(f"{root}/{record['id']}", json = {"starred": True}).status_code == 404
         assert client.delete(f"{root}/{record['id']}").status_code == 404
         assert record["id"] not in client.get(root).text
+        assert client.get(f"{root}/{record['id']}/signed-url").status_code == 404
         if kind == "video":
-            assert client.get(f"{root}/{record['id']}/signed-url").status_code == 404
             assert client.get(f"{root}/{record['id']}/export").status_code == 404
     with _client(account) as client:
         assert client.get(f"{root}/{record['id']}/file").status_code == 200
@@ -124,10 +124,17 @@ def test_clear_and_paths_are_account_scoped(kind, module, tmp_path):
     assert run_as(BOB, module.gallery_dir) == tmp_path / "accounts" / BOB.account_id / folder
 
 
-@pytest.mark.parametrize("kind,module", [("images", inference), ("video", video)])
-def test_signed_links_authorize_only_the_original_account_and_media(kind, module):
+@pytest.mark.parametrize(
+    "kind,module,sign,verify",
+    [
+        ("images", inference, "_sign_image_id", "_verify_image_link_token"),
+        ("audio", inference, "_sign_audio_id", "_verify_audio_link_token"),
+        ("video", video, "_sign_video_id", "_verify_video_link_token"),
+    ],
+)
+def test_signed_links_authorize_only_the_original_account_and_media(kind, module, sign, verify):
     record = run_as(ALICE, _save, kind)
-    sign = module._sign_image_id if kind == "images" else module._sign_video_id
+    sign, verify = getattr(module, sign), getattr(module, verify)
     token = run_as(ALICE, sign, record["id"])
     root = f"/api/inference/{kind}/gallery"
     with _client(BOB) as client:
@@ -141,9 +148,6 @@ def test_signed_links_authorize_only_the_original_account_and_media(kind, module
             client.get(f"{root}/{record['id']}/file-signed", params = {"token": tampered}).status_code
             == 401
         )
-    verify = (
-        module._verify_image_link_token if kind == "images" else module._verify_video_link_token
-    )
     owner_token = run_as(OWNER, sign, record["id"])
     assert owner_token.split(".")[0] == record["id"]
     assert verify(owner_token) == record["id"]

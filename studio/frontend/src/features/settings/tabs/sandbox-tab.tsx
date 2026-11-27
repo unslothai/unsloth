@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Badge } from "@/components/ui/badge";
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { useIsAccountOwner } from "@/features/auth";
 import {
-  PermissionModeDropdown,
+  FullAccessConfirmDialog,
   SandboxSetupDialog,
   type SandboxSetupJob,
   type SandboxSetupOperation,
   forgetSandboxCapability,
   loadSandboxSetup,
   pickSandboxLevel,
+  SANDBOX_DOCS_URL,
   sandboxSwitchState,
   startSandboxSetup,
   useActivePermissionMode,
   useChatRuntimeStore,
+  usePermissionModeChoice,
   useSandboxCapability,
 } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
@@ -27,7 +30,7 @@ import { ShieldIcon } from "@/lib/shield-cog-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type HostPrepJob,
@@ -41,6 +44,11 @@ import {
   updateSandboxSettings,
 } from "../api/sandbox-isolation";
 import { isSettingsRouteAbsent } from "../api/settings-route-absent";
+import {
+  loadTrustedToolFolders,
+  parseTrustedFolders,
+  updateTrustedToolFolders,
+} from "../api/trusted-tool-folders";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -79,9 +87,8 @@ function ToolRow({
   label: string;
   tool: SandboxToolStatus;
   shell?: SandboxStatus["terminalShell"];
-  /** The setup row below already says why and what to run; repeating it per tool is noise. */
   quiet?: boolean;
-  /** Off on Windows: the generic MXC remediation repeats what the Windows section offers. */
+  /** Off on Windows: the generic MXC remediation repeats the Windows section. */
   withRemediation?: boolean;
 }) {
   const t = useT();
@@ -101,17 +108,22 @@ function ToolRow({
   );
   return (
     <SettingsRow label={label} description={description}>
-      <Badge
-        variant="outline"
-        // Grey and sized like the dropdown pills.
-        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
-      >
+      <SandboxStatus>
         {view.isolated ? <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} /> : null}
         {view.isolated
           ? t("settings.sandbox.osIsolation", { backend: view.backendLabel })
           : t("settings.sandbox.softwareSafeguards")}
-      </Badge>
+      </SandboxStatus>
     </SettingsRow>
+  );
+}
+
+// A read-only value, not a control: plain text, so it is not mistaken for a button.
+function SandboxStatus({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground [&>svg]:size-3.5">
+      {children}
+    </span>
   );
 }
 
@@ -120,14 +132,19 @@ function MemoryLimitRow({
   saving,
   error,
   onSave,
+  onAuto,
 }: {
   memory: SandboxMemoryStatus;
   saving: boolean;
   error: string | null;
   onSave: (memoryLimitGb: number) => void;
+  onAuto: () => void;
 }) {
   const t = useT();
-  const shown = memory.lockedByEnvironment ? memory.limitGb : memory.savedGb;
+  const locked = memory.lockedByEnvironment;
+  const canAuto = memory.auto !== null && !locked;
+  const [auto, setAuto] = useState(memory.auto === true && !locked);
+  const shown = locked ? memory.limitGb : memory.savedGb;
   const [draft, setDraft] = useState(shown === null ? "" : String(shown));
   const [invalid, setInvalid] = useState(false);
   const submit = () => {
@@ -141,9 +158,18 @@ function MemoryLimitRow({
       return;
     }
     setInvalid(false);
-    if (value !== memory.savedGb) onSave(value);
+    if (memory.auto || value !== memory.savedGb) onSave(value);
   };
-  const note = memory.lockedByEnvironment
+  const toggleAuto = (on: boolean) => {
+    setInvalid(false);
+    if (on && !memory.auto) {
+      // The switch turns on once the save lands, so a failed save leaves it off.
+      onAuto();
+      return;
+    }
+    setAuto(on);
+  };
+  const note = locked
     ? t("settings.sandbox.memoryLocked")
     : invalid
       ? t("settings.sandbox.memoryInvalid", {
@@ -162,9 +188,7 @@ function MemoryLimitRow({
           <span
             className={cn(
               NOTE_CLASS,
-              memory.lockedByEnvironment
-                ? "text-muted-foreground"
-                : "text-destructive",
+              locked ? "text-muted-foreground" : "text-destructive",
             )}
           >
             {note}
@@ -172,27 +196,38 @@ function MemoryLimitRow({
         ) : null
       }
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
+        {canAuto ? (
+          <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Switch
+              aria-label={t("settings.sandbox.memoryAuto")}
+              checked={auto}
+              disabled={saving}
+              onCheckedChange={toggleAuto}
+            />
+            {t("settings.sandbox.memoryAuto")}
+          </label>
+        ) : null}
         <div className="flex items-center gap-1.5">
           <Input
             type="number"
             min={memory.minGb}
             max={memory.maxGb}
             step={1}
-            value={draft}
-            disabled={memory.lockedByEnvironment}
+            value={auto ? String(memory.defaultGb) : draft}
+            disabled={locked || auto}
             aria-label={t("settings.sandbox.memoryLabel")}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") submit();
             }}
-            className="h-8 w-24"
+            className="h-control w-24"
           />
           <span className="text-xs font-medium text-muted-foreground">
             GB
           </span>
         </div>
-        {memory.lockedByEnvironment ? null : (
+        {locked || auto ? null : (
           <Button
             variant="outline"
             size="sm"
@@ -222,21 +257,15 @@ function SelectedOptionDescription({ name, detail }: { name: string; detail: str
   );
 }
 
+// Drops the edge-to-edge glyph to the label's cap line.
+const ROW_ICON_CLASS =
+  "me-1.5 mt-[calc(0.2rem*var(--ui-font-scale,1))] size-[calc(22px*var(--ui-space-scale,1))]";
+
 /** Per account, so every account sees it; the OS sandbox sections below are the owner's. */
 function PermissionsSection() {
   const t = useT();
   const permissionsRef = useRef<HTMLElement | null>(null);
-  const activePermission = useActivePermissionMode();
-  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
-  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
-  const capability = useSandboxCapability(sandboxLevel === "high");
-  const { checked, disabled } = sandboxSwitchState(
-    sandboxLevel,
-    activePermission.value,
-    capability,
-  );
-  const [setupOpen, setSetupOpen] = useState(false);
-  const levelDescriptionId = useId();
+  const choice = usePermissionModeChoice();
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
 
@@ -249,29 +278,59 @@ function PermissionsSection() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
 
+  return (
+    <SettingsSection
+      ref={permissionsRef}
+      title={t("settings.general.permissions.sectionTitle")}
+    >
+      {/* Exclusive: switching the active one off is a no-op. */}
+      {choice.options.map((option) => (
+        <SettingsRow
+          key={option.value}
+          icon={<option.icon className={cn(ROW_ICON_CLASS, option.value === "ask" && "scale-[0.94]")} strokeWidth={1.75} />}
+          iconAlign="top"
+          label={t(`settings.general.permissions.names.${option.value}`)}
+          description={t(`settings.general.permissions.details.${option.value}`)}
+        >
+          <Switch
+            aria-label={t(`settings.general.permissions.names.${option.value}`)}
+            checked={choice.permissionMode === option.value}
+            onCheckedChange={(on) => {
+              if (on) choice.choose(option.value);
+            }}
+          />
+        </SettingsRow>
+      ))}
+      <FullAccessConfirmDialog open={choice.confirmOpen} onOpenChange={choice.setConfirmOpen} />
+    </SettingsSection>
+  );
+}
+
+function SandboxLevelSection() {
+  const t = useT();
+  const activePermission = useActivePermissionMode();
+  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
+  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
+  const capability = useSandboxCapability(sandboxLevel === "high");
+  const { checked, disabled } = sandboxSwitchState(
+    sandboxLevel,
+    activePermission.value,
+    capability,
+  );
+  const [setupOpen, setSetupOpen] = useState(false);
+  const levelDescriptionId = useId();
+  const pillId = useId();
+
   // Full access turns the sandbox off: show Disabled and lock Low and High.
   const activeLevel = disabled ? "off" : checked ? "high" : "low";
   const levels = disabled ? (["off", "low", "high"] as const) : (["low", "high"] as const);
 
   return (
     <SettingsSection
-      ref={permissionsRef}
-      title={t("settings.general.permissions.sectionTitle")}
-      description={t("settings.sandbox.permissionsIntro")}
+      title={t("settings.sandbox.levelLabel")}
     >
       <SettingsRow
-        label={t("settings.sandbox.permissionLabel")}
-        description={
-          <SelectedOptionDescription
-            name={t(`settings.general.permissions.names.${activePermission.value}`)}
-            detail={t(`settings.general.permissions.details.${activePermission.value}`)}
-          />
-        }
-      >
-        <PermissionModeDropdown sandboxControls={false} />
-      </SettingsRow>
-      <SettingsRow
-        label={t("settings.sandbox.levelLabel")}
+        label={t("settings.sandbox.levelRowLabel")}
         description={
           <span id={levelDescriptionId}>
             <SelectedOptionDescription
@@ -301,12 +360,13 @@ function PermissionsSection() {
                   void pickSandboxLevel(level, setSandboxLevel, () => setSetupOpen(true));
                 }}
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
                   selected
-                    ? "hub-tab-toggle-pill cursor-default text-foreground"
+                    ? "cursor-default text-foreground"
                     : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
                 )}
               >
+                {selected && <SegmentedPill group={`${pillId}-level`} />}
                 {t(SANDBOX_LEVEL_TEXT[level].name)}
               </button>
             );
@@ -314,18 +374,10 @@ function PermissionsSection() {
         </div>
       </SettingsRow>
       {/* Its own instance: the chat-page root dialog is not mounted on every page. */}
-      <SandboxSetupDialog
-        open={setupOpen}
-        onOpenChange={setSetupOpen}
-        onLearnMore={() =>
-          permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" })
-        }
-      />
+      <SandboxSetupDialog open={setupOpen} onOpenChange={setSetupOpen} />
     </SettingsSection>
   );
 }
-
-const SANDBOX_DOCS_URL = "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth";
 
 export function SandboxTab() {
   const t = useT();
@@ -346,7 +398,7 @@ export function SandboxTab() {
             target="_blank"
             rel="noreferrer"
             title={t("settings.sandbox.docsLabel")}
-            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {t("settings.sandbox.docs")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -360,6 +412,8 @@ export function SandboxTab() {
         </p>
       </header>
       <PermissionsSection />
+      <SandboxLevelSection />
+      {isOwner ? <TrustedFoldersSection /> : null}
       {/* Not mounted for managed accounts, so none of the owner-only sandbox routes are called. */}
       {isOwner ? (
         <OsSandboxSections />
@@ -372,20 +426,22 @@ export function SandboxTab() {
 
 function OsSandboxSections() {
   const t = useT();
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Save and prepare failures sit with the Windows controls, e.g. the remote-browser refusal.
   const [actionError, setActionError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
   const [absent, setAbsent] = useState(false);
-  // The Linux install and the Windows runtime install; the Windows prepare step keeps `job`.
+  // Linux install and Windows runtime install use setupJob; the Windows prepare step keeps job.
   const [setupJob, setSetupJob] = useState<SandboxSetupJob | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const mounted = useRef(true);
-  // Bumped by every read and save: an older status read must not overwrite a newer answer.
+  // Bumped by every read and save so an older read cannot overwrite a newer answer.
   const statusGeneration = useRef(0);
 
   useEffect(() => {
@@ -394,6 +450,17 @@ function OsSandboxSections() {
       mounted.current = false;
     };
   }, []);
+
+  // Waits for the first status read: before it the section is too short to scroll to.
+  const settled = status !== null || error !== null || absent;
+  useEffect(() => {
+    if (scrollTarget !== "sandbox-os" || !settled) return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("sandbox-os");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget, settled]);
 
   // Callers set `loading`: a synchronous setState from the mount effect would cascade a render.
   const refresh = useCallback(
@@ -428,7 +495,7 @@ function OsSandboxSections() {
 
   useEffect(() => {
     void refresh(false);
-    // A job started from another window, or before this tab was reopened, keeps reporting here.
+    // A job started elsewhere keeps reporting here.
     void loadHostPreparation(t("settings.sandbox.prepareError"))
       .then((current) => {
         if (!mounted.current || current.state === "idle") return;
@@ -469,7 +536,6 @@ function OsSandboxSections() {
     return () => window.clearTimeout(timer);
   }, [setupJob, refresh, t]);
 
-  // Poll while the elevated helper runs; the status is re-read once it finishes.
   useEffect(() => {
     if (!shouldPollJob(job)) return;
     const timer = window.setTimeout(() => {
@@ -584,7 +650,6 @@ function OsSandboxSections() {
 
   const windows = status?.windows ?? null;
   const view = windows ? windowsView(windows, job, saving) : null;
-  // The runtime-only install reports under its own row; the setup row keeps the other operations.
   const runtimeJob = setupJob?.operation === "windows-runtime" ? setupJob : null;
   const runtimeRunning = runtimeJob?.state === "running";
   const runtimeFailed = jobResult(runtimeJob) === "failed";
@@ -613,6 +678,7 @@ function OsSandboxSections() {
       ) : (
         <>
           <SettingsSection
+            ref={sectionRef}
             title={t("settings.sandbox.toolsSection")}
             action={
               <Button
@@ -719,7 +785,7 @@ function OsSandboxSections() {
                           >
                             {t("settings.sandbox.setupCommandHint")}
                           </span>
-                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
+                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-lg bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
                             {setupRow.command}
                           </pre>
                           <Button
@@ -742,11 +808,12 @@ function OsSandboxSections() {
                 {status.memory ? (
                   <MemoryLimitRow
                     // A saved or reloaded value resets the draft.
-                    key={`${status.memory.savedGb}:${status.memory.limitGb}`}
+                    key={`${status.memory.savedGb}:${status.memory.limitGb}:${status.memory.auto}`}
                     memory={status.memory}
                     saving={saving}
                     error={actionError}
                     onSave={(memoryLimitGb) => void save({ memoryLimitGb })}
+                    onAuto={() => void save({ memoryLimitAuto: true })}
                   />
                 ) : null}
               </>
@@ -809,14 +876,16 @@ function OsSandboxSections() {
                       label={t("settings.sandbox.builtinLabel")}
                       description={t("settings.sandbox.builtinDescription")}
                     >
-                      <Badge
-                        variant="outline"
-                        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
-                      >
+                      <SandboxStatus>
                         <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} />
                         {t("settings.sandbox.builtinInUse")}
-                      </Badge>
+                      </SandboxStatus>
                     </SettingsRow>
+                  ) : null}
+                  {view.builtinUpdate ? (
+                    <p className="py-2 text-xs text-muted-foreground leading-relaxed">
+                      {t("settings.sandbox.builtinNeedsUpdate", view.builtinUpdate)}
+                    </p>
                   ) : null}
                   <SettingsRow
                     label={t("settings.sandbox.optInLabel")}
@@ -935,5 +1004,79 @@ function OsSandboxSections() {
         </>
       )}
     </>
+  );
+}
+
+function TrustedFoldersSection() {
+  const t = useT();
+  const [saved, setSaved] = useState<string[] | null>(null);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    loadTrustedToolFolders(t("settings.sandbox.trustedFoldersLoadError"))
+      .then((folders) => {
+        if (!live) return;
+        setSaved(folders);
+        setDraft(folders.join("\n"));
+      })
+      .catch((loadError) => {
+        if (!live || isSettingsRouteAbsent(loadError)) return;
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      });
+    return () => {
+      live = false;
+    };
+  }, [t]);
+
+  if (saved === null && error === null) return null;
+  // Not loaded means not known: saving then would replace the stored list with the empty draft.
+  const unsaveable =
+    saved === null || parseTrustedFolders(draft).join("\n") === saved.join("\n");
+  const save = () => {
+    setSaving(true);
+    updateTrustedToolFolders(
+      parseTrustedFolders(draft),
+      t("settings.sandbox.trustedFoldersSaveError"),
+    )
+      .then((folders) => {
+        setSaved(folders);
+        setDraft(folders.join("\n"));
+        setError(null);
+      })
+      .catch((saveError) => {
+        setError(saveError instanceof Error ? saveError.message : String(saveError));
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <SettingsSection title={t("settings.sandbox.trustedFoldersTitle")}>
+      <SettingsRow
+        label={t("settings.sandbox.trustedFoldersLabel")}
+        description={t("settings.sandbox.trustedFoldersDescription")}
+        wideControl={true}
+        below={
+          error ? <span className={cn(NOTE_CLASS, "text-destructive")}>{error}</span> : null
+        }
+      >
+        <div className="flex w-full max-w-[calc(26rem*var(--ui-space-scale,1))] flex-col items-end gap-2">
+          <Textarea
+            value={draft}
+            disabled={saving}
+            spellCheck={false}
+            aria-label={t("settings.sandbox.trustedFoldersLabel")}
+            placeholder={t("settings.sandbox.trustedFoldersPlaceholder")}
+            onChange={(event) => setDraft(event.target.value)}
+            className="font-mono text-xs"
+          />
+          <Button variant="outline" size="sm" disabled={saving || unsaveable} onClick={save}>
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        </div>
+      </SettingsRow>
+    </SettingsSection>
   );
 }

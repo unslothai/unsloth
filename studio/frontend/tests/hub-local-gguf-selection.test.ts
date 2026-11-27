@@ -143,3 +143,37 @@ test("a blank-quant variant remains eligible for the ranked fallback", () => {
   const sorted = sortLocalGgufVariants([oversized, blank], { gpuGb: 24 });
   assert.equal(resolveLocalGgufVariant(sorted, {}), blank);
 });
+
+test("the memory bar reads the cached revision while an update is published", async () => {
+  const { localGgufMemoryBarVariant } = await import(
+    "../src/features/hub/lib/gguf-variant-sort.ts"
+  );
+  const { ggufVariantLookupTableBytes } = await import(
+    "../src/lib/gguf-fit.ts"
+  );
+  const GiB = 1024 ** 3;
+  const cached = {
+    quant: "Q4_K_M",
+    size_bytes: 70 * GiB,
+    lookup_table_bytes: 20 * GiB,
+  };
+  // The merged row keeps the cached size but carries the published table.
+  const merged = {
+    ...cached,
+    lookup_table_bytes: 30 * GiB,
+    download_size_bytes: 80 * GiB,
+    update_available: true,
+  };
+  const barVariant = localGgufMemoryBarVariant(merged, [
+    { quant: "Q8_0", size_bytes: 1, lookup_table_bytes: 0 },
+    cached,
+  ]);
+  assert.equal(barVariant?.size_bytes, 70 * GiB);
+  assert.equal(ggufVariantLookupTableBytes(barVariant!), 20 * GiB);
+
+  // No update, or no cached row, keeps the selected variant.
+  const current = { ...cached, update_available: false };
+  assert.equal(localGgufMemoryBarVariant(current, [cached]), current);
+  assert.equal(localGgufMemoryBarVariant(merged, null), merged);
+  assert.equal(localGgufMemoryBarVariant(null, [cached]), null);
+});

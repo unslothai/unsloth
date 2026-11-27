@@ -36,6 +36,14 @@ test("the first detected agent that can run the active model wins", () => {
   );
 });
 
+test("a detected VS Code is never picked on its own", () => {
+  assert.equal(
+    pickCompatibleAgent(["claude", "vscode", "opencode"], "claude", false),
+    "opencode",
+  );
+  assert.equal(pickCompatibleAgent(["vscode"], "opencode", false), null);
+});
+
 test("only GGUF-only agents detected on a safetensors model resets the pick", () => {
   assert.equal(pickCompatibleAgent(["claude"], "claude", false), "opencode");
   assert.equal(pickCompatibleAgent(["codex"], "codex", false), "opencode");
@@ -49,7 +57,6 @@ test("a compatible current pick is left alone", () => {
 });
 
 test("nothing detected still corrects a pick that cannot run", () => {
-  // The non-loopback reset clears the detected list, so this is the only correction point.
   assert.equal(pickCompatibleAgent([], "claude", false), "opencode");
 });
 

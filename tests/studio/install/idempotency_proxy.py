@@ -2,29 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A logging HTTP proxy (CONNECT tunnels plus plain HTTP), stdlib only.
-
-test_update_idempotency.py claims that a second `unsloth studio update` does no network
-work. A claim like that cannot be checked from inside the process being measured, and
-"the update finished quickly" is not evidence: a warm uv cache also finishes quickly,
-and so does a run that fetched three release manifests. So the child gets a proxy as its
-ONLY route out (HTTPS_PROXY/HTTP_PROXY/ALL_PROXY, with 127.0.0.1 in NO_PROXY), and every
-attempt is written down whether it succeeds or not.
-
-There is no TLS interception here and there does not need to be: the destination host,
-the byte counts in each direction and the duration are all recorded from the CONNECT
-line, which is enough to say which hosts a run talked to and how much it moved.
-
-    python idempotency_proxy.py serve --port 0 --log p.jsonl --port-file p.port
-    python idempotency_proxy.py serve --refuse ...       # 403 everything, still log it
-    python idempotency_proxy.py serve --deny-hosts pypi.org,github.com ...
-    python idempotency_proxy.py summary p.jsonl [--since-ts T]
-
---refuse is how offline is MEASURED rather than asserted: the child still has a proxy to
-talk to, every attempt is answered 403 and recorded, so a run that claims to have done
-nothing has to prove it made no connections. --deny-hosts is the same aimed at the
-package hosts alone.
-"""
+"""A logging proxy records every connection attempt, so idempotency and offline runs are measured."""
 
 from __future__ import annotations
 
@@ -59,9 +37,7 @@ class Proxy:
         self.refuse = refuse
         self.deny_hosts = tuple(h.strip().lower() for h in deny_hosts if h.strip())
         self.lock = threading.Lock()
-        # Workers between accept and their journal record, published so the harness can tell "quiet"
-        # from "nothing left to journal": a worker blocked in the upstream connect has written
-        # nothing yet.
+        # Workers between accept and their journal record, so the harness can tell quiet from done.
         self.active = 0
         self.active_path = log_path + ".active"
         self._publish_active()
@@ -71,7 +47,6 @@ class Proxy:
         self.srv.listen(256)
         self.port = self.srv.getsockname()[1]
         if port_file:
-            # Written last and in one go: the caller polls this file for the port.
             tmp = port_file + ".tmp"
             with open(tmp, "w") as fh:
                 fh.write(str(self.port))
@@ -115,8 +90,6 @@ class Proxy:
                 conn, _ = self.srv.accept()
             except OSError:
                 return
-            # Before the worker exists: an accepted, unscheduled connection is invisible to the
-            # journal.
             self._adjust_active(+1)
             threading.Thread(target = self.handle, args = (conn,), daemon = True).start()
 
@@ -146,7 +119,6 @@ class Proxy:
         }
 
     def handle(self, conn: socket.socket) -> None:
-        # Released once the record is in the journal (or the worker died trying).
         try:
             self._handle(conn)
         finally:
@@ -159,7 +131,6 @@ class Proxy:
         down = up = 0
         status = "ok"
         upstream = None
-        # Set once journalled, so an early journal does not get a second record from the `finally`.
         recorded = False
         try:
             head = self._read_head(conn)
@@ -178,8 +149,7 @@ class Proxy:
             if self.denied(probe):
                 host, status = probe, "refused"
                 port = 443 if method == "CONNECT" else 80
-                # Journalled BEFORE the 403 reaches the client: a caller can tear the proxy down on
-                # seeing the refusal, and a lost record reads as a connection that never happened.
+                # Journal before the 403 reaches the client, which may tear the proxy down on seeing it.
                 self.log(self._record(t0, host, port, method, down, up, status))
                 recorded = True
                 conn.sendall(
@@ -245,9 +215,7 @@ def summary(
     since_ts: float | None = None,
     until_ts: float | None = None,
 ) -> dict:
-    # largest_bytes_down is the biggest SINGLE connection, which is what separates a release's
-    # metadata from its payload: both are served by the same host over the same URL shape, so a
-    # total or a connection count cannot tell them apart (see PREBUILT_METADATA_CEILING).
+    # Largest single connection separates release metadata from payload (see PREBUILT_METADATA_CEILING).
     by_host: dict[str, dict] = defaultdict(
         lambda: {
             "bytes_down": 0,

@@ -1,19 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Review follow-ups to the prebuilt marker fast path.
-
-Two defects the marker work exposed, each with the user situation it costs:
-
-  * the llama marker rewriter asked os.chown for the owner as well as the group, which a
-    non-root member of a group-shared install cannot grant. chown is all-or-nothing, so the
-    group was not applied either and os.replace installed the member's primary group,
-    leaving the marker unreadable to everyone else who shares the install. prebuilt_core
-    was fixed for this; the llama writer was not, and this work gave it a new caller
-    (whisper's slim pairing backfill).
-
-  * UNSLOTH_PREBUILT_FULL_CHECK turns the no-network shortcut off for llama and whisper.
-    Node never read it, so the one variable documented as "force a full revalidation" left
-    a third of the runtime answered from its marker.
-"""
+"""Review fixes: llama writer must not chown the owner; Node must honour UNSLOTH_PREBUILT_FULL_CHECK."""
 
 import sys
 from pathlib import Path
@@ -57,15 +43,8 @@ def _node_tree(root: Path, host) -> None:
 def test_a_live_marker_rewrite_falls_back_to_the_group_when_the_owner_is_refused(
     tmp_path, monkeypatch, writer_name
 ):
-    """Both marker rewriters must ask for owner AND group, then for the group alone.
-
-    Neither half is sufficient. A shared install's marker is owned by whoever installed it,
-    and chown(2) refuses the WHOLE call when an unprivileged caller names another owner, so
-    asking only for the owner loses the group too and the next reader in that group cannot
-    read the marker. Asking only for the group is wrong the other way: under root, the one
-    caller that CAN restore the owner, it leaves the marker owned by root, and an 0600
-    marker stops being readable by the user who owns the install.
-    """
+    """Rewriters ask for owner and group, then group alone: an unprivileged owner change fails the
+    whole chown(2) and drops the group; group-only as root leaves a 0600 marker unreadable."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840"}\n', encoding = "utf-8")
     original = marker.stat()
@@ -92,11 +71,7 @@ def test_a_live_marker_rewrite_falls_back_to_the_group_when_the_owner_is_refused
 
 @requires_chown
 def test_the_group_survives_a_rewrite_the_owner_cannot_be_granted(tmp_path, monkeypatch):
-    """The end state, not just the argument: a refused owner must not cost the group.
-
-    os.chown is emulated with the kernel's own rule -- an unprivileged caller may not change
-    the owner, and chown is all-or-nothing -- so this fails for any writer that names one.
-    """
+    """Fake os.chown refuses the owner; the group must survive, as chown is all-or-nothing."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840"}\n', encoding = "utf-8")
     shared_gid = marker.stat().st_gid
@@ -114,10 +89,7 @@ def test_the_group_survives_a_rewrite_the_owner_cannot_be_granted(tmp_path, monk
 
 @requires_chown
 def test_a_marker_rewrite_keeps_the_keys_the_about_tab_renders(tmp_path, monkeypatch):
-    """release_tag and tag reach the user through /api/system/hardware and the About tab.
-
-    A rewrite that drops them changes what Studio displays, so pin that they survive.
-    """
+    """release_tag and tag feed the About tab via /api/system/hardware; keep both on rewrite."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840", "tag": "b10840"}\n', encoding = "utf-8")
     monkeypatch.setattr(LLAMA.os, "chown", lambda path, uid, gid: None)
@@ -133,11 +105,7 @@ def test_a_marker_rewrite_keeps_the_keys_the_about_tab_renders(tmp_path, monkeyp
 
 
 def test_node_honours_the_full_check_escape_hatch(tmp_path, monkeypatch):
-    """UNSLOTH_PREBUILT_FULL_CHECK is the documented way to force a full revalidation.
-
-    llama and whisper both turn their shortcut off for it. Node did not, so the variable
-    silently covered two of the three runtimes.
-    """
+    """Node must honour UNSLOTH_PREBUILT_FULL_CHECK, which llama and whisper already do."""
     host = _node_host()
     _node_tree(tmp_path, host)
     NODE.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
@@ -166,21 +134,18 @@ def test_the_node_bypass_spells_it_the_way_llama_does(monkeypatch, value):
 
 @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe"])
 def test_the_node_bypass_stays_off_for_anything_else(monkeypatch, value):
-    """An unset or negative value must leave the fast path in place, or every update pays
-    the spawns forever."""
+    """Any other value keeps the fast path, or every update pays the spawns forever."""
     monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", value)
     assert NODE.prebuilt_full_check_requested() is False
     assert LLAMA.prebuilt_full_check_requested() is False
 
 
-# The migration run: a pre-record marker has no digest and, on Windows, no loader preflight, so
-# this run decides whether the bytes on disk become the reference every later run is held to.
+# A pre-record marker's run decides whether disk bytes become the reference for later runs.
 _LOGIC = _load("studio_install_llama_prebuilt_pr10648_logic", "install_llama_prebuilt.py")
 
 
 def _legacy_marker_install(tmp_path, helpers, windows: bool):
-    """A healthy tree under a marker with no runtime_files, i.e. every install made before
-    this record existed."""
+    """Healthy tree under a marker lacking runtime_files, as every pre-record install has."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     if windows:
@@ -201,7 +166,6 @@ def _legacy_marker_install(tmp_path, helpers, windows: bool):
     checksums = helpers.release_checksums((choice.name, choice.expected_sha256, repo))
     plan = helpers.release_plan([choice], checksums)
     helpers.write_metadata(install_dir, choice, checksums)
-    # Strip the keys that postdate this work, which is what an older Studio's marker looks like.
     # runtime_files is not a fingerprint input, so the stripped marker stays self-consistent.
     import json as _json
 
@@ -232,12 +196,7 @@ def _load_logic_helpers():
 
 
 def test_a_legacy_marker_is_not_blessed_without_asking_the_loader(tmp_path, monkeypatch, helpers):
-    """A Windows install damaged under a pre-record marker must not have its damage recorded.
-
-    Windows gets neither of the loader preflights below, and a marker with no runtime_files has
-    no digest to fail, so before this the only integrity test was "the file is not zero bytes".
-    The next run would then be compared against the damaged bytes for ever.
-    """
+    """Windows legacy marker must be loader-verified before blessing, or damage is recorded."""
     install_dir, host, plan = _legacy_marker_install(tmp_path, helpers, windows = True)
 
     probed = []
@@ -281,17 +240,11 @@ def test_a_linux_legacy_install_is_covered_by_its_preflight_instead(tmp_path, mo
 
 
 def test_a_marker_that_vanishes_between_the_two_reads_does_not_crash(tmp_path, monkeypatch):
-    """_backfill_fingerprint_inputs reads the marker a second time.
-
-    Another installer swapping the tree in between leaves None, and the old code called
-    .get on it. The backfill has nothing to catch up at that point, so falling out is the
-    answer -- the run that replaced the tree wrote its own marker.
-    """
+    """Backfill must tolerate a marker vanishing between its two reads, not call .get on None."""
     calls = []
 
     class Ops:
         def load_prebuilt_metadata(self, install_dir):
-            # Present for _kept_marker_patch's read, gone for the backfill's.
             calls.append(1)
             return {"install_fingerprint": "abc"} if len(calls) == 1 else None
 
@@ -311,13 +264,11 @@ def test_a_marker_that_vanishes_between_the_two_reads_does_not_crash(tmp_path, m
     )()
 
     monkeypatch.setattr(CORE, "_kept_marker_patch", lambda ops, d, s: {"fingerprint_coverage": {}})
-    # The bug was an AttributeError here, not a wrong answer.
     CORE._backfill_fingerprint_inputs(Ops(), tmp_path, selection)
 
 
 def test_a_blocked_marker_swap_is_retried_then_reported(tmp_path, monkeypatch):
-    """Rename-over needs DELETE access on the destination, so a scanner holding the marker
-    open fails the swap where the in-place write this replaced would have succeeded."""
+    """Rename-over needs DELETE on the marker, so a scanner holding it open blocks the swap."""
     source = tmp_path / "tmp-marker"
     source.write_text("{}", encoding = "utf-8")
     destination = tmp_path / "MARKER.json"
@@ -332,8 +283,7 @@ def test_a_blocked_marker_swap_is_retried_then_reported(tmp_path, monkeypatch):
             raise blocked
         Path(src).rename(dst)
 
-    # Swap the MODULE's os reference, never os.name itself: pathlib reads os.name at runtime, so
-    # setting it globally makes every path in the process a backslash one.
+    # Swap the module's os, never os.name: pathlib reads os.name at runtime.
     class FakeOs:
         name = "nt"
         replace = staticmethod(blocked_then_ok)
@@ -365,9 +315,7 @@ def test_a_swap_blocked_for_any_other_reason_raises_at_once(tmp_path, monkeypatc
     assert len(attempts) == 1, "a non-transient failure was retried"
 
 
-# The walk-back records why AUTOMATIC selection took an older release, so reusing it for a run
-# that NAMED one answers "already matches N" while N is not installed. The full path turns off
-# older-release fallback as soon as published_release_tag is supplied.
+# The walk-back is for AUTOMATIC selection; a named release must not reuse it.
 def _mac(macos_version = (14, 7)):
     return LLAMA.HostInfo(
         system = "Darwin",
@@ -408,8 +356,7 @@ def test_a_pinned_release_is_not_satisfied_by_a_walked_back_install():
 
 
 def test_an_automatic_request_still_accepts_the_walk_back():
-    """The optimisation this PR exists for must survive the fix above: without a pin, a Mac
-    holding the older release because the newest needs a newer OS is still current."""
+    """Without a pin, a Mac that walked back to an older release still counts as current."""
     host = _mac()
     marker = _walked_back_marker(host)
     assert LLAMA._release_expectation_met(marker, "b9999", host, pinned = False) is True
@@ -423,8 +370,7 @@ def test_a_pinned_release_that_is_actually_installed_is_still_current():
 
 
 def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
-    """The guard is only worth anything if the caller actually passes the pin, so drive the
-    real entry point and record what it asked."""
+    """The guard only matters if the caller passes the pin, so drive the real entry point."""
     seen = []
     monkeypatch.setattr(
         LLAMA,
@@ -432,8 +378,7 @@ def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
         lambda marker, expected, host, *, pinned = False: seen.append(pinned) or False,
     )
     host = _mac()
-    # Everything the guards AHEAD of the release check demand: failing an earlier one would
-    # make this pass vacuously, with the pin never computed at all.
+    # Satisfy every earlier guard, or this passes with the pin never computed.
     monkeypatch.setattr(
         LLAMA,
         "load_prebuilt_metadata",
@@ -469,9 +414,7 @@ def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
     assert seen == [True], f"the pin never reached the expectation check: {seen}"
 
 
-# The mode restore protects a REFRESH, which has another reader. A first write has neither a
-# mode to preserve nor a reader, and raising there aborts a whole Node install over a cosmetic
-# call, reachable on Windows through the sharing violation the swap already retries.
+# A first write has no mode to preserve; raising there would abort a Node install.
 def _refuse_mode_change(monkeypatch, module):
     def refuse(path, mode):
         raise PermissionError(13, "Permission denied")
@@ -489,8 +432,7 @@ def test_a_first_node_marker_survives_a_refused_mode_restore(tmp_path, monkeypat
 
 
 def test_a_node_marker_refresh_abandons_on_a_refused_mode_restore(tmp_path, monkeypatch):
-    """The refresh is where the harm is: the existing marker must be left exactly as it was,
-    rather than replaced by one only its writer can read."""
+    """On a refused mode restore, keep the marker; never swap in one only its writer can read."""
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     NODE.write_metadata(install_dir, version = "24.17.0", asset = "a.tar.gz", sha256 = "b" * 64)
@@ -505,8 +447,7 @@ def test_a_node_marker_refresh_abandons_on_a_refused_mode_restore(tmp_path, monk
 
 
 def test_the_runtime_record_refresh_still_never_raises(tmp_path, monkeypatch):
-    """record_runtime_verification is best effort by contract: an unrefreshable marker costs
-    the two spawns again, and must never take the caller down with it."""
+    """record_runtime_verification is best effort; an unrefreshable marker must never raise."""
     host = _node_host()
     _node_tree(tmp_path, host)
     NODE.write_metadata(tmp_path, version = "24.17.0", asset = "a", sha256 = "b" * 64)
@@ -514,11 +455,7 @@ def test_the_runtime_record_refresh_still_never_raises(tmp_path, monkeypatch):
     NODE.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
 
 
-# A release found untrustworthy must not read as "update unavailable"
-# The keep paths exist because a lookup that could not ANSWER says nothing about the tree on disk.
-# An asset outside the checksum index, or a manifest digest disagreeing with it, is the opposite:
-# the release was fetched and found untrustworthy. Reporting "update unavailable, existing prebuilt
-# kept" over that turns a tamper signal into a routine offline notice.
+# An untrustworthy release must not read as 'update unavailable': that hides a tamper signal.
 def _ops():
     """The one name expected_sha256_for reads, over prebuilt_core's own defaults. A component
     module supplies SHA256_ASSET_NAME; neither core nor llama defines it, and without it the
@@ -552,11 +489,7 @@ def test_a_plain_lookup_failure_is_not_an_integrity_error():
     assert not isinstance(CORE.PrebuiltFallback("offline"), CORE.ReleaseIntegrityError)
 
 
-# llama's keep arm must refuse an untrustworthy release too
-# llama has kept an install on a failed lookup since before this branch, and that arm caught every
-# PrebuiltFallback including the integrity refusals. Closed here so the two installers cannot
-# disagree about what a keep is allowed to hide. The condition is inline, so this drives the real
-# install_prebuilt: with the guard removed the whole install suite stayed green.
+# llama's keep arm must refuse integrity failures too; the guard is inline, so drive install_prebuilt.
 def _llama_keep_probe(monkeypatch, tmp_path, raised):
     """Run llama's install_prebuilt with the planner raising *raised*, over a tree its own
     _existing_install_runs accepts, and report whether it took the keep arm."""

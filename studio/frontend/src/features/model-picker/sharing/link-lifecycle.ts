@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  type ChatSearch,
-  clearNewChatDraft,
-  useChatRuntimeStore,
-} from "@/features/chat";
+import { type ChatSearch, useChatRuntimeStore } from "@/features/chat";
 import { toast } from "@/lib/toast";
 import { modelConfigDraftKey } from "../model-config/model-config-draft";
 import {
@@ -132,7 +128,6 @@ export function openRunConfigTarget(
       return;
     }
     if (pending.newChatId === undefined) {
-      clearNewChatDraft();
       const runtime = useChatRuntimeStore.getState();
       runtime.setActiveThreadId(null);
       runtime.setActiveProjectId(null);

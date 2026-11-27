@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Auto-class resolution for omni checkpoints, and what it must NOT move.
-
-`Qwen/Qwen3-Omni-30B-A3B-Instruct` names `Qwen3OmniMoeForConditionalGeneration`
-and so reads as a VLM, but transformers registers `qwen3_omni_moe` only under
-`AutoModelForTextToWaveform`. Every other auto class raises "Unrecognized
-configuration class" on it, which is a hard load failure before the weights are
-touched.
-
-The resolver is consulted ONLY when the already-chosen class has no mapping, so
-these tests spend as much effort on the models that must keep taking exactly
-the branch they take today as on the one that changes.
-"""
+"""The omni resolver runs only if the chosen auto class has no mapping, leaving other branches as-is."""
 
 import pytest
 
@@ -50,7 +39,6 @@ def test_omni_resolves_to_the_class_its_family_registered():
     config = _omni_config()
     resolved = _resolve_omni_auto_model(config)
     assert resolved is not None
-    # and it really maps, rather than merely being a different name to fail on
     assert resolve_model_class(resolved, config) is not None
 
 
@@ -65,15 +53,13 @@ def test_ordinary_vlms_are_never_rerouted(config_name):
 
 
 def test_nothing_matching_returns_None_rather_than_a_concrete_class():
-    """Returning the concrete class the checkpoint names is WRONG: it is in no
-    auto mapping, so it leaves the processor set and downgrades to AutoTokenizer."""
+    """A concrete class is in no auto mapping; returning it would downgrade to AutoTokenizer."""
     assert _resolve_omni_auto_model(transformers.LlamaConfig()) is None
     assert _resolve_omni_auto_model(object()) is None
 
 
 def test_every_class_the_resolver_can_return_takes_a_processor():
-    """The resolver's answer decides processor selection, so every possible
-    answer must be in the set that selects AutoProcessor."""
+    """Every class the resolver can return must be in the set that selects AutoProcessor."""
     import unsloth.models.loader as loader
 
     processor_classes = _multimodal_auto_classes()
@@ -104,7 +90,7 @@ class _CannotAnswer:
 
 
 class _WrongSignature:
-    def get_input_embeddings(self, input_ids):  # remote code does this
+    def get_input_embeddings(self, input_ids):
         raise AssertionError("must not be reached")
 
 
@@ -116,9 +102,9 @@ class _Normal:
 @pytest.mark.parametrize(
     "model, expected",
     [
-        (_CannotAnswer(), None),  # transformers 5 base impl raises
-        (_WrongSignature(), None),  # TypeError, not AttributeError
-        (object(), None),  # method absent entirely
+        (_CannotAnswer(), None),
+        (_WrongSignature(), None),
+        (object(), None),
         (_Normal(), "embeddings"),
     ],
 )
@@ -147,23 +133,20 @@ def test_offload_embedding_declines_a_model_it_cannot_inspect(requested, capsys)
     assert _resolve_offload_embedding(_NoEmbeddings(), requested) is False
     printed = capsys.readouterr().out
     if requested == "auto":
-        # the default declines silently: nobody asked for it
         assert "Not offloading embeddings" not in printed
     else:
         assert "Not offloading embeddings" in printed
 
 
 def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
-    """Without the needs_processor term, is_vlm_config is False for an omni
-    checkpoint (its vision config hides under thinker_config), which skips the
-    guard and calls load_vllm with is_vision_model=False for an unsupported model."""
+    """Without needs_processor, is_vlm_config is False for omni checkpoints (vision config sits
+    under thinker_config), so the guard is skipped and load_vllm gets is_vision_model=False."""
     from unsloth.models.vision import VLLM_SUPPORTED_VLM
 
     config = _omni_config()
     assert not hasattr(config, "vision_config"), "premise: vision lives under thinker_config"
     assert "qwen3_omni_moe" not in VLLM_SUPPORTED_VLM, "premise: vLLM does not support it"
 
-    # what is_vlm_config now computes for it
     resolved = _resolve_omni_auto_model(config)
     is_vlm = resolved in [IMAGE_TEXT_CLASS]
     needs_processor = is_vlm or resolved in _multimodal_auto_classes()
@@ -199,8 +182,7 @@ def _pretrained_base():
 
 
 def test_a_getter_that_fails_internally_is_not_read_as_a_bad_signature():
-    """Skipping it would cost the module its input-gradient hook, so under PEFT
-    with gradient checkpointing backward fails or the adapter trains on nothing."""
+    """Skipping it loses the input-grad hook: PEFT with checkpointing fails or trains nothing."""
     Base = _pretrained_base()
 
     class RaisesInside(Base):
@@ -219,7 +201,7 @@ def test_a_getter_that_cannot_take_zero_arguments_is_skipped():
         def get_input_embeddings(self, input_ids):
             raise AssertionError("must not be reached")
 
-    _tiny(WrongSignature).enable_input_require_grads()  # must not raise
+    _tiny(WrongSignature).enable_input_require_grads()
 
 
 def test_a_normal_model_still_gets_its_hook():

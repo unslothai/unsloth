@@ -27,7 +27,6 @@ def l4_with_empty_cache(monkeypatch, tmp_path):
     other.mkdir()
     monkeypatch.setattr(dmod, "hub_cache_dir", lambda: str(live))
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(other))
-    # A 24 GB L4 with ~22 GB free.
     monkeypatch.setattr(
         dmod,
         "settled_snapshot_device_memory",

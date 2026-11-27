@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What may enter an A/B ratio: a completed cell, from THIS session.
-
-Two ways a ratio was formed out of things that are not comparable, both of them silent:
-
-  A CRASHED ARM CAN WIN. An arm that died part way through a cell still wrote the action rows it
-  had already measured. Pairing those against a completed cell on the other side turned a crash
-  into an improvement -- a treatment cell holding one 50 ms keystroke against a completed 100 ms
-  base cell reported IMPROVED, and the crash appeared only in the excluded list underneath.
-
-  RESUME REOPENS THE SESSION. `--resume` appends to the payload of the run it is continuing, and
-  the new cells carry a new session id. `assert_comparable` refuses two sessions, but both sides
-  are labelled with the CURRENT one, so the 8% cross-session drift term it exists to refuse came
-  back in through the rows.
-"""
+"""Only completed cells from this session may enter an A/B ratio; a crashed arm can otherwise win."""
 
 from __future__ import annotations
 
@@ -105,11 +92,7 @@ def test_a_crashed_treatment_cell_does_not_become_a_win():
 
 
 def test_a_cell_that_failed_a_per_cell_gate_does_not_become_a_win():
-    """REGRESSION. A completeness gate is advisory where it is emitted, so the cell arrives here
-    `completed=True` with a full set of timings -- and cheaper ones, because a thread that lost its
-    middle renders fewer rows. `excluded_from_rows` reads the same gate row into `excluded_cells`,
-    but nothing filters on that block, and `ab.md` is scored from `readings_by_arm`.
-    """
+    """A cell that failed a per-cell gate must not feed a ratio; the gate row alone does not exclude it."""
 
     records = [
         _cell("r10K.base.rep0", "base"),
@@ -152,15 +135,7 @@ def test_a_passing_gate_leaves_its_cell_alone():
 
 
 def test_a_failed_timer_clamp_does_not_throw_away_the_rest_of_the_cell():
-    """A per-cell gate is not automatically fatal, and this one says so itself.
-
-    `timer_clamp` fails whenever idle calibration cannot establish a floor -- an overloaded
-    machine, or the frames instrument simply not being loaded. `session.py` calls that "NOT fatal,
-    and NOT silently zero": blocked time is a subtraction against the floor, so `busy_pct` is null
-    with the reason attached and every other column stands. Excluding the cell would delete
-    keystroke, frame and census readings that were measured correctly, most often on the machines
-    least able to spare a repetition.
-    """
+    """A failed timer_clamp is not fatal: busy_pct goes null with its reason; other columns stand."""
 
     records = [
         _cell("r10K.base.rep0", "base"),

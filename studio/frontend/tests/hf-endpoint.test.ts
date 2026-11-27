@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Two things here are easy to get wrong: the module must stay importable under
- * bare node (network.ts imports it, and the tests import that directly), and a
- * reply omitting the fields must not reset a configured mirror.
+ * The module must stay importable under bare node, and a reply omitting the
+ * fields must not reset a configured mirror.
  */
 
 import assert from "node:assert/strict";
@@ -47,8 +46,6 @@ test("before /api/health answers, both endpoints are the official ones", () => {
 });
 
 test("the hooks React subscribes to are the same state the getters read", () => {
-  // The hooks are thin useStore wrappers, so what matters is that they read the
-  // one store the setter writes, not a second copy kept in sync by hand.
   resetHfEndpoints();
   assert.equal(typeof useHfEndpoint, "function");
   assert.equal(typeof useHfDatasetsServer, "function");
@@ -65,8 +62,7 @@ test("a mirror reported by the backend is applied to both getters", () => {
 });
 
 test("a reported endpoint is stored as sent, minus trailing slashes", () => {
-  // Already sanitised and canonicalised by the backend; only the trailing slash
-  // is dropped, since every consumer builds `${getHfEndpoint()}/path`.
+  // Already canonicalised by the backend; only the trailing slash is dropped.
   for (const [raw, expected] of [
     ["https://hf-mirror.com", "https://hf-mirror.com"],
     ["https://hf-mirror.com/", "https://hf-mirror.com"],
@@ -84,8 +80,7 @@ test("a reported endpoint is stored as sent, minus trailing slashes", () => {
 });
 
 test("an older backend that reports neither field keeps the configured mirror", () => {
-  // An older Studio carries no hf_endpoint: resetting would strand a mirror-only
-  // deployment on a host it cannot reach.
+  // An older Studio carries no hf_endpoint: resetting would strand a mirror-only deployment.
   resetHfEndpoints();
   setHfEndpoints("https://hf-mirror.com", "https://ds.example.com");
   setHfEndpoints(undefined, undefined);
@@ -99,8 +94,6 @@ test("an older backend that reports neither field keeps the configured mirror", 
 });
 
 test("a value that does not parse as an http(s) URL is ignored", () => {
-  // Not a second copy of the policy: only a value that would throw inside
-  // `new URL(getHfEndpoint())` is kept out.
   for (const junk of [
     "javascript:alert(1)",
     "file:///etc/passwd",
@@ -137,8 +130,6 @@ test("the datasets server stays independent of the hub mirror", () => {
 });
 
 test("the Hub offline backoff keys on the configured mirror, not huggingface.co", () => {
-  // The backoff maps key on the request origin: keying a mirror deployment on
-  // huggingface.co would report the Hub healthy while every request failed.
   resetHfEndpoints();
   setHfEndpoints("https://hf-mirror.com", undefined);
   clearRemoteBackoff("https://hf-mirror.com");
@@ -235,8 +226,64 @@ test("a relay to a custom endpoint gets the session, and the Hugging Face token 
   assert.equal(refreshes, 1);
   const both = ["Bearer session", "Bearer hf_x"];
   const fresh = ["Bearer fresh1", "Bearer hf_x"];
-  // The gated 401 came from the endpoint with a token, so it is asked once more without it,
-  // still carrying the session; that also 401s and the original answer is returned.
   const anonymous = ["Bearer session", null];
   assert.deepEqual(sent, [both, anonymous, both, anonymous, both, fresh, fresh, ["Bearer hf_x", null]]);
 });
+
+test("hub page links open ModelScope directly, aliased ids included", async () => {
+  const { hubWebUrl, setHubPageLinks } = await import("../src/lib/hf-endpoint.ts");
+  const adapter = "http://127.0.0.1:8888/api/hub/modelscope";
+  resetHfEndpoints();
+  setHfEndpoints(adapter, undefined, "modelscope");
+  assert.equal(hubWebUrl(`${adapter}/unsloth/Qwen3-8B`), `${adapter}/unsloth/Qwen3-8B`);
+  setHubPageLinks(null, {
+    base: "https://www.modelscope.cn",
+    aliases: { model: {}, dataset: { "openai/gsm8k": "AI-ModelScope/gsm8k" } },
+  });
+  assert.equal(
+    hubWebUrl(`${adapter}/unsloth/Qwen3-8B`),
+    "https://www.modelscope.cn/models/unsloth/Qwen3-8B",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/datasets/OpenAI/GSM8K`),
+    "https://www.modelscope.cn/datasets/AI-ModelScope/gsm8k",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/unsloth/Qwen3-8B/resolve/main/docs/guide.md#setup`),
+    "https://www.modelscope.cn/models/unsloth/Qwen3-8B/resolve/master/docs/guide.md#setup",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/unsloth/Qwen3-8B?tab=files`),
+    "https://www.modelscope.cn/models/unsloth/Qwen3-8B?tab=files",
+  );
+  // A pinned revision needs the backend's commit mapping, so it keeps the mount.
+  const pinned = `${adapter}/unsloth/Qwen3-8B/resolve/${"a".repeat(40)}/LICENSE`;
+  assert.equal(hubWebUrl(pinned), pinned);
+  assert.equal(hubWebUrl("https://example.com/x/y"), "https://example.com/x/y");
+});
+
+test("hub page links on a relayed mirror use the mirror's own origin", async () => {
+  const { hubWebUrl, missingHubPageBase, setHubPageBase, setHubPageLinks } = await import(
+    "../src/lib/hf-endpoint.ts"
+  );
+  const relay = "http://127.0.0.1:8888/api/hub/endpoint/abc";
+  resetHfEndpoints();
+  setHfEndpoints("https://hf-mirror.com", undefined, "huggingface");
+  assert.equal(missingHubPageBase(), null);
+  setHfEndpoints(relay, undefined, "huggingface", { endpoint: true });
+  setHubPageLinks(null, undefined);
+  assert.equal(missingHubPageBase(), relay);
+  assert.equal(hubWebUrl(`${relay}/org/m`), `${relay}/org/m`);
+  setHubPageBase(relay, "https://hf-mirror.com/");
+  assert.equal(missingHubPageBase(), null);
+  assert.equal(hubWebUrl(`${relay}/datasets/org/d`), "https://hf-mirror.com/datasets/org/d");
+  // A base loaded for an endpoint that has since changed is never applied to the new one.
+  const next = "http://127.0.0.1:8888/api/hub/endpoint/def";
+  setHfEndpoints(next, undefined, "huggingface", { endpoint: true });
+  assert.equal(hubWebUrl(`${next}/org/m`), `${next}/org/m`);
+  setHubPageLinks("https://hub.internal", undefined);
+  assert.equal(hubWebUrl(`${next}/org/m`), "https://hub.internal/org/m");
+  setHubPageBase(relay, "https://stale.example");
+  assert.equal(hubWebUrl(`${next}/org/m`), "https://hub.internal/org/m");
+});
+

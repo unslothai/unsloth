@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Cache selection for multimodal generation (unslothai/unsloth#6028).
-
-A static cache makes transformers skip mask materialisation at prefill and rely
-on `is_causal`, which drops the bidirectional image/audio block overlay the Gemma
-multimodal families build. Image tokens then attend causally and spatial
-grounding degrades. `generate` must fall back to the dynamic cache for those
-requests, and only those.
-"""
+"""Gemma media generation needs the dynamic cache; static prefill drops the bidirectional overlay."""
 
 import sys
 import types
@@ -78,8 +71,7 @@ def test_none_media_kwarg_keeps_static_cache(gemma_like):
 
 
 def test_causal_vlm_keeps_static_cache(causal_vlm):
-    """Qwen2-VL, Llava and PaliGemma have no bidirectional block overlay, so they
-    must not lose the static-cache path."""
+    """Qwen2-VL, Llava and PaliGemma have no bidirectional block overlay, so keep static cache."""
     assert not _needs_bidirectional_multimodal_mask(causal_vlm, {"pixel_values": object()})
 
 
@@ -91,8 +83,7 @@ def test_unknown_module_does_not_raise():
 
 @pytest.mark.parametrize("helper", _BIDIRECTIONAL_MASK_BUILDERS)
 def test_either_mask_builder_gates_the_guard(request, helper):
-    """The two names span transformers 5.10 to current, so either one alone has
-    to be enough."""
+    """Either name alone must gate the guard: the two span transformers 5.10 to current."""
     name = f"_fake_helper_{request.node.name}"
     model = _make_model(name, True, helper = helper)
     try:
@@ -102,12 +93,7 @@ def test_either_mask_builder_gates_the_guard(request, helper):
 
 
 def test_real_gemma_modules_expose_the_helper():
-    """Pin the upstream symbols the guard keys on, so a rename is caught here.
-
-    These helpers landed in transformers 5.10. Before that neither name exists
-    (measured on 4.57.6 and 5.5.0), the guard is inert by design, and Gemma keeps
-    the static path it always had, so there is nothing to pin.
-    """
+    """Pins the transformers 5.10 helper names the guard keys on, so a rename fails here."""
     transformers = pytest.importorskip("transformers")
     from packaging.version import InvalidVersion, Version
 
@@ -131,8 +117,7 @@ def test_real_gemma_modules_expose_the_helper():
 
 
 def test_causal_vlms_never_expose_a_mask_builder():
-    """The other half of the gate: these must stay on the static path on every
-    version, so neither name may appear on them."""
+    """Causal VLMs stay on the static path on every version, so neither helper name may appear."""
     pytest.importorskip("transformers")
     for name in ("qwen2_vl", "llava", "paligemma"):
         try:
@@ -197,8 +182,7 @@ def _gemma3_shaped(module):
 
 
 def test_causal_gemma4_variant_keeps_the_static_cache(gemma_like):
-    """E2B / E4B leave use_bidirectional_attention None, so upstream builds no
-    overlay and they must not lose the compiled path."""
+    """E2B / E4B leave use_bidirectional_attention None: no overlay, so compiled path stays."""
     module = sys.modules[type(gemma_like).__module__]
     assert not _needs_bidirectional_multimodal_mask(
         _gemma4_shaped(module, None), {"pixel_values": object()}
@@ -290,8 +274,7 @@ def test_text_only_still_gets_the_static_cache():
 
 
 def test_none_is_preserved_when_not_forcing():
-    """bfloat16 mixed precision clears the cache by setting None; that path must
-    keep its own meaning."""
+    """None is how bfloat16 mixed precision clears the cache, so it must keep its own meaning."""
     assert _resolve_cache_choice(False, None, {}) is None
 
 
@@ -359,18 +342,12 @@ def test_blocked_token_types_match_upstream():
 
 
 def _force_gate(local_cache_implementation, kwargs, is_media):
-    """The force decision from unsloth_base_fast_generate, isolated.
-
-    Deliberately independent of the local default: clearing it does not make the
-    effective cache dynamic, since kwargs and the caller's generation_config are
-    applied afterwards.
-    """
+    """Mirrors the force decision alone; the local default does not settle the effective cache."""
     return kwargs.get("past_key_values") is None and is_media
 
 
 def test_mixed_precision_still_forces_dynamic_for_media():
-    """UNSLOTH_BFLOAT16_MIXED_PRECISION clears the local default to None. An
-    explicit static kwarg would otherwise survive and bring the bug back."""
+    """UNSLOTH_BFLOAT16_MIXED_PRECISION clears local default; a static kwarg revives the bug."""
     kwargs = {"generation_config": _GenCfg(), "cache_implementation": "static"}
     assert _force_gate(None, kwargs, is_media = True)
     _resolve_cache_choice(True, None, kwargs)
@@ -390,8 +367,7 @@ def test_text_only_never_forces_even_with_a_cleared_default():
 
 @pytest.mark.parametrize("requested", ["offloaded", "quantized"])
 def test_a_growing_cache_the_caller_asked_for_survives(requested):
-    """offloaded and quantized grow per step, so they keep the media mask.
-    Downgrading them to plain dynamic would throw away the memory they buy."""
+    """Offloaded and quantized caches grow per step; downgrading them to dynamic wastes memory."""
     assert _dynamic_cache_choice({"cache_implementation": requested}) == requested
     cfg = _GenCfg()
     cfg.cache_implementation = requested

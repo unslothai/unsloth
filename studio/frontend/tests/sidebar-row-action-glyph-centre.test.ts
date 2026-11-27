@@ -6,9 +6,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// A sidebar row's pin, pencil and "…" sit in a 24px hover circle. Painted on the glyph box, the
-// circle kept subpixel precision while the browser snapped the 15px icon inside it to whole
-// pixels, so the icon drifted off centre by up to half a pixel.
+// Painted on the glyph box, the circle kept subpixel precision while the icon snapped.
 
 const CSS = readSrc("index.css");
 const SIDEBAR = readSrc("components/app-sidebar.tsx");
@@ -18,7 +16,6 @@ test("the hover circle is painted on the icon, padded out to the glyph box", () 
     CSS,
     /\.sidebar-row-action-glyph > svg \{\n\t\t--glyph-icon: var\(--icon-size\);\n\t\tbox-sizing: border-box;\n\t\twidth: 100% !important;\n\t\theight: 100% !important;\n\t\tpadding: calc\(\(100% - var\(--glyph-icon\)\) \/ 2\);\n\t\tborder-radius: 9999px;/,
   );
-  // Each icon size the glyphs hold keeps its own drawn size.
   assert.match(CSS, /\.sidebar-row-action-glyph > svg\.size-4 \{\n\t\t--glyph-icon: calc\(var\(--spacing\) \* 4\);/);
   assert.match(CSS, /\.sidebar-row-action-glyph > svg\.size-3\\\.5 \{\n\t\t--glyph-icon: calc\(var\(--spacing\) \* 3\.5\);/);
   // The tint is on the icon, not the glyph box, or the two would snap apart again.

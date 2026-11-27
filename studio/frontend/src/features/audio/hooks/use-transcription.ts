@@ -9,14 +9,18 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { AudioApiError } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
-import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
+import { sttSameModel } from "../audio-page-policy";
+import { sttRepoIdForSidecarKey, sttSidecarKeyFor } from "../catalog";
 import {
   getTranscript,
   renameTranscriptSpeakers,
   transcribeSourceWithProgress,
 } from "../transcribe-api";
 import { downloadTranscript } from "../transcript-download";
-import type { TranscriptExportFormat } from "../transcript-export";
+import {
+  type TranscriptExportFormat,
+  needsSavedTimings,
+} from "../transcript-export";
 import {
   readTranscriptDraft,
   transcriptDraftKey,
@@ -65,6 +69,9 @@ export function useTranscription({
   ensureSttLoaded,
   setLastSttRepo,
   refreshSttStatus,
+  sttEngineFor,
+  readSttResidency,
+  sttLoadGeneration,
 }: Pick<AudioHostState, "activeRef" | "busyRef" | "setBusy"> &
   Pick<
     SttSidecar,
@@ -76,6 +83,9 @@ export function useTranscription({
     | "ensureSttLoaded"
     | "setLastSttRepo"
     | "refreshSttStatus"
+    | "sttEngineFor"
+    | "readSttResidency"
+    | "sttLoadGeneration"
   >) {
   const [draftKey] = useState(transcriptDraftKey);
   const [recoveredTranscript] = useState(() => readTranscriptDraft(draftKey));
@@ -184,8 +194,35 @@ export function useTranscription({
     selectedSttRepoRef.current = repo;
     setSelectedSttRepo(repo);
     const model = sttSidecarKeyFor(repo);
-    const engine = sttEngineForRepoId(repo);
-    if (sttLoadedModel !== model || sttLoadedEngine !== engine) {
+    const engine = sttEngineFor(repo);
+    // An Eject or another pick during the read below bumps this.
+    const generation = sttLoadGeneration.current;
+    // Page state lags an idle unload; transcribing against it skipped the load and hit a 409.
+    const resident = await readSttResidency(engine).catch(() =>
+      sttLoadedModel && sttLoadedEngine
+        ? { model: sttLoadedModel, engine: sttLoadedEngine }
+        : null,
+    );
+    // Nothing is busy during that read, so an Eject, a pick or leaving the page meanwhile wins; a
+    // status refresh that cleared the selection (nothing resident yet) does not.
+    if (sttLoadGeneration.current !== generation || !activeRef.current) return null;
+    const current = selectedSttRepoRef.current;
+    if (current !== null && current !== repo) return null;
+    if (current === null) {
+      selectedSttRepoRef.current = repo;
+      setSelectedSttRepo(repo);
+    }
+    if (
+      !resident ||
+      resident.engine !== engine ||
+      !sttSameModel(
+        repo,
+        resident.model,
+        sttSidecarKeyFor,
+        engine,
+        sttRepoIdForSidecarKey,
+      )
+    ) {
       if (!(await ensureSttLoaded(repo, model, engine))) return null;
     }
     setLastSttRepo(repo);
@@ -194,6 +231,8 @@ export function useTranscription({
     lastSttRepo,
     sttLoadedModel,
     sttLoadedEngine,
+    sttEngineFor,
+    readSttResidency,
     ensureSttLoaded,
     setLastSttRepo,
   ]);
@@ -201,7 +240,16 @@ export function useTranscription({
   const runTranscription = useCallback(
     async (
       source: AudioSourceSelection,
-      options: { language: string; timestamps: boolean; speakers: boolean },
+      {
+        connection,
+        ...options
+      }: {
+        language: string;
+        timestamps: boolean;
+        speakers: boolean;
+        speakerAccent?: string;
+        connection?: { providerId: string; modelId: string } | null;
+      },
       onSourceExpired?: () => void,
       confirmedVersion?: number,
     ) => {
@@ -215,7 +263,9 @@ export function useTranscription({
       const controller = new AbortController();
       transcriptionAbort.current = controller;
       try {
-        const target = await prepareTranscriptionModel();
+        const target = connection
+          ? { model: connection.modelId, engine: "" }
+          : await prepareTranscriptionModel();
         if (!target || controller.signal.aborted || !activeRef.current) return;
         setBusy("transcribing");
         clearTranscript();
@@ -231,7 +281,8 @@ export function useTranscription({
           source.name,
           {
             ...target,
-            device: useVoiceSettingsStore.getState().sttDevice,
+            device: connection ? "" : useVoiceSettingsStore.getState().sttDevice,
+            providerId: connection?.providerId,
             ...options,
             signal: controller.signal,
           },
@@ -341,19 +392,37 @@ export function useTranscription({
   const handleDownloadTranscript = useCallback(
     async (format: TranscriptExportFormat) => {
       const version = transcriptVersion.current;
+      let details = transcriptDetails;
+      let names = speakerNames;
+      if (
+        transcriptRecord &&
+        !details.segments.length &&
+        !details.words.length &&
+        needsSavedTimings(format, transcriptRecord)
+      ) {
+        try {
+          // A listed row can predate a rename; nothing is renamed here before timings load.
+          const full = await getTranscript(transcriptRecord.id);
+          details = detailsFrom(full);
+          names = full.speaker_names ?? {};
+        } catch (error) {
+          toastFailure("Could not load this transcript's timing", error);
+          return;
+        }
+      }
       if (
         (await downloadTranscript(format, {
           title: transcribedName ?? "transcript",
           text: transcript,
           model: transcriptModel,
-          details: transcriptDetails,
-          names: speakerNames,
+          details,
+          names,
         })) &&
         transcriptVersion.current === version
       )
         setTranscriptExported(true);
     },
-    [transcript, transcribedName, transcriptModel, transcriptDetails, speakerNames],
+    [transcript, transcribedName, transcriptModel, transcriptDetails, transcriptRecord, speakerNames],
   );
 
   return {

@@ -3,6 +3,7 @@
 
 import {
   AUDIO_CPP_AUDIO_TYPES,
+  AUDIO_CPP_REPO,
   AUDIO_CPP_SEP_AUDIO_TYPE,
 } from "../../../audio/audio-cpp-catalog.ts";
 import type { FormatFilter } from "./recommended-fit";
@@ -19,9 +20,21 @@ const NATIVE_AUDIO_TYPES = new Set([
 
 const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
 
-/** Hub evidence that a GGUF repo is published for the GGUF audio runtime rather than llama.cpp.
- *  A Hub search row has no header to read, so its name, tags or library say so or nothing does. */
+/** Hub evidence that a GGUF targets the GGUF audio runtime rather than llama.cpp. */
 const AUDIO_RUNTIME_EVIDENCE = /audio[-_.]?cpp/;
+
+const AUDIO_CPP_UMBRELLA_NAME = /^audio[-_.]?cpp[-_.]?gguf(?:$|[-_.])/i;
+
+/** The multi-model package repo itself, or a fork or mirror of it: its folders are the models, so
+ *  the root never loads as one. */
+export function isAudioCppUmbrellaRepo(id: string): boolean {
+  const parts = id.trim().split("/");
+  if (parts.length !== 2) return false;
+  return (
+    id.trim().toLowerCase() === AUDIO_CPP_REPO.toLowerCase() ||
+    AUDIO_CPP_UMBRELLA_NAME.test(parts[1])
+  );
+}
 
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
@@ -37,7 +50,6 @@ export function shouldRecommendCommunityModels(
   return policy === "recommended";
 }
 
-/** Maps detected audio runtime types to the media tag used by Chat routing. */
 export function audioPipelineTagFor(
   audioType?: string | null,
   isLocalCheckpoint = false,
@@ -59,9 +71,7 @@ export function nativeAudioCheckpointIsLoadable(
   return !audioType || !NATIVE_AUDIO_TYPES.has(audioType) || exportType === "merged";
 }
 
-/** Community ASR runs through the Transformers Whisper sidecar, or through the GGUF audio
- *  runtime for a GGUF published for it. Curated GGUF/MTMD artifacts are handled by the catalog
- *  before this gate, so an uncurated row must identify one of those two. */
+/** Community ASR runs via the Transformers Whisper sidecar or the GGUF audio runtime. */
 export function communityAudioRowIsRunnable({
   isStt,
   isTts,
@@ -84,6 +94,7 @@ export function communityAudioRowIsRunnable({
   if (!isStt && !isTts) {
     return true;
   }
+  if (isAudioCppUmbrellaRepo(id)) return false;
   const evidence = [id, baseModel ?? "", ...(tags ?? [])].map((value) =>
     value.toLowerCase(),
   );
@@ -102,11 +113,7 @@ export function communityAudioRowIsRunnable({
 
   if (audioType && NATIVE_AUDIO_TYPES.has(audioType)) return true;
 
-  // The main-slot TTS backend decodes only the four codec families below. Hub's
-  // text-to-speech tag also covers Bark, VITS, SpeechT5 and others that load as language
-  // models but cannot emit a WAV here. Llasa is excluded despite being well known: it speaks
-  // XCodec2, which AudioCodecManager cannot decode, so it produced a row that loaded and
-  // then failed at generation. This list and the comment above must stay in step.
+  // Only these codec families decode; Llasa is excluded. Keep in step with the comment above.
   const normalizedAudioType = (audioType ?? "").toLowerCase();
   if (["snac", "bicodec", "dac"].includes(normalizedAudioType)) return true;
   if (normalizedAudioType === "csm") return !isGguf;
@@ -131,6 +138,7 @@ function isAudioRuntimeGgufEvidence({
   libraryName?: string | null;
   audioType?: string | null;
 }): boolean {
+  if (isAudioCppUmbrellaRepo(id)) return false;
   return (
     AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "") ||
     [id, baseModel ?? "", ...(tags ?? []), libraryName ?? ""].some((value) =>
@@ -158,14 +166,10 @@ export function speechGgufIsUndecodable({
     .some((value) => CSM_PATH_SEGMENT.test(value));
 }
 
-/** `csm` as its own path or name segment. The separator class carries a BACKSLASH as well as
- *  a slash: local checkpoint paths arrive here, and on Windows
- *  `C:\models\csm-1b\model.gguf` reads as one segment to a posix-only class. */
+/** Separator class includes a backslash because Windows local paths arrive here. */
 const CSM_PATH_SEGMENT = /(?:^|[-_./\\])csm(?:$|[-_./\\])/;
 
-/** Whether a fine-tuned or exported row is a CSM checkpoint in a GGUF container, which no
- *  runtime here decodes. `audioType` is read off the checkpoint by the backend, so it holds
- *  even where nothing in the path says "csm". */
+/** CSM checkpoint in a GGUF container; `audioType` comes from the checkpoint, not the path. */
 export function localAudioRowIsUndecodableGguf({
   audioType,
   exportType,
@@ -179,10 +183,8 @@ export function localAudioRowIsUndecodableGguf({
   return isGguf && (audioType ?? "").toLowerCase() === "csm";
 }
 
-/** Whether an audio pick from the chat picker may be routed to the Audio page. The page's own
- *  lists apply `communityAudioRowIsRunnable`, so routing a repo that fails it lands on a page
- *  that cannot show the row, and its `?model=` handoff evicts the chat model first. Curated
- *  ids always route: the catalog, not the tag, is their runtime contract. */
+/** Whether a chat-picker audio pick may route to the Audio page, which applies the same
+ *  runnable checks; curated ids always route. */
 export function audioPickIsRoutable({
   id,
   task,
@@ -199,18 +201,15 @@ export function audioPickIsRoutable({
   task: string | null | undefined;
   isGguf: boolean;
   isCurated: boolean;
-  /** Trained or exported here, so its codec was read off the checkpoint itself. */
   isLocalCheckpoint?: boolean;
-  /** Filesystem inventory row: its task came from reading the GGUF's own architecture. */
+  /** Task came from reading the GGUF's own architecture. */
   taskFromGgufArch?: boolean;
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
   audioType?: string | null;
 }): boolean {
-  // GGUF speech tasks have two provenances: Orpheus retains the ordinary llama architecture and
-  // runs on Audio's SNAC path, while the dedicated CSM speech architectures are unsupported.
-  // Unknown old-backend rows fail closed.
+  // Orpheus keeps the llama arch and runs on SNAC; CSM archs are unsupported; unknown rows fail closed.
   if (taskFromGgufArch && isGguf && task === "text-to-speech") {
     const codec = (audioType ?? "").toLowerCase();
     if (codec === "csm" || !codec) return false;
@@ -232,17 +231,13 @@ export function audioPickIsRoutable({
   // reject it on its directory name. Its task came from the backend reading the checkpoint,
   // the stronger signal, and the Audio page lists it off that same tag.
   if (isLocalCheckpoint) {
-    // Provenance says nothing about the decoder: a CSM GGUF found on disk is as unrunnable as a
-    // cached one, and routing it hands Audio a row it cannot show after the handoff already
-    // evicted the chat model.
+    // A CSM GGUF on disk is as unrunnable as a cached one.
     if (speechGgufIsUndecodable({ isGguf, id, baseModel, tags })) return false;
     return (
       task === "text-to-speech" || task === "automatic-speech-recognition"
     );
   }
-  // The same Hub evidence the Audio page's own lists judge on. Passing the id alone rejected a
-  // checkpoint whose family is in its tags or base model rather than its name, so the page
-  // listed it but the chat picker refused to route.
+  // Same Hub evidence the Audio page's own lists judge on.
   return communityAudioRowIsRunnable({
     isStt: task === "automatic-speech-recognition",
     isTts: task === "text-to-speech",
@@ -253,6 +248,21 @@ export function audioPickIsRoutable({
     libraryName,
     audioType,
   });
+}
+
+/** The backend names on-device speech checkpoints it runs through mlx-audio by that library, Mac only. */
+export function macMlxSttRowIsRunnable({
+  isMac,
+  isStt,
+  isGguf,
+  libraryName,
+}: {
+  isMac: boolean;
+  isStt: boolean;
+  isGguf: boolean;
+  libraryName?: string | null;
+}): boolean {
+  return isMac && isStt && !isGguf && libraryName?.toLowerCase() === "mlx-audio";
 }
 
 /** The macOS audio runtime can execute TTS only through llama.cpp GGUF. Curated families may
@@ -317,9 +327,8 @@ export function taskPickerRowMatches({
   return format === "all" ? isRecommendable : matchesFormat;
 }
 
-/** A downloaded GGUF often exposes only its base architecture (Orpheus reports `llama`), so
- *  generic inventory correctly calls it chat. An exact curated Audio artifact is a stronger
- *  contract, but only for its own active Audio mode. */
+/** A downloaded GGUF often reports only its base arch (Orpheus says `llama`); an exact curated
+ *  Audio artifact overrides that, but only for its own Audio mode. */
 export function curatedAudioInventoryMatches({
   isActiveCatalogArtifact,
   catalogScope,
@@ -331,6 +340,9 @@ export function curatedAudioInventoryMatches({
   catalogTask: "tts" | "stt" | null | undefined;
   pickerTask: string | readonly string[] | null | undefined;
 }): boolean {
+  // An active id with no seed artifact is a fetched catalog row the page already scoped (a
+  // downloaded TF-GridNet reports audio-to-audio, which the Separate picker's tasks leave out).
+  if (isActiveCatalogArtifact && catalogScope == null && pickerTask?.length) return true;
   if (
     !isActiveCatalogArtifact ||
     catalogScope !== "audio" ||
@@ -345,8 +357,7 @@ export function curatedAudioInventoryMatches({
     : pickerTask === expected;
 }
 
-/** A cached Audio GGUF can be classified from its base architecture as text-generation. Only
- *  an exact catalog artifact may replace that fallback when Chat decides which page owns it. */
+/** Only an exact catalog artifact may replace a text-generation fallback for a cached Audio GGUF. */
 export function curatedAudioInventoryTask({
   inventoryTask,
   isExactCatalogArtifact,
@@ -384,6 +395,17 @@ export function allowedHiddenModelIdMatches(
   );
 }
 
+/** An audio.cpp umbrella folder row lists only on a task page that passed its exact id. */
+export function umbrellaFolderRowAllowed(
+  row: { repoId: string; umbrellaFolder?: boolean },
+  allowedHiddenModelIds: ReadonlySet<string> | undefined,
+): boolean {
+  return (
+    !row.umbrellaFolder ||
+    allowedHiddenModelIdMatches(allowedHiddenModelIds, row.repoId)
+  );
+}
+
 /** Backend tag for a diffusion GGUF the Images backend cannot assemble; both pickers hide these rows. */
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 
@@ -393,20 +415,15 @@ export function taskForMediaPick(
   pipelineTag: string | null | undefined,
   inventoryTask: string | null | undefined,
 ): string | null {
-  // Such a GGUF still carries an ordinary text-to-image tag on the Hub. The on-device verdict is
-  // what the loader enforces, so it outranks the tag: trusting the tag routes the pick at a
-  // page whose picker omits the row and whose load would be refused.
+  // The on-device verdict is what the loader enforces, so it outranks the Hub tag.
   if (inventoryTask === UNSUPPORTED_DIFFUSION_TASK) return inventoryTask;
-  // Cache inventory commonly reports Audio GGUFs as generic text-generation; an exact catalog
-  // task is the stronger runtime contract there.
+  // Cache inventory often reports Audio GGUFs as text-generation; the catalog task wins there.
   return pipelineTag && pipelineTag !== "text-generation"
     ? pipelineTag
     : (inventoryTask ?? pipelineTag ?? null);
 }
 
-/** Filesystem checkpoints cannot be served by the STT sidecars yet. Keep cached Hub snapshots
- *  and curated artifacts visible, but not local-directory rows that would send an absolute
- *  path to the Hub-only API. */
+/** STT sidecars cannot serve filesystem checkpoints yet (the API is Hub-only). */
 export function filesystemRowsSupportedForTask(
   pickerTask: string | readonly string[] | null | undefined,
   rowTask?: string | null,

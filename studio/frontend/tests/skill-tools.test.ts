@@ -4,18 +4,46 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { skillToolsOffered } from "../src/features/chat/api/skill-tools.ts";
+import { skillToolNames } from "../src/features/chat/api/skill-tools.ts";
 
-const enabled = { valid: true, shadowed: false, enabled: true };
+const enabled = { name: "guided", valid: true, shadowed: false, enabled: true };
 
-test("an enabled skill is offered only while Code is on (#11671)", () => {
-  assert.equal(skillToolsOffered([enabled], true), true);
-  assert.equal(skillToolsOffered([enabled], false), false);
+test("Code on offers both skill tools for any usable skill", () => {
+  assert.deepEqual(skillToolNames([enabled], true, []), ["read_skill", "create_skill"]);
+});
+
+test("Code off keeps a plain chat out of the tool loop (#11671)", () => {
+  assert.deepEqual(skillToolNames([enabled], false, []), []);
+  assert.deepEqual(skillToolNames([enabled], false, ["what is guided?"]), []);
+  // not a mention: no whitespace before @, or the name is not spec-shaped.
+  assert.deepEqual(skillToolNames([enabled], false, ["mail me@guided"]), []);
+  assert.deepEqual(skillToolNames([enabled], false, ["@Guided"]), []);
+  // the backend would not preload these, so they must not open the loop either.
+  assert.deepEqual(skillToolNames([enabled], false, ["use @guided!!"]), []);
+  assert.deepEqual(skillToolNames([enabled], false, ["use @guided]"]), []);
+  assert.deepEqual(skillToolNames([enabled], false, ["use @guided."]), ["read_skill"]);
+});
+
+test("Code off still reads a skill the user @mentions, but never creates one", () => {
+  assert.deepEqual(skillToolNames([enabled], false, ["use @guided please"]), ["read_skill"]);
+  // an earlier mention keeps it readable because preloaded SKILL.md is not replayed.
+  assert.deepEqual(skillToolNames([enabled], false, ["@guided", "and now?"]), ["read_skill"]);
+});
+
+test("a mention of an unusable or unknown skill offers nothing with Code off", () => {
+  for (const skill of [
+    { ...enabled, enabled: false },
+    { ...enabled, shadowed: true },
+    { ...enabled, valid: false },
+  ]) {
+    assert.deepEqual(skillToolNames([skill], false, ["@guided"]), []);
+  }
+  assert.deepEqual(skillToolNames([enabled], false, ["@someone-else"]), []);
 });
 
 test("Code alone offers nothing without a usable skill", () => {
-  assert.equal(skillToolsOffered([], true), false);
-  assert.equal(skillToolsOffered([{ ...enabled, enabled: false }], true), false);
-  assert.equal(skillToolsOffered([{ ...enabled, shadowed: true }], true), false);
-  assert.equal(skillToolsOffered([{ ...enabled, valid: false }], true), false);
+  assert.deepEqual(skillToolNames([], true, ["@guided"]), []);
+  assert.deepEqual(skillToolNames([{ ...enabled, enabled: false }], true, []), []);
+  assert.deepEqual(skillToolNames([{ ...enabled, shadowed: true }], true, []), []);
+  assert.deepEqual(skillToolNames([{ ...enabled, valid: false }], true, []), []);
 });

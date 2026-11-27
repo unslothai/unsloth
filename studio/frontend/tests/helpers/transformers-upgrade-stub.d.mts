@@ -4,6 +4,8 @@
 // Types for transformers-upgrade-stub.mjs so a .ts test can drive it without `any`.
 // Same shape as export-api-stub.d.mts next to it.
 
+import type { TransformersUpgradeCheck } from "../../src/features/transformers-upgrade/types";
+
 /** One argument object as the stub records it. Loose on purpose: a test asserts a key
  *  is absent as well as present, so every field is optional and reading an unknown one
  *  is a compile error rather than `any`. */
@@ -19,19 +21,18 @@ export interface RecordedArgs {
   resumeRunId?: unknown;
 }
 
+/** The real check result, so a field added there (sidecarKeeps4Bit) is accepted here too.
+ *  `upgrade` stays loose, and installBreaksExactResume optional as the tests leave it out. */
+export type StubUpgradeCheck = Omit<TransformersUpgradeCheck, "upgrade" | "installBreaksExactResume"> & {
+  upgrade: unknown;
+  installBreaksExactResume?: boolean;
+};
+
 export declare const calls: { name: string; args: RecordedArgs[] }[];
 
 export declare const state: {
   /** What `checkTransformersUpgrade` returns, or an Error it throws instead. */
-  checkResult:
-    | {
-        upgrade: unknown;
-        requiresTrustRemoteCode: boolean;
-        latestTierActive: boolean;
-        forces16Bit: boolean;
-        installBreaksExactResume?: boolean;
-      }
-    | Error;
+  checkResult: StubUpgradeCheck | Error;
   /** What the consent dialog resolves to. */
   consentResult: boolean;
   /** Whether the dialog actually ran an install, which is what forces 16-bit. */

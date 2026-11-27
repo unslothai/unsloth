@@ -1,29 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Say, on a failure, how far behind the base branch this run's merge ref is.
-#
-# A pull_request run does not test the PR's head. It tests `refs/pull/N/merge`, a
-# merge of the head into the base as the base stood WHEN THE RUN WAS CREATED. That
-# ref is not recomputed because the base later moved, so a failure fixed on main
-# ten minutes after a run started keeps failing that run forever, and re-running it
-# does not help: a re-run replays the same merge commit.
-#
-# That is not hypothetical here. #11372 gave three test files `encoding = "utf-8"`
-# and merged at 14:35 UTC. Runs created at 13:39, 14:26 and 14:29 on #11375, #11357
-# and #11373 all kept failing `tests/test_source_read_encoding.py` on exactly those
-# three lines, and all three were read as defects in branches that had never touched
-# the files. The only cure is a push to the PR, which is what makes GitHub build a
-# new merge ref.
-#
-# The cost of not saying this is that someone debugs a fix that already landed. The
-# step is `if: failure()` so a green job pays nothing for it, and it only speaks when
-# the base has actually moved, so it does not add noise to the common case where the
-# failure is real.
-#
-# It NEVER changes the job's result. A stale merge ref does not make a failure
-# untrue -- the merge really does fail -- and deciding that for the reader would be
-# worse than the confusion it is fixing. It reports and gets out of the way.
+# On failure, report how far the base has moved past this run's merge ref; re-runs reuse it.
+# Never changes the job result.
 
 name: Report the age of this run's merge ref
 description: >-
@@ -37,9 +16,7 @@ runs:
     - name: Compare the merge ref's base against the branch tip
       shell: bash
       env:
-        # `gh` needs a token, and checkout runs with persist-credentials: false
-        # in these jobs, so there is nothing in the git config to fall back on.
-        # The compare endpoint only wants `contents: read`.
+        # checkout uses persist-credentials: false, so gh needs the token; compare needs only contents: read.
         GH_TOKEN: ${{ github.token }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -47,18 +24,12 @@ runs:
       run: |
         set -u
         if [ -z "${BASE_SHA:-}" ] || [ -z "${BASE_REF:-}" ]; then
-          # Not a pull_request event. Nothing to compare against.
           exit 0
         fi
-        # base.sha is the commit the merge ref was built on; BASE_REF is where the
-        # branch is now. `ahead_by` on base...ref is how far the branch has moved
-        # since, which is the number this is about. Asking the API rather than the
-        # clone on purpose: these checkouts are shallow, and deepening them enough
-        # to hold both commits costs more than the answer is worth.
+        # Ask the API, not the shallow clone.
         behind=$(gh api "repos/${REPOSITORY}/compare/${BASE_SHA}...${BASE_REF}" --jq '.ahead_by' 2>/dev/null) || behind=""
         case "${behind}" in
           ''|*[!0-9]*)
-            # No answer, or not a number. Say nothing rather than guess.
             exit 0
             ;;
         esac

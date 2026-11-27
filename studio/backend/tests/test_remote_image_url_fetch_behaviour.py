@@ -23,7 +23,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from auth.authentication import get_current_subject  # noqa: E402
+from auth.authentication import authenticated_via_api_key, get_current_subject  # noqa: E402
 import core.inference.external_provider as external_provider  # noqa: E402
 import routes.inference as inference_route  # noqa: E402
 
@@ -74,6 +74,7 @@ def _client(monkeypatch, backend):
     app = FastAPI()
     app.include_router(inference_route.router, prefix = "/v1")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app, raise_server_exceptions = False)
 
 
@@ -235,7 +236,12 @@ class TestRemoteUrlNeverReachesLlamaServer:
         r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(_webp_b64()))
 
         assert r.status_code == 200, r.text
-        assert _image_urls(backend.dispatched[-1]["messages"]) == [_webp_b64()]
+        # The payload is decoded and checked like any image (#19193), so llama-server gets a data URL of the
+        # checked bytes, not the caller's string: compare the picture, not the encoding.
+        [sent] = _image_urls(backend.dispatched[-1]["messages"])
+        assert sent.startswith("data:image/"), sent[:40]
+        with Image.open(BytesIO(base64.b64decode(sent.split(",", 1)[1]))) as img:
+            assert img.size == (2, 2)
 
     def test_a_data_url_still_goes_through_untouched_by_the_fetch(self, monkeypatch):
         def _never(*_a, **_k):

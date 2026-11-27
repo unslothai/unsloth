@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The load phase split, and the ways a timer like this reports a lie.
-
-Three of these guards exist because the obvious implementation gets them wrong
-and the wrong answer looks exactly like a real result in the report:
-
-* a timer that never attached reporting **0.0 seconds**, which reads as "no
-  download happened" rather than "nothing was measured";
-* `snapshot_download` calling `hf_hub_download` per file, so a naive sum counts
-  the same seconds twice and can report more download time than the phase it
-  sat inside;
-* a raising download leaving the timer installed, so every later call in the
-  process is still wrapped.
-"""
+"""Timers must not report 0.0s when unmeasured, double-count snapshot_download, or stay installed."""
 
 from __future__ import annotations
 
@@ -42,9 +30,7 @@ def hub(monkeypatch):
 
 
 def test_an_unattached_timer_reports_none_not_zero(monkeypatch):
-    """The finding this whole file exists for. With nothing patched, `seconds`
-    must be None: a report showing 0.0 is indistinguishable from a warm cache,
-    and one of those is a measurement while the other is a broken instrument."""
+    """Unattached timer reports None, not 0.0, which looks like a warm cache and hides a fault."""
     monkeypatch.setitem(sys.modules, "huggingface_hub", types.ModuleType("huggingface_hub"))
     monkeypatch.delitem(sys.modules, "transformers.utils.hub", raising = False)
     timer = FetchTimer().install()
@@ -106,11 +92,7 @@ def test_nested_calls_are_not_counted_twice(hub, tmp_path):
         elapsed = time.time() - started
 
     assert timer.calls == 4, "every call is counted"
-    # Against the outer call's OWN elapsed time, not a fixed ceiling: the three
-    # inner sleeps run inside that call, so double counting lands near 2x it
-    # while a correct sum lands at 1x. A host that deschedules the runner
-    # stretches both sides equally, where a constant bound would go red on
-    # scheduling and report it as double counting.
+    # Double counting lands near 2x the outer call's elapsed time; descheduling stretches both.
     assert (
         timer._seconds <= elapsed * 1.5
     ), f"nested seconds counted twice: {timer._seconds} against {elapsed} elapsed"
@@ -129,13 +111,11 @@ def test_a_raising_download_still_restores_the_module(hub):
         huggingface_hub.hf_hub_download()
     timer.uninstall()
     assert huggingface_hub.hf_hub_download is original, "the wrapper outlived the timer"
-    # The failed attempt is still time spent trying, so it counts.
     assert timer.calls == 1
 
 
 def test_the_split_never_reports_a_negative_weight_load(hub, tmp_path):
-    """The two clocks are the same clock, but rounding can still put the fetch a
-    tenth past the phase, and a negative duration reads as a broken report."""
+    """Same clock; rounding can put the fetch a tenth past the phase; never report negative."""
     blob = tmp_path / "f.bin"
     blob.write_bytes(b"z")
 
@@ -152,18 +132,7 @@ def test_the_split_never_reports_a_negative_weight_load(hub, tmp_path):
 
 
 def test_no_alias_of_a_hub_download_is_left_unwrapped(monkeypatch):
-    """`transformers.utils.hub` does `from huggingface_hub import ...` at import
-    time, so it holds its OWN reference and rebinding the public name leaves it
-    untouched. `cached_files` calls that alias for a multi-file (sharded)
-    checkpoint, which is the biggest download any leg does, so missing it moves
-    the dominant fetch into `weight_load_seconds` while `patched` stays
-    non-empty and the record still looks valid.
-
-    Derived, not listed: the aliases are DISCOVERED by comparing each module's
-    attributes against the originals before patching, so a module that starts
-    holding one of these names is covered without editing this test, and
-    dropping a target fails here rather than on hardware.
-    """
+    """Every module alias of a hub download must be wrapped, or sharded fetches go untimed."""
     real_hub = types.ModuleType("huggingface_hub")
     real_hub.hf_hub_download = lambda *a, **k: ""
     real_hub.snapshot_download = lambda *a, **k: ""
@@ -249,8 +218,7 @@ def test_an_unattached_timer_is_not_rendered_as_a_zero_second_fetch():
 
 
 def test_every_leg_ships_the_module():
-    """A timer the payload cannot import measures nothing. Asserted against the
-    registry rather than a hardcoded list, so a new leg cannot miss it."""
+    """Every leg must ship phase_timers.py or the timer measures nothing; LEGS covers new legs."""
     sys.path.insert(0, str(ROOT / ".github" / "scripts"))
     from kaggle_t4_ci.legs import LEGS
 

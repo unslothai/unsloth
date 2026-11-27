@@ -1,56 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Installer scripts and README must not put a wildcard bind in a user-visible
-# DEFAULT launch command. Binding 0.0.0.0 exposes the raw port to the LAN, so it
-# has to be something the reader opts into, never what they are handed first.
-# Provenance: #5267 (default the Unsloth host to 127.0.0.1) and #7774 (anchor the
-# host-defaults assertions).
-#
-# The property, stated without reference to any heading:
-#
-#   1. The FIRST `unsloth studio` command the README shows must not bind a
-#      wildcard host.
-#   2. A wildcard bind must still be documented SOMEWHERE, as a deliberate
-#      opt-in, so the capability is not simply undocumented.
-#   3. No launch command the installers print or generate binds a wildcard host.
-#
-# Three things this file used to do, and no longer does. The first two went red
-# on an edit that was correct; the third went GREEN on one that was not:
-#
-#   * It sliced README.md by heading -- `#### Launch` up to the next heading of
-#     any level -- and asserted BOTH halves inside that one window. Deleting
-#     `#### Update` silently extended the window to end-of-file (fixed once by
-#     adding the stop-at-any-heading rule), and then moving the opt-in under a
-#     sibling `#### Remote HTTPS & LAN Access` moved it out of the window and
-#     broke the positive half. The README's heading structure is edited directly
-#     and often; it is not a stable index and must not be load-bearing. The
-#     assertions below survive a section being renamed, reordered, merged or
-#     split, because they never look at a heading.
-#
-#   * It hard-coded the needle `studio -H 0.0.0.0`. That misses
-#     `studio -p 8888 -H 0.0.0.0`, misses `--host 0.0.0.0`, misses `-H=0.0.0.0`,
-#     and -- the reason it matters most -- would go permanently, silently vacuous
-#     the day `-H` is renamed. The flag spellings are now read off the
-#     `typer.Option` in unsloth_cli/commands/studio.py that declares them, so the
-#     needle is derived from the code it protects rather than re-spelled here.
-#
-#   * It sliced the three installer files on hand-written markers, two of which
-#     were COMMENT PROSE ("In interactive terminals, ..."). A comment has no
-#     reason to stay stable, so rewording one turned this guard red for reasons
-#     that had nothing to do with host defaults, and three of the four windows
-#     ran to end of file, so each negative assertion covered a superset of the
-#     region its label named. Worse, the launcher window could go VACUOUS rather
-#     than loud: see the reproduction in the install.sh launcher section below.
-#     Every installer window is now derived from the file's own structure -- a
-#     heredoc delimiter, a top-level `if`/`fi`, a PowerShell brace block -- and
-#     every one of them asserts that it closed on its own closing token instead
-#     of running off the end of the file.
-#
-# `unsloth studio`'s own default (`--host 127.0.0.1`) is asserted separately and
-# structurally in tests/studio/test_cli_studio_defaults.py; this file is about
-# what the docs and installers SHOW.
+# Installers and README must not show a wildcard bind (0.0.0.0) as the DEFAULT launch command.
+# Nothing here keys on README headings or comment prose; flag spellings are read from the
+# typer.Option in unsloth_cli/commands/studio.py, and every window asserts it closed.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -72,11 +25,7 @@ assert_ge() {
     fi
 }
 
-# ── the probe ────────────────────────────────────────────────────────────────
-# One definition of "a studio launch command that binds a wildcard host", shared
-# by the README half and the installer half below, so the two cannot drift into
-# meaning different things. Written to a temp file rather than inlined at each
-# call site for the same reason.
+# One shared probe for the README and installer halves so they cannot drift.
 PROBE="$(mktemp)"
 trap 'rm -f "$PROBE"' EXIT INT TERM
 cat > "$PROBE" << 'PROBE_PY'
@@ -250,9 +199,6 @@ PROBE_PY
 
 probe_fact() { printf '%s\n' "$_readme_facts" | awk -F '\t' -v k="$1" '$1 == k {print $2; found = 1} END {if (!found) exit 1}'; }
 
-# A studio launch command that binds a wildcard host, anywhere in $2. Used for
-# the plain-text installer windows; the README goes through `readme` mode above,
-# which adds the fenced-block parse but shares this same command matcher.
 assert_no_wildcard_bind() {
     _label="$1"; _haystack="$2"
     _hits=$(printf '%s\n' "$_haystack" | python3 "$PROBE" scan "$STUDIO_CLI")
@@ -269,8 +215,7 @@ echo ""
 echo "=== host option spellings (derived from the CLI) ==="
 
 _host_flags=$(python3 "$PROBE" flags "$STUDIO_CLI")
-# Canary. If the parameter is renamed or the option removed, this reports it
-# rather than leaving every negative assertion below matching nothing forever.
+# Canary: a renamed option would otherwise leave every negative assertion matching nothing.
 assert_contains \
     "host flags: the studio CLI declares a long --host option" \
     "$_host_flags" "--"
@@ -279,10 +224,7 @@ echo "  (derived: $(printf '%s' "$_host_flags" | tr '\n' ' '))"
 echo ""
 echo "=== the detector, against fixtures ==="
 
-# Every negative assertion in this file passes when the detector sees NOTHING,
-# so a detector that quietly stops matching turns the whole file green while
-# guarding nothing. These pin both directions of it directly, so that failure
-# reports itself here instead of hiding behind five green lines below.
+# Every negative assertion passes when the detector sees nothing, so pin both directions.
 assert_detects() {
     _label="$1"; _line="$2"; _want="$3"
     _hits=$(printf '%s\n' "$_line" | python3 "$PROBE" scan "$STUDIO_CLI")
@@ -303,8 +245,6 @@ assert_detects "flags between studio and the bind"  'unsloth studio -p 8888 -H 0
 assert_detects "trailing flags after the bind"      'unsloth studio -H 0.0.0.0 -p 8888'            detected
 assert_detects "shell-prompt prefix"                '$ unsloth studio -H 0.0.0.0'                  detected
 assert_detects "inline env assignment prefix"       "PW='x' unsloth studio -H 0.0.0.0"             detected
-# The exact shape #9654 found getting past a line-start-anchored detector. Kept
-# verbatim rather than paraphrased, because it is the one that was actually let through.
 assert_detects "the prefixed shape from #9654"      "UNSLOTH_STUDIO_PASSWORD='x' unsloth studio --host=0.0.0.0" detected
 assert_detects "indented inside a fenced block"     '    unsloth studio -H 0.0.0.0'                detected
 assert_detects "quoted inside a printf"             'printf "%s" "unsloth studio -p 1 -H 0.0.0.0"' detected
@@ -325,21 +265,10 @@ assert_detects "a trailing comment naming it"       'unsloth studio  # add -H 0.
 assert_detects "a path, not the subcommand"         'unsloth-studio-launcher -H 0.0.0.0'           ignored
 assert_detects "an empty window"                    ''                                             ignored
 
-# ── the windows ──────────────────────────────────────────────────────────────
-# Every installer window below is cut from the file's own STRUCTURE, never from a
-# comment and never from a sentence someone might reword. Anchoring on a comment
-# is the worst case of all, because a comment exists to be rewritten.
+# Windows are cut from the file's own structure, never from comments or prose.
 
-# The heredoc that redirects into the path held by $2, from the line that opens
-# it through its own terminator. `want=delim` returns that terminator instead of
-# the body. Both come from the SAME matched line in the SAME pass, which is the
-# whole point: a window opened by one rule and closed by another can disagree,
-# and when it does the disagreement is silent.
-#
-# While looking for the opener it joins backslash continuations, so the redirect
-# and its `<<` are matched as one shell LOGICAL line however they are wrapped.
-# The joining stops the moment the heredoc opens, because the launcher body has
-# continuations of its own and they are content, not syntax to be folded away.
+# Heredoc redirecting into $2, opener through terminator; want=delim returns the terminator.
+# Both come from the same matched line. Continuations are joined only until the heredoc opens.
 _heredoc_window() {
     awk -v q="\"'" -v target="$2" -v want="${3:-body}" '
     !delim {
@@ -369,11 +298,7 @@ _heredoc_window() {
     ' "$1"
 }
 
-# A top-level shell branch: the `if` line matching $2, through the `fi` in column
-# zero that closes it. Nested branches inside it are indented, so the first
-# column-zero `fi` is the right one. Callers assert the window ended on that `fi`,
-# which is what turns a close that never matched into a report instead of a
-# silent run to end of file.
+# Top-level `if` matching $2 through the column-zero `fi` that closes it.
 _shell_if_block() {
     awk -v pat="$2" '
     !found && $0 ~ pat { found = 1; print; next }
@@ -381,9 +306,7 @@ _shell_if_block() {
     ' "$1"
 }
 
-# A PowerShell block: the line matching $2, through the line where its braces
-# balance again. `[{]` rather than `{` so the brace is a literal and not the
-# start of an ERE interval.
+# `[{]` so the brace is a literal, not an ERE interval.
 _ps_brace_block() {
     awk -v pat="$2" '
     !found && $0 ~ pat { found = 1 }
@@ -391,30 +314,14 @@ _ps_brace_block() {
     ' "$1"
 }
 
-# The last line of a window, trimmed. A window that ran off the end of the file
-# does not end on its own closing token; that is the difference between a window
-# that closed on purpose and one that was never closed at all.
+# A window that ran off the end of the file does not end on its own closing token.
 _window_close() { printf '%s\n' "$1" | tail -n 1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
 
 echo ""
 echo "=== install.sh launcher template ==="
 
-# The heredoc that generates ~/.local/share/unsloth/launch-studio.sh.
-#
-# This window is the one shape in this file that could go vacuous rather than
-# loud, so it is worth stating exactly. It used to find its start with an awk
-# pattern and its terminator with a SEPARATE, stricter grep that also required
-# the `<<` on that same line. Split the redirect across a line continuation --
-#
-#     cat > "$_css_launcher" \
-#         << 'LAUNCHER_EOF'
-#
-# -- and the grep matched nothing, the derived delimiter was the empty string,
-# and `$0 == delim` then matched the first BLANK LINE inside the launcher. The
-# window collapsed from 357 lines to 6. The `#!/usr/bin/env bash` canary sits in
-# those 6 and still passed, so `-H 0.0.0.0` added to the launcher's own `exec`
-# line went through at 39 pass / 0 fail. One helper, one matched line, no second
-# pattern to disagree with the first.
+# One helper for start and delimiter: a separate delimiter grep once matched nothing on a
+# split redirect and collapsed the window to a few lines.
 _launcher_delim=$(_heredoc_window "$INSTALL_SH" '_css_launcher' delim)
 _launcher=$(_heredoc_window "$INSTALL_SH" '_css_launcher' body)
 assert_ge \
@@ -433,14 +340,9 @@ assert_no_wildcard_bind \
 echo ""
 echo "=== install.sh end-of-install block ==="
 
-# The post-install prompt-or-print branch, anchored on the `if` that declares it.
-# The anchor used to be the comment ABOVE that `if` ("In interactive terminals,
-# ask the user before starting Unsloth ..."), and the window ran from there to
-# end of file. `_SKIP_AUTOSTART` is a shell variable this branch reads: renaming
-# it is a code change, and the prompt canary below reports it at once instead of
-# leaving an empty window behind.
+# Anchored on the `if` itself; `_SKIP_AUTOSTART` renames are caught by the prompt canary.
 _end=$(_shell_if_block "$INSTALL_SH" '^if .*_SKIP_AUTOSTART.*; then$')
-# "read" alone also matches "readable" and "_can_read_tty", so pin the full prompt.
+# "read" alone also matches "readable" and "_can_read_tty".
 assert_contains \
     "install.sh: interactive block prompts user (read)" \
     "$_end" "read -r _reply"
@@ -454,8 +356,6 @@ assert_no_wildcard_bind \
 echo ""
 echo "=== install.ps1 end-of-install block ==="
 
-# Same branch, same reasoning, PowerShell braces instead of `fi`. Also anchored
-# on the comment above it until now, and also ran to end of file.
 _ps1_end=$(_ps_brace_block "$INSTALL_PS1" '^[ \t]*if [(][$]IsInteractive[)] [{][ \t]*$')
 assert_contains \
     "install.ps1: interactive block prompts user (Read-Host)" \
@@ -470,19 +370,10 @@ assert_no_wildcard_bind \
 echo ""
 echo "=== studio/setup.sh launch hint ==="
 
-# Deliberately NOT windowed, and the label says so. The footer that prints the
-# hint lives in a top-level `if [ "$_LLAMA_ONLY" = "1" ]; then` block, and that
-# same header opens three different top-level blocks in setup.sh, so there is no
-# structural boundary that picks out the footer -- only the ordinal "the third
-# one", which is a hand-written marker wearing a different hat. The old anchor
-# was the bare string `"launch"` and ran to end of file from there, so reading
-# the whole file loses no coverage, gains the rest of it, and cannot be narrowed
-# by an edit anywhere. Over-reporting here is cheap; the file's own wildcard
-# opt-in is prose ("add -H 0.0.0.0 for LAN / cloud access") with no `studio` word
-# in it, so it is not a launch command and does not trip this.
+# Deliberately not windowed: the `_LLAMA_ONLY` header opens three blocks in setup.sh. Its
+# opt-in text is prose without `studio`, so reading the whole file does not trip.
 _setup_all=$(cat "$SETUP_SH")
-# Canary: setup.sh still prints a launch hint at all. A file that stopped
-# mentioning studio would otherwise satisfy the assertion below by saying nothing.
+# Canary: a file that stopped mentioning studio would satisfy the assertion below.
 assert_contains \
     "studio/setup.sh: the footer still prints a launch hint" \
     "$_setup_all" "unsloth studio -p 8888"
@@ -493,13 +384,8 @@ assert_no_wildcard_bind \
 echo ""
 echo "=== the installers, whole file ==="
 
-# The windows above name the region each guard is ABOUT, which is what makes a
-# failure readable. These two name the file, which is what makes the family hard
-# to defeat: a window can be narrowed by an edit and still look healthy, a whole
-# file cannot, so a wildcard bind that lands outside every window is still
-# reported, just with a less specific label. Both installers are clean today
-# because their opt-in text is prose rather than a runnable command; if that ever
-# stops being true, prefer rephrasing the prose over deleting these two.
+# Whole-file checks cannot be narrowed by an edit. If they fire, rephrase the opt-in prose
+# rather than deleting them.
 assert_no_wildcard_bind \
     "install.sh: no launch command anywhere in the file binds a wildcard host" \
     "$(cat "$INSTALL_SH")"
@@ -512,15 +398,11 @@ echo "=== README.md launch commands ==="
 
 _readme_facts=$(python3 "$PROBE" readme "$README" "$STUDIO_CLI")
 
-# The probe crashing is a different failure from the README being wrong, and it
-# should not arrive as a bare `set -e` abort halfway down the output.
 assert_contains \
     "README: the structural probe reported its facts" \
     "$_readme_facts" "commands"
 
-# Three canaries before the two real assertions. Each one is a way the parse
-# could come back empty or wrong, and an empty parse is exactly how a negative
-# assertion passes while guarding nothing.
+# Canaries: an empty parse would let the negative assertion pass vacuously.
 assert_eq \
     "README: every fenced code block is terminated" \
     "balanced" "$(probe_fact fences)"
@@ -531,8 +413,7 @@ assert_ge \
     "README: the README shows at least two studio launch commands" \
     "$(probe_fact commands)" 2
 
-# The property. No heading is consulted anywhere in either of these: the first
-# command in document order is the primary one, wherever it has been moved to.
+# The first command in document order is the primary one, wherever it moved.
 assert_eq \
     "README: the primary launch command binds no wildcard host" \
     "no" "$(probe_fact primary_binds_wildcard)"

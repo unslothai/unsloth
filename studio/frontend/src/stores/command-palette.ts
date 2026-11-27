@@ -6,7 +6,7 @@ import { create } from "zustand";
 
 interface CommandPaletteStore {
   isOpen: boolean;
-  // Handed to the dialog an action opens, since the palette unmounts before that dialog closes.
+  // Passed to the opened dialog, since the palette unmounts before that dialog closes.
   opener: HTMLElement | null;
   close: () => void;
   toggle: () => void;

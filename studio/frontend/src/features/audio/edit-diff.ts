@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One diff drives both the highlighting in ② and the changes sent to the model. Words are
-// whitespace-separated tokens: punctuation stays on its word.
+// Words are whitespace-separated tokens: punctuation stays on its word.
 
 /** The diff is quadratic: past this many words on either side it is not computed. */
 export const EDIT_DIFF_MAX_WORDS = 400;
@@ -20,7 +19,6 @@ export interface EditChange {
   new: string[];
   /** The transcript word right after the change; null at the end. */
   before: string | null;
-  /** Index of the change's first word in the transcript. */
   index: number;
 }
 

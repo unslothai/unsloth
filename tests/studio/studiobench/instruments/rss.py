@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser-tree RSS, sampled on a thread. SALVAGED from playwright_reasoning_pane.py.
-
-WHY NOT `performance.memory`. `usedJSHeapSize` is the JS heap of one renderer. Three things are
-wrong with reading it as the memory cost of a long thread. It excludes the DOM, which is where a
-thread of 31,637 elements actually lives, and which is C++ on the other side of the heap boundary.
-It excludes every other process in the browser tree, and the GPU process holds the layer buffers
-for a tall page. And it is a heap SIZE, so a garbage collection that has not run yet reads as
-growth and one that just ran reads as a leak repaired.
-
-RSS of the whole browser tree has none of those problems and one of its own: the browser's pid is
-not something Playwright exposes. The browser is launched by the node driver, which is a child of
-this process, so the browser is a grandchild with an engine-specific name and a per-platform
-executable path. Diffing the descendant set across the launch identifies it without knowing any of
-that.
-
-None, never 0.0. A renderer that has exited and a permission failure both produce no reading, and
-reporting either as zero would put a fabricated floor under `rss_growth_mb`.
-"""
+"""Unreadable samples are None, never 0.0, so no fabricated floor reaches rss_growth_mb."""
 
 from __future__ import annotations
 
@@ -82,9 +65,7 @@ def tree_rss_mb(roots: list) -> Optional[float]:
 
 
 class RssSampler:
-    """Samples on a THREAD, because the driver is blocked inside Playwright's sync API for the
-    whole run and cannot sample anything itself. Touches no Playwright object, only psutil, so it
-    is safe alongside the sync API's greenlet."""
+    """Samples on a thread since the sync API blocks the driver; touches only psutil, so it is safe."""
 
     def __init__(
         self,
@@ -131,9 +112,8 @@ class RssSampler:
         return usable[-1] if usable else None
 
     def growth_mb(self) -> Optional[float]:
-        """Peak minus the FIRST reading of this run, not minus zero. A browser that is already up
-        carries a base footprint that has nothing to do with the thread, and the run before this
-        one in the same browser leaves its own. What is claimed is what this run ADDED."""
+        """Peak minus this run's first reading, not zero: a pre-warmed browser's base footprint is
+        excluded."""
         usable = [v for _, v in self.samples if v is not None]
         if len(usable) < 2:
             return None

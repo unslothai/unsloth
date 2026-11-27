@@ -1,22 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** desktop web pages use per-tab native views for bot checks; native views cover the DOM, so overlays use snapshots. */
+/** desktop web pages use per-tab native views for bot checks. macOS puts each page under the app's webview, so
+ *  overlays draw over the live page; elsewhere native views cover the DOM, so overlays use snapshots. */
 
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
+import { getAppliedInterfaceZoom, subscribeAppliedInterfaceZoom } from "@/features/settings/lib/interface-scale-runtime";
 import { toast } from "@/lib/toast";
-import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
+import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR, cornerInsets } from "@/lib/toast-offset";
 import { hostOf } from "./address";
+import { agentDownloadRule } from "./agent/agent-store";
 import { approveChosenDownload, approveDownload, downloadSiteOf } from "./download-approval-queue";
 import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
-import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import {
+  FLOATING_ATTRIBUTE,
+  FLOATING_MOVE_EVENT,
+  FLOATING_PRESS_EVENT,
+  FLOATING_SCALE_VAR,
+  floatingNativeZoom,
+} from "./floating-events";
+import { outsideThread } from "./outside-thread";
+import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
@@ -41,7 +52,9 @@ type NativeEvent =
   | { kind: "url"; tabId: string; url: string }
   | { kind: "history"; tabId: string; canGoBack: boolean; canGoForward: boolean; icon: string | null }
   | { kind: "newTab"; tabId: string; url: string }
+  | { kind: "refused"; tabId: string; url: string }
   | { kind: "external"; tabId: string; url: string }
+  | { kind: "failed"; tabId: string; error: string }
   | {
       kind: "download";
       tabId: string;
@@ -92,6 +105,13 @@ function error(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+function nativeErrorText(message: string): string {
+  if (/public web/i.test(message)) return t("browser.native.blocked");
+  if (/local addresses/i.test(message)) return t("browser.native.blockedLocal");
+  if (/Unsloth's own/i.test(message)) return t("browser.native.studioAddress");
+  return message;
+}
+
 // The view's history closes with it: keep the page it reached as a tab entry, for Back.
 function keepReachedPage(tabId: string): void {
   const store = useBrowserStore.getState();
@@ -100,6 +120,13 @@ function keepReachedPage(tabId: string): void {
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
   store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
+}
+
+// A view pruned while its tab is still on the granted origin keeps the grant, to reopen.
+function onLocalOrigin(tabId: string): boolean {
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const entry = tab && currentEntry(tab);
+  return entry?.kind === "web" && localOriginGranted(tabId, entry.url);
 }
 
 function closeView(tabId: string): void {
@@ -113,8 +140,12 @@ function closeView(tabId: string): void {
   pageEntries.delete(tabId);
   loadingPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
-  void call("browser_view_close", { tabId }).catch(() => undefined);
+  if (parkedView === tabId) parkedView = null;
+  background = background.filter((id) => id !== tabId);
+  void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
 }
+
+setLocalViewCloser(closeView);
 
 let listening = false;
 
@@ -139,6 +170,14 @@ const loadingPages = new Set<string>();
 function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
   const fresh = pageEntries.get(tabId) !== entry;
   pageEntries.set(tabId, entry);
+  const store = useBrowserStore.getState();
+  const tab = store.tabs.find((candidate) => candidate.id === tabId);
+  if (tab && tab.chat !== store.chat) {
+    // Off-screen chat: a self-navigation keeps the page's own flag, not the shown chat's incognito.
+    const own = entry.temporary === true;
+    temporaryPages.set(tabId, fresh ? own : (temporaryPages.get(tabId) ?? own));
+    return;
+  }
   const kept = fresh ? entry.temporary === true : loadingPages.has(tabId) && temporaryPages.get(tabId) === true;
   temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || kept);
 }
@@ -163,7 +202,7 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
       ? Promise.resolve(false)
       : saveAs
         ? approveChosenDownload(url, name)
-        : approveDownload(url, name, asking);
+        : approveDownload(url, name, asking, tab ? agentDownloadRule(tab.id, asking, url) : null);
   const key = downloadKey(id);
   void decided
     .then(async (allow) => {
@@ -200,6 +239,13 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (!tab) return;
+  if (event.kind === "failed") {
+    // It never reached a page: what `pages` holds is the view it replaced.
+    pages.delete(tab.id);
+    closeView(tab.id);
+    store.updateTab(tab.id, { loading: false, nativeError: event.error });
+    return;
+  }
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
@@ -215,6 +261,8 @@ function onNativeEvent(event: NativeEvent): void {
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
       if (!event.loading) history.recordVisit(event.url, tab.title, temporary);
+      // A page that loads while parked would otherwise show its first (blank) frame.
+      if (!event.loading) refreshCoveredPage(tab.id);
       break;
     case "title":
       store.updateTab(tab.id, { title: event.title });
@@ -248,15 +296,15 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+        openPopup(tab, event.url);
       } else {
-        prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
-          label: t("browser.native.open"),
-          onClick: () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab) }),
-        });
+        promptPopup(tab, event.url);
       }
       break;
     }
+    case "refused":
+      promptPopup(tab, event.url);
+      break;
     case "external":
       prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
         label: t("browser.native.open"),
@@ -264,6 +312,23 @@ function onNativeEvent(event: NativeEvent): void {
       });
       break;
   }
+}
+
+// A page at work in a chat off screen opens its popups there, not over this chat's tabs.
+function openPopup(tab: BrowserTab, url: string): void {
+  const store = useBrowserStore.getState();
+  if (tab.chat !== store.chat) {
+    // The opener's temporary flag, not the shown chat's: a temporary page's popups stay out of history.
+    const temporary = pageTemporary(tab.id, currentEntry(tab));
+    store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true, temporary });
+  } else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
+}
+
+function promptPopup(tab: BrowserTab, url: string): void {
+  prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url }), {
+    label: t("browser.native.open"),
+    onClick: () => openPopup(tab, url),
+  });
 }
 
 /** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
@@ -300,8 +365,7 @@ function prompt(message: string, action: { label: string; onClick: () => void })
   toast(message, { id: PROMPT_ID, action });
 }
 
-/** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet.
- *  Web addresses only: a blob: or data: page goes with the view that made it. */
+/** Keyed by the entry the view holds; blob: and data: pages are not remembered. */
 function remember(tabId: string, url: string): void {
   const entry = views.get(tabId);
   if (entry !== undefined && /^https?:/i.test(url)) resume.set(tabId, { entry, url });
@@ -311,8 +375,6 @@ function shownUrl(tab: BrowserTab): string {
   return tab.displayUrl ?? currentEntryUrl(tab);
 }
 
-/** Once the view moves off the address the tab was opened for, opening that address again
- *  opens it rather than focusing this tab. */
 function leftOpenedPage(tab: BrowserTab, url: string): { openKey?: null } {
   return tab.openKey?.startsWith("url:") && tab.openKey !== `url:${url}` ? { openKey: null } : {};
 }
@@ -325,6 +387,11 @@ function currentEntryUrl(tab: BrowserTab): string {
 export function nativeAction(tabId: string, action: "back" | "forward" | "reload" | "stop"): void {
   if (!views.has(tabId)) return;
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
+}
+
+export function focusPage(tabId: string): void {
+  if (!views.has(tabId)) return;
+  void call("browser_view_action", { tabId, action: "focus" }).catch(() => undefined);
 }
 
 /** Gives key focus back to the panel's webview. */
@@ -359,23 +426,315 @@ export async function nativeFind(tabId: string, query: string, backwards: boolea
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
 }
 
-// exclude upward-opening tooltips to avoid hiding the native page on every hover; overlapping toasts still cover it.
+// Snapshot mode: any of these over the page covers it.
 // `data-native-cover`: panel UI over the page, e.g. an annotation comment.
 const OVERLAY_SELECTOR =
-  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast], [data-native-cover]';
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast], [data-native-cover], .find-bar-surface';
+// Layered mode: menus and dialogs take all page input, so an outside click closes them.
+const BLOCKING_SELECTOR =
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-native-cover]';
+const MENU_SELECTOR = "[data-radix-popper-content-wrapper]";
+// Layered mode: these take input only within their own rect. Lasting panels and rail cards stay out of
+// snapshot mode, which would freeze the page while they show.
+const CLICKABLE_SELECTOR =
+  "[data-sonner-toast], .find-bar-surface, [data-native-clickable], [data-native-rail] > *";
+
+// Whether pages sit under the app's webview (macOS); null until the backend answers.
+let layered: boolean | null = null;
+let layeredAsked: Promise<boolean> | null = null;
+
+function askLayered(): Promise<boolean> {
+  layeredAsked ??= call<boolean>("browser_view_layered")
+    .catch(() => false)
+    .then((answer) => (layered = answer === true));
+  return layeredAsked;
+}
 
 function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
-function covered(rect: DOMRect): boolean {
-  for (const element of document.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR)) {
+const TOOLTIP = '[role="tooltip"]';
+// Hover cards close on their own once the pointer leaves, like tooltips.
+const HOVER_ONLY = '[role="tooltip"], [data-slot="hover-card-content"]';
+
+/** Boxes of `selector` over `rect` (anywhere when null), minus those holding `skip`. */
+function overlays(selector: string, rect: DOMRect | null, skip: string | null = TOOLTIP): DOMRect[] {
+  const boxes: DOMRect[] = [];
+  for (const element of outsideThread(selector)) {
     if (element.closest("[data-native-page]")) continue;
-    if (element.querySelector('[role="tooltip"]')) continue;
+    // The dialog the browser opens in over compare, projects and phones holds the page, not covers it.
+    if (element.querySelector("[data-native-page]")) continue;
+    if (skip && element.querySelector(skip)) continue;
     const box = element.getBoundingClientRect();
-    if (box.width > 0 && box.height > 0 && intersects(box, rect)) return true;
+    if (box.width > 0 && box.height > 0 && (!rect || intersects(box, rect))) boxes.push(box);
   }
-  return false;
+  return boxes;
+}
+
+function covering(rect: DOMRect): "none" | "tooltip" | "other" {
+  if (overlays(OVERLAY_SELECTOR, rect).length > 0) return "other";
+  return overlays(OVERLAY_SELECTOR, rect, null).length > 0 ? "tooltip" : "none";
+}
+
+// A page covered only by a tooltip stays parked this long after it closes (or until the pointer
+// reaches the page), so hovering along the toolbar captures once, not per button.
+const TOOLTIP_HOLD_MS = 250;
+let tooltipHold = 0;
+
+function coveredNow(rect: DOMRect): boolean {
+  const cover = covering(rect);
+  if (cover === "tooltip") tooltipHold = performance.now() + TOOLTIP_HOLD_MS;
+  else if (cover === "other") tooltipHold = 0;
+  return cover !== "none" || performance.now() < tooltipHold;
+}
+
+type Input = { blocked: boolean; exclude: Bounds[] };
+
+const NO_INPUT: Input = { blocked: false, exclude: [] };
+
+function panelInput(rect: DOMRect, area: DOMRect | null): Input {
+  // A menu away from the page owns it too, so a click on the page closes the menu, as anywhere else.
+  if (overlays(BLOCKING_SELECTOR, rect).length > 0 || overlays(MENU_SELECTOR, null, HOVER_ONLY).length > 0) {
+    return { blocked: true, exclude: [] };
+  }
+  const exclude = overlays(CLICKABLE_SELECTOR, rect).map((box) => ({
+    x: Math.floor(box.left),
+    y: Math.floor(box.top),
+    width: Math.ceil(box.width) + 1,
+    height: Math.ceil(box.height) + 1,
+    viewportWidth: window.innerWidth,
+  }));
+  // The page view past the panel's edge, painted over by the app (holeClip): after a split drag it
+  // keeps its old frame until the resize lands, and input there belongs to the chat it sits under.
+  const frame = shownBounds ?? { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+  const left = Math.max(rect.left, area?.left ?? rect.left);
+  const right = Math.min(rect.right, area?.right ?? rect.right);
+  const strip = (from: number, to: number) =>
+    to - from >= 1 &&
+    exclude.push({
+      x: Math.floor(from),
+      y: frame.y,
+      width: Math.ceil(to - from),
+      height: frame.height,
+      viewportWidth: window.innerWidth,
+    });
+  strip(frame.x, left);
+  strip(right, frame.x + frame.width);
+  return { blocked: false, exclude };
+}
+
+// Empty, so the first sync after a reload clears a menu's block the backend kept.
+let sentInput = "";
+
+// Sent directly, not queued, so a menu owns the page as soon as it opens.
+function sendInput(input: Input): void {
+  const key = JSON.stringify(input);
+  if (key === sentInput) return;
+  const wasBlocked = sentInput !== "" && (JSON.parse(sentInput) as Input).blocked;
+  sentInput = key;
+  void call("browser_view_input", input).catch(() => undefined);
+  if (input.blocked !== wasBlocked) lendKeys(input.blocked);
+}
+
+// A menu or dialog opened while the page holds the keys takes them, and returns them on close.
+let lentFrom: { tabId: string; active: Element | null } | null = null;
+
+function lendKeys(blocked: boolean): void {
+  if (blocked) {
+    if (!shownView || document.hasFocus()) return;
+    lentFrom = { tabId: shownView, active: document.activeElement };
+    void focusPanel(shownView);
+    return;
+  }
+  const lent = lentFrom;
+  lentFrom = null;
+  if (!lent) return;
+  requestAnimationFrame(() => {
+    const active = document.activeElement;
+    // Not to a tab switched away from meanwhile: its view is hidden.
+    if (lent.tabId !== shownView) return;
+    if (active === null || active === document.body || active === lent.active) focusPage(lent.tabId);
+  });
+}
+
+const HOLE_ATTRIBUTE = "data-native-hole";
+const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
+let holed: HTMLElement[] = [];
+// In the floating window a fixed background misses the page: cut in the node's own box, backgrounds only.
+const LOCAL_ATTRIBUTE = "data-native-hole-local";
+let local: HTMLElement[] = [];
+// The wallpaper is no ancestor of the page, so it is masked instead.
+const MASK_ATTRIBUTE = "data-native-hole-mask";
+let masked: HTMLElement[] = [];
+let holeSignature = "";
+let holeTab: string | null = null;
+let holeBounds: Bounds | null = null;
+// A split drag pins the page at its old width, so as the panel shrinks the view overflows the
+// handle; resizing it every frame would relayout the page, so on a layered page the app draws over
+// it, cutting the hole no wider than the panel.
+let holeClip: DOMRect | null = null;
+
+function paints(computed: CSSStyleDeclaration): boolean {
+  return computed.backgroundImage !== "none" || opaque(computed.backgroundColor);
+}
+
+function opaque(color: string): boolean {
+  if (color === "transparent") return false;
+  const alpha = /\/\s*([\d.]+)%?\s*\)$/.exec(color) ?? /^rgba\([^)]*,\s*([\d.]+)\s*\)$/.exec(color);
+  return !alpha || Number.parseFloat(alpha[1]) > 0;
+}
+
+function openHole(tabId: string, bounds: Bounds): void {
+  const moved = JSON.stringify(bounds) !== JSON.stringify(holeBounds);
+  holeTab = tabId;
+  holeBounds = bounds;
+  if (!markHole() && moved) placeHole();
+}
+
+// Set per holed node, not the root, since the vars do not inherit; under the app's interface zoom
+// WebKit scales fixed-background lengths by that zoom again, so it is undone here or a zoomed-out
+// app covers the right and bottom of the page.
+function placeHole(): void {
+  if (!holeBounds) return;
+  const zoom = getAppliedInterfaceZoom() || 1;
+  const left = holeClip ? Math.max(holeBounds.x, holeClip.left) : holeBounds.x;
+  const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
+  const rect = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height];
+  const values = rect.map((value) => value / zoom);
+  for (const node of holed) {
+    if (local.includes(node)) continue;
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+    cutAt(node, "background", values[0], values[1], values[2], values[3]);
+  }
+  // No zoom correction: neither a mask nor a box-local cut is a fixed background.
+  for (const node of [...local, ...masked]) {
+    const box = node.getBoundingClientRect();
+    // Untrimmed: a node that grows later (the chat as its panel floats) kept the old edge.
+    const x = rect[0] - box.left;
+    const y = rect[1] - box.top;
+    const [width, height] = [rect[2], rect[3]];
+    const cut = [x, y, width, height];
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${cut[index]}px`));
+    cutAt(node, local.includes(node) ? "background" : "mask", x, y, width, height);
+  }
+}
+
+const CUT_PROPERTIES = [
+  "background-position",
+  "background-size",
+  "mask-position",
+  "mask-size",
+  "-webkit-mask-position",
+  "-webkit-mask-size",
+] as const;
+
+/** Also as lengths: WebKit doesn't repaint a background or mask when only registered vars change. */
+function cutAt(node: HTMLElement, kind: "background" | "mask", x: number, y: number, width: number, height: number): void {
+  const right = x + width;
+  const bottom = y + height;
+  const position = `0 0, 0 ${bottom}px, 0 ${y}px, ${right}px ${y}px`;
+  const size = `100% ${Math.max(0, y)}px, 100% max(0px, calc(100% - ${bottom}px)), ${Math.max(0, x)}px ${height}px, max(0px, calc(100% - ${right}px)) ${height}px`;
+  const prefixes = kind === "background" ? ["background"] : ["mask", "-webkit-mask"];
+  for (const prefix of prefixes) {
+    node.style.setProperty(`${prefix}-position`, position, "important");
+    node.style.setProperty(`${prefix}-size`, size, "important");
+  }
+}
+
+/** Re-reads background colors when the chain, its classes or the theme change; true if it did. */
+function markHole(): boolean {
+  const element = holeTab ? placeholder(holeTab) : null;
+  if (!element) return false;
+  const chain: HTMLElement[] = [];
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) chain.push(node);
+  // Theme: html classes, palette and inline color vars, minus our own.
+  const root = document.documentElement;
+  const theme = (root.style.cssText ?? "").replace(/--native-hole-[^;]*;?/g, "");
+  // Ancestors only, no document scan: this runs on every recheck.
+  const layers = chain
+    .filter((node) => node.hasAttribute?.("data-wallpaper-workspace") || node.hasAttribute?.("data-chat-content-root"))
+    .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
+  layers.push(...floatingUnderlay(chain));
+  const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
+  // A node can start painting later with no class change (just floated): uncut, the page stayed white.
+  const missed = chain.some((node) => !node.hasAttribute?.(HOLE_ATTRIBUTE) && paints(getComputedStyle(node)));
+  if (signature === holeSignature && !missed && [...holed, ...masked].every((node) => node.isConnected)) return false;
+  unmarkHole();
+  holeSignature = signature;
+  const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
+  const colors = chain.map((node) => getComputedStyle(node));
+  chain.forEach((node, index) => {
+    const computed = colors[index];
+    if (!paints(computed)) return;
+    node.style.setProperty("--native-hole-bg", computed.backgroundColor);
+    holed.push(node);
+    if (index <= floating) local.push(node);
+  });
+  masked = layers;
+  placeHole();
+  for (const node of holed) node.setAttribute(HOLE_ATTRIBUTE, "");
+  for (const node of local) node.setAttribute(LOCAL_ATTRIBUTE, "");
+  for (const node of masked) node.setAttribute(MASK_ATTRIBUTE, "");
+  // Mid theme switch everything can read transparent: retry next sync.
+  if (holed.length === 0) holeSignature = "";
+  return true;
+}
+
+/** The chat under a floating page is no ancestor of it, so its boxes are masked too. */
+function floatingUnderlay(chain: HTMLElement[]): HTMLElement[] {
+  const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
+  if (floating < 0) return [];
+  const under: HTMLElement[] = [];
+  for (const node of chain.slice(floating)) {
+    if (node.hasAttribute("data-chat-content-root")) break;
+    for (const sibling of node.parentElement?.children ?? []) {
+      if (sibling !== node && sibling instanceof HTMLElement && !sibling.classList.contains("chat-wallpaper")) under.push(sibling);
+    }
+  }
+  return under;
+}
+
+function unmarkHole(): void {
+  for (const node of holed) {
+    node.removeAttribute(HOLE_ATTRIBUTE);
+    for (const name of ["--native-hole-bg", ...HOLE_VARS, ...CUT_PROPERTIES]) node.style.removeProperty(name);
+  }
+  holed = [];
+  for (const node of local) node.removeAttribute(LOCAL_ATTRIBUTE);
+  local = [];
+  for (const node of masked) {
+    node.removeAttribute(MASK_ATTRIBUTE);
+    for (const name of [...HOLE_VARS, ...CUT_PROPERTIES]) node.style.removeProperty(name);
+  }
+  masked = [];
+  holeSignature = "";
+}
+
+function closeHole(): void {
+  holeTab = null;
+  holeBounds = null;
+  unmarkHole();
+}
+
+/** The panel body: the parent of the outermost page box (two nested boxes carry the attribute). */
+function panelArea(element: HTMLElement): HTMLElement | null {
+  let page = element.closest("[data-browser-page]");
+  for (let outer = page?.parentElement?.closest("[data-browser-page]"); outer; outer = outer.parentElement?.closest("[data-browser-page]")) {
+    page = outer;
+  }
+  return page?.parentElement ?? null;
+}
+
+/** Re-cuts the hole when the panel's edges move; cheap, so it runs every frame of a drag. */
+function clipHole(element: HTMLElement | null): void {
+  // Docked only: in a floating window this chopped the cut at a stale panel edge.
+  const docked = element && layered && !element.closest?.(`[${FLOATING_ATTRIBUTE}]`);
+  const area = docked ? panelArea(element)?.getBoundingClientRect() ?? null : null;
+  const same = area && holeClip ? area.left === holeClip.left && area.right === holeClip.right : area === holeClip;
+  if (same) return;
+  holeClip = area;
+  placeHole();
 }
 
 function visibleRect(element: HTMLElement): DOMRect | null {
@@ -389,7 +748,7 @@ function visibleRect(element: HTMLElement): DOMRect | null {
   if (rect.width < 2 || rect.height < 2) return null;
   let bottom = rect.bottom;
   // `data-native-inset`: panel UI below the page, e.g. the annotate bar.
-  for (const dock of document.querySelectorAll<HTMLElement>(
+  for (const dock of outsideThread(
     ".chat-full-view-dock, .chat-full-view-dock-minimized, [data-native-inset]",
   )) {
     const box = dock.getBoundingClientRect();
@@ -399,10 +758,8 @@ function visibleRect(element: HTMLElement): DOMRect | null {
   return new DOMRect(rect.left, rect.top, rect.width, bottom - rect.top);
 }
 
-type Desired =
-  | { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds }
-  | { tabId: string; covered: true }
-  | null;
+type Shown = { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds };
+type Desired = Shown | (Shown & { covered: true }) | null;
 
 function placeholder(tabId: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(`[data-native-page="${CSS.escape(tabId)}"]`);
@@ -412,7 +769,7 @@ let toastInset: string | null = null;
 
 // native views cover DOM toasts, so reserve a left column when the page reaches the right edge or Run settings.
 function insetToasts(rect: DOMRect | null): void {
-  const style = document.documentElement.style;
+  const style = cornerInsets.style;
   // read the inline value set by watchChatSettingsInset; it is absent when the panel is closed or the row is narrow.
   const settings = Number.parseFloat(style.getPropertyValue(CHAT_SETTINGS_INSET_VAR)) || 0;
   const room = rect && rect.right >= window.innerWidth - settings - 2 && rect.left >= TOAST_COLUMN;
@@ -423,17 +780,27 @@ function insetToasts(rect: DOMRect | null): void {
   else style.removeProperty(BROWSER_PAGE_INSET_VAR);
 }
 
+function floatingScale(tabId: string): number {
+  const surface = placeholder(tabId)?.closest?.<HTMLElement>(`[${FLOATING_ATTRIBUTE}]`);
+  const scale = Number.parseFloat(surface?.style?.getPropertyValue?.(FLOATING_SCALE_VAR) ?? "");
+  return scale > 0 && scale <= 1 ? scale : 1;
+}
+
 function desiredView(): Desired {
   const page = pageRect();
-  insetToasts(page?.rect ?? null);
+  if (layered) {
+    const element = page ? placeholder(page.tab.id) : null;
+    const area = element ? (panelArea(element)?.getBoundingClientRect() ?? null) : null;
+    sendInput(page ? panelInput(page.rect, area) : NO_INPUT);
+  }
+  else insetToasts(page?.rect ?? null);
   if (!page) return null;
   const { tab, entry, rect } = page;
-  if (covered(rect)) return { tabId: tab.id, covered: true };
-  return {
+  const shown: Shown = {
     tabId: tab.id,
     url: entry.url,
     entry: entryKey(entry),
-    zoom: tab.zoom,
+    zoom: floatingNativeZoom(tab.zoom, floatingScale(tab.id)),
     bounds: {
       x: Math.round(rect.left),
       y: Math.round(rect.top),
@@ -442,6 +809,12 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
+  const covered = movingWindow() || (!layered && coveredNow(rect));
+  return covered ? { ...shown, covered: true } : shown;
+}
+
+function movingWindow(): boolean {
+  return document.querySelector?.("[data-floating-gesture]") != null;
 }
 
 function pageRect(): { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }>; rect: DOMRect } | null {
@@ -466,11 +839,16 @@ function pruneViews(shown: string | null): void {
       resume.delete(tabId);
     }
   }
-  while (views.size > MAX_VIEWS) {
-    const oldest = recency.find((id) => id !== shown && views.has(id));
+  while (views.size - background.length > MAX_VIEWS) {
+    const oldest = recency.find((id) => id !== shown && views.has(id) && !background.includes(id));
     if (!oldest) break;
     closeView(oldest);
   }
+}
+
+/** A page view on screen has the keys: the app's document lost focus to it, not to another window. */
+export function nativePageHasKeys(): boolean {
+  return shownView !== null && !document.hasFocus();
 }
 
 function setShownView(tabId: string | null): void {
@@ -498,6 +876,95 @@ let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null
 let shownBounds: Bounds | null = null;
 const viewBounds = new Map<string, Bounds>();
 
+// Pages kept open while their chat is off screen: the agent at work in another chat. Newest last;
+// past the cap the oldest closes (and reopens where it got to, like any pruned view).
+const MAX_BACKGROUND = 3;
+let background: string[] = [];
+const openingInBackground = new Set<string>();
+let watchingBackground = false;
+// A panel is mounted (startNativeViews running), which prunes and closes hidden pages itself.
+let panelUp = false;
+
+/** Keeps `tabId`'s page open, and following its tab, while the panel shows another chat or none. */
+export function keepInBackground(tabId: string): void {
+  background = [...background.filter((id) => id !== tabId), tabId];
+  while (background.length > MAX_BACKGROUND) {
+    const oldest = background.shift();
+    if (oldest && oldest !== shownView && oldest !== parkedView && views.has(oldest)) closeView(oldest);
+  }
+  listenOnce();
+  if (!watchingBackground) {
+    watchingBackground = true;
+    useBrowserStore.subscribe(syncBackground);
+  }
+  syncBackground();
+}
+
+/** The page can close with the panel again; with no panel up, it closes now. */
+export function releaseBackground(tabId: string): void {
+  background = background.filter((id) => id !== tabId);
+  if (!panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
+}
+
+/** Opens or moves each kept page its tab no longer matches; the panel owns the one it shows. */
+function syncBackground(): void {
+  if (background.length === 0) return;
+  const tabs = new Map(useBrowserStore.getState().tabs.map((tab) => [tab.id, tab]));
+  for (const tabId of [...background]) {
+    const tab = tabs.get(tabId);
+    if (!tab) {
+      releaseBackground(tabId);
+      continue;
+    }
+    const entry = currentEntry(tab);
+    if (tabId === shownView || tabId === parkedView || entry.kind !== "web" || openingInBackground.has(tabId)) continue;
+    const key = entryKey(entry);
+    if (views.get(tabId) === key) continue;
+    void openInBackground(tabId, entry.url, key);
+  }
+}
+
+async function openInBackground(tabId: string, url: string, key: number): Promise<void> {
+  openingInBackground.add(tabId);
+  const resumed = resume.get(tabId);
+  try {
+    if (views.has(tabId)) {
+      await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
+    } else {
+      const bounds = viewBounds.get(tabId) ??
+        shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
+      openedTabs.add(tabId);
+      await call("browser_view_open_background", { tabId, url: resumed?.entry === key ? resumed.url : url, bounds });
+      viewBounds.set(tabId, bounds);
+      recency = [...recency.filter((id) => id !== tabId), tabId];
+    }
+    views.set(tabId, key);
+    if (useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.nativeError) {
+      useBrowserStore.getState().updateTab(tabId, { nativeError: null });
+    }
+  } catch (cause) {
+    useBrowserStore.getState().updateTab(tabId, { loading: false, nativeError: error(cause) });
+    // Not retried here: the agent's next action asks again.
+    background = background.filter((id) => id !== tabId);
+  } finally {
+    openingInBackground.delete(tabId);
+  }
+  // Let go (run over, tab closed, cap) while it opened: nothing owns it now.
+  if (!background.includes(tabId) && !panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
+  syncBackground();
+}
+
+/** True once `tabId`'s page is open (a kept page reopening after the cap closed it), false after `timeoutMs`. */
+export async function whenViewOpen(tabId: string, timeoutMs = 5000): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  while (!views.has(tabId) || openingInBackground.has(tabId)) {
+    if (Date.now() > until) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
+
 function clearSnapshot(): void {
   if (!snapshot) return;
   const { style } = snapshot.element;
@@ -508,31 +975,253 @@ function clearSnapshot(): void {
   snapshot = null;
 }
 
-async function paintSnapshot(tabId: string): Promise<void> {
+let paintToken = 0;
+
+/** True when the placeholder shows a snapshot of `tabId` (a fresh one if `fresh`); only the newest call paints. */
+async function paintSnapshot(tabId: string, fresh = false): Promise<boolean> {
+  const shows = () => !fresh && snapshot?.tabId === tabId;
   const bounds = shownBounds;
   const element = placeholder(tabId);
-  if (shownView !== tabId || !bounds || !element) return;
+  if ((shownView !== tabId && parkedView !== tabId) || !bounds || !element) return shows();
   const started = generation;
+  const token = ++paintToken;
+  const current = () => element.isConnected && started === generation && token === paintToken;
   const png = await Promise.race([
     call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), SNAPSHOT_WAIT_MS)),
   ]);
-  if (!png?.byteLength || !element.isConnected || started !== generation) return;
+  if (!png?.byteLength || !current()) return shows();
   const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  // Decode before hiding the view, or the placeholder flashes blank.
+  const image = new Image();
+  image.src = url;
+  if (!(await image.decode().then(() => true, () => false)) || !current()) {
+    URL.revokeObjectURL(url);
+    return shows();
+  }
   // align snapshots to the visible native bounds because the chat dock can shorten the view.
   const box = element.getBoundingClientRect();
   element.style.backgroundImage = `url(${url})`;
   element.style.backgroundPosition = `${bounds.x - box.left}px ${bounds.y - box.top}px`;
   element.style.backgroundSize = `${bounds.width}px ${bounds.height}px`;
   element.style.backgroundRepeat = "no-repeat";
+  if (snapshot && snapshot.url !== url) URL.revokeObjectURL(snapshot.url);
   snapshot = { tabId, element, url };
+  return true;
+}
+
+// Covered views are parked off-window instead of hidden: a hidden view stops painting and returns blank.
+let parkedView: string | null = null;
+
+function parkable(tabId: string): boolean {
+  return views.has(tabId) && shownBounds !== null && (shownView === tabId || parkedView === tabId);
+}
+
+// A failed capture keeps the page on screen and asks the next sync to try again, a few times.
+const COVER_TRIES = 3;
+let coverFails = 0;
+let coverRetry = 0;
+
+// A parked page whose snapshot missed a change (a zoom), until a capture lands.
+let staleSnapshot: string | null = null;
+
+function retryCover(): void {
+  if (coverFails >= COVER_TRIES) return;
+  coverFails += 1;
+  coverRetry += 1;
+}
+
+async function coverView(tabId: string, zoom: number, bounds: Bounds): Promise<void> {
+  if (parkedView !== tabId) {
+    // Parked without a snapshot, the placeholder would show blank.
+    if (!(await paintSnapshot(tabId))) {
+      retryCover();
+      return;
+    }
+    await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
+    parkedView = tabId;
+    staleSnapshot = null;
+    coverFails = 0;
+    setShownView(null);
+  }
+  // A resize while covered: park at the new size and capture again, or the snapshot keeps the old frame.
+  if (JSON.stringify(bounds) !== JSON.stringify(shownBounds)) {
+    shownBounds = bounds;
+    viewBounds.set(tabId, bounds);
+    await call("browser_view_show", { tabId, bounds, parked: true });
+    staleSnapshot = tabId;
+  }
+  if ((zooms.get(tabId) ?? 1) !== zoom) {
+    zooms.set(tabId, zoom);
+    await call("browser_view_zoom", { tabId, zoom });
+    staleSnapshot = tabId;
+  }
+  if (staleSnapshot !== tabId) return;
+  if (await paintSnapshot(tabId, true)) {
+    staleSnapshot = null;
+    coverFails = 0;
+  } else retryCover();
+}
+
+/** Re-snapshots a covered page after it changes, e.g. a find step. */
+export function refreshCoveredPage(tabId: string): void {
+  if (parkedView !== tabId) return;
+  staleSnapshot = tabId;
+  void paintSnapshot(tabId, true).then((painted) => {
+    if (!painted) retryCover();
+    else if (staleSnapshot === tabId) {
+      staleSnapshot = null;
+      coverFails = 0;
+    }
+  });
+}
+
+// The page's picture while its floating window moves: a child, as the placeholder's background is the cut's fill.
+let dragShot: {
+  tabId: string;
+  url: string;
+  image: HTMLImageElement;
+  size: Bounds | null;
+  layoutWidth: number;
+  shown: boolean;
+} | null = null;
+let dragShotTicket = 0;
+
+async function captureForDrag(tabId: string): Promise<void> {
+  const ticket = ++dragShotTicket;
+  const size = shownBounds;
+  const layoutWidth = placeholder(tabId)?.clientWidth ?? 0;
+  const png = await call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null);
+  if (!png?.byteLength) return;
+  const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  const image = new Image();
+  image.src = url;
+  if (!(await image.decode().then(() => true, () => false)) || ticket !== dragShotTicket) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+  // Swapped in place: removing the old one first left the window empty.
+  const wasShown = dragShot?.tabId === tabId && dragShot.shown;
+  clearDragShot();
+  dragShot = { tabId, url, image, size, layoutWidth, shown: false };
+  if (wasShown || parkedView === tabId) showDragShot();
+}
+
+// The box is fractional, so its rounded size moves by a pixel with the window.
+function sameSize(a: Bounds | null, b: Bounds | null): boolean {
+  return !!a && !!b && Math.abs(a.width - b.width) <= 2 && Math.abs(a.height - b.height) <= 2;
+}
+
+function showDragShot(): void {
+  const page = dragShot ? placeholder(dragShot.tabId) : null;
+  // Taken at another size (before it floated): stretched, it flickered.
+  if (!dragShot || !page || dragShot.shown || !sameSize(dragShot.size, shownBounds)) return;
+  // The decoded image, not a CSS background: WebKit re-decoded that while the window moved.
+  Object.assign(dragShot.image.style, {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    // Its own proportions: scales with the window like the page, cropped, never stretched.
+    width: dragShot.layoutWidth ? `${dragShot.layoutWidth}px` : "100%",
+    height: "auto",
+    pointerEvents: "none",
+  });
+  page.style.position = "relative";
+  page.style.overflow = "hidden";
+  page.appendChild(dragShot.image);
+  dragShot.shown = true;
+}
+
+function hideDragShot(): void {
+  if (!dragShot?.shown) return;
+  const page = dragShot.image.parentElement;
+  dragShot.image.remove();
+  page?.style.removeProperty("position");
+  page?.style.removeProperty("overflow");
+  dragShot.shown = false;
+}
+
+function clearDragShot(): void {
+  if (!dragShot) return;
+  hideDragShot();
+  URL.revokeObjectURL(dragShot.url);
+  dragShot = null;
+}
+
+function floats(element: HTMLElement): boolean {
+  return element.closest?.(`[${FLOATING_ATTRIBUTE}]`) != null;
+}
+
+/** Kept marked, so the app isn't restyled (a flash). */
+function shutHole(): void {
+  if (holeBounds && (holeBounds.width > 0 || holeBounds.height > 0)) {
+    holeBounds = { ...holeBounds, width: 0, height: 0 };
+    placeHole();
+  }
+}
+
+function coverForDrag(tabId: string): void {
+  shutHole();
+  if (dragShot?.tabId === tabId) showDragShot();
+}
+
+// A dropped page redraws a moment after it lands (its off-window tiles may be gone): the picture stays till then.
+const DROP_HOLD_MS = 400;
+let dropTimer = 0;
+
+function clearDragShotAfterDrop(): void {
+  window.clearTimeout(dropTimer);
+  dropTimer = window.setTimeout(() => {
+    if (parkedView !== null || movingWindow()) return;
+    hideDragShot();
+    // No hover capture comes before the next drag, and a page that just floated has none at its size.
+    const page = shownView ? placeholder(shownView) : null;
+    if (shownView && page && floats(page)) void captureForDrag(shownView);
+  }, DROP_HOLD_MS);
+}
+
+// Started outside the apply pump: applyView waits for it, or it could undo a quick drop's restore.
+let parking: { tabId: string; done: Promise<void> } | null = null;
+
+function parkForDrag(tabId: string): Promise<void> {
+  if (parkedView === tabId) return Promise.resolve();
+  if (parking?.tabId === tabId) return parking.done;
+  coverForDrag(tabId);
+  const done = call("browser_view_show", { tabId, bounds: shownBounds, parked: true }).then(
+    () => {
+      parkedView = tabId;
+      setShownView(null);
+      if (dragShot?.tabId === tabId) showDragShot();
+      else void captureForDrag(tabId);
+    },
+    () => undefined,
+  ).finally(() => {
+    if (parking?.done === done) parking = null;
+  });
+  parking = { tabId, done };
+  return done;
 }
 
 async function applyView(desired: Desired): Promise<void> {
+  if (parking) await parking.done;
+  if (desired && "covered" in desired && movingWindow() && parkable(desired.tabId)) {
+    await parkForDrag(desired.tabId);
+    return;
+  }
   if (!desired || "covered" in desired) {
+    closeHole();
     // keep the snapshot if an overlay reopens during capture.
     if (snapshot?.tabId !== desired?.tabId) clearSnapshot();
-    if (desired) await paintSnapshot(desired.tabId);
+    // Another tab under a lasting cover (the find bar): show it first so it can be captured, not left blank.
+    if (desired && !parkable(desired.tabId)) {
+      const { tabId, url, entry, zoom, bounds } = desired;
+      await applyView({ tabId, url, entry, zoom, bounds });
+    }
+    if (desired && parkable(desired.tabId)) {
+      await coverView(desired.tabId, desired.zoom, desired.bounds);
+      return;
+    }
+    parkedView = null;
     setShownView(null);
     await call("browser_view_show", { tabId: null });
     return;
@@ -544,20 +1233,45 @@ async function applyView(desired: Desired): Promise<void> {
   const started = generation;
   const stale = () => {
     if (started === generation) return false;
-    void call("browser_view_close", { tabId }).catch(() => undefined);
+    void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
     return true;
   };
   try {
     openedTabs.add(tabId);
+    // Zoomed while hidden, so the page isn't seen at the old scale (on top: parked here; layered: cut shut).
+    const rezoom = existed && loaded === entry && (zooms.get(tabId) ?? 1) !== zoom;
+    const resized = JSON.stringify(bounds) !== JSON.stringify(shownBounds);
+    if (rezoom && !layered && shownView === tabId && resized) {
+      await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
+      if (stale()) return;
+      parkedView = tabId;
+    }
+    if (rezoom && parkedView === tabId) {
+      zooms.set(tabId, zoom);
+      await call("browser_view_zoom", { tabId, zoom });
+      if (stale()) return;
+    }
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
+    parkedView = null;
+    staleSnapshot = null;
+    coverFails = 0;
     clearSnapshot();
+    clearDragShotAfterDrop();
+    if (layered && existed && loaded === entry && (zooms.get(tabId) ?? 1) !== zoom) {
+      zooms.set(tabId, zoom);
+      await call("browser_view_zoom", { tabId, zoom });
+      if (stale()) return;
+    }
+    // After the move, so hole and page update together.
+    if (layered) openHole(tabId, bounds);
     shownBounds = bounds;
     viewBounds.set(tabId, bounds);
     setShownView(tabId);
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
       if (stale()) return;
     }
     views.set(tabId, entry);
@@ -570,14 +1284,13 @@ async function applyView(desired: Desired): Promise<void> {
     if (stale()) return;
     useBrowserStore.getState().updateTab(tabId, {
       loading: false,
-      nativeError: /public web/i.test(error(cause)) ? t("browser.native.blocked") : error(cause),
+      nativeError: nativeErrorText(error(cause)),
     });
   }
   recency = [...recency.filter((id) => id !== tabId), tabId];
 }
 
-// One call in flight, across mounts; meanwhile only the newest state waits, so a drag can't queue
-// a backlog of stale bounds for the native view to replay.
+// One call in flight; only the newest state waits, so a drag cannot queue stale bounds.
 let running = false;
 let pending: { desired: Desired } | null = null;
 
@@ -603,6 +1316,7 @@ function apply(desired: Desired): void {
 let epoch = 0;
 onNativeViewsClosed(() => {
   for (const tabId of [...views.keys()]) keepReachedPage(tabId);
+  parkedView = null;
   setShownView(null);
   views.clear();
   viewBounds.clear();
@@ -618,24 +1332,50 @@ onNativeViewsClosed(() => {
   pump();
 });
 
+const MOTION_EVENTS = ["transitionrun", "transitionend", "animationstart", "animationend"] as const;
+// Past Sonner's 400 ms slide.
+const MOTION_MS = 500;
+let motionUntil = 0;
+
 export function startNativeViews(): () => void {
   listenOnce();
+  panelUp = true;
   let frame = 0;
   let sent = "";
   let resized: HTMLElement | null = null;
+  let resizedArea: HTMLElement | null = null;
+  // The panel resizing (a split drag) only re-cuts the hole: no full sync, no call to the view.
+  const areaObserver = new ResizeObserver(() => clipHole(resized));
   const resizeObserver = new ResizeObserver(() => schedule());
 
   const sync = () => {
     frame = 0;
+    if (layered === null) return;
+    if (parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
+    markHole();
     const desired = desiredView();
+    if (desired && movingWindow() && desired.tabId === shownView) coverForDrag(desired.tabId);
     pruneViews(desired?.tabId ?? null);
     const element = desired ? placeholder(desired.tabId) : null;
+    // Docked <-> floating: the old cut showed the page through the chat until it moved.
+    if (layered !== null && element && resized && element !== resized && desired?.tabId === shownView && floats(element) !== floats(resized)) {
+      if (layered) shutHole();
+      // The chat's panels animate and the window's backgrounds paint late: re-cut every frame.
+      motionUntil = performance.now() + MOTION_MS;
+    }
     if (element !== resized) {
       if (resized) resizeObserver.unobserve(resized);
+      if (resizedArea) areaObserver.unobserve(resizedArea);
+      resizedArea = element && layered ? panelArea(element) : null;
       if (element) resizeObserver.observe(element);
+      if (resizedArea) areaObserver.observe(resizedArea);
       resized = element;
     }
-    const key = JSON.stringify([epoch, desired]);
+    clipHole(element);
+    // Boxes under the cut resize on their own (the chat as its panel floats).
+    placeHole();
+    if (performance.now() < motionUntil) schedule();
+    const key = JSON.stringify([epoch, coverRetry, desired]);
     if (key === sent) return;
     sent = key;
     apply(desired);
@@ -645,25 +1385,80 @@ export function startNativeViews(): () => void {
   };
 
   const unsubscribe = useBrowserStore.subscribe(schedule);
+  // The zoom lands after the resize it causes is measured, so the hole is placed again then.
+  const unzoom = subscribeAppliedInterfaceZoom(() => {
+    placeHole();
+    schedule();
+  });
   const overlays = new MutationObserver(schedule);
   overlays.observe(document.body, { childList: true });
+  overlays.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-palette"] });
   window.addEventListener("resize", schedule);
+  // Clickable overlays and covers slide in without a body mutation: measure them every frame while they move.
+  const moved = (event: Event) => {
+    if (!(event.target as Element | null)?.closest?.(`${CLICKABLE_SELECTOR}, [data-native-cover]`)) return;
+    motionUntil = performance.now() + MOTION_MS;
+    schedule();
+  };
+  for (const type of MOTION_EVENTS) document.addEventListener(type, moved, true);
+  const reachedPage = (event: Event) => {
+    if (tooltipHold && (event.target as Element | null)?.closest?.("[data-native-page]")) {
+      tooltipHold = 0;
+      schedule();
+    }
+  };
+  document.addEventListener("pointerover", reachedPage, true);
+  // A dragged or resized panel ends where the pointer lets go.
+  document.addEventListener("pointerup", schedule, true);
+  // A layered page follows the floating window; one on top waits for the drop (see sync).
+  const floatingMoved = () => {
+    // In the move's own frame (a sync is a frame late); on top of the app nothing syncs mid-gesture.
+    if (shownView && movingWindow()) {
+      const tabId = shownView;
+      coverForDrag(tabId);
+      // Outside apply: forgotten, or a gesture ending where it started never shows the page again.
+      sent = "";
+      if (!layered && parkable(tabId)) void parkForDrag(tabId);
+    }
+    if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
+  };
+  window.addEventListener(FLOATING_MOVE_EVENT, floatingMoved);
+  const floatingPressed = () => {
+    if (layered !== null && shownView) void captureForDrag(shownView);
+  };
+  window.addEventListener(FLOATING_PRESS_EVENT, floatingPressed);
   const interval = window.setInterval(schedule, RECHECK_MS);
+  void askLayered().then(schedule);
   schedule();
 
   return () => {
     cancelAnimationFrame(frame);
     unsubscribe();
+    unzoom();
     overlays.disconnect();
     resizeObserver.disconnect();
+    areaObserver.disconnect();
     window.removeEventListener("resize", schedule);
+    for (const type of MOTION_EVENTS) document.removeEventListener(type, moved, true);
+    document.removeEventListener("pointerover", reachedPage, true);
+    document.removeEventListener("pointerup", schedule, true);
+    window.removeEventListener(FLOATING_MOVE_EVENT, floatingMoved);
+    window.removeEventListener(FLOATING_PRESS_EVENT, floatingPressed);
     window.clearInterval(interval);
-    // close pages because hidden native views keep scripts and media running.
+    panelUp = false;
+    tooltipHold = 0;
+    // close pages because hidden native views keep scripts and media running; a page at work
+    // in the background is only hidden.
     generation += 1;
     pending = null;
+    parkedView = null;
     setShownView(null);
     clearSnapshot();
+    clearDragShot();
+    closeHole();
+    sendInput(NO_INPUT);
     insetToasts(null);
-    for (const tabId of [...views.keys()]) closeView(tabId);
+    for (const tabId of [...views.keys()]) if (!background.includes(tabId)) closeView(tabId);
+    if (views.size > 0) void call("browser_view_show", { tabId: null }).catch(() => undefined);
   };
 }

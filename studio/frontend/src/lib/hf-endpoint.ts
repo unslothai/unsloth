@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The frontend's HuggingFace endpoints, held in one place. `config/env.ts` pushes
- * the values in when `/api/health` answers.
- *
- * A store, not plain module state, so React sees it change. Imports only zustand,
- * deliberately: `network.ts` imports this and the unit tests import that under bare
- * node, which cannot evaluate what `config/env.ts` would bring.
- */
+/** `config/env.ts` pushes values in from `/api/health`. Imports only zustand so `network.ts`
+ * stays testable under bare node. */
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -18,6 +12,14 @@ export const DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co";
 
 export type HubSource = "huggingface" | "modelscope";
 
+type RepoKind = "model" | "dataset";
+
+type ModelScopePages = {
+  base: string;
+  /** Lowercased Hugging Face id -> ModelScope id. */
+  aliases: Record<RepoKind, Record<string, string>>;
+};
+
 const store = createStore<{
   endpoint: string;
   datasetsServer: string;
@@ -25,20 +27,21 @@ const store = createStore<{
   /** Kept after a switch back: requests already queued for the adapter still go there. */
   modelScopeBase: string | null;
   proxyBases: readonly string[];
+  /** The web origin behind a relayed `endpoint`; ignored once `endpoint` changes. */
+  pageBase: { endpoint: string; base: string } | null;
+  modelScopePages: ModelScopePages | null;
 }>(() => ({
   endpoint: DEFAULT_HF_ENDPOINT,
   datasetsServer: DEFAULT_DATASETS_SERVER,
   source: "huggingface",
   modelScopeBase: null,
   proxyBases: [],
+  pageBase: null,
+  modelScopePages: null,
 }));
 
-/**
- * Accept a value from `/api/health` only if it parses as an http(s) URL. Not a
- * second copy of the backend's policy: `utils/hf_endpoint.py` is the only
- * producer and has already sanitised and canonicalised it. Deciding the rules
- * twice is what made the two disagree about an IDN host and an IPv6 literal.
- */
+/** Only checks it parses as http(s): `utils/hf_endpoint.py` already sanitised it, and a second
+ * policy disagreed about IDN and IPv6 hosts. */
 function usableEndpoint(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
@@ -52,12 +55,8 @@ function usableEndpoint(raw: string | null | undefined): string | null {
   return trimmed.replace(/\/+$/, "");
 }
 
-/**
- * Apply the endpoints reported by `/api/health`. A blank, absent or unparseable
- * value leaves the current one alone: older backends report neither field, and
- * resetting would strand a mirror-only deployment on huggingface.co. `proxied`
- * marks a value that is the backend's relay rather than the endpoint itself.
- */
+/** Blank or unparseable keeps the current value, so a mirror-only deployment is not reset.
+ * `proxied` marks the backend's relay. */
 export function setHfEndpoints(
   endpoint?: string | null,
   datasetsServer?: string | null,
@@ -94,7 +93,84 @@ export function resetHfEndpoints(): void {
     source: "huggingface",
     modelScopeBase: null,
     proxyBases: [],
+    pageBase: null,
+    modelScopePages: null,
   });
+}
+
+function aliasTable(raw: unknown): Record<string, string> {
+  const table: Record<string, string> = {};
+  if (raw && typeof raw === "object") {
+    for (const [from, to] of Object.entries(raw)) {
+      if (typeof to === "string") table[from.toLowerCase()] = to;
+    }
+  }
+  return table;
+}
+
+/** `/api/health`'s web pages for the current `endpoint`: a relayed mirror's own origin, and
+ * `modelscope_pages` (`{base, aliases}`) while ModelScope is the source. */
+export function setHubPageLinks(pageBase?: string | null, modelScope?: unknown): void {
+  const ms = modelScope as { base?: unknown; aliases?: Record<string, unknown> } | null;
+  const msBase = usableEndpoint(typeof ms?.base === "string" ? ms.base : null);
+  store.setState((prev) => ({
+    modelScopePages: msBase
+      ? {
+          base: msBase,
+          aliases: {
+            model: aliasTable(ms?.aliases?.model),
+            dataset: aliasTable(ms?.aliases?.dataset),
+          },
+        }
+      : prev.modelScopePages,
+  }));
+  const base = usableEndpoint(pageBase);
+  if (base) setHubPageBase(store.getState().endpoint, base);
+}
+
+export function setHubPageBase(endpoint: string, pageBase: string): void {
+  const base = usableEndpoint(pageBase);
+  if (base && store.getState().endpoint === endpoint) {
+    store.setState({ pageBase: { endpoint, base } });
+  }
+}
+
+/** The relayed endpoint whose web origin is still unknown, or null. */
+export function missingHubPageBase(): string | null {
+  const { endpoint, source, proxyBases, pageBase } = store.getState();
+  return source === "huggingface" &&
+    proxyBases.includes(endpoint) &&
+    pageBase?.endpoint !== endpoint
+    ? endpoint
+    : null;
+}
+
+const MODELSCOPE_PAGE_PATH =
+  /^\/(datasets\/)?([^/?#]+\/[^/?#]+)(?:\/?|\/resolve\/(?:main|master)\/([^?#]+))([?#].*)?$/;
+
+/** Where a browser should open a URL built on `getHfEndpoint()`: the hub's own web page rather
+ * than the backend's mount or relay, which would only redirect there. Other URLs pass through. */
+export function hubWebUrl(url: string): string {
+  const { endpoint, source, pageBase, modelScopePages } = store.getState();
+  if (url !== endpoint && !url.startsWith(`${endpoint}/`)) return url;
+  const rest = url.slice(endpoint.length);
+  if (source === "modelscope") {
+    const match = modelScopePages ? MODELSCOPE_PAGE_PATH.exec(rest) : null;
+    if (!modelScopePages || !match) return url;
+    const kind: RepoKind = match[1] ? "dataset" : "model";
+    const repo = modelScopePages.aliases[kind][match[2].toLowerCase()] ?? match[2];
+    const file = match[3] ? `/resolve/master/${match[3]}` : "";
+    return `${modelScopePages.base}/${kind}s/${repo}${file}${match[4] ?? ""}`;
+  }
+  return pageBase?.endpoint === endpoint ? `${pageBase.base}${rest}` : url;
+}
+
+export function useHubWebUrl(url: string): string {
+  return useStore(store, () => hubWebUrl(url));
+}
+
+export function useMissingHubPageBase(): string | null {
+  return useStore(store, missingHubPageBase);
 }
 
 export function getHfEndpoint(): string {
@@ -132,7 +208,7 @@ export function useHubName(): string {
   return useHubSource() === "modelscope" ? "ModelScope" : "Hugging Face";
 }
 
-/** The datasets-server knows Hugging Face repos only: a ModelScope id would get another dataset's data. */
+/** Hugging Face repos only: a ModelScope id would get another dataset's data. */
 export function hasDatasetsServer(): boolean {
   return store.getState().source !== "modelscope";
 }

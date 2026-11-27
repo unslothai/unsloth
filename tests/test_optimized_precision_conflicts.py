@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+import __future__
 import ast
+import importlib.util
+import inspect
 import fnmatch
 import os
 import sys
@@ -26,6 +29,91 @@ def _mistral_format_names(tree):
     return names
 
 
+def _tiling_names(tree):
+    """Names loader.py imports from ..tiling (tiled MLP), which these precision checks never reach."""
+    return {
+        alias.asname or alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "tiling" and node.level == 2
+        for alias in node.names
+    }
+
+
+# Sibling modules whose plain functions from_pretrained calls are run for real, not stubbed.
+_LIFTED_MODULES = ("loader_utils", "mapper")
+
+
+def _loader_utils_functions(
+    tree,
+    path,
+    method,
+    module = "loader_utils",
+):
+    """Real definitions of the .<module> functions loader.py imports and `method` calls."""
+    imported = {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == module
+        for alias in node.names
+    }
+    used = {n.id for n in ast.walk(method) if isinstance(n, ast.Name)}
+    source = ast.parse((path.parent / f"{module}.py").read_text(encoding = "utf-8"))
+    defs = {n.name: n for n in source.body if isinstance(n, ast.FunctionDef)}
+    return [
+        defs[imported[name]] for name in sorted(used & imported.keys()) if imported[name] in defs
+    ]
+
+
+def _real_function(path, name):
+    """One self-contained function compiled from its module's source, so the fixture runs the real code without
+    importing the module (unsloth.models._utils pulls in torch)."""
+    node = next(
+        n
+        for n in ast.parse(path.read_text(encoding = "utf-8")).body
+        if isinstance(n, ast.FunctionDef) and n.name == name
+    )
+    namespace = {}
+    exec(compile(ast.Module([node], type_ignores = []), str(path), "exec"), namespace)
+    return namespace[name]
+
+
+def _gguf_load_module(path):
+    spec = importlib.util.spec_from_file_location("_unsloth_gguf_load_for_tests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _module_definitions(tree):
+    """loader.py's own top-level functions and literal constants, by name."""
+    defined = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            defined[node.name] = node
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            try:
+                ast.literal_eval(node.value)
+            except ValueError:
+                continue
+            defined[node.targets[0].id] = node
+    return defined
+
+
+def _closure(roots, defined):
+    """Every definition in `defined` the roots reach by name, transitively, in source order."""
+    wanted, pending = set(), list(roots)
+    while pending:
+        for node in ast.walk(pending.pop()):
+            if isinstance(node, ast.Name) and node.id in defined and node.id not in wanted:
+                wanted.add(node.id)
+                pending.append(defined[node.id])
+    return [node for name, node in defined.items() if name in wanted]
+
+
 @pytest.fixture
 def loader():
     path = Path(__file__).resolve().parents[1] / "unsloth/models/loader.py"
@@ -37,11 +125,6 @@ def loader():
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
     )
     method.decorator_list = []
-    helper = next(
-        n
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_precision_flags_conflict"
-    )
     captured = {"config_calls": 0}
 
     def dispatch(**kwargs):
@@ -65,16 +148,20 @@ def loader():
         _requested_float32 = lambda dtype: False,
         hf_login = lambda token: token,
         requested_device_map = lambda device: device,
+        deepspeed_zero3_device_map = lambda device: device,
         is_automatic_device_map = lambda device: isinstance(device, str),
         prepare_device_map = lambda: ("sequential", False),
         ALLOW_BITSANDBYTES = True,
         ALLOW_PREQUANTIZED_MODELS = True,
         USE_MODELSCOPE = False,
+        logger = SimpleNamespace(warning_once = lambda *args, **kwargs: None),
         SUPPORTS_LLAMA32 = True,
         get_model_name = lambda name, **kwargs: name,
         _revision_for_resolved_repo = lambda revision, *args: revision,
         AutoConfig = SimpleNamespace(from_pretrained = config),
         PeftConfig = SimpleNamespace(from_pretrained = no_adapter),
+        # No load scope here, so every probe reaches its loader, as _memo_config_probe does outside one.
+        _memo_config_probe = lambda loader, name, **kwargs: loader(name, **kwargs),
         get_transformers_model_type = lambda *args, **kwargs: ["llama"],
         FastLlamaModel = SimpleNamespace(from_pretrained = dispatch),
         apply_unsloth_gradient_checkpointing = lambda value, *args: value,
@@ -83,14 +170,64 @@ def loader():
         _get_dtype = lambda dtype: dtype,
         _revision_for_tokenizer_repo = lambda *args: None,
         _raise_if_modeling_ignores_config = lambda *args: None,
+        raise_if_fast_inference_under_fsdp2 = lambda fast_inference: None,
+        _refuse_network_share_raw_adapter_base = lambda *args, **kwargs: None,
+        _resolved_revision = lambda model_name, revision, *args, **kwargs: revision,
+        # #19464: from_pretrained starts every load with a backend switch that needs a real torch.
+        _unsloth_load_begins = lambda: None,
+        # #19889: the real helper. No case passes gguf_file, so it returns the 4bit / 8bit flags unchanged.
+        gguf_drop_bitsandbytes = _real_function(path.parent / "_utils.py", "gguf_drop_bitsandbytes"),
     )
-    # Mistral-format checkpoints (#12144) are redirected before the precision check. None of
-    # these fixtures is one, so every helper that decides that answers False and the redirect
-    # is an exception nothing raises. Read off loader.py so a new helper is covered too.
+    # #19947: from_pretrained imports its GGUF checks from unsloth/_gguf_load.py. That module needs only the stdlib,
+    # so the fixture loads all of it (helpers added there later included) instead of stubbing one name at a time.
+    for name, value in vars(_gguf_load_module(path.parent.parent / "_gguf_load.py")).items():
+        if callable(value) and not name.startswith("__"):
+            env.setdefault(name, value)
+    # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
-    exec(compile(ast.Module(body = [helper, method], type_ignores = []), str(path), "exec"), env)
+    for name in _tiling_names(tree):
+        env.setdefault(name, lambda *args, **kwargs: None)
+    # Real loader_utils helpers (e.g. the fp8 dequantize check from #14516) where no stub is given.
+    env.setdefault("inspect", inspect)
+    flags = __future__.annotations.compiler_flag  # annotations such as Union stay unevaluated
+    # .mapper too: from_pretrained calls mapper.bf16_repo_loads_16bit since #18061.
+    for module in _LIFTED_MODULES:
+        real = [n for n in _loader_utils_functions(tree, path, method, module) if n.name not in env]
+        source = str(path.parent / f"{module}.py")
+        exec(compile(ast.Module(body = real, type_ignores = []), source, "exec", flags = flags), env)
+    # Every loader.py helper from_pretrained reaches and no stub above replaces, new ones included
+    # (a fixed list missed _agree_fast_inference_across_ranks from #15390).
+    defined = {name: node for name, node in _module_definitions(tree).items() if name not in env}
+    helpers = _closure([method], defined)
+    for node in helpers:
+        if isinstance(node, ast.FunctionDef):
+            node.decorator_list = []
+    # Relative imports inside from_pretrained cannot run here (no package context): a stubbed name
+    # is read from env instead, and an unstubbed one fails by name if a test reaches it.
+    ast.fix_missing_locations(_RelativeImports(env).visit(method))
+    exec(compile(ast.Module(body = [*helpers, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
+
+
+class _RelativeImports(ast.NodeTransformer):
+    def __init__(self, env):
+        self.env = env
+
+    def visit_ImportFrom(self, node):
+        if not node.level:
+            return node
+        missing = [a.name for a in node.names if (a.asname or a.name) not in self.env]
+        if not missing:
+            return ast.copy_location(ast.Pass(), node)
+        message = f"from_pretrained reached `from {'.' * node.level}{node.module or ''} import {', '.join(missing)}`: stub it in the loader fixture"
+        return ast.copy_location(
+            ast.Raise(
+                exc = ast.Call(ast.Name("AssertionError", ast.Load()), [ast.Constant(message)], []),
+                cause = None,
+            ),
+            node,
+        )
 
 
 @pytest.mark.parametrize(
@@ -162,6 +299,10 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
     def snapshot_download(name, allow_file_pattern = None):
         calls.append((name, allow_file_pattern))
+        if name.startswith("hf-only/"):
+            raise ValueError(f"{name} is not on ModelScope")
+        snapshot = cache / name.replace("/", "--")
+        snapshot.mkdir(exist_ok = True)
         for filename in (
             "config.json",
             "adapter_config.json",
@@ -171,9 +312,9 @@ def modelscope_snapshot(monkeypatch, tmp_path):
             if allow_file_pattern is None or any(
                 fnmatch.fnmatch(filename, pattern) for pattern in allow_file_pattern
             ):
-                (cache / filename).write_text("test fixture")
+                (snapshot / filename).write_text("test fixture")
                 downloaded.append(filename)
-        return str(cache)
+        return str(snapshot)
 
     monkeypatch.setitem(
         sys.modules, "modelscope", SimpleNamespace(snapshot_download = snapshot_download)
@@ -183,7 +324,7 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
 def use_modelscope_adapter(env, cache, base_name):
     def config(name, **kwargs):
-        if name == str(cache):
+        if name == str(cache / "owner--model"):
             raise ValueError("Adapter has no model config")
         return SimpleNamespace(model_type = "llama", rope_scaling = None)
 
@@ -222,6 +363,25 @@ def test_modelscope_conflicts_do_not_download_weights(
     assert len(calls) == 1
 
 
+def test_modelscope_adapter_with_network_share_base_is_refused(
+    loader, modelscope_snapshot, monkeypatch
+):
+    env, captured = loader
+    cache, _, _ = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, r"\\evil.example\share\model")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.vision_utils",
+        SimpleNamespace(_is_network_share = lambda path: path.startswith("\\\\")),
+    )
+
+    with pytest.raises(ValueError, match = "network share"):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False)
+    assert "dispatch" not in captured
+
+
 @pytest.mark.parametrize(
     "kwargs, adapter_base, expected_4bit",
     [
@@ -243,6 +403,23 @@ def test_modelscope_valid_loads_download_weights(
         env["from_pretrained"](model_name = "owner/model", **kwargs)
 
     assert "model.safetensors" in downloaded
-    assert captured["dispatch"]["model_name"] == (adapter_base or str(cache))
+    # An adapter's base is fetched from ModelScope as well (#3726).
+    loaded = adapter_base or "owner/model"
+    assert captured["dispatch"]["model_name"] == str(cache / loaded.replace("/", "--"))
     assert captured["dispatch"]["load_in_4bit"] is expected_4bit
     assert calls[-1] == ("owner/model", None)
+    assert (loaded, None) in calls
+
+
+def test_modelscope_adapter_base_missing_there_loads_from_the_hub(loader, modelscope_snapshot):
+    """#3726: an adapter on ModelScope whose base is only on the Hub still loads that base by repo id."""
+    env, captured = loader
+    cache, downloaded, calls = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, "hf-only/base")
+
+    with pytest.raises(DispatchReached):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False, load_in_16bit = True)
+
+    assert captured["dispatch"]["model_name"] == "hf-only/base"
+    assert ("hf-only/base", None) in calls

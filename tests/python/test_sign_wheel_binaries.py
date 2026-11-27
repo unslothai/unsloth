@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The wheelhouse signer: what it signs, what it refuses, and what it must not break.
-
-A .whl cannot be Authenticode signed, so the native binaries inside it are, and the wheel is
-repacked. That makes RECORD the thing most likely to go quietly wrong -- signing changes every
-signed member's bytes, and a stale RECORD ships a wheel that reads as corrupt to anything that
-checks it. The signing call itself is stubbed here: this is about the packing, the refusals and
-the RECORD, none of which need Azure.
-"""
+"""Signing changes every signed member's bytes, so the wheel's RECORD must be rewritten to match."""
 
 from __future__ import annotations
 
@@ -42,11 +35,7 @@ def _pe(
     signed: bool = False,
     plus: bool = True,
 ) -> bytes:
-    """The smallest byte string the reader will accept as a PE image.
-
-    Built rather than vendored: a real .pyd in the tree would be a binary nobody can review,
-    and every field this tool reads is one of the four below.
-    """
+    """Smallest PE image the reader accepts, built in code instead of vendoring a binary nobody reviews."""
     header_at = 0x80
     blob = bytearray(b"\0" * 0x400)
     blob[0:2] = b"MZ"
@@ -85,11 +74,7 @@ def _wheel(path: Path, members: dict) -> Path:
 
 @pytest.fixture
 def fake_signer(tmp_path):
-    """Stands in for trusted-signing-cli: appends a certificate table to the file it is given.
-
-    The real one talks to Azure. What this file's tests are about is everything around that
-    call, so the stub does the one thing the caller checks for -- the file comes back signed.
-    """
+    """Fake for trusted-signing-cli: appends a certificate table, the only thing the caller checks."""
     script = tmp_path / "fake_signer.py"
     script.write_text(
         "import struct, sys\n"
@@ -151,8 +136,7 @@ class TestSigningAWheel:
                 assert mod.is_signed(z.read(name)), name
 
     def test_an_already_signed_binary_is_left_alone(self, mod, tmp_path, fake_signer):
-        """delvewheel vendors Microsoft's redistributables into pyarrow already signed by
-        Microsoft. Re-signing one replaces their signature with ours."""
+        """Vendored Microsoft DLLs arrive signed; re-signing would replace their signature."""
         original = _pe(signed = True)
         wheel = _wheel(
             tmp_path / "demo-1.0-cp313-cp313-win_arm64.whl",
@@ -253,8 +237,7 @@ class TestTheRecordIsRegenerated:
         ), "the fixture did not really change the bytes, so this proves nothing"
 
     def test_record_names_itself_without_a_digest(self, mod, tmp_path, fake_signer):
-        """PEP 376: RECORD cannot hash itself, and a tool that writes one anyway makes the
-        file self-contradictory."""
+        """RECORD cannot hash itself (PEP 376); a digest makes the file contradict itself."""
         wheel = _wheel(
             tmp_path / "demo-1.0-cp313-cp313-win_arm64.whl",
             {
@@ -307,8 +290,7 @@ class TestItRefusesRatherThanShipSomethingWrong:
             mod.sign_wheel(wheel, tmp_path / "out", failing)
 
     def test_a_signer_that_silently_does_nothing_fails_the_run(self, mod, tmp_path):
-        """Exit 0 with the file untouched is the dangerous case: it would publish an unsigned
-        wheel while every log line says it was signed."""
+        """A signer that exits 0 but leaves the file untouched would publish an unsigned wheel."""
         wheel = _wheel(
             tmp_path / "demo-1.0-cp313-cp313-win_arm64.whl",
             {

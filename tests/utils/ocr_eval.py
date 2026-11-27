@@ -130,7 +130,6 @@ class OCRModelEvaluator:
                 print(f"Skipping sample {sample_idx}: No question found in user message")
             return None, None, None, []
 
-        # Model input excludes the assistant message
         input_messages = []
         if system_message:
             input_messages.append(system_message)
@@ -173,7 +172,6 @@ class OCRModelEvaluator:
                 use_cache = True,
             )
 
-        # Keep only the generated tokens, not the input
         generated_ids_trimmed = [
             out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
@@ -257,7 +255,6 @@ class OCRModelEvaluator:
             }
         )
 
-        # Sort by WER (best first)
         comparison_df = comparison_df.sort_values("WER")
 
         print("\nComparison Table (sorted by WER):")

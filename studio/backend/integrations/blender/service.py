@@ -2,8 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import functools
 import json
+import os
+import shutil
+import stat
 import sys
+from typing import Optional
 
 from core.inference.mcp_client import (
     join_stdio_command,
@@ -11,8 +16,14 @@ from core.inference.mcp_client import (
     stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
 )
-from integrations.blender import MIN_BLENDER_VERSION, MIN_PYTHON_VERSION, launch_command
+from integrations.blender import (
+    MIN_BLENDER_VERSION,
+    MIN_PYTHON_VERSION,
+    launch_command,
+    runtime_ready,
+)
 from integrations.blender.runtime import ensure_runtime
+from integrations.installed import is_installed, note_connected
 from models.mcp_servers import BlenderSettings, McpBuiltinResponse, McpServerProbeResult
 
 
@@ -48,13 +59,19 @@ def resolve_server(row: dict) -> dict:
     }
 
 
-def catalog_item(row = None):
+def catalog_item(row = None, detect: bool = True):
     reason = unavailable_reason()
+    available = reason is None
+    settings = settings_for(row)
+    is_enabled = bool(row and row["is_enabled"])
+    if available and is_enabled and not runtime_ready():
+        reason = "The Blender MCP runtime is not downloaded, so Blender tools are off. Chat retries the download within a minute, or use Test connection; the backend needs internet access."
     return McpBuiltinResponse(
-        **settings_for(row).model_dump(),
+        **settings.model_dump(),
+        installed = is_installed("blender", settings.blender_path) if detect else None,
         server_id = row["id"] if row else None,
-        is_enabled = bool(row and row["is_enabled"]),
-        available = reason is None,
+        is_enabled = is_enabled,
+        available = available,
         unavailable_reason = reason,
         min_blender_version = MIN_BLENDER_VERSION,
     )
@@ -65,7 +82,7 @@ async def _bridge_version(port):
     try:
         request = {
             "type": "execute",
-            "code": "import bpy\nresult = {'version': list(bpy.app.version)}",
+            "code": "import bpy\nresult = {'version': list(bpy.app.version), 'binary_path': bpy.app.binary_path}",
             "strict_json": True,
         }
         writer.write((json.dumps(request) + "\0").encode())
@@ -81,9 +98,65 @@ async def _bridge_version(port):
             raise ValueError("Invalid Blender bridge version response")
         if tuple(version) < tuple(map(int, MIN_BLENDER_VERSION.split("."))):
             raise ValueError(f"Blender {MIN_BLENDER_VERSION} or newer is required")
+        binary = response.get("result", {}).get("binary_path")
+        return binary if isinstance(binary, str) and binary else None
     finally:
         writer.close()
         await writer.wait_closed()
+
+
+def _not_plantable(st) -> bool:
+    """Owned by this user or root; writable by nobody else (a private group or a sticky directory is fine)."""
+    if st.st_uid not in (0, os.getuid()):
+        return False
+    if stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX:
+        return True
+    return not (st.st_mode & 0o002) and not (st.st_mode & 0o020 and not _private_group(st.st_gid))
+
+
+@functools.lru_cache(maxsize = 8)
+def _private_group(gid: int) -> bool:
+    """No other account is in the group (a primary gid is often shared: macOS staff)."""
+    try:
+        import grp, pwd  # noqa: E401, PLC0415 (POSIX only)
+        others = set(grp.getgrgid(gid).gr_mem) - {pwd.getpwuid(os.getuid()).pw_name}
+        return not others and not any(
+            p.pw_gid == gid and p.pw_uid != os.getuid() for p in pwd.getpwall()
+        )
+    except (ImportError, KeyError, OSError):
+        return False
+
+
+def _parents(path: str):
+    while True:
+        yield path
+        up = os.path.dirname(path)
+        if up == path:
+            return
+        path = up
+
+
+def _own_blender(path) -> Optional[str]:
+    """Anything on 127.0.0.1 can answer the bridge port and Studio later runs this path: the canonical path of an
+    own blender* executable, else None (a symlink or a writable parent could be swapped after the check)."""
+    if not hasattr(os, "getuid") or not isinstance(path, str) or not os.path.isabs(path):
+        return None  # no POSIX owner to check (Windows): never adopt a reported path
+    try:
+        real = os.path.realpath(path, strict = True)
+        st = os.stat(real)
+    except (OSError, ValueError):
+        return None
+    if not os.path.basename(real).lower().startswith("blender"):
+        return None
+    if not stat.S_ISREG(st.st_mode) or not os.access(real, os.X_OK):
+        return None
+    try:
+        chain = [st] + [os.stat(d) for d in _parents(os.path.dirname(real))]
+    except OSError:
+        return None
+    if not all(_not_plantable(item) for item in chain):
+        return None
+    return real
 
 
 async def probe(
@@ -116,8 +189,13 @@ async def probe(
     result = McpServerProbeResult(ok = True, tool_count = len(tools))
     if check_bridge:
         try:
-            await asyncio.wait_for(_bridge_version(settings.port), timeout = 5)
+            binary = await asyncio.wait_for(_bridge_version(settings.port), timeout = 5)
             result.blender_ready = True
+            note_connected("blender")
+            # An unpacked Linux tarball is not on PATH: report the running Blender for the CLI tools.
+            own = _own_blender(binary)
+            if not settings.blender_path and not shutil.which("blender") and own:
+                result.blender_path = own
         except Exception:
             result.blender_ready = False
             result.blender_error = f"Blender is not connected on port {settings.port}. Enable its MCP add-on, then retry."

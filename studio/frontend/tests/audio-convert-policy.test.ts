@@ -293,7 +293,6 @@ test("only the expired-upload 404 expires uploads, and a re-upload clears it", (
   );
 });
 
-// Chatterbox restarts under clon for Clone and vc for Convert; a stale task hides the reload.
 const CLONE_REFRESHES_AFTER_RUN =
   /await showRunResult\(\{[\s\S]*?\}\);\s*(?:\/\/[^\n]*\n\s*)*await refreshStatus\(\);\s*\} catch \(error\)/;
 const CLONE_REFRESHES_AFTER_STOP =
@@ -315,7 +314,6 @@ test("Convert's reload notice reads a status refreshed after a Clone run, a stop
   assert.match(clone, CLONE_REFRESHES_AFTER_STOP);
   const convert = readSrc("features/audio/hooks/use-convert-generation.ts");
   assert.match(convert, CONVERT_REFRESHES_AFTER_STOPPED_SWITCH);
-  // A stopped Clone run can restart audio.cpp after Stop returns; arriving on Convert reads it again.
   const page = readSrc("features/audio/audio-page.tsx");
   assert.match(page, CONVERT_REFRESHES_ON_ARRIVAL);
 });
@@ -338,7 +336,6 @@ test("the Convert source card states Convert's own length cap", () => {
     /maxRecordSeconds=\{caps\?\.source_max_seconds \?\? 300\}/,
   );
   const card = readSrc("features/audio/components/audio-source-input.tsx");
-  // Five minutes reads as minutes, not 300 s.
   assert.match(card, /`Uses the first \$\{usesFirstSeconds \/ 60\} min\.`/);
 });
 

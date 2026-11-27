@@ -38,9 +38,6 @@ def _load_guard_module():
 _system_dir_guard = _load_guard_module()
 
 
-# ── install.ps1: relocate before doing any work ──
-
-
 def _install_ps1() -> str:
     return INSTALL_PS1.read_text(encoding = "utf-8")
 
@@ -51,7 +48,7 @@ def test_install_ps1_leaves_system_directory_before_installing():
     guard_idx = src.index("$InSystemDir = Test-UnderSystemRoot $CurrentDir")
     for marker in (
         'step "winget" "available"',
-        # No "uv " prefix: the installer invokes the resolved $script:UvExe, not the bare token.
+        # No "uv " prefix: the installer invokes the resolved $script:UvExe.
         "venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
@@ -132,8 +129,7 @@ def _extract_helper() -> str:
         (r"C:\Windows\SysWOW64", "True"),
         (r"C:\Windows", "True"),
         (r"C:\Users\me", "False"),
-        # Siblings sharing the prefix: rejecting these would abort an install with a supported absolute
-        # UNSLOTH_STUDIO_HOME override.
+        # Prefix siblings must be accepted: they are valid UNSLOTH_STUDIO_HOME overrides.
         (r"C:\Windows2", "False"),
         (r"C:\WindowsApps\stuff", "False"),
         (r"C:\WindowsStudio", "False"),
@@ -148,10 +144,7 @@ def test_install_ps1_under_system_root(path: str, expected: str):
         f"{_extract_helper()}"
         f"\"RESULT=$(Test-UnderSystemRoot '{path}')\"\n"
     )
-    # run_pwsh, not subprocess.run: Test-UnderSystemRoot only reports a verdict if pwsh
-    # lived long enough to print one, and an interpreter that aborted at startup would
-    # read here as the containment check answering wrongly for this path.
-    # See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh: a startup abort would read as the containment check answering wrongly.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -183,7 +176,6 @@ _PS_STUBS = (
     'function step { param($Label, $Value, $Color) Write-Host "STEP:$Label|$Value" }\n'
     'function substep { param($Message, $Color) Write-Host "SUBSTEP:$Message" }\n'
     'function Exit-InstallFailure { param($Message, $Code = 1) Write-Host "FAILED:$Message"; exit 42 }\n'
-    # install.ps1 prints through its UTF-8 stdout sink; the harness only needs the text.
     "function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }\n"
     "$InSystemDir = $true\n"
 )
@@ -211,9 +203,7 @@ def _run_relocation_block(
         + '\nWrite-Host "CWD:$((Get-Location).ProviderPath)"\n'
         + 'Write-Host "LLAMA:$WithLlamaCppDir"\n'
     )
-    # Inherit the real environment (pwsh needs PATH and SystemRoot) and repoint every home-ish variable at the fixture.
-    # HOMEDRIVE/HOMEPATH too: PowerShell builds $HOME from that pair on Windows, and a stale one would look like a safe
-    # directory.
+    # Repoint every home var, HOMEDRIVE/HOMEPATH too: PowerShell builds $HOME from that pair.
     env = dict(os.environ)
     drive, tail = os.path.splitdrive(str(home_env))
     env.update(
@@ -227,9 +217,7 @@ def _run_relocation_block(
             "HOMEPATH": tail,
         }
     )
-    # run_pwsh, not subprocess.run: every relocation case below reads this run's exit code to tell
-    # "moved out of System32" from "routed through Exit-InstallFailure", and a pwsh killed by a
-    # signal is neither. See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh: a pwsh killed by a signal is neither relocated nor Exit-InstallFailure.
     return run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -276,8 +264,7 @@ def test_relocation_block_leaves_a_fully_qualified_llama_cpp_dir_alone(tmp_path)
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_relocation_block_refuses_a_studio_home_under_the_system_root(tmp_path):
-    """Relocating the CWD does not move $StudioHome, which SYSTEM resolves under
-    System32\\config\\systemprofile: fail rather than install there."""
+    """$StudioHome stays under System32 when the CWD moves, so refuse instead of installing."""
     system_root = tmp_path / "Windows"
     current_dir = system_root / "System32"
     current_dir.mkdir(parents = True)
@@ -326,9 +313,6 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
     assert "FAILED:" in res.stdout, "must route through Exit-InstallFailure for rollback"
 
 
-# ── unsloth_cli: the message the user actually reads ──
-
-
 def _expand_windows_user(value: str, environ: dict[str, str]) -> str:
     """The real ntpath.expanduser, against the fake environment."""
     with mock.patch.dict(os.environ, environ, clear = True):
@@ -336,12 +320,7 @@ def _expand_windows_user(value: str, environ: dict[str, str]) -> str:
 
 
 def _expand_windows_vars(value: str, environ: dict[str, str]) -> str:
-    """The real ntpath.expandvars, against the fake environment.
-
-    Reimplementing it here would test the reimplementation: the guard is given
-    the same function it gets in production, reading the environment the test
-    describes rather than the host's.
-    """
+    """Use the real ntpath.expandvars; a reimplementation would test itself rather than the guard."""
     with mock.patch.dict(os.environ, environ, clear = True):
         return ntpath.expandvars(value)
 
@@ -374,8 +353,7 @@ def _guard_outcome(
     if environ_extra:
         environ.update(environ_extra)
 
-    # ntpath for the path semantics, with expanduser pinned: the real one reads the host's HOME, and on Windows "~" is
-    # USERPROFILE, SYSTEM's included.
+    # expanduser pinned: the real one reads the host's HOME; on Windows "~" is USERPROFILE.
     fake_path = types.SimpleNamespace(
         normcase = ntpath.normcase,
         normpath = ntpath.normpath,
@@ -394,15 +372,13 @@ def _guard_outcome(
         return ntpath.join(base, tail)
 
     chdir_calls: list[str] = []
-    # The guard re-reads the directory after moving, so the fake has to move too.
     current = {"cwd": cwd}
 
     def _chdir(target):
         chdir_calls.append(target)
         if chdir_error is not None:
             raise chdir_error
-        # A junction, or a profile that is itself inside the Windows tree: the call succeeds and the
-        # process ends up somewhere else than it asked for.
+        # A junction or in-tree profile: the call succeeds but cwd ends up elsewhere.
         current["cwd"] = (
             chdir_lands_in if chdir_lands_in is not None and target == _RELOCATED else target
         )
@@ -426,18 +402,13 @@ def _guard_outcome(
         sep = "\\",
         expanduser = lambda path: _expand_windows_user(path, environ),
         makedirs = _makedirs,
-        # Only a folder that really holds System32 counts as a Windows directory.
         isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
-        # sys.path entries are on disk only when the caller says so, the way the filesystem would answer.
         exists = lambda path: ntpath.normcase(path) in {ntpath.normcase(p) for p in real_paths},
         abspath = _abspath,
         home_isdir = lambda path: ntpath.normcase(path)
         not in {ntpath.normcase(home) for home in missing_homes},
-        # Windows expansion, from the same environment the guard is reading.
         expandvars = lambda value: _expand_windows_vars(value, environ),
-        # The real sys.path belongs to pytest, so the guard gets a copy to pin.
-        # pass_syspath = False leaves it out, which is what the console script does: only then does the guard reach the
-        # real list.
+        # The real sys.path belongs to pytest; pass_syspath = False mimics the console script.
         **({"syspath": syspath if syspath is not None else []} if pass_syspath else {}),
     )
     if environ_out is not None:
@@ -506,16 +477,13 @@ def _cd_line(message: str, shell: str) -> str:
 )
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_cli_guard_cd_line_actually_runs_in_powershell(profile_name: str, tmp_path):
-    """The advertised recovery command must survive a paste: Set-Location takes one -Path,
-    so an unquoted profile with a space fails."""
+    """The advertised cd line must quote the profile path: Set-Location takes one -Path."""
     profile = tmp_path / profile_name
     profile.mkdir()
     message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = str(profile))
     assert message is not None
     command = _cd_line(message, "PowerShell")
-    # run_pwsh, not subprocess.run: this is the call whose stderr caught the crash in the
-    # first place ('Stack overflow.' from a bare cd), and blaming the advertised recovery
-    # command for it is exactly the wrong reading. See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh: a startup crash must not be blamed on the advertised recovery command.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"{command}; (Get-Location).Path"],
         capture_output = True,
@@ -572,14 +540,7 @@ def test_cli_guard_message_repeats_the_actual_command():
     ), "the retry line must reproduce the invoked command, re-quoting arguments with spaces"
 
 
-# Issue #8510:
-
-# ── "Run Unsloth at login" (issue #8510): the desktop cannot choose its own cwd ──
-#
-# Windows registers login startup as an HKCU Run value, which carries no working
-# directory, so Unsloth Desktop and every CLI child it spawns start in System32.
-# The commands it runs take no path from the user, so they move out of the folder
-# instead of refusing and leaving the user with a tray icon and no server.
+# HKCU Run values carry no cwd, so Desktop and its CLI children start in System32; move out.
 _RELOCATED = r"C:\Users\me\.unsloth"
 
 
@@ -590,8 +551,7 @@ _RELOCATED = r"C:\Users\me\.unsloth"
         ["unsloth", "studio", "--api-only"],
         ["unsloth", "studio", "provision-desktop-auth"],
         ["unsloth", "studio", "desktop-capabilities", "--json"],
-        # The command that upgrades a desktop too old to set the marker; without it such a user gets a working backend
-        # and no way to update from the tray.
+        # Upgrades a desktop too old to set the marker; without it the tray cannot update.
         ["unsloth", "studio", "update"],
         ["unsloth", "studio", "--help"],
     ],
@@ -604,8 +564,7 @@ def test_cli_guard_relocates_a_desktop_managed_command(argv: list[str]):
 
 
 def test_cli_guard_lands_where_the_desktop_puts_its_children():
-    """studio/src-tauri/src/process.rs pins ~/.unsloth; both halves must agree, or the
-    cwd-relative ./models scan finds different folders depending on which half ran."""
+    """process.rs pins ~/.unsloth; if the halves disagree, cwd-relative ./models scans differ."""
     _, _, chdir_calls = _guard_outcome(
         r"C:\Windows\System32", argv = ["unsloth", "studio", "--api-only"]
     )
@@ -613,11 +572,7 @@ def test_cli_guard_lands_where_the_desktop_puts_its_children():
 
 
 def test_cli_guard_relocates_when_the_desktop_marks_the_child():
-    """Newer desktop builds set the marker; the argv rules above cover older ones.
-
-    The marker exists for a command shape this CLI does not know yet, so it is
-    tried here with one.
-    """
+    """Newer desktop builds set the marker for command shapes the argv rules miss."""
     message, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", "desktop-handshake", "--json"],
@@ -637,8 +592,7 @@ def test_cli_guard_relocates_when_the_desktop_marks_the_child():
     ],
 )
 def test_cli_guard_marker_does_not_authorise_a_command_carrying_a_path(rest: list[str]):
-    """The backend and everything below it inherit the marker, so it must not
-    widen the set to commands that resolve a path the caller gave them."""
+    """The marker is inherited downstream, so it must not authorise commands that take a path."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", *rest],
@@ -654,11 +608,9 @@ def test_cli_guard_marker_does_not_authorise_a_command_carrying_a_path(rest: lis
         ["unsloth", "export", "--output", "out"],
         ["unsloth", "studio", "setup"],
         ["unsloth", "start", "claude"],
-        # `studio run` declares its own --api-only and takes user paths, so it
-        # must not be mistaken for the desktop's backend launch.
+        # `studio run` takes --api-only and user paths, so it is not the desktop's backend launch.
         ["unsloth", "studio", "run", "--model", "./local.gguf", "--api-only"],
         ["unsloth", "studio", "run", "--api-only"],
-        # The top-level alias for `studio run`, same reasoning.
         ["unsloth", "run", "--api-only"],
     ],
 )
@@ -702,8 +654,7 @@ def test_cli_guard_fails_closed_when_the_work_dir_cannot_be_created():
 
 
 def test_cli_guard_never_relocates_into_the_public_profile():
-    """A SYSTEM or service profile must not send one account's caches, scans and
-    outputs into a folder every other account on the machine can write."""
+    """SYSTEM or service profiles must not send caches or outputs to a folder others can write."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", "--api-only"],
@@ -748,7 +699,6 @@ def test_cli_guard_sees_through_an_extended_length_path():
 @pytest.mark.parametrize(
     "argv",
     [
-        # A relative repo path here is resolved against the working directory.
         ["unsloth", "studio", "update", "--local", "./repo"],
         ["unsloth", "studio", "desktop-capabilities", "--out", "./x"],
     ],
@@ -760,8 +710,7 @@ def test_cli_guard_only_relocates_the_exact_desktop_argv(argv: list[str]):
 
 
 def test_cli_guard_marker_does_not_cover_path_taking_commands():
-    """The marker is inherited by everything the backend spawns, so it authorises
-    the studio commands the desktop runs and nothing else."""
+    """The marker is inherited by all backend children, so it only authorises studio commands."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "train", "--dataset", ".\\data.json"],
@@ -781,8 +730,7 @@ def test_cli_guard_fails_closed_when_every_home_is_a_system_directory():
     assert colour == "red"
     assert chdir_calls == []
     assert message is not None
-    # This one is read in the desktop's logs, not a terminal, so it must not tell the reader to cd somewhere or claim
-    # they used "Run as administrator".
+    # Read in the desktop's logs, so it must not tell the reader to cd or say "Run as administrator".
     assert "Run as administrator" not in message
 
 
@@ -813,8 +761,7 @@ def test_cli_guard_finds_the_real_windows_folder_past_a_shadowed_windir():
 
 
 def test_cli_guard_ignores_a_windir_that_holds_no_system32():
-    """A WINDIR pointed at the user's own profile must not turn their project
-    folders into system folders, which would block every command they run."""
+    """A WINDIR without System32 must not turn the user's project folders into system folders."""
     message, colour, _ = _guard_outcome(
         r"C:\Users\me\projects\llm",
         argv = ["unsloth", "train"],
@@ -825,8 +772,7 @@ def test_cli_guard_ignores_a_windir_that_holds_no_system32():
 
 
 def test_cli_guard_keeps_working_when_nothing_looks_like_windows():
-    """No candidate holds System32 (an unusual image, or a test): fall back to
-    SystemRoot rather than trusting the settable value."""
+    """Without a System32 candidate, fall back to SystemRoot rather than the settable value."""
     _, colour, _ = _guard_outcome(
         r"E:\Windows\System32",
         argv = ["unsloth", "train"],
@@ -837,8 +783,7 @@ def test_cli_guard_keeps_working_when_nothing_looks_like_windows():
 
 
 def test_cli_guard_pins_a_relative_studio_home_before_moving():
-    """Unsloth resolves the override with Path.resolve(), which anchors a relative
-    value to the working directory, so moving first would retarget it."""
+    """Path.resolve() anchors relative values to the cwd, so pin them before the move."""
     environ_out: dict[str, str] = {}
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
@@ -867,8 +812,7 @@ def test_cli_guard_pins_every_relative_path_override(name: str):
 
 
 def test_cli_guard_does_not_recreate_a_profile_that_is_not_mounted():
-    """A roaming profile that has not arrived yet has a writable parent, so
-    makedirs would build an empty second one that shadows the real profile."""
+    """A profile not yet mounted has a writable parent: makedirs would create an empty shadow."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", "--api-only"],
@@ -878,8 +822,7 @@ def test_cli_guard_does_not_recreate_a_profile_that_is_not_mounted():
 
 
 def test_cli_guard_never_relocates_into_the_public_profile_from_userprofile():
-    """The public profile is readable and writable by every account on the
-    machine, so it is no place for one account's caches, scans and outputs."""
+    """The public profile is world-writable, so it is no place for caches, scans or outputs."""
     public = r"C:\Users\Public"
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
@@ -892,8 +835,7 @@ def test_cli_guard_never_relocates_into_the_public_profile_from_userprofile():
 
 @pytest.mark.parametrize("public", [r"C:\Users\Public", r"c:\users\public\\"])
 def test_safe_user_dir_rejects_the_public_profile_from_either_candidate(public: str):
-    """It is the folder that is shared, not the variable that named it, so `~`
-    resolving there is refused exactly as USERPROFILE is."""
+    """Refusal follows the folder, not its variable, so ~ resolving there is refused as well."""
     environ = {"USERPROFILE": r"C:\Windows\System32\config\systemprofile", "PUBLIC": public}
     chosen = _system_dir_guard.safe_user_dir(
         environ,
@@ -903,7 +845,6 @@ def test_safe_user_dir_rejects_the_public_profile_from_either_candidate(public: 
         expanduser = lambda _p: r"C:\Users\Public",
     )
     assert chosen is None
-    # A human can still be told about it, which is what allow_public is for.
     assert (
         _system_dir_guard.safe_user_dir(
             environ,
@@ -939,18 +880,17 @@ def test_cli_guard_pins_the_local_checkout_update_reads():
         (r"\\server\share\cache", True),
         (r"\\?\C:\cache", True),
         (r"\\?\unc\server\share", True),
-        # Rooted, but only to the drive of the current directory.
+        # Rooted only to the current directory's drive.
         (r"\cache", False),
         ("/cache", False),
-        # Relative to the current directory on drive D.
+        # Relative to drive D's current directory.
         ("D:cache", False),
         ("cache", False),
         (r".\cache", False),
     ],
 )
 def test_only_a_value_naming_one_folder_counts_as_fully_qualified(value: str, qualified: bool):
-    """isabs() answered True for a leading separator until Python 3.13 and False
-    after it, so the folder a value names must not be decided by it."""
+    """isabs() flipped at Python 3.13 for a leading separator, so it cannot decide the folder."""
     assert _system_dir_guard._is_fully_qualified(value, ntpath) is qualified
 
 
@@ -1002,8 +942,7 @@ def test_cli_guard_accepts_an_extended_unc_profile_in_either_case(profile: str):
 
 
 def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
-    """ "D:cache" means the current directory on drive D, which join() cannot know
-    and which the move changes, so Windows itself has to resolve it first."""
+    """D:cache means drive D's current directory, so Windows must resolve it before the move."""
     environ_out: dict[str, str] = {}
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
@@ -1017,8 +956,7 @@ def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
 
 
 def test_cli_guard_refuses_to_move_when_a_drive_relative_override_cannot_be_resolved():
-    """Moving anyway would silently retarget it, which is what the pinning exists
-    to prevent, so the guard fails closed instead."""
+    """Moving anyway would silently retarget a drive-relative override; fail closed instead."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", "--api-only"],
@@ -1036,7 +974,7 @@ def test_cli_guard_pins_every_storage_root_override_studio_reads():
     source = storage_roots.read_text(encoding = "utf-8")
     overrides = set(re.findall(r'environ\.get\(\s*"(UNSLOTH_[A-Z_]*(?:HOME|PATH|DIR))"', source))
     assert overrides, "no storage root overrides found: has storage_roots.py moved?"
-    # Same case: _setup_cache_env fills each only when blank, so a user's relative value survives.
+    # _setup_cache_env fills each only when blank, so a user's relative value survives.
     overrides |= set(re.findall(r'^\s*"([A-Z][A-Z0-9_]*)":\s*str\(', source, re.MULTILINE))
     missing = sorted(overrides - set(_system_dir_guard._RELATIVE_PATH_ENV))
     assert not missing, f"relative values of {missing} would be retargeted by the move"
@@ -1171,10 +1109,8 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
         "lib",
         "",
         r".\plugins",
-        # setuptools registers this for an editable namespace install and its own path hook accepts it by exact string;
-        # it names no directory.
+        # setuptools' editable path-hook sentinel: accepted by exact string, names no directory.
         "__editable__.unsloth-2026.8.15.finder.__path_hook__",
-        # A relative archive: importable, so it moves with the process.
         "modules.zip",
     ]
     _message, colour, chdir_calls = _guard_outcome(
@@ -1194,9 +1130,7 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
         r"C:\Windows\System32",
         # join, not normpath: the same spelling the environment pinning uses.
         r"C:\Windows\System32\.\plugins",
-        # Names nothing on disk: setuptools' editable sentinel, which its own path hook accepts back by exact string.
         "__editable__.unsloth-2026.8.15.finder.__path_hook__",
-        # An archive that is really there is anchored like any other root.
         r"C:\Windows\System32\modules.zip",
     ]
 
@@ -1214,14 +1148,12 @@ def test_cli_guard_writes_back_only_an_expansion_the_reader_agrees_with():
         environ_extra = {
             "LOCALAPPDATA": r"C:\Users\me\AppData\Local",
             "HF_HUB_CACHE": r"%LOCALAPPDATA%\hub",
-            # One pass leaves another reference, but it already names a drive, so it means the same folder from
-            # anywhere.
+            # A second-pass reference that already names a drive means the same folder from anywhere.
             "HF_ASSETS_CACHE": r"C:\cache\%UNSET%\assets",
         },
         environ_out = environ_out,
     )
     assert colour == "yellow"
-    # One pass settles it, so it names one folder and is written back.
     assert environ_out["HF_HUB_CACHE"] == r"C:\Users\me\AppData\Local\hub"
     assert environ_out["HF_ASSETS_CACHE"] == r"C:\cache\%UNSET%\assets"
 
@@ -1246,7 +1178,6 @@ def test_cli_guard_refuses_to_move_under_an_expansion_that_stays_relative():
         assert (colour, chdir_calls) == ("red", []), name
         assert "path settings" in message, name
         assert name in message, name
-        # Nothing is left rewritten by the attempt.
         assert environ_out[name] == value
 
 
@@ -1254,8 +1185,7 @@ def test_cli_guard_refuses_a_value_that_would_not_fit_in_the_environment():
     r"""A scalar that was already near the 32767-character limit crosses it once
     it names its folder in full, and a variable Windows will not accept is a
     failure to report here rather than in the next process."""
-    # The limit is lowered rather than the value grown: the harness sets the environment through os.environ, and Windows
-    # will not store 32767 characters there.
+    # Lower the limit instead: Windows will not store 32767 characters in os.environ.
     with mock.patch.object(_system_dir_guard, "_WINDOWS_ENV_VALUE_LIMIT", 64):
         message, colour, chdir_calls = _guard_outcome(
             r"C:\Windows\System32",
@@ -1271,7 +1201,6 @@ def test_cli_guard_refuses_a_list_that_would_not_fit_in_the_environment():
     r"""Windows caps a variable at 32767 characters, and a list of relative
     entries can cross that once each names its folder in full. Reporting it here
     names the setting; discovering it when the next process starts does not."""
-    # Same reason as the scalar above, and the raw list fits where the anchored one does not.
     entries = ";".join(["entry"] * 3)
     with mock.patch.object(_system_dir_guard, "_WINDOWS_ENV_VALUE_LIMIT", 64):
         message, colour, chdir_calls = _guard_outcome(
@@ -1293,15 +1222,13 @@ def test_cli_guard_never_refuses_an_update_over_the_local_checkout_setting():
     _message, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         ["unsloth", "studio", "update"],
-        # Z: has no current directory, so this one cannot be resolved at all.
+        # Z: has no current directory, so this cannot be resolved at all.
         environ_extra = {"STUDIO_LOCAL_REPO": "Z:checkout"},
         environ_out = environ_out,
     )
     assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
-    # Left exactly as written, and the update proceeds.
     assert environ_out["STUDIO_LOCAL_REPO"] == "Z:checkout"
 
-    # The same value under a name something reads still stops the move.
     message, colour, _chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         ["unsloth", "studio", "update"],
@@ -1327,7 +1254,6 @@ def test_cli_guard_refuses_a_path_attached_to_a_short_option():
         )
         assert (colour, chdir_calls) == ("red", []), argv
         assert "cannot run from" in message
-    # The bare marked form the desktop actually runs still relocates.
     _message, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         ["unsloth", "studio", "desktop-handshake"],
@@ -1347,21 +1273,17 @@ def test_cli_guard_goes_back_when_the_move_lands_somewhere_still_refused():
         ["unsloth", "studio", "--api-only"],
         environ_extra = {"HF_HOME": "cache"},
         environ_out = environ_out,
-        # A junction under the profile: the move succeeds and the process is still inside the
-        # folder the guard refuses.
+        # A junction under the profile: the move succeeds but stays inside the refused folder.
         chdir_lands_in = r"C:\Windows\System32\config\systemprofile",
     )
     assert colour == "red"
     assert "cannot run from" in message
-    # Back where it started, and the override is exactly as the caller wrote it.
     assert chdir_calls[-1] == r"C:\Windows\System32"
     assert environ_out["HF_HOME"] == "cache"
 
 
 def test_cli_guard_restores_the_real_sys_path_when_the_move_fails():
-    """The console script passes no list, so the guard has to snapshot the real
-    sys.path before pinning it, or a chdir that then fails leaves the process
-    carrying import roots it never agreed to."""
+    """Snapshot sys.path before pinning, so a failed chdir cannot leave unagreed import roots."""
     import sys
 
     before = list(sys.path)
@@ -1466,8 +1388,7 @@ def test_cli_guard_pins_the_token_path_and_the_special_pythonpath_entries():
     assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
     assert environ_out["HF_TOKEN_PATH"] == r"C:\Windows\System32\secrets\token"
     assert environ_out["PYTHONPATH"] == (
-        # The empty component is the folder being left; `~` is anchored as the literal relative
-        # folder Python reads there, not as the profile.
+        # `~` is the literal relative folder Python reads there, not the profile.
         r"C:\Windows\System32;C:\Windows\System32\~\plugins;C:\shared\lib"
     )
 
@@ -1480,7 +1401,6 @@ def test_cli_guard_says_which_setting_stopped_the_move():
     _message, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         ["unsloth", "studio", "--api-only"],
-        # No current directory for drive D, so the OS cannot resolve this.
         environ_extra = {"HF_HOME": "D:cache"},
         drive_cwd = {},
     )

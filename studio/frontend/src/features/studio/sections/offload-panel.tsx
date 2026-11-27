@@ -65,11 +65,23 @@ export function useOffloadState(enabled: boolean, intervalMs = 2000): OffloadSta
         // Retry on the next poll.
       }
     }
-    void poll();
-    const timer = setInterval(() => void poll(), intervalMs);
+    let lastPollAt = 0;
+    const pollNow = () => {
+      lastPollAt = Date.now();
+      void poll();
+    };
+    pollNow();
+    const timer = setInterval(() => {
+      if (!document.hidden) pollNow();
+    }, intervalMs);
+    const onVisibilityChange = () => {
+      if (!document.hidden && Date.now() - lastPollAt >= intervalMs) pollNow();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [enabled, intervalMs]);
   return data;
@@ -100,7 +112,7 @@ const CELL = {
 
 function Stat({ label, value }: { label: string; value: string }): ReactElement {
   return (
-    <div className="flex flex-col gap-0.5 rounded-xl bg-muted/50 px-3 py-2">
+    <div className="flex flex-col gap-0.5 rounded-lg bg-muted/50 px-3 py-2">
       <span className="text-ui-11 text-muted-foreground">{label}</span>
       <span className="font-mono text-sm">{value}</span>
     </div>

@@ -6,11 +6,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
-// The shipped helper is lifted out of chat-adapter.ts rather than copied, so
-// these assert against the real source. Importing the module would drag in the
-// stores and the toast layer for one pure string function.
+// Lifted from chat-adapter.ts source; importing it would drag in the stores and toast layer.
 const adapterPath = fileURLToPath(
   new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
 );
@@ -27,8 +25,6 @@ const normalizeTarget = new Function(
 const sameKey = (a: string, b: string) => normalizeTarget(a) === normalizeTarget(b);
 
 test("one Windows file spelled with either separator is one candidate", () => {
-  // Two keys meant one spelling burned an attempt on the same file, and a
-  // remembered record written as C:\ never matched C:/.
   assert.ok(sameKey("C:\\Users\\a\\models\\M.gguf", "C:/Users/a/models/M.gguf"));
 });
 
@@ -38,7 +34,6 @@ test("Windows and UNC paths still fold case", () => {
 });
 
 test("WSL UNC paths keep their case, because they address ext4", () => {
-  // Folding merged two real files onto one key, so the second never loaded.
   assert.ok(
     !sameKey("\\\\wsl$\\Ubuntu\\home\\a\\M.gguf", "\\\\wsl$\\Ubuntu\\home\\a\\m.gguf"),
   );
@@ -50,7 +45,7 @@ test("POSIX paths keep their case", () => {
 });
 
 test("a decomposed filename is the same candidate as its composed form", () => {
-  // macOS hands back NFD, so a remembered model was never re-attempted.
+  // macOS returns NFD filenames.
   assert.ok(sameKey("/home/a/caf\u00e9.gguf", "/home/a/cafe\u0301.gguf"));
 });
 
@@ -106,4 +101,48 @@ test("startup remembers an inactive quant through the logical chat inventory tar
   }], 8192);
   await local.listVariants();
   assert.equal(scopes.at(-1), localPath);
+});
+
+test("a remembered repo still ranks first when only its Hugging Face cache path is listed", () => {
+  const declarations = [
+    "normalizeTarget",
+    "buildAutoLoadSources",
+    "rememberedMatch",
+    "rememberedSources",
+    "orderAutoLoadSources",
+  ].map((name) => {
+    const begin = source.indexOf(`function ${name}(`);
+    assert.ok(begin >= 0, `${name} is no longer defined in chat-adapter.ts`);
+    return source.slice(begin, source.indexOf("\n}", begin) + 2);
+  }).join("\n");
+  const helpers = new Function(
+    "listGgufVariants", "isGgufLocalRow",
+    `${ts.transpileModule(declarations, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020 },
+    }).outputText}; return { buildAutoLoadSources, orderAutoLoadSources };`,
+  )(async () => ({ variants: [] }), () => true);
+  const cacheRow = (repo: string, size: number) => {
+    const path = `/home/a/.cache/huggingface/hub/models--${repo.replace("/", "--")}`;
+    return {
+      id: path, path, load_id: path, source: "hf_cache", model_id: repo,
+      size_bytes: size, capabilities: { requires_variant: true },
+    };
+  };
+  const sources = helpers.buildAutoLoadSources([], [], [
+    cacheRow("unsloth/gemma-4-E2B-it-GGUF", 3_000_000_000),
+    cacheRow("unsloth/gemma-4-26B-A4B-it-GGUF", 17_000_000_000),
+  ], 8192);
+  const remembered = { id: "unsloth/gemma-4-26B-A4B-it-GGUF", kind: "gguf" };
+  const [first] = helpers.orderAutoLoadSources(sources, remembered);
+  assert.equal(first.repoId, "unsloth/gemma-4-26B-A4B-it-GGUF");
+
+  const studioRow = { ...cacheRow("unsloth/gemma-4-26B-A4B-it-GGUF", 17_000_000_000), source: "models_dir" };
+  const [studioFirst] = helpers.orderAutoLoadSources(
+    helpers.buildAutoLoadSources([], [], [
+      cacheRow("unsloth/gemma-4-E2B-it-GGUF", 3_000_000_000),
+      studioRow,
+    ], 8192),
+    remembered,
+  );
+  assert.equal(studioFirst.repoId, "unsloth/gemma-4-E2B-it-GGUF");
 });

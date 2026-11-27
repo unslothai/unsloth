@@ -32,7 +32,6 @@ LLAMA4_SCOUT_ID = "meta-llama/Llama-4-Scout-17B-16E"
 SEED = 42
 SEQ_LENS = [1024]
 DTYPES = [torch.bfloat16]
-# Reduce the number of autotuning configs to prevent excessive runtime.
 NUM_AUTOTUNE_CONFIGS = 50
 
 
@@ -67,7 +66,6 @@ def prep_triton_kernel_traits(autotune):
         )
         from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
 
-        # Hack to reduce number of autotuning configs
         _autotuned_grouped_gemm_forward_kernel.configs = (
             _autotuned_grouped_gemm_forward_kernel.configs[:NUM_AUTOTUNE_CONFIGS]
         )
@@ -168,9 +166,7 @@ def test_llama4_ref(
     precision = ".6f",
     verbose = False,
 ):
-    torch.manual_seed(
-        SEED
-    )  # Should not be needed when running using pytest -- autouse fixture in conftest.py
+    torch.manual_seed(SEED)
     device = "cuda"
     hidden_dim = model_config.hidden_size
     atol, rtol = TOLERANCES[dtype]

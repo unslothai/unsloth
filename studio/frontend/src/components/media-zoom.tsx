@@ -29,7 +29,6 @@ function clamp(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
 }
 
-/** Room kept clear around a picture shown at fit, in px. */
 export type MediaInset = { top: number; right: number; bottom: number; left: number };
 
 const NO_INSET: MediaInset = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -42,7 +41,6 @@ export function MediaZoomStage({
 }: {
   zoom: MediaZoom;
   onFitScale: (scale: number | null) => void;
-  /** Fit within the stage less this; a picture larger than that area may use the whole stage. */
   inset?: MediaInset;
   children: ReactNode;
 }) {
@@ -220,7 +218,6 @@ export function MediaZoomStage({
             ? {
                 width: box.width,
                 height: box.height,
-                // Centred in the clear area while it fits there, in the whole stage once larger.
                 left:
                   room && box.width <= room.width
                     ? inset.left + (room.width - box.width) / 2
@@ -231,7 +228,15 @@ export function MediaZoomStage({
                     : (stage.height - box.height) / 2,
                 transform: translate(pan),
               }
-            : { inset: 0 }
+            : // Until measured, the clear area: a contained picture there already sits where fit
+              // puts it, so nothing moves once it loads. Longhands, not `inset`: React clears a
+              // removed shorthand after setting `left`, which put the picture at the left edge.
+              {
+                left: inset.left,
+                top: inset.top,
+                width: `calc(100% - ${inset.left + inset.right}px)`,
+                height: `calc(100% - ${inset.top + inset.bottom}px)`,
+              }
         }
       >
         {children}

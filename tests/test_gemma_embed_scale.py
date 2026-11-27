@@ -55,7 +55,7 @@ def test_detection_tracks_installed_transformers(arch):
 
 
 def _tiny_checkpoint(path, repo):
-    # The hub tiny Gemma uses head_dim 2, which no xformers kernel takes; keep its config and tokenizer, widen heads.
+    # The hub tiny Gemma uses head_dim 2, which no xformers kernel takes, so widen heads.
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     config = AutoConfig.from_pretrained(repo)
@@ -107,7 +107,7 @@ def test_prefill_and_decode_scale_once(monkeypatch, tmp_path, repo, module_name)
     decode = []
     mod = importlib.import_module(module_name)
     original = mod.fast_rms_layernorm_inference_gemma
-    # The first norm of each decode step sees the scaled embeddings (residual stream input).
+    # The first norm of each decode step sees the scaled embeddings.
     monkeypatch.setattr(
         mod,
         "fast_rms_layernorm_inference_gemma",

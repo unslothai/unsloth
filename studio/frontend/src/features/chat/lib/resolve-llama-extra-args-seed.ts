@@ -19,7 +19,6 @@ export function resolveLlamaExtraArgsSeed({
   if (incoming !== undefined) {
     return isGguf ? { loadedLlamaExtraArgs: incoming ?? null } : {};
   }
-  // A backend that omits the field: keep this tab's first-hand record for the same model, but
-  // never hand the previous model's arguments to a new one.
+  // Omitted field: never carry the previous model's args to a new one.
   return hydratingExistingModel ? { loadedLlamaExtraArgs: null } : {};
 }

@@ -1,36 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-frame cost and intent correctness of the main chat viewport's autoscroll (#8483).
-
-The chat viewport follows the bottom through a 600ms window that every mutation re-arms, so a
-streaming message keeps the window open for its whole duration. What that window costs depends
-on whether the frame chain re-arms unconditionally or only while layout is still moving, which
-is the change PR #8525 made to the research activity panel's equivalent loop.
-
-Four phases, and the third is the one that decides whether the port is worth making:
-
-    stream  - tokens and blocks at a realistic cadence; how many frames does the loop run.
-    idle    - the loop must stop when the content goes quiet.
-    silent  - content grows via an inline style, which the MutationObserver deliberately
-              excludes and a border-box ResizeObserver cannot see. Only a frame that reads
-              layout notices. This models a decoding image, a font-display: swap webfont and a
-              late KaTeX pass. Measures how long the view stays off the bottom.
-    intent  - scrolling up detaches and stays detached through further streaming; scrolling
-              back re-attaches. A cheaper loop must not cost any of this.
-
-requestAnimationFrame is pumped on a fixed 16ms timer: Chromium here produces only a couple of
-real frames a second, which would flatten a runaway per-frame loop into a passing number. The
-counts are therefore a property of the code, not of this machine's compositor. Chromium is also
-not the WebKitGTK webview the desktop app embeds, so what transfers is the work, not the
-absolute timings.
-
-Run:
-    python tests/studio/playwright_chat_autoscroll.py
-
-It starts and stops its own vite dev server. Point it at one you already have with
-SMOKE_BASE_URL, or move the port it picks with SMOKE_PORT.
-"""
+"""Per-frame cost and scroll-intent checks of the chat autoscroll loop, under Playwright."""
 
 from __future__ import annotations
 
@@ -52,7 +23,6 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5193"))
-# Unset: start and stop our own server.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -60,18 +30,13 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-chat-autoscroll"))
 OUT.mkdir(parents = True, exist_ok = True)
 
-# A token every 250ms for 8s: the deep research synthesis cadence, and the one the loop is wasteful at.
-# A faster cadence (SMOKE_TOKEN_GAP_MS=40) is the one case where a frame per token is justified, so measuring only there
-# hides the effect.
+# 250ms per token is the research synthesis cadence where the old loop was wasteful.
 TOKEN_COUNT = int(os.environ.get("SMOKE_TOKEN_COUNT", "32"))
 TOKEN_GAP_MS = int(os.environ.get("SMOKE_TOKEN_GAP_MS", "250"))
-# One frame per token at this cadence is 4/s; the old loop ran at the pump's ceiling, around 62/s. 25/s leaves room for
-# React's own frames and still fails loudly on a return to the ceiling.
+# One frame per token is 4/s here; the old loop ran ~62/s. 25/s leaves room for React frames.
 MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "25"))
-# The follow window in the hook.
 FOLLOW_SETTLE_MS = 600
-# What the settle check trades away: unobservable growth is followed on a timer, not the next
-# frame. Generous against 115ms measured, tight enough to catch a regression.
+# Silent growth is followed on a timer; measured 115ms.
 SILENT_GROWTH_REPIN_BUDGET_MS = int(os.environ.get("SMOKE_REPIN_BUDGET_MS", "250"))
 
 PUMP_INIT = """
@@ -150,8 +115,7 @@ def run() -> dict:
         page.wait_for_timeout(800)
         results["seeded"] = page.evaluate("window.__autoscroll.metrics()")
 
-        # Streaming. Clock and counter start and stop together inside the page, so they
-        # bracket one interval; split across round trips they do not, and the rate drifts.
+        # Clock and counter must start and stop inside the page or the rate drifts across round trips.
         before = metrics(cdp)
         streamed = page.evaluate(
             """async ([count, gap, tailMs]) => {
@@ -193,8 +157,7 @@ def run() -> dict:
         page.wait_for_timeout(2000)
         results["idle_raf_per_2s"] = page.evaluate("window.__rafCount")
 
-        # Silent growth. A token first to open a fresh follow window, then growth as an inline style, which
-        # reaches neither observer.
+        # Growth as an inline style reaches neither observer.
         page.evaluate("window.__autoscroll.resetGrowth()")
         page.wait_for_timeout(900)
         settled = page.evaluate(
@@ -289,8 +252,6 @@ def main() -> int:
         failures.append("the viewport did not stay pinned through the stream")
     if not results["stream"]["is_at_bottom"]:
         failures.append("isAtBottom went false while following")
-    # Recording the count without asserting on it was false-green: the unconditional loop ran 503 callbacks over this
-    # stream and the script still exited 0.
     if raf_rate > MAX_STREAM_RAF_PER_SECOND:
         failures.append(
             f"the follow loop ran at {raf_rate:.1f} rAF/s during the stream, over the "
@@ -303,8 +264,7 @@ def main() -> int:
     intent = results["intent"]
     if not intent["detached"]:
         failures.append("scrolling up did not detach")
-    # Without this the check above is vacuous: if the tokens streamed while detached add no height, "streaming
-    # re-pinned a detached reader" passes on a tree where following is broken in either direction.
+    # Without this the check above is vacuous.
     if not intent["grewWhileDetached"]:
         failures.append("the content did not grow while detached; the re-pin check proved nothing")
     if not intent["stillDetached"]:
@@ -314,7 +274,6 @@ def main() -> int:
     repinned_after_ms = results["silent_growth"]["repinnedAfterMs"]
     if repinned_after_ms is None:
         failures.append("silent growth was never followed inside the window")
-    # The settle timer is 100ms plus the frame it schedules, measured at 115ms.
     elif repinned_after_ms > SILENT_GROWTH_REPIN_BUDGET_MS:
         failures.append(
             f"silent growth took {repinned_after_ms:.0f}ms to follow, over the "

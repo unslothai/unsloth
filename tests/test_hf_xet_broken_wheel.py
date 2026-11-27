@@ -39,8 +39,7 @@ def _fake_host(
     sysconfig_platform,
     machine = "unknown-cpu",
 ):
-    """`machine` defaults to something unmappable, so a passing test is passing on
-    sysconfig.get_platform() alone, which is the point."""
+    """The machine default is unmappable, so only sysconfig.get_platform() decides the result."""
     monkeypatch.setattr(sysconfig, "get_platform", lambda: sysconfig_platform)
     monkeypatch.setattr(platform, "machine", lambda: machine)
 
@@ -56,7 +55,6 @@ def _platform_tag_cases():
         ("linux_armv7l", "armv7l"),
         ("macosx_11_0_arm64", "arm64"),
         ("macosx_10_12_x86_64", "x86_64"),
-        # Unreadable on purpose: these must never be reported as a mismatch.
         ("macosx_10_9_universal2", None),
         ("any", None),
         ("something_else", None),
@@ -101,8 +99,7 @@ def test_architecture_mismatch_verdicts(monkeypatch, host_platform, tags, expect
         ("linux-aarch64", "aarch64", "arm64"),
         ("macosx-11.0-arm64", "arm64", "arm64"),
         ("macosx-10.12-x86_64", "x86_64", "x86_64"),
-        # sysconfig cannot name a single CPU for a universal2 build, so platform.machine()
-        # is the right answer there and only there.
+        # sysconfig cannot name one CPU for universal2, so platform.machine() is right there only.
         ("macosx-10.9-universal2", "arm64", "arm64"),
         ("something-unparseable", "x86_64", "x86_64"),
         ("something-unparseable", "sparc64", None),
@@ -115,9 +112,8 @@ def test_host_cpu_family_prefers_sysconfig(monkeypatch, host_platform, machine, 
 
 
 def test_host_cpu_family_ignores_the_physical_cpu_on_windows(monkeypatch):
-    """REGRESSION. platform.machine() on Windows asks WMI for the PHYSICAL processor, so an
-    emulated x86-64 interpreter on Windows on ARM answers "ARM64" while being win-amd64. The case
-    that matters is the unloadable win_arm64 wheel read as healthy."""
+    """Regression: Windows platform.machine() asks WMI for the physical CPU, so emulated win-amd64
+    on Windows ARM says ARM64; an unloadable win_arm64 wheel read as healthy."""
     monkeypatch.setattr(sysconfig, "get_platform", lambda: "win-amd64")
     monkeypatch.setattr(platform, "machine", lambda: "ARM64")
 
@@ -159,8 +155,7 @@ def _install_fake_environment(
         if name == "hf_xet":
             if import_error is not None:
                 raise import_error
-            # A real module, not a bare object: __file__ is what separates an installed package
-            # from the empty namespace shell the confirm step has to reject.
+            # __file__ separates an installed package from the empty namespace shell.
             loaded = types.ModuleType("hf_xet")
             loaded.__file__ = "/site-packages/hf_xet/__init__.py"
             return loaded
@@ -189,12 +184,10 @@ def test_fires_on_a_wrong_architecture_wheel(monkeypatch, caplog):
         IF.fix_broken_hf_xet_wheel()
 
     assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
-    # one line, naming the real cause rather than repeating "pip install hf_xet"
     assert len(caplog.records) == 1
     message = caplog.records[0].getMessage()
     assert "architecture" in message and "win_amd64" in message
 
-    # idempotent
     caplog.clear()
     IF.fix_broken_hf_xet_wheel()
     assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
@@ -281,14 +274,7 @@ def test_an_imported_hf_xet_short_circuits_before_any_lookup(monkeypatch):
 
 
 def test_fires_when_hf_xet_is_only_an_empty_namespace_package(monkeypatch, caplog, tmp_path):
-    """REGRESSION. An hf_xet/ directory with no __init__.py and no extension is a NAMESPACE
-    package: it imports cleanly and defines nothing, so confirming with a bare import cleared a
-    suspicion that was correct. huggingface_hub does `from hf_xet import PyXetDownloadInfo,
-    download_files`, which still fails. Reproduced against huggingface_hub 0.36.2 with the package
-    contents deleted and the directory and dist-info left: find_spec returned a namespace spec,
-    `import hf_xet` succeeded, and every download still went to Xet and died with
-    "cannot import name 'PyXetDownloadInfo' from 'hf_xet' (unknown location)".
-    """
+    """An hf_xet namespace package imports cleanly but lacks symbols, so a bare import proves nothing."""
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
     monkeypatch.delitem(IF.sys.modules, "hf_xet", raising = False)
     monkeypatch.setattr(IF, "_hf_xet_distribution_is_installed", lambda: True)
@@ -329,19 +315,11 @@ def test_fires_when_hf_xet_is_only_an_empty_namespace_package(monkeypatch, caplo
 
     assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
     assert "namespace package" in caplog.records[0].getMessage()
-    # The shell must not be left behind for the next importer to trip over.
     assert "hf_xet" not in IF.sys.modules
 
 
 def test_fires_when_the_hub_already_cached_the_namespace_shell(monkeypatch, caplog, tmp_path):
-    """REGRESSION. huggingface_hub's own `from hf_xet import PyXetDownloadInfo, download_files`
-    leaves hf_xet in sys.modules even when those symbols are missing, because the PACKAGE imported
-    fine and only the attribute lookup failed. A cached module is therefore not proof of a working
-    one, and short-circuiting on its mere presence left the user broken. Reproduced against
-    huggingface_hub 0.36.2, Hub used before unsloth: the import raised "cannot import name
-    'PyXetDownloadInfo' from 'hf_xet' (unknown location)", the shell stayed cached with
-    __file__ None, and routes_to_xet was still True afterwards.
-    """
+    """A cached hf_xet module is no proof of a working one: the hub caches the empty shell too."""
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
     monkeypatch.setattr(IF, "_hf_xet_distribution_is_installed", lambda: True)
     monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ())
@@ -352,7 +330,7 @@ def test_fires_when_the_hub_already_cached_the_namespace_shell(monkeypatch, capl
     spec.submodule_search_locations = [str(package)]
 
     shell = types.ModuleType("hf_xet")
-    shell.__file__ = None  # what the Hub left behind
+    shell.__file__ = None
     monkeypatch.setitem(IF.sys.modules, "hf_xet", shell)
 
     real_find_spec = importlib.util.find_spec
@@ -448,7 +426,7 @@ def test_extension_header_decides_when_wheel_metadata_is_unreadable(monkeypatch,
     package = tmp_path / "hf_xet"
     package.mkdir()
     extension = package / ("hf_xet" + importlib.machinery.EXTENSION_SUFFIXES[0])
-    extension.write_bytes(_compiled_object("pe", 0x8664))  # x86-64 binary
+    extension.write_bytes(_compiled_object("pe", 0x8664))
 
     spec = importlib.machinery.ModuleSpec("hf_xet", None, is_package = True)
     spec.submodule_search_locations = [str(package)]
@@ -490,12 +468,8 @@ def test_never_overrides_an_explicit_setting(monkeypatch, user_value):
 def test_an_explicit_disable_set_after_the_hub_was_imported_is_carried_through(
     monkeypatch, user_value
 ):
-    """REGRESSION. Setting the variable late is read by nobody, so honour it on the constant.
-
-    The user who imports transformers first and only then sets HF_HUB_DISABLE_XET=1 asked for Xet
-    off and, without this, still gets every download routed to Xet. The truthy set is
-    huggingface_hub's own ENV_VARS_TRUE_VALUES, matched case-insensitively as constants.py does.
-    """
+    """Setting HF_HUB_DISABLE_XET after the hub import must still take effect, matched case-
+    insensitively."""
     monkeypatch.setenv("HF_HUB_DISABLE_XET", user_value)
     modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
 
@@ -555,10 +529,7 @@ def test_patches_the_frozen_constant_when_the_hub_is_already_imported(monkeypatc
 
 
 def test_patches_every_module_that_binds_the_flag(monkeypatch):
-    """Patch by attribute, not by hardcoded module name: a module that ever does
-    `from .constants import HF_HUB_DISABLE_XET` would hold its own copy that patching constants.py
-    could not reach. Today constants.py is the only binding that exists.
-    """
+    """Patch every module binding the flag, not just constants.py: a from-import keeps its own copy."""
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
     _fake_host(monkeypatch, "win-arm64")
     monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ("win_amd64",))
@@ -573,7 +544,6 @@ def test_patches_every_module_that_binds_the_flag(monkeypatch):
             "utils._runtime": _UNBOUND,  # reads constants.X, holds no copy: must stay unbound
         },
     )
-    # a look-alike package must not be caught by the prefix match
     decoy = types.ModuleType("huggingface_hubby")
     decoy.HF_HUB_DISABLE_XET = False
     monkeypatch.setitem(sys.modules, "huggingface_hubby", decoy)
@@ -588,9 +558,8 @@ def test_patches_every_module_that_binds_the_flag(monkeypatch):
 
 
 def test_does_not_invent_the_flag_on_hub_versions_that_never_had_it(monkeypatch):
-    """Before 0.34 the Hub read os.environ per call, so the variable alone is the whole fix and
-    creating the attribute would put a value into a namespace upstream does not own.
-    """
+    """Hub versions before 0.34 read os.environ per call, so HF_HUB_DISABLE_XET alone is the fix;
+    setting the attribute would invent a flag upstream never had."""
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
     _fake_host(monkeypatch, "win-arm64")
     monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ("win_amd64",))
@@ -604,8 +573,7 @@ def test_does_not_invent_the_flag_on_hub_versions_that_never_had_it(monkeypatch)
 
 
 def test_does_not_import_huggingface_hub_just_to_patch_it(monkeypatch):
-    """The normal ordering. Nothing is frozen yet, and importing the Hub here would move its cost
-    into every unsloth import."""
+    """Nothing is frozen yet; importing the Hub here would cost every unsloth import."""
     monkeypatch.delitem(sys.modules, "huggingface_hub", raising = False)
     for name in [n for n in sys.modules if n.startswith("huggingface_hub.")]:
         monkeypatch.delitem(sys.modules, name, raising = False)
@@ -646,8 +614,7 @@ def test_patching_is_idempotent_and_reports_only_real_changes(monkeypatch):
 
 
 def test_patching_survives_hostile_modules(monkeypatch):
-    """Lazy packages raise from __getattr__, None entries linger, modules refuse setattr. A bad
-    neighbour must not stop the module that matters from being patched."""
+    """Raising __getattr__, None entries or refused setattr must not block patching."""
     modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
 
     class Exploding(types.ModuleType):

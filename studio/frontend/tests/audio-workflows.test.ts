@@ -26,7 +26,7 @@ test("the Audio page offers Speak, Clone, Edit, Convert, Music, Separate and Tra
     ["speak", "clone", "edit", "convert", "music", "separate", "transcribe"],
   );
   assert.equal(audioWorkflowTab("separate").heading, "Separate audio");
-  assert.equal(audioWorkflowTab("speak").heading, "Text to speech");
+  assert.equal(audioWorkflowTab("speak").heading, "Text to Speech");
   assert.equal(audioWorkflowTab("clone").heading, "Clone a voice");
   assert.equal(audioWorkflowTab("edit").heading, "Edit speech");
   assert.equal(audioWorkflowTab("edit").label, "Edit");

@@ -1,13 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit test for UNSLOTH_HOME master-root removal in scripts/uninstall.sh.
-#
-# setup.sh and setup.ps1 install llama.cpp, node and whisper.cpp as CHILDREN of the master
-# root, beside studio/, so removing the Studio root alone strands multi-gigabyte trees. The
-# root is user-chosen, so only a tree carrying the Unsloth owner marker may be deleted.
-# Hermetic, following test_uninstall_sd_cpp_custom_root.sh: the real helpers and the real
-# removal block are extracted from uninstall.sh and run against per-test fixtures.
+# UNSLOTH_HOME master-root removal in scripts/uninstall.sh: runtimes are children of the master
+# root, which is user-chosen, so only trees with the owner marker may be deleted.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +18,6 @@ mkdir -p "$HOME"
 assert_nodir() { _l="$1"; [ -e "$2" ] && { echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 assert_dir()   { _l="$1"; [ -e "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing $2)"; FAIL=$((FAIL+1)); }; }
 assert_link()  { _l="$1"; [ -L "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (link missing $2)"; FAIL=$((FAIL+1)); }; }
-# -e is false for a dangling symlink, which is exactly the shape one case below is about.
 assert_present() { _l="$1"; { [ -e "$2" ] || [ -L "$2" ]; } && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing $2)"; FAIL=$((FAIL+1)); }; }
 assert_eq()    { _l="$1"; [ "$2" = "$3" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (got '$2', want '$3')"; FAIL=$((FAIL+1)); }; }
 
@@ -35,23 +29,18 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     sed -n '/^_master_root() {/,/^}/p'      "$UNINSTALL_SH"
     sed -n '/^_set_marker() {/,/^}/p'       "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
-# Every helper the block calls, by name. A helper that stops being extracted goes "command not
-# found" inside a subshell the harness already swallows, which reads as "nothing was removed"
-# and passes the keep-assertions while failing the remove-assertions for the wrong reason.
+# A missing helper fails inside a swallowed subshell and reads as "nothing removed".
 for _h in _remove_path _remove_lock_file _is_unsafe_root _master_root _set_marker; do
     grep -q "^$_h() {" "$HELPERS_FILE" || { echo "FAIL: helpers missing $_h"; exit 1; }
 done
 
-# The real block, anchored on its own first line so a rename fails loudly instead of vacuously.
 BLOCK_FILE=$(mktemp -p "$_TMP_ROOT")
 sed -n '/^[[:space:]]*_mr_root="\$_MASTER_ROOT_SAVED"/,/^[[:space:]]*# end master-root children$/p' "$UNINSTALL_SH" > "$BLOCK_FILE"
 [ -s "$BLOCK_FILE" ] || { echo "FAIL: master-root removal block not extracted"; exit 1; }
 grep -q 'unsloth-studio-owned' "$BLOCK_FILE" || { echo "FAIL: extracted block lost the marker gate"; exit 1; }
 
 run_block() {
-    # The real script resolves the master root ONCE before anything is removed, because the note
-    # it can read lives inside a tree the custom-root loop deletes. The block takes that saved
-    # value, so the harness has to seed it the same way.
+    # The real script resolves the master root ONCE before removal; seed it the same way.
     ( set -e; HOME="$1"; UNSLOTH_HOME="$2"; export HOME UNSLOTH_HOME
       . "$HELPERS_FILE"; _MASTER_ROOT_SAVED="$(_master_root)"; . "$BLOCK_FILE" ) || true
 }
@@ -76,16 +65,12 @@ assert_nodir "stale audio.cpp lock removed" "$MR/.audio.cpp.install.lock.stale.3
 assert_dir   "studio root left to the Studio removal" "$MR/studio"
 
 echo "== only a FILE is removed from an install-lock path =="
-# prebuilt_core.install_lock creates the lock with os.open(O_CREAT | O_EXCL), so it is always a
-# regular file. The names are fixed, so in a user-chosen root a directory here is the user's:
-# rm -rf on it would take a tree that never carried the owner marker the children above need.
+# Locks are always regular files (O_CREAT|O_EXCL); a directory at that name is the user's.
 MRL="$_TMP_ROOT/lockshapes"
 mkdir -p "$MRL/studio" "$MRL/.node.install.lock/keep"
 : > "$MRL/.node.install.lock/keep/user-file"
 : > "$MRL/.llama.cpp.install.lock"
-# A link at a lock name is the user's too: O_CREAT | O_EXCL never makes one, and
-# uninstall.ps1 already excluded reparse points, so unlinking it here was the two halves of
-# one rule disagreeing. Two shapes, since a link to a file is -f and a dangling one is not.
+# A link at a lock name is the user's too, matching uninstall.ps1's reparse-point rule.
 ln -s "$MRL/.llama.cpp.install.lock" "$MRL/.whisper.cpp.install.lock"
 ln -s "$MRL/nowhere" "$MRL/.sd.cpp.install.lock"
 : > "$MRL/.sd.cpp.install.lock.stale.4242"
@@ -102,7 +87,6 @@ MR2="$_TMP_ROOT/mixed"
 mkdir -p "$MR2"/{llama.cpp,node,audio.cpp}
 : > "$MR2/node/.unsloth-studio-owned"
 : > "$MR2/llama.cpp/my-own-build"
-# A clone of the audio.cpp repo is named exactly this.
 : > "$MR2/audio.cpp/CMakeLists.txt"
 run_block "$HOME" "$MR2"
 assert_dir   "unmarked llama.cpp kept" "$MR2/llama.cpp"
@@ -156,14 +140,10 @@ got=$( ( HOME="$HOME"; UNSLOTH_HOME="/"; export HOME UNSLOTH_HOME; . "$HELPERS_F
 assert_eq "/ yields nothing" "$got" ""
 
 echo "== a root that is gone does not end the uninstall =="
-# Under set -e the canonicalizing `cd` fails whenever the root is absent (a second uninstall, a
-# portable install on an unplugged drive) and a bare assignment takes that exit status. bash
-# hides it by clearing errexit inside command substitution, so this runs the shells the
-# advertised `| sh` one-liner reaches. REACHED_END is the assertion, not the value returned.
+# Under set -e the canonicalizing `cd` fails when the root is absent; bash hides that, so
+# test the shells `| sh` reaches. REACHED_END is the assertion.
 for _shell in dash "bash --posix" sh; do
     command -v ${_shell%% *} > /dev/null 2>&1 || continue
-    # || true: this harness runs under set -e too, so without it the failing child takes the
-    # whole test file down and the check below never reports which shell broke.
     out=$( env -i HOME="$HOME" PATH="$PATH" UNSLOTH_HOME="$_TMP_ROOT/never-existed" \
         $_shell -c "set -e; . \"$HELPERS_FILE\"; r=\$(_master_root); echo REACHED_END" 2>&1 \
         || true )
@@ -171,9 +151,7 @@ for _shell in dash "bash --posix" sh; do
 done
 
 echo "== a dangling runtime symlink is not ours to unlink =="
-# -e is false for a dangling symlink, so an unmarked one named llama.cpp fell past the marker
-# gate into _remove_path, which treats -L as present and removes the link. Its target volume
-# being unmounted is the ordinary reason, and the link is the user's.
+# An unmarked dangling llama.cpp link must not be removed: -e misses it, _remove_path does not.
 MRD="$_TMP_ROOT/dangling"
 mkdir -p "$MRD/studio" "$MRD/node"
 : > "$MRD/node/.unsloth-studio-owned"
@@ -183,9 +161,7 @@ assert_present "an unmarked dangling link is kept" "$MRD/llama.cpp"
 assert_nodir "a marked tree beside it still goes" "$MRD/node"
 
 echo "== a whitespace-only Studio override does not suppress the master root =="
-# storage_roots.studio_root() trims these, so "   " is unset to every resolver. A bare -n test
-# called it present, skipped the master-root branch, and then discarded the whitespace path:
-# the runtime siblings went and <UNSLOTH_HOME>/studio stayed.
+# studio_root() trims, so a whitespace-only Studio override is unset to every resolver.
 ROOTS_FILE=$(mktemp -p "$_TMP_ROOT")
 sed -n '/^_custom_studio_roots() {/,/^}/p' "$UNINSTALL_SH" > "$ROOTS_FILE" 2>/dev/null || : > "$ROOTS_FILE"
 if grep -q '_custom_studio_roots() {' "$ROOTS_FILE"; then
@@ -204,11 +180,7 @@ else
 fi
 
 echo "== the master root is remembered when the environment does not carry it =="
-# `UNSLOTH_HOME=/mnt/portable unsloth studio update` installs the runtimes there and leaves
-# nothing behind in the environment. setup.sh writes a note in the Studio tree; without it an
-# uninstall later removed the Studio tree and stranded the runtimes.
-# The real layout: Studio lives at <master>/studio, and with a bare environment the only thing
-# that names that directory is the default-mode studio.conf install.sh wrote.
+# setup.sh writes a master-root note in the Studio tree so a later bare uninstall finds the runtimes.
 NOTED="$_TMP_ROOT/noted"
 mkdir -p "$HOME/.unsloth/studio/share" "$NOTED/studio/share" "$HOME/.local/share/unsloth"
 printf "UNSLOTH_EXE='%s'\n" "$NOTED/studio/unsloth_studio/bin/unsloth" \
@@ -223,9 +195,7 @@ assert_eq "the environment outranks the note" "$got" "$_TMP_ROOT/from-env"
 printf '%s\n' "$HOME/.unsloth" > "$NOTED/studio/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; export HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "a note naming the default root is still refused" "$got" ""
-# A tree copied from one master root to another keeps a note naming the ORIGINAL, whose
-# runtimes carry the same owner markers the copy's would, so accepting it would authorise
-# deleting the original install's llama.cpp, node and whisper.cpp.
+# A copied tree's note names the ORIGINAL master root; accepting it would delete its runtimes.
 COPIED="$_TMP_ROOT/copied"
 mkdir -p "$COPIED/studio/share"
 printf '%s\n' "$NOTED" > "$COPIED/studio/share/.unsloth-master-root"
@@ -235,9 +205,7 @@ assert_eq "a note carried in from another master root is refused" "$got" ""
 rm -f "$NOTED/studio/share/.unsloth-master-root" "$HOME/.local/share/unsloth/studio.conf"
 
 echo "== a named Studio root does not borrow another install's note =="
-# Two installs on one box, the legacy tree carrying a note and the named one not: probing the
-# legacy path first let its note win here while the removal worked on the named tree, so the run
-# deleted one Studio and the OTHER install's runtime children.
+# The named tree's note must win over the legacy one, or the other install's runtimes go.
 BORROWED="$_TMP_ROOT/borrowed"
 NAMED_MASTER="$_TMP_ROOT/named-master"
 NAMED="$NAMED_MASTER/studio"
@@ -246,7 +214,6 @@ printf '%s\n' "$BORROWED" > "$HOME/.unsloth/studio/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$NAMED"
          export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "an unrelated install's note is not adopted" "$got" ""
-# The alias is the same rule, and the named root's OWN note is still read.
 printf '%s\n' "$NAMED_MASTER" > "$NAMED/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME UNSLOTH_STUDIO_HOME; STUDIO_HOME="$NAMED"
          export HOME STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
@@ -254,9 +221,7 @@ assert_eq "the named root's own note is still read" "$got" "$NAMED_MASTER"
 rm -f "$HOME/.unsloth/studio/share/.unsloth-master-root" "$NAMED/share/.unsloth-master-root"
 
 echo "== a padded Studio override still finds the note setup.sh wrote =="
-# setup.sh trims UNSLOTH_STUDIO_HOME before choosing where to write, so appending to the padded
-# value looked somewhere that does not exist: the note was never found, while the removal loop
-# trimmed the same override and stranded the master-root runtimes.
+# setup.sh trims UNSLOTH_STUDIO_HOME before writing the note, so the reader must trim too.
 PADDED_MASTER="$_TMP_ROOT/padded-master"
 PADDED="$PADDED_MASTER/studio"
 mkdir -p "$PADDED/share"
@@ -269,8 +234,7 @@ got=$( ( HOME="$HOME"; unset UNSLOTH_HOME UNSLOTH_STUDIO_HOME; STUDIO_HOME="  $P
 assert_eq "the padded alias finds it too" "$got" "$PADDED_MASTER"
 
 echo "== only the installer's own stale locks are swept =="
-# prebuilt_core.py moves a lock aside as <name>.stale.<pid>. A bare .*.install.lock.stale.* glob
-# also matched an unrelated hidden file, and in a root the user chose that file is theirs.
+# Stale locks are <name>.stale.<pid>; a looser glob matched the user's hidden files.
 STALE="$_TMP_ROOT/stale-root"
 mkdir -p "$STALE"
 : > "$STALE/.node.install.lock.stale.4242"
@@ -282,9 +246,7 @@ assert_present "an unrelated hidden file stays" "$STALE/.backup.install.lock.sta
 assert_present "a non-numeric suffix stays" "$STALE/.llama.cpp.install.lock.stale.notapid"
 
 echo "== a note with a second line is refused, as the comment beside it promises =="
-# The four readers have to agree, and this is the one that authorises a delete: the two Python
-# readers strip the WHOLE file, so a two-line note is not a directory to them, while taking
-# line 1 here licensed removing <master>/llama.cpp, node, whisper.cpp and sd.cpp.
+# The Python readers strip the whole file, so a multi-line note is not a directory here either.
 MULTI_MASTER="$_TMP_ROOT/multiline-master"
 MULTI="$MULTI_MASTER/studio"
 mkdir -p "$MULTI/share" "$_TMP_ROOT/elsewhere"
@@ -293,25 +255,19 @@ got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$MULTI"
          export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "a two-line note names no master root" "$got" ""
 
-# ... and a blank second line is just the trailing newline of an ordinary note.
 printf '%s\n\n' "$MULTI_MASTER" > "$MULTI/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$MULTI"
          export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "a trailing blank line is still one line" "$got" "$MULTI_MASTER"
 
-# The ordinary note must keep working, or the check above proves only that nothing is read.
 printf '%s\n' "$MULTI_MASTER" > "$MULTI/share/.unsloth-master-root"
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="$MULTI"
          export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "a one-line note is still honoured" "$got" "$MULTI_MASTER"
 
 echo "== a note in the legacy tree cannot aim the uninstall at a second install =="
-# The legacy install carries a note naming $HOME, which setup used to accept: the profile
-# CONTAINS ~/.unsloth/studio, so containment passed and the value is not the legacy root.
-# _custom_studio_roots then emitted "$HOME/studio", and a SECOND marked install kept there was
-# accepted as a Studio root to remove, taking its database and outputs. The deny list does not
-# catch it: it refuses $HOME as a master root, not the Studio candidate derived from it.
-# storage_roots._is_legacy_studio_tree and the CLI decline that note outright; so must this.
+# A legacy note naming $HOME must be declined, as storage_roots._is_legacy_studio_tree does,
+# or a second install at $HOME/studio is removed.
 LEGACY_HOME="$_TMP_ROOT/legacy-note-home"
 mkdir -p "$LEGACY_HOME/.unsloth/studio/share"
 printf '%s\n' "$LEGACY_HOME" > "$LEGACY_HOME/.unsloth/studio/share/.unsloth-master-root"

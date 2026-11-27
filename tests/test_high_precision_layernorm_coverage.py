@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_HIGH_PRECISION_LAYERNORM must upcast every norm in a block, not some.
-
-The selector used to be name-only, so a block whose norms are not all named
-"*norm" got a float32 norm feeding a bfloat16 one on the same chain. Gemma 4's
-`embed_vision` is the live case: `pos_norm` matched, its siblings `patch_ln1`
-and `patch_ln2` did not.
-"""
+"""UNSLOTH_HIGH_PRECISION_LAYERNORM must upcast every norm in a block, not only names ending in norm."""
 
 import torch
 import torch.nn as nn
@@ -48,8 +42,7 @@ def test_non_norm_modules_are_not_selected():
 
 
 def test_custom_rmsnorm_still_matched_by_name():
-    """Model-specific RMSNorm classes are not torch.nn types, so the name rule
-    still has to carry them."""
+    """Model-specific RMSNorm classes are not torch.nn types, so the name rule must still match them."""
 
     class RMSNorm(nn.Module):
         def __init__(self):
@@ -72,8 +65,7 @@ def test_norm_types_is_non_empty_and_typed():
 
 
 def test_weightless_norm_is_skipped():
-    """`.to(float32)` on a norm with no weight is a no-op, and named_modules
-    exposes such norms, so the hasattr guard must stay."""
+    """named_modules exposes weightless norms (.to(float32) no-op); keep the hasattr guard."""
 
     class Weightless(nn.LayerNorm):
         def __init__(self):

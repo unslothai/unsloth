@@ -1,11 +1,7 @@
-# Model defaults for unsloth/functiongemma-270m-it
-# Based on FunctionGemma_(270M).ipynb
 # Also applies to: unsloth/functiongemma-270m-it-unsloth-bnb-4bit, google/functiongemma-270m-it, unsloth/functiongemma-270m-it-unsloth-bnb-4bit
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 4096
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 4

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pair the two expert files of a dual-expert (Wan2.2-A14B) video DiT by their high/low noise token.
-
-The high-noise expert is the pipeline's ``transformer`` (early steps), the low-noise one ``transformer_2``.
-"""
+"""Pairs the two expert files of a dual-expert (Wan2.2-A14B) video DiT by high/low noise token;
+high-noise is transformer, low-noise is transformer_2."""
 
 from __future__ import annotations
 
@@ -52,8 +50,7 @@ def moe_expert_pair(filename: Optional[str]) -> Optional[tuple[str, str]]:
 
 
 def moe_pick_pairs(fam: Any, *names: Optional[str]) -> bool:
-    """Whether a single-file / GGUF pick of ``fam`` is loadable: any single-DiT family, or a dual-expert
-    one whose name pairs its partner expert."""
+    """Single-file or GGUF pick: loadable for single-DiT, or MoE whose name pairs its partner."""
     if not getattr(fam, "is_moe", False):
         return True
     return any(moe_partner_filename(Path(str(n)).name if n else None) for n in names if n)

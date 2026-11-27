@@ -55,6 +55,11 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
         from fastapi import HTTPException
         from core.training.account_jobs import account_path
 
+        from utils.datasets.remote_images import is_network_share, private_sources_allowed
+
+        # Opening a share path makes Windows sign in to its host (NTLM); the row picked it.
+        if is_network_share(path_value) and not private_sources_allowed():
+            return None
         try:
             account_path(path_value)
         except (HTTPException, OSError, RuntimeError, ValueError, TypeError):
@@ -69,8 +74,7 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
     return None
 
 
-# Resolved once: to_jsonable runs per value, and importing pandas per value cost 30% of it. The
-# placeholder is a private object rather than None, which a real value can be.
+# Resolved once: importing pandas per value cost 30%. Sentinel, since None is a real value.
 _NO_SENTINEL = object()
 _PANDAS_NA: Any = _NO_SENTINEL
 _PANDAS_NAT: Any = _NO_SENTINEL
@@ -78,8 +82,7 @@ _PANDAS_SENTINELS_READY = False
 
 
 def _is_pandas_missing(value: Any) -> bool:
-    """pandas' own missing sentinels. Identity rather than ``pd.isna``, which answers element-wise
-    for a list or an array; these two are singletons."""
+    """Identity check, not pd.isna (element-wise on arrays); pandas' sentinels are singletons."""
     global _PANDAS_NA, _PANDAS_NAT, _PANDAS_SENTINELS_READY
     if not _PANDAS_SENTINELS_READY:
         try:
@@ -166,11 +169,7 @@ def to_preview_jsonable(value: Any) -> Any:
 
 
 def to_preview_jsonable_row(row: Any) -> Any:
-    """A dataset row, converted a column at a time.
-
-    ``to_preview_jsonable`` answers about a VALUE, and its Hugging Face image detection matches any
-    mapping carrying ``bytes`` or ``path`` -- which a row can be. Handing it a whole row replaced
-    every column, labels included, with one JPEG preview payload."""
+    """Per column: a row with bytes or path keys looks like one image and replaces every column."""
     if isinstance(row, list):
         return [to_preview_jsonable_row(item) for item in row]
     if not isinstance(row, dict):

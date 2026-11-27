@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A save that fails because the model was offloaded should say so.
-
-Offloaded parameters sit on the meta device, and saving then dies inside
-accelerate with an error that names neither the model nor the offload. The
-hint is appended to that error, never substituted for it, and stays empty
-unless a meta parameter is really present.
-"""
+"""Append the offload hint to the save error, never replace it; only when a meta parameter exists."""
 
 import sys
 from pathlib import Path
@@ -45,9 +39,6 @@ def _p(device):
     return torch.nn.Parameter(torch.zeros(2, device = device), requires_grad = False)
 
 
-# ---- fires when it should --------------------------------------------------
-
-
 def test_a_meta_parameter_produces_a_hint():
     m = _Model([("model.layers.0.mlp.down_proj.weight", _p("meta"))])
     hint = _offloaded_parameter_hint(m)
@@ -69,8 +60,7 @@ def test_the_hint_states_the_remedy():
 
 
 def test_it_reports_a_few_names_not_all_of_them():
-    """A 30B MoE has thousands of offloaded tensors; pasting them all would
-    bury the actual error."""
+    """A 30B MoE has thousands of offloaded tensors; pasting them all would bury the error."""
     m = _Model([(f"layer.{i}.weight", _p("meta")) for i in range(500)])
     hint = _offloaded_parameter_hint(m)
     assert hint.count("layer.") <= 3
@@ -83,12 +73,8 @@ def test_a_mix_of_real_and_meta_still_fires():
     assert _offloaded_parameter_hint(m)
 
 
-# ---- stays silent when it should ------------------------------------------
-
-
 def test_a_fully_resident_model_gets_no_hint():
-    """The mislabelling risk. An unrelated save failure must not be blamed
-    on an offload that never happened."""
+    """An unrelated save failure must not be blamed on an offload that never happened."""
     m = _Model([("a", _p("cpu")), ("b", _p("cpu"))])
     assert _offloaded_parameter_hint(m) == ""
 
@@ -126,26 +112,18 @@ def test_a_parameter_with_no_device_does_not_crash():
     assert _offloaded_parameter_hint(m) == ""
 
 
-# ---- wiring ---------------------------------------------------------------
-
 SRC = (ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
 
 
 def test_both_save_failure_paths_use_it():
-    """The GGUF export can fail at the merge step or at the plain save step,
-    and offloading breaks both."""
+    """GGUF export can fail at the merge or the plain save step; offloading breaks both."""
     assert SRC.count("_offloaded_parameter_hint(self)") == 2
 
 
 def test_the_original_error_is_still_reported():
-    """The hint is added TO the error, never instead of it.
-
-    Anchored on the message text alone, not on a whole string literal: the
-    repo's ruff hook may merge the hint into the same f-string or split it out
-    again, and either shape satisfies what this is actually checking.
-    """
+    """The original save error must still be reported; match the message text, not whole string literals."""
     for anchor in ("Failed to save/merge model: ", "Failed to save model: "):
-        # All occurrences, not the first: a docstring also quotes these messages.
+        # All occurrences: a docstring also quotes these messages.
         windows = []
         i = SRC.find(anchor)
         assert i != -1, anchor

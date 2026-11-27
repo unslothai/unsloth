@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Gemma2 softcapping attention stays under 2**31 score elements per compiled call.
-
-Inductor indexes the [bsz, heads, q, q] score tensor in int32. Past 2**31 elements the last
-batch rows wrap and come back NaN (torch 2.9: gemma-2-9b, a left padded batch of 8 at 4305 tokens).
-"""
+"""Gemma2 softcap attention keeps each compiled call under 2**31 score elements, else int32 wraps."""
 
 import types
 
