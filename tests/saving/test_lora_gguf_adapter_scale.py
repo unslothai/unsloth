@@ -102,6 +102,8 @@ def _config(folder):
         {"init_lora_weights": "pissa", "alpha_pattern": {"o_proj": 3}},
         {"init_lora_weights": False, "snapshot": "loftq"},
         {"init_lora_weights": "pissa", "set_scale": 2.0},
+        {"set_scale": 0.5},
+        {"use_rslora": True, "set_scale": 0.5},
     ],
     ids = [
         "default",
@@ -114,6 +116,8 @@ def _config(folder):
         "pissa-alpha_pattern",
         "loftq-unit-scale",
         "pissa-set_scale",
+        "set_scale",
+        "rslora-set_scale",
     ],
 )
 def test_converter_input_applies_to_the_original_base(tmp_path, monkeypatch, config_kwargs):

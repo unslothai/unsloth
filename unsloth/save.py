@@ -6619,20 +6619,45 @@ def _lora_gguf_converter_input(
             f"Unsloth: this `init_lora_weights = {init!r}` adapter trained on a rewritten base and cannot be "
             "written relative to the original one, which a GGUF LoRA needs. Export the merged model as GGUF instead."
         )
+    if not fold_scale:
+        return source
+    from .models._utils import _residual_lora_rows
+
     rslora, alpha = config.get("use_rslora"), config.get("lora_alpha")
     ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
-    if not fold_scale or not (rewritten_base or rslora or alphas or not alpha):
-        return source
     gguf_alpha = alpha or 1.0  # llama.cpp reads alpha = 0 as "no scaling"
+    # Saved factors run at the live scale (set_scale / scale_layer move it); converted ones carry it already.
+    converted = (
+        {n for _, _, n in _residual_lora_rows(model, {"default"})} if rewritten_base else set()
+    )
+    live = {
+        n: m.scaling["default"]
+        for n, m in model.named_modules()
+        if isinstance(getattr(m, "scaling", None), dict) and "default" in m.scaling
+    }
     weights = load_peft_weights(source, device = "cpu")
-    for key, B in weights.items():
+    factors = {}
+    for key in weights:
         suffix = next((s for s in (".lora_B.weight", ".lora_embedding_B") if key.endswith(s)), None)
         if suffix is None:
             continue
-        name = key[: -len(suffix)].removeprefix("base_model.model.")
+        prefix = key[: -len(suffix)]
+        name = prefix.removeprefix("base_model.model.")
         r = ranks.get(get_pattern_key(ranks, name), config["r"])
-        scale = alphas.get(get_pattern_key(alphas, name), alpha) / (r**0.5 if rslora else r)
-        weights[key] = (B.float() * (scale * r / gguf_alpha)).to(B.dtype)
+        if prefix in live and prefix not in converted:
+            scale = live[prefix]
+        else:
+            scale = alphas.get(get_pattern_key(alphas, name), alpha) / (r**0.5 if rslora else r)
+        factors[key] = scale * r / gguf_alpha
+    # As saved only if llama.cpp, now or once it reads use_rslora / alpha_pattern, applies exactly these factors.
+    if (
+        not (rewritten_base or rslora or alphas)
+        and alpha
+        and all(abs(f - 1) < 1e-9 for f in factors.values())
+    ):
+        return source
+    for key, factor in factors.items():
+        weights[key] = (weights[key].float() * factor).to(weights[key].dtype)
     # A fresh folder: `source` may be scratch_dir, and Windows cannot replace a file it just read.
     out = os.path.join(scratch_dir, "gguf")
     os.makedirs(out, exist_ok = True)
