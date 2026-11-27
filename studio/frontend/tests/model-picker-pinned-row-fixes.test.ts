@@ -33,7 +33,7 @@ test("a pinned quant row shows its size and vision mark", () => {
   assert.match(pickers, /sizes: new Map\(groups\.flatMap\(\(group\) => group\.sizes\)\)/);
   assert.match(
     pickers,
-    /meta=\{\s*sizeBytes \? `GGUF · \$\{formatBytes\(sizeBytes\)\}` : "GGUF"\s*\}/,
+    /meta=\{\s*sizeBytes \? `GGUF · \$\{compactBytes\(sizeBytes\)\}` : "GGUF"\s*\}/,
   );
   assert.match(pickers, /quantChip=\{ggufQuantChipLabel\(entry\.quant\)\}\s*showVision=\{hasVision\}/);
 });

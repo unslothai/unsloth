@@ -35,8 +35,7 @@ def test_a_typo_is_refused_and_says_which_arms_exist():
 
 
 def test_naming_the_treatment_arm_of_a_run_that_has_no_treatment_is_refused():
-    """Without `--ab` there is one arm. Naming the other one is not a harmless no-op: the caller
-    believes a gate is in force that nothing in the run will ever apply."""
+    """Without --ab there is one arm; naming treatment implies a gate that nothing applies."""
     with pytest.raises(SystemExit):
         M._windowed_arms("treatment", ["base"])
 

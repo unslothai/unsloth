@@ -3,8 +3,7 @@
 
 import type { GalleryImage, GalleryPage } from "../api.ts";
 
-/** Pages from the top to `count` records, plus up to one page for a selection `loaded` held (new records push it down;
- *  one it never held was deleted elsewhere). Re-reads `selectedId` per fetch; null once `stillFresh` fails. */
+/** Pages to `count` records, plus one page for a held selection; null once `stillFresh` fails. */
 export async function collectGalleryWindow(
   fetchPage: (offset: number, limit: number) => Promise<GalleryPage>,
   loaded: readonly GalleryImage[],

@@ -63,8 +63,7 @@ export function lengthIncompleteReason(
   return cause === "context_window" ? "context_window" : "length";
 }
 
-/** llama.cpp counts include reasoning. Ignore usage counts: providers may exclude reasoning
- *  or enforce a lower output cap, so those counts cannot establish context exhaustion. */
+/** llama.cpp counts include reasoning; usage may omit it, so usage cannot prove exhaustion. */
 export function windowEvidenceCount(
   timings: { predicted_n?: unknown } | null | undefined,
 ): number | null {

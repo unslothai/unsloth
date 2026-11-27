@@ -53,7 +53,7 @@ const draftKey = find(
   (n) => ts.isVariableDeclaration(n) && n.name.getText(composer) === "draftKey",
 ) as ts.VariableDeclaration;
 
-type Thread = { id: string; modelType: string; modelId?: string };
+type Thread = { id: string; modelType: string };
 for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
   const component = find(
     source,
@@ -81,6 +81,7 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
     "failed-known-empty",
     "failed-known-saved",
   ] as const) {
+    if (name === "GeneralCompareContent" && scenario === "failed") continue;
     test(`${name}: ${scenario} history selects the correct draft scope`, async () => {
       let resolve!: (threads: Thread[]) => void;
       let reject!: (reason: Error) => void;
@@ -110,6 +111,8 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
           listedPairRef: {
             current: scenario.startsWith("failed-known") ? "saved-pair" : null,
           },
+          busy: false,
+          wasBusyRef: { current: true },
           listStoredChatThreads: () => read,
           isExpectedBackgroundChatStorageError: () => true,
           resolveComparePaneThreadIds: (threads: Thread[]) => ({
@@ -189,6 +192,100 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
         "failed history still releases shell readiness",
       );
       cleanup();
+    });
+  }
+
+  if (name === "GeneralCompareContent") {
+    const restoreState = (
+      initialThreads: Record<string, string>[],
+      pair: { first?: string; second?: string },
+    ) => {
+      const declarations = [
+        "initialPair",
+        "[model1ThreadId, setModel1ThreadId]",
+        "[model2ThreadId, setModel2ThreadId]",
+        "[threadsSettled, setThreadsSettled]",
+        "[pairSaved, setPairSaved]",
+        "restore",
+        "[model1Selection, setModel1]",
+        "[model2Selection, setModel2]",
+        "[model1, model2]",
+      ].map((name) =>
+        find(
+          component,
+          (n) => ts.isVariableDeclaration(n) && n.name.getText(source) === name,
+        ).getText(source),
+      );
+      return evaluate(
+        `const ${declarations.join(", ")};
+        (${effect.arguments[0].getText(source)})();
+        return {model1ThreadId, model2ThreadId, threadsSettled, pairSaved, model1, model2};`,
+        {
+          initialThreads,
+          resolveComparePaneThreadIds: () => pair,
+          useState: (initial: unknown) => [
+            typeof initial === "function" ? initial() : initial,
+          ],
+          useMemo: (compute: () => unknown) => compute(),
+          loraModels: [{ id: "me/right-lora", exportType: "lora" }],
+          modelIdsMatch: (a: string, b: string) => a === b,
+          globalCheckpoint: "unsloth/loaded",
+          globalGgufVariant: "Q8_0",
+          globalIsDiffusion: true,
+          busy: false,
+          wasBusyRef: { current: false },
+          listStoredChatThreads: () => assert.fail("initial history was already read"),
+        },
+      );
+    };
+
+    test("restores each pane's own thread and model from the initial history", () => {
+      assert.deepEqual(
+        restoreState(
+          [
+            {
+              id: "left",
+              modelId: "unsloth/left-GGUF",
+              modelGgufVariant: "Q4_K_M",
+            },
+            { id: "right", modelId: "me/right-lora", modelGgufVariant: "Q6_K" },
+          ],
+          { first: "left", second: "right" },
+        ),
+        {
+          model1ThreadId: "left",
+          model2ThreadId: "right",
+          threadsSettled: true,
+          pairSaved: true,
+          model1: { id: "unsloth/left-GGUF", isLora: false, ggufVariant: "Q4_K_M" },
+          model2: { id: "me/right-lora", isLora: true, ggufVariant: "Q6_K" },
+        },
+      );
+    });
+
+    test("a saved pane with no recorded model asks for one", () => {
+      const state = restoreState([{ id: "left" }, { id: "right" }], {
+        first: "left",
+        second: "right",
+      });
+      assert.equal(state.model1.id, "");
+      assert.equal(state.model2.id, "");
+    });
+
+    test("a fresh comparison starts from the loaded model and an empty pane", () => {
+      assert.deepEqual(restoreState([], {}), {
+        model1ThreadId: undefined,
+        model2ThreadId: undefined,
+        threadsSettled: true,
+        pairSaved: false,
+        model1: {
+          id: "unsloth/loaded",
+          isLora: false,
+          ggufVariant: "Q8_0",
+          isDiffusion: true,
+        },
+        model2: { id: "", isLora: false },
+      });
     });
   }
 }

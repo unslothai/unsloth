@@ -68,15 +68,13 @@ def test_embeddinggemma_layout_is_detected(modules_json):
 
 
 def test_a_root_only_st_model_is_not(modules_json):
-    """Pooling lives in a subfolder but holds no weight, so nothing is at risk
-    and the existing subdir pruning should stay in force."""
+    """Pooling sits in a subfolder but holds no weight, so subdir pruning stays in force."""
     modules_json(ROOT_ONLY)
     assert U._repo_has_weighted_st_subfolders("org/plain-st") is False
 
 
 def test_a_repo_without_modules_json_is_not(modules_json):
-    """Plain causal LMs, the overwhelming majority, must keep the old behaviour exactly so a fix for
-    one notebook does not enlarge other downloads."""
+    """Plain causal LMs keep the old behaviour, so the fix does not enlarge other downloads."""
     modules_json(None)
     assert U._repo_has_weighted_st_subfolders("unsloth/Qwen3-0.6B") is False
 
@@ -94,8 +92,7 @@ def test_a_repo_without_modules_json_is_not(modules_json):
     ],
 )
 def test_malformed_modules_json_falls_back_to_the_old_behaviour(modules_json, payload):
-    """Best-effort by design: anything unreadable must not start failing loads
-    that work today."""
+    """Best-effort by design: anything unreadable must not start failing loads that work today."""
     modules_json(payload)
     assert U._repo_has_weighted_st_subfolders("org/whatever") is False
 
@@ -112,8 +109,7 @@ def test_every_weight_bearing_type_counts(modules_json, leaf):
 
 
 def test_the_taxonomy_is_shared_with_unsloth_zoo_not_restated():
-    """If these two ever disagree, unsloth would fetch a module the gate then
-    rejects, or prune one it demands -- the exact shape of the original bug."""
+    """A divergent copy would fetch a module the gate rejects, or prune one it demands."""
     src = (Path(U.__file__)).read_text(encoding = "utf-8")
     assert "_ST_WEIGHTED_MODULE_TYPES" in src
     assert '"dense"' not in src.split("_repo_has_weighted_st_subfolders")[1][:2000]
@@ -163,8 +159,7 @@ def test_the_subdir_weight_patterns_are_dropped_for_such_a_repo(modules_json, mo
 
 
 def test_the_subdir_weight_patterns_are_kept_for_everything_else(modules_json, monkeypatch):
-    """The other half of the claim. Without this, the test above would pass
-    just as well if the patterns had been deleted outright."""
+    """Without this, deleting the subdir weight patterns would still pass the test above."""
     modules_json(None)
     got = _ignores("unsloth/Qwen3-0.6B", monkeypatch)
     assert "*/*.safetensors" in got, got
@@ -181,8 +176,7 @@ def test_only_the_subdir_weight_patterns_differ(modules_json, monkeypatch):
 
 
 def test_the_patterns_still_exist(modules_json):
-    """The subdir weight ignore patterns are correct for fp16/ or experimental/ directories a root
-    load never reads; this fix narrows where they apply and does not retire them."""
+    """Subdir weight patterns stay: fp16/ and experimental/ are dirs a root load never reads."""
     assert "*/*.safetensors" in U._SUBDIR_WEIGHT_IGNORE_PATTERNS
     assert "*/*.bin" in U._SUBDIR_WEIGHT_IGNORE_PATTERNS
 
@@ -315,8 +309,7 @@ def test_the_bin_prune_is_untouched_without_st_modules(modules_json, monkeypatch
 
 
 def test_an_explicit_format_request_keeps_both_for_such_a_repo(modules_json, monkeypatch):
-    """use_safetensors fetches no repo listing, so the glob cannot be scoped and pruning it would
-    drop the module weight. Keeping both formats is the trade the multi-component case already makes."""
+    """use_safetensors can't scope the glob, so pruning would drop weights; keep both formats."""
     modules_json(EMBEDDINGGEMMA)
     patterns = _ignores("org/st-bin-dense", monkeypatch, use_safetensors = True)
     assert "*.bin" not in patterns

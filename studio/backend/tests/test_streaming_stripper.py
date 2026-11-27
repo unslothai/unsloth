@@ -151,8 +151,7 @@ def test_repeated_call_is_cached():
 
 
 def test_scan_is_amortized_not_quadratic(monkeypatch):
-    """Prose-only text costs constant work per token since the sentinel scan resumes; a cheaper full
-    strip once made a ratio against it meaningless, so count characters, not time."""
+    """Constant work per token as the scan resumes; count characters, a cheap strip skews time."""
     scanned = []
     real = tool_call_parser._first_sentinel
 
@@ -239,8 +238,7 @@ def test_incremental_matches_reference_on_structured_fuzz():
 
 
 def test_prose_containing_the_word_call_is_still_amortized(monkeypatch):
-    """The word call is also English, so a sentinel hit must be confirmed against its arm; counts
-    characters scanned, since a wall-clock ratio flaked on loaded runners."""
+    """Count characters, as wall-clock flaked; 'call' is English, so hits need confirming."""
     work = []
     real_scan = tool_call_parser._first_sentinel
     real_full = StreamingMarkupStripper._full_strip
@@ -268,8 +266,7 @@ def test_prose_containing_the_word_call_is_still_amortized(monkeypatch):
     short, _ = cost(300)
     long, length = cost(1200)
 
-    # 4x the tokens: about 4x the work when amortized, 16x (600 characters per buffer character)
-    # when every unconfirmed call sends the whole buffer through the full strip.
+    # Amortized work grows 4x for 4x tokens; a full strip per unconfirmed call makes it 16x.
     assert long < short * 8 and long <= 8 * length, (
         f"work grew {long / max(short, 1):.1f}x for 4x the tokens ({short} -> {long} characters "
         f"over a {length}-character buffer) on prose containing the word 'call'"
@@ -518,8 +515,7 @@ def _reference_strip_non_final(text, enabled_tool_names = ENABLED):
     ],
 )
 def test_non_final_stripper_matches_the_non_final_strip(text):
-    """The final-answer loop calls the strip with final = False, which leaves end-of-turn arms off;
-    sharing the tool loop's instance would turn them on."""
+    """final = False keeps end-of-turn arms off; the final-answer loop needs its own stripper."""
     stripper = StreamingMarkupStripper(ENABLED, seg_final = False)
     for size in range(1, len(text) + 1):
         assert stripper.strip(text[:size]) == _reference_strip_non_final(
@@ -624,8 +620,7 @@ def test_openers_far_past_the_closer_do_not_reopen_the_quadratic_scan():
 
 
 def test_an_unterminated_blocked_body_is_not_rescanned_per_snapshot():
-    """An unterminated blocked call keeps the stripper on its whole-buffer path, so the body scan
-    must not rerun per snapshot; counted, not timed, so it cannot flake."""
+    """Unterminated bodies must not rescan per snapshot; counted, not timed, so it can't flake."""
     from core import tool_healing
     from core.inference.tool_call_parser import StreamingMarkupStripper
 
@@ -649,14 +644,12 @@ def test_an_unterminated_blocked_body_is_not_rescanned_per_snapshot():
     finally:
         tool_healing._balanced_json_span = real
 
-    # Roughly one scan per snapshot is the design; two per snapshot means the kept call's
-    # body end is being resolved eagerly again, which is what made this quadratic.
+    # Design is one scan per snapshot; two means eager body-end resolution, which is quadratic.
     assert calls["n"] < 1.5 * snapshots, f"{calls['n']} scans for {snapshots} snapshots"
 
 
 def test_a_body_scan_with_no_closing_brace_short_circuits():
-    """The span can only close on a ``}``; with none present the walk cannot succeed, so the
-    early return is exactly equivalent and keeps the streaming rescan cheap."""
+    """Without any }, no span can close, so the early return is exact and keeps rescans cheap."""
     from core.tool_healing import _balanced_json_span
 
     assert _balanced_json_span('{"command":"' + "A" * 4096, 0) is None

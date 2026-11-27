@@ -23,6 +23,7 @@ tl = pytest.importorskip("triton.language")
 def sr(monkeypatch):
     monkeypatch.delenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", raising = False)
     monkeypatch.delenv("UNSLOTH_BF16_SR_FUSED", raising = False)
+    monkeypatch.delenv("UNSLOTH_BF16_SR_FUSED_BNB", raising = False)
     path = Path(__file__).resolve().parents[1] / "unsloth/optimizers/bf16_stochastic_rounding.py"
     spec = importlib.util.spec_from_file_location("_test_bf16_sr_fused", path)
     module = importlib.util.module_from_spec(spec)
@@ -300,7 +301,9 @@ def test_adam_l2_decay_keeps_the_float32_route(sr):
 
 
 def test_bitsandbytes_rounds_in_one_pass(sr, monkeypatch):
+    """The float32-copy route (bitsandbytes optimizers other than 8-bit blockwise Adam take it)."""
     bnb = pytest.importorskip("bitsandbytes")
+    monkeypatch.setenv("UNSLOTH_BF16_SR_FUSED_BNB", "0")
 
     def train(mode):
         g = torch.Generator().manual_seed(0)
@@ -372,8 +375,9 @@ def test_launch_failure_after_the_probe_falls_back(sr, capsys):
         assert opt.state[p]["exp_avg"].dtype == torch.bfloat16 and torch.isfinite(p).all()
 
 
-def test_bitsandbytes_round_failure_after_the_probe_falls_back(sr):
+def test_bitsandbytes_round_failure_after_the_probe_falls_back(sr, monkeypatch):
     bnb = pytest.importorskip("bitsandbytes")
+    monkeypatch.setenv("UNSLOTH_BF16_SR_FUSED_BNB", "0")
     p = torch.nn.Parameter((torch.randn(256, 192, device = "cuda") * 0.05).to(torch.bfloat16))
     opt = bnb.optim.AdamW8bit([p], lr = 1e-3, min_8bit_size = 256)
     sr.enable_bf16_stochastic_rounding(opt, verbose = False)
@@ -532,3 +536,192 @@ def test_one_pass_step_bumps_the_parameters_version(sr):
     assert p._version > before
     with pytest.raises(RuntimeError, match = "modified by an inplace operation"):
         saved.backward()
+
+
+def _bnb_ordered(t):
+    """bfloat16 bit patterns on a monotonic integer line: adjacent bfloat16 values differ by 1."""
+    v = t.detach().view(torch.int16).int()
+    return torch.where(v < 0, -(v & 0x7FFF), v)
+
+
+def _bnb_train(
+    sr,
+    monkeypatch,
+    fused,
+    steps = 30,
+    weight_decay = 0.01,
+    nan_step = None,
+    cls_name = "AdamW8bit",
+):
+    bnb = pytest.importorskip("bitsandbytes")
+    monkeypatch.setenv("UNSLOTH_BF16_SR_FUSED_BNB", "1" if fused else "0")
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    # 8-bit blockwise state for all but the first; sizes off the 256-element block too
+    shapes = [(1000,), (5000,), (37, 1409), (16, 352, 64), (4096, 256)]
+    params = [
+        torch.nn.Parameter((torch.randn(s, device = "cuda", generator = g) * 0.02).to(torch.bfloat16))
+        for s in shapes
+    ]
+    start = [p.detach().clone() for p in params]
+    first = []
+    opt = getattr(bnb.optim, cls_name)(params, lr = 1e-4, weight_decay = weight_decay)
+    assert sr.enable_bf16_stochastic_rounding(opt, seed = 7, verbose = False) == len(params)
+    for step in range(steps):
+        gg = torch.Generator(device = "cuda").manual_seed(100 + step)
+        for p in params:
+            p.grad = (torch.randn(p.shape, device = "cuda", generator = gg) * 1e-3).to(torch.bfloat16)
+            if step == nan_step:
+                p.grad.view(-1)[7] = float("nan")
+                p.grad.view(-1)[-1] = float("inf")
+        if step == 0:
+            first = [p.grad.clone() for p in params]
+        opt.step()
+    return params, opt, start, first
+
+
+@pytest.mark.parametrize("steps", [1, 30])
+@pytest.mark.parametrize("weight_decay", [0.0, 0.01])
+@pytest.mark.parametrize("nan_step", [None, 0])
+def test_bitsandbytes_8bit_adam_one_kernel_matches_the_float32_copy_route(
+    sr, monkeypatch, steps, weight_decay, nan_step
+):
+    """One-kernel 8-bit AdamW matches the float32-copy route: states bitwise, weights within a few bfloat16
+    steps (same draws; only last-bit float32 differences can flip a rounding)."""
+    fused, opt, start, first = _bnb_train(sr, monkeypatch, True, steps, weight_decay, nan_step)
+    assert opt.__dict__.get("_unsloth_sr_bnb_fused_steps") == 5 * steps
+    assert opt.__dict__.get("_unsloth_sr_triton_rounds", 0) == 0
+    ref, ref_opt, _, _ = _bnb_train(sr, monkeypatch, False, steps, weight_decay, nan_step)
+    assert ref_opt.__dict__.get("_unsloth_sr_bnb_fused_steps", 0) == 0
+    for a, b, w0, g0 in zip(fused, ref, start, first):
+        state_a, state_b = opt.state[a], ref_opt.state[b]
+        assert state_a["step"] == state_b["step"] == steps
+        for key in ("state1", "state2", "absmax1", "absmax2"):
+            if key in state_b and state_b[key] is not None:
+                x, y = state_a[key], state_b[key]
+                if x.dtype == torch.uint8 or key.startswith("absmax"):  # 8-bit state: bitwise
+                    same = (x == y) | (x.isnan() & y.isnan())
+                    assert same.all(), (tuple(a.shape), key, int((~same).sum()))
+                else:  # 32-bit moments: up to contraction order
+                    assert torch.equal(x.isfinite(), y.isfinite())
+                    x, y = x[x.isfinite()], y[y.isfinite()]
+                    worst = float((x - y).abs().max() / y.abs().max())
+                    assert worst < 1e-5, (tuple(a.shape), key, worst)
+        eight_bit = state_b["state1"].dtype == torch.uint8
+        if eight_bit:
+            assert torch.isfinite(
+                a
+            ).all()  # the 8-bit kernel leaves a weight with a NaN / Inf gradient alone
+        assert torch.equal(a.isnan(), b.isnan())  # the 32-bit kernel does not, in either route
+        if eight_bit and steps == 1:
+            skipped = ~torch.isfinite(g0)
+            assert torch.equal(a.detach()[skipped], w0[skipped])
+        finite = ~a.isnan() & torch.isfinite(g0)
+        a, b, w0, g0 = (t.detach()[finite].float() for t in (a, b, w0, g0))
+        assert (a != b).float().mean() < 5e-3
+        if steps == 1:
+            # first step in float64: the weight is one of its two bfloat16 neighbours (bnb's __powf is ~1e-5 off)
+            g = g0.double()
+            exact = w0.double() - 1e-4 * (0.1 * g / 0.1) / (
+                (0.001 * g * g).sqrt() / 0.001**0.5 + 1e-8
+            )
+            exact = exact * (1 - 1e-4 * weight_decay)
+            ulp = exact.abs().clamp_min(1e-30) * 2**-7
+            assert ((a.double() - exact).abs() <= ulp * 1.01 + 1e-12).all(), tuple(a.shape)
+        else:
+            # later steps: a few bfloat16 steps apart at most (random walk near zero), small against steps * lr
+            tol = 2 * torch.maximum(a.abs(), b.abs()) * 2**-7 + 0.05 * steps * 1e-4
+            assert ((a - b).abs() <= tol).all(), (
+                tuple(a.shape),
+                float(((a - b).abs() / tol).max()),
+            )
+            assert abs(float((a - b).mean())) < 1e-7
+
+
+def test_bitsandbytes_8bit_adam_one_kernel_takes_a_transposed_gradient(sr, monkeypatch):
+    """A non-contiguous gradient (grouped experts) is made contiguous, not sent to the float32-copy route."""
+    bnb = pytest.importorskip("bitsandbytes")
+    p = torch.nn.Parameter((torch.randn(8, 512, 384, device = "cuda") * 0.02).to(torch.bfloat16))
+    opt = bnb.optim.AdamW8bit([p], lr = 1e-4)
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    for _ in range(3):
+        p.grad = (torch.randn(8, 384, 512, device = "cuda") * 1e-3).to(torch.bfloat16).transpose(1, 2)
+        assert not p.grad.is_contiguous()
+        opt.step()
+    assert opt.__dict__.get("_unsloth_sr_bnb_fused_steps") == 3
+    assert opt.__dict__.get("_unsloth_sr_triton_rounds", 0) == 0
+
+
+def test_bitsandbytes_8bit_adam_one_kernel_keeps_no_float32_copy(sr, monkeypatch):
+    bnb = pytest.importorskip("bitsandbytes")
+    p = torch.nn.Parameter((torch.randn(4096, 1024, device = "cuda") * 0.02).to(torch.bfloat16))
+    opt = bnb.optim.AdamW8bit([p], lr = 1e-4)
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    peaks = {}
+    for fused in (True, False):
+        monkeypatch.setenv("UNSLOTH_BF16_SR_FUSED_BNB", "1" if fused else "0")
+        p.grad = (torch.randn(p.shape, device = "cuda") * 1e-3).to(torch.bfloat16)
+        opt.step()
+        torch.cuda.synchronize()
+        base = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        opt.step()
+        torch.cuda.synchronize()
+        peaks[fused] = torch.cuda.max_memory_allocated() - base
+    # the float32-copy route would hold weight + grad in float32 (8 bytes per element)
+    assert peaks[False] >= 8 * p.numel()
+    assert peaks[True] < p.numel()
+
+
+def test_bitsandbytes_32bit_state_override_takes_one_kernel(sr, monkeypatch):
+    """Trainer's 32-bit-state embeddings (GlobalOptimManager override) take the one-kernel route too."""
+    bnb = pytest.importorskip("bitsandbytes")
+    emb = torch.nn.Embedding(4096, 1024, device = "cuda", dtype = torch.bfloat16)
+    manager = bnb.optim.GlobalOptimManager.get_instance()
+    manager.register_module_override(emb, "weight", {"optim_bits": 32})
+    try:
+        opt = bnb.optim.AdamW8bit(emb.parameters(), lr = 1e-4)
+        sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+        p = emb.weight
+        p.grad = (torch.randn(p.shape, device = "cuda") * 1e-3).to(torch.bfloat16)
+        opt.step()
+        assert opt.state[p]["state1"].dtype == torch.float32
+        torch.cuda.synchronize()
+        base = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        opt.step()
+        torch.cuda.synchronize()
+    finally:
+        manager.initialize()  # the override is process-wide: keep it out of later tests
+    assert torch.cuda.max_memory_allocated() - base < p.numel()
+    assert opt.__dict__.get("_unsloth_sr_bnb_fused_steps") == 2
+    assert opt.__dict__.get("_unsloth_sr_triton_rounds", 0) == 0
+
+
+def test_bitsandbytes_8bit_adam_launch_failure_falls_back(sr, monkeypatch, capsys):
+    bnb = pytest.importorskip("bitsandbytes")
+    monkeypatch.delenv("UNSLOTH_BF16_SR_FUSED_BNB", raising = False)
+    p = torch.nn.Parameter((torch.randn(256, 192, device = "cuda") * 0.05).to(torch.bfloat16))
+    opt = bnb.optim.AdamW8bit([p], lr = 1e-3)
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    assert sr._bnb_triton_ok(p.device)
+    p.grad = torch.zeros_like(p)
+    opt.init_state(opt.param_groups[0], p, 0, 0)
+    assert opt.state[p]["state1"].dtype == torch.uint8
+
+    class Broken:
+        def __getitem__(self, grid):
+            def launch(*args, **kwargs):
+                raise RuntimeError("simulated compile failure")
+
+            return launch
+
+    sr._bnb_adam8bit_kernel = Broken()
+    before = p.detach().clone()
+    for _ in range(2):
+        p.grad = (torch.randn(p.shape, device = "cuda") * 1e-3).to(torch.bfloat16)
+        opt.step()
+    assert opt.state[p]["step"] == 2  # the failed launch did not count a step
+    assert opt.__dict__.get("_unsloth_sr_bnb_fused_steps", 0) == 0
+    assert opt.__dict__.get("_unsloth_sr_triton_rounds") == 2
+    assert sr._BNB_OK[str(p.device)] is False and "failed on" in capsys.readouterr().out
+    assert not torch.equal(p.detach(), before) and torch.isfinite(p).all()

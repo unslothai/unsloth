@@ -15,8 +15,7 @@ export type ExportedReplyItem = {
 const ownersByRevision = new WeakMap<object, ReadonlySet<string>>();
 
 /**
- * @param revision identity that changes whenever the exported repository could have.
- * @param exportItems reads the repository; called at most once per revision.
+ * Revision must change whenever the repository could; exportItems runs at most once per revision.
  */
 export function researchReplyOwners(
   revision: object,

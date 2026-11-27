@@ -30,7 +30,6 @@ from core.inference.video_families import detect_video_family  # noqa: E402
 
 
 def _ref_save_bytes(frames):
-    # the reference video save: (frame * 255).clamp(0, 255).byte()
     return (frames * 255).clamp(0, 255).byte()
 
 
@@ -239,14 +238,12 @@ def test_keyframes_without_a_size_keep_the_reference_canvas(size):
     assert np.array_equal(
         np.asarray(last), np.asarray(fit_h3_keyframe(img, 1344, 768, anchor = H3_ANCHOR_LAST))
     )
-    # an explicit size still wins
     *_, w2, h2, _ = VideoBackend._resolve_keyframes(h3, None, data, None, 960, 544)
     assert (w2, h2) == (960, 544)
 
 
 def test_the_int8_decoder_stays_the_default_like_the_reference_template(monkeypatch):
-    # The reference templates decode with an int8 ConvRot VAE; Studio's int8 decoder lands as close to that decode
-    # as its float16 one and is faster and smaller, so it stays the default.
+    # Int8 stays the default: as close to the reference ConvRot decode as float16, and faster.
     from core.inference import video_minimax_h3_vae as H
 
     monkeypatch.delenv(H.H3_VAE_INT8_ENV, raising = False)

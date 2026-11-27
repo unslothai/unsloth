@@ -185,8 +185,7 @@ def trusted_proxy_hosts() -> frozenset[str]:
 
 
 def request_via_trusted_proxy(scope) -> bool:
-    """Local reverse proxy for an allowlisted name. Host must be loopback or allowlisted: a DNS-rebound page
-    sends its own name as Host, so it cannot borrow the allowlist via X-Forwarded-Host."""
+    """Host must be loopback or allowlisted; DNS rebinding cannot borrow X-Forwarded-Host."""
     allowed = trusted_proxy_hosts()
     if not allowed or not isinstance(scope, dict):
         return False
@@ -214,8 +213,7 @@ def request_via_trusted_proxy(scope) -> bool:
     return host_allowed or bool(forwarded_hosts)
 
 
-# Hop headers a proxy adds without naming the client (Apache's X-Forwarded-Server, an nginx block that
-# only sets X-Forwarded-Proto). Kept apart because Colab's tolerated-header check walks the tuple above.
+# Hop headers naming no client; kept apart: Colab's tolerated-header check walks the tuple.
 _PROXY_HOP_HEADERS = ("via", "x-forwarded-port", "x-forwarded-proto", "x-forwarded-server")
 
 
@@ -223,7 +221,6 @@ _RELAY_HEADERS = frozenset(_PROXIED_CLIENT_HEADERS + _PROXY_HOP_HEADERS)
 
 
 def names_a_forwarded_client(request) -> bool:
-    """Whether a proxy or tunnel marked this request as relayed."""
     return not _RELAY_HEADERS.isdisjoint(k.lower() for k in request.headers.keys())
 
 

@@ -131,8 +131,7 @@ def _post(cli, **body):
 
 
 def test_a_reload_that_bakes_adapters_retries_with_them(monkeypatch):
-    """Resolved to none on a plain load; a rebake with tarot lands before the slot. Unpinned, the engine
-    would read the missing selection as none and zero the new bake."""
+    """Unpinned, the engine reads the missing selection as none and zeroes the new bake."""
     engine = _ReloadingEngine(before = [], after = TAROT)
     cli, store = _client(monkeypatch, engine)
     resp = _post(cli, seed = 7)
@@ -144,8 +143,7 @@ def test_a_reload_that_bakes_adapters_retries_with_them(monkeypatch):
 
 
 def test_a_reload_with_other_adapters_retries_with_its_own_set(monkeypatch):
-    """Resolved to tarot; the same model is rebaked with pixel. Unpinned, the stale tarot set is refused
-    by the engine as a 400 although the request never named an adapter."""
+    """Unpinned, a stale tarot set is refused with a 400 though no adapter was named."""
     engine = _ReloadingEngine(before = TAROT, after = PIXEL)
     cli, store = _client(monkeypatch, engine)
     resp = _post(cli, seed = 7)
@@ -174,8 +172,7 @@ def test_an_unchanged_load_is_not_refused(monkeypatch):
 
 
 def test_a_batch_waiting_through_a_reload_carries_the_pin(monkeypatch):
-    """Requests queued behind a running generation wait longest, so a reload lands there most often:
-    the batched call carries the adapter pin and every member retries with the new set."""
+    """Queued requests wait longest, so reloads land there; the batch pin lets members retry."""
     monkeypatch.setattr(batching, "batch_max", lambda: 8)
     engine = _ReloadingEngine(before = [], after = TAROT, holder = True, auto = False)
     cli, store = _client(monkeypatch, engine)

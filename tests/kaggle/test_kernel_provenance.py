@@ -23,8 +23,7 @@ VENDORED = {
 
 
 def test_the_measured_configuration_passes():
-    """The exact shape the recon probe recorded. If this ever fails, the rule
-    has drifted away from the hardware rather than the hardware from the rule."""
+    """The recon probe's recorded config; a failure means the rule drifted from the hardware."""
     kernels = {
         "fla": VENDORED,
         "causal_conv1d": {"importable": False, "error": "ModuleNotFoundError"},
@@ -35,8 +34,7 @@ def test_the_measured_configuration_passes():
 
 
 def test_a_pip_installed_fla_is_not_the_vendored_one():
-    """ "importable" is the tempting assertion and it is the wrong one: it passes
-    on a copy that is not what ships."""
+    """importable is the wrong check: it passes on a pip copy that is not the vendored one."""
     kernels = {
         "fla": {"importable": True, "file": "/site-packages/fla/__init__.py", "vendored": False}
     }
@@ -51,8 +49,7 @@ def test_fla_missing_is_a_failure():
 
 
 def test_flash_attention_2_on_turing_is_a_failure():
-    """FA2 cannot execute on sm_75, so a stack that selects it fails at the first forward; the check
-    must flag it, not report an unexplained crash."""
+    """FA2 cannot execute on sm_75; the check must flag it, not report an unexplained crash."""
     broken = vision_kernel_failures(
         {"fla": VENDORED}, {"config": "flash_attention_2"}, capability = "7.5"
     )
@@ -60,8 +57,7 @@ def test_flash_attention_2_on_turing_is_a_failure():
 
 
 def test_flash_attention_2_is_not_flagged_off_turing():
-    """The same choice is correct on Ampere. A rule that fired everywhere would
-    be wrong rather than strict."""
+    """FA2 is correct on Ampere; a rule firing everywhere would be wrong, not strict."""
     assert (
         vision_kernel_failures({"fla": VENDORED}, {"config": "flash_attention_2"}, capability = "8.6")
         == []
@@ -74,8 +70,7 @@ def test_a_missing_attention_record_is_a_failure_not_a_silence():
 
 
 def test_causal_conv1d_absence_is_reported_and_not_asserted():
-    """causal_conv1d and mamba_ssm are absent on the notebook path, where ssm_runtime.py's
-    wheel-first code never runs, so absence is reported rather than asserted."""
+    """The notebook skips ssm_runtime.py's wheel-first code, so the absence is only reported."""
     kernels = {
         "fla": VENDORED,
         "causal_conv1d": {"importable": False, "error": "ModuleNotFoundError"},

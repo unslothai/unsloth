@@ -42,8 +42,7 @@ LEVER_TILE_BATCH = "vae_tile_batch"
 LEVER_TILE_GRAPHS = "vae_tile_graphs"
 LEVER_HALF = "vae_fp16"
 
-# sha256[:16] of the stock ``_blend`` / ``_stitch_tiles`` sources the canvas reproduces (diffusers 0.41-0.42 and the
-# vendored H3-Image copy, which carry the same text).
+# Canvas reproduces stock _blend/_stitch_tiles; sha256[:16] pins diffusers 0.41-0.42, H3-Image.
 _BLEND_SHA = frozenset({"2b6df9fb4c3a9c96"})
 _STITCH_SHA = frozenset({"ae481626afa30528"})
 
@@ -579,8 +578,7 @@ def canvas_decode(
         if race.prints is None:
             race.prints = prints
         elif race.prints != prints:
-            # The weights moved (sequential placement re-uploads the VAE per render): a graph would read the old
-            # addresses, and recording per render costs more than it saves, so this load decodes eager.
+            # Weights moved: graphs go stale; recording per render costs more, so decode eager.
             vae._unsloth_canvas_graphs = False
             for r in races.values():
                 if r.graphs is not None:

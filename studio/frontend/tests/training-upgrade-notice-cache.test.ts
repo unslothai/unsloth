@@ -99,8 +99,7 @@ test("a different copy or token is still a different answer", () => {
 });
 
 test("a check still in flight across the install cannot rewind the cache", () => {
-  // A stale pre-install check can resolve after the post-install one; its write must be dropped
-  // or nothing re-asks and the notice vanishes.
+  // A late pre-install check must drop its write, or nothing re-asks and the notice vanishes.
   const stale = upgradeNoticeCacheKey(4, MODEL, false, null, "");
   const fresh = upgradeNoticeCacheKey(5, MODEL, false, null, "");
   writeUpgradeNoticeCache(5, fresh, AFTER_INSTALL);

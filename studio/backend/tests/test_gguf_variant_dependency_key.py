@@ -10,8 +10,7 @@ KLEIN_REPO = "unsloth/FLUX.2-klein-GGUF"
 
 
 def test_klein_4b_and_9b_in_one_repo_get_different_keys():
-    """sd_cpp_text_encoders_for keys klein-4B and klein-9B by repo id and filename: same repo and
-    family but different companions, so a repo-wide footprint is wrong"""
+    """Keys are per file: klein-4B and klein-9B share a repo but need different companions."""
     key_4b = _variant_dependency_key(KLEIN_REPO, "flux.2-klein-4b-Q4_K_M.gguf")
     key_9b = _variant_dependency_key(KLEIN_REPO, "flux.2-klein-9b-Q4_K_M.gguf")
     assert key_4b is not None and key_9b is not None
@@ -57,8 +56,7 @@ def test_different_families_in_one_neutral_repo_get_different_keys():
 
 
 def test_a_text_model_has_no_key():
-    """No family resolves, so there is nothing to group by. Null, not a made-up key:
-    the client treats an unkeyed listing as one group, which is the old behavior."""
+    """No family resolves, so the key is null, not made up: unkeyed listings form one group."""
     assert (
         _variant_dependency_key(
             "unsloth/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf"

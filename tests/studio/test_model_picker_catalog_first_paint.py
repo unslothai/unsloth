@@ -29,8 +29,7 @@ def test_curated_catalog_becomes_rows_without_a_request():
     # Same format policy as the listing rows, so nothing vanishes when one lands.
     assert "taskCatalogFormatMatches(" in seed
     assert "matchesFormatFilter(id, isG, formatFilter)" in seed
-    # The recommendable gate now runs in `keep`, over seeds and listing rows alike.
-    # A capable FP8 / NVFP4 checkpoint is also recommendable (runsCheckpointQuant).
+    # Gate runs in `keep` for seeds and rows; capable FP8/NVFP4 pass via runsCheckpointQuant.
     assert re.search(
         r"isRecommendable:\s*isRecommendableFormat\(r\.id, r\.isGguf, isMac(, r\.quantMethod)?\)( \|\|\s*runsCheckpointQuant\(r\))?,",
         source,

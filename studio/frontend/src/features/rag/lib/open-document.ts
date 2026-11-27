@@ -8,9 +8,8 @@ import { toast } from "@/lib/toast";
 import { getDocumentFileUrl } from "../api/rag-api";
 
 /**
- * Opens an indexed document's file outside Studio: the OS opener on Desktop (its webview has no
- * window.open), else a new tab opened inside the click, since popup blockers refuse one opened
- * after the URL request.
+ * Opens an indexed document outside Studio: the OS opener on Desktop (no window.open there), else a
+ * new tab opened inside the click, since popup blockers refuse one opened after the URL request.
  */
 export function openRagDocumentExternally(
   documentId: string,

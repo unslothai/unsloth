@@ -32,7 +32,7 @@ _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
 # What the self-heal INSTALLS; keep in sync with unsloth-zoo's darwin deps. mlx pinned: it breaks in patch releases (unslothai/unsloth#9466), and 0.32.2's GQA-8 decode read row 0's KV for every batch row (mlx#4431). mlx-vlm is a range (the transformers override decides how high it resolves); mlx-lm too: 0.32 needs Python 3.11.
 _MLX_INSTALL_SPECS = {
-    "mlx": "==0.32.4",
+    "mlx": "==0.32.5",
     "mlx-lm": ">=0.31.3,<=0.32.2",
     "mlx-vlm": ">=0.6.4,<=0.8.1",
 }
@@ -81,14 +81,27 @@ def _mlx_minimum(name: str) -> str:
     return minimum
 
 
+def _follows_zoo_mlx_pin(declared: str) -> bool:
+    """An exact zoo pin no older than 0.32.3 (0.32.2 is mlx#4431)."""
+    if not declared.startswith("==") or any(c in declared for c in ",*"):
+        return False
+    try:
+        from packaging.version import Version
+        return Version(declared[2:].strip()) >= Version("0.32.3")
+    except Exception:
+        return False
+
+
 def _install_packages() -> tuple[str, ...]:
-    """mlx-lm and mlx-vlm are narrowed to the specifier unsloth-zoo declares, as their call shapes
-    must match it; mlx is pinned exactly at both ends, so intersecting it would empty the range;
-    uv intersects both."""
+    """mlx-lm / mlx-vlm narrowed to the zoo's range (call shapes must match); mlx takes the zoo's exact
+    pin, since ours beside a different zoo pin is undone by the next core install."""
     packages = []
     for name, spec in _MLX_INSTALL_SPECS.items():
-        declared = _zoo_declared_specifier(name) if name in ("mlx-lm", "mlx-vlm") else ""
-        packages.append(f"{name}{spec},{declared}" if declared else f"{name}{spec}")
+        declared = _zoo_declared_specifier(name)
+        if name == "mlx":
+            packages.append(f"{name}{declared if _follows_zoo_mlx_pin(declared) else spec}")
+        else:
+            packages.append(f"{name}{spec},{declared}" if declared else f"{name}{spec}")
     return tuple(packages)
 
 

@@ -178,7 +178,6 @@ def test_job_completion_is_seen_soon_after_the_last_log_line():
         assert all(p == "/sdcpp/v1/jobs/job1" for m, p, _ in requests if m == "GET")
         # Log-driven polling stays bounded: at most one GET per floor over the job.
         assert len(requests) < 60
-    # Every server line reached the progress callback, in order, before the result.
     assert steps == [
         line
         for _ in range(5)
@@ -225,8 +224,7 @@ def test_ready_is_seen_soon_after_listening_line(monkeypatch):
     print(
         f"bind -> ready lag: median {median * 1000:.1f} ms, all {[round(x * 1000) for x in lags]}"
     )
-    # The line comes just before the bind, so the first probe can hit a closed port; Windows takes
-    # a few hundred ms to refuse a loopback connect, so there it only has to beat the old 0.5 s poll.
+    # Probes can beat the bind; Windows refuses loopback slowly, so it keeps the 0.5 s bound.
     assert median < (0.5 if os.name == "nt" else 0.1), lags
 
 

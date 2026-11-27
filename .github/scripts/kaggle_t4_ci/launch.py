@@ -256,8 +256,7 @@ def username_of(api) -> str | None:
         return None
 
 
-# Registry of pushed but undeleted kernels so a later launch can reclaim them after kill -9.
-# Keyed on pid: a live owner's kernels must never be deleted.
+# Kernels pushed but not deleted, reclaimed after kill -9; keyed on pid, live owners' are kept.
 INFLIGHT = (
     Path(os.environ.get("UNSLOTH_WORKSPACE") or Path(__file__).resolve().parents[3])
     / "logs"
@@ -460,7 +459,6 @@ def push(
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
                     return _pushed(False, "slug_mismatch", out, attempted)
-                # Record the kernel the moment it exists.
                 _inflight_add(attempted[-1])
                 return {"ok": True, "slug": attempted[-1], "attempts": attempted}
             if any(m in lowered for m in CAPACITY_MARKERS):

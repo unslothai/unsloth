@@ -145,7 +145,6 @@ def test_a_text_to_image_family_keeps_the_seeded_split(monkeypatch, cards):
     measured, plan = _place(monkeypatch, cards, unpriced = False)
     assert not measured.estimates.get("measured_omits_references")
     _, flat = _place(monkeypatch, cards, unpriced = False, tier_seeds = False)
-    # the seed still packs more of the model onto the primary than the flat estimate
     assert _primary_weights(plan) > _primary_weights(flat)
 
 

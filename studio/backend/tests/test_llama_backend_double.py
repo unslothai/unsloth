@@ -59,8 +59,7 @@ def test_the_double_claims_nothing_the_real_backend_lacks():
 
 
 def test_a_bare_double_can_still_serve_a_chat_completion(monkeypatch):
-    """The canary: drive the real route with nothing but the shared double, so a newly read
-    attribute fails here by name rather than scattering errors across five files."""
+    """Canary: the real route on the shared double alone; a new attribute read fails by name."""
 
     class _Backend(FakeLlamaCppBackend):
         def generate_chat_completion(self, **kwargs):

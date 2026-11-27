@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Module state, read by the recording bar after the session is gone: composer text cannot
- *  tell (a saved prompt may be inserted, a partial transcript still lands). */
+/** Read by the recording bar once the session ends; composer text can't tell what it produced. */
 let producedTranscript = false;
 let producedClip: File | null = null;
 let failed = false;

@@ -110,8 +110,7 @@ def test_a_primary_llama_server_on_the_gpu_keeps_chat(evicted, monkeypatch):
 
 
 def test_a_kept_audio_cpp_fallback_beside_a_gpu_primary_keeps_chat(evicted, monkeypatch):
-    # The kept model's own orchestrator is not the primary: the call site is gated on `replacing`,
-    # and even if it ran, the primary llama-server's VRAM keeps the claim.
+    # Kept model isn't the primary; gated on `replacing`, and primary VRAM keeps the claim.
     monkeypatch.setattr(inf, "_llama_cpp_backend", FakeLlama(active = True))
     kept = FakeOrchestrator("org/kept-audio-cpp", {"audio_device_fallback": "cpu"})
     monkeypatch.setattr(model_slots, "slots", [model_slots.ExtraSlot(FakeLlama(), kept, "owner")])
@@ -128,7 +127,6 @@ def test_the_release_runs_for_a_primary_gpu_load_before_the_response():
     gate = "if replacing and chat_load_needs_gpu:\n"
     assert source.count(gate) == 1
     at = source.index(call)
-    # The gate opens the block, then only the comment line sits between it and the call.
     assert source[source.index(gate) + len(gate) : at].strip().startswith("#")
     assert source[source.index(gate) + len(gate) : at].count("\n") == 1
     # The standard path's response statement follows directly, so the call is never inside its arguments.

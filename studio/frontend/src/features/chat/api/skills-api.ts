@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { useEffect, useSyncExternalStore } from "react";
 import { useSkillsSwitchStore } from "../stores/skills-switch-store";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
@@ -73,11 +74,9 @@ function publish(next: SkillsSnapshot): void {
 async function parseResponse<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail =
-      body && typeof body === "object" && "detail" in body
-        ? String(body.detail)
-        : `Request failed (${response.status})`;
-    throw new Error(detail);
+    throw new Error(
+      formatApiErrorBody(body) ?? `Request failed (${response.status})`,
+    );
   }
   return body as T;
 }

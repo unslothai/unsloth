@@ -8,11 +8,15 @@ so nothing is loaded locally and the connection's own server decides where the m
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import ipaddress
 import logging
 import math
 import re
 import threading
 import time
+from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
@@ -32,7 +36,7 @@ class ConnectionEmbedderError(RuntimeError):
     """A missing or disabled connection, or a bad answer from it."""
 
 
-def resolve_connection_model(name: str) -> tuple[dict, str]:
+def _find_connection(name: str) -> tuple[dict, str, str]:
     from storage import providers_db
 
     ref = name.strip()[len(config.CONNECTION_MODEL_PREFIX) :].strip()
@@ -52,6 +56,11 @@ def resolve_connection_model(name: str) -> tuple[dict, str]:
     model = ref[len(label) + 1 :].strip()
     if not model:
         raise ConnectionEmbedderError(f"{name!r} names no model after the connection name.")
+    return provider, label, model
+
+
+def resolve_connection_model(name: str) -> tuple[dict, str]:
+    provider, label, model = _find_connection(name)
     if not provider.get("is_enabled", True):
         raise ConnectionEmbedderError(f"The connection {label!r} is disabled.")
     return provider, model
@@ -82,6 +91,58 @@ def _client_for(model_name: str):
     return client, provider, model
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _server_of(base_url: str) -> str:
+    # Spellings of one server are one server; userinfo and query carry credentials, not a server.
+    try:
+        parts = urlsplit(base_url.strip())
+        host = (parts.hostname or "").rstrip(".")
+        port = parts.port
+    except ValueError:
+        return base_url.strip()
+    scheme = parts.scheme.lower()
+    with contextlib.suppress(ValueError):
+        host = ipaddress.ip_address(host).compressed
+    host = "localhost" if host in _LOOPBACK_HOSTS else f"[{host}]" if ":" in host else host
+    if port is not None and port != _DEFAULT_PORTS.get(scheme):
+        host = f"{host}:{port}"
+    return f"{scheme}://{host}{parts.path.rstrip('/').removesuffix('/v1').rstrip('/')}"
+
+
+def connection_destination(provider: dict) -> str:
+    server = _server_of(provider.get("base_url") or "")
+    server = f"{provider.get('provider_type') or ''}\n{server}"
+    return hashlib.sha256(server.encode("utf-8")).hexdigest()[:16]
+
+
+def connection_identity(name: str, destination: str | None = None) -> str:
+    # The server is part of the vector space, not only the connection name and model id.
+    if destination is None:
+        try:
+            destination = connection_destination(_find_connection(name)[0])
+        except ConnectionEmbedderError:
+            destination = "unresolved"
+    return f"{config.embedding_identity('connection', name)}:{destination}"
+
+
+def stamp_legacy_identities(conn) -> None:
+    rows = conn.execute(
+        "SELECT DISTINCT embedding_model FROM documents WHERE embedding_model LIKE 'connection:%'"
+    ).fetchall()
+    for row in rows:
+        identity = row[0]
+        name = config.embedding_identity_model(identity)
+        if name is None or identity != config.embedding_identity("connection", name):
+            continue
+        conn.execute(
+            "UPDATE documents SET embedding_model=? WHERE embedding_model=?",
+            (connection_identity(name), identity),
+        )
+
+
 # Every digit, symbol, newline and letter run is >= 1 WordPiece token: an upper bound for 512-token embedders.
 _TOKEN_UNITS = re.compile(r"\d|[^\W\d_]+|[^\w\s]|_|\n")
 
@@ -108,8 +169,9 @@ class ConnectionEmbeddingBackend:
         self._http = _remote_http_client()
         self._dims: dict[str, int] = {}
         self._lock = threading.Lock()
+        self._served = threading.local()
 
-    def _post(self, model_name: str, texts: list[str]) -> list[list[float]]:
+    def _post(self, model_name: str, texts: list[str]) -> tuple[list[list[float]], str]:
         from core.inference.external_provider import _append_provider_path
 
         client, provider, model = _client_for(model_name)
@@ -146,7 +208,7 @@ class ConnectionEmbeddingBackend:
             raise ConnectionEmbedderError(
                 f"The connection {label!r} returned {len(rows)} vectors for {len(texts)} inputs."
             )
-        return rows
+        return rows, connection_destination(provider)
 
     def encode(
         self,
@@ -157,12 +219,21 @@ class ConnectionEmbeddingBackend:
     ):
         name = model_name or config.effective_embedding_model()
         texts = list(texts)
+        self._served.destination = None
         if not texts:
             return np.zeros((0, self.dim(model_name = name)), dtype = np.float32)
         rows: list[list[float]] = []
+        destinations = set()
         batch = max(1, min(config.EMBED_BATCH, _MAX_BATCH))
         for start in range(0, len(texts), batch):
-            rows.extend(self._post(name, texts[start : start + batch]))
+            part, destination = self._post(name, texts[start : start + batch])
+            rows.extend(part)
+            destinations.add(destination)
+        if len(destinations) > 1:
+            raise ConnectionEmbedderError(
+                f"The connection for {name!r} changed while embedding; retry."
+            )
+        self._served.destination = destinations.pop()
         arr = np.asarray(rows, dtype = np.float32)
         if arr.ndim != 2 or arr.shape[1] == 0:
             raise ConnectionEmbedderError(f"Embeddings from {name!r} have shape {arr.shape}.")
@@ -173,6 +244,9 @@ class ConnectionEmbeddingBackend:
             norms[norms == 0] = 1.0
             arr = arr / norms
         return arr
+
+    def served_embedding_identity(self) -> str | None:
+        return getattr(self._served, "destination", None)
 
     def dim(self, *, model_name = None) -> int:
         name = model_name or config.effective_embedding_model()

@@ -19,10 +19,7 @@ function physicalPerCssPx(windowScaleFactor: number): number {
     : 1;
 }
 
-/**
- * Drop position in CSS pixels. Do not collapse both branches onto `devicePixelRatio`: on macOS it
- * includes the Retina backing scale that NSView points lack, so it would divide twice.
- */
+/** CSS pixels; never collapse onto devicePixelRatio, as macOS already includes the Retina scale. */
 export function nativeDropPointToCss(
   position: { x: number; y: number },
   windowScaleFactor: number,

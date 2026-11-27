@@ -6,8 +6,7 @@
 name: Security audit
 
 on:
-  # PRs run this only when they touch an input it reads; floating pins are covered by the
-  # daily cron and every push to main.
+  # PRs run only when listed inputs change; daily cron and main pushes cover floating pins.
   pull_request:
     paths:
       - 'pyproject.toml'
@@ -203,8 +202,7 @@ jobs:
           done
 
       - name: pip-audit (declared Python deps, no install)
-        # `-r` resolves via PyPI metadata without running install hooks.
-        # PIP_CONSTRAINT pins an older setuptools so legacy setup.py packages (openai-whisper) build.
+        # -r: no install hooks; PIP_CONSTRAINT pins old setuptools for legacy setup.py builds.
         continue-on-error: true
         env:
           PIP_CONSTRAINT: ${{ github.workspace }}/audit-reqs/build-constraints.txt
@@ -314,8 +312,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       # ─────────────────────────────────────────────────────────────
       - name: Download + verify OSV-Scanner
-        # Separate step so binary integrity is a hard gate; a download failure only skips the scan.
-        # Bump OSV_SHA256 together with OSV_VERSION.
+        # Bump OSV_SHA256 with OSV_VERSION; a hash mismatch fails hard, a download error skips.
         run: |
           set -euo pipefail
           OSV_VERSION="v2.0.2"
@@ -444,8 +441,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # Trivy is deliberately not used: its action tags were hijacked in the litellm 1.82.7
-      # compromise. OSV-Scanner and TruffleHog cover its CVE and secret detection.
+      # Trivy is not used: its action tags were hijacked in the litellm 1.82.7 compromise.
       # ─────────────────────────────────────────────────────────────
 
       # ─────────────────────────────────────────────────────────────
@@ -492,9 +488,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # Mutable tags were the tj-actions attack vector. Catch every
-      # non-SHA-pinned `uses:` across the workflows tree. Warn-only
-      # initially so the existing baseline does not block PRs.
+      # Mutable tags were the tj-actions attack vector; flag every non-SHA-pinned uses: line in the
+      # workflows tree. Warn-only initially so the existing baseline does not block PRs.
       # ─────────────────────────────────────────────────────────────
       - name: GitHub Actions pinning verifier
         continue-on-error: true
@@ -794,8 +789,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # ─────────────────────────────────────────────────────────────────────
   npm-scan-packages:
-    # npm counterpart: fetch each lockfile tarball directly (never `npm install`), verify
-    # integrity, extract with guards and pattern-scan. Stdlib-only; every tarball is hostile.
+    # Fetch and verify tarballs directly (no npm install); stdlib-only; tarballs are hostile.
     name: npm scan-packages (Unsloth frontend tarballs)
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -6,8 +6,10 @@ torchvision==0.28.0
 torchaudio==2.11.0
 transformers==5.12.1
 
-# Load-time 4-bit and prequantized BitsAndBytes checkpoints.
+# Load-time 4-bit and prequantized BitsAndBytes checkpoints. vLLM 0.28+ serves them only through the
+# vllm-bnb-plugin package (loaded from its vllm.general_plugins entry point).
 bitsandbytes==0.49.2
+vllm-bnb-plugin==0.0.3
 
 # Native load-time INT8 conversion.
 torchao==0.17.0

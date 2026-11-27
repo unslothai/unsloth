@@ -88,8 +88,7 @@ def test_an_unknown_attribute_is_diagnosed_without_prescribing_a_direction(patch
 
 
 def test_a_known_floor_still_prescribes_the_upgrade(patched_torch):
-    """NEGATIVE CONTROL: a floor IS evidence of the direction, so that branch must keep
-    saying which half is out of step rather than being softened with it."""
+    """Negative control: a known floor is evidence, so the out-of-step half is still named."""
     with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
         _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
 
@@ -162,8 +161,7 @@ def test_a_vendor_rocm_torch_is_sent_back_to_its_own_source(
 
 
 def test_an_unrecognisable_local_tag_gets_no_accelerator_note(patched_torch, monkeypatch):
-    """NEGATIVE CONTROL: a local tag naming no known family says nothing about the
-    accelerator, so inventing a source for it would be worse than silence."""
+    """Negative control: an unknown local tag yields no accelerator note, not an invented one."""
     monkeypatch.setattr(patched_torch, "__version__", "2.10.0+localbuild1")
 
     with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
@@ -196,8 +194,7 @@ def test_a_conda_torch_is_pointed_at_conda_not_pip(patched_torch, monkeypatch, t
 
 @pytest.mark.parametrize("torch_version", ["2.7.0", "2.9.0.dev20250101", "2.7.0+fbcode"])
 def test_a_pypi_torch_gets_no_accelerator_note(patched_torch, monkeypatch, torch_version):
-    """NEGATIVE CONTROL: no recognised backend tag means PyPI is already the right
-    place, so the plain command stands alone with nothing extra to read."""
+    """Negative control: no recognised backend tag leaves the plain PyPI command with no note."""
     monkeypatch.setattr(patched_torch, "__version__", torch_version)
 
     with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
@@ -210,8 +207,7 @@ def test_a_pypi_torch_gets_no_accelerator_note(patched_torch, monkeypatch, torch
 
 
 def test_an_unattributable_access_keeps_torchs_own_error(patched_torch, monkeypatch):
-    """sys._getframe is CPython-only and audited, so a hardened interpreter can refuse it; hasattr()
-    swallows only AttributeError, so rethrowing would break feature probes."""
+    """Torch's error survives: hasattr swallows only AttributeError; _getframe may be refused."""
 
     def _refuse(_depth):
         raise RuntimeError("frame inspection is not allowed here")
@@ -228,8 +224,7 @@ def test_an_unattributable_access_keeps_torchs_own_error(patched_torch, monkeypa
 
 
 def test_hasattr_and_getattr_default_are_unaffected(patched_torch):
-    """The error subclasses AttributeError precisely so these keep working;
-    transformers 5.17 guards this very dtype with hasattr."""
+    """Subclasses AttributeError so hasattr works; transformers 5.17 guards this dtype with it."""
     assert not hasattr(patched_torch, "unsloth_probe_dtype")
     assert getattr(patched_torch, "unsloth_probe_dtype", "fallback") == "fallback"
 
@@ -288,8 +283,7 @@ def test_installing_twice_wraps_once(patched_torch):
 
 
 def test_a_torch_without_a_module_getattr_is_left_alone(monkeypatch):
-    """The wrapper has one prerequisite, so say what happens without it: nothing,
-    and it says so rather than raising."""
+    """Without a module __getattr__ on torch, the wrapper returns False and does not raise."""
     monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
     assert import_fixes.patch_torch_missing_attribute_error() is False
 
@@ -440,8 +434,7 @@ def test_a_shim_with_the_macro_is_not_named(monkeypatch, tmp_path):
 
 
 def test_a_shim_with_no_hash_format_is_not_named(monkeypatch, tmp_path):
-    """Only a '#' in a PyArg_Parse format needs the macro, so a shim without one
-    is not a finding no matter what it includes."""
+    """Only a hash format in PyArg_Parse needs the macro; a shim without one is not a finding."""
     spec, _ = _fake_triton(tmp_path, _UNGUARDED_SHIM.replace('"ss#ii"', '"sslii"'))
     monkeypatch.setattr(sys, "version_info", (3, 12, 3))
     monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
@@ -468,8 +461,7 @@ def test_a_hash_format_only_in_a_comment_is_not_a_finding(monkeypatch, tmp_path,
 
 
 def test_a_live_hash_format_beside_a_comment_is_still_a_finding(monkeypatch, tmp_path):
-    """NEGATIVE CONTROL: masking comments must not mask the call itself, and a `//`
-    inside a string literal must not blank the rest of the file."""
+    """Negative control: masking must spare a live call and a double slash in a string."""
     source = (
         "/* the parser below still uses a length format */\n"
         'static const char *kDoc = "see //triton/backends for /* details */";\n' + _UNGUARDED_SHIM
@@ -586,7 +578,6 @@ def test_the_installed_triton_is_not_flagged():
         ("/*\n#define PY_SSIZE_T_CLEAN\n*/\n", "", True),
         ("/* x */ /*\n#  define PY_SSIZE_T_CLEAN 1\n*/\n", "", True),
         ("//#define PY_SSIZE_T_CLEAN\n", "", True),
-        # Control: a real define with a commented-out undef is still defined.
         ("#define PY_SSIZE_T_CLEAN\n/*\n#undef PY_SSIZE_T_CLEAN\n*/\n", "", False),
         ("#define PY_SSIZE_T_CLEAN\n/* now include it */\n", "", False),
     ],
@@ -830,8 +821,7 @@ def test_the_provider_lookup_still_works_without_packages_distributions(
 
 
 def test_the_provider_fallback_reports_unknown_when_nothing_is_installed(monkeypatch):
-    """NEGATIVE CONTROL: the fallback asks each provider whether it is installed, so a
-    host with none of them must not pick one anyway."""
+    """Negative control: no provider installed, so the fallback must not pick one anyway."""
     import importlib.metadata as metadata
 
     monkeypatch.setattr(metadata, "packages_distributions", lambda: {}, raising = False)
@@ -913,9 +903,7 @@ def test_the_provider_that_ships_the_offending_file_is_the_one_named(monkeypatch
     ids = ["generic-first", "accelerator-first"],
 )
 def test_a_file_claimed_by_two_providers_is_settled_by_torchs_backend(monkeypatch, tmp_path, order):
-    """Coexisting providers RECORD the same paths, so both claim the offending file and the
-    first entry is nothing but ordering. The harmful answer is always the one that installs
-    a CUDA build over an accelerator one, so an XPU torch settles it for the XPU provider."""
+    """Both providers record the file, so order is noise; an XPU torch settles it, never CUDA."""
     driver = tmp_path / "backends" / "intel" / "driver.c"
     driver.parent.mkdir(parents = True)
     driver.write_text("x", encoding = "utf-8")
@@ -992,8 +980,7 @@ def test_the_declared_requirement_is_read_by_distribution_name(monkeypatch):
 
 
 def test_two_claimants_a_cuda_torch_cannot_separate_name_the_generic_one(monkeypatch, tmp_path):
-    """NEGATIVE CONTROL: with no accelerator in torch's tag there is no accelerator to
-    preserve, so the generic provider is the answer rather than whichever came first."""
+    """Negative control: no accelerator in torch's tag, so generic wins over first-listed."""
     driver = tmp_path / "backends" / "nvidia" / "driver.c"
     driver.parent.mkdir(parents = True)
     driver.write_text("x", encoding = "utf-8")
@@ -1020,8 +1007,7 @@ def test_two_claimants_a_cuda_torch_cannot_separate_name_the_generic_one(monkeyp
 
 
 def test_an_unownable_path_falls_back_to_the_previous_answer(monkeypatch, tmp_path):
-    """NEGATIVE CONTROL: metadata that names no owner, or no path at all, must leave the
-    ordering-based answer exactly as it was rather than reporting nothing."""
+    """Negative control: unownable metadata keeps the ordering-based answer, not nothing."""
     import importlib.metadata as metadata
 
     monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": ["triton-windows"]})

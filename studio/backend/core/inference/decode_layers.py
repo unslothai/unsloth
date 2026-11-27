@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Installs and removes one wrapper on an instance's method slot (e.g. VAE decode) exactly: wrap
-records the prior instance-dict entry or none, unwrap restores it if still outermost; if a later
-wrapper captured it, it becomes a pass-through skipped by __wrapped__."""
+"""Wrap and unwrap a layer on an instance method slot (e.g. VAE decode): unwrap restores the exact
+prior entry only when outermost; else it is a pass-through skipped via __wrapped__."""
 
 from __future__ import annotations
 
@@ -58,8 +57,7 @@ def find(owner: Any, attr: str, name: str) -> Optional[Layer]:
 
 
 def unwrap(layer: Optional[Layer]) -> bool:
-    """Remove ``layer``. True when it was outermost and the slot holds exactly what it held before wrapping; False
-    when later wrappers sit over it (it is now a pass-through) or it was already removed."""
+    """True if outermost and slot holds its prior entry, else False (pass-through or removed)."""
     if layer is None or not layer.active:
         return False
     owner, attr = layer.owner, layer.attr
@@ -97,9 +95,8 @@ def unwrap(layer: Optional[Layer]) -> bool:
 
 
 def next_layer(fn: Any) -> Any:
-    """What the decode wrapper ``fn`` calls through to: the decode in its mutable slot (an eager outer wrapper that
-    keeps what it wraps rewritable: the fp16 non-finite check, the ROCm bf16 decode) when it has one, otherwise its
-    ``__wrapped__``. Every walker of a decode chain uses this, so a slot is never skipped."""
+    """The decode a wrapper calls through: its mutable slot when set (eager outer wrappers keep what
+    they wrap rewritable), else __wrapped__; all walkers use it so no slot is skipped."""
     slot = getattr(fn, "_unsloth_decode_slot", None)
     if slot is not None:
         inner = getattr(slot, "__dict__", {}).get("decode")

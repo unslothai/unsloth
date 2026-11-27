@@ -41,8 +41,7 @@ export function SidebarEdgeTrigger({
     setWidth,
     resetWidth,
   } = useSidebarWidth();
-  // Holds the drag until release: reaching the minimum would pin the sidebar and unmount this
-  // handle.
+  // Holds until release: reaching the minimum would pin the sidebar and unmount this handle.
   const [holding, setHolding] = useState(false);
   const release = () => setHolding(false);
 

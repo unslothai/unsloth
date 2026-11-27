@@ -17,8 +17,7 @@ import unsloth  # noqa: F401
 from real_accelerator import has_real_cuda
 from unsloth.models import llama as llama_module
 
-# gemma.py, qwen2.py and the vision/MoE loaders reuse LlamaAttention_fast_forward, so the
-# llama row covers them.
+# gemma.py, qwen2.py, vision/MoE loaders reuse LlamaAttention_fast_forward; llama covers them.
 ATTENTION_FILES = (
     "llama.py",
     "cohere.py",
@@ -170,8 +169,7 @@ def test_fallback_runs_on_an_instance_that_never_reached_the_loader():
 
 
 def test_instance_attribute_still_wins_over_the_fallback():
-    """This is the whole safety argument: the fused LoRA kernels are still selected, so
-    the getattr default only ever fires where the old code raised."""
+    """Fused LoRA kernels stay selected; the getattr default only fires where old code raised."""
     from unsloth.kernels import apply_lora_o, apply_lora_qkv
 
     attention = _plain_llama_attention()

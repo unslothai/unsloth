@@ -239,8 +239,7 @@ export function setActiveAction(chat: string, controller: AbortController | null
   else activeActions.delete(liveChat(chat));
 }
 
-// A download the agent started can be reported after its run ends (a slow response, a native
-// view's prompt), so the agent's rule outlasts the run by this much.
+// Grace period: a download can be reported after its run ends, so the rule outlasts the run.
 const DOWNLOAD_GRACE_MS = 120_000;
 
 const runEndListeners = new Set<(chat: string) => void>();

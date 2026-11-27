@@ -206,8 +206,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                         grad = state["projector"].project(full_rank_grad, state["step"])
 
-                        # Zero p.data so the 8-bit update writes the pure delta.
-                        p._saved_data = p.data.clone()
+                        # Zero p.data so the 8-bit update writes the pure delta; rebinding keeps the weight, so no clone.
+                        p._saved_data = p.data
                         p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
                         p.grad = grad
 
@@ -270,7 +270,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
     @staticmethod
     def _has_weight_quant(p: torch.Tensor, group: dict) -> bool:
-        """Check if this parameter uses INT8 weight quantization."""
         return (
             group.get("weight_quant", False)
             and hasattr(p, "_q_scales")  # tag set by init_weight_quantization()
@@ -365,7 +364,6 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
     return handles
 
 
-# Default linear layer names in transformer blocks that should use GaLore.
 _DEFAULT_GALORE_TARGETS = {
     "q_proj",
     "k_proj",
