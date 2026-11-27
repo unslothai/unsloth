@@ -366,7 +366,7 @@ function lastForcedAt(): number | null {
       return stored;
     }
   } catch {
-    // Storage can be unavailable in restricted browser contexts.
+    // storage unavailable
   }
   return forcedAt;
 }
@@ -379,6 +379,7 @@ function fetchForcedStatus(): Promise<LlamaUpdateStatus | null> {
       try {
         localStorage.setItem(FORCED_AT_STORAGE_KEY, String(at));
       } catch {
+        // storage unavailable
       }
     }
     if (forcedInFlight === request) forcedInFlight = null;
