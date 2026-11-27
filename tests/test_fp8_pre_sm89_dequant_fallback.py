@@ -7,7 +7,9 @@ import types
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+from real_accelerator import has_real_cuda  # noqa: E402
+
+pytestmark = pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 
 BLOCK = [128, 128]
 
@@ -180,13 +182,16 @@ def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, bloc
     from unsloth.kernels import fp8
 
     # The cache is keyed on the device, so clear it between the simulated capabilities.
+    # Simulated NVIDIA capabilities: hip = None, else a real ROCm host routes on its gfx arch instead.
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
+        mp.setattr(torch.version, "hip", None)
         fp8._fp8_device_lacks_kernel.cache_clear()
         assert not fp8._fp8_kernel_unsupported(weight)
         via_triton = fp8._blockwise_weight_dequant_any_shape(weight, scale, block, torch.bfloat16)
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+        mp.setattr(torch.version, "hip", None)
         fp8._fp8_device_lacks_kernel.cache_clear()
         assert fp8._fp8_kernel_unsupported(weight)
         via_torch = fp8._blockwise_weight_dequant_any_shape(weight, scale, block, torch.bfloat16)
@@ -237,6 +242,7 @@ def test_pre_sm89_forward_never_reaches_the_fp8_only_kernels(monkeypatch, weight
         or (_ for _ in ()).throw(AssertionError("fp8_block_matmul reached on a pre-sm89 device")),
     )
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+    monkeypatch.setattr(torch.version, "hip", None)  # an A100, also on a real ROCm host
 
     torch.manual_seed(0)
     bs, m, k = 128, 512, 1024
@@ -350,3 +356,34 @@ def test_real_device_forward_matches_the_dequant_reference():
     rel = (out.float() - ref).norm() / ref.norm()
     # The fp8 kernels also quantize the activation (a few % error); the dequant path is ~bf16 exact.
     assert torch.isfinite(out.float()).all() and rel < 0.08, f"relative error {rel:.4f}"
+
+
+def test_grouped_fp8_eval_without_the_kernels_package_takes_the_dequant_path(monkeypatch):
+    """Without the `kernels` package, grouped fp8 eval uses the dequant path."""
+    from unsloth.kernels import fp8
+
+    if getattr(fp8, "FP8GroupedLinear", None) is None:
+        pytest.skip("this transformers has no FP8GroupedLinear")
+    monkeypatch.setattr(fp8, "_FP8_GROUPED_EVAL_KERNEL_OK", False, raising = False)
+    monkeypatch.setattr(
+        fp8, "_fp8_grouped_forward_orig", lambda *a, **k: pytest.fail("reached the hub kernel path")
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
+
+    n_groups, out_per, hidden, bs = 2, 256, 256, 128
+    layer = type("Stub", (), {})()
+    layer.weight = (torch.randn(n_groups * out_per, hidden, device = "cuda") * 0.3).to(
+        torch.float8_e4m3fn
+    )
+    layer.weight_scale_inv = (
+        torch.rand(n_groups * out_per // bs, hidden // bs, device = "cuda", dtype = torch.float32) + 0.5
+    )
+    layer.n_groups, layer.block_size, layer.has_bias = n_groups, [bs, bs], False
+    layer.bias, layer.training = None, False
+    x = torch.randn(4, n_groups, hidden, device = "cuda", dtype = torch.bfloat16)
+    out = fp8.FP8GroupedLinear.forward(layer, x)
+    w = fp8._blockwise_weight_dequant_any_shape(
+        layer.weight, layer.weight_scale_inv, [bs, bs], torch.bfloat16
+    )
+    want = torch.einsum("bgi,goi->bgo", x, w.view(n_groups, out_per, hidden))
+    torch.testing.assert_close(out, want, rtol = 2e-2, atol = 2e-2)

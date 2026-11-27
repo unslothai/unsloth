@@ -48,6 +48,7 @@ const noop = () => undefined;
 Object.assign(globalThis, {
   window: Object.assign(globalThis, {
     innerWidth: 1000,
+    location: { protocol: "http:" },
     addEventListener: noop,
     removeEventListener: noop,
   }),

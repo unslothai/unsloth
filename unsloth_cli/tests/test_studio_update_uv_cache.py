@@ -639,7 +639,10 @@ def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, t
     the best-effort handler and failing an update whose setup had succeeded."""
     studio = _studio()
     weird = (tmp_path / os.fsdecode(b"caf\xe9-cache")).resolve()
-    _fill(weird)
+    try:
+        _fill(weird)
+    except OSError:
+        pytest.skip("this filesystem refuses non-UTF-8 names (APFS)")
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "StudioHome")
     monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda cwd = None: weird)
     monkeypatch.delenv("UV_CACHE_DIR", raising = False)

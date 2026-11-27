@@ -94,6 +94,30 @@ export function ModelLoadDescription({
   );
 }
 
+/** One line for headers too narrow for the inline bar; it takes only the space its siblings leave. */
+export function ModelLoadCompactStatus({
+  label,
+  title,
+  progressPercent,
+}: {
+  label: string;
+  title: string;
+  progressPercent?: number | null;
+}) {
+  return (
+    <div
+      className="flex min-w-0 grow basis-0 items-center gap-1.5 text-xs text-muted-foreground"
+      title={title}
+    >
+      <Spinner className="size-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+      {typeof progressPercent === "number" ? (
+        <span className="shrink-0 tabular-nums">{Math.round(clampProgress(progressPercent))}%</span>
+      ) : null}
+    </div>
+  );
+}
+
 type ModelLoadInlineStatusProps = {
   label: string;
   title: string;
@@ -134,6 +158,13 @@ export function ModelLoadInlineStatus({
             </span>
           </div>
         </div>
+      ) : progressLabel ? (
+        <span
+          className="min-w-0 truncate text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80"
+          title={progressLabel}
+        >
+          {splitProgressLabel(progressLabel).primary}
+        </span>
       ) : null}
       {onStop ? (
         <Button

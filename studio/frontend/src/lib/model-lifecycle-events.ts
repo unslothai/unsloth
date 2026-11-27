@@ -9,8 +9,8 @@ export const MODEL_LIFECYCLE_EVENT = "unsloth:model-lifecycle";
 
 export type EjectedModelRuntime = "image" | "video";
 
-/** "tts" shares the chat slot; it is named apart so chat can tell loads it did not start. */
-export type ModelRuntime = "chat" | "image" | "video" | "stt" | "tts";
+/** "tts" and "translate" share the chat slot; they are named apart so chat can tell loads it did not start. */
+export type ModelRuntime = "chat" | "image" | "video" | "stt" | "tts" | "translate";
 
 export type ModelLifecycle = {
   runtime: ModelRuntime;

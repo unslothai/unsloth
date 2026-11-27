@@ -271,6 +271,69 @@ test("a backend without chat runs selects the legacy path", async () => {
   assert.equal(await supportsChatGenerationRuns("thread-1"), false);
 });
 
+test("durable admission survives the network drop of a locked phone", async () => {
+  let calls = 0;
+  let hidden = true;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls <= 6) throw new TypeError("Load failed");
+    return new Response(JSON.stringify({ runs: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  // Six hidden failures would exceed the visible budget; only the unlock-time ones count.
+  const supported = await supportsChatGenerationRuns("thread-1", undefined, {
+    isHidden: () => {
+      if (calls === 6) hidden = false;
+      return hidden;
+    },
+    delay: () => 0,
+  });
+  assert.equal(supported, true);
+  assert.equal(calls, 7);
+});
+
+test("durable admission gives up on a server that stays unreachable while visible", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    throw new TypeError("Failed to fetch");
+  }) as typeof fetch;
+  await assert.rejects(
+    supportsChatGenerationRuns("thread-1", undefined, {
+      isHidden: () => false,
+      delay: () => 0,
+    }),
+  );
+  assert.equal(calls, 4);
+});
+
+test("durable admission does not retry a refusal or a Stop", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ detail: "nope" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  await assert.rejects(supportsChatGenerationRuns("thread-1"));
+  assert.equal(calls, 1);
+
+  const stop = new AbortController();
+  calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    stop.abort();
+    throw new TypeError("Load failed");
+  }) as typeof fetch;
+  await assert.rejects(
+    supportsChatGenerationRuns("thread-1", stop.signal, { delay: () => 0 }),
+  );
+  assert.equal(calls, 1);
+});
+
 test("tool-enabled durable admission errors select the legacy stream", async () => {
   globalThis.fetch = (async () =>
     new Response(
@@ -298,6 +361,18 @@ test("credential-safe durable admission errors select the legacy stream", async 
       assert.equal(isLegacyFallbackChatGenerationAdmissionError(error), true);
       return true;
     },
+  );
+});
+
+test("a connection the server cannot replay selects the legacy stream", async () => {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ detail: "This connection's chat runs use the legacy streaming path" }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  await assert.rejects(
+    createChatGenerationRun(createInput()),
+    (error: unknown) => isLegacyFallbackChatGenerationAdmissionError(error),
   );
 });
 

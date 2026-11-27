@@ -12,7 +12,18 @@ import types
 import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_ENV = ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_FSDP2", "WORLD_SIZE")
+# The rendezvous variables are cleared too: a value left by the job or an earlier test must not reach the
+# process group the PP path creates.
+_ENV = (
+    "UNSLOTH_TP_SIZE",
+    "UNSLOTH_PP_SIZE",
+    "UNSLOTH_FSDP2",
+    "WORLD_SIZE",
+    "RANK",
+    "LOCAL_RANK",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+)
 
 
 def _load_tp_env(monkeypatch, calls):
@@ -98,5 +109,22 @@ def test_wrapper_refuses_pp_size_alone(monkeypatch):
     )
     ns = {"__name__": "unsloth.models._utils", "__package__": "unsloth.models", "os": os}
     exec(compile(ast.Module(body = [fn], type_ignores = []), "_utils.py", "exec"), ns)
-    with pytest.raises(ValueError, match = "UNSLOTH_PP_SIZE=2"):
+    # The pipeline split builds the mesh, which creates the process group. A real env:// rendezvous only fails
+    # fast while RANK is unset; with RANK / MASTER_ADDR / MASTER_PORT in the environment rank 0 waits for a
+    # second rank that never comes, the worker is killed by the per-test timeout and the xdist run stalls
+    # to the job cap. Answer the rendezvous here so the test cannot depend on the worker's environment.
+    import torch.distributed as dist
+
+    groups = []
+
+    def no_rendezvous(*args, **kwargs):
+        groups.append(args[0] if args else kwargs.get("backend"))
+        raise ValueError("process group creation stubbed by the test")
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: False)
+    monkeypatch.setattr(dist, "init_process_group", no_rendezvous)
+    with pytest.raises(ValueError, match = "UNSLOTH_PP_SIZE=2") as caught:
         ns["_tensor_parallel_env_trainer_pre"](torch.nn.Linear(2, 2))
+    # The refusal came from the pipeline path creating its process group, not from an earlier unrelated error.
+    assert len(groups) == 1, groups
+    assert "process group creation stubbed by the test" in str(caught.value)

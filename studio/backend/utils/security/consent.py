@@ -24,6 +24,7 @@ from utils.security.remote_code_scan import (
     config_declares_auto_map,
     hub_config_path,
     remote_code_config_paths,
+    versioned_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -118,9 +119,10 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     if not name.lower().endswith(".gguf"):
         return False
     try:
-        from utils.paths import is_local_path
+        from utils.paths import is_local_path, normalize_path
         if is_local_path(name):
-            return True
+            # A folder named *.gguf is a model folder, auto_map and all.
+            return not os.path.isdir(os.path.expanduser(normalize_path(name)))
     except Exception:
         pass
     # Remote: a file reference is repo_id ("org/name") + filename => >= 2 slashes.
@@ -140,17 +142,28 @@ def _load_remote_code_configs(
     try:
         from utils.paths import is_local_path, normalize_path
 
+        names = list(remote_code_config_paths(load_subdirs))
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
             configs = []
-            for name in remote_code_config_paths(load_subdirs):
+            if root.is_file():
+                # A JSON file path loads as the config itself: AutoConfig reads it and imports its auto_map.
+                try:
+                    configs.append(json.loads(root.read_text(encoding = "utf-8-sig")))
+                except ValueError:
+                    pass
+                root = root.parent
+            for name in names:
                 p = root.joinpath(*Path(name).parts)
                 if p.is_file():
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
+                    names.extend(
+                        [n for n in versioned_config_paths(name, configs[-1]) if n not in names]
+                    )
             return configs
 
         configs = []
-        for name in remote_code_config_paths(load_subdirs):
+        for name in names:
             try:
                 p = hub_config_path(model_name, name, hf_token)
             except Exception:
@@ -158,6 +171,9 @@ def _load_remote_code_configs(
                 return None
             if p is not None:
                 configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
+                names.extend(
+                    [n for n in versioned_config_paths(name, configs[-1]) if n not in names]
+                )
         # Every config was read or a genuine 404 -> an empty list is a definitive "no auto_map".
         return configs
     except Exception as exc:
@@ -246,6 +262,103 @@ def _fingerprint_target_key(target: str) -> str:
     return target.lower()
 
 
+def _managed_refusal(primary: str) -> RemoteCodeDecision:
+    return RemoteCodeDecision(
+        primary,
+        True,
+        True,
+        None,
+        None,
+        "",
+        MANAGED_REMOTE_CODE_REFUSAL,
+        approvable = False,
+        block_cause = MANAGED_REFUSED,
+    )
+
+
+_MAX_ADAPTER_CHAIN = 4
+
+
+def _adapter_base_of(target: str, hf_token) -> Optional[str]:
+    """base_model_name_or_path from a target's own adapter_config.json (local or Hub), else None."""
+    import json
+    from pathlib import Path
+
+    from utils.datasets.remote_images import is_network_share
+
+    if is_network_share(target):
+        return None
+    try:
+        cfg = Path(target) / "adapter_config.json"
+        if cfg.is_file():
+            base = json.loads(cfg.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path")
+        else:
+            from utils.transformers_version import _remote_lora_base
+            base = _remote_lora_base(target, hf_token = hf_token or None)
+    except Exception:
+        return None
+    if not isinstance(base, str) or not base.strip() or is_network_share(base.strip()):
+        return None
+    return base.strip()
+
+
+def _discovered_root_allowed(path: str) -> bool:
+    """A root found by following a config is scanned for a managed account only inside its own
+    workspace: the scan returns snippets of what it reads, and the load refuses the rest anyway."""
+    from pathlib import Path
+
+    from utils.paths.storage_roots import within_account
+
+    try:
+        if not Path(path).exists():
+            return True  # a Hub id
+        return within_account(Path(path))
+    except (OSError, ValueError):
+        return False
+
+
+# A trained EAGLE-3 drafter folder: GGUF export runs the converter on it under the load's trust.
+_DRAFTER_SUBDIR = "eagle3"
+
+
+def _local_drafter_dir(target: str) -> Optional[str]:
+    from pathlib import Path
+
+    from utils.datasets.remote_images import is_network_share
+
+    if is_network_share(target):
+        return None
+    try:
+        drafter = Path(target) / _DRAFTER_SUBDIR
+        if not (drafter / "config.json").is_file() or not _discovered_root_allowed(str(drafter)):
+            return None
+        return str(drafter)
+    except (OSError, ValueError):
+        return None
+
+
+def _with_adapter_chains(targets, hf_token) -> list:
+    """transformers follows a base's own adapter_config.json to the model named there and runs its
+    auto_map code, so every model along an adapter chain is scanned, not only the first base; a
+    local checkpoint's drafter folder is converted under the same trust, so it is scanned too."""
+    out = list(targets)
+    seen = set(out)
+    for target in list(targets):
+        drafter = _local_drafter_dir(target)
+        if drafter and drafter not in seen:
+            seen.add(drafter)
+            out.append(drafter)
+        current = target
+        for _ in range(_MAX_ADAPTER_CHAIN):
+            nxt = _adapter_base_of(current, hf_token)
+            if not nxt or nxt in seen or not _discovered_root_allowed(nxt):
+                break
+            seen.add(nxt)
+            out.append(nxt)
+            current = nxt
+    return out
+
+
 def evaluate_remote_code_consent_for_targets(
     targets,
     hf_token: Optional[str] = None,
@@ -280,12 +393,15 @@ def evaluate_remote_code_consent_for_targets(
     combined: dict = {}
     has_remote_code = False
     load_subdirs_by_target = load_subdirs_by_target or {}
-    for target in targets:
+    for target in _with_adapter_chains(targets, hf_token):
         load_subdirs = tuple(load_subdirs_by_target.get(target, ()))
         scan_kwargs = {"load_subdirs": load_subdirs} if load_subdirs else {}
         declares_code = _config_has_auto_map(target, hf_token, **scan_kwargs)
         if declares_code is False:
             continue
+        if declares_code is True and managed_remote_code_refused():
+            # Refused whatever the code says, so do not download and scan every .py first.
+            return _managed_refusal(primary)
         try:
             files = repo_remote_code_files(target, hf_token = hf_token, **scan_kwargs)
         except RemoteCodeUnscannable:
@@ -336,17 +452,7 @@ def evaluate_remote_code_consent_for_targets(
         )
 
     if managed_remote_code_refused():
-        return RemoteCodeDecision(
-            primary,
-            True,
-            True,
-            None,
-            None,
-            "",
-            MANAGED_REMOTE_CODE_REFUSAL,
-            approvable = False,
-            block_cause = MANAGED_REFUSED,
-        )
+        return _managed_refusal(primary)
 
     result = scan_remote_code_files(combined)
     fingerprint = remote_code_fingerprint(combined)

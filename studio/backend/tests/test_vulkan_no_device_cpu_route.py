@@ -132,13 +132,13 @@ def test_a_listed_device_or_unproven_probe_keeps_vulkan(monkeypatch, tmp_path, o
     assert launches[0][0][0] == "/fake/llama-server"
     assert fallback_sources == []
     assert backend._cpu_fallback_reason is None
-    # Suspect only after a timeout or a fault: the shorter stall window.
+    # Suspect after a timeout, a fault or a failed probe: the shorter stall window.
     expected = (
         min(
             LlamaCppBackend._HEALTH_STALL_TIMEOUT_S,
             LlamaCppBackend._SUSPECT_VULKAN_STALL_TIMEOUT_S,
         )
-        if outcome in ("timeout", "crashed")
+        if outcome in ("timeout", "crashed", "error")
         else LlamaCppBackend._HEALTH_STALL_TIMEOUT_S
     )
     assert sink["health_timeouts"][0] == expected
@@ -146,9 +146,9 @@ def test_a_listed_device_or_unproven_probe_keeps_vulkan(monkeypatch, tmp_path, o
     assert sink["health_kwargs"][0]["max_total_s"] >= expected
     # Only a suspect probe stops CPU work from renewing the stall window.
     assert sink["health_kwargs"][0]["cpu_counts_as_progress"] is (
-        outcome not in ("timeout", "crashed")
+        outcome not in ("timeout", "crashed", "error")
     )
-    if outcome not in ("timeout", "crashed"):
+    if outcome not in ("timeout", "crashed", "error"):
         # That stall only ever fails with advice: a slow disk gets three times the room.
         assert sink["health_kwargs"][0]["max_total_s"] >= (
             expected * LlamaCppBackend._LISTED_VULKAN_CEILING_FACTOR
@@ -163,7 +163,7 @@ def test_a_lowered_stall_window_still_governs_a_suspect_launch(monkeypatch, tmp_
     assert sink["health_timeouts"][0] == 60.0
 
 
-@pytest.mark.parametrize("outcome", ["timeout", "crashed"])
+@pytest.mark.parametrize("outcome", ["timeout", "crashed", "error"])
 def test_a_hung_suspect_launch_replays_on_cpu(monkeypatch, tmp_path, outcome):
     _route_env(monkeypatch, outcome)
     sink = {}
@@ -232,11 +232,10 @@ def test_a_reload_keeps_the_no_device_reason(monkeypatch, tmp_path):
     assert backend._cpu_fallback_reason == "vulkan_no_device"
 
 
-@pytest.mark.parametrize("outcome", ["devices", "error"])
-def test_a_stall_after_a_listed_device_fails_without_a_cpu_replay(monkeypatch, tmp_path, outcome):
+def test_a_stall_after_a_listed_device_fails_without_a_cpu_replay(monkeypatch, tmp_path):
     """The probe saw a working device, so a slow start is not proof of a broken driver:
     no CPU replay, no relaunch into the same hang, and the error points at Settings."""
-    _route_env(monkeypatch, outcome)
+    _route_env(monkeypatch, "devices")
     sink = {}
     with pytest.raises(
         RuntimeError, match = r"no loading progress\)\. .*Settings > GGUF inference engine"

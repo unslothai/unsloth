@@ -121,7 +121,7 @@ function foldPart(part: unknown, seed: number): number {
 }
 
 /** Hashed, not measured: a run mutates a turn in place. */
-function branchSignature(messages: readonly ThreadMessage[]): string {
+export function branchSignature(messages: readonly ThreadMessage[]): string {
   let hash = 0;
   let parts = 0;
   for (const message of messages) {

@@ -165,8 +165,13 @@ class _FakeServer:
     def is_alive(self):
         return True
 
-    def start(self, files):
+    def start(
+        self,
+        files,
+        extra_args = None,
+    ):
         self.started += 1
+        self.extra_args = extra_args
 
     def stop(self):
         pass
@@ -191,8 +196,35 @@ def _frames(n):
     return [Image.new("RGB", (64, 48), (i * 20 % 256, 0, 0)) for i in range(n)]
 
 
+@pytest.mark.parametrize(
+    "platform, paravirtual, marker, args",
+    [
+        ("darwin", False, None, ["--backend", "vae=cpu"]),
+        ("darwin", False, b"cosmos3: latent frame", ["--backend", "vae=cpu"]),
+        ("darwin", False, vr._METAL_IM2COL_3D_MARKER, []),
+        ("darwin", True, None, []),
+        ("linux", False, None, []),
+        ("win32", False, None, []),
+    ],
+)
+def test_server_args_put_the_vae_on_the_cpu_only_without_metal_im2col_3d(
+    tmp_path, monkeypatch, platform, paravirtual, marker, args
+):
+    monkeypatch.setattr("core.inference.sd_cpp_args.metal_is_paravirtual", lambda: paravirtual)
+    binary = tmp_path / "sd-server"
+    binary.write_bytes(b"sd-server")
+    if marker is not None:
+        # The Metal kernels are embedded in the library next to sd-server, not in the binary itself.
+        (tmp_path / "libstable-diffusion.dylib").write_bytes(b"\0" * 64 + marker + b"\0")
+    # A cached answer for one marker must not answer the other.
+    vr.binary_supports_cosmos3(str(binary))
+    assert vr.server_args(str(binary), platform) == args
+
+
 def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     server = _FakeServer(b"AVI")
+    server.binary = "/opt/sd/sd-server"
+    monkeypatch.setattr(vr, "server_args", lambda binary: ["--host-flag", binary])
     runner = vr.RestyleRunner(server_factory = lambda _model: server)
     monkeypatch.setattr(
         "core.inference.video_minimax_h3.transcode_video_to_mp4",
@@ -210,6 +242,7 @@ def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     assert (state["step"], state["total"]) == (2, 2)
     assert state["eta_seconds"] is None  # cleared once decoding starts
     assert state["video"] == {"id": "v1"}
+    assert server.extra_args == ["--host-flag", "/opt/sd/sd-server"]
     payload = server.payloads[0]
     assert payload["video_frames"] == 5 and len(payload["control_frames"]) == 5
     control = Image.open(io.BytesIO(base64.b64decode(payload["control_frames"][0])))
@@ -296,7 +329,7 @@ def test_cancel_aborts_a_loading_server(weights):
     released = threading.Event()
 
     class _SlowServer(_FakeServer):
-        def start(self, files):
+        def start(self, files, **_):
             started.set()
             assert released.wait(5)
             raise vr_cancelled("startup cancelled")
@@ -496,6 +529,7 @@ def test_preview_reports_frames_used_and_edges():
 
 
 def test_availability_names_what_is_missing(weights, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_COSMOS3_TRANSFER_DIR", str(tmp_path / "setup"))
     monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: None)
     out = vr.availability()
     assert not out["available"] and "stable-diffusion.cpp" in out["reason"]
@@ -505,7 +539,8 @@ def test_availability_names_what_is_missing(weights, monkeypatch, tmp_path):
     monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: str(plain))
     assert not vr.availability()["available"]
     (plain.parent / "libstable-diffusion.so").write_bytes(b"..." + vr._COSMOS3_MARKER + b" %d/%d")
-    assert vr.availability() == {"available": True, "reason": None}
+    ready = vr.availability()
+    assert ready["available"] is True and ready["reason"] is None and ready["missing"] == []
     assert not vr.availability({})["available"]
 
 
@@ -1078,7 +1113,7 @@ def test_a_new_server_waits_for_the_previous_one_to_stop(weights):
             stopping.set()
             assert release.wait(5)
 
-        def start(self, files):
+        def start(self, files, **_):
             started.append(release.is_set())
 
     runner = vr.RestyleRunner(server_factory = lambda _model: _Slow(b"AVI"))

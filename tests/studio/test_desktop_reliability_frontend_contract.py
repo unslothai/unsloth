@@ -70,6 +70,7 @@ CHAT_HEADER_MENU = FRONTEND / "features/chat/components/chat-header-menu.tsx"
 BROWSER_TOGGLE = FRONTEND / "features/browser/browser-toggle.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
+CODE_FILENAME = FRONTEND / "components/assistant-ui/code-filename.ts"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
 
@@ -225,7 +226,10 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "return savedPath !== null" not in helper
 
     assert helper.index("if (isTauri)") < helper.index("  const blob =")
-    assert "downloadFile(" in history
+    # Chat backups stream through bounded IPC chunks (#19372); either native-files helper is the native boundary.
+    assert 'from "@/lib/native-files"' in history
+    assert "downloadFile(" in history or "downloadBlobStreaming(" in history
+    assert 'invoke<string | null>("begin_native_file_save"' in helper
     assert "downloadFile(" in prompt_storage
     assert "pickNativeChatImport" in data_tab
     assert "if (!isTauri)" in data_tab
@@ -233,8 +237,13 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "pickNativeChatImport" in projects
     assert "if (!isTauri)" in projects
     assert 'type="file"' in data_tab
-    # Open WebUI exports are .json arrays.
-    assert 'accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"' in data_tab
+    assert "accept={CHAT_IMPORT_ACCEPT}" in data_tab
+    assert "accept={CHAT_IMPORT_ACCEPT}" in projects
+    import_chats = _ui_source(FRONTEND / "features/chat/utils/import-chats.ts")
+    assert (
+        'export const CHAT_IMPORT_ACCEPT = ".json,.jsonl,.ndjson,.csv,.md,.markdown";'
+        in import_chats
+    )
 
     native_dialogs = _ui_source(NATIVE_DIALOGS)
     assert (
@@ -366,8 +375,12 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "if (!isTauri)" in helper
     assert "downloadFile(yaml, filename" in training
     assert "downloadFile(text, filename" in markdown
-    assert "fallbackExt" in markdown
-    assert 'rust: "rs"' in markdown
+    # Snippet names are shared with the chat Files menu, so they live in code-filename.ts.
+    code_filename = _ui_source(CODE_FILENAME)
+    assert 'import { getCodeFilename } from "./code-filename";' in markdown
+    assert "getCodeFilename(language)" in markdown
+    assert "fallbackExt" in code_filename
+    assert 'rust: "rs"' in code_filename
     assert "downloadUrl(part.image, filename)" in image
     assert "urlToBlob(part.image)" in image
     assert "downloadUrl(src, filename)" in audio
@@ -752,8 +765,11 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
     assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
     assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
+    # The model picker moved into the composer; New chat leads the header's model controls.
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
-    assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
+    controls = chat_page.index('data-chat-model-controls=""')
+    assert controls < new_chat_click < chat_page.index("<ChatModelNotice", new_chat_click)
+    assert "<ModelSelector" not in chat_page[controls:new_chat_click]
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
@@ -2103,7 +2119,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
-    assert "@[50rem]:border-r" in header
+    assert "@[50rem]:border-r @[50rem]:border-border/60" in header
     # The media model picker shares Chat's control height (scaled in index.css), see _MEDIA_PICKER_CLASS.
     assert _MEDIA_PICKER_CLASS in header
     # No label override: the trigger reads exactly like Chat's.
@@ -2120,10 +2136,10 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
-    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3" in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-3 pb-5 max-sm:px-5" in layout
     assert "btn-float-action" not in layout
     assert "absolute inset-x-0 bottom-0" not in layout
-    assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
+    assert layout.count("px-10 pt-7 pb-6 max-sm:px-5") == 2
 
 
 TRAIN_SCROLLER_LAYOUT = (
@@ -2301,7 +2317,6 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (VIDEO_PAGE, "", "h", "48px", 1),
     (CHAT_PAGE, "", "h", "48px", 1),
     (IMAGES_PAGE, "@[50rem]:", "pt", "60px", 1),
-    (AUDIO_PAGE, "@[50rem]:", "pt", "60px", 2),
     (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
     (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
     # Hand-set sidebar lengths stay put as labels grow, so rows clip their text; seven 30px rows

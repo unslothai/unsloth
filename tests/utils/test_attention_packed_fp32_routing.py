@@ -235,13 +235,13 @@ def test_packed_fp32_cuda_parity(monkeypatch):
         torch.testing.assert_close(a.double(), b, atol = tol, rtol = tol)
 
 
-def test_packed_fp32_reroute_keeps_fp32_output_on_sm100(native_packed_host, monkeypatch):
-    # sm_100+ downcasts fp32 for xformers; without autocast the output must stay fp32.
+def test_packed_fp32_model_stays_fp32_on_sm100(native_packed_host, monkeypatch):
+    # sm_100+ xformers only runs bf16, so an fp32 model (no autocast) keeps per-segment fp32 SDPA.
     monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
     lengths = [3, 5]
     Q, K, V = _packed_qkv(torch.float32, lengths)
     out = _attend(Q, K, V, _seq_info(lengths), ad.select_attention_backend(use_varlen = True))
-    assert native_packed_host == {"xformers": 1, "sdpa": 0}
+    assert native_packed_host == {"xformers": 0, "sdpa": len(lengths)}
     assert out.dtype == torch.float32
     o_proj = torch.nn.Linear(H * D, H * D)
     o_proj(out.as_subclass(torch.Tensor).reshape(1, sum(lengths), H * D))

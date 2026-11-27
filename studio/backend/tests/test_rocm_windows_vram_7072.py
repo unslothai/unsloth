@@ -119,6 +119,12 @@ def _subprocess_run(
     return fake_run
 
 
+def _pdh_feed(luid):
+    """The in-process PDH read, fed by whatever fake ``subprocess.run`` the test installed."""
+    out = hw.subprocess.run(["pdh", f"GPU Engine(*luid {luid:#x}*)"], capture_output = True).stdout
+    return [tuple(line.rsplit("|", 1)) for line in out.splitlines() if "|" in line]
+
+
 @pytest.fixture
 def win_rocm(monkeypatch):
     """Configure the hardware module as a Windows ROCm host with 2 visible GPUs."""
@@ -127,6 +133,7 @@ def win_rocm(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw.sys, "platform", "win32")
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
+    monkeypatch.setattr(hw, "_rocm_windows_adapter_engine_samples", _pdh_feed)
     # Force the capacity-ranking path: a Windows dev box would otherwise query its own HIP/registry.
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
     monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", lambda ordinals, names: None)
@@ -1835,7 +1842,7 @@ def test_a_discrete_card_on_the_same_runtime_keeps_the_dedicated_counter(win_roc
 # This card at 17%, other adapters at 61%, so a wrong selection still reads 78.
 FOREIGN_ENGINES = [
     ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 12.0),
-    ("pid_101_luid_0x00000000_0x00015369_phys_0_eng_1_engtype_3D", 5.0),
+    ("pid_101_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 5.0),
     ("pid_200_luid_0x00000000_0x000183fe_phys_0_eng_0_engtype_3D", 44.0),
     ("pid_300_luid_0x00000000_0x0001842f_phys_0_eng_0_engtype_3D", 17.0),
 ]
@@ -1895,15 +1902,12 @@ def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, m
     assert device["gpu_utilization_pct"] == 78.0
 
 
-def test_the_adapter_is_matched_here_and_the_engine_type_in_the_path(win_rocm, monkeypatch):
-    """A LUID in the path would hand adapter selection to PDH, which no test here can run; the
-    engine type stays in the path to keep one type per process."""
+def test_a_known_luid_reads_in_process_not_through_powershell(win_rocm, monkeypatch):
+    """Ref 18005: a standard user's Get-Counter overran its timeout; the LUID match here still decides."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     _, query = _engine_query(monkeypatch, SOLO_ADAPTERS, FOREIGN_ENGINES)
-    assert "\\GPU Engine(*engtype_3D*)\\Utilization Percentage" in query
-    assert "luid_" not in query
-    assert "InstanceName" in query
+    assert query.startswith("pdh GPU Engine(*luid 0x15369*)")
 
 
 def test_a_longer_luid_that_starts_the_same_is_not_this_adapter(win_rocm, monkeypatch):
@@ -1930,17 +1934,49 @@ def test_engtype_spelled_in_lower_case_is_still_a_3d_engine(win_rocm, monkeypatc
         SOLO_ADAPTERS,
         [
             ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3d", 12.0),
-            ("pid_101_LUID_0X00000000_0X00015369_phys_0_eng_1_ENGTYPE_3D", 5.0),
+            ("pid_101_LUID_0X00000000_0X00015369_PHYS_0_ENG_0_ENGTYPE_3D", 5.0),
         ],
     )
     assert device["gpu_utilization_pct"] == 17.0
 
 
-def test_only_3d_engines_count(win_rocm, monkeypatch):
-    """A compute engine is not the 3D reading, and no 3D instance is unknown, not zero."""
+def test_the_busiest_engine_type_is_the_reading(win_rocm, monkeypatch):
+    """#18005: HIP runs on Compute while 3D idles. Each type sums its processes; types do not add."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     (device,), _ = _engine_query(
+        monkeypatch,
+        SOLO_ADAPTERS,
+        [
+            ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 1.0),
+            ("pid_101_luid_0x00000000_0x00015369_phys_0_eng_2_engtype_Compute", 60.0),
+            ("pid_102_luid_0x00000000_0x00015369_phys_0_eng_2_engtype_Compute", 30.0),
+            ("pid_103_luid_0x00000000_0x00015369_phys_0_eng_1_engtype_Copy", 3.0),
+        ],
+    )
+    assert device["gpu_utilization_pct"] == 90.0
+
+
+def test_separate_engines_of_one_type_do_not_add_up(win_rocm, monkeypatch):
+    """Two Compute engines at 60 % each are a 60 % adapter, as Task Manager and the NPU reading say."""
+    _solo_host(monkeypatch, (0x15369, 0))
+
+    (device,), _ = _engine_query(
+        monkeypatch,
+        SOLO_ADAPTERS,
+        [
+            ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_2_engtype_Compute", 60.0),
+            ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_3_engtype_Compute", 60.0),
+        ],
+    )
+    assert device["gpu_utilization_pct"] == 60.0
+
+
+def test_without_a_luid_only_3d_engines_count(win_rocm, monkeypatch):
+    """The host-wide fallback stays the 3D query: every engine of every adapter overruns the timeout."""
+    _solo_host(monkeypatch)
+
+    (device,), query = _engine_query(
         monkeypatch,
         SOLO_ADAPTERS,
         [
@@ -1948,6 +1984,7 @@ def test_only_3d_engines_count(win_rocm, monkeypatch):
             ("pid_101_luid_0x00000000_0x00015369_phys_0_eng_1_engtype_Copy", 3.0),
         ],
     )
+    assert "\\GPU Engine(*engtype_3D*)\\Utilization Percentage" in query
     assert device["gpu_utilization_pct"] is None
 
 
@@ -1973,11 +2010,11 @@ def test_unusable_samples_are_dropped_and_the_sum_is_bounded(win_rocm, monkeypat
         SOLO_ADAPTERS,
         [
             ("pid_1_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", "NaN"),
-            ("pid_2_luid_0x00000000_0x00015369_phys_0_eng_1_engtype_3D", "Infinity"),
-            ("pid_3_luid_0x00000000_0x00015369_phys_0_eng_2_engtype_3D", -5.0),
-            ("pid_4_luid_0x00000000_0x00015369_phys_0_eng_3_engtype_3D", "not-a-number"),
-            ("pid_5_luid_0x00000000_0x00015369_phys_0_eng_4_engtype_3D", 70.0),
-            ("pid_6_luid_0x00000000_0x00015369_phys_0_eng_5_engtype_3D", 70.0),
+            ("pid_2_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", "Infinity"),
+            ("pid_3_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", -5.0),
+            ("pid_4_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", "not-a-number"),
+            ("pid_5_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 70.0),
+            ("pid_6_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 70.0),
         ],
     )
     assert device["gpu_utilization_pct"] == 100.0
@@ -2232,3 +2269,126 @@ def test_display_polls_share_one_combined_counter_read(win_rocm_solo, monkeypatc
     assert poll() == fresh
     assert len(spawns) - before == per_poll
     assert not any("Get-Counter -Counter" in s for s in spawns[before:])
+
+
+def test_counters_unavailable_still_name_a_plain_adapter_from_hip(win_rocm, monkeypatch):
+    """#18005: a standard user's Get-Counter overruns its timeout; HIP's LUID keeps the in-process
+    engine and temperature reads alive. A linked node (mask set) stays unknown."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *a, **k: None)
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0)))
+    (dev,), _ = hw._rocm_windows_per_device_vram([0])
+    assert dev["luid"] == 0x15369 and dev["used_gb"] is None
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0b11)))
+    (dev,), _ = hw._rocm_windows_per_device_vram([0])
+    assert dev["luid"] is None
+
+
+def test_the_monitor_poll_starts_nothing_that_can_elevate(win_rocm, monkeypatch):
+    """No UAC prompt, ever (#14041, #18005): a Windows ROCm poll launches only PowerShell Get-Counter;
+    the per-adapter engine and temperature reads launch nothing."""
+    _solo_host(monkeypatch, (0x15369, 0))
+    monkeypatch.delenv("UNSLOTH_ENABLE_AMD_SMI", raising = False)
+    inner = _subprocess_run(adapter_output = _adapter_output(SOLO_ADAPTERS))
+    launched = []
+
+    def run(cmd, *a, **k):
+        launched.append(cmd if isinstance(cmd, list) else [cmd])
+        return inner(cmd, *a, **k)
+
+    monkeypatch.setattr(hw.subprocess, "run", run)
+    monkeypatch.setattr(
+        hw.subprocess, "Popen", lambda *a, **k: pytest.fail(f"unexpected Popen {a!r}")
+    )
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_adapter_engine_samples",
+        lambda luid: [("pid_1_luid_0x00000000_0x00015369_phys_0_eng_2_engtype_compute 0", 64.0)],
+    )
+    monkeypatch.setattr(hw, "_rocm_windows_d3dkmt_temperature_c", lambda luid: 51.0)
+
+    (device,) = hw.get_gpu_utilization()["devices"]
+    assert (device["gpu_utilization_pct"], device["temperature_c"]) == (64.0, 51.0)
+    assert launched and all(cmd[0] == "powershell" and "Get-Counter" in cmd[-1] for cmd in launched)
+    assert not any("GPU Engine" in cmd[-1] for cmd in launched)
+
+
+def test_hip_luids_without_dedicated_counters_never_sum_a_missing_snapshot(win_rocm, monkeypatch):
+    """APU beside a discrete card, Dedicated Usage failed, Shared Usage answered: the HIP LUIDs that keep
+    the engine and temperature reads alive must not send a missing snapshot into the unified sum."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
+    _mixed_host(monkeypatch)
+    monkeypatch.setattr(
+        hw, "_rocm_props_are_positively_unified", lambda props: props.total_memory == 8 * GB
+    )
+
+    def counters(
+        counter = "Dedicated Usage",
+        *a,
+        **k,
+    ):
+        return (
+            None
+            if counter == "Dedicated Usage"
+            else [("luid_0x00000000_0x0000c001_phys_0", 1.0 * GB)]
+        )
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", counters)
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xC001, 0), (0xD1E2, 0)))
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["luid"] for d in devices] == [0xC001, 0xD1E2]
+    assert [d["used_gb"] for d in devices] == [None, None]
+    assert aggregate is None
+
+
+def test_one_bit_per_physical_device_still_names_each_whole_adapter(win_rocm, monkeypatch):
+    """ROCm 7.14 on Windows reports luidDeviceNodeMask as 1 << physical index (measured on 2x R9700 +
+    iGPU: 1, 2, 4), not a node mask. Each adapter is still one phys_0 node, so each keeps its LUID."""
+    _igpu_beside_dgpu(monkeypatch)
+    monkeypatch.setattr(
+        hw, "_rocm_windows_hip_adapter_ids", _hip_ids((DGPU_LUID, 0b01), (IGPU_LUID, 0b10))
+    )
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["luid"] for d in devices] == [DGPU_LUID, IGPU_LUID]
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *a, **k: None)
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["luid"] for d in devices] == [DGPU_LUID, IGPU_LUID]
+
+
+def test_each_visible_gpu_reads_its_own_engines(win_rocm, monkeypatch):
+    _igpu_beside_dgpu(monkeypatch)
+    busy = {DGPU_LUID: 90.0, IGPU_LUID: 0.0}
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_adapter_engine_samples",
+        lambda luid: [
+            (f"pid_1_luid_0x00000000_0x{luid:08x}_phys_0_eng_2_engtype_compute 0", busy[luid])
+        ],
+    )
+    monkeypatch.setattr(hw, "_rocm_windows_d3dkmt_temperature_c", lambda luid: 50.0)
+    devices = hw.get_gpu_utilization()["devices"]
+    assert [d["gpu_utilization_pct"] for d in devices] == [90.0, 0.0]
+
+
+def test_rows_the_hip_join_rejects_still_leave_each_gpu_its_luid(win_rocm, monkeypatch):
+    """Dedicated rows that do not join by LUID (here the discrete card's row is missing) cost the VRAM
+    join, not the adapter identity the engine and temperature reads need."""
+    _igpu_beside_dgpu(monkeypatch)
+    rows = [(f"luid_0x00000000_0x{IGPU_LUID:08x}_phys_0", 0.3 * GB)]
+    monkeypatch.setattr(
+        hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda counter = "Dedicated Usage": rows
+    )
+    assert (
+        hw._match_adapter_used_by_hip_luid(
+            rows,
+            [
+                {"visible_ordinal": i, "name": n, "total_bytes": 1, "dedicated_bytes": 1}
+                for i, n in enumerate(("a", "b"))
+            ],
+        )
+        is None
+    )
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["luid"] for d in devices] == [DGPU_LUID, IGPU_LUID]

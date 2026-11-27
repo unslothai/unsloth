@@ -2,12 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * WebKit folds window and document pointer listeners into the style of every element (event listener
- * regions), so the first listener of a type added there, or the last one removed, restyles the whole
- * page. react-resizable-panels adds and removes its document pointer listeners each time a panel group
- * re-registers, which the browser pane does several times while it opens and closes: about 2 s per
- * step on a 100-turn chat. One no-op listener of each type held for the page's lifetime keeps that set
- * constant, so those adds and removes change nothing. Chromium is unaffected either way.
+ * Pins one no-op pointer listener per type: WebKit restyles only when the set of listeners changes.
  */
 
 export const PINNED_POINTER_EVENTS = [

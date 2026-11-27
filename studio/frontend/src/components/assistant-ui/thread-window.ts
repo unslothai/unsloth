@@ -87,8 +87,7 @@ const NUMBERED_ENV = /\\begin\{(equation|multline|align|gather|alignat|flalign|e
 /** Display math only: KaTeX refuses these environments inline. */
 const DISPLAY_MATH = /\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]/g;
 
-/** Code renders verbatim, so an environment in it is an example, not math. The markdown
- *  pipeline's own regions: fenced (in containers too), indented and inline. */
+/** Math in markdown code regions (fenced, indented, inline) is example text, not math. */
 function withoutCode(text: string): string {
   let prose = "";
   let cursor = 0;
@@ -162,8 +161,7 @@ export type Equations = { html: number; mathml: number };
 type Density = { lines: number; px: number };
 
 /**
- * Measured heights by message id; an unmeasured row is estimated from px per line seen so far per
- * role. A ratio of sums, not a fitted line: the first rows measured are alike, so a fit is undefined.
+ * Unmeasured rows use px per line so far per role, a ratio of sums: early rows alike, so no fit.
  */
 export class RowHeights {
   private measured = new Map<string, { height: number; revision: unknown }>();
@@ -366,8 +364,7 @@ export type SlideInput = {
   keep?: number;
 };
 
-/** Extend toward an edge within reach, drop rows past keep, re-centre when the viewport is in a
- *  spacer. Pins are the caller's. */
+/** Extend toward an edge within reach, drop rows past keep, and re-centre when in a spacer. */
 export function planSlide(input: SlideInput): RowWindow {
   const { win, count, rows, viewHeight, heightOf, maxStep } = input;
   const reach = input.reach ?? WINDOW_REACH_PX;
@@ -379,8 +376,7 @@ export function planSlide(input: SlideInput): RowWindow {
   const last = rows[rows.length - 1];
 
   if (first && last) {
-    // A jump outran the window: open a fresh one where the offset lands, walked by the heights
-    // the spacers are sized from.
+    // A jump outran the window: open a fresh one at the offset, walked by spacer heights.
     const above = first.top - viewHeight;
     const below = -last.bottom;
     if (above > keep || below > keep) {
@@ -541,6 +537,32 @@ export function holdTailTurn(
 export const sameWindow = (a: RowWindow | null, b: RowWindow | null): boolean =>
   a === b ||
   (a != null && b != null && a.start === b.start && a.end === b.end && samePins(a.pins, b.pins));
+
+/** A slow local model writes a token a second: anything faster is one stream, not a pause. */
+export const STREAM_QUIET_MS = 1000;
+
+/** Whether a reply is streaming: React restarts a transition render on every chunk. */
+export class TailPulse {
+  private revision: unknown;
+  private changedAt = Number.NEGATIVE_INFINITY;
+  /** Content changes seen: two since a commit was issued is a stream, one may be a late edit. */
+  changes = 0;
+
+  constructor(revision?: unknown) {
+    this.revision = revision;
+  }
+
+  note(revision: unknown, now: number): void {
+    if (revision === this.revision) return;
+    this.revision = revision;
+    this.changedAt = now;
+    this.changes += 1;
+  }
+
+  streaming(now: number, quietMs = STREAM_QUIET_MS): boolean {
+    return now - this.changedAt < quietMs;
+  }
+}
 
 /** The leading spacer takes an anchor shift; only what it cannot take is left for scrollTop. */
 export function absorbShift(

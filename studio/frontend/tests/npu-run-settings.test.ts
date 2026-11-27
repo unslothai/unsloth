@@ -34,9 +34,9 @@ test("a downloaded NPU row opens run settings with the model's context limit", (
 test("NPU run settings pin customContextLength and offer nothing FastFlowLM ignores", () => {
   assert.match(configPage, /const targetIsNpu = isNpuModelId\(target\.id\);/);
   assert.match(configPage, /const pinsContextLength = targetIsMlx \|\| targetIsNpu;/);
-  assert.match(configPage, /contextPinPatch\(value, pinsContextLength\)/);
+  assert.match(configPage, /contextPinPatch\(value, pinsContextLength[,)]/);
   const writers = configPage.match(/contextPinPatch\(/g) ?? [];
-  const npuAware = configPage.match(/contextPinPatch\(\w+, pinsContextLength\)/g) ?? [];
+  const npuAware = configPage.match(/contextPinPatch\(\w+, pinsContextLength[,)]/g) ?? [];
   assert.ok(writers.length > 0);
   assert.equal(npuAware.length, writers.length);
   assert.match(configPage, /!target\.isGguf && !targetIsMlx && !targetIsNpu && /);
@@ -47,4 +47,22 @@ test("the NPU footer's setup path keeps the setup notice while a search is activ
   const browse = pickers.slice(pickers.indexOf("const showNpuBrowse ="));
   assert.match(browse, /\(!showHfSection \|\| !npuCatalog\.ready \|\| npuBrowseRows\.length > 0\)/);
   assert.match(browse, /\{showHfSection && npuCatalog\.ready \? null : \(\s*<NpuSetupNotice/);
+});
+
+test("NPU run settings show Auto until a load sizes the window, then the resident one", () => {
+  assert.doesNotMatch(configPage, /NPU_DEFAULT_CONTEXT_LENGTH/);
+  assert.match(
+    configPage,
+    /const npuServedWindow =\s+targetIsNpu && isActiveModel \? servedWindow\(loadedContextLength\) : null;/,
+  );
+  assert.match(configPage, /unknownLabel=\{targetIsNpu \? "Auto" : undefined\}/);
+  assert.match(configPage, /displayValue=\{isMlx && windowUnknown && !dragging \? unknownLabel : undefined\}/);
+});
+
+test("a pinned or Auto window above the known NPU fit warns", () => {
+  const warning = configPage.slice(configPage.indexOf("{targetIsNpu &&\n              isActiveModel &&"));
+  assert.doesNotMatch(warning.split("</p>")[0], /savedContextPin/);
+  assert.match(warning, /npuContextFit != null/);
+  assert.match(warning, /maxSeqLengthValue > npuContextFit/);
+  assert.match(warning, /free-memory estimate/);
 });

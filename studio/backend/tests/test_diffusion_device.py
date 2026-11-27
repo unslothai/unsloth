@@ -494,6 +494,66 @@ def test_frame_pad_fix_is_metal_only():
     assert shortcut.padded == [1]
 
 
+def _wan_conv_pipe(kernel, padding):
+    torch = pytest.importorskip("torch")
+    wan = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_wan")
+    torch.manual_seed(0)
+    conv = wan.WanCausalConv3d(4, 6, kernel, padding = padding)
+    return torch, conv, _Pipe(vae = torch.nn.Sequential(conv), scheduler = object())
+
+
+@pytest.mark.parametrize(
+    "kernel, padding",
+    [((3, 3, 3), 1), ((1, 1, 1), 0), ((3, 1, 1), (1, 0, 0)), ((3, 3, 3), (1, 0, 1))],
+)
+@pytest.mark.parametrize("cache_frames", [None, 1, 2])
+def test_wan_causal_conv_pads_into_a_zero_buffer_bit_exactly(kernel, padding, cache_frames):
+    torch, conv, pipe = _wan_conv_pipe(kernel, padding)
+    x = torch.randn(1, 4, 3, 9, 7)
+    cache = None if cache_frames is None else torch.randn(1, 4, cache_frames, 9, 7)
+    expected = conv(x, cache)
+    pads = []
+    real_pad = torch.nn.functional.pad
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 1
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            torch.nn.functional, "pad", lambda *a, **k: pads.append(a[1]) or real_pad(*a, **k)
+        )
+        got = conv(x, cache)
+    assert torch.equal(got, expected)
+    assert pads == []
+
+
+def test_wan_causal_conv_keeps_its_stock_forward_off_metal_and_under_another_wrapper():
+    torch, conv, pipe = _wan_conv_pipe((3, 3, 3), 1)
+    assert dd.install_frame_pad_fix(pipe, _cuda_target()) == 0
+    assert "forward" not in conv.__dict__
+    hooked = conv.forward
+    conv.forward = hooked
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
+    assert conv.forward is hooked
+
+
+def test_wan_causal_conv_falls_back_to_stock_for_a_mismatched_cache():
+    torch, conv, pipe = _wan_conv_pipe((3, 3, 3), 1)
+    dd.install_frame_pad_fix(pipe, _mps_target())
+    x = torch.randn(1, 4, 2, 5, 5)
+    cache = torch.randn(1, 4, 2, 5, 5, dtype = torch.float64)
+    with pytest.raises(RuntimeError):
+        type(conv).forward(conv, x, cache)
+    with pytest.raises(RuntimeError):
+        conv(x, cache)
+
+
+def test_the_video_loader_installs_the_frame_pad_fix():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "core/inference/video.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "install_frame_pad_fix(pipe, target, logger = logger)" in src
+
+
 def test_the_image_loader_installs_the_frame_pad_fix():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "core/inference/diffusion.py").read_text(
@@ -560,11 +620,20 @@ def _pipe_with(decoder, encoder = None) -> types.SimpleNamespace:
 def _mps_torch() -> types.ModuleType:
     torch = types.ModuleType("torch")
     torch.syncs = 0
+    torch.unqueued_syncs = 0
 
     def _bump():
         torch.syncs += 1
 
-    torch.mps = types.SimpleNamespace(synchronize = _bump)
+    def _unqueued():
+        torch.unqueued_syncs += 1
+
+    def _zeros(*_shape, device):
+        assert device == "mps"
+        return types.SimpleNamespace(cpu = _bump)
+
+    torch.zeros = _zeros
+    torch.mps = types.SimpleNamespace(synchronize = _unqueued)
     return torch
 
 
@@ -584,6 +653,7 @@ def test_vae_sync_runs_after_every_decoder_call_and_keeps_its_output(monkeypatch
     assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(3) == ["out0", "out1", "out2"]
     assert torch.syncs == 3
+    assert torch.unqueued_syncs == 0
 
 
 def test_vae_sync_runs_after_every_encoder_call_too(monkeypatch):
@@ -613,11 +683,52 @@ def test_vae_sync_survives_a_synchronize_that_raises(monkeypatch):
     def _boom():
         raise RuntimeError("Torch not compiled with MPS enabled")
 
-    torch.mps.synchronize = _boom
+    torch.zeros = lambda *_shape, device: _boom()
     monkeypatch.setitem(sys.modules, "torch", torch)
     decoder = _FakeDecoder()
     assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(2) == ["out0", "out1"]
+
+
+def test_vae_sync_survives_another_thread_copying_off_the_device():
+    import subprocess
+    from pathlib import Path
+
+    torch = pytest.importorskip("torch")
+    if not torch.backends.mps.is_available():
+        pytest.skip(reason = "the race needs a real Apple MPS device")
+    script = """
+import threading, time, types, torch
+from core.inference import diffusion_device as dd
+
+held = torch.randn(64, 1024, 1024, device = "mps")
+stop = threading.Event()
+
+def copy_off():
+    while not stop.is_set():
+        held.to("cpu")
+
+decoder = torch.nn.Conv2d(8, 8, 3, padding = 1).to("mps")
+pipe = types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder, encoder = None))
+assert dd.install_vae_sync(pipe, dd.diffusion_device_target_from_torch_device("mps", torch.float32))
+latents = torch.randn(1, 8, 256, 256, device = "mps")
+writer = threading.Thread(target = copy_off, daemon = True)
+writer.start()
+until = time.monotonic() + 5
+with torch.no_grad():
+    while time.monotonic() < until:
+        decoder(latents)
+stop.set()
+writer.join()
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = Path(__file__).resolve().parents[1],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert done.returncode == 0, done.stderr[-400:]
 
 
 def _mask(
@@ -1085,3 +1196,71 @@ def test_float64_device_probes_the_operands_xpu(monkeypatch):
     assert asked == [1, 0, 1]
     monkeypatch.setenv(_PROBE_ENV, "0")
     assert dd.float64_device("xpu:1") == "xpu:1"
+
+
+def _h3_conv_pipe(
+    kernel = 3,
+    spatial = 1,
+    temporal = 2,
+):
+    torch = pytest.importorskip("torch")
+    h3 = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_minimax_h3")
+    torch.manual_seed(0)
+    conv = h3.MiniMaxH3VideoCausalConv3d(
+        4, 6, kernel, spatial_padding = spatial, temporal_padding = temporal
+    )
+    return torch, conv, _Pipe(vae = torch.nn.Sequential(conv), scheduler = object())
+
+
+@pytest.mark.parametrize("front", [1, 2, 3])
+@pytest.mark.parametrize("spatial, mode", [(0, "reflect"), (1, "reflect"), (2, "replicate")])
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+def test_h3_causal_pad_matches_the_frame_axis_f_pad_bit_exactly(front, spatial, mode, dtype):
+    torch = pytest.importorskip("torch")
+    F = torch.nn.functional
+    torch.manual_seed(1)
+    x = torch.randn(2, 3, 4, 7, 6).to(getattr(torch, dtype))
+    expected = F.pad(x, (spatial, spatial, spatial, spatial, 0, 0), mode = mode) if spatial else x
+    expected = F.pad(expected, (0, 0, 0, 0, front, 0), mode = "constant")
+    got = dd.h3_causal_pad(x, spatial, mode, front)
+    assert got.shape == expected.shape and got.dtype == expected.dtype
+    assert torch.equal(got, expected)
+    assert torch.count_nonzero(got[:, :, :front]) == 0
+
+
+@pytest.mark.parametrize(
+    "kernel, spatial, temporal", [(3, 1, 2), (3, 0, 2), (1, 0, 0), ((3, 1, 1), 0, 2)]
+)
+@pytest.mark.parametrize("frames", [1, 3, 5])
+def test_h3_causal_conv_on_metal_concatenates_its_causal_frames_bit_exactly(
+    kernel, spatial, temporal, frames
+):
+    torch, conv, pipe = _h3_conv_pipe(kernel, spatial, temporal)
+    x = torch.randn(1, 4, frames, 9, 8)
+    expected = conv(x)
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 1
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
+    pads = []
+    real_pad = torch.nn.functional.pad
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            torch.nn.functional,
+            "pad",
+            lambda *a, **k: pads.append(tuple(a[1])) or real_pad(*a, **k),
+        )
+        got = conv(x)
+    assert torch.equal(got, expected)
+    # the spatial pad keeps F.pad; no frame-axis pad is left for Metal
+    assert all(p[4:] == (0, 0) for p in pads)
+    assert len(pads) == (1 if spatial else 0)
+
+
+def test_h3_causal_conv_keeps_its_stock_forward_off_metal():
+    torch, conv, pipe = _h3_conv_pipe()
+    for target in (_cuda_target(), dd.diffusion_device_target_from_torch_device("cpu", FP32)):
+        assert dd.install_frame_pad_fix(pipe, target) == 0
+        assert "forward" not in conv.__dict__
+    hooked = conv.forward
+    conv.forward = hooked
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
+    assert conv.forward is hooked

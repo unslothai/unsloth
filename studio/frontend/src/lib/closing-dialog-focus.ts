@@ -2,11 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A closing dialog keeps focus inside it until it unmounts after its exit animation. In WebKit that
- * exit, with the focused element still in the fading dialog, ends in one long restyle of the whole
- * page: about 2 s on a 100-turn chat when Settings, the command palette, search or rename closes.
- * Blurring as the exit animation starts avoids it. Radix still returns focus to the trigger when the
- * dialog unmounts, so where focus lands afterwards is unchanged. Chromium never paid this.
+ * Blur on exit start: a focused element in the fading dialog makes WebKit restyle the whole page
+ * (about 2 s at 100 turns); Radix still returns focus to the trigger, so landing is unchanged
  */
 
 type ClosingTarget = {

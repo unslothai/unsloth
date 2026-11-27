@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
-import { setHfEndpoints } from "@/lib/hf-endpoint";
+import { DEFAULT_HF_ENDPOINT, setHfEndpoints, setHubPageLinks } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -46,6 +46,8 @@ interface PlatformState {
   videoCpuOptIn: boolean;
   // authed /api/health cpu_training: training runs (or would, on "no_torch") on the CPU backend.
   cpuTraining: boolean;
+  // authed /api/health mlx_inference; null on an older backend, where MLX checks use chatOnlyReason.
+  mlxInference: boolean | null;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
@@ -85,6 +87,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnlyHint: null,
   videoCpuOptIn: false,
   cpuTraining: false,
+  mlxInference: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -273,6 +276,7 @@ async function readHealth(
         chat_only_reason?: string | null;
         video_cpu_opt_in?: boolean;
         cpu_training?: boolean;
+        mlx_inference?: boolean;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -282,6 +286,7 @@ async function readHealth(
         hub_source?: string;
         hub_proxy?: string | null;
         datasets_server_proxy?: string | null;
+        modelscope_pages?: unknown;
       };
       if (generation !== backendGeneration) return usePlatformStore.getState().deviceType;
       if (
@@ -312,6 +317,11 @@ async function readHealth(
         datasetsProxy ? backendUrl(datasetsProxy) : data.hf_datasets_server,
         data.hub_source,
         { endpoint: hubProxy !== null, datasetsServer: datasetsProxy !== null },
+      );
+      // A saved endpoint is reported as the default; `useHubPageUrl` asks the owner route instead.
+      setHubPageLinks(
+        hubProxy && data.hf_endpoint !== DEFAULT_HF_ENDPOINT ? data.hf_endpoint : null,
+        data.modelscope_pages,
       );
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
@@ -354,6 +364,13 @@ async function readHealth(
             : data.video_cpu_opt_in === true,
         cpuTraining:
           data.cpu_training === undefined ? previous.cpuTraining : data.cpu_training === true,
+        // Absent from a settled reply = older backend: null, so the reason answers.
+        mlxInference:
+          isProvisionalVerdict(data) || isDetectionDeferred(data)
+            ? previous.mlxInference
+            : typeof data.mlx_inference === "boolean"
+              ? data.mlx_inference
+              : null,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

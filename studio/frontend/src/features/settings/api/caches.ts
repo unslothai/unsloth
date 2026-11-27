@@ -22,6 +22,7 @@ export const CACHE_KEYS = [
   "hf_assets",
   "hf_datasets",
   "hf_hub",
+  "npu_models",
 ] as const;
 
 export type CacheKey = (typeof CACHE_KEYS)[number];
@@ -186,6 +187,8 @@ export type CacheBreakdownEntry = {
   repoId?: string;
   repoType?: "model";
   cachePath?: string;
+  /** NPU model folders: FastFlowLM's family:size, which the NPU catalog maps to a lemond id. */
+  checkpoint?: string;
   deleteAllowed?: boolean;
 };
 
@@ -207,6 +210,7 @@ export async function loadCacheBreakdown(
       repo_id?: string;
       repo_type?: "model";
       cache_path?: string;
+      checkpoint?: string;
       delete_allowed?: boolean;
     }[];
   };
@@ -217,6 +221,7 @@ export async function loadCacheBreakdown(
     repoId: entry.repo_id,
     repoType: entry.repo_type,
     cachePath: entry.cache_path,
+    checkpoint: entry.checkpoint,
     deleteAllowed: entry.delete_allowed === true,
   }));
 }

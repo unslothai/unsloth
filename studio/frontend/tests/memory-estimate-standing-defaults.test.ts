@@ -46,9 +46,8 @@ test("the estimate request sends the resolved mode, not the raw record", () => {
   );
 });
 
-test("the two verdicts drawn from the mode read the resolved one too", () => {
+test("the verdict drawn from the mode reads the resolved one too", () => {
   assert.match(CONFIG_PAGE, /runtimeGpuMemoryMode !== "manual" \|\|/);
-  assert.match(CONFIG_PAGE, /runtimeGpuMemoryMode === "manual" &&/);
   assert.doesNotMatch(CONFIG_PAGE, /\(runtimeConfig\.gpuMemoryMode \?\? "auto"\)/);
 });
 

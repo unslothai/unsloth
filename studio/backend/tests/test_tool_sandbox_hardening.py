@@ -506,7 +506,7 @@ def test_the_empty_proc_layout_binds_nothing_from_host_proc(tmp_path, monkeypatc
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "the bubblewrap backend is Linux only")
-def test_datasets_and_assets_are_bound_from_the_real_hf_home(tmp_path, monkeypatch):
+def test_assets_are_bound_from_the_real_hf_home_and_datasets_are_not_shared(tmp_path, monkeypatch):
     """HF_HUB_CACHE=/mnt/models makes the display home the hub itself, which the jail can write."""
     from core.inference import sandbox_linux
     import utils.hf_cache_settings as cache_settings
@@ -532,11 +532,12 @@ def test_datasets_and_assets_are_bound_from_the_real_hf_home(tmp_path, monkeypat
     )
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
     assert binds["hub"] == str(hub)
-    assert binds["datasets"] == str(real_home / "datasets")
     assert binds["assets"] == str(real_home / "assets")
+    # Studio memory-maps its datasets cache's prepared Arrow files: the jail gets no view of it.
+    assert "datasets" not in binds
 
 
-def test_portable_datasets_and_assets_caches_are_bound_where_they_point(tmp_path, monkeypatch):
+def test_a_portable_assets_cache_is_bound_where_it_points(tmp_path, monkeypatch):
     """Portable installs set HF_DATASETS_CACHE / HF_ASSETS_CACHE under their root and leave HF_HOME alone."""
     from core.inference import sandbox_linux
     import utils.hf_cache_settings as cache_settings
@@ -570,8 +571,8 @@ def test_portable_datasets_and_assets_caches_are_bound_where_they_point(tmp_path
         lambda name, path: None if os.path.isdir(path) else sandbox_linux.CACHE_MISSING,
     )
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
-    assert binds["datasets"] == str(portable / "datasets")
     assert binds["assets"] == str(portable / "assets")
+    assert "datasets" not in binds
 
 
 def _auto_plan(tmp_path):
@@ -692,10 +693,11 @@ def test_dedicated_cache_paths_are_expanded(tmp_path, monkeypatch):
     import utils.hf_cache_settings as cache_settings
 
     home = tmp_path / "home"
-    (home / "portable" / "datasets").mkdir(parents = True)
+    (home / "portable" / "assets").mkdir(parents = True)
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("HF_DATASETS_CACHE", " ~/portable/datasets ")
-    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
+    monkeypatch.setenv("USERPROFILE", str(home))  # what expanduser reads on Windows
+    monkeypatch.setenv("HF_ASSETS_CACHE", " ~/portable/assets ")
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
     monkeypatch.setattr(
         cache_settings,
         "get_hf_cache_paths",
@@ -706,13 +708,15 @@ def test_dedicated_cache_paths_are_expanded(tmp_path, monkeypatch):
             source = "environment",
         ),
     )
+    # os.path.expanduser reads USERPROFILE on Windows, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr(
         sandbox_linux,
         "_cache_hazard_within_deadline",
         lambda name, path: None if os.path.isdir(path) else sandbox_linux.CACHE_MISSING,
     )
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
-    assert binds["datasets"] == str(home / "portable" / "datasets")
+    assert binds["assets"] == str(home / "portable" / "assets")
 
 
 @_POSIX

@@ -1,0 +1,155 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import asyncio
+
+from core.inference import mcp_client, tools
+from models.inference import ChatCompletionRequest
+from routes.chat_history import ChatProjectPatch, patch_project
+from routes.inference import _select_request_tools
+from storage import mcp_servers_db, studio_db
+
+
+def test_chat_uses_its_projects_saved_mcp_servers(monkeypatch):
+    """Switch between project chats and check listing, deferred lookup and execution."""
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    alpha = "a" * 16
+    beta = "b" * 16
+    disabled = "c" * 16
+    for server_id, enabled in ((alpha, True), (beta, True), (disabled, False)):
+        mcp_servers_db.create_server(
+            id = server_id,
+            display_name = server_id,
+            url = "https://example.invalid/mcp",
+            is_enabled = enabled,
+        )
+        mcp_client.cache_tools(server_id, [{"name": "echo"}])
+
+    for project_id in ("alpha", "beta", "legacy"):
+        studio_db.upsert_chat_project(
+            {"id": project_id, "name": project_id, "createdAt": 1, "updatedAt": 2}
+        )
+
+    assert patch_project(
+        "alpha", ChatProjectPatch(mcpServerIds = [alpha, disabled]), "owner"
+    ).mcpServerIds == [alpha, disabled]
+    assert patch_project("beta", ChatProjectPatch(mcpServerIds = [beta]), "owner").mcpServerIds == [
+        beta
+    ]
+
+    async def list_chat(session_id, server_ids):
+        payload = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "Hello"}],
+            session_id = session_id,
+        )
+        names = {f"mcp__{server_id}__echo" for server_id in server_ids}
+        listed = await _select_request_tools(payload, tools_on = False, mcp_allowed = True)
+        cached, complete = tools.cached_mcp_tools()
+        assert complete
+        assert {tool["function"]["name"] for tool in listed} == names
+        assert {tool["function"]["name"] for tool in cached} == names
+        assert bool(tools.mcp_tool_spec(f"mcp__{beta}__echo")) == (beta in server_ids)
+
+    async def switch_chats():
+        alpha_session = tools.project_session_id("alpha")
+        beta_session = tools.project_session_id("beta")
+        await list_chat(alpha_session, [alpha])
+        assert "not enabled for this project" in tools.execute_mcp_tool(
+            f"mcp__{beta}__echo",
+            {},
+            session_id = alpha_session,
+        )
+        await list_chat(beta_session, [beta])
+        await list_chat(tools.project_session_id("legacy"), [alpha, beta])
+        await list_chat("unfiled-thread", [alpha, beta])
+        for selection, expected in (([], []), (None, [alpha, beta])):
+            patch_project("alpha", ChatProjectPatch(mcpServerIds = selection), "owner")
+            assert studio_db.get_chat_project("alpha")["mcpServerIds"] == selection
+            await list_chat(alpha_session, expected)
+        await list_chat(beta_session, [beta])
+
+    asyncio.run(switch_chats())
+
+
+def test_mcp_app_endpoints_honour_the_project_selection(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+
+    from models.mcp_servers import McpUiToolCallRequest
+    from routes import mcp_servers as routes
+
+    monkeypatch.setattr(routes, "get_tool_policy", lambda: True, raising = False)
+    kept, dropped = "d" * 16, "e" * 16
+    for server_id in (kept, dropped):
+        mcp_servers_db.create_server(
+            id = server_id, display_name = server_id, url = "https://example.invalid/mcp", is_enabled = True
+        )
+    studio_db.upsert_chat_project({"id": "gamma", "name": "gamma", "createdAt": 1, "updatedAt": 2})
+    patch_project("gamma", ChatProjectPatch(mcpServerIds = [kept]), "owner")
+    session = tools.project_session_id("gamma")
+
+    async def blocked():
+        with pytest.raises(HTTPException) as read:
+            await routes.read_mcp_ui_resource(
+                dropped, uri = "ui://w", session_id = session, current_subject = "owner"
+            )
+        with pytest.raises(HTTPException) as call:
+            await routes.call_mcp_ui_tool(
+                dropped,
+                McpUiToolCallRequest(tool_name = "echo", session_id = session),
+                current_subject = "owner",
+            )
+        return read.value, call.value
+
+    for exc in asyncio.run(blocked()):
+        assert exc.status_code == 400 and "not enabled for this project" in exc.detail
+
+    async def deselected_mid_turn():
+        await tools.set_mcp_project_scope(session)
+        patch_project("gamma", ChatProjectPatch(mcpServerIds = []), "owner")
+        return tools.execute_mcp_tool(f"mcp__{kept}__echo", {}, session_id = session)
+
+    assert "not enabled for this project" in asyncio.run(deselected_mid_turn())
+    patch_project("gamma", ChatProjectPatch(mcpServerIds = [kept]), "owner")
+    assert not tools.mcp_project_excludes(kept, session)
+    assert not tools.mcp_project_excludes(dropped, "unfiled-thread")
+
+
+def test_queued_mcp_call_rechecks_the_project_before_dispatch(monkeypatch):
+    server_id = "f" * 16
+    mcp_servers_db.create_server(
+        id = server_id, display_name = server_id, url = "https://example.invalid/mcp", is_enabled = True
+    )
+    mcp_client.cache_tools(server_id, [{"name": "echo"}])
+    studio_db.upsert_chat_project({"id": "delta", "name": "delta", "createdAt": 1, "updatedAt": 2})
+    patch_project("delta", ChatProjectPatch(mcpServerIds = [server_id]), "owner")
+    session = tools.project_session_id("delta")
+    seen = []
+
+    def dispatch(*_args, config_check, **_kwargs):
+        seen.append(config_check())
+        patch_project("delta", ChatProjectPatch(mcpServerIds = []), "owner")
+        seen.append(config_check())
+        return "sent"
+
+    monkeypatch.setattr(tools, "call_tool_sync", dispatch)
+    tools.execute_mcp_tool(f"mcp__{server_id}__echo", {}, session_id = session)
+    assert seen == [True, False]
+
+
+def test_mcp_app_dispatch_rechecks_the_project():
+    from routes import mcp_servers as routes
+
+    server_id = "0" * 16
+    mcp_servers_db.create_server(
+        id = server_id, display_name = server_id, url = "https://example.invalid/mcp", is_enabled = True
+    )
+    studio_db.upsert_chat_project({"id": "eps", "name": "eps", "createdAt": 1, "updatedAt": 2})
+    patch_project("eps", ChatProjectPatch(mcpServerIds = [server_id]), "owner")
+    session = tools.project_session_id("eps")
+    check = routes._ui_call_kwargs(server_id, mcp_servers_db.get_server(server_id), None, session)[
+        "config_check"
+    ]
+    assert check()
+    patch_project("eps", ChatProjectPatch(mcpServerIds = []), "owner")
+    assert not check()

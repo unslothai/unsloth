@@ -121,6 +121,7 @@ import {
 import { useSourceDrop } from "./use-source-drop";
 import { useUploadQueue } from "./use-upload-queue";
 import { groupByLinkedFolder, useLinkedFolderNames } from "./linked-folder-groups";
+import { linkedFolderDocumentsSummary } from "./source-folder-copy";
 
 function useKnowledgeBaseName(kbId: string | null): string | null {
   // Keyed by id: a drop during a switch must not name one KB and add to another.
@@ -300,8 +301,8 @@ function LinkedFolderCard({
   const compact = useContext(CompactCardsContext);
   const indexing = docs.filter(isProcessing).length;
   const label = name ?? "Linked folder";
-  const count = `${docs.length} ${docs.length === 1 ? "file" : "files"}`;
-  const title = `${label}: ${count}, kept in sync and shared with every chat in this project. Manage it in the project's Sources tab.`;
+  const summary = linkedFolderDocumentsSummary(label, docs.length, indexing);
+  const title = summary.title;
   if (compact) {
     return (
       <div
@@ -315,7 +316,7 @@ function LinkedFolderCard({
         )}
         <span className="truncate">{label}</span>
         <span className="shrink-0 text-muted-foreground tabular-nums">
-          {indexing > 0 ? `${indexing}/${docs.length}` : docs.length}
+          {indexing > 0 ? `${docs.length - indexing}/${docs.length}` : docs.length}
         </span>
         <span className="sr-only">linked folder, shared with the project</span>
       </div>
@@ -345,7 +346,7 @@ function LinkedFolderCard({
               ) : (
                 <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.5} className="size-6" />
               )}
-              <span>{indexing > 0 ? `Indexing ${indexing} of ${docs.length}` : count}</span>
+              <span>{summary.label}</span>
               <span className="sr-only">linked folder, shared with the project</span>
             </span>
           }

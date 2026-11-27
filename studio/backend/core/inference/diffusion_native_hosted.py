@@ -45,9 +45,14 @@ def native_hosted_pickle(fam: Any) -> bool:
     return bool(getattr(fam, "native_offload_hosted_int8_pickle", False))
 
 
-def _log(logger: Any, level: str, msg: str) -> None:
+def _log(
+    logger: Any,
+    level: str,
+    msg: str,
+    tag: str = "video.native_hosted",
+) -> None:
     if logger is not None:
-        getattr(logger, level)("video.native_hosted: %s", msg)
+        getattr(logger, level)("%s: %s", tag, msg)
 
 
 def hosted_metadata(path: str) -> Optional[dict]:
@@ -106,9 +111,18 @@ def load_native_from_hosted(
     config_kwargs: Optional[dict] = None,
     base: Optional[str] = None,
     logger: Any = None,
+    tag: str = "video.native_hosted",
+    keep_fp32: bool = False,
+    compute_dtype: Any = None,
 ) -> Any:
-    """The native ``component`` built from hosted ``path``, or None (the caller falls back to the dense build). Never
-    raises. Refuses unless the file holds exactly the layers, rotation and activation path the runtime build makes."""
+    """The native ``component`` built from hosted ``path``, or None (the caller falls back to the dense build). Raises
+    only an allocation failure. Refuses unless the file holds exactly the layers, rotation and activation path the runtime build makes.
+
+    ``compute_dtype`` (float16 on an fp16-only card): the native Linears compute in it and every other floating
+    tensor is held in it, as a float16 ``from_pretrained`` would hold it (``keep_fp32`` modules in float32).
+    Safetensors files only; None keeps the bf16 build."""
+    if compute_dtype is not None and not str(path).endswith(".safetensors"):
+        return None
     if not str(path).endswith(".safetensors"):
         return _load_native_from_pickle(
             path,
@@ -129,8 +143,15 @@ def load_native_from_hosted(
         t0 = time.perf_counter()
         meta = hosted_metadata(path)
         problem = metadata_refusal(meta, spec, family = family, component = component)
+        if not problem and base:
+            # A fine-tune's shapes load the family's official codes strict=True: refuse another base here, since
+            # the planning header probe that also checks it can be off (UNSLOTH_PREQUANT_HEADER_PROBE=0).
+            from .diffusion_prequant import _same_base_model
+            ckpt_base = meta.get("base_model_id")
+            if not ckpt_base or not _same_base_model(str(ckpt_base), str(base)):
+                problem = f"checkpoint base {ckpt_base!r}, not {base!r}"
         if problem:
-            _log(logger, "info", f"hosted int8 checkpoint not used ({problem})")
+            _log(logger, "info", f"hosted int8 checkpoint not used ({problem})", tag = tag)
             return None
         from accelerate import init_empty_weights
         from safetensors.torch import load_file
@@ -162,6 +183,7 @@ def load_native_from_hosted(
                 "info",
                 f"hosted int8 checkpoint not used ({len(quantised)} quantised layers, the native build makes "
                 f"{len(wanted)}; e.g. {sorted(quantised ^ wanted)[:2]})",
+                tag = tag,
             )
             return None
         if any(key.endswith(_ACT_PAYLOADS) for key in state):
@@ -169,6 +191,7 @@ def load_native_from_hosted(
                 logger,
                 "info",
                 "hosted int8 checkpoint not used (it carries static activation scales)",
+                tag = tag,
             )
             return None
         modules = dict(model.named_modules())
@@ -179,6 +202,7 @@ def load_native_from_hosted(
                 logger,
                 "info",
                 "hosted int8 checkpoint not used (its rotated layers differ from the native build's)",
+                tag = tag,
             )
             return None
         parts: dict = {}
@@ -199,6 +223,7 @@ def load_native_from_hosted(
                     logger,
                     "info",
                     f"hosted int8 checkpoint not used ({fqn}: unexpected payload layout)",
+                    tag = tag,
                 )
                 return None
             parts[fqn + ".weight"] = HostedInt8Parts(codes, scale, zero)
@@ -216,7 +241,7 @@ def load_native_from_hosted(
                 int(lin.out_features),
                 bias = lin.bias is not None,
                 device = "meta",
-                dtype = torch.bfloat16,
+                dtype = compute_dtype or torch.bfloat16,
             )
             codes = state.pop(fqn + _QDATA)
             scale = state.pop(fqn + _SCALE).to(torch.float32).reshape(-1).contiguous()
@@ -242,11 +267,27 @@ def load_native_from_hosted(
         model.load_state_dict(state, strict = True, assign = True)
         del state
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
-            _log(logger, "warning", "hosted int8 checkpoint left meta tensors; not used")
+            _log(logger, "warning", "hosted int8 checkpoint left meta tensors; not used", tag = tag)
             return None
-        if any(p.dtype != torch.bfloat16 for p in model.parameters() if p.is_floating_point()):
-            _log(logger, "info", "hosted int8 checkpoint not used (a non-bf16 dense tensor)")
+        # ``keep_fp32``: float32 also where a bf16 from_pretrained keeps it (``_keep_in_fp32_modules``, e.g. FLUX.3's
+        # norm_q / norm_k, which its hosted file stores as F32). Off for the video callers.
+        kept = (
+            set(getattr(transformer_cls, "_keep_in_fp32_modules", None) or ())
+            if keep_fp32
+            else set()
+        )
+        if any(
+            p.dtype != torch.bfloat16
+            and not (p.dtype == torch.float32 and kept & set(name.split(".")))
+            for name, p in model.named_parameters()
+            if p.is_floating_point()
+        ):
+            _log(
+                logger, "info", "hosted int8 checkpoint not used (a non-bf16 dense tensor)", tag = tag
+            )
             return None
+        if compute_dtype is not None:
+            _hold_in_compute_dtype(model, compute_dtype, kept)
         model.eval()
         try:
             model._unsloth_runtime_quant = "int8"
@@ -262,11 +303,77 @@ def load_native_from_hosted(
             "info",
             f"read {len(quantised)} int8 ConvRot layers of {component} from the hosted checkpoint as native "
             f"Linears in {time.perf_counter() - t0:.1f} s (no dense shards, no runtime quantise)",
+            tag = tag,
         )
         return model
     except Exception as exc:  # noqa: BLE001 - an unusable file falls back to the dense build
-        _log(logger, "warning", f"hosted int8 read failed: {type(exc).__name__}: {str(exc)[:200]}")
+        # Out of memory is not an unusable file: the dense load + quantise would need more, so it surfaces.
+        raise_if_allocation_failure(exc)
+        _log(
+            logger,
+            "warning",
+            f"hosted int8 read failed: {type(exc).__name__}: {str(exc)[:200]}",
+            tag = tag,
+        )
         return None
+
+
+# PyTorch's CPU allocator raises a plain RuntimeError ("DefaultCPUAllocator: can't allocate memory: you tried to
+# allocate N bytes. Error code 12 (Cannot allocate memory)"), which names no OutOfMemory class.
+_HOST_ALLOC_FAILURE = ("can't allocate memory", "cannot allocate memory", "defaultcpuallocator")
+
+
+def is_allocation_failure(exc: BaseException) -> bool:
+    """Whether ``exc`` (or anything in its cause chain) is an allocation failure: host ``MemoryError``, torch
+    ``OutOfMemoryError`` (CUDA or host), or the CPU allocator's errno-12 ``RuntimeError``."""
+    from .diffusion_batched import is_oom_error
+
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, MemoryError) or getattr(cur, "errno", None) == 12:
+            return True
+        text = str(cur).lower()
+        if any(marker in text for marker in _HOST_ALLOC_FAILURE):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return is_oom_error(exc)
+
+
+def raise_if_allocation_failure(exc: BaseException) -> None:
+    """Re-raises ``exc`` when it is an allocation failure (``is_allocation_failure``), which the hosted readers must
+    not turn into a dense fallback: the dense load and quantise need more memory, not less."""
+    if is_allocation_failure(exc):
+        raise exc
+
+
+def _hold_in_compute_dtype(model: Any, compute_dtype: Any, kept: set) -> None:
+    """Every dense floating parameter / buffer of ``model`` in ``compute_dtype`` (``kept`` modules in float32), as a
+    ``from_pretrained(torch_dtype = compute_dtype)`` of the released shards holds them. Native Linears keep their int8
+    codes and float32 scales (integer views); their bias goes to the compute dtype, as the runtime build casts it.
+    Non-persistent buffers keep the dtype their constructor built them in (Qwen-Image-2.1's float32 timestep
+    ``freqs``): ``from_pretrained`` never casts them, and the file does not hold them."""
+    import torch
+    for name, module in model.named_modules():
+        keep = bool(kept & set(name.split("."))) if name else False
+        want = torch.float32 if keep else compute_dtype
+        for pname, param in list(module.named_parameters(recurse = False)):
+            if param.is_floating_point() and param.dtype != want:
+                setattr(
+                    module,
+                    pname,
+                    torch.nn.Parameter(param.detach().to(want), requires_grad = False),
+                )
+        for bname, buf in list(module.named_buffers(recurse = False)):
+            if (
+                buf is not None
+                and buf.is_floating_point()
+                and buf.dtype != want
+                and bname != "rot_h"
+                and bname not in getattr(module, "_non_persistent_buffers_set", ())
+            ):
+                module._buffers[bname] = buf.to(want)
 
 
 _PICKLE_ACT_QUANT = "_int8_symm_per_token_reduced_range_quant"
@@ -489,5 +596,6 @@ def _load_native_from_pickle(
         )
         return model
     except Exception as exc:  # noqa: BLE001 - an unusable file falls back to the dense build
+        raise_if_allocation_failure(exc)
         _log(logger, "warning", f"hosted int8 read failed: {type(exc).__name__}: {str(exc)[:200]}")
         return None

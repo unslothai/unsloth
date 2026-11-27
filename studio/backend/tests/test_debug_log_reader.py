@@ -7,6 +7,7 @@ caller already has."""
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -270,3 +271,24 @@ def test_a_colorized_credential_is_masked_before_it_reaches_the_viewer(tmp_path)
         encoding = "utf-8",
     )
     assert "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345" not in "\n".join(read_tail(path).lines)
+
+
+def test_serialized_credentials_on_initial_load_and_live_poll(tmp_path):
+    path = tmp_path / "provider.log"
+    path.touch()
+    cursor = read_tail(path).cursor
+    # Opaque values have no vendor prefix that could mask a broken field rule.
+    value = "DemoOnly' \"אב\\end"
+    fields = ("api_key", "password", "client_secret", "refresh_token", "access_token")
+    payload = {**dict.fromkeys(fields, value), "model": "example-model"}
+    masked = {**dict.fromkeys(fields, "<redacted>"), "model": "example-model"}
+
+    def event(fields):
+        return json.dumps({"event": "provider request " + json.dumps(fields), "level": "warning"})
+
+    ordinary = [event({"api_key_count": 2, "model": "example-model"}), "provider unavailable"]
+    original = [event(payload), event({"body": json.dumps(payload)}), *ordinary]
+    expected = [event(masked), event({"body": json.dumps(masked)}), *ordinary]
+    path.write_text("\n".join(original) + "\n", encoding = "utf-8")
+    assert read_tail(path).lines == expected
+    assert read_since(path, cursor).lines == expected

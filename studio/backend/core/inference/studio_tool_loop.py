@@ -108,6 +108,7 @@ from core.inference.tool_stream_exec import (
 from core.inference.tools import (
     build_rag_autoinject,
     execute_tool,
+    PythonCallAnalyses,
     is_high_risk_tool_call,
     mcp_image_share,
     mcp_image_targets,
@@ -232,6 +233,25 @@ def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
         key: value
         for key, value in arguments.items()
         if key not in _HOSTED_ARGUMENT_PLUMBING_KEYS and not key.startswith("openai_")
+    }
+
+
+def _append_hosted_replay(message: dict[str, Any], hosted_text: str) -> None:
+    """Gemini replays a turn from its native answer parts instead of ``content``, so the hosted
+    output goes into both, or a turn with any answer text loses it."""
+    if not hosted_text:
+        return
+    content = message.get("content")
+    message["content"] = f"{content}\n\n{hosted_text}" if content else hosted_text
+    extra = message.get("extra_content")
+    google = extra.get("google") if isinstance(extra, dict) else None
+    answers = google.get("answer_parts") if isinstance(google, dict) else None
+    if not isinstance(answers, list) or not answers:
+        return
+    lead = "\n\n" if any(isinstance(part, dict) and part.get("text") for part in answers) else ""
+    message["extra_content"] = {
+        **extra,
+        "google": {**google, "answer_parts": [*answers, {"text": f"{lead}{hosted_text}"}]},
     }
 
 
@@ -433,29 +453,37 @@ def _result_budget_tokens(
     calls: list[dict[str, Any]],
     tool_messages: list[dict[str, Any]],
     call_index: int,
+    sent_tools: list[dict[str, Any]] | None = None,
 ) -> int:
-    thread = messages_without_unpriced_media(conversation)
-    results = [m for m in (*thread, *tool_messages) if m.get("role") == "tool"]
-    rest = [m for m in thread if m.get("role") != "tool"]
-    rest.append(
-        {
-            "role": "assistant",
-            "content": "".join(turn.text),
-            "reasoning_content": "".join(turn.reasoning),
-        }
-    )
-    replayed = [
-        {"name": (call.get("function") or {}).get("name"), "arguments": call.get("arguments")}
-        for call in calls
-    ]
-    batch = [{"role": "assistant", "tool_calls": replayed}]
-    held = estimate_messages_tokens_conservative(results, dense_ascii = True)
-    spent = (
-        estimate_messages_tokens_conservative(rest)
-        + estimate_messages_tokens_conservative(tools or [])
-        + held
-        + estimate_messages_tokens_conservative(batch, dense_ascii = True)
-    )
+    usage = turn.usage or {}
+    if _usage_int(usage, "prompt_tokens") > 0:
+        # The server counted the prompt and this turn; only what the batch added since is unpriced.
+        held = estimate_messages_tokens_conservative(tool_messages, dense_ascii = True)
+        added = [tool for tool in tools or [] if tool not in (sent_tools or [])]
+        spent = _pass_context_tokens(usage) + estimate_messages_tokens_conservative(added) + held
+    else:
+        thread = messages_without_unpriced_media(conversation)
+        results = [m for m in (*thread, *tool_messages) if m.get("role") == "tool"]
+        rest = [m for m in thread if m.get("role") != "tool"]
+        rest.append(
+            {
+                "role": "assistant",
+                "content": "".join(turn.text),
+                "reasoning_content": "".join(turn.reasoning),
+            }
+        )
+        replayed = [
+            {"name": (call.get("function") or {}).get("name"), "arguments": call.get("arguments")}
+            for call in calls
+        ]
+        batch = [{"role": "assistant", "tool_calls": replayed}]
+        held = estimate_messages_tokens_conservative(results, dense_ascii = True)
+        spent = (
+            estimate_messages_tokens_conservative(rest)
+            + estimate_messages_tokens_conservative(tools or [])
+            + held
+            + estimate_messages_tokens_conservative(batch, dense_ascii = True)
+        )
     # Uncounted results get two characters a budget token: fit the window even at one token each.
     room = min(
         tool_result_budget(window, max_tokens, spent),
@@ -1634,6 +1662,9 @@ async def _stream_with_studio_tools(
         if provider_turns >= max_provider_turns:
             # Caps requests for unrunnable tools (disabled or budget gone) so the conversation stays bounded.
             break
+        if run.served_window is not None:
+            # Every turn: a custom server is asked for usage only while its window is cached (60 s).
+            await run.served_window()
         provider_turns += 1
         turn = _Turn(round = provider_turns)
         # Clear stale timings even if this turn sends no usage chunk.
@@ -1883,8 +1914,10 @@ async def _stream_with_studio_tools(
                 yield _status_sse("")
             # A model that only announced a tool gets one nudge, as in the local loops.
             visible_answer = "".join(turn.text)
+            # A turn cut off at the output limit is not nudged: the next round's stop would hide the length stop.
             if (
                 tools_available
+                and not truncated
                 and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
@@ -1898,15 +1931,12 @@ async def _stream_with_studio_tools(
                     # A hosted tool ran with no local call after it; this path skips the replay the reprompt relies on.
                     stalled_message: dict[str, Any] = {
                         "role": "assistant",
-                        "content": (
-                            f"{visible_answer}\n\n{stalled_hosted}"
-                            if visible_answer
-                            else stalled_hosted
-                        ),
+                        "content": visible_answer,
                     }
                     if turn.reasoning_extra:
                         # Gemini 3 needs the text part's thoughtSignature on replay.
                         stalled_message["extra_content"] = turn.reasoning_extra
+                    _append_hosted_replay(stalled_message, stalled_hosted)
                     append_assistant_turn(
                         conversation,
                         stalled_message,
@@ -2017,6 +2047,7 @@ async def _stream_with_studio_tools(
             permission_mode, bypass_permissions = live_permissions.apply(
                 permission_mode, bypass_permissions
             )
+            python_analyses = PythonCallAnalyses() if name == "python" else None
             needs_confirmation = needs_tool_confirmation(
                 confirm_tool_calls = confirm_tool_calls,
                 bypass_permissions = bypass_permissions,
@@ -2027,6 +2058,8 @@ async def _stream_with_studio_tools(
                 never_needs = never_needs_approval,
                 sandbox_level = sandbox_level,
                 session_id = session_id,
+                thread_id = thread_id,
+                python_analyses = python_analyses,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirmation = needs_confirmation or image_share is not None
@@ -2039,6 +2072,7 @@ async def _stream_with_studio_tools(
                 prompted = needs_confirmation,
                 is_high_risk = is_high_risk_tool_call,
                 sandbox_level = sandbox_level,
+                python_analyses = python_analyses,
             )
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
@@ -2139,6 +2173,8 @@ async def _stream_with_studio_tools(
                 strict = strict_isolation,
                 share = image_share,
                 index = call_index,
+                sent_tools = active_tools,
+                analyses = python_analyses,
             ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
@@ -2177,6 +2213,7 @@ async def _stream_with_studio_tools(
                         calls,
                         tool_messages,
                         index,
+                        sent_tools,
                     )
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                     try:
@@ -2191,6 +2228,8 @@ async def _stream_with_studio_tools(
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 if share is not None:
                     kwargs["mcp_image"] = share["image"]
+                if analyses is not None and accepts_kwarg(execute_tool, "python_analyses"):
+                    kwargs["python_analyses"] = analyses
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             tool_stream: Any = started_fetches.pop(call_index, None)
@@ -2254,6 +2293,7 @@ async def _stream_with_studio_tools(
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
                         session_id = session_id,
+                        thread_id = thread_id,
                     ) or requires_os_isolation(
                         confirm_tool_calls = confirm_tool_calls,
                         bypass_permissions = follower_bypass,
@@ -2267,7 +2307,14 @@ async def _stream_with_studio_tools(
                         break
                     started_fetches[next_index] = _StartedToolStream(
                         scoped_tool_stream(
-                            partial(_invoke, call = spec, approved = False, strict = False, share = None),
+                            partial(
+                                _invoke,
+                                call = spec,
+                                approved = False,
+                                strict = False,
+                                share = None,
+                                analyses = None,
+                            ),
                             tool_name = spec.tool_name,
                             tool_call_id = spec.card_id,
                             cancel_event = cancel_event,
@@ -2343,18 +2390,12 @@ async def _stream_with_studio_tools(
                 "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
             ),
         }
-        hosted_text = turn.hosted_replay_text()
-        if hosted_text:
-            # Replay provider-hosted tool output as text, or the follow-up answers from local results alone; native shapes differ per provider.
-            assistant_message["content"] = (
-                f"{assistant_message['content']}\n\n{hosted_text}"
-                if assistant_message["content"]
-                else hosted_text
-            )
         if turn.reasoning:
             assistant_message["reasoning_content"] = "".join(turn.reasoning)
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
+        # Replay provider-hosted tool output as text, or the follow-up answers from local results alone; native shapes differ per provider.
+        _append_hosted_replay(assistant_message, turn.hosted_replay_text())
         if assistant_tool_calls:
             assistant_message["tool_calls"] = assistant_tool_calls
         if assistant_message["content"] or assistant_tool_calls:

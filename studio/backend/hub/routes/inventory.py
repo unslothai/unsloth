@@ -153,7 +153,7 @@ def get_models_folder(
 @router.get("/sdxl-checkpoint", response_model = bool)
 def is_sdxl_checkpoint(
     repo_id: str = Query(..., min_length = 1, max_length = 192),
-    filename: str = Query(..., pattern = r"(?i)^[^/\\]+\.safetensors$"),
+    filename: str = Query(..., pattern = r"(?i)^(?:[^/\\.][^/\\]*/)*[^/\\]+\.safetensors$"),
     revision: Optional[str] = Query(None, pattern = r"^[0-9a-f]{40}$"),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
@@ -274,6 +274,9 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    engram_precision: str = Query(
+        "", max_length = 32, description = "Standalone Engram table the load fetches, if any"
+    ),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -284,6 +287,7 @@ async def get_gguf_download_progress(
             variant = variant,
             expected_bytes = expected_bytes,
             hf_token = hf_token,
+            engram_precision = engram_precision.strip(),
         ),
         via_api_key = via_api_key,
     )

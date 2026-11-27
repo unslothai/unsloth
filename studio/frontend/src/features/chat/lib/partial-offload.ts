@@ -127,7 +127,9 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
           "The GPU was found but llama.cpp could not use it, so the model runs " +
           "entirely on CPU and generation will be slow. This is a backend " +
           "problem rather than a size one, so a smaller quantization will not " +
-          "help. The llama-server log in Settings > Logs has the reason.",
+          "help. The llama-server log in Settings > Logs has the reason. To " +
+          "reinstall the engine, use Repair installation in Settings in the " +
+          "desktop app, or re-run the Unsloth installer.",
       };
     case "noneFit":
       return {

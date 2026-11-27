@@ -195,7 +195,7 @@ test("selected and fallback clip actions remain named and downloadable", () => {
     source,
     /onDelete=\{\(\) => void handleDeleteClip\(clip\.id\)\}/,
   );
-  assert.match(source, /menu=\{clipMenu\(selectedClip, "row"\)\}/);
+  assert.match(source, /menu=\{clipMenu\(selectedClip, "toolbar"\)\}/);
   assert.match(
     source,
     /const handleDownloadFallbackClip[\s\S]*saveAudio\(\s*clipFileName\(fallbackClip\),\s*fallbackClip\.url,/,

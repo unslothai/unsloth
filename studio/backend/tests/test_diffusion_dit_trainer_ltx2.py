@@ -522,8 +522,9 @@ def _run_cfg(base_model: str, tmp_path) -> DiffusionLoraConfig:
     ).normalized()
 
 
-def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, monkeypatch):
-    # loras/diffusion is image-only and video has no LoRA surface, so do not mirror video adapters.
+def test_a_video_run_publishes_its_adapter_for_the_video_load(tmp_path, monkeypatch):
+    # The Video load's ``loras`` resolve through loras/diffusion; the sidecar family keeps it off image models.
+    import json
     from pathlib import Path
 
     catalog = tmp_path / "loras" / "diffusion"
@@ -535,8 +536,10 @@ def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, 
 
     video = _run_cfg("Lightricks/LTX-2", tmp_path)
     assert video.resolved_family == "ltx-2"
-    assert _publish_to_lora_catalog(str(adapter), video) is None
-    assert list(catalog.iterdir()) == []
+    published_video = _publish_to_lora_catalog(str(adapter), video)
+    assert published_video is not None and Path(published_video).parent == catalog
+    sidecar = json.loads(Path(published_video).with_suffix(".json").read_text(encoding = "utf-8"))
+    assert sidecar["families"] == ["ltx-2"]
 
     image = _run_cfg("stabilityai/stable-diffusion-xl-base-1.0", tmp_path)
     published = _publish_to_lora_catalog(str(adapter), image)

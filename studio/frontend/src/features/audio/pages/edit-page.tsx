@@ -27,6 +27,7 @@ import {
 } from "../hooks/use-edit-generation";
 import { useAudioEditStore } from "../stores/audio-edit-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
 type RailProps = Omit<
@@ -85,7 +86,7 @@ function EditInputs({
         />
       </div>
 
-      <div className="grid gap-1.5" data-tour="audio-edit-transcript">
+      <div className="grid gap-2" data-tour="audio-edit-transcript">
         <div className="flex items-center justify-between gap-2">
           <FieldLabel
             htmlFor={EDIT_TRANSCRIPT_FIELD_ID}
@@ -98,7 +99,7 @@ function EditInputs({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-auto px-2 py-1 text-ui-11p5"
+            className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             disabled={!sourceUsable || transcriber.transcribing || disabled}
             onClick={() => void transcriber.transcribe(source)}
           >
@@ -137,7 +138,7 @@ function EditInputs({
             </Button>
           </p>
         ) : (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {EDIT_COPY.transcriptHint}
           </p>
         )}
@@ -213,13 +214,13 @@ function EditInputs({
             onChange={(pitchSteps) => setDelivery({ pitchSteps })}
             commitWhileDragging
           />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {EDIT_COPY.pitchHint}
           </p>
         </div>
       ) : null}
       {adapter?.family === "vevo2" ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           {EDIT_COPY.vevo2SwitchNote}
         </p>
       ) : null}
@@ -354,7 +355,6 @@ export function EditOutput({
   recommendedModels?: readonly ModelOption[];
   onPickModel?: (id: string) => void;
 }) {
-  const picks = modelReady || !onPickModel ? [] : recommendedModels.slice(0, 3);
   return (
     <TtsOutput
       {...props}
@@ -365,29 +365,15 @@ export function EditOutput({
         ) : null
       }
       emptyActions={
-        picks.length > 0 ? (
-          <div
-            className="flex flex-wrap justify-center gap-2"
-            aria-label="Recommended models"
-          >
-            {picks.map((model) => (
-              <Button
-                key={model.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onPickModel?.(model.id)}
-              >
-                Use {model.name}
-              </Button>
-            ))}
-          </div>
-        ) : null
+        modelReady ? null : (
+          <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+        )
       }
+      emptyTitle="Edited speech will appear here"
       emptyText={
         modelReady
           ? EDIT_COPY.emptyText
-          : "Edited speech lands here. Load a model that can edit speech, add a recording, and press Generate."
+          : "Load a model that can edit speech, add a recording, and press Generate."
       }
     />
   );

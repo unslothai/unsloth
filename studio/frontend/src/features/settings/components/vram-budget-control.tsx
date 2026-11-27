@@ -3,6 +3,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
+import { InfoHint } from "@/components/ui/info-hint";
 import { usePlatformStore } from "@/config/env";
 // eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
 import { AdvancedGpuSlider } from "@/features/model-picker/components/advanced-gpu-slider";
@@ -192,10 +193,18 @@ export function VramBudgetControl({
         </p>
       )}
       {shownPercent !== defaultPercent && (
-        <p id={adviceId} className="text-ui-11 text-amber-500">
+        <p
+          id={adviceId}
+          className="flex items-center gap-1 text-ui-11 text-muted-foreground"
+        >
           {shownPercent > defaultPercent
-            ? "Above the default leaves less headroom and may cause an out-of-memory error."
-            : "Below the default leaves more memory free, but may offload more of the model to CPU and slow generation."}
+            ? "Above default: may run out of memory."
+            : "Below default: may run slower."}
+          <InfoHint>
+            {shownPercent > defaultPercent
+              ? "Above the default leaves less headroom and may cause an out-of-memory error."
+              : "Below the default leaves more memory free, but may offload more of the model to CPU and slow generation."}
+          </InfoHint>
         </p>
       )}
       {settings.isStored && (

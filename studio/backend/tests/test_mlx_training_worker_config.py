@@ -3,6 +3,7 @@
 import ast
 import importlib.util
 import inspect
+import itertools
 import os
 import sys
 import textwrap
@@ -200,6 +201,38 @@ def test_mlx_dora_requires_the_named_use_dora_parameter():
     assert _mlx_dora_peft_kwargs({"use_dora": False}, old_zoo) == {}
 
 
+@pytest.mark.parametrize("marker", [True, None])
+def test_mlx_text_lora_drops_vision_only_on_a_zoo_that_trains_without_it(monkeypatch, marker):
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    if marker is not None:
+        loader.DROP_VISION_WEIGHTS_TRAINS_LORA = marker
+    mlx = types.ModuleType("unsloth_zoo.mlx")
+    mlx.loader = loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", mlx)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    drops = {"drop_vision_weights": True} if marker else {}
+    for use_lora, image, audio in itertools.product((True, False), repeat = 3):
+        kwargs = _run_mlx_assignment(
+            "drop_vision_kwargs",
+            use_lora = use_lora,
+            is_dataset_image = image,
+            is_dataset_audio = audio,
+        )
+        assert kwargs == (drops if use_lora and not (image or audio) else {})
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    loads = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and ast.unparse(n.func) == "FastMLXModel.from_pretrained"
+    ]
+    assert len(loads) == 2
+    assert all(
+        any(kw.arg is None and ast.unparse(kw.value) == "drop_vision_kwargs" for kw in n.keywords)
+        for n in loads
+    )
+
+
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
@@ -347,7 +380,8 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
 
     adapted = _adapt_for_mlx_vlm([item], resize = 128, image_layout = "chw")
 
-    assert adapted[0]["image"].shape == (3, 80, 128)
+    assert adapted[0]["images"].shape == (3, 80, 128)
+    assert "image" not in adapted[0]
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
 
 
@@ -571,15 +605,18 @@ def _finalize(
     trainer,
     stop = (False, True),
     checkpoint_ok = True,
+    output_dir = "/out",
+    owns_output_dir = False,
 ):
     events = []
     _worker._finalize_mlx_training(
         trainer,
         lambda: stop,
-        "/out",
+        output_dir,
         lambda: None,
         lambda event_type, **payload: events.append((event_type, payload)),
         lambda: checkpoint_ok,
+        owns_output_dir = owns_output_dir,
     )
     return events
 
@@ -626,12 +663,53 @@ def test_mlx_rank0_save_failure_reaches_every_rank():
 
 def test_mlx_single_process_finalization_keeps_prior_contract():
     trainer = _FakeRankTrainer()
+    trainer._global_step = 3
     assert _finalize(trainer, stop = (True, False))[-1][1]["status_message"] == "Training cancelled"
     assert trainer.saved == []
 
     events = _finalize(trainer, stop = (True, True), checkpoint_ok = False)
     assert trainer.saved == ["/out"]
     assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True
+
+
+@pytest.mark.parametrize(
+    "rank, world_size, owns_output_dir",
+    [(0, 1, True), (0, 2, True), (1, 2, True), (0, 1, False)],
+)
+def test_mlx_stop_before_first_step_saves_nothing_and_is_not_an_error(
+    tmp_path, rank, world_size, owns_output_dir
+):
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / _worker.ROW_BOUND_MARKER_FILE).write_text("{}")
+    trainer = _FakeRankTrainer(rank = rank, world_size = world_size)
+    trainer._global_step = 0
+    events = _finalize(
+        trainer,
+        stop = (True, True),
+        checkpoint_ok = False,
+        output_dir = str(out),
+        owns_output_dir = owns_output_dir,
+    )
+    assert trainer.saved == []
+    # Only the main rank removes the folder, and only one this run created.
+    assert out.exists() == (rank != 0 or not owns_output_dir)
+    assert events[-1] == (
+        "complete",
+        {"output_dir": None, "saved": False, "status_message": "Training stopped"},
+    )
+
+
+def test_mlx_stop_before_first_step_keeps_an_output_dir_with_other_files(tmp_path):
+    (tmp_path / _worker.ROW_BOUND_MARKER_FILE).write_text("{}")
+    (tmp_path / "keep.txt").write_text("x")
+    trainer = _FakeRankTrainer()
+    trainer._global_step = 0
+    events = _finalize(trainer, stop = (True, True), output_dir = str(tmp_path), owns_output_dir = True)
+    assert events[-1][1]["saved"] is False
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [_worker.ROW_BOUND_MARKER_FILE, "keep.txt"]
+    )
 
 
 def _adapter_setup_block():

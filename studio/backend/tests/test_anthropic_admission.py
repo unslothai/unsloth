@@ -225,6 +225,21 @@ def _snapshot(key = _KEY):
     return get_llama_admission_queue(key).snapshot()
 
 
+async def _until_queued(
+    task,
+    n = 1,
+    key = _KEY,
+    timeout = 5.0,
+):
+    """Wait for ``task`` to reach the admission queue; a fixed 0.1 s sleep raced the handler on a loaded runner."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while _snapshot(key).queued < n:
+        assert not task.done(), "the request finished without queueing"
+        assert loop.time() < deadline, _snapshot(key)
+        await asyncio.sleep(0.01)
+
+
 def _occupy(key, capacity, n):
     """Hold ``n`` slots on the queue so the next reserve must wait; returns leases."""
     leases = []
@@ -395,7 +410,7 @@ def test_non_streaming_queued_then_admitted(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         assert _snapshot().queued == 1
         held[0].release()
         response = await asyncio.wait_for(task, timeout = 2)
@@ -413,7 +428,7 @@ def test_capacity_enforced_from_effective_parallel_slots(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         snap = _snapshot()
         assert snap.capacity == 3 and snap.active == 3 and snap.queued == 1
         for lease in held:
@@ -532,7 +547,7 @@ def test_shares_queue_with_openai_by_base_url(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         assert _snapshot().queued == 1
         openai_lease.release()
         assert (await asyncio.wait_for(task, timeout = 2)).status_code == 200
@@ -824,7 +839,7 @@ def test_passthrough_dispatch_site_reserves_and_releases(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_passthrough_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         assert _snapshot().queued == 1
         for lease in held:
             lease.release()
@@ -862,7 +877,7 @@ def test_queued_non_stream_cancel_does_not_leak_a_coroutine(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
+        await _until_queued(task)
         assert _snapshot().queued == 1
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

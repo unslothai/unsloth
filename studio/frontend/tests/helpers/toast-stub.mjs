@@ -5,7 +5,11 @@
 export const calls = [];
 
 export const toast = Object.assign(
-  (title, options) => calls.push({ kind: "default", title, options }),
+  // Like Sonner, return the id the caller passed.
+  (title, options) => {
+    const n = calls.push({ kind: "default", title, options });
+    return options?.id ?? n;
+  },
   {
     info: (title, options) => calls.push({ kind: "info", title, options }),
     loading: (title, options) => {

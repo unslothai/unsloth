@@ -87,7 +87,9 @@ def build(
 ):
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    config = AutoConfig.from_pretrained(repo)
+    from tests._tiny_fixture_revisions import revision
+
+    config = AutoConfig.from_pretrained(repo, revision = revision(repo))
     text = config.get_text_config()
     for key, value in (overrides or {}).items():
         setattr(text, key, value)
@@ -302,6 +304,12 @@ def test_mutation_unsummed_replicated_factor_fails():
         )
 
 
+def _head_dim(text):
+    # An explicit head_dim wins over hidden_size // heads: the tiny Phi3 repo now sets head_dim = 8 with
+    # hidden_size 8 and 4 heads, so the fused qkv is (32, 16, 16), not (8, 4, 4).
+    return getattr(text, "head_dim", None) or text.hidden_size // text.num_attention_heads
+
+
 def _styles(plan):
     return {k.split(".", 3)[-1] if k.count(".") >= 3 else k: v for k, v in plan.styles().items()}
 
@@ -325,7 +333,7 @@ def test_plan_covers_every_layer(arch):
         }
         parts = {p.name: p.parts for r in plan.regions for p in r.projs}
         text = tpn._text_config(model)
-        hd = text.hidden_size // text.num_attention_heads
+        hd = _head_dim(text)
         assert parts["qkv_proj"] == (
             text.num_attention_heads * hd,
             text.num_key_value_heads * hd,
@@ -520,7 +528,7 @@ def test_fused_qkv_under_a_packed_plan_keeps_the_gqa_layout():
     model = build(PHI3)
     text = tpn._text_config(model)
     assert text.num_key_value_heads < text.num_attention_heads  # the tiny Phi3 is GQA (4 / 2)
-    hd = text.hidden_size // text.num_attention_heads
+    hd = _head_dim(text)
     q, kv = text.num_attention_heads * hd, text.num_key_value_heads * hd
     ids = _batch(model)
     _, ref_logits = _loss(model, ids)

@@ -150,8 +150,7 @@ test("WebKitGTK steps stay small near the reader and ramp to FAR_MOUNT_CHUNK pas
   assert.equal(nextMountChunk(CHUNK_MESSAGES, -500, near, reach), near);
   assert.equal(nextMountChunk(CHUNK_MESSAGES, reach, near, reach), near);
   assert.equal(nextMountChunk(CHUNK_MESSAGES, Number.NaN, near, reach), near);
-  // Past it the first step of a window (previous 0) stays small, so the tail paints first; then it
-  // grows to the cap and holds.
+  // Past the reach, steps start small so the tail paints first, then grow to the cap.
   const steps: number[] = [];
   let chunk = 0;
   for (let i = 0; i < 6; i += 1) {

@@ -159,9 +159,13 @@ def _pin_video_fetch_to_the_named_repo(monkeypatch):
 @pytest.fixture(autouse = True)
 def _roomy_host_ram(monkeypatch):
     """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
-    Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
+    Tests that need a tight host stub usable_host_ram_mib themselves, after this. CPU-only loads (no GPU here) are
+    also sized against host RAM before downloading (video_cpu_host), so a 16 GB runner refused cosmos3-nano / Wan."""
+    from core.inference import diffusion_small_host
     from utils import host_memory
+
     monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (1 << 30, 1 << 30))
 
 
 @pytest.fixture(autouse = True)
@@ -1132,11 +1136,17 @@ def test_generate_reclaims_model_offload_host_memory(fake_runtime, tmp_path, mon
     assert backend.generate_progress()["active"] is False
 
 
-def test_a_stop_during_the_reclaim_cannot_be_answered_true(fake_runtime, tmp_path, monkeypatch):
+@pytest.mark.parametrize("encode_outside_lock", ["0", "1"])
+def test_a_stop_during_the_reclaim_cannot_be_answered_true(
+    fake_runtime, tmp_path, monkeypatch, encode_outside_lock
+):
     """The trim blocks after the last is_set() check, so the event must be deregistered before the
-    trim, under cancel_generate's lock; a Stop in that window must not be answered true."""
+    trim, under cancel_generate's lock; a Stop in that window must not be answered true. With the
+    encode after the lock the trim comes before the encode, so a Stop there is answered true and
+    does discard the clip."""
     from core.inference import video as video_mod
 
+    monkeypatch.setenv("UNSLOTH_VIDEO_ENCODE_OUTSIDE_LOCK", encode_outside_lock)
     backend = VideoBackend()
     _load_gguf(backend, tmp_path)
     backend._state = dataclasses.replace(backend._state, offload_policy = "model")
@@ -1149,6 +1159,11 @@ def test_a_stop_during_the_reclaim_cannot_be_answered_true(fake_runtime, tmp_pat
 
     monkeypatch.setattr(video_mod, "reclaim_offload_host_memory", stop_midway)
 
+    if encode_outside_lock == "1":
+        with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+            backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
+        assert answered == [True]
+        return
     result = backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
     assert result["mp4_bytes"] == b"MP4"
     assert answered == [False], "cancel_generate answered true for a clip that was still persisted"
@@ -1919,12 +1934,12 @@ def test_load_installs_the_vae_sync_on_mps(fake_runtime, monkeypatch, device, ho
         torch,
         device,
         types.SimpleNamespace(
-            synchronize = lambda: syncs.append(1),
             recommended_max_memory = lambda: 64 * 1024**3,
             driver_allocated_memory = lambda: 0,
         ),
         raising = False,
     )
+    monkeypatch.setattr("core.inference.diffusion_device.mps_synchronize", lambda: syncs.append(1))
     monkeypatch.setattr(
         "core.inference.video.resolve_diffusion_device_target",
         lambda: DiffusionDeviceTarget(
@@ -2639,6 +2654,8 @@ def test_the_video_refusal_also_names_a_broken_torchao_rather_than_the_gpu(
 
 def test_begin_load_refuses_dense_quant_on_a_non_pipeline_video_kind(fake_runtime, monkeypatch):
     # The DiT quant exists only on the pipeline path, so refuse it on a GGUF pick.
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the quant check.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
     backend = VideoBackend()
     with pytest.raises(RuntimeError) as excinfo:
         backend.begin_load(
@@ -3974,6 +3991,8 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     from types import SimpleNamespace
 
     H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the claim.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
 
     backend = VideoBackend()
     monkeypatch.setattr(
@@ -5764,6 +5783,95 @@ def test_h3_modular_load_forwards_the_hub_token_to_the_component_loads(fake_runt
     assert "token" not in pipe.load_kwargs
 
 
+class _FailingVaeSpec:
+    def __init__(self, error):
+        self.pretrained_model_name_or_path = "unsloth/MiniMax-H3"
+        self.subfolder = "vae"
+        self.type_hint = _FakeModelMixin
+        self._error = error
+
+    def load(self, **kwargs):
+        if kwargs.get("use_safetensors") and getattr(self._error, "safetensors_error", None):
+            raise self._error.safetensors_error
+        raise self._error
+
+
+class _FakeModelMixin:
+    pass
+
+
+class _SwallowingModularPipe(_FakeModularPipe):
+    error: BaseException = OSError()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.vae = None
+        self._component_specs = {"vae": _FailingVaeSpec(type(self).error)}
+
+    def load_components(self, **kwargs):
+        super().load_components(**kwargs)
+        for name, spec in self._component_specs.items():
+            try:
+                setattr(self, name, spec.load(**kwargs))
+            except Exception:  # noqa: BLE001 -- diffusers' own behaviour
+                pass
+
+
+def _disk_full_then_bin_404() -> BaseException:
+    """ENOSPC hidden behind the .bin 404 unless asked for safetensors only."""
+    import errno
+
+    error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.bin."
+    )
+    error.safetensors_error = OSError(errno.ENOSPC, "No space left on device")
+    return error
+
+
+def _bin_404_only() -> BaseException:
+    error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.bin."
+    )
+    error.safetensors_error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.safetensors."
+    )
+    return error
+
+
+@pytest.mark.parametrize(
+    "error, kind, text",
+    [
+        (OSError(28, "No space left on device"), "disk_full", "Not enough disk space"),
+        (_disk_full_then_bin_404(), "disk_full", "Not enough disk space"),
+        (_bin_404_only(), "not_found", "not found on Hugging Face"),
+    ],
+)
+def test_h3_modular_load_fails_when_the_vae_cannot_be_fetched(
+    fake_runtime, monkeypatch, error, kind, text
+):
+    from core.inference.diffusion_component_fetch import ComponentFetchError
+
+    monkeypatch.setattr(_SwallowingModularPipe, "error", error)
+    monkeypatch.setattr(sys.modules["diffusers"], "ModelMixin", _FakeModelMixin, raising = False)
+    monkeypatch.setattr(
+        _FakeModularPipeline,
+        "from_pretrained",
+        classmethod(
+            lambda cls, path, **kw: (
+                setattr(_FakeModularPipeline, "last", {"path": path, **kw}),
+                setattr(_FakeModularPipeline, "instance", _SwallowingModularPipe()),
+                _FakeModularPipeline.instance,
+            )[-1]
+        ),
+    )
+    with pytest.raises(ComponentFetchError) as info:
+        _load_h3_modular(VideoBackend())
+    assert info.value.component == "vae"
+    assert info.value.kind == kind
+    assert "the vae component of MiniMaxAI/MiniMax-H3 (vae/)" in str(info.value)
+    assert text in str(info.value)
+
+
 def test_h3_modular_load_pins_the_component_loads_to_the_studio_cache(fake_runtime):
     """Component loads need the Studio cache_dir, since HF_HUB_CACHE is a snapshot taken at import."""
     from core.inference.video import hub_cache_dir
@@ -6688,6 +6796,42 @@ def test_attention_trim_installed_on_every_speed_tier(fake_runtime, monkeypatch,
     assert "hunyuan_attn_trim" in status["speed_optims"]
 
 
+def _ltx2_mask_spy(monkeypatch):
+    """Record every LTX-2.x full-mask install the load makes and report one DiT hooked."""
+    from core.inference import video_ltx2
+
+    calls: list = []
+
+    def _fake(pipe, logger = None):
+        calls.append(pipe)
+        return 1
+
+    # raising=False: a tree without the hook never calls it, so the load-path assertions below fail on it
+    monkeypatch.setattr(video_ltx2, "install_ltx2_full_mask_drop", _fake, raising = False)
+    return calls
+
+
+@pytest.mark.parametrize("mode", ["eager", "default", "max"])
+def test_ltx2_full_mask_drop_installed_and_reported(fake_runtime, monkeypatch, mode):
+    calls = _ltx2_mask_spy(monkeypatch)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = mode
+    )
+    assert status["loaded"] is True
+    assert len(calls) == 1
+    assert "ltx2_full_mask_drop" in status["speed_optims"]
+
+
+def test_ltx2_full_mask_drop_skipped_on_the_off_tier(fake_runtime, monkeypatch):
+    calls = _ltx2_mask_spy(monkeypatch)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert status["loaded"] is True
+    assert calls == []
+    assert "ltx2_full_mask_drop" not in status["speed_optims"]
+
+
 def test_every_video_fetch_resolves_both_cache_roots():
     """Every video load fetch must resolve both cache roots, or planner-skipped files get re-pulled."""
     # Every module on the video load path, including video_ltx2.py.
@@ -7056,7 +7200,7 @@ def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
     assert calls[-1]["params"].init_img is None
 
 
-def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
+def test_h3_omitted_size_keeps_the_reference_canvas(monkeypatch):
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
@@ -7064,10 +7208,10 @@ def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
     backend.generate(prompt = "p", first_frame = _data_url(1920, 1080))
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
 
-    # With no first frame the last one drives it, matching the Diffusers blocks.
+    # The reference keyframe node keeps its 1344x768 whatever the keyframe's aspect (the frame is cropped onto it).
     backend.generate(prompt = "p", last_frame = _data_url(1080, 1920))
-    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (768, 1344)
-    assert calls[-1]["end_size"] == (768, 1344)
+    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
+    assert calls[-1]["end_size"] == (1344, 768)
 
     backend.generate(prompt = "p")
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
@@ -11497,9 +11641,7 @@ def _patch_events(
     done: bool = False,
     run_ahead: bool = True,
 ):
-    """Hand out fake CUDA events, optionally already complete. Returns the list they land in.
-
-    ``run_ahead`` lets the host outrun events that never finish, as it does when the hold is skipped."""
+    """Fake CUDA events, optionally done; run_ahead lets the host outrun events that never finish."""
     import core.inference.video as video_mod
 
     if run_ahead:
@@ -13371,6 +13513,7 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         cancel_event = None,
         local_files_only = False,
         scheme = None,
+        on_fallback = None,
     ):
         fetched.append(([src.location for src in sources], cancel_event, local_files_only))
 
@@ -13540,10 +13683,11 @@ def test_cudnn_benchmark_opt_out_families():
         "ltx-2.5",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
+        "minimax-h3",
     } <= off
     assert all(
         fam.vae_force_fp32
-        or fam.name in ("ltx-2", "ltx-2.5")
+        or fam.name in ("ltx-2", "ltx-2.5", "minimax-h3")
         or fam.name.startswith("hunyuanvideo-1.5")
         or fam.name.startswith("cosmos3-")
         for fam in _FAMILIES
@@ -14226,3 +14370,16 @@ def test_h3_staged_reference_frames_raise_the_first_failure_in_frame_order(tmp_p
     monkeypatch.setattr(Image.Image, "save", failing_save)
     with pytest.raises(OSError, match = "disk full at 3"):
         h3.stage_h3_references(h3.MiniMaxH3References(videos = ((frames, None, None),)), tmp_path)
+
+
+def test_begin_load_refuses_an_unknown_attention_backend_before_loading(monkeypatch):
+    # Like the image backend: inside the load an unknown name only aborted the speed layer and ran it unoptimised.
+    import threading
+
+    started = []
+    monkeypatch.setattr(threading, "Thread", lambda *a, **k: started.append(1))
+    with pytest.raises(ValueError, match = "Unsupported attention_backend"):
+        VideoBackend().begin_load(
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", attention_backend = "_native_bogus"
+        )
+    assert started == []

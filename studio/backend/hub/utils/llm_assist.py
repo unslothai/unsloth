@@ -87,7 +87,17 @@ def _fetch_hf_dataset_card(
 ) -> tuple[Optional[str], Optional[dict[str, Any]]]:
     try:
         from huggingface_hub import DatasetCard
+        from hub.utils.dataset_cache import dataset_cache_can_answer
+        from hub.utils.hf_tokens import cached_read_refused
 
+        # A Hub refusal falls back to the shared cache, which may hold another account's private card.
+        if cached_read_refused(
+            hf_token,
+            repo_id = dataset_name,
+            repo_type = "dataset",
+            is_cached = lambda: dataset_cache_can_answer(dataset_name),
+        ):
+            return None, None
         card = DatasetCard.load(dataset_name, token = hf_token)
         readme = card.text or ""
         if len(readme) > README_MAX_CHARS:

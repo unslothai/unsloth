@@ -33,7 +33,6 @@ def _provider(**overrides):
         **{
             "provider_type": "openai_codex",
             "display_name": "ChatGPT subscription",
-            "models": ["gpt-5.4"],
             **overrides,
         }
     )
@@ -772,8 +771,8 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
         codex_client.forget_subscription_models(created.id)
 
 
-def test_codex_update_of_seed_models_never_reaches_upstream(monkeypatch):
-    """A curated-only save must not wait on /codex/models when upstream is down."""
+def test_codex_update_of_saved_models_never_reaches_upstream(monkeypatch):
+    """A save of models the row already holds must not wait on /codex/models when upstream is down."""
     from core.inference import openai_codex_client as codex_client
 
     created = asyncio.run(
@@ -783,6 +782,7 @@ def test_codex_update_of_seed_models_never_reaches_upstream(monkeypatch):
             via_api_key = False,
         )
     )
+    providers_db.update_provider(id = created.id, models = ["gpt-5.4", "gpt-5.5"])
     codex_client.forget_subscription_models(created.id)
     calls = []
 
@@ -868,8 +868,8 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
         codex_client.forget_subscription_models(created.id)
 
 
-def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
-    """Save must reject a seed the known plan catalog omits, since chat refuses it on every send."""
+def test_codex_save_refuses_a_model_the_plan_catalog_omits(monkeypatch):
+    """Save must reject a model the known plan catalog omits, since chat refuses it on every send."""
     from core.inference import openai_codex_client as codex_client
 
     created = asyncio.run(
@@ -1009,6 +1009,9 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
     assert recorded == []
 
     codex_client.forget_subscription_models(created.id)
+    codex_client._offered_models[created.id] = {
+        model: {"id": model, "listed": True} for model in ("gpt-5.4", "gpt-5.5")
+    }
     try:
         asyncio.run(
             providers_route.update_provider_config(
@@ -1050,6 +1053,7 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
         )
     )
     provider_id = created.id
+    providers_db.update_provider(id = provider_id, models = ["gpt-5.4"])
 
     credential_secrets.get_or_create_credential_encryption_key()
     credential_secrets.upsert_secret(
@@ -1108,6 +1112,19 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
         monkeypatch.setattr(
             providers_route.openai_codex_auth, "remember_catalog_account", _remember
         )
+        with pytest.raises(HTTPException) as unproven:
+            asyncio.run(
+                providers_route.update_provider_config(
+                    provider_id,
+                    ProviderUpdate(display_name = "Renamed", models = ["gpt-5.4"]),
+                    credential = ("alice", None),
+                    via_api_key = False,
+                )
+            )
+        assert unproven.value.status_code == 400
+        assert recorded == []
+
+        codex_client._offered_models[provider_id] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
         renamed = asyncio.run(
             providers_route.update_provider_config(
                 provider_id,
@@ -1149,6 +1166,7 @@ def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
         )
     )
     codex_client.forget_subscription_models(created.id)
+    codex_client._offered_models[created.id] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
     lookups.clear()
     try:
         asyncio.run(
@@ -1232,6 +1250,7 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
         )
     )
     provider_id = created.id
+    providers_db.update_provider(id = provider_id, models = ["gpt-5.4"])
 
     credential_secrets.get_or_create_credential_encryption_key()
     credential_secrets.upsert_secret(

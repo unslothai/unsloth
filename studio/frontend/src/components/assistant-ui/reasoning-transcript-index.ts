@@ -7,6 +7,7 @@ import { mathFromMarkdown } from "mdast-util-math";
 import { gfm } from "micromark-extension-gfm";
 import { math } from "micromark-extension-math";
 import remend from "remend";
+import { mathSafeRemendOptions } from "../../lib/math-safe-remend.ts";
 import type { Definition, RootContent } from "mdast";
 import { markdownBlockFallback } from "./markdown-block-fallback.ts";
 import { ownString } from "./own-string.ts";
@@ -204,7 +205,7 @@ function continuationPrefix(
       return { prefix: `${opener}\n`, listDepth: 0 };
   }
   const trimmed = text.slice(0, cut).trimEnd();
-  const repaired = remend(trimmed);
+  const repaired = remend(trimmed, mathSafeRemendOptions());
   const suffix = repaired.startsWith(trimmed)
     ? repaired.slice(trimmed.length)
     : "";

@@ -927,6 +927,13 @@ def decode_rope_inplace(Q, K, cos, sin, position_ids):
     return True
 
 
+def _batch_position_ids(position_ids, batch, seq_len):
+    # The kernels read one id per (batch, seq) row: [1, seq] ids would read past the tensor.
+    if position_ids is not None and batch != 1 and position_ids.numel() == seq_len:
+        return position_ids.reshape(1, seq_len).expand(batch, seq_len)
+    return position_ids
+
+
 def fast_rope_embedding(
     Q,
     K,
@@ -934,6 +941,7 @@ def fast_rope_embedding(
     sin,
     rope_embedding_indices = None,
 ):
+    rope_embedding_indices = _batch_position_ids(rope_embedding_indices, Q.shape[0], Q.shape[2])
     if not torch.compiler.is_compiling():
         return _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices)
     if (

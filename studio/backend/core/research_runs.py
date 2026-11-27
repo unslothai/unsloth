@@ -27,13 +27,16 @@ from auth import storage as auth_storage
 from core.inference.external_provider import _SERVED_WINDOW_PROVIDERS, ExternalProviderClient
 from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
+from core.inference.npu_backend import is_npu_model_path
 from core.inference.providers import validate_provider_base_url
+from core.inference.http_stream import aiter_sse_lines
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import (
     EMPTY_SEARCH_RESULTS,
     RAG_SOURCES_SENTINEL,
     execute_mcp_tool,
+    is_unreadable_page,
     execute_tool,
     is_high_risk_tool_call,
     mcp_search_tools,
@@ -56,6 +59,7 @@ from core.research.citations import (
     _citation_title,
     _document_source_citation,
     _mcp_source_label,
+    _trim_url_tail,
     _validate_report,
 )
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
@@ -95,6 +99,12 @@ _OPENAI_RESPONSES_FIXED_SAMPLING_MODEL = re.compile(
     r"o\d+(?:[-.]|$)|codex-mini(?:[-.]|$))"
 )
 _OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
+# RFC 3986 bars unencoded []{}|\^; typographic quotes and CJK punctuation end a URL in prose.
+_QUESTION_URL = re.compile(
+    r"https?://[^\s<>\"`\x00\[\]{}|\\^\u00ab\u00bb\u2018-\u201f\u3000-\u303f\uff00-\uffef]+",
+    re.IGNORECASE,
+)
+_QUESTION_URL_PAIRS = {('"', '"'), ("`", "`"), ("<", ">")}
 _WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
@@ -146,11 +156,15 @@ _NAMED_MODEL_WAIT_SECONDS = 60.0
 # Transport keepalives prevent HTTP read timeouts without proving that a model is progressing.
 _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS = 120.0
 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
+# FastFlowLM serves one request at a time and Lemonade sends headers at once, so a queued call's wait counts.
+_NPU_FIRST_OUTPUT_TIMEOUT_SECONDS = 900.0
 # Cancellation is cooperative, so bound the unwind; a stuck iterator keeps a timed-out call open.
 _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Sent only while llama-server's prompt eval advances, so a long prefill is progress, not a stall.
+_PREFILL_PROGRESS_COMMENT = ": prefill-progress"
 # Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
 _ADMISSION_HEARTBEAT_MISSES = 3
 # Also the ceiling for any budget, so the poll loop stays bounded however long generation itself runs.
@@ -162,6 +176,21 @@ _MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
 _MODEL_CALL_KEY_LIFETIME_SECONDS = 2 * 60 * 60
 # Headroom so the named stall guards expire before HTTPX's own read timeout does.
 _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
+
+
+def _first_output_budget(config: dict) -> float:
+    """Seconds a call may wait for its first token; never past a finite run wall clock."""
+    budgets = config["budgets"]
+    budget = float(budgets.get("firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS))
+    inference = config.get("inferenceRequest") or {}
+    if not _external_provider_run(inference) and is_npu_model_path(
+        inference.get("model") or config.get("model")
+    ):
+        budget = max(budget, _NPU_FIRST_OUTPUT_TIMEOUT_SECONDS)
+    model_timeout = float(budgets["modelTimeoutSeconds"])
+    if model_timeout > 0:
+        budget = min(budget, model_timeout)
+    return budget
 
 
 def _model_wait_budget(run: dict) -> float:
@@ -1016,11 +1045,39 @@ def _mcp_evidence(sources: list[dict]) -> str:
     return f"\n\nMCP tools:\n{text}"
 
 
+def _question_url(question: str, match: re.Match) -> str:
+    """GFM tail trim, plus the closing half of a *_~' run that opens the URL ('url', **url**)."""
+    opener = question[: match.start()]
+    scheme, rest = match.group(0).split(":", 1)
+    url = f"{scheme.lower()}:{rest}"
+    if opener.endswith("]("):
+        depth = 0
+        for index, char in enumerate(url):
+            depth += (char == "(") - (char == ")")
+            if depth < 0:
+                return url[:index]
+        return url
+    if (opener[-1:], question[match.end() : match.end() + 1]) in _QUESTION_URL_PAIRS:
+        return url
+    closer = opener[len(opener.rstrip("*_~'")) :][::-1]
+    while True:
+        trimmed = _trim_url_tail(url)
+        if closer and trimmed.endswith(closer):
+            trimmed, closer = trimmed[: -len(closer)], ""
+        if trimmed == url:
+            return url
+        url = trimmed
+
+
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     """empty searches must report missing evidence even when the tool succeeds."""
     if rag_sources:
         return False
-    return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
+    return (
+        is_tool_error(web_result)
+        or web_result.strip() in EMPTY_SEARCH_RESULTS
+        or is_unreadable_page(web_result)
+    )
 
 
 def _preferred_step_error(current: str, candidate: str) -> str:
@@ -1611,7 +1668,7 @@ class ResearchSupervisor:
         response: httpx.Response,
         semantic_deadline: Callable[[], tuple[float, type[BaseException]] | None] | None = None,
     ) -> AsyncIterator[str]:
-        iterator = response.aiter_lines().__aiter__()
+        iterator = aiter_sse_lines(response).__aiter__()
 
         def wait_timeout() -> float:
             if semantic_deadline is None:
@@ -1719,6 +1776,12 @@ class ResearchSupervisor:
             "qwen",
             "qwencloud",
             "mistral",
+            "xai",
+            "nvidia",
+            "cohere",
+            "vercel",
+            "azure",
+            "bedrock",
         ):
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
@@ -1816,14 +1879,7 @@ class ResearchSupervisor:
         try:
             await self._note_phase(run["id"], "phase.started", phase, call_id, step_position)
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
-            # Configurable, capped by a finite run wall clock; legacy runs use the default.
-            first_output_budget = float(
-                config["budgets"].get(
-                    "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-                )
-            )
-            if model_timeout > 0:
-                first_output_budget = min(first_output_budget, model_timeout)
+            first_output_budget = _first_output_budget(config)
             # Unlimited drops only the wall clock; the gap bound must still clear the queue-notice heartbeat.
             admission_gap_budget = max(
                 first_output_budget,
@@ -1996,7 +2052,10 @@ class ResearchSupervisor:
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
-                            elif line.startswith(_ADMISSION_DONE_COMMENT):
+                            elif line.startswith(_ADMISSION_DONE_COMMENT) or (
+                                line.startswith(_PREFILL_PROGRESS_COMMENT)
+                                and semantic_output_at is None
+                            ):
                                 first_output_deadline = loop.time() + first_output_budget
                             continue
                         data = line[5:].strip()
@@ -2412,6 +2471,13 @@ class ResearchSupervisor:
             run["userMessageId"],
             str(run["config"].get("question") or ""),
         )
+        question_urls = [
+            url
+            for url in dict.fromkeys(
+                _question_url(question, match) for match in _QUESTION_URL.finditer(question)
+            )
+            if check_url_access(url, website_policy)[0]
+        ]
         reset = db.prepare_execution_resume if resuming else db.reset_execution_steps
         written = await asyncio.to_thread(reset, run["id"], self.worker_id)
         await self._check_worker_write(run["id"], written)
@@ -2512,106 +2578,122 @@ class ResearchSupervisor:
         )
         for position in range(start_position, max_steps):
             await self._check_active(run["id"])
-            source_catalog = "\n".join(
-                f"- {_citation_title(source, source['url'])} | {source['url']} | "
-                f"{source.get('snippet') or ''}"
-                for source in sources
+            linked_url = (
+                next(
+                    (url for url in question_urls if url not in fetched_urls),
+                    None,
+                )
+                if len(sources) < max_sources
+                else None
             )
-            evidence = "\n\n".join(decision_notes)
-            decision_system = _system_prompt_with_instructions(
-                _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
-                run["config"],
-            )
-            await _refresh_served_context_length(run)
-            # A fixed 60k tail dwarfs small contexts and runs every step; overflow kills the run pre-synthesis.
-            decision_total = _prompt_char_budget(
-                _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
-            )
-            decision_question, decision_plan_json = _fit_decision_inputs(
-                question,
-                run["plan"],
-                len(decision_system),
-                decision_total,
-            )
-            # Catalog is unbounded too (maxSources, 4000-char snippets); fit it before dependent sections.
-            decision_catalog = _fit_source_catalog(
-                source_catalog,
-                _trimmable_budget(
+            if linked_url is not None:
+                action = {"action": "fetch", "title": "Reading the linked page", "url": linked_url}
+            else:
+                source_catalog = "\n".join(
+                    f"- {_citation_title(source, source['url'])} | {source['url']} | "
+                    f"{source.get('snippet') or ''}"
+                    for source in sources
+                )
+                evidence = "\n\n".join(decision_notes)
+                decision_system = _system_prompt_with_instructions(
+                    _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
+                    run["config"],
+                )
+                await _refresh_served_context_length(run)
+                # A fixed 60k tail dwarfs small contexts and runs every step; overflow kills the run pre-synthesis.
+                decision_total = _prompt_char_budget(
+                    _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
+                )
+                decision_question, decision_plan_json = _fit_decision_inputs(
+                    question,
+                    run["plan"],
+                    len(decision_system),
                     decision_total,
+                )
+                # Catalog is unbounded too (maxSources, 4000-char snippets); fit it before dependent sections.
+                decision_catalog = _fit_source_catalog(
+                    source_catalog,
+                    _trimmable_budget(
+                        decision_total,
+                        len(decision_system)
+                        + len(decision_question)
+                        + len(decision_plan_json)
+                        + _MIN_SYNTHESIS_EVIDENCE_CHARS,
+                        len(source_catalog),
+                    ),
+                )
+                decision_query_history_json = json.dumps(
+                    sorted(used_queries),
+                    ensure_ascii = False,
+                )
+                decision_state_json = json.dumps(research_state, ensure_ascii = False)
+                decision_scaffold = (
                     len(decision_system)
                     + len(decision_question)
                     + len(decision_plan_json)
-                    + _MIN_SYNTHESIS_EVIDENCE_CHARS,
-                    len(source_catalog),
-                ),
-            )
-            decision_query_history_json = json.dumps(
-                sorted(used_queries),
-                ensure_ascii = False,
-            )
-            decision_state_json = json.dumps(research_state, ensure_ascii = False)
-            decision_scaffold = (
-                len(decision_system)
-                + len(decision_question)
-                + len(decision_plan_json)
-                + len(decision_catalog)
-                + len(decision_query_history_json)
-                + len(decision_state_json)
-            )
-            evidence_chars = _trimmable_budget(
-                decision_total, decision_scaffold, _MAX_SYNTHESIS_EVIDENCE_CHARS
-            )
-            decision_context = conversation_context[
-                : _trimmable_budget(
-                    decision_total, decision_scaffold + evidence_chars, _MAX_CONTEXT_CHARS
+                    + len(decision_catalog)
+                    + len(decision_query_history_json)
+                    + len(decision_state_json)
                 )
-            ]
-            decision, decision_reasoning, _finish_reason, _usage = await self._stream_completion(
-                run,
-                [
-                    {
-                        "role": "system",
-                        "content": decision_system,
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Conversation context JSON:\n{_shield_untrusted(decision_context)}\n\n"
-                            f"Question:\n{_shield_untrusted(decision_question)}\n\n"
-                            f"Approved plan (guidance only):\n"
-                            f"{_shield_untrusted(decision_plan_json)}\n\n"
-                            f"Actions remaining after this one: {max_steps - position - 1}\n"
-                            f"<untrusted_query_history_json>\n"
-                            f"{_shield_untrusted(decision_query_history_json)}\n"
-                            f"</untrusted_query_history_json>\n\n"
-                            f"<untrusted_research_state_json>\n"
-                            f"{_shield_untrusted(decision_state_json) or '{}'}\n"
-                            f"</untrusted_research_state_json>\n\n"
-                            f"<untrusted_web_evidence>\n"
-                            f"Gathered sources:\n{_shield_untrusted(decision_catalog) or '(none)'}\n\n"
-                            f"{_shield_untrusted(evidence[-evidence_chars:] if evidence_chars else '') or '(none)'}\n"
-                            f"</untrusted_web_evidence>"
-                        ),
-                    },
-                ],
-                json_mode = True,
-                report_progress = False,
-                phase = "decision",
-                step_position = position,
-                max_tokens = 2048,
-                enable_thinking = False,
-            )
-            try:
-                action = _parse_and_validate_action(
+                evidence_chars = _trimmable_budget(
+                    decision_total, decision_scaffold, _MAX_SYNTHESIS_EVIDENCE_CHARS
+                )
+                decision_context = conversation_context[
+                    : _trimmable_budget(
+                        decision_total, decision_scaffold + evidence_chars, _MAX_CONTEXT_CHARS
+                    )
+                ]
+                (
                     decision,
                     decision_reasoning,
-                    {source["url"] for source in sources},
-                    website_policy,
+                    _finish_reason,
+                    _usage,
+                ) = await self._stream_completion(
+                    run,
+                    [
+                        {
+                            "role": "system",
+                            "content": decision_system,
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Conversation context JSON:\n{_shield_untrusted(decision_context)}\n\n"
+                                f"Question:\n{_shield_untrusted(decision_question)}\n\n"
+                                f"Approved plan (guidance only):\n"
+                                f"{_shield_untrusted(decision_plan_json)}\n\n"
+                                f"Actions remaining after this one: {max_steps - position - 1}\n"
+                                f"<untrusted_query_history_json>\n"
+                                f"{_shield_untrusted(decision_query_history_json)}\n"
+                                f"</untrusted_query_history_json>\n\n"
+                                f"<untrusted_research_state_json>\n"
+                                f"{_shield_untrusted(decision_state_json) or '{}'}\n"
+                                f"</untrusted_research_state_json>\n\n"
+                                f"<untrusted_web_evidence>\n"
+                                f"Gathered sources:\n{_shield_untrusted(decision_catalog) or '(none)'}\n\n"
+                                f"{_shield_untrusted(evidence[-evidence_chars:] if evidence_chars else '') or '(none)'}\n"
+                                f"</untrusted_web_evidence>"
+                            ),
+                        },
+                    ],
+                    json_mode = True,
+                    report_progress = False,
+                    phase = "decision",
+                    step_position = position,
+                    max_tokens = 2048,
+                    enable_thinking = False,
                 )
-            except (ValueError, json.JSONDecodeError):
-                action = _next_unused_seed_action(run["plan"], used_queries)
-                if action is None:
-                    break
+                try:
+                    action = _parse_and_validate_action(
+                        decision,
+                        decision_reasoning,
+                        {source["url"] for source in sources},
+                        website_policy,
+                    )
+                except (ValueError, json.JSONDecodeError):
+                    action = _next_unused_seed_action(run["plan"], used_queries)
+                    if action is None:
+                        break
             if action["action"] == "finish":
                 if notes:
                     next_state = _normalize_research_state(action.get("researchState"))
@@ -2777,10 +2859,19 @@ class ResearchSupervisor:
                 document_sources.append({**source, "stepPosition": position})
                 rag_sources.append(source)
             step_sources = []
-            for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
+            found_sources = (
+                [
+                    {k: match.group(k).strip() for k in ("title", "url", "snippet")}
+                    for match in _URL_BLOCK.finditer(result)
+                ]
+                if action["action"] == "search"
+                else [{"title": argument, "url": argument, "snippet": ""}]
+                if not _research_step_failed(result, [])
+                else []
+            )
+            for source in found_sources:
                 if len(sources) >= max_sources:
                     break
-                source = {k: match.group(k).strip() for k in ("title", "url", "snippet")}
                 allowed, _reason, _hostname = check_url_access(
                     source["url"],
                     website_policy,

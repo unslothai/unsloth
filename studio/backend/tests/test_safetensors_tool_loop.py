@@ -5614,3 +5614,254 @@ def test_a_forced_tool_search_is_released_once_discovery_runs(monkeypatch):
     _collect_events(loop)
     assert [name for name, _ in exec_fn.calls] == ["mcp_tool_search"]
     assert exec_fn.offered == [["mcp_tool_search"], ["web_search", "mcp_tool_search"]]
+
+
+@pytest.mark.parametrize("tool_choice, injected", [(None, True), ("none", False)])
+def test_mcp_matches_arrive_as_a_search_after_the_message(tool_choice, injected):
+    from core.inference.tools import build_synthetic_search_exchange
+
+    exchange = build_synthetic_search_exchange(
+        tool_name = "mcp_tool_search",
+        call_prefix = "mcp_auto_",
+        status_label = "Finding MCP tools",
+        query = "move my page",
+        text = "Loaded 1 MCP tool.",
+        sources = None,
+    )
+    seen = []
+
+    def single_turn(messages, **_kwargs):
+        seen.append([dict(m) for m in messages])
+        yield "done"
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "move it"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool([]),
+            tool_choice = tool_choice,
+            mcp_match_exchange = {**exchange, "names": []},
+        )
+    )
+    roles = [m["role"] for m in seen[0]]
+    if injected:
+        assert roles[-3:] == ["user", "assistant", "tool"]
+        assert seen[0][-1]["content"] == "Loaded 1 MCP tool."
+        assert any(
+            e.get("type") == "tool_end" and e["tool_name"] == "mcp_tool_search" for e in events
+        )
+    else:
+        assert roles[-1] == "user"
+
+
+@pytest.mark.parametrize("split", [True, False])
+@pytest.mark.parametrize(
+    "t1, shown",
+    [
+        ("<think>I will search.</think>", ""),
+        ("<think>I will search.</think>Let me search.", "Let me search."),
+    ],
+)
+def test_split_reasoning_content_moves_think_blocks_into_reasoning_field(split, t1, shown):
+    t2 = "<think>A</think>x<think>B</think>"
+    seen, turns = [], iter([t1, f"{t2}<function=web_search></function>", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            nudge_tool_calls = True,
+            split_reasoning_content = split,
+        )
+    )
+    reprompt, tool_turn = [m for m in seen[2] if m["role"] == "assistant"]
+    # Unsplit, the re-prompt turn keeps the classifier's text: the visible plan, else the bare thought.
+    assert reprompt["content"] == (shown if split else (shown or t1))
+    assert reprompt.get("reasoning_content") == ("I will search." if split else None)
+    assert tool_turn["content"] == ("x" if split else t2)
+    assert tool_turn.get("reasoning_content") == ("A\nB" if split else None)
+
+
+def test_split_reasoning_content_keeps_the_intent_text_of_a_prefilled_reprompt():
+    # The prompt opened the thought, so the raw turn has no <think> to split on.
+    seen, turns = [], iter(["Plan.</think>Let me search.", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+            split_reasoning_content = True,
+        )
+    )
+    (reprompt,) = [m for m in seen[1] if m["role"] == "assistant"]
+    assert reprompt["content"] == "Let me search."
+
+
+@pytest.mark.parametrize("split", [True, False])
+@pytest.mark.parametrize(
+    "call",
+    [
+        '<|content_invoke_tool_json|>{"name":"web_search","args":{"q":"<function=s> <|end_message|>"}}<|end_message|>',
+        "<|message_model|>web_search<|content_invoke_tool_json|>{'name':'web_search','args':{'q':'s'}}<|end_message|>",
+    ],
+)
+def test_split_reasoning_content_replays_a_native_call_only_as_tool_calls(split, call):
+    # The prose opener before the call must not hide it from the cut.
+    text = 'x <|content_invoke_tool_json|> "'
+    seen, turns = [], iter([f"<think>A</think>{text}{call}y", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            split_reasoning_content = split,
+        )
+    )
+    (tool_turn,) = [m for m in seen[1] if m["role"] == "assistant"]
+    assert tool_turn["tool_calls"][0]["function"]["name"] == "web_search"
+    assert (
+        (tool_turn["content"] == f"{text}y")
+        if split
+        else ("<|content_invoke_tool_json|>{" in tool_turn["content"])
+    )
+
+
+def test_split_reasoning_content_survives_a_native_call_with_a_non_string_name():
+    turns = iter(
+        [
+            '<function name="web_search"></function><|content_invoke_tool_json|>{"name":1,"args":{}}<|end_message|>',
+            "Done.",
+        ]
+    )
+    execute = FakeExecuteTool(["ok"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = lambda messages, **_: iter([next(turns)]),
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = execute,
+            split_reasoning_content = True,
+        )
+    )
+    assert [name for name, *_ in execute.calls] == ["web_search"]
+
+
+@pytest.mark.parametrize("split", [True, False])
+def test_a_resumed_turn_keeps_a_call_made_after_a_no_op(split):
+    # A resumed partial is stored as a merged copy; a call attached after a no-op's append must reach it.
+    names = ("missing_tool", "web_search")
+    calls = "".join(
+        f'<|content_invoke_tool_json|>{{"name":"{name}","args":{{"q":"{i}"}}}}<|end_message|>'
+        for i, name in enumerate(names)
+    )
+    seen, turns = [], iter([f" sunny.{calls}", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "Paris is"},
+            ],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            continue_final_message = True,
+            split_reasoning_content = split,
+        )
+    )
+    resumed = [m for m in seen[1] if m["role"] == "assistant"][0]
+    assert [c["function"]["name"] for c in resumed.get("tool_calls", [])] == ["web_search"]
+
+
+def test_split_reasoning_content_leaves_the_shown_final_turn_alone():
+    call = '<|content_invoke_tool_json|>{"name":"web_search","args":{"q":"%s"}}<|end_message|>'
+
+    def shown(split):
+        turns = iter([call % "a", f"Before{call % 'b'}After"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = lambda messages, **_: iter([next(turns)]),
+                messages = [{"role": "user", "content": "q"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = FakeExecuteTool(["ok"]),
+                max_tool_iterations = 1,
+                split_reasoning_content = split,
+            )
+        )
+        return [e["text"] for e in events if e.get("type") == "content"]
+
+    # The route streams deltas, so a final snapshot shorter than the streamed one would leave the call shown.
+    assert shown(True) == shown(False)
+
+
+def test_a_python_call_runs_with_the_analysis_its_classification_made():
+    """Auto mode screens the code once: each run gets the handoff its own approval check filled."""
+    from core.inference import tools as tools_mod
+
+    seen: list = []
+
+    def _execute(
+        name,
+        arguments,
+        *,
+        python_analyses = None,
+        **_kwargs,
+    ):
+        seen.append((name, arguments.get("code"), python_analyses))
+        return "OK"
+
+    turn_iter = iter(
+        [
+            [
+                "<function=python><parameter=code>print(1)</parameter></function>"
+                "<function=python><parameter=code>print(2)</parameter></function>"
+            ],
+            ["Done."],
+        ]
+    )
+
+    def _gen(_messages):
+        yield next(turn_iter)[0]
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "run"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            execute_tool = _execute,
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert [code for _name, code, _a in seen] == ["print(1)", "print(2)"]
+    first, second = (analyses for _name, _code, analyses in seen)
+    assert isinstance(first, tools_mod.PythonCallAnalyses) and first is not second
+    assert list(first._by_source) == ["print(1)"] and list(second._by_source) == ["print(2)"]

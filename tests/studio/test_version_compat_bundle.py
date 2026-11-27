@@ -32,6 +32,15 @@ CRON_ONLY = {
     "tests/version_compat/test_trl_vllm_generation_lora_patch.py",
 }
 
+# Need real torch, TRL and unsloth, so the pytest-only bundle would only skip them. On a PR they run in
+# consolidated-tests-ci.yml's Core job, which installs that stack; the tests below prove that job still names them.
+CORE_WORKFLOW = REPO / ".github" / "workflows" / "consolidated-tests-ci.yml"
+CORE_JOB = "consolidated"
+RUN_BY_CORE = {
+    "tests/version_compat/test_sft_assistant_mask_fallback_trainer.py",
+    "tests/version_compat/test_sft_end_of_turn_eos_trainer.py",
+}
+
 
 def _doc() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8")) or {}
@@ -79,7 +88,9 @@ def test_every_suite_still_runs_on_a_pull_request() -> None:
         if _runs_on_pull_request(job):
             pr_named |= _named_paths(job)
 
-    uncovered = sorted(s for s in _all_suites() - CRON_ONLY if not _covers(pr_named, s))
+    uncovered = sorted(
+        s for s in _all_suites() - CRON_ONLY - RUN_BY_CORE if not _covers(pr_named, s)
+    )
     assert not uncovered, (
         f"these version-compat suites are not run by any pull_request job: {uncovered}. "
         f"Either a path was dropped from {BUNDLE_JOB}'s pytest line -- which removes a "
@@ -87,6 +98,59 @@ def test_every_suite_still_runs_on_a_pull_request() -> None:
         f"wired up. If a suite genuinely cannot run on a PR, add it to CRON_ONLY with the "
         f"reason."
     )
+
+
+def _core_job_misses(doc: dict) -> list[str]:
+    """RUN_BY_CORE suites the PR-triggered Core job does not name in a step run from this checkout."""
+    on = doc.get("on", doc.get(True)) or {}
+    job = (doc.get("jobs") or {}).get(CORE_JOB)
+    if "pull_request" not in on or job is None or not _runs_on_pull_request(job):
+        return sorted(RUN_BY_CORE)
+    named: set[str] = set()
+    for step in job.get("steps") or []:
+        # A step run from another checkout (the zoo tree in $RUNNER_TEMP) collects that repo's tests/, not ours.
+        if step.get("working-directory"):
+            continue
+        named |= _named_paths({"steps": [step]})
+    return sorted(s for s in RUN_BY_CORE if s not in named)
+
+
+def test_suites_left_to_the_core_job_run_there() -> None:
+    """RUN_BY_CORE is a claim about another workflow, so check it rather than trust it."""
+    assert RUN_BY_CORE.isdisjoint(CRON_ONLY)
+    assert RUN_BY_CORE <= _all_suites(), sorted(RUN_BY_CORE - _all_suites())
+    doc = yaml.safe_load(CORE_WORKFLOW.read_text(encoding = "utf-8")) or {}
+    missed = _core_job_misses(doc)
+    assert not missed, (
+        f"{CORE_JOB} no longer runs {missed} on a pull request (job gone, not PR-triggered, path dropped, "
+        f"or the step moved under another checkout's working-directory). Name it in a PR job or move it to CRON_ONLY."
+    )
+
+
+def test_the_core_job_check_is_not_vacuous() -> None:
+    """Each way the Core job can stop running a suite must be reported, or the check proves nothing."""
+    suite = sorted(RUN_BY_CORE)[0]
+
+    def load():
+        return yaml.safe_load(CORE_WORKFLOW.read_text(encoding = "utf-8")) or {}
+
+    def naming_steps(doc):
+        return [st for st in doc["jobs"][CORE_JOB]["steps"] if suite in str(st.get("run", ""))]
+
+    doc = load()
+    assert naming_steps(doc), f"{CORE_JOB} names {suite} in no step"
+    for st in naming_steps(doc):
+        st["run"] = st["run"].replace(suite, "tests/version_compat/")
+    assert suite in _core_job_misses(doc)
+
+    doc = load()
+    for st in naming_steps(doc):
+        st["working-directory"] = "${{ runner.temp }}/unsloth-zoo"
+    assert suite in _core_job_misses(doc)
+
+    doc = load()
+    doc["jobs"][CORE_JOB]["if"] = "github.event_name == 'schedule'"
+    assert suite in _core_job_misses(doc)
 
 
 def test_the_bundle_exists_and_names_suites_explicitly() -> None:

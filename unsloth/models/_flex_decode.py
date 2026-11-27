@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""One-token flex decode (zoo flex_decoding) for FastModel generate() over a StaticCache.
-
-Per layer type, builds zoo's graph-refillable decode BlockMask when every layer's shape is supported, else
-transformers' SDPA mask, so a model can mix both. Prefill, dynamic caches and custom masks are untouched.
-UNSLOTH_FLEX_DECODE: auto (sm80+, MODEL_TYPES, CUDA-graphed decode only: eager flex decode is slower than SDPA),
-1 (always), 0 (off)."""
+"""Flex decode over StaticCache; UNSLOTH_FLEX_DECODE auto (sm80+, MODEL_TYPES, graphed decode only;
+eager flex is slower than SDPA), 1 on, 0 off"""
 
 import inspect
 import os

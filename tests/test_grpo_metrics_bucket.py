@@ -30,6 +30,7 @@ HELPERS = {
     "_unsloth_grpo_flush_metrics",
     "_unsloth_grpo_defer_metric",
     "_unsloth_grpo_refuse_boundary_blind_packing",
+    "_unsloth_grpo_refuse_rank_local_forwards",
 }
 BATCH, PROMPT, COMPLETION = 2, 3, 4
 

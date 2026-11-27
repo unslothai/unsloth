@@ -259,8 +259,7 @@ def reserve(
     total,
     written = None,
 ):
-    """Grows a growable cache, eagerly, to hold `total` tokens. `written` re-syncs the host counters, which a
-    compiled update or a replay may leave stale."""
+    """Grows the cache eagerly to total tokens; written re-syncs stale host counters."""
     members = list(_members(cache))
     if not members:
         return

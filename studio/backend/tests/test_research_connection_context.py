@@ -206,8 +206,15 @@ def test_window_probe_sends_the_templated_headers_of_the_run(research_home, monk
 
 
 def test_window_probe_reads_the_connection_under_its_config_guard(research_home, monkeypatch):
-    from routes import provider_credentials
-    from storage import credential_secrets
+    import importlib
+
+    from core import research_runs
+
+    # The modules the probe itself uses. Other test files load private copies of routes.provider_credentials and
+    # drop it from sys.modules, so `from routes import provider_credentials` could return a stale package attribute
+    # whose lock table the probe never touches (every read then looked unguarded).
+    provider_credentials = importlib.import_module("routes.provider_credentials")
+    credential_secrets = research_runs.credential_secrets
 
     guarded = []
     read_key = credential_secrets.get_provider_api_key

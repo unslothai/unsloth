@@ -8,6 +8,7 @@ import contextlib
 import functools
 import inspect
 import os
+import re
 import sys
 import time
 import types
@@ -26,6 +27,16 @@ _COMPILE_OPTIONS = {
 }
 
 
+def _strict_dynamo():
+    """Dynamo with suppress_errors off; some torch builds (AMD's ROCm torch 2.11) have no such flag."""
+    config = torch._dynamo.config
+    return (
+        config.patch(suppress_errors = False)
+        if hasattr(config, "suppress_errors")
+        else contextlib.nullcontext()
+    )
+
+
 def _cudagraph_mode():
     """UNSLOTH_BLOCK_CUDAGRAPHS: "1" always on, unset or "auto" decided per run (see _auto_observe),
     anything else off (before auto, every value but "1" meant off)."""
@@ -33,6 +44,204 @@ def _cudagraph_mode():
     if value == "1":
         return "on"
     return "auto" if value in ("", "auto") else "off"
+
+
+# Inductor's C++ wrapper launches a compiled block's kernels from C++ instead of a Python wrapper:
+# packed / padding-free LoRA rows are launch-bound (Colab L4, Qwen3-4B QLoRA 1.44 -> 1.29 s/step,
+# Llama-3.2-3B LoRA 0.93 -> 0.80), at a one-time C++ build of the block graphs (about a minute on a
+# cold cache, nothing on a warm one), so it starts once a run is long (_CPP_WRAPPER_AFTER).
+# UNSLOTH_BLOCK_CPP_WRAPPER: "1" on at once wherever Inductor allows it, "0" off, unset / "auto" for
+# NVIDIA CUDA on Linux from torch 2.14 with a C++ compiler. A failed C++ build keeps the Python wrapper.
+# torch 2.10 and 2.12 fail the switch-time trial below (a C++ backward asserts "CudaKernelParamCache
+# not populated"), so auto mode starts at 2.14, the oldest build where it passed.
+_CPP_WRAPPER_MIN_TORCH = "2.14.0"
+
+
+_CPP_WRAPPER_AUTO_GPU = re.compile(r"\bL4\b")  # NVIDIA L4, not L40 / L40S
+
+
+def _cpp_wrapper_reason():
+    """Why blocks keep Inductor's Python wrapper (None: they use the C++ one)."""
+    value = os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "auto").strip().lower()
+    if value in ("0", "false", "no", "off"):
+        return "UNSLOTH_BLOCK_CPP_WRAPPER=0"
+    try:
+        import torch._inductor.config as inductor_config
+        if not hasattr(inductor_config, "cpp_wrapper"):
+            return "this torch has no Inductor C++ wrapper"
+    except Exception:
+        return "Inductor unavailable"
+    if value == "1":
+        return None
+    if getattr(torch.version, "hip", None) or getattr(torch.version, "cuda", None) is None:
+        return "not an NVIDIA CUDA build"
+    if sys.platform != "linux":
+        return "not Linux"
+    from packaging.version import Version
+
+    if Version(torch.__version__.split("+")[0]) < Version(_CPP_WRAPPER_MIN_TORCH):
+        return f"torch < {_CPP_WRAPPER_MIN_TORCH}"
+    try:
+        if not torch.cuda.is_available():
+            return "no CUDA device"
+    except Exception:
+        return "no CUDA device"
+    # Inductor builds with $CXX, else g++ on Linux; asking Inductor itself may try to install one.
+    import shutil
+
+    if shutil.which(os.environ.get("CXX") or "g++") is None:
+        return "no C++ compiler"
+    # Auto mode only where it was measured to beat A/A + 5% s/step: Colab L4 -11.6% (Qwen3-4B QLoRA),
+    # -14.3% (Llama-3.2-3B LoRA). G4 (RTX PRO 6000) gave -4.3% / -6.3%, a tie, so other GPUs keep the
+    # Python wrapper unless UNSLOTH_BLOCK_CPP_WRAPPER=1.
+    try:
+        name = torch.cuda.get_device_name()
+    except Exception:
+        name = ""
+    if not _CPP_WRAPPER_AUTO_GPU.search(name or ""):
+        return (
+            f"auto mode is only on for GPUs measured to gain (NVIDIA L4), not {name or 'this GPU'}"
+        )
+    return None
+
+
+_CPP_WRAPPER_REASON = _cpp_wrapper_reason()
+# Calls per layer of a block class (about two per micro-batch under gradient checkpointing) before its
+# C++ region is built; UNSLOTH_BLOCK_CPP_WRAPPER=1 builds it at once.
+try:
+    _CPP_WRAPPER_AFTER = max(0, int(os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER_AFTER", "2000")))
+except ValueError:
+    _CPP_WRAPPER_AFTER = 2000
+if os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "").strip() == "1":
+    _CPP_WRAPPER_AFTER = 0
+# Auto mode builds the C++ region only if the run has enough optimizer steps left to win its cold build
+# back: L4 measured +55-70 s once (Qwen3-4B; +12 s Llama-3.2-3B) against 0.135-0.17 s saved per step,
+# so 70 s / 0.10 s = 700 steps is the conservative bar. A run whose steps left are unknown (no
+# Trainer.train in progress) keeps the Python wrapper.
+try:
+    _CPP_WRAPPER_MIN_REMAINING = max(
+        0, int(os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER_MIN_REMAINING", "700"))
+    )
+except ValueError:
+    _CPP_WRAPPER_MIN_REMAINING = 700
+
+
+def _cpp_wrapper_steps_left():
+    """Optimizer steps left in the Trainer.train in progress, else None."""
+    try:
+        from ._gc_train_scope import active_trainer_state
+        state = active_trainer_state()
+    except Exception:
+        return None
+    max_steps = getattr(state, "max_steps", 0) or 0
+    if max_steps <= 0:
+        return None
+    return max(0, max_steps - (getattr(state, "global_step", 0) or 0))
+
+
+# regions: block classes given a C++ wrapper region; fallbacks: classes whose C++ build failed.
+CPP_WRAPPER_STATS = {"regions": 0, "fallbacks": 0}
+# Non-empty once the C++ wrapper probe failed: no block of the process uses the C++ wrapper after that.
+_CPP_WRAPPER_BROKEN = []
+_CPP_WRAPPER_PROBED = {}
+
+
+def _install_cpp_wrapper_param_fix():
+    """Inductor's lazy C++ wrapper launch (torch >= 2.14) runs each kernel once and then reads its cubin
+    and launch params from CudaKernelParamCache, keyed by kernel name only. Names repeat across graphs
+    (triton_poi_fused_..._0), and a kernel object that already ran (shared through Inductor's in-memory
+    kernel source cache) takes run()'s cached-launcher fast path and saves nothing, so the lookup could
+    return another graph's same-named kernel: wrong kernel, "CUDA driver error: invalid argument", a
+    segfault or NaN losses (packed rows, then padded rows, in one process). Each lookup now follows a
+    save by that kernel object. True once installed; False when this torch has no lazy launch."""
+    try:
+        from torch._inductor.runtime import triton_lazy_compile as lazy
+        from torch._inductor.codecache import CudaKernelParamCache
+    except Exception:
+        return False
+    original = getattr(lazy, "run_triton_kernel_with_autotune", None)
+    cache = getattr(CudaKernelParamCache, "cache", None)
+    if original is None or not isinstance(cache, dict):
+        return False
+    if getattr(original, "_unsloth_saves_params", False):
+        return True
+
+    def run_triton_kernel_with_autotune(pending_kernels, kernel_name, stream, args):
+        kernel = pending_kernels.get(kernel_name) if isinstance(pending_kernels, dict) else None
+        if (
+            kernel is not None
+            and not hasattr(kernel, "launchers")
+            and callable(getattr(kernel, "result", None))
+        ):
+            kernel = kernel.result()
+        launchers = getattr(kernel, "launchers", None)
+        # Only when run() will save (every launcher stores its cubin), else the lookup would find nothing.
+        if launchers is not None and all(getattr(l, "store_cubin", False) for l in launchers):
+            if hasattr(kernel, "_cached_launcher"):
+                kernel._cached_launcher = (
+                    None  # run() takes the path that saves this kernel's params
+                )
+            cache.pop(kernel_name, None)
+        return original(pending_kernels, kernel_name, stream, args)
+
+    run_triton_kernel_with_autotune._unsloth_saves_params = True
+    lazy.run_triton_kernel_with_autotune = run_triton_kernel_with_autotune
+    return True
+
+
+def _cpp_wrapper_probe_fn(x, w):
+    return (torch.nn.functional.silu(x @ w) * x).float().square().sum()
+
+
+def _cpp_wrapper_probe(device):
+    """None if Inductor's C++ wrapper builds and runs a small forward and its backward on `device`
+    (two sizes, the second through the dynamic graph), else why not. Once per device per process:
+    AOTAutograd builds a block's backward lazily, at loss.backward(), where a missing or broken
+    toolchain could not fall back any more. Local tensors only (no RNG, no model state), its own
+    saved-tensor hooks so an outer checkpoint's pack hooks do not apply."""
+    key = (device.type, device.index)
+    if _CPP_WRAPPER_BROKEN:
+        return _CPP_WRAPPER_BROKEN[0]
+    if key not in _CPP_WRAPPER_PROBED:
+        why = None
+        if not _install_cpp_wrapper_param_fix():
+            why = "this torch has no lazy C++ wrapper kernel launch"
+            _CPP_WRAPPER_PROBED[key] = why
+            _CPP_WRAPPER_BROKEN.append(why)
+            CPP_WRAPPER_STATS["fallbacks"] += 1
+            return why
+        try:
+            fn = torch.compile(
+                _cpp_wrapper_probe_fn, fullgraph = True, dynamic = True, options = {"cpp_wrapper": True}
+            )
+            with (
+                torch.inference_mode(False),
+                torch.enable_grad(),
+                torch.autograd.graph.saved_tensors_hooks(lambda t: t, lambda t: t),
+            ):
+                for rows in (16, 24):
+                    base = torch.arange(rows * 32, device = device, dtype = torch.float32)
+                    x = (base.view(rows, 32).sin() * 0.1).requires_grad_()
+                    w = (
+                        torch.arange(32 * 32, device = device, dtype = torch.float32).view(32, 32).cos()
+                        * 0.1
+                    )
+                    w.requires_grad_()
+                    gx, gw = torch.autograd.grad(fn(x, w), (x, w))
+                    if not (torch.isfinite(gx).all() and torch.isfinite(gw).all()):
+                        why = "non-finite probe gradients"
+                        break
+        except torch.OutOfMemoryError:
+            raise
+        except Exception as e:
+            if isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError):
+                return "out of memory while building"  # not a broken toolchain: not cached
+            why = (str(e).strip().splitlines() or [type(e).__name__])[0][:200]
+        _CPP_WRAPPER_PROBED[key] = why
+        if why is not None:
+            _CPP_WRAPPER_BROKEN.append(why)
+            CPP_WRAPPER_STATS["fallbacks"] += 1
+    return _CPP_WRAPPER_PROBED[key]
 
 
 # Per-block CUDA graphs only pay off for static shapes on a launch-bound step.
@@ -65,8 +274,11 @@ def _new_cudagraph_state():
 
 # Auto mode: phase "probe" (graphs off, watching), "on" or "off" (final). first: the layer whose
 # call starts a forward pass; passes: forward passes seen, all with batch shape `shape` on `device`.
+# ddp: None, or the agreement session of the DDP wrapper built for this run (UNSLOTH_BLOCK_CUDAGRAPHS_DDP=1
+# only), see _auto_ddp_enroll.
 def _new_auto_state():
     return {
+        "ddp": None,
         "phase": "probe",
         "first": None,
         "shape": None,
@@ -247,21 +459,113 @@ def _packed_kwargs(kwargs):
     get = kwargs.get
     return (
         get("packed_seq_lengths") is not None
+        or get(_PACKED_BLOCK_KWARG) is not None
         or get("cu_seq_lens_q") is not None
         or get("cu_seq_lens_k") is not None
         or get("cu_seqlens") is not None
     )
 
 
+def _grad_side_inputs(args, kwargs):
+    """A non-hidden_states input needing grad (Mllama cross-attention states): its replayed-backward grad lives in
+    graph pool memory the next replay overwrites before it is summed, and only hidden_states is guarded (_CloneGrad)."""
+    for value in (*args, *kwargs.values()):
+        if isinstance(value, torch.Tensor) and value.requires_grad:
+            return True
+    return False
+
+
+# Bumped on every module / parameter registration (PEFT add_adapter), so cached block parameter
+# lists are rebuilt; None until the global hooks are installed, False if this torch has none.
+_PARAMS_GEN = [None]
+
+
+def _bump_params_gen(*args):
+    _PARAMS_GEN[0] += 1
+
+
+def _watch_registrations():
+    if _PARAMS_GEN[0] is not None:
+        return
+    from torch.nn.modules import module as nn_module
+
+    names = (
+        "register_module_module_registration_hook",
+        "register_module_parameter_registration_hook",
+    )
+    registers = [getattr(nn_module, name, None) for name in names]
+    if any(register is None for register in registers):
+        _PARAMS_GEN[0] = False
+        return
+    _PARAMS_GEN[0] = 0
+    for register in registers:
+        register(_bump_params_gen)
+
+
+def _block_params(layer):
+    d = layer.__dict__
+    params = d.get("_unsloth_block_params")
+    _watch_registrations()
+    gen = _PARAMS_GEN[0]
+    if params is None or (gen is not False and d.get("_unsloth_block_params_gen") != gen):
+        params = d["_unsloth_block_params"] = list(layer.parameters())
+        d["_unsloth_block_params_gen"] = gen
+    return params
+
+
 def _trainable(layer):
-    params = layer.__dict__.get("_unsloth_block_params")
-    if params is None:
-        params = layer.__dict__["_unsloth_block_params"] = list(layer.parameters())
-    return any(p.requires_grad for p in params)
+    return any(p.requires_grad for p in _block_params(layer))
 
 
 # The grad-mode trial before a checkpointed block's first no-grad call stands in for the recompute.
 _IN_TRIAL = [False]
+
+
+def _same(tensor):
+    return tensor
+
+
+def _detached(tensor):
+    # Pack hook of the non-reentrant trial. Nothing backpropagates the trial graph, so it is only freed
+    # when its output dies; a pack hook returning its input saves an op's output on that op's own node,
+    # a cycle through the C++ graph that gc cannot see (torch's saved_tensors_hooks warning). Each
+    # block's first non-reentrant call then kept its whole trial forward until exit (Qwen3-30B-A3B
+    # shape, 4 layers, 32K tokens, aux loss on: 14 GiB between steps).
+    return tensor.detach()
+
+
+@contextlib.contextmanager
+def _no_output_capture(layer):
+    """Hide the trial forward from transformers output recording (an extra router_logits entry skews the aux loss)."""
+    swapped = []
+    for module in layer.modules():
+        fn = module.__dict__.get("forward")
+        # functools.wraps copies __qualname__, not the code object's.
+        code = getattr(fn, "__code__", None)
+        qual = getattr(code, "co_qualname", None)  # Python >= 3.11
+        if qual is None:
+            qual = (
+                "make_capture_wrapper" if getattr(code, "co_name", "") == "wrapped_forward" else ""
+            )
+        if hasattr(fn, "__wrapped__") and "make_capture_wrapper" in qual:
+            swapped.append((module, fn))
+            module.forward = fn.__wrapped__
+    # Live collector, trial entries trimmed after: a hidden (None) one compiled a graph no real call reuses.
+    try:
+        from transformers.utils.output_capturing import _active_collector
+        collected = _active_collector.get()
+    except Exception:
+        collected = None
+    lists = []
+    if isinstance(collected, dict):
+        lists = [(v, len(v)) for v in collected.values() if type(v) is list]
+    try:
+        yield
+    finally:
+        for values, length in lists:
+            del values[length:]
+        for module, fn in swapped:
+            module.forward = fn
 
 
 # output_hidden_states hands block outputs to the caller, who may keep them past the generation.
@@ -381,35 +685,49 @@ def _clone_outputs(out):
     return pytree.tree_map(lambda x: x.clone() if torch.is_tensor(x) else x, out)
 
 
+def _pool_grad_hook(param):
+    ref = weakref.ref(param)
+
+    def hook(grad):
+        p = ref()
+        if p is None or p.grad is not None:
+            return None
+        return grad.clone()
+
+    return hook
+
+
 def _param_grads_out_of_pool(layer):
-    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it."""
-    if layer.__dict__.get("_unsloth_block_grad_hooks", False):
-        return
-    layer.__dict__["_unsloth_block_grad_hooks"] = True
-
-    def hook_for(param):
-        ref = weakref.ref(param)
-
-        def hook(grad):
-            p = ref()
-            if p is None or p.grad is not None:
-                return None
-            return grad.clone()
-
-        return hook
-
-    for param in layer.parameters():
+    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it.
+    Hooks follow requires_grad at each grad-mode call, not the first call: PEFT's set_adapter /
+    disable_adapter flip it, and the first graphed call can be a reference forward (TRL DPO's "ref"
+    adapter, disable_adapter) with the trained adapter frozen."""
+    if not torch.is_grad_enabled():
+        return  # this call makes no parameter gradient
+    hooked = layer.__dict__.get("_unsloth_block_grad_hooks")
+    if not isinstance(hooked, dict):
+        hooked = layer.__dict__["_unsloth_block_grad_hooks"] = {}
+    for param in _block_params(layer):
         if param.requires_grad:
-            param.register_hook(hook_for(param))
+            seen = hooked.get(id(param))
+            if seen is None or seen() is not param:
+                param.register_hook(_pool_grad_hook(param))
+                hooked[id(param)] = weakref.ref(param)
 
 
 def _in_nonreentrant_checkpoint():
     """Non-reentrant checkpoint frees recomputed inputs mid graph recording, which cudagraph trees refuse."""
+    if _IN_TRIAL[0] == "nonreentrant":
+        return True
     try:
         hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
     except Exception:
         return False
-    return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+    # The trial's own pair is only pushed inside a non-reentrant checkpoint (see _wrap).
+    return bool(hooks) and (
+        getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+        or (hooks[0] is _detached and hooks[1] is _same)
+    )
 
 
 def _graphs_unsafe_moe(layer, note = True):
@@ -451,14 +769,36 @@ def _flex_block_mask_call(
     return False
 
 
-# Auto: graphs start when launch time exceeds GPU time by _AUTO_RATIO and all calls had one shape.
+# Auto: graphs start when launch time is at least the ratio threshold x GPU time and all calls had one shape.
+# The ratio is measured on forward block calls only; the checkpoint recompute and backward launch more
+# per GPU millisecond, so on Ampere and newer a forward ratio near 1 already gains a lot: A100 Qwen3-4B
+# QLoRA 2x1024 measured 1.14-1.51 across fresh processes and ran 310 ms/step with graphs vs 390 ms
+# without, so a 1.2 threshold split one run setup into two speeds by host jitter. A100 ratios 0.55-0.92
+# gained nothing (-1.2% to +1.0%). On T4 (sm75) graphs were 4-7% slower at ratios 0.66-1.11 (Qwen3-0.6B
+# LoRA 2x1024), so below sm80 the threshold stays 1.2.
 _AUTO_WARMUP_PASSES = 2
 _AUTO_MEASURE_CALLS = 4
 _AUTO_SLEEP_CYCLES = 20_000_000  # ~10-15 ms: the block's launches queue behind it
+_AUTO_RATIO_SM80 = 1.0
+_AUTO_RATIO_OLDER = 1.2
+# UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO overrides the per-device default on every device.
 try:
-    _AUTO_RATIO = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO", "1.2"))
-except ValueError:
-    _AUTO_RATIO = 1.2
+    _AUTO_RATIO = float(os.environ["UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO"])
+except (KeyError, ValueError):
+    _AUTO_RATIO = None
+
+
+def _auto_ratio(device):
+    """The launch / GPU ratio at or above which auto mode turns graphs on for blocks on `device`."""
+    if _AUTO_RATIO is not None:
+        return _AUTO_RATIO
+    try:
+        major = torch.cuda.get_device_capability(device)[0]
+    except Exception:
+        return _AUTO_RATIO_OLDER
+    return _AUTO_RATIO_SM80 if major >= 8 else _AUTO_RATIO_OLDER
+
+
 # 2.13+: the graphed region gets its own recompile bucket (isolate_recompiles) instead of sharing
 # the stock region's cache limit. Before 2.11 FastLanguageModel LoRA blocks are not compiled at all.
 _AUTO_MIN_TORCH = "2.13"
@@ -479,6 +819,426 @@ def _auto_off(auto, why):
     _auto_note(f"Unsloth: block CUDA graphs stay off ({why}).")
 
 
+# DDP, opt-in: UNSLOTH_BLOCK_CUDAGRAPHS_DDP=1, set the same on every rank before Unsloth loads a model.
+# Without it any process group keeps graphs off and nothing below runs (no hook, no collective).
+# With it, every DDP wrapper is enrolled when it is built (every rank builds it together: its
+# constructor runs collectives), so every rank has the agreement hook before its first forward,
+# whatever its data does. The hook sits on the DDP wrapper, so it runs eagerly before DDP's own forward
+# on every rank, also when one rank compiled ddp.module (a vote of 0 there). On grad-synced
+# forwards (the forwards DDP itself needs every rank to run) it runs one all_reduce(MIN) of every rank's
+# verdict (0 off, 1 still probing, 2 ready, 3 on), eagerly. Each rank probes alone but never turns
+# graphs on alone: they go on in the forward where every rank reported ready, and any rank's veto turns
+# them off everywhere in the forward of that vote. Local refusals (environment, build, device, layout,
+# compile setup) are votes of 0, never a skipped vote. After graphs are on the hook asks again after
+# 1, 2, 4, ... up to _AUTO_DDP_RECHECK synced forwards, so a later rank-local fallback (packed rows, the
+# shape cap, a failed graph compile, a block outside the DDP module) turns them off on that rank at once
+# and on the others at the next check. Under DDP.join() no vote is taken and the count stands still on
+# every rank (a joined rank shadows only DDP's own collectives); a rank that forwards there turns its
+# graphs off, and the next vote after the window turns them off everywhere.
+_AUTO_DDP = os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_DDP", "0").strip() == "1"
+_AUTO_DDP_RECHECK = 64
+_AUTO_DDP_MAX_PROBES = 64  # synced forwards a rank may still be probing before graphs stay off
+_AUTO_DDP_NOTE = "Unsloth: block CUDA graphs turned off on every DDP rank ({})."
+_DISABLE_DYNAMO = (
+    getattr(getattr(torch, "compiler", None), "disable", None) or torch._dynamo.disable
+)
+# DDP wrapper -> its agreement session; outside the module tree, so torch.save(ddp) never sees it.
+_AUTO_DDP_SESSIONS = weakref.WeakKeyDictionary()
+
+
+def _auto_world():
+    try:
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_world_size()
+    except Exception:
+        return 2  # unreadable: treat as distributed (graphs stay off)
+    return 1
+
+
+def _auto_is_cuda(hidden_states):
+    return hidden_states.is_cuda
+
+
+def _dynamo_callback_active():
+    """A torch.compile around the model: its block calls run traced or under the compiler's frame
+    callback (a callable, or False for run-only frames), so whether a rank reaches them eagerly can
+    differ by rank (recompile fallbacks)."""
+    try:
+        from torch._C._dynamo import eval_frame
+        return eval_frame.get_eval_frame_callback() is not None
+    except Exception:
+        return False
+
+
+def _dtensor_type():
+    try:
+        from torch.distributed.tensor import DTensor
+    except Exception:
+        try:
+            from torch.distributed._tensor import DTensor
+        except Exception:
+            return ()
+    return DTensor
+
+
+def _fsdp2_type():
+    try:
+        from torch.distributed.fsdp import FSDPModule
+    except Exception:
+        try:
+            from torch.distributed._composable.fsdp import FSDPModule
+        except Exception:
+            return ()
+    return FSDPModule
+
+
+def _auto_cp_reason():
+    """Unsloth's context-parallel manager, or torch's native context_parallel() dispatch: collectives
+    inside attention."""
+    cp = sys.modules.get("unsloth.context_parallel")
+    if cp is not None and getattr(cp, "get_cp_manager", lambda: None)() is not None:
+        return "context parallel"
+    for name in (
+        "torch.distributed.tensor.experimental._context_parallel._attention",
+        "torch.distributed.tensor.experimental._attention",
+    ):
+        native = sys.modules.get(name)
+        if native is None:
+            continue
+        if torch.nn.functional.scaled_dot_product_attention in getattr(
+            native, "_replaced_functions", ()
+        ):
+            return "context parallel"
+        ops = getattr(native, "custom_ops", None)
+        if ops:
+            dispatcher = getattr(_dtensor_type(), "_op_dispatcher", None)
+            handlers = getattr(dispatcher, "_custom_op_handlers", None) or {}
+            if any(op in handlers for op in ops):
+                return "context parallel"
+    return None
+
+
+def _has_dtensor(params):
+    dtensor = _dtensor_type()
+    return bool(dtensor) and any(isinstance(p, dtensor) for p in params)
+
+
+def _compiled_inside_ddp(ddp):
+    """DDP(torch.compile(model)) or a compiled forward: a disabled region can leave one rank eager."""
+    module = ddp.module
+    optimized = getattr(getattr(torch, "_dynamo", None), "OptimizedModule", None)
+    forward = module.__dict__.get("forward")
+    return (
+        (optimized is not None and isinstance(module, optimized))
+        or getattr(module, "_compiled_call_impl", None) is not None
+        or hasattr(forward, "_torchdynamo_orig_callable")
+    )
+
+
+def _auto_ddp_local_reason(ddp):
+    """Why this rank can never turn graphs on for this DDP model (None: it may). Read on every rank
+    at enrollment and sent as a vote of 0, so a rank-local answer still reaches every rank."""
+    if _CUDAGRAPH_MODE != "auto":
+        return "UNSLOTH_BLOCK_CUDAGRAPHS is not auto"
+    if not _enabled():
+        return "block compilation disabled"
+    module = ddp.module
+    if not any(getattr(getattr(m, "forward", None), _MARK, False) for m in module.modules()):
+        return "no compiled blocks in the DDP module"
+    param = next(module.parameters(), None)
+    if param is None or not _auto_is_cuda(param):
+        return "not a CUDA device"
+    why = _auto_platform_reason()
+    if why is not None:
+        return why
+    if _compiled_inside_ddp(ddp):
+        return "torch.compile inside the DDP wrapper"
+    fsdp2 = _fsdp2_type()
+    if fsdp2 and any(isinstance(m, fsdp2) for m in module.modules()):
+        return "FSDP2 module"
+    if _has_dtensor(module.parameters()):
+        return "DTensor weights (FSDP2 / tensor parallel)"
+    return None
+
+
+def _auto_ddp_vote_device(ddp):
+    """The rank's own GPU for NCCL (the module's parameter device, never the ambient current device:
+    with device_ids=None that can be another rank's GPU), the CPU otherwise (gloo, cpu:gloo)."""
+    import torch.distributed as dist
+
+    backend = str(dist.get_backend(ddp.process_group)).lower()
+    device = getattr(ddp, "device", None)
+    if not isinstance(device, torch.device):
+        param = next(ddp.module.parameters(), None)
+        device = param.device if param is not None else torch.device("cpu")
+    if device.type == "cuda" and device.index is not None and "nccl" in backend:
+        return device
+    return torch.device("cpu")
+
+
+def _auto_ddp_enroll(ddp):
+    """Right after a DDP wrapper is built, on every rank: attach the agreement hook and its session."""
+    world = _auto_world()
+    if world <= 1:
+        return
+    auto = _CUDAGRAPH_STATE["auto"]
+    group = getattr(ddp, "process_group", None)
+    try:
+        partial = group is None or group.size() != world
+    except Exception:
+        partial = True
+    if partial:
+        # The same answer on every member of the group: no hook, no vote, graphs off.
+        _auto_ddp_veto(auto, "DDP over part of the ranks")
+        return
+    try:
+        why = _auto_ddp_local_reason(ddp)
+    except Exception:
+        why = "DDP layout unavailable"
+    members = weakref.WeakSet()
+    try:
+        members.update(ddp.module.modules())
+        device = _auto_ddp_vote_device(ddp)
+    except Exception:
+        why = why or "DDP layout unavailable"
+        device = torch.device("cpu")
+    try:
+        import torch.distributed as dist
+        rank = dist.get_rank(group)
+        # The vote buffer is allocated here, not in a forward: a rank-local allocation failure at vote
+        # time would leave that rank out of the collective the others are already waiting in.
+        vote = torch.zeros(4, dtype = torch.int64, device = device)
+    except Exception:
+        why = why or "DDP layout unavailable"
+        rank, vote = None, None
+    session = {
+        "owner": weakref.ref(ddp),
+        "auto": auto,
+        "members": members,
+        "admitted": weakref.WeakKeyDictionary(),  # layer -> the parameter list checked for DTensors
+        "owned": weakref.WeakKeyDictionary(),  # layer -> its last forward call ran in the owner
+        "why": why,
+        "device": device,
+        "rank": rank,
+        "vote": vote,
+        "count": 0,
+        "next": 1,
+        "interval": 1,
+        "done": False,
+        "switching": False,
+    }
+    _AUTO_DDP_SESSIONS[ddp] = session
+    # On the DDP wrapper, not on ddp.module: a torch.compile of ddp.module (ddp.module.compile(),
+    # DDP(torch.compile(model))) on one rank only would trace a module hook away there while an eager
+    # rank votes, so the ranks would enter different collectives. The wrapper's own call stays eager
+    # under any compile of the module it wraps, so every rank reaches this hook; a compiled module is
+    # a vote of 0 there.
+    if _auto_ddp_pre_forward not in ddp._forward_pre_hooks.values():
+        ddp.register_forward_pre_hook(_auto_ddp_pre_forward)
+    previous = auto["ddp"]
+    auto["ddp"] = session  # a previous session retires: it votes 0 at its next forward, if any
+    if previous:
+        return  # a re-wrapped model keeps the agreed state; the first vote confirms it
+    if auto["phase"] == "on":
+        # Graphs went on in one process before the process group came up.
+        _auto_ddp_veto(auto, "process group started after graphs went on")
+    elif auto["first"] is not None and auto["phase"] == "probe":
+        # A probe started in one process: start again inside DDP.
+        auto.update(first = None, shape = None, device = None, passes = 0, decision = None)
+        auto["host"].clear()
+        auto["gpu"].clear()
+
+
+def _join_enabled(ddp):
+    return bool(getattr(getattr(ddp, "_join_config", None), "enable", False))
+
+
+def _auto_ddp_pre_forward(ddp, args):
+    # Registered on the DDP wrapper; a plain function so torch.save(ddp) can pickle the hook. It runs
+    # before DDP's own forward, eagerly, also when ddp.module is compiled (a vote of 0 there). A user
+    # torch.compile of the DDP model itself or of a function calling it traces this hook: it traces to
+    # nothing (no call into the compiler-disabled step, so fullgraph=True still works and
+    # fullgraph=False gets no graph break), and a forward that runs a compiled graph never runs it.
+    # Run eagerly under the compiler's callback (a recompile or cache-limit fallback, which can differ
+    # by rank), it only vetoes locally. So no compiled DDP forward counts or votes on any rank,
+    # whether that rank traced, replayed or fell back, and the ranks keep one schedule; the local veto
+    # reaches the other ranks at the next eager vote, if there is one.
+    if torch.compiler.is_compiling():
+        return
+    _auto_ddp_step(ddp, _dynamo_callback_active())
+
+
+@_DISABLE_DYNAMO
+def _auto_ddp_step(ddp, compiling):
+    if getattr(ddp, "_delay_all_reduce_all_params", False) or getattr(
+        ddp, "_use_python_reducer", False
+    ):
+        return  # no DDP forward of ours to own (the same on every rank): no vote
+    session = _AUTO_DDP_SESSIONS.get(ddp)
+    if session is None or session["done"]:
+        return
+    session["switching"] = False
+    auto = session["auto"]
+    live = _CUDAGRAPH_STATE["auto"] is auto and auto["ddp"] is session
+    if _join_enabled(ddp):
+        # No vote under join (a joined rank shadows only DDP's own collectives) and no count, so the
+        # schedule is the same on every rank afterwards, however many inputs each rank had.
+        if live:
+            _auto_ddp_veto(auto, "DDP join (uneven inputs)")
+        return
+    if not (torch.is_grad_enabled() and ddp.require_backward_grad_sync):
+        return
+    if compiling:
+        # No vote and no count: another rank may be replaying a graph that never runs this hook.
+        if live:
+            _auto_ddp_veto(auto, "torch.compile around the DDP model")
+        return
+    session["count"] += 1
+    if session["count"] >= session["next"]:
+        _auto_ddp_agree(auto, session, ddp, live)
+
+
+def _auto_ddp_veto(auto, why):
+    """This rank's graphs off now; the other ranks follow at the next agreement."""
+    if auto["phase"] == "on":
+        auto["why"] = auto["why"] or why
+        _graphs_off("ddp", _AUTO_DDP_NOTE.format(why))  # the run path releases the pool
+    elif auto["phase"] != "off":
+        _auto_off(auto, why)
+
+
+def _auto_ddp_agree(auto, session, ddp, live):
+    import torch.distributed as dist
+
+    count = session["count"]
+    flag = 0
+    if live:
+        try:
+            why = session["why"] or _auto_cp_reason()
+            if why is None and _compiled_inside_ddp(ddp):
+                why = "torch.compile inside the DDP wrapper"
+            if why is not None:
+                _auto_ddp_veto(auto, why)
+        except Exception:
+            # Every enrolled rank has to reach the collective: a local failure is a veto, not a skip.
+            _auto_ddp_veto(auto, "distributed")
+        if auto["phase"] == "off" or _CUDAGRAPH_STATE["off"] is not None:
+            flag = 0
+        elif auto["phase"] == "on":
+            flag = 3
+        elif auto["decision"] == "on":
+            flag = 2
+        else:
+            flag = 1
+    # Outside the try below: a rank-local failure here raises on that rank instead of being taken
+    # as a finished session, which would skip the collective the other ranks already entered.
+    group = ddp.process_group
+    world = group.size()
+    rank = session["rank"]
+    vote = session["vote"]
+    if rank is None:
+        rank = dist.get_rank(group)
+    if vote is None:
+        vote = session["vote"] = torch.zeros(4, dtype = torch.int64, device = session["device"])
+    for i, value in enumerate((flag * world + rank, count, -count, -flag)):
+        vote[i] = value  # in place: no allocation at vote time
+    try:
+        dist.all_reduce(vote, op = dist.ReduceOp.MIN, group = group)
+        low, lowest, negative_highest, negative_top = vote.tolist()
+    except Exception:
+        if live:
+            _auto_ddp_veto(auto, "DDP agreement failed")
+        session["done"] = True
+        return
+    agreed, vetoing = divmod(low, world)
+    if lowest != -negative_highest:
+        agreed, why = 0, "DDP vote counters differed among participating ranks"
+    elif agreed == 0:
+        if vetoing == rank:
+            why = auto["why"] or f"graphs off here: {_CUDAGRAPH_STATE['off']}"
+        else:
+            why = f"rank {vetoing}: graphs off there"
+    elif agreed == 1 and -negative_top == 3:
+        agreed, why = 0, "graphs on in some ranks while another still probes"
+    elif agreed == 1 and count >= _AUTO_DDP_MAX_PROBES:
+        agreed, why = 0, f"a rank still probing after {count} forwards"
+    if agreed == 0:
+        if live:
+            _auto_ddp_veto(auto, why)
+        session["done"] = True
+        return
+    if agreed >= 2:
+        if auto["phase"] == "probe":
+            auto["phase"] = "on"
+            auto["first"] = None
+            session["switching"] = True  # this forward's blocks check the probed shape once more
+            _rank0_note(
+                "auto",
+                auto.get("note", "Unsloth: block CUDA graphs on.") + " (every DDP rank agreed)",
+            )
+        session["next"] = count + session["interval"]
+        session["interval"] = min(session["interval"] * 2, max(1, _AUTO_DDP_RECHECK))
+    else:
+        session["next"] = count + 1
+
+
+_NOT_OURS = object()
+
+
+def _backend_compile_failed(e):
+    """BackendCompilerFailed or a subclass (InductorError on torch 2.7+)."""
+    return any(c.__name__ == "BackendCompilerFailed" for c in type(e).__mro__)
+
+
+def _ddp_stock_phase(session, layer, phase, tracing):
+    """DDP: the phase a stock call acts on. Traced: none (the enclosing graph owns the call; the next
+    eager call sees the same rows). Outside the owning forward: none (no veto from a foreign model).
+    A block of the owning forward goes through the same checks as a compiled call."""
+    if tracing:
+        return None
+    if phase not in ("probe", "on") or not layer.training:
+        return phase
+    why = _auto_ddp_call_reason(session, layer)
+    if why is _NOT_OURS:
+        return None
+    if why is not None:
+        _auto_ddp_veto(_CUDAGRAPH_STATE["auto"], why)
+        return _CUDAGRAPH_STATE["auto"]["phase"]
+    return phase
+
+
+def _auto_ddp_admit(session, layer):
+    params = _block_params(layer)
+    if session["admitted"].get(layer) is not params:
+        # First call, or the parameter list changed since (a registration bumped the cache).
+        if _has_dtensor(params):
+            return "DTensor weights (FSDP2 / tensor parallel)"
+        session["admitted"][layer] = params
+    return _auto_cp_reason()
+
+
+def _auto_ddp_call_reason(session, layer):
+    """Per block call of an enrolled run, on every path: None (this call may take part), why it
+    vetoes graphs, or _NOT_OURS (plain for this call only: outside the owning DDP forward)."""
+    owner = session["owner"]()
+    if owner is None:
+        return _NOT_OURS
+    if torch._C._current_graph_task_id() != -1:
+        # A checkpoint recompute in backward, after the DDP forward ended: graphs only for a block
+        # whose last forward call ran inside the owning DDP forward.
+        if session["owned"].get(layer, False):
+            return _auto_ddp_admit(session, layer)
+        return _NOT_OURS
+    if _DDP._get_active_ddp_module() is not owner:
+        session["owned"][layer] = False
+        return _NOT_OURS
+    if layer not in session["members"]:
+        return "block outside the DDP module"
+    session["owned"][layer] = True
+    return _auto_ddp_admit(session, layer)
+
+
 def _auto_platform_reason():
     """Why auto mode can never turn graphs on in this process (None: it may)."""
     if getattr(torch.version, "hip", None):
@@ -492,17 +1252,14 @@ def _auto_platform_reason():
 
 def _auto_static_reason(layer, hidden_states):
     """Why auto mode never turns graphs on for this run (None: it may)."""
-    if not hidden_states.is_cuda:
+    if not _auto_is_cuda(hidden_states):
         return "not a CUDA tensor"
     why = _auto_platform_reason()
     if why is not None:
         return why
-    try:
-        import torch.distributed as dist
-        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
-            return "distributed"
-    except Exception:
-        return "distributed"
+    why = _auto_distributed_reason(layer)
+    if why is not None:
+        return why
     total = trainable = 0
     for p in layer.parameters():
         total += p.numel()
@@ -514,10 +1271,25 @@ def _auto_static_reason(layer, hidden_states):
     return None
 
 
+def _auto_distributed_reason(layer):
+    """None on one process, or in a DDP run enrolled for agreement (UNSLOTH_BLOCK_CUDAGRAPHS_DDP=1)
+    whose local rules allow graphs; any other multi-process layout keeps graphs off."""
+    if _auto_world() <= 1:
+        return None
+    if not _AUTO_DDP:
+        return "distributed"
+    session = _CUDAGRAPH_STATE["auto"]["ddp"]
+    if not session:
+        return "distributed, not DDP"
+    return session["why"]
+
+
 def _auto_call_reason(layer, hidden_states, args, kwargs):
     """Why this probed call rules graphs out (None: it does not)."""
     if _packed_kwargs(kwargs):
         return "packed / padding-free rows"
+    if _grad_side_inputs(args, kwargs):
+        return "a side input takes a gradient"
     if _in_nonreentrant_checkpoint():
         return "non-reentrant checkpointing"
     if _graphs_unsafe_moe(layer, note = False):
@@ -536,7 +1308,25 @@ def _auto_observe(layer, hidden_states, args, kwargs):
     auto = _CUDAGRAPH_STATE["auto"]
     if auto["phase"] == "off":
         return "plain"
+    session = auto["ddp"] if _AUTO_DDP else None
+    if session:
+        # DDP: ownership, DTensor and context parallel on every call, graphs on or not.
+        why = _auto_ddp_call_reason(session, layer)
+        if why is _NOT_OURS:
+            return "plain"
+        if why is not None:
+            _auto_ddp_veto(auto, why)
+            return "plain"
     if auto["phase"] == "on":
+        if session:
+            if session["switching"] and tuple(hidden_states.shape) != auto["shape"]:
+                # The forward graphs went on in runs a shape the probe never saw on this rank.
+                _auto_ddp_veto(auto, "batch shape changed at the DDP switch")
+                return "plain"
+        elif _AUTO_DDP and _auto_world() > 1:
+            # Graphs went on in one process, then a process group came up without a DDP model.
+            _auto_ddp_veto(auto, "distributed, not DDP")
+            return "plain"
         return "graphs"
     outside = _IN_TRIAL[0] or torch._C._current_graph_task_id() != -1
     if auto["first"] is None:
@@ -562,6 +1352,8 @@ def _auto_observe(layer, hidden_states, args, kwargs):
         return "plain"
     if auto["first"]() is layer:  # a new forward pass
         if auto["decision"] == "on":
+            if session:
+                return "plain"  # the DDP hook turns graphs on, in one forward for every rank
             auto["phase"] = "on"
             auto["first"] = None
             return "graphs"
@@ -576,7 +1368,7 @@ def _auto_decide(auto, device):
     ratio = host / max(gpu, 1e-9)
     detail = f"block launch {host * 1e3 / len(auto['host']):.2f} ms vs GPU {gpu * 1e3 / len(auto['gpu']):.2f} ms"
     auto["ratio"] = ratio
-    if ratio < _AUTO_RATIO:
+    if ratio < _auto_ratio(device):
         _auto_off(auto, f"GPU-bound: {detail}")
         return
     try:
@@ -589,11 +1381,12 @@ def _auto_decide(auto, device):
         _auto_off(auto, f"{free / 2**30:.1f} GiB free")
         return
     auto["decision"] = "on"
-    _rank0_note(
-        "auto",
+    auto["note"] = (
         f"Unsloth: block CUDA graphs on (one batch shape, {detail}). "
-        "UNSLOTH_BLOCK_CUDAGRAPHS=0 keeps them off.",
+        "UNSLOTH_BLOCK_CUDAGRAPHS=0 keeps them off."
     )
+    if not auto["ddp"]:
+        _rank0_note("auto", auto["note"])  # DDP: noted once every rank agreed
 
 
 def _auto_time(call, device):
@@ -669,6 +1462,26 @@ except Exception:
     _DDP = None
 
 
+def _install_ddp_enrollment():
+    """UNSLOTH_BLOCK_CUDAGRAPHS_DDP=1 only: every DDP wrapper is enrolled as it is built."""
+    if not _AUTO_DDP or _DDP is None:
+        return
+    init = _DDP.__init__
+    if getattr(init, "_unsloth_block_ddp_enroll", False):
+        return
+
+    @functools.wraps(init)
+    def __init__(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        _auto_ddp_enroll(self)
+
+    __init__._unsloth_block_ddp_enroll = True
+    _DDP.__init__ = __init__
+
+
+_install_ddp_enrollment()
+
+
 def _no_ddp_graph_split():
     """Stop DDPOptimizer splitting block graphs so checkpoint recomputes save the same tensors as
     the forward (CheckpointError under DDP non-reentrant checkpointing); gradients still reach
@@ -704,8 +1517,9 @@ def _region_recompile_limit(kinds):
     return max(16 * kinds + 16, 32)
 
 
-# gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
-_SKIP = {"GptOssDecoderLayer"}
+# gpt-oss builds its flex mask inside attention, so the block broke and recompiled per length;
+# DeepSeek-V4.1 top-k gather [B, S, min(index_topk, T), D] fails Inductor backward on torch 2.14
+_SKIP = {"GptOssDecoderLayer", "DeepseekV41DecoderLayer"}
 
 
 def _enabled():
@@ -806,6 +1620,19 @@ def _rebind_class(cls):
             setattr(cls, key, new)
 
 
+def _relax_strict_dynamic(obj):
+    """Views drop the strict mark, so a block's specialized length cannot raise ConstraintViolationError."""
+    if isinstance(obj, torch.Tensor):
+        return obj.view(obj.shape) if getattr(obj, "_dynamo_dynamic_indices", None) else obj
+    if type(obj) in (tuple, list):
+        new = [_relax_strict_dynamic(o) for o in obj]
+        return obj if all(a is b for a, b in zip(new, obj)) else type(obj)(new)
+    if type(obj) is dict:
+        new = {k: _relax_strict_dynamic(v) for k, v in obj.items()}
+        return obj if all(new[k] is obj[k] for k in obj) else new
+    return obj
+
+
 def _mark_seq_dynamic(seq_len, obj):
     if isinstance(obj, torch.Tensor):
         # A float tensor's last dim is a width even when it equals seq_len (mrope ids are int).
@@ -835,6 +1662,17 @@ def _mark_batch_dynamic(batch, obj):
 
 
 _DYNAMIC_BATCH = os.environ.get("UNSLOTH_BLOCK_COMPILE_DYNAMIC_BATCH", "1") != "0"
+# Per-document metadata of a packed row: one entry per document (+1 for cu_seqlens).
+_PACKED_LENGTH_KWARGS = ("packed_seq_lengths", "cu_seq_lens_q", "cu_seq_lens_k", "cu_seqlens")
+
+
+def _mark_packed_dynamic(kwargs):
+    # The document count changes from one packed batch to the next: without the mark every block (and
+    # the attention frame after its graph break) recompiled once on the second packed batch.
+    for key in _PACKED_LENGTH_KWARGS:
+        value = kwargs.get(key)
+        if isinstance(value, torch.Tensor) and value.dim() == 1:
+            torch._dynamo.maybe_mark_dynamic(value, 0)
 
 
 # fla's opaque op state: None until a GatedDeltaNet layer ran its self-check, then True / False.
@@ -880,6 +1718,8 @@ def _gdn_chunk_adapter(original):
         if (
             _GDN_OP[0]
             and torch.compiler.is_compiling()
+            # A prefix-trie row (TRL AsyncGRPO) scans along each sample's path, not the packed order.
+            and "tree_segment_parents" not in kwargs
             and kwargs.get("use_qk_l2norm_in_kernel") is True
             # Only the self-checked default; packed batches only if their self-check passed.
             and (cu_seqlens is None or (_GDN_VARLEN[0] and q.shape[0] == 1))
@@ -894,9 +1734,9 @@ def _gdn_chunk_adapter(original):
             q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
             scale = q.shape[-1] ** -0.5
             if cu_seqlens is None:
-                out = torch.ops.unsloth.qwen3_5_gdn_chunk(q, k, v, g, beta, scale)
+                out = torch.ops.unsloth.qwen3_5_gdn_chunk_v2(q, k, v, g, beta, scale)
             else:
-                out = torch.ops.unsloth.qwen3_5_gdn_chunk(
+                out = torch.ops.unsloth.qwen3_5_gdn_chunk_v2(
                     q, k, v, g, beta, scale, cu_seqlens.contiguous()
                 )
             return out[0], None
@@ -974,20 +1814,25 @@ def _route_fla_callers(gc):
 
 def _causal_conv1d_adapter(original, depthwise_conv):
     # Inductor's conv backward guards on the exact sequence length: recompile per length.
+    # transformers < 5.15 calls with causal-conv1d kwargs (x = ..., seq_idx = None): pass args through unchanged.
     @functools.wraps(original, updated = ())
-    def causal_conv1d_fn(
-        hidden_states,
-        weight,
-        bias = None,
-        activation = None,
-        **kwargs,
-    ):
+    def causal_conv1d_fn(*args, **kwargs):
+        named = dict(zip(("hidden_states", "weight", "bias", "activation"), args))
+        x_key = "x" if "x" in kwargs else "hidden_states"
+        hidden_states = named.get("hidden_states", kwargs.get(x_key))
+        weight = named.get("weight", kwargs.get("weight"))
+        bias = named.get("bias", kwargs.get("bias"))
+        activation = named.get("activation", kwargs.get("activation"))
         if (
             _IN_BLOCK[0]
             and torch.compiler.is_compiling()
+            and len(args) <= 4
+            and hidden_states is not None
+            and weight is not None
             and weight.dim() == 2
             and activation in (None, "silu", "swish")
             and all(kwargs.get(key) is None for key in ("seq_idx", "cu_seqlens", "initial_states"))
+            and "tree_segment_parents" not in kwargs
             and not kwargs.get("return_final_states")
         ):
             out = depthwise_conv(hidden_states.to(weight.dtype), weight)
@@ -996,7 +1841,7 @@ def _causal_conv1d_adapter(original, depthwise_conv):
             if activation is not None:
                 out = torch.nn.functional.silu(out)
             return out.to(hidden_states.dtype)
-        return original(hidden_states, weight, bias, activation = activation, **kwargs)
+        return original(*args, **kwargs)
 
     causal_conv1d_fn._unsloth_block_adapter = True
     return causal_conv1d_fn
@@ -1099,6 +1944,10 @@ def _prepare_gdn(layer, hidden_states):
         from ._gdn_op import _fla_ops, varlen_ok
 
         heads, dk, dv = gdn.num_v_heads, gdn.head_k_dim, gdn.head_v_dim
+        # transformers >= 5.23 passes q / k unrepeated (huggingface/transformers#49141).
+        qk_heads = getattr(gdn, "num_k_heads", heads)
+        if not qk_heads or heads % qk_heads:
+            qk_heads = heads
         B, T = hidden_states.shape[0], hidden_states.shape[1]
         dev, dt = hidden_states.device, hidden_states.dtype
 
@@ -1107,8 +1956,8 @@ def _prepare_gdn(layer, hidden_states):
             r = lambda *s, dtype = dt: torch.randn(*s, device = dev, dtype = dtype, generator = gen)
             g = -torch.rand(B, T, heads, device = dev, generator = gen) * 0.1
             return (
-                r(B, T, heads, dk),
-                r(B, T, heads, dk),
+                r(B, T, qk_heads, dk),
+                r(B, T, qk_heads, dk),
                 r(B, T, heads, dv),
                 g,
                 r(B, T, heads).sigmoid(),
@@ -1120,15 +1969,14 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_OP[0] = _route_fla_kernel() > 0
         if _GDN_OP[0]:
             _route_causal_conv(gdn)
+    except torch.OutOfMemoryError:
+        _GDN_OP[0] = None
+        raise
     except Exception:
         _GDN_OP[0] = False
 
 
-# PEFT's ParamWrapper (target_parameters on a non-expert weight, e.g. a MoE router) registers a torch
-# parametrization on every forward and removes it after, and torch builds a new Parametrized<Class>
-# subclass per registration. Dynamo guards a module's type id, so each call recompiles the module's
-# forward whenever the fresh class lands at an address it has not seen (how many do depends on the
-# allocator: a different code path shifted the count). One class per module instance keeps the id.
+# A fresh class per PEFT forward would change the type id Dynamo guards, so each module keeps one.
 _PARAMETRIZED_CLASSES = weakref.WeakKeyDictionary()
 
 
@@ -1141,8 +1989,7 @@ def _stable_parametrized_classes():
     if original is None or getattr(original, "_unsloth_stable", False):
         return
 
-    # Eager: the class swap is the graph break PEFT's registration already takes, and Dynamo must
-    # not fold the cache lookup into a graph.
+    # Eager: the swap is the graph break PEFT already takes; Dynamo must not fold the lookup.
     @torch.compiler.disable
     @functools.wraps(original)
     def _inject_new_class(module):
@@ -1167,6 +2014,10 @@ def _stable_parametrized_classes():
 # zoo's Gemma-4 sliding router scans the mask (data dependent) and declines while compiling, so
 # the block runs the scan eagerly and a router wrapper reads the verdict stored on the mask.
 _BAND_MODULE = "unsloth_zoo.temporary_patches.gemma4_banded_attention"
+_FLASH_MODULE = "unsloth_zoo.temporary_patches.gemma4_flash_sliding"
+# Read by unsloth/kernels/large_head_attention.py (PLAIN_CAUSAL_ATTR): a compiled head_dim 512 layer
+# takes the kernel over a causal mask the block verified here, instead of masked SDPA.
+_PLAIN_CAUSAL_ATTR = "_unsloth_plain_causal"
 _BAND_CHECK = [None]
 
 
@@ -1183,8 +2034,13 @@ def _gemma4_router_hook():
         router, "_unsloth_block_band", False
     ):
         return
-    zoo = sys.modules.get(router.__module__)
-    plain = getattr(zoo, "_ORIG_SDPA", [None])[0]
+    # Other routers wrap zoo's (unsloth's head_dim 512 kernel, installed at load before this runs, has no
+    # _ORIG_SDPA), so fall back to zoo's module: without it the hook never installed for Gemma-4.
+    plain = None
+    for name in (router.__module__, _FLASH_MODULE):
+        plain = getattr(sys.modules.get(name), "_ORIG_SDPA", [None])[0]
+        if plain is not None:
+            break
     check = getattr(sys.modules.get(_BAND_MODULE), "_mask_is_plain_band", None)
     if plain is None or not callable(check):
         return
@@ -1233,6 +2089,24 @@ def _gemma4_router_hook():
                     enable_gqa = True,
                 )
                 return out.transpose(1, 2).contiguous(), None
+            if (
+                window
+                and attention_mask is not None
+                and query.shape[2] == key.shape[2]
+                and query.shape[2] > window
+                and not (dropout and module.training)
+                and kwargs.get("softcap", None) is None
+                and getattr(attention_mask, _LONG_BAND_ATTR, False) is True
+                and query.dtype == key.dtype == value.dtype
+                and query.dtype in (torch.float16, torch.bfloat16)
+                and query.shape[-1] == key.shape[-1] == value.shape[-1]
+                and query.shape[1] % key.shape[1] == 0
+                and _band_kernel_checked(query)
+                and _band_offsets_fit(query, key, value)
+            ):
+                # Longer than the window: masked SDPA computes all S x S scores (and repeats the kv
+                # heads); the interval kernel reads only each row's window (O(S * w)).
+                return _band_kernel_attention(query, key, value, window, scaling), None
             return plain(
                 module,
                 query,
@@ -1260,6 +2134,85 @@ def _gemma4_router_hook():
     ALL_ATTENTION_FUNCTIONS["sdpa"] = sdpa_attention_forward
 
 
+# Set on a sliding layer's 4D mask when it is the plain band, the sequence is longer than the window and
+# the interval kernel passed its self check at this head_dim / dtype; read by the router above.
+_LONG_BAND_ATTR = "_unsloth_block_long_band"
+_BAND_KERNEL_ENV = "UNSLOTH_BLOCK_SLIDING_KERNEL"
+_LH_MODULE = "unsloth.kernels.large_head_attention"
+
+
+def _band_offsets_fit(query, key, value):
+    lh = sys.modules.get(_LH_MODULE)
+    if lh is None:  # loaded by _band_kernel_checked whenever the kernel can run
+        return True
+    limit = lh._INT32_MAX
+    if max(query.numel(), key.numel(), value.numel()) > limit:
+        return False
+    return max(lh._row_span(query), lh._row_span(key), lh._row_span(value)) <= limit
+
+
+def _band_kernel_attention(query, key, value, window, scaling):
+    lh = sys.modules[_LH_MODULE]
+    B, S = query.shape[0], query.shape[2]
+    rows = torch.arange(S, device = query.device, dtype = torch.int32)
+    lo = (rows - (window - 1)).clamp_min(0).expand(B, S).contiguous()
+    hi = rows.expand(B, S).contiguous()
+    scale = scaling if scaling is not None else query.shape[-1] ** -0.5
+    return lh.large_head_attention(query, key, value, lo, hi, scale).contiguous()
+
+
+def _band_kernel_ready(layer, hidden_states):
+    """Eager: the interval kernel may serve this sliding layer (CUDA sm80+, passed its self check at the
+    layer's head_dim). Checked per dtype; the router also reads the verdict for the call's dtype."""
+    if os.environ.get(_BAND_KERNEL_ENV, "1") == "0" or hidden_states is None:
+        return False
+    if not hidden_states.is_cuda or torch.version.hip is not None:
+        return False
+    key = str(hidden_states.device)
+    cached = layer.__dict__.get("_unsloth_band_kernel_ready")
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    ready = _band_kernel_check(layer, hidden_states.device)
+    if ready is None:
+        return False  # transient (an OOM): not served this call, checked again on the next one
+    layer.__dict__["_unsloth_band_kernel_ready"] = (key, ready)
+    return ready
+
+
+def _band_kernel_check(layer, device):
+    head_dim = None
+    for module in layer.modules():
+        if getattr(module, "is_sliding", False) and getattr(module, "sliding_window", None):
+            head_dim = getattr(module, "head_dim", None)
+            break
+    if head_dim not in (64, 128, 256):
+        return False
+    try:
+        from unsloth.kernels import large_head_attention as lh
+
+        if not lh._enabled() or not lh._measured_faster_on(device):
+            return False
+        dtypes = [torch.float16] + ([torch.bfloat16] if torch.cuda.is_bf16_supported() else [])
+        verdicts = [bool(lh._self_check(device, dtype, head_dim)) for dtype in dtypes]
+        # The self check returns False without caching a verdict after an OOM: no verdict for the layer either.
+        if not any(verdicts) and any(
+            (str(device), dtype, head_dim) not in lh._SELF_CHECK for dtype in dtypes
+        ):
+            return None
+        return any(verdicts)
+    except torch.OutOfMemoryError:
+        return None
+    except Exception:
+        return False
+
+
+def _band_kernel_checked(query):
+    lh = sys.modules.get(_LH_MODULE)
+    if lh is None:
+        return False
+    return lh._SELF_CHECK.get((str(query.device), query.dtype, query.shape[-1]), False) is True
+
+
 def _sliding_window(layer):
     window = layer.__dict__.get("_unsloth_block_window", 0)
     if window == 0:
@@ -1272,7 +2225,13 @@ def _sliding_window(layer):
     return window
 
 
-def _precheck_band(layer, seq_len, args, kwargs):
+def _precheck_band(
+    layer,
+    seq_len,
+    args,
+    kwargs,
+    hidden_states = None,
+):
     # Every 4D mask gets a verdict: a missing attribute would recompile.
     check = _BAND_CHECK[0]
     if check is None:
@@ -1287,6 +2246,145 @@ def _precheck_band(layer, seq_len, args, kwargs):
                     obj._unsloth_block_band = False
             elif not hasattr(obj, "_unsloth_block_band"):
                 obj._unsloth_block_band = False
+            # Full-attention layers: a band as wide as the sequence is the plain causal mask
+            # (scan cached on the mask by version, one per forward for every global layer).
+            if window is None:
+                try:
+                    causal = bool(check(obj, seq_len, seq_len))
+                except Exception:
+                    causal = False
+                setattr(obj, _PLAIN_CAUSAL_ATTR, causal)
+            elif not hasattr(obj, _PLAIN_CAUSAL_ATTR):
+                setattr(obj, _PLAIN_CAUSAL_ATTR, False)
+            if window is not None:
+                long_band = False
+                if seq_len > window and _band_kernel_ready(layer, hidden_states):
+                    try:
+                        long_band = bool(check(obj, seq_len, window))
+                    except Exception:
+                        long_band = False
+                setattr(obj, _LONG_BAND_ATTR, long_band)
+            elif not hasattr(obj, _LONG_BAND_ATTR):
+                setattr(obj, _LONG_BAND_ATTR, False)
+
+
+# transformers drops the mask (None) for unpadded micro batches and dynamo guards on mask vs None, so
+# each flip recompiles. Once a layer has seen a mask, rebuild None in that layout (same SDPA result).
+_MASK_KWARG = "attention_mask"
+_MASK_SPEC = "_unsloth_block_mask_spec"
+_MASK_FLAGS = "_unsloth_block_mask_flags"
+_MATERIALISED_ATTR = "_unsloth_block_materialised"
+_MASK_FLAG_ATTRS = ("_unsloth_block_band", _PLAIN_CAUSAL_ATTR, _LONG_BAND_ATTR)
+# Shared rebuilt mask; held strongly only up to this size.
+_MATERIALISED = [None]
+_MATERIALISED_KEEP_BYTES = 1 << 28
+
+
+def _mask_layout(mask, seq_len):
+    if not isinstance(mask, torch.Tensor) or mask.requires_grad or mask.is_floating_point():
+        return None
+    if mask.is_inference() or getattr(mask, "is_nested", False) or mask.shape[-1] != seq_len:
+        return None
+    if mask.dim() == 2:
+        heads = None
+    elif mask.dim() == 4 and mask.dtype == torch.bool and mask.shape[-2] == seq_len:
+        heads = mask.shape[1]
+    else:
+        return None
+    shape, stride = mask.shape, mask.stride()
+    broadcast = tuple(i for i in range(mask.dim()) if stride[i] == 0 and shape[i] > 1)
+    expected, step = [0] * mask.dim(), 1
+    for i in reversed(range(mask.dim())):
+        if i in broadcast:
+            continue
+        expected[i] = step
+        step *= shape[i]
+    if any(shape[i] > 1 and stride[i] != expected[i] for i in range(mask.dim())):
+        return None
+    # Dynamo also guards a view's base (transformers expands/slices its masks).
+    view = mask._base is not None
+    if view:
+        base = mask._base
+        stored = [1 if i in broadcast else shape[i] for i in range(mask.dim())]
+        if list(base.shape) != stored or not base.is_contiguous():
+            return None
+    elif broadcast:
+        return None
+    return (mask.dim(), mask.dtype, heads, broadcast, view)
+
+
+def _layer_is_causal(layer):
+    attn = getattr(layer, "self_attn", None) or getattr(layer, "attention", None)
+    causal = getattr(attn, "is_causal", None)
+    return causal if isinstance(causal, bool) else None
+
+
+def _materialise_mask(layout, causal, batch, seq_len, device):
+    dim, dtype, heads, broadcast, view = layout
+    key = (layout, causal, batch, seq_len, device)
+    cached = _MATERIALISED[0]
+    if cached is not None and cached[0] == key:
+        mask = cached[1] if cached[2] else cached[1]()
+        if mask is not None:
+            return mask
+    full = (batch, seq_len) if dim == 2 else (batch, heads, seq_len, seq_len)
+    stored = tuple(1 if i in broadcast else size for i, size in enumerate(full))
+    if dim == 4 and causal and (2 in broadcast or 3 in broadcast):
+        # A causal mask needs both token dims stored; a broadcast one (padding-only layout) keeps None.
+        return None
+    # Not an inference tensor: training reuses the cache and autograd may save it (hybrid padding multiply).
+    with torch.inference_mode(False), torch.no_grad():
+        if dim == 4 and causal:
+            # A fresh tensor in the stored shape (contiguous() keeps a (1, 1, L, L) expand as a view of the 2D base).
+            mask = torch.empty(stored, dtype = torch.bool, device = device)
+            mask.copy_(torch.ones((seq_len, seq_len), dtype = torch.bool, device = device).tril_())
+        else:
+            mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
+        if view:
+            mask = mask.expand(full)
+    setattr(mask, _MATERIALISED_ATTR, True)
+    keep = mask.untyped_storage().nbytes() <= _MATERIALISED_KEEP_BYTES
+    _MATERIALISED[0] = (key, mask if keep else weakref.ref(mask), keep)
+    return mask
+
+
+def _normalise_mask(layer, hidden_states, kwargs):
+    if _MASK_KWARG not in kwargs or hidden_states.dim() != 3:
+        return kwargs
+    mask = kwargs[_MASK_KWARG]
+    if mask is not None:
+        if not getattr(mask, _MATERIALISED_ATTR, False):
+            layout = _mask_layout(mask, hidden_states.shape[1])
+            if layout is not None:
+                layer.__dict__[_MASK_SPEC] = layout
+            else:
+                layer.__dict__.pop(_MASK_SPEC, None)
+        return kwargs
+    layout = layer.__dict__.get(_MASK_SPEC)
+    if layout is None or kwargs.get("is_causal") is not None:
+        return kwargs
+    causal = _layer_is_causal(layer) if layout[0] == 4 else None
+    if layout[0] == 4 and causal is None:
+        return kwargs
+    mask = _materialise_mask(
+        layout, causal, hidden_states.shape[0], hidden_states.shape[1], hidden_states.device
+    )
+    return kwargs if mask is None else {**kwargs, _MASK_KWARG: mask}
+
+
+def _settle_mask_flags(layer, kwargs):
+    # Dynamo guards on fast-path flags: keep one only where the last real mask had it.
+    mask = kwargs.get(_MASK_KWARG)
+    if not isinstance(mask, torch.Tensor):
+        return
+    if not getattr(mask, _MATERIALISED_ATTR, False):
+        layer.__dict__[_MASK_FLAGS] = tuple(getattr(mask, name, None) for name in _MASK_FLAG_ATTRS)
+        return
+    flags = layer.__dict__.get(_MASK_FLAGS)
+    for i, name in enumerate(_MASK_FLAG_ATTRS):
+        if hasattr(mask, name):
+            prior = flags[i] if flags is not None else None
+            setattr(mask, name, bool(getattr(mask, name)) and prior is True)
 
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
@@ -1295,6 +2393,8 @@ _IN_BLOCK = [0]
 # block is inlined into a user's torch.compile, which may be fullgraph=True. Read by unsloth_zoo.
 _IN_COMPILED_REGION = [False]
 _PACKED_MODULE = "unsloth.utils.hf_packed_attention"
+_DISPATCH_MODULE = "unsloth.utils.attention_dispatch"
+_PACKED_BLOCK_KWARG = "_unsloth_packed_varlen"
 _NO_PACKED = [False]
 _OFF, _FULL, _SPLIT = 0, 1, 2
 _DEMOTION = (_FULL, _SPLIT, _OFF)
@@ -1310,6 +2410,103 @@ def _training_flex_options(options):
     if isinstance(options, dict) and not ({"FORCE_USE_FLEX_ATTENTION", "BACKEND"} & options.keys()):
         return {**options, "FORCE_USE_FLEX_ATTENTION": True}
     return options
+
+
+# Memory-efficient SDPA backward ops (masked training calls).
+_EFFICIENT_SDPA_BACKWARD = (
+    "_scaled_dot_product_efficient_attention_backward",
+    "_efficient_attention_backward",
+)
+
+
+def _efficient_backward_keeps_guard():
+    """CUDA torch < 2.14: without torch's (always true) guard the efficient backward copies the bias densely
+    and faults on padded lengths not a multiple of 8 (`attn_bias is not correctly aligned`)."""
+    from packaging.version import Version
+    return torch.version.hip is None and Version(torch.__version__.split("+")[0]) < Version("2.14")
+
+
+# Cache keys do not see the lowering, so graphs cached without the guard must be invalidated.
+_EFFICIENT_BACKWARD_CACHE_TAG = "unsloth/efficient-backward-guard"
+
+
+def _tag_efficient_backward_cache():
+    config = getattr(torch.compiler, "config", None)
+    if config is None or not isinstance(getattr(config, "cache_key_tag", None), str):
+        return False
+    tags = [t for t in config.cache_key_tag.split(",") if t]
+    if _EFFICIENT_BACKWARD_CACHE_TAG in tags:
+        return True
+    value = ",".join(tags + [_EFFICIENT_BACKWARD_CACHE_TAG])
+    try:
+        from ..kernels.triton_launch import set_torch_config, sync_compile_cache_tag_to_workers
+    except Exception:
+        setattr(config, "cache_key_tag", value)
+        return True
+    # Every thread: a reentrant checkpoint recompiles its grad graph on autograd's device thread.
+    set_torch_config(config, "cache_key_tag", value)
+    sync_compile_cache_tag_to_workers()
+    return True
+
+
+def _sdpa_alignment_without_guard():
+    """Stop Inductor recompiling a block per `seq_len % 8` class: inside torch 2.14's SDPA lowering only,
+    `guard_or_false` becomes `statically_known_true` (False is its documented safe answer), so a dynamic length
+    takes the general unaligned path instead of installing a `Mod(s, 8)` guard (20-44 s recompile per layer kind).
+    The memory-efficient backward keeps torch's guard where it needs it (_efficient_backward_keeps_guard).
+    UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
+    if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
+        if _efficient_backward_keeps_guard():
+            # Stock lowering, but the same cache key as a run without the guard before the tag existed:
+            # tag it too, or that run's faulting efficient backward is served again.
+            _tag_efficient_backward_cache()
+        return False
+    try:
+        import torch._inductor.lowering as lowering
+        from torch._inductor.sizevars import SizeVarAllocator
+        from torch._inductor.virtualized import V
+    except Exception:
+        return False
+    original = getattr(lowering, "sdpa_constraint", None)
+    table = getattr(lowering, "_maybe_layout_constraints", None)
+    if original is None or not isinstance(table, dict):
+        return False
+    if getattr(original, "_unsloth_no_align_guard", False):
+        return True
+    if not hasattr(SizeVarAllocator, "statically_known_true") or not hasattr(
+        SizeVarAllocator, "guard_or_false"
+    ):
+        return False
+    guarded = set()
+    if _efficient_backward_keeps_guard():
+        for name in _EFFICIENT_SDPA_BACKWARD:
+            packet = getattr(torch.ops.aten, name, None)
+            if packet is not None and hasattr(packet, "default"):
+                guarded.add(packet.default)
+        _tag_efficient_backward_cache()
+
+    @functools.wraps(original)
+    def sdpa_constraint(*args, **kwargs):
+        if args and getattr(args[0], "target", None) in guarded:
+            return original(*args, **kwargs)
+        sizevars = V.graph.sizevars
+        shadowed = "guard_or_false" in sizevars.__dict__
+        previous = sizevars.__dict__.get("guard_or_false")
+        sizevars.guard_or_false = sizevars.statically_known_true
+        try:
+            return original(*args, **kwargs)
+        finally:
+            if shadowed:
+                sizevars.guard_or_false = previous
+            else:
+                del sizevars.guard_or_false
+
+    sdpa_constraint._unsloth_no_align_guard = True
+    replaced = [op for op, fn in table.items() if fn is original]
+    for op in replaced:
+        table[op] = sdpa_constraint
+    lowering.sdpa_constraint = sdpa_constraint
+    return bool(replaced)
 
 
 def _flex_split_hook():
@@ -1388,7 +2585,8 @@ def _nf4_in_blocks():
     Linear4bit.forward = forward
 
 
-_CACHE_KWARGS = ("past_key_values", "past_key_value", "cache_params", "layer_past")
+# transformers >= 5.24 layers take `cache` (it was `past_key_values`).
+_CACHE_KWARGS = ("past_key_values", "past_key_value", "cache_params", "layer_past", "cache")
 
 
 def _has_cache(args, kwargs):
@@ -1435,6 +2633,83 @@ def _layer_kind(layer):
     )
 
 
+def _is_hf_checkpoint_wrapper(fn):
+    """transformers >= 5.23 checkpoints in a wrapper GradientCheckpointingLayer.__init_subclass__ puts on
+    each layer class's `forward` (it was `__call__`); it checkpoints only while it is `type(self).forward`."""
+    code = getattr(fn, "__code__", None)
+    return (
+        code is not None
+        and code.co_name == "forward_with_checkpointing"
+        and callable(getattr(fn, "__wrapped__", None))
+    )
+
+
+# The cache arguments transformers' wrapper clears before it checkpoints (unless _can_checkpoint_with_cache):
+# `past_key_values` on 5.23, `cache` on 5.24.
+_CHECKPOINT_CACHE_KWARGS = ("past_key_values", "cache", "layer_past")
+
+
+def _checkpoint_contract(wrapper):
+    """What the installed transformers wrapper does, read off its code: whether it checkpoints only under grad
+    (5.24 added `torch.is_grad_enabled()`; 5.23 checkpoints a training-mode layer under no_grad too, cache
+    cleared) and which cache keywords it clears. Unknown code keeps the 5.24 rule and clears every name."""
+    code = getattr(wrapper, "__code__", None)
+    if code is None:
+        return True, _CHECKPOINT_CACHE_KWARGS
+    names = tuple(n for n in _CHECKPOINT_CACHE_KWARGS if n in code.co_consts)
+    return "is_grad_enabled" in code.co_names, names or _CHECKPOINT_CACHE_KWARGS
+
+
+def _checkpointing(forward, contract = None):
+    """The block's forward hides transformers' checkpoint wrapper, so layers ran without checkpointing."""
+    needs_grad, cache_kwargs = contract or (True, _CHECKPOINT_CACHE_KWARGS)
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        outermost = type(self).forward is forward_with_checkpointing or (
+            getattr(self.__dict__.get("forward"), "__func__", None) is forward_with_checkpointing
+        )
+        # transformers >= 5.24: without grad there is no backward to replay the layer, so it runs as is, cache
+        # included (generating from a model left in training mode). 5.23 checkpoints it with the cache cleared.
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and (not needs_grad or torch.is_grad_enabled())
+            and outermost
+        ):
+            if kwargs.get("use_cache"):
+                kwargs["use_cache"] = False
+            if not getattr(self, "_can_checkpoint_with_cache", False):
+                for name in cache_kwargs:
+                    if kwargs.get(name) is not None:
+                        kwargs[name] = None
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def _fast_lora():
+    from ..kernels import fast_lora
+    return fast_lora
+
+
+def _skip_down_eligible(layer, original):
+    try:
+        return _fast_lora().block_skip_down_eligible(layer, original)
+    except Exception:
+        return False
+
+
+def _replays(layer):
+    try:
+        return _fast_lora()._replay_module() is layer
+    except Exception:
+        return False
+
+
 def _wrap(
     cls,
     compile_options,
@@ -1443,6 +2718,12 @@ def _wrap(
     install = True,
 ):
     original = getattr(cls.forward, "_unsloth_block_original", cls.forward)
+    checkpoint_outside = getattr(cls.forward, "_unsloth_block_checkpoint_outside", False)
+    contract = getattr(cls.forward, "_unsloth_block_checkpoint_contract", None)
+    if _is_hf_checkpoint_wrapper(original):
+        # Compile the layer's own forward; checkpointing goes back outside the block (below).
+        contract = _checkpoint_contract(original)
+        original, checkpoint_outside = original.__wrapped__, True
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     try:
@@ -1492,6 +2773,96 @@ def _wrap(
     else:
         plain = compiled
     graphed_box = [compiled if graphs else None]
+    # The C++ wrapper copy of the graphs-off region, used once auto mode has stopped timing launches
+    # (its launch / GPU ratio thresholds were measured on the Python wrapper) and never for CUDA graphs.
+    # Built once this class's layers average _CPP_WRAPPER_AFTER calls each: its C++ build costs about a
+    # minute once, which a short run would not win back.
+    cpp = {
+        "on": _CPP_WRAPPER_REASON is None and not graphs,
+        "region": None,
+        "layers": set(),
+        "calls": 0,
+    }
+
+    def cpp_wanted(kwargs):
+        # Packed rows never take CUDA graphs, so they need not wait for auto mode's verdict. Never inside
+        # a non-reentrant checkpoint: a switch between its forward and recompute would change what the
+        # two save.
+        return (
+            cpp["on"]
+            and not _CPP_WRAPPER_BROKEN
+            and not _in_nonreentrant_checkpoint()
+            and (not auto or _CUDAGRAPH_STATE["auto"]["phase"] == "off" or _packed_kwargs(kwargs))
+        )
+
+    def cpp_in_use(self, hidden_states, args, kwargs, mode):
+        """Counts this class's calls per layer and builds the C++ region once past the threshold."""
+        if not cpp_wanted(kwargs):
+            return False
+        if cpp["region"] is None:
+            # Per layer seen, so a second model of the same class (or a deleted first one) still counts.
+            cpp["layers"].add(id(self))
+            cpp["calls"] += 1
+            if cpp["calls"] <= _CPP_WRAPPER_AFTER * len(cpp["layers"]):
+                return False
+            if _CPP_WRAPPER_AFTER > 0:  # auto: only a run that wins the cold build back
+                left = _cpp_wrapper_steps_left()
+                if left is None or left < _CPP_WRAPPER_MIN_REMAINING:
+                    # Not latched: a later, longer Trainer.train in this process can still switch.
+                    _rank0_note(
+                        "cpp_wrapper_short_run",
+                        "Unsloth: keeping Inductor's Python wrapper for the decoder blocks "
+                        f"({'steps left unknown' if left is None else f'{left} steps left'}; the C++ "
+                        f"wrapper's one-time build pays off from about {_CPP_WRAPPER_MIN_REMAINING}).",
+                    )
+                    return False
+            why = _cpp_wrapper_probe(hidden_states.device)
+            if why is not None:
+                cpp["on"] = False
+                _rank0_note(
+                    "cpp_wrapper_probe",
+                    f"Unsloth: Inductor's C++ wrapper failed a forward + backward probe ({why}); "
+                    "every block keeps the Python wrapper.",
+                )
+                return False
+            CPP_WRAPPER_STATS["regions"] += 1
+            if _CPP_WRAPPER_AFTER > 0:
+                _rank0_note(
+                    "cpp_wrapper",
+                    "Unsloth: compiling the decoder blocks with Inductor's C++ wrapper (once, about a "
+                    "minute) for faster steps. UNSLOTH_BLOCK_CPP_WRAPPER=0 keeps the Python wrapper.",
+                )
+            cpp["region"] = torch.compile(
+                original,
+                fullgraph = False,
+                dynamic = None,
+                options = {**compile_options, "cpp_wrapper": True},
+                **isolate,
+            )
+        return True
+
+    def fast(kwargs):
+        return cpp["region"] if cpp["region"] is not None and cpp_wanted(kwargs) else compiled
+
+    def python_wrapper_fallback(e):
+        """A failed C++ build (compiler, headers, an op it cannot wrap): this class's blocks go back to
+        the Python wrapper region. False when the C++ wrapper was not in use."""
+        if (
+            cpp["region"] is None
+            or not cpp["on"]
+            or not _backend_compile_failed(e)
+            # An OOM wrapped by the compiler is not a failed C++ build.
+            or isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError)
+        ):
+            return False
+        cpp["on"] = False
+        CPP_WRAPPER_STATS["fallbacks"] += 1
+        first = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+        print(
+            f"Unsloth: {cls.__name__} block compile with Inductor's C++ wrapper failed ({first}); "
+            "compiling it with the Python wrapper."
+        )
+        return True
 
     def graphed():
         if graphed_box[0] is None:
@@ -1510,9 +2881,22 @@ def _wrap(
 
     graph_shapes = set()
 
-    def run(self, hidden_states, args, kwargs, mode):
+    def run(
+        self,
+        hidden_states,
+        args,
+        kwargs,
+        mode,
+        skip_down = False,
+        trial = False,
+    ):
         kwargs, shared = _shared_kv_scratch(self, kwargs)
+        if skip_down:
+            # Call scoped: only this call's tagged layer forward and fused MLP see it (no global, no thread).
+            kwargs = {**kwargs, "_unsloth_skip_down": True}
         out = _run(self, hidden_states, args, kwargs, mode)
+        if skip_down and not trial:
+            _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
         if shared is not None:
             shared[0].update(shared[1])
         return out
@@ -1557,38 +2941,71 @@ def _wrap(
                             graph_shapes.add(shape)
                 # Before the graphs_off read: the observer may set or clear it for this block.
                 flex = use_graphs and _note_block_mask_call(self, args, kwargs)
+                side = use_graphs and _grad_side_inputs(args, kwargs)
+                ddp_run = auto and _AUTO_DDP and bool(_CUDAGRAPH_STATE["auto"]["ddp"])
+                if side and ddp_run:
+                    # Plain here while the other ranks replay: publish it as a veto.
+                    _auto_ddp_veto(_CUDAGRAPH_STATE["auto"], "a side input takes a gradient")
                 if use_graphs and (
                     _CUDAGRAPH_STATE["off"] is not None
                     or self.__dict__.get("_unsloth_block_graphs_off", False)
                     or _in_nonreentrant_checkpoint()
                     or _graphs_unsafe_moe(self)
                     or flex
+                    or side
                 ):
                     if _CUDAGRAPH_STATE["off"] is not None and _CUDAGRAPH_STATE["release"] is None:
                         _release_graph_pool()
-                    return plain(self, hidden_states, *args, **kwargs)
+                    region = fast(kwargs) if plain is compiled else plain
+                    return region(self, hidden_states, *args, **kwargs)
+                if (
+                    ddp_run
+                    and _CUDAGRAPH_STATE["off"] is not None
+                    and _CUDAGRAPH_STATE["release"] is None
+                ):
+                    # DDP: a veto can leave every later call plain; release the pool on those too.
+                    _release_graph_pool()
                 if use_graphs:
-                    _param_grads_out_of_pool(self)
-                    device = hidden_states.device.index
-                    if _pool_outputs_stay_valid(self, hidden_states):
-                        if _input_grad_must_leave_pool(hidden_states):
-                            # A leaf's .grad outlives the generation (trainable inputs_embeds); a
-                            # checkpoint's backward recomputes (a new generation) before reading it.
-                            hidden_states = _CloneGrad.apply(hidden_states)
-                        return _graphed_call(
-                            graphed(), device, self, hidden_states, *args, **kwargs
+                    try:
+                        return _graphs_run(self, hidden_states, args, kwargs)
+                    except Exception as e:
+                        # DDP: a graph variant that fails to compile (its own first compile, after
+                        # the plain variant already passed the checked bit) falls back to plain and
+                        # votes 0, instead of ending one rank while the others wait for it.
+                        if (
+                            not ddp_run
+                            or not _backend_compile_failed(e)
+                            or isinstance(
+                                getattr(e, "inner_exception", None), torch.OutOfMemoryError
+                            )
+                        ):
+                            raise
+                        _graphs_off(
+                            "graph compile",
+                            "Unsloth: block CUDA graph compile failed; blocks run without CUDA graphs.",
                         )
-                    if hidden_states.requires_grad and torch.is_grad_enabled():
-                        hidden_states = _CloneGrad.apply(hidden_states)
-                    return _clone_outputs(
-                        _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
-                    )
-                return compiled(self, hidden_states, *args, **kwargs)
+                        return plain(self, hidden_states, *args, **kwargs)
+                return fast(kwargs)(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
             _IN_COMPILED_REGION[0] = False
             packed[0] = packed_previous
+
+    def _graphs_run(self, hidden_states, args, kwargs):
+        _param_grads_out_of_pool(self)
+        device = hidden_states.device.index
+        if _pool_outputs_stay_valid(self, hidden_states):
+            if _input_grad_must_leave_pool(hidden_states):
+                # A leaf's .grad outlives the generation (trainable inputs_embeds); a
+                # checkpoint's backward recomputes (a new generation) before reading it.
+                hidden_states = _CloneGrad.apply(hidden_states)
+            return _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
+        if hidden_states.requires_grad and torch.is_grad_enabled():
+            hidden_states = _CloneGrad.apply(hidden_states)
+        return _clone_outputs(
+            _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
+        )
 
     def _inline(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -1602,6 +3019,8 @@ def _wrap(
 
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
+        # Set only on the grad-mode trial call below: it compiles the skip graph the replay will use.
+        trial = kwargs.pop("_unsloth_skip_trial", False)
         tracing = torch.compiler.is_compiling()
         mode = self.__dict__.get("_unsloth_block_mode")
         if mode is None:
@@ -1609,18 +3028,29 @@ def _wrap(
             if not tracing:
                 self.__dict__["_unsloth_block_mode"] = mode
         # Training only: eval logits stay bit-equal to transformers.
-        if (
+        stock = (
             mode == _OFF
             or not self.training
             or _has_cache(args, kwargs)
             or not _enabled()
             or _forced_float32(self)
             or _zero3_partitioned(self)
-            or (unsloth_forward and kwargs.get("packed_seq_lengths") is not None)
             # PrefixGrouper's int segment table would recompile at every new GRPO length.
-            or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
-        ):
+            or kwargs.get("prefix_seg_info") is not None
+        )
+        if not stock and unsloth_forward and kwargs.get("packed_seq_lengths") is not None:
+            # Packed lengths -> device cu_seqlens; no traceable varlen kernel keeps the stock forward.
+            prepare = getattr(sys.modules.get(_DISPATCH_MODULE), "prepare_packed_block", None)
+            prepared = None if tracing or prepare is None else prepare(self, hidden_states, kwargs)
+            if prepared is None:
+                stock = True
+            else:
+                kwargs = prepared
+        if stock:
             phase = _CUDAGRAPH_STATE["auto"]["phase"] if auto else None
+            ddp_session = auto and _AUTO_DDP and _CUDAGRAPH_STATE["auto"]["ddp"]
+            if ddp_session:
+                phase = _ddp_stock_phase(ddp_session, self, phase, tracing)
             if (
                 (graphs or phase == "on")
                 and self.training
@@ -1630,6 +3060,13 @@ def _wrap(
                 _graphs_off("packed", _PACKED_NOTE)
             elif phase == "probe" and self.training and _packed_kwargs(kwargs):
                 _auto_off(_CUDAGRAPH_STATE["auto"], "packed / padding-free rows")
+            if (
+                ddp_session
+                and not tracing
+                and _CUDAGRAPH_STATE["off"] is not None
+                and _CUDAGRAPH_STATE["release"] is None
+            ):
+                _release_graph_pool()  # every later call may be stock: release here too
             if (
                 unsloth_forward
                 and self.training
@@ -1649,43 +3086,92 @@ def _wrap(
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
+            kwargs = _normalise_mask(self, hidden_states, kwargs)
+            hidden_states, args, kwargs = _relax_strict_dynamic((hidden_states, args, kwargs))
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
             if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
                 _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
-            _precheck_band(self, hidden_states.shape[1], args, kwargs)
-        bit = 2 if torch.is_grad_enabled() else 1
+            _mark_packed_dynamic(kwargs)
+            _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
+            _settle_mask_flags(self, kwargs)
+        # Bit 2 runs every op; bit 4 skips the MLP down projection, since a checkpoint replay never
+        # reads this layer's output in backward; a no-grad call trials the graph replay uses.
+        skip_down = _skip_down_eligible(self, original)
+        if torch.is_grad_enabled():
+            skip_down = skip_down and (trial or _replays(self))
+            bit = 4 if skip_down else 2
+        else:
+            bit = 1
+        trial_bit = 4 if bit == 1 and skip_down else 2
         checked = self.__dict__.get("_unsloth_block_checked", 0)
-        if bit == 1 and not checked & 2:
-            # Grad-mode trial first (RNG forked): a checkpoint recompute must not demote below this call.
+        nonreentrant = (
+            bit == 2 and not checked & 2 and not _IN_TRIAL[0] and _in_nonreentrant_checkpoint()
+        )
+        if (bit == 1 or nonreentrant) and not checked & trial_bit:
+            # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
+            # this call. Inside a non-reentrant checkpoint (also a no-grad call: a reentrant layer in a
+            # non-reentrant parent) our own saved-tensor hooks keep the trial graph out of the
+            # checkpoint frame, whose recompute would otherwise save fewer tensors (detaching pack,
+            # see _detached)
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
-            with torch.random.fork_rng(devices = devices), torch.enable_grad():
-                _IN_TRIAL[0] = True
+            hooks = (
+                torch.autograd.graph.saved_tensors_hooks(_detached, _same)
+                if nonreentrant or (bit == 1 and _in_nonreentrant_checkpoint())
+                else contextlib.nullcontext()
+            )
+            with (
+                torch.random.fork_rng(devices = devices),
+                torch.enable_grad(),
+                hooks,
+                _no_output_capture(self),
+            ):
+                _IN_TRIAL[0] = "nonreentrant" if nonreentrant else True
                 try:
-                    forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                    forward(
+                        self,
+                        hidden_states.detach().requires_grad_(),
+                        *args,
+                        _unsloth_skip_trial = not nonreentrant,
+                        **kwargs,
+                    )
                 finally:
                     _IN_TRIAL[0] = False
             mode = self.__dict__["_unsloth_block_mode"]
             if mode == _OFF:
                 return original(self, hidden_states, *args, **kwargs)
             checked = self.__dict__.get("_unsloth_block_checked", 0)
-        if checked & bit:
-            return run(self, hidden_states, args, kwargs, mode)
+        skip_down = bit == 4
+        # The C++ wrapper region is built after the first calls (auto mode times launches first):
+        # its first call per grad mode also runs with errors raised, so a failed build falls back.
+        cpp_bit = bit if cpp_in_use(self, hidden_states, args, kwargs, mode) else 0
+        cpp_checked = self.__dict__.get("_unsloth_block_cpp_checked", 0)
+        if checked & bit and cpp_checked & cpp_bit == cpp_bit:
+            return run(self, hidden_states, args, kwargs, mode, skip_down, trial)
         while True:
             try:
-                with torch._dynamo.config.patch(suppress_errors = False):
-                    out = run(self, hidden_states, args, kwargs, mode)
+                with _strict_dynamo():
+                    out = run(self, hidden_states, args, kwargs, mode, skip_down, trial)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
+                self.__dict__["_unsloth_block_cpp_checked"] = cpp_checked | cpp_bit
                 return out
             except torch.OutOfMemoryError:
                 raise
             except Exception as e:
                 # Non-reentrant checkpoint ends a recompute by raising through the forward: control
                 # flow, not a compile failure (demoting on it left the stock forward in every block).
-                if type(e).__name__ == "_StopRecomputationError":
+                # CheckpointError (forward / recompute mismatch) too: demoting would hide it.
+                if type(e).__name__ in ("_StopRecomputationError", "CheckpointError"):
+                    raise
+                # An OOM while Inductor compiles or autotunes is transient, not a compile failure.
+                if _backend_compile_failed(e) and isinstance(
+                    getattr(e, "inner_exception", None), torch.OutOfMemoryError
+                ):
                     raise
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback
                     traceback.print_exc()
+                if python_wrapper_fallback(e):
+                    continue
                 mode = _SPLIT if mode == _FULL else _OFF
                 self.__dict__["_unsloth_block_mode"] = mode
                 kind = _layer_kind(self)
@@ -1708,10 +3194,14 @@ def _wrap(
 
     forward._unsloth_block_original = original
     forward._unsloth_block_state = state
+    forward._unsloth_block_checkpoint_outside = checkpoint_outside
+    forward._unsloth_block_checkpoint_contract = contract
     setattr(forward, _MARK, True)
+    # A new name: `forward` is also the closure the grad-mode trial above calls (the shim would recurse).
+    installed = _checkpointing(forward, contract) if checkpoint_outside else forward
     if install:
-        cls.forward = forward
-    return forward
+        cls.forward = installed
+    return installed
 
 
 _TOWER_SEGMENTS = (
@@ -1938,11 +3428,11 @@ def _install_router_capture_hooks(model):
     ):
         return 0
     installed = 0
-    # Outermost first, as transformers would: an install recurses into nested models and flags them. Its
-    # recursion does not check that flag, so a module with an already hooked descendant (an earlier eager
-    # capturing forward) is skipped: installing it would hook that descendant twice (duplicated outputs).
+    # Outermost first, as transformers does; skip modules with a hooked descendant (no double
+    # hooks).
     for module in model.modules():
-        flags = registry.get(str(type(module))) or {}
+        # dict.get: 5.23's _CanRecordRegistry.get expects the model and returned {} for a string (transformers#49594).
+        flags = dict.get(registry, str(type(module))) or {}
         if "router_logits" not in flags or any(
             getattr(m, "_output_capturing_hooks_installed", False) for m in module.modules()
         ):
@@ -1953,6 +3443,21 @@ def _install_router_capture_hooks(model):
         except Exception:
             pass
     return installed
+
+
+def _rebind_hooked_instances(model, cls, before):
+    """accelerate's device-map hooks (a model split over GPUs) call the forward bound at load, `_old_forward`, not
+    the class attribute. Left there, transformers' >= 5.23 checkpoint wrapper sees it is no longer the class forward
+    and runs the stock layer with neither checkpointing nor the compiled block: point them at the installed forward."""
+    rebound = 0
+    for module in model.modules():
+        if type(module) is not cls:
+            continue
+        old = module.__dict__.get("_old_forward")
+        if old is not None and getattr(old, "__func__", None) is before:
+            module._old_forward = types.MethodType(cls.forward, module)
+            rebound += 1
+    return rebound
 
 
 def patch_block_compile(model):
@@ -2000,6 +3505,7 @@ def patch_block_compile(model):
     for cls in inner:
         _rebind_class(cls)
     _flex_split_hook()
+    _sdpa_alignment_without_guard()
     _gemma4_router_hook()
     _stable_parametrized_classes()
     if any(type(m).__name__ == "Linear4bit" for m in model.modules()):
@@ -2018,9 +3524,16 @@ def patch_block_compile(model):
     wrapped = []
     for cls in classes:
         if getattr(cls.forward, _MARK, False):
+            # Wrapped by an earlier model: this model's hooks may still hold the forward from before.
+            before = getattr(cls.forward, "_unsloth_block_before", None)
+            if before is not None:
+                _rebind_hooked_instances(model, cls, before)
             continue
-        _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
+        before = cls.forward
+        installed = _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
+        installed._unsloth_block_before = before
         wrapped.append(cls.__name__)
+        _rebind_hooked_instances(model, cls, before)
     for layer in compiled_layers:
         if not any(m.__dict__.get("_unsloth_fp8_lora") is not None for m in layer.modules()):
             continue
@@ -2046,7 +3559,17 @@ def patch_block_compile(model):
     if _CUDAGRAPH_MODE == "auto":
         # A new model decides again: a launch-bound model loaded first must not turn graphs on for
         # a GPU-bound one. Graphs that went off for shape churn stay off.
-        _CUDAGRAPH_STATE["auto"] = _new_auto_state()
+        state = _CUDAGRAPH_STATE
+        if _AUTO_DDP and state["off"] == "ddp":
+            # A DDP veto belongs to that run (its session retires, voting 0): once its pool is
+            # released, the new model decides again.
+            _release_graph_pool()
+            if state["release"] == "done":
+                state["off"] = None
+                state["release"] = None
+                state["ours"].clear()
+                state["notes"].difference_update({"off", "auto", "released"})
+        state["auto"] = _new_auto_state()
     if wrapped:
         print(f"Unsloth: compiling each transformer block as one region ({', '.join(wrapped)}).")
     return wrapped

@@ -17,6 +17,16 @@ export const AUDIO_CPP_AUDIO_TYPES: ReadonlySet<string> = new Set([
 
 export type AudioCppTask = "tts" | "music" | "asr" | "sep";
 
+/** What Separate offers a model for. Mirrors SeparationSpec.goal in audio_cpp_models.py. */
+export type SeparationGoal = "stems" | "speakers" | "voice" | "restore";
+
+export const SEPARATION_GOAL_LABELS: Readonly<Record<SeparationGoal, string>> = {
+  stems: "Split stems",
+  voice: "Isolate voice",
+  restore: "Restore or upscale",
+  speakers: "Split speakers",
+};
+
 /** Mirrors AudioWorkflowId; spelled out to keep this file import-free. */
 export type AudioCppWorkflow =
   | "speak"
@@ -37,6 +47,10 @@ export interface AudioCppModel {
   /** uses eSpeak-ng phonemization, absent from upstream runtime bundles. */
   needsEspeak?: boolean;
   stems?: readonly string[];
+  /** Separate only: what it is for; absent means stems. */
+  goal?: SeparationGoal;
+  /** Extra picker search terms for a capability the name does not show. */
+  keywords?: readonly string[];
 }
 
 /** the `audio_cpp_runtime` block of `/api/inference/audio/stt/status`. */
@@ -168,7 +182,11 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Maya1-GGUF"), task: "tts" },
   { id: folder("NeuTTS-2E-GGUF"), task: "tts" },
   { id: folder("OmniVoice-GGUF"), task: "tts", workflows: ["speak", "clone"] },
-  { id: folder("VibeVoice-1.5B-GGUF"), task: "tts" },
+  {
+    id: folder("VibeVoice-1.5B-GGUF"),
+    task: "tts",
+    keywords: ["multi-speaker", "multiple speakers", "dialogue", "conversation", "podcast"],
+  },
   { id: folder("VoxCPM1-GGUF"), task: "tts", workflows: ["speak", "clone"] },
   { id: folder("Voxtral-4B-TTS-2603-GGUF"), task: "tts" },
   { id: folder("Fish-Audio-S2-Pro-GGUF"), task: "tts", workflows: ["speak", "clone"] },
@@ -210,6 +228,62 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
     task: "sep",
     workflows: ["separate"],
     stems: ["vocals", "instrumental"],
+  },
+  // A community repo the runtime's voice_isolator spec downloads from.
+  {
+    id: "Etherll/voice-isolator-GGUF",
+    task: "sep",
+    workflows: ["separate"],
+    goal: "voice",
+    stems: ["voice"],
+    keywords: ["noise", "denoise", "clean", "enhance"],
+  },
+  {
+    id: folder("Sidon-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    goal: "restore",
+    stems: ["restored"],
+    keywords: ["noise", "denoise", "clean", "speech"],
+  },
+  {
+    id: folder("Apollo-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    goal: "restore",
+    stems: ["restored"],
+    keywords: ["music", "mp3", "compression"],
+  },
+  {
+    id: folder("UniverSR-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    goal: "restore",
+    stems: ["restored"],
+    keywords: ["upscale", "super-resolution", "48 kHz"],
+  },
+  {
+    id: folder("AudioSR-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    goal: "restore",
+    stems: ["restored"],
+    keywords: ["upscale", "super-resolution", "48 kHz"],
+  },
+  // Its SS file splits two speakers; the SE and SR files clean and upscale speech.
+  {
+    id: folder("MossFormer2-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    goal: "speakers",
+    keywords: ["speakers", "enhance", "upscale"],
+  },
+  {
+    id: folder("TF-GridNet-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    goal: "speakers",
+    keywords: ["speakers"],
   },
   { id: folder("Qwen3-ASR-0.6B-GGUF"), task: "asr" },
   { id: folder("Qwen3-ASR-1.7B-GGUF"), task: "asr" },
@@ -254,7 +328,6 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
 
 /** Shared-repo folders the pickers leave out, and why. The nightly catalog check warns on a folder in neither list (the backend catalog lists it). */
 export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
-  "Sidon-GGUF": "needs a newer audio runtime",
   // Offer it on Transcribe once the Hub's main branch carries it (only on spec-refresh-v0.9.2 for now).
   "VibeVoice-ASR-Streaming-7B-GGUF": "not on the Hub's main branch yet",
   "Smart-Turn-v3-GGUF": "needs a newer audio runtime",
@@ -262,16 +335,11 @@ export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "CED-GGUF": "needs a newer audio runtime",
   "FireRedVAD-GGUF": "needs a newer audio runtime",
   "MicroWakeWord-GGUF": "needs a newer audio runtime",
-  "MossFormer2-GGUF": "needs a newer audio runtime",
   "Phonon-2-GGUF": "needs a newer audio runtime",
   "Sherpa-KWS-GGUF": "needs a newer audio runtime",
-  "TF-GridNet-GGUF": "needs a newer audio runtime",
   "MioCodec-25Hz-44.1kHz-v2-GGUF": "the codec MioTTS downloads and loads with",
   "Qwen3-ForcedAligner-0.6B-GGUF": "the aligner Transcribe uses for Qwen3-ASR timestamps",
   "MiniMax-H3-Q4-GGUF": "an audio and video package Unsloth cannot load yet",
-  "Apollo-GGUF": "audio restoration has no page",
-  "AudioSR-GGUF": "audio super-resolution has no page",
-  "UniverSR-GGUF": "audio super-resolution has no page",
   "PersonaPlex-GGUF": "duplex speech chat has no page",
   "MMS-Forced-Aligner-GGUF": "forced alignment has no page",
   "Sortformer-Diar-4spk-v1-GGUF": "speaker diarization has no page",
@@ -374,6 +442,20 @@ export function audioCppDisplayName(id: string): string {
     return trimmed.slice(AUDIO_CPP_REPO.length + 1).split("/")[0] || trimmed;
   }
   return trimmed.split("/").pop() || trimmed;
+}
+
+// A trailing quant tag on a GGUF file stem: `-q8_0`, `-Q4_K_M`, `-f16`.
+const FILE_STEM_QUANT = /[-_.](?:i?q\d\w*|bf16|f16|f32)$/i;
+
+/** An older clip's model label (a GGUF file stem such as `kokoro-82m-q8_0`) as its catalog folder name. */
+export function audioCppNameForFileStem(stem: string): string | null {
+  const base = stem.trim().toLowerCase().replace(FILE_STEM_QUANT, "");
+  if (!base || base === stem.trim().toLowerCase()) return null;
+  for (const model of AUDIO_CPP_MODELS) {
+    const name = audioCppDisplayName(model.id);
+    if (name.toLowerCase().replace(/-gguf$/, "") === base) return name;
+  }
+  return null;
 }
 
 /** Hub path of an umbrella folder (`<repo>/tree/main/<Folder>`); null for any other id. */

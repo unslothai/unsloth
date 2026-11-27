@@ -41,9 +41,8 @@ test("leaving a pinned bottom as the page changes height, with no key or pointer
 });
 
 test("a distant row skipped or released at a pinned bottom is a clamp, even when scrollHeight reads unchanged", () => {
-  // Chromium, 200 turns, fresh load: a row swapping in or out of content-visibility moved scrollTop
-  // up 259 px with scrollHeight the same by the scroll event; read as a scroll up, the chat opened
-  // up to 23,000 px above its last message in half of the loads.
+  // Row swaps move scrollTop but not scrollHeight; without the clamp check that reads as scrolling
+  // up.
   assert.match(HOOK, /import \{ ROW_DISTANT_ATTRIBUTE \} from "@\/components\/assistant-ui\/distant-rows";/);
   const observe = between("mutationObserver.observe(el, {", "});");
   assert.match(observe, /attributeFilter: \[[^\]]*ROW_DISTANT_ATTRIBUTE,?\s*\]/, "the toggle reaches the hook");

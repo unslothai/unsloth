@@ -297,7 +297,12 @@ def test_a_community_repo_several_specs_download_from_is_not_listed(env):
             "family": family,
             "tasks": ["tts" if family == "glm_tts" else "asr"],
             "packages": [
-                {"format": "gguf", "files": files, "download": {"repo": "Mixed/audio.cpp"}}
+                {
+                    "id": family,
+                    "format": "gguf",
+                    "files": files,
+                    "download": {"repo": "Mixed/audio.cpp"},
+                }
             ],
         }
         (env["specs"] / f"{family}.json").write_text(json.dumps(spec))
@@ -306,18 +311,21 @@ def test_a_community_repo_several_specs_download_from_is_not_listed(env):
     assert rows["Jmica/Drama-3-GGUF"].family == "fish_drama3"
     targets = catalog._spec_targets(
         {
-            "a": {"packages": [{"format": "gguf", "download": {"repo": "Same/Repo"}}]},
-            "b": {"packages": [{"format": "gguf", "download": {"repo": "same/repo"}}]},
-            "c": {"packages": [{"format": "gguf", "download": {"repo": "One/Repo"}}]},
+            name: {
+                "packages": [
+                    {"id": name, "format": "gguf", "files": ["m.gguf"], "download": {"repo": repo}}
+                ]
+            }
+            for name, repo in (("a", "Same/Repo"), ("b", "same/repo"), ("c", "One/Repo"))
         },
         [],
     )
     assert targets == ({}, {"One/Repo": "c"})
 
 
-def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
+def test_a_community_package_is_offered_with_every_file_it_reads(env, monkeypatch):
     # trklou/audio.cpp (F5/Habibi) reads vocab.txt beside its GGUF; ampixa/sanoTTS a config.json.
-    for family, repo, files in (
+    packages = (
         (
             "f5_tts",
             "trklou/audio.cpp",
@@ -331,7 +339,20 @@ def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
             "dignome/kitten_tts2",
             ["kitten.gguf", "LICENSE", "NOTICE", "native/LICENSE", "SHA256SUMS", "README.md"],
         ),
-    ):
+        # Its repo does not publish the config its package reads.
+        ("half_tts", "Half/TTS", ["half-q8_0.gguf", "config.json"]),
+    )
+    published = {repo: files for _family, repo, files in packages}
+    published["Half/TTS"] = ["half-q8_0.gguf"]
+    listing = acm._hub_listing
+
+    def repo_listing(repo_id, folder, token):
+        if repo_id in published:
+            return [RepoFile(name, 100) for name in published[repo_id] if "LICENSE" not in name]
+        return listing(repo_id, folder, token)
+
+    monkeypatch.setattr(acm, "_hub_listing", repo_listing)
+    for family, repo, files in packages:
         spec = {
             "family": family,
             "tasks": ["tts", "clone"],
@@ -340,15 +361,19 @@ def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
         }
         (env["specs"] / f"{family}.json").write_text(json.dumps(spec))
     rows = _rows(catalog.audio_catalog_payload())
-    for repo in ("trklou/audio.cpp", "ampixa/sanoTTS"):
-        assert rows[repo].workflows == [] and rows[repo].unsupported_reason == catalog._SIDECARS
-    assert rows["Voices/TTS"].unsupported_reason is None and rows["Voices/TTS"].workflows
+    for repo in ("trklou/audio.cpp", "ampixa/sanoTTS", "Voices/TTS"):
+        assert rows[repo].unsupported_reason is None and rows[repo].workflows, repo
+        # The download is the GGUF and the file beside it.
+        assert rows[repo].size_bytes == 200, repo
+    assert rows["Half/TTS"].workflows == []
+    assert rows["Half/TTS"].unsupported_reason == acm.PACKAGE_INCOMPLETE
     assert rows["dignome/kitten_tts2"].unsupported_reason is None
     assert rows["Jmica/Drama-3-GGUF"].workflows == ["speak", "clone"]
 
 
-def test_a_community_repo_whose_gguf_is_not_audio_cpp_is_withheld(env, monkeypatch):
-    # SenseVoice and Echo-TTS publish GGUFs whose architecture is not "audiocpp": resolve() is None.
+def test_a_community_repo_the_runtime_spec_names_needs_no_audiocpp_header(env, monkeypatch):
+    # SenseVoice and Echo-TTS publish GGUFs whose architecture is not "audiocpp", yet the runtime
+    # whose spec names their repo loads them: the spec vouches, so no header is probed.
     spec = {
         "family": "sense_asr",
         "tasks": ["asr"],
@@ -376,10 +401,11 @@ def test_a_community_repo_whose_gguf_is_not_audio_cpp_is_withheld(env, monkeypat
     monkeypatch.setattr(acm, "read_remote_header", header)
     rows = _rows(catalog.audio_catalog_payload())
     sense = rows["FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp"]
-    assert sense.workflows == [] and sense.unsupported_reason == catalog._NOT_AUDIO_CPP
+    assert sense.workflows == ["transcribe"] and sense.unsupported_reason is None
     assert rows["Jmica/Drama-3-GGUF"].workflows == ["speak", "clone"]
-    # The spec's recommended file is the one probed.
-    assert ("Jmica/Drama-3-GGUF", "drama-3-Q4_K_S.gguf") in seen
+    assert not [repo for repo, _name in seen if repo != AUDIO_CPP_REPO]
+    assert acm.spec_vouched_family("funaudiollm/sensevoicesmall-gguf-audiocpp") == "sense_asr"
+    assert acm.spec_vouched_family("Nobody/Else") is None
 
 
 def test_a_spec_dir_read_is_capped_and_ignores_bad_files(env, monkeypatch):

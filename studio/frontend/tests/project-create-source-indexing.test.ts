@@ -32,6 +32,7 @@ const { uploadStagedSources } = loadWithStubs<typeof Dropzone>(
     "@hugeicons/react": {},
     "@/lib/utils": { cn: () => "" },
     "@/lib/toast": { toast },
+    "@/lib/dropped-folders": {},
     "@/features/native-intents": {},
     "@/features/chat/stores/chat-runtime-store": {},
     "./vision-overrides": {

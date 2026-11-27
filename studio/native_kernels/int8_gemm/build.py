@@ -246,7 +246,17 @@ def main() -> int:
     ]
     if os.name == "nt":
         # static MSVC runtime (no DLL dependency), the conforming preprocessor CCCL needs
-        common += ["-Xcompiler", "/MT", "-Xcompiler", "/Zc:preprocessor", "--diag-suppress=177"]
+        # /Zc:__cplusplus: MSVC otherwise reports 199711L, so CUDA's dim3 is not constexpr and CUTLASS's sm100 headers
+        # (pulled in by gemm_universal_adapter.h) fail with "constexpr function cannot have a nonliteral return type".
+        common += [
+            "-Xcompiler",
+            "/MT",
+            "-Xcompiler",
+            "/Zc:preprocessor",
+            "-Xcompiler",
+            "/Zc:__cplusplus",
+            "--diag-suppress=177",
+        ]
     else:
         common += ["-Xcompiler", "-fPIC", "-Xcompiler", "-fvisibility=hidden"]
     units = []

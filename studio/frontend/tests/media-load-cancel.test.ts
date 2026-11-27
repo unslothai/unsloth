@@ -26,23 +26,15 @@ for (const [page, path] of PAGES) {
       /cancel: \{ label: "Cancel", onClick: onCancel \}/,
       "the load toast must carry a cancel action, not just a close button",
     );
-    // Every toast site has to pass it: the toast is created by handleLoad, by
-    // the mount-time resume of a load started elsewhere, re-created in place by
-    // each progress tick, and rebuilt by handleCancelLoad when the unload fails
-    // and the load it could not stop has to stay visible. A tick that dropped
-    // the action would make the button vanish one second into the load. The
-    // fifth is handleLoad's "Saving chat context…" update while the start
-    // request is pending, which must keep the Cancel too.
-    // Call sites only: the declaration's own argument list opens with a newline.
-    const sites = SOURCE.match(/loadToastArgs\((?!\n)[^)\n]*\)/g) ?? [];
-    assert.equal(sites.length, 5, "expected the five load-toast call sites");
-    for (const site of sites) {
-      assert.match(
-        site,
-        /cancelLoadFromToast/,
-        `a load toast built without the cancel action: ${site}`,
-      );
-    }
+    assert.match(SOURCE, /toastOptions: loadToastArgs,/);
+    assert.doesNotMatch(SOURCE, /toast\(null, loadToastArgs/);
+    assert.match(SOURCE, /loadToast\.setCancel\(\(\) => void handleCancelLoad\(\)\);/);
+  });
+
+  test(`the ${page} load toast routes progress through the shared controller`, () => {
+    assert.match(SOURCE, /if \(sig !== lastLoadSig\.current\) \{\s*lastLoadSig\.current = sig;\s*loadToast\.update\(p\);/);
+    assert.match(SOURCE, /onClosedChange: setClosedLoad,/);
+    assert.match(SOURCE, /busy === "loading" && closedLoad && \(\s*<LoadInlineStatus p=\{closedLoad\} \/>/);
   });
 
   test(`the ${page} page shows a cancel control while a load is in flight`, () => {
@@ -71,7 +63,7 @@ for (const [page, path] of PAGES) {
   test(`the ${page} cancel routes through the backend unload`, () => {
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleCancelLoad = useCallback("),
-      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+      SOURCE.indexOf("useEffect(() => {\n    loadToast.setCancel"),
     );
     assert.ok(handler.length > 0, "expected handleCancelLoad");
     assert.match(
@@ -124,12 +116,12 @@ for (const [page, path] of PAGES) {
     // Restoring twice raises a duplicate toast and a second poll.
     const restore = SOURCE.slice(
       SOURCE.indexOf("const restoreLoadTracking = useCallback("),
-      SOURCE.indexOf("}, [pollLoadProgress, cancelLoadFromToast]);"),
+      SOURCE.indexOf("}, [pollLoadProgress, loadToast]);"),
     );
     assert.match(restore, /loadTrackingRestored[.]current = true;/);
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleCancelLoad = useCallback("),
-      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+      SOURCE.indexOf("useEffect(() => {\n    loadToast.setCancel"),
     );
     assert.match(handler, /if [(]!wasLoading [|][|] loadTrackingRestored[.]current[)] return;/);
   });
@@ -214,16 +206,16 @@ for (const [page, path] of PAGES) {
     // dropResidentState already killed the poll, so a failed unload must restore tracking.
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleCancelLoad = useCallback("),
-      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+      SOURCE.indexOf("useEffect(() => {\n    loadToast.setCancel"),
     );
     assert.match(handler, /const wasLoading = busy === "loading";/);
     assert.match(handler, /restoreLoadTracking\(\);/);
     const restore = SOURCE.slice(
       SOURCE.indexOf("const restoreLoadTracking = useCallback("),
-      SOURCE.indexOf("}, [pollLoadProgress, cancelLoadFromToast]);"),
+      SOURCE.indexOf("}, [pollLoadProgress, loadToast]);"),
     );
     assert.match(restore, /setBusy\("loading"\);/);
-    assert.match(restore, /loadToastId\.current = toast\(/);
+    assert.match(restore, /loadToast\.open\(IDLE_PROGRESS\);/);
     assert.match(restore, /void pollLoadProgress\(\);/);
   });
 
@@ -231,7 +223,7 @@ for (const [page, path] of PAGES) {
     // begin_load refuses a second load while one is registered, so stay busy until it settles.
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleUnload = useCallback("),
-      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+      SOURCE.indexOf("useEffect(() => {\n    loadToast.setCancel"),
     );
     assert.match(handler, /const pending = pendingStart\.current;/);
     assert.match(handler, /setBusy\("unloading"\);/);

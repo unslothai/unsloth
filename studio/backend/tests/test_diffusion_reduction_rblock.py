@@ -243,12 +243,12 @@ def _filter_reaching_compile(monkeypatch, family):
     return seen["filter_reductions"]
 
 
-def test_only_ltx_opts_into_the_reduction_filter(monkeypatch):
-    # B200: of the video families only LTX-2 opts in
+def test_only_opted_in_video_families_filter_reductions(monkeypatch):
+    # B200: LTX-2 and HunyuanVideo-1.5 opt in, Wan 2.2 keeps inductor's pick
     monkeypatch.setattr(cc, "_device_capability", lambda: (10, 0))
-    assert _filter_reaching_compile(monkeypatch, _family("ltx-2")) is True
-    for name in ("hunyuanvideo-1.5", "wan2.2-ti2v-5b"):
-        assert _filter_reaching_compile(monkeypatch, _family(name)) is False, name
+    for name in ("ltx-2", "hunyuanvideo-1.5"):
+        assert _filter_reaching_compile(monkeypatch, _family(name)) is True, name
+    assert _filter_reaching_compile(monkeypatch, _family("wan2.2-ti2v-5b")) is False
 
 
 def _compiled_kwargs(max_autotune = False, filter_reductions = False):

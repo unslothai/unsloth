@@ -172,6 +172,76 @@ def test_lora_unavailable_reason_names_the_cause():
     )
 
 
+def test_nvfp4_bakes_loras_like_int8_and_fp8_except_on_a_policy_base():
+    """The load bakes adapters before an NVFP4 quantize (diffusion._apply_loras routes nvfp4 to the baked path, the
+    Images page lists nvfp4 as a baking scheme), so the status must not say LoRAs are unavailable there."""
+    pipeline = dict(engine = "diffusers", model_kind = "pipeline", transformer_quant = "nvfp4")
+    assert dl.lora_unavailable_reason(family = "flux.2-klein", **pipeline) is None
+    assert (
+        dl.lora_unavailable_reason(
+            family = "flux.2-klein", base_repo = "black-forest-labs/FLUX.2-klein-4B", **pipeline
+        )
+        is None
+    )
+    assert dl.supports_lora(family = "flux.2-klein", compiled = True, **pipeline)
+    # A per-layer policy names Linears that PEFT's wrapping renames: refused with the way out.
+    for family, base in (
+        ("z-image", "Tongyi-MAI/Z-Image-Turbo"),
+        ("flux.1", "black-forest-labs/FLUX.1-schnell"),
+        ("qwen-image-2.1", "Qwen/Qwen-Image-2.1"),
+        ("qwen-image", None),
+    ):
+        reason = dl.lora_unavailable_reason(family = family, base_repo = base, **pipeline)
+        assert reason and "NVFP4" in reason and "FP8" in reason, (family, base)
+    # The policy is per base: another base of a policy family takes the whole-model build, which bakes.
+    assert (
+        dl.lora_unavailable_reason(
+            family = "flux.1", base_repo = "black-forest-labs/FLUX.1-dev", **pipeline
+        )
+        is None
+    )
+    assert "MXFP8" in dl.lora_unavailable_reason(
+        engine = "diffusers", family = "flux.2-klein", model_kind = "pipeline", transformer_quant = "mxfp8"
+    )
+
+
+def test_generate_on_a_policy_nvfp4_base_gives_the_status_reason_not_a_reload():
+    """A reload with the adapter cannot work on a per-layer NVFP4 policy base, so generate must say what status says."""
+    import threading
+
+    from core.inference import diffusion as D
+
+    backend = D.DiffusionBackend.__new__(D.DiffusionBackend)
+
+    def state(family, base):
+        return types.SimpleNamespace(
+            pipe = types.SimpleNamespace(),
+            family = types.SimpleNamespace(name = family),
+            kind = "pipeline",
+            transformer_quant = "nvfp4",
+            base_repo = base,
+        )
+
+    policy = state("flux.1", "black-forest-labs/FLUX.1-schnell")
+    with pytest.raises(dl.LoraSelectionError) as err:
+        backend._apply_loras(policy, [("adapter", 1.0)], threading.Event())
+    assert not isinstance(err.value, dl.LoraReloadRequiredError)
+    assert str(err.value) == dl.lora_unavailable_reason(
+        engine = "diffusers",
+        family = "flux.1",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+    )
+    # A whole-model NVFP4 base still asks for the reload that bakes the adapter.
+    with pytest.raises(dl.LoraReloadRequiredError):
+        backend._apply_loras(
+            state("flux.2-klein", "black-forest-labs/FLUX.2-klein-4B"),
+            [("adapter", 1.0)],
+            threading.Event(),
+        )
+
+
 def test_resolve_specs_maps_cancelled_to_diffusion_sentinel(tmp_path, monkeypatch):
     # A cancelled Hub download raises RuntimeError("Cancelled"); it maps to the sentinel so the route returns 409.
     def _boom(spec_id, weight, **kw):
@@ -403,6 +473,16 @@ def _backend():
     return DiffusionBackend()
 
 
+def _inductor_builds_cpu_kernels() -> bool:
+    """Inductor compiles CPU kernels with the host C++ compiler; a Windows runner without MSVC on PATH has none."""
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+        get_cpp_compiler()
+    except Exception:  # noqa: BLE001 -- InvalidCxxCompiler, or a torch without cpp_builder
+        return False
+    return True
+
+
 def test_diffusers_apply_loads_and_sets_adapters(monkeypatch):
     import threading
 
@@ -467,7 +547,7 @@ def test_diffusers_apply_rejects_unsupported_quant():
     import threading
 
     pipe = _FakePipe()
-    with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         _backend()._apply_loras(
             _fake_state(pipe, kind = "single_file", quant = "fp8"),
             [("styleA", 1.0)],
@@ -505,7 +585,7 @@ def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
     assert pipe.active == (["style", "style_2"], [0.7, 1.0])
     assert pipe.loaded == []  # never reloaded or re-attached
     # A file the bake does not hold still needs a reload with the new selection.
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         b._apply_loras(state, [("styleA", 1.0), ("styleC", 1.0)], threading.Event())
     assert pipe.active == (["style", "style_2"], [0.7, 1.0])
 
@@ -558,7 +638,7 @@ def test_baked_weights_stay_fixed_under_a_block_streamed_graph(monkeypatch, mode
     b._apply_loras(state, [("styleA", 1.0), ("styleB", 1.0)], threading.Event())
     for loras in ([("styleA", 1.0)], [("styleA", 0.5), ("styleB", 1.0)], []):
         if refused:
-            with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+            with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
                 b._apply_loras(state, loras, threading.Event())
             assert pipe._unsloth_loras == baked and pipe.active is None
         else:
@@ -772,7 +852,6 @@ def test_baked_lora_subset_and_weight_changes_keep_compiled_graphs(monkeypatch):
         ([("a", 1.0), ("b", 1.0)], 1.0, 1.0),  # back
         ([("b", 0.5)], 0.0, 0.5),  # the other subset, new weight
         ([("a", 0.7), ("b", 1.0)], 0.7, 1.0),  # weight tweak
-        ([], 0.0, 0.0),  # every adapter off
         ([("a", 1.0), ("b", 1.0)], 1.0, 1.0),
     ):
         b._apply_loras(state, loras, threading.Event())
@@ -781,7 +860,92 @@ def test_baked_lora_subset_and_weight_changes_keep_compiled_graphs(monkeypatch):
         assert [w for (_n, _p, w) in pipe._unsloth_loras] == [wa, wb]
     assert counter.frame_count == 1  # no recompile
     assert resets == []  # no captured graph dropped
+    # Every adapter off bypasses the layers (the plain load's graph): one more frame, compiled once, then reused.
+    for loras, wa, wb in (([], 0.0, 0.0), ([("a", 1.0), ("b", 1.0)], 1.0, 1.0), ([], 0.0, 0.0)):
+        b._apply_loras(state, loras, threading.Event())
+        with torch.no_grad():
+            torch.testing.assert_close(compiled(x), expected(wa, wb))
+    assert counter.frame_count == 2
+    assert len(resets) == 3
     torch._dynamo.reset()
+
+
+def test_baked_lora_at_weight_zero_compiles_to_the_plain_load(monkeypatch):
+    # A baked adapter at scale 0 adds an exact zero, so eager matched a load without it, but compiled it did not: the
+    # LoRA term changed inductor's fusion and so where bf16 intermediates round (Z-Image LPIPS 0.017 on L4). Every
+    # adapter at 0 now bypasses the layers, so the compiled forward is bit-identical to the plain one.
+    import copy
+    import threading
+
+    import torch
+    from peft import LoraConfig, inject_adapter_in_model
+
+    from core.inference import diffusion as diff
+
+    if not _inductor_builds_cpu_kernels():
+        pytest.skip("inductor needs a host C++ compiler to build CPU kernels")
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda handles: None)
+
+    class Block(torch.nn.Module):
+        def __init__(self, d):
+            super().__init__()
+            self.norm = torch.nn.LayerNorm(d, elementwise_affine = False)
+            self.to_q = torch.nn.Linear(d, d)
+            self.ff1 = torch.nn.Linear(d, 4 * d)
+            self.ff2 = torch.nn.Linear(4 * d, d)
+            self.gate = torch.nn.Parameter(torch.randn(d) * 0.5)
+
+        def forward(self, x):
+            x = x + self.gate * self.to_q(self.norm(x))
+            act = torch.nn.functional.gelu(self.ff1(self.norm(x)), approximate = "tanh")
+            return x + self.ff2(act)
+
+    torch.manual_seed(0)
+    plain = torch.nn.Sequential(*[Block(64) for _ in range(2)]).to(torch.bfloat16).eval()
+    baked = copy.deepcopy(plain)
+    inject_adapter_in_model(
+        LoraConfig(r = 4, lora_alpha = 4, target_modules = ["to_q", "ff1", "ff2"]),
+        baked,
+        adapter_name = "a",
+    )
+    for name, param in baked.named_parameters():
+        if "lora_B" in name:
+            torch.nn.init.normal_(param, std = 0.1)
+    baked.to(torch.bfloat16).eval()
+
+    class _Pipe:
+        transformer = baked
+
+    pipe = _Pipe()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    b = _backend()
+    pipe._unsloth_loras = b._resolve_lora_set([("a", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 6
+
+    x = torch.randn(2, 32, 64, dtype = torch.bfloat16)
+    torch._dynamo.reset()
+    try:
+        with torch.no_grad():
+            want = torch.compile(plain, backend = "inductor")(x)
+            compiled = torch.compile(baked, backend = "inductor")
+            with_lora = compiled(x)
+            assert not torch.equal(with_lora, want)  # the adapter applies at weight 1
+            b._apply_loras(state, [], threading.Event())
+            assert torch.equal(compiled(x), want)
+            b._apply_loras(state, [("a", 1.0)], threading.Event())
+            assert torch.equal(compiled(x), with_lora)
+    finally:
+        torch._dynamo.reset()
 
 
 def test_pinned_lora_scale_falls_back_when_a_scale_is_rewritten(monkeypatch):
@@ -1146,9 +1310,8 @@ def _roomy_host(monkeypatch):
 
 
 def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(monkeypatch):
-    """A quantized single file's adapters merged into its weights at load: a weight change or switching the adapter off
-    re-merges into the same tensors, so a compiled model reads the new weights with no recompile and no dropped graph,
-    and weight 0 is the base weights exactly."""
+    """Quantized single-file adapters merged at load change weight in place: no recompile, no
+    dropped graph; weight 0 is exactly the base weights."""
     import threading
 
     import torch
@@ -1280,6 +1443,76 @@ def test_merged_adapters_on_an_offloaded_load_need_a_reload(monkeypatch):
 
     b, state, pipe, _net = _merged_lokr_pipe(monkeypatch)
     state.offload_policy = "group"
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         b._apply_loras(state, [("a", 0.5)], threading.Event())
     assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]
+
+
+def test_hunyuanimage_21_is_gated_off_for_lora():
+    """diffusers' HunyuanImagePipeline has no LoRA loader: refuse up front, not with an AttributeError mid-generate."""
+    assert not dl.diffusers_lora_family_supported("hunyuanimage-2.1")
+    for quant in (None, "int8", "fp8"):
+        assert not dl.supports_lora(
+            engine = "diffusers",
+            family = "hunyuanimage-2.1",
+            model_kind = "pipeline",
+            transformer_quant = quant,
+        )
+        assert "no LoRA loader" in dl.lora_unavailable_reason(
+            engine = "diffusers",
+            family = "hunyuanimage-2.1",
+            model_kind = "pipeline",
+            transformer_quant = quant,
+        )
+
+
+# Families not checkable via ``getattr(diffusers, pipeline_class)``; any other missing class fails.
+_LORA_LOADER_CHECK_EXCEPTIONS = {
+    "flux.3-klein-base": "modular pipeline in diffusers 0.42+ only; its loader is asserted when the class imports",
+    "flux.3-klein": "modular pipeline in diffusers 0.42+ only; its loader is asserted when the class imports",
+    "moss-image": "in-tree MOSSImagePipeline with its own loader methods, asserted below",
+    "minimax-h3-image": "in-tree pipeline; Studio merges its adapters at load, there is no per-generation loader",
+}
+
+
+def test_every_diffusers_pipeline_family_has_a_lora_loader_or_is_gated_off():
+    """A family whose diffusers pipeline class lacks load_lora_weights must be listed as unsupported."""
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference.diffusion_families import _FAMILIES
+
+    missing, unchecked = [], []
+    for fam in _FAMILIES:
+        name = getattr(fam, "pipeline_class", None)
+        if not name or not dl.diffusers_lora_family_supported(fam.name):
+            continue  # already gated off
+        try:
+            cls = getattr(diffusers, name, None)
+        except Exception as exc:  # noqa: BLE001 - the pipeline's own imports fail in this environment
+            pytest.skip(f"cannot import diffusers.{name}: {exc}")
+        if cls is None:
+            if fam.name not in _LORA_LOADER_CHECK_EXCEPTIONS:
+                unchecked.append(f"{fam.name} ({name})")
+            continue
+        if not hasattr(cls, "load_lora_weights"):
+            missing.append(fam.name)
+    assert unchecked == [], "pipeline class missing from diffusers and not an allowed exception"
+    assert missing == []
+
+
+def test_lora_loader_check_exceptions_hold():
+    """Each allowed exception is true: in-tree MOSS carries the loader, and FLUX.3 has one wherever it imports."""
+    from core.inference.diffusion_families import _FAMILIES
+
+    names = {fam.name for fam in _FAMILIES}
+    assert set(_LORA_LOADER_CHECK_EXCEPTIONS) <= names
+    # The in-tree MOSS pipeline subclasses diffusers' mixins, so it imports only where diffusers does.
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference.diffusion_moss_image import MOSSImagePipeline
+
+    for method in ("load_lora_weights", "set_adapters", "unload_lora_weights"):
+        assert callable(getattr(MOSSImagePipeline, method, None)), method
+    for fam in _FAMILIES:
+        if fam.name.startswith("flux.3"):
+            cls = getattr(diffusers, fam.pipeline_class, None)
+            if cls is not None:
+                assert hasattr(cls, "load_lora_weights"), fam.name

@@ -9,7 +9,8 @@ export interface PasteNode {
   getAttribute?: (name: string) => string | null;
 }
 
-type Ctx = { pre: boolean; bold: boolean; italic: boolean };
+// white-space: collapse (normal/nowrap), line (pre-line: newlines only), pre (pre/pre-wrap/break-spaces).
+type Ctx = { space: "collapse" | "line" | "pre"; bold: boolean; italic: boolean };
 
 // Everything convert() can turn into Markdown, styled spans included.
 const STRUCTURE =
@@ -26,6 +27,11 @@ const BLOCK = new Set([
 const INDENT = "\u0001";
 const FENCE_OPEN = "\u0002";
 const FENCE_CLOSE = "\u0003";
+// Tag a fence as inline code or a code block, so it is told apart from preserved whitespace.
+const CODE = "\u0004";
+const CODE_BLOCK = "\u0005";
+const PRIVATE = new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}${CODE}${CODE_BLOCK}]`, "g");
+const text = (node: PasteNode) => (node.textContent ?? "").replace(PRIVATE, "");
 
 function attr(node: PasteNode, name: string): string {
   return node.getAttribute?.(name) ?? "";
@@ -43,24 +49,87 @@ function children(node: PasteNode, ctx: Ctx): string {
 
 const FENCED = new RegExp(`${FENCE_OPEN}[\\s\\S]*?${FENCE_CLOSE}`, "g");
 
+function trimLineEnd(line: string): string {
+  let end = line.length;
+  while (end > 0 && " \t\u00a0".includes(line[end - 1])) end--;
+  return line.slice(0, end);
+}
+
 function clean(text: string): string {
   const fences: string[] = [];
+  // Per-line index trim: a `[ \t\u00a0]+\n` regex is quadratic on long non-breaking space runs.
   return text
     .replace(FENCED, (block) => `${FENCE_OPEN}${fences.push(block) - 1}${FENCE_CLOSE}`)
-    .replace(/[ \t]+\n/g, "\n")
+    .split("\n")
+    .map(trimLineEnd)
+    .join("\n")
     .replace(/\n[ \t]+/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim()
     .replace(new RegExp(`${FENCE_OPEN}(\\d+)${FENCE_CLOSE}`, "g"), (_, i: string) => fences[Number(i)]);
 }
 
-function wrap(marker: string, inner: string): string {
-  const body = inner.trim();
-  if (!body) return inner;
-  const lead = inner.slice(0, inner.length - inner.trimStart().length);
-  const trail = inner.slice(inner.trimEnd().length);
-  return `${lead}${marker}${body}${marker}${trail}`;
+const EDGE = new RegExp(`[\\s${FENCE_OPEN}${FENCE_CLOSE}]`);
+const MARKS = new RegExp(`[${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
+const NOT_MARKS = new RegExp(`[^${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
+
+// Edge whitespace moves out past fence marks, so `**bold **` never forms; it stays fenced if it was.
+function edges(inner: string): [string, string, string] {
+  // Index scans, not a regex: a backtracking edge match is quadratic on long whitespace runs.
+  let start = 0;
+  let end = inner.length;
+  while (start < end && EDGE.test(inner[start])) start++;
+  while (end > start && EDGE.test(inner[end - 1])) end--;
+  const [head, body, tail] = [inner.slice(0, start), inner.slice(start, end), inner.slice(end)];
+  const marks = (s: string) => s.replace(NOT_MARKS, "");
+  const space = (s: string, keep: boolean) => {
+    const ws = s.replace(MARKS, "");
+    return keep && ws && ws !== s ? `${FENCE_OPEN}${ws}${FENCE_CLOSE}` : ws;
+  };
+  return [space(head, true), `${marks(head)}${body}${marks(tail)}`, space(tail, tail.includes("\n"))];
 }
+
+const PARAGRAPH = new RegExp(`\\n[ \\t\\u00a0${FENCE_OPEN}${FENCE_CLOSE}]*\\n`, "g");
+const CODE_RANGE = new RegExp(`${FENCE_OPEN}[${CODE}${CODE_BLOCK}][^${FENCE_CLOSE}]*${FENCE_CLOSE}`, "g");
+
+// Paragraph breaks outside code, as [text, break, text, ...].
+function paragraphs(body: string): string[] {
+  const code = [...body.matchAll(CODE_RANGE)].map((m) => [m.index, m.index + m[0].length]);
+  const parts: string[] = [];
+  let last = 0;
+  let j = 0;
+  for (const m of body.matchAll(PARAGRAPH)) {
+    while (j < code.length && code[j][1] <= m.index) j++;
+    if (j < code.length && code[j][0] <= m.index) continue;
+    parts.push(body.slice(last, m.index), m[0]);
+    last = m.index + m[0].length;
+  }
+  parts.push(body.slice(last));
+  return parts;
+}
+
+// Emphasis and link text cannot span paragraphs or open a code block, so each paragraph is built alone.
+function perParagraph(inner: string, build: (body: string) => string): string {
+  const [lead, body, trail] = edges(inner);
+  const core = body.replaceAll(`${FENCE_OPEN}${FENCE_CLOSE}`, "");
+  const block = core.startsWith(`${FENCE_OPEN}${CODE_BLOCK}`) && core.indexOf(FENCE_CLOSE) === core.length - 1;
+  if (block || !body.replace(MARKS, "")) return inner;
+  const parts = paragraphs(body);
+  if (parts.length === 1) return `${lead}${build(body)}${trail}`;
+  // A split can cut a fence; close it at each piece's end and reopen it in the next.
+  let open = false;
+  const pieces = parts.map((part, i) => {
+    const reopen = open ? FENCE_OPEN : "";
+    const o = part.lastIndexOf(FENCE_OPEN);
+    const c = part.lastIndexOf(FENCE_CLOSE);
+    if (o !== c) open = o > c;
+    const piece = `${reopen}${part}${open ? FENCE_CLOSE : ""}`;
+    return i % 2 ? piece : perParagraph(piece, build);
+  });
+  return `${lead}${pieces.join("")}${trail}`;
+}
+
+const wrap = (marker: string, inner: string) => perParagraph(inner, (body) => `${marker}${body}${marker}`);
 
 function safeHref(raw: string): string | null {
   const href = raw.trim();
@@ -77,7 +146,7 @@ function codeSpan(text: string): string {
 
 // textContent drops <br>, which some editors use for the line breaks in code.
 function preText(node: PasteNode): string {
-  if (node.nodeType === 3) return node.textContent ?? "";
+  if (node.nodeType === 3) return text(node);
   if (node.nodeName.toUpperCase() === "BR") return "\n";
   return Array.from(node.childNodes).map(preText).join("");
 }
@@ -86,9 +155,9 @@ function preBlock(node: PasteNode): string {
   const code = elements(node).find((child) => child.nodeName.toUpperCase() === "CODE");
   const cls = `${attr(node, "class")} ${code ? attr(code, "class") : ""}`;
   const lang = /(?:language|lang)-([\w+#-]+)/.exec(cls)?.[1] ?? "";
-  const text = preText(node).replace(/\n$/, "");
-  const fence = "`".repeat(Math.max(3, ...(text.match(/`{3,}/g) ?? []).map((run) => run.length + 1)));
-  return `\n\n${FENCE_OPEN}${fence}${lang}\n${text}\n${fence}${FENCE_CLOSE}\n\n`;
+  const body = preText(node).replace(/\n$/, "");
+  const fence = "`".repeat(Math.max(3, ...(body.match(/`{3,}/g) ?? []).map((run) => run.length + 1)));
+  return `\n\n${FENCE_OPEN}${CODE_BLOCK}${fence}${lang}\n${body}\n${fence}${FENCE_CLOSE}\n\n`;
 }
 
 function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
@@ -104,12 +173,13 @@ function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
     const marker = ordered ? `${index++}.` : "-";
     // Blank lines are kept only inside fenced code.
     let fenced = false;
-    const body = clean(children(item, ctx))
+    const body = clean(children(item, resolve(item, ctx)))
       .split("\n")
       .filter((line) => {
         const keep = fenced || line.trim() !== "";
-        if (line.includes(FENCE_OPEN)) fenced = true;
-        if (line.includes(FENCE_CLOSE)) fenced = false;
+        const open = line.lastIndexOf(FENCE_OPEN);
+        const close = line.lastIndexOf(FENCE_CLOSE);
+        if (open !== close) fenced = open > close;
         return keep;
       });
     const [first = "", ...rest] = body;
@@ -119,15 +189,23 @@ function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
   return lines.join("\n");
 }
 
-function tableRows(node: PasteNode): PasteNode[] {
-  const rows: PasteNode[] = [];
+function tableRows(node: PasteNode, ctx: Ctx): [PasteNode, Ctx][] {
+  const rows: [PasteNode, Ctx][] = [];
   for (const child of elements(node)) {
     const tag = child.nodeName.toUpperCase();
-    if (tag === "TR") rows.push(child);
-    else if (tag === "THEAD" || tag === "TBODY" || tag === "TFOOT") rows.push(...tableRows(child));
+    if (tag === "TR") rows.push([child, resolve(child, ctx)]);
+    else if (tag === "THEAD" || tag === "TBODY" || tag === "TFOOT") rows.push(...tableRows(child, resolve(child, ctx)));
   }
   return rows;
 }
+
+// Split, not `/\s*\n\s*/`, which is quadratic on long whitespace runs; input is already trimmed.
+const flatten = (text: string) =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ");
 
 function span(cell: PasteNode, name: string, max: number): number {
   const value = Number.parseInt(attr(cell, name), 10);
@@ -135,17 +213,14 @@ function span(cell: PasteNode, name: string, max: number): number {
 }
 
 function table(node: PasteNode, ctx: Ctx): string {
-  const physical = tableRows(node);
+  const physical = tableRows(node, ctx);
   // Lay merged cells onto the grid so every value stays under its own header.
   const rows: string[][] = physical.map(() => []);
-  physical.forEach((row, r) => {
+  physical.forEach(([row, rowCtx], r) => {
     let c = 0;
     for (const cell of elements(row).filter((child) => /^T[DH]$/i.test(child.nodeName))) {
       while (rows[r][c] !== undefined) c++;
-      const text = clean(children(cell, ctx))
-        .replace(new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"), "")
-        .replace(/\s*\n\s*/g, " ")
-        .replace(/\|/g, "\\|");
+      const text = flatten(clean(children(cell, resolve(cell, rowCtx))).replaceAll(INDENT, "")).replace(/\|/g, "\\|");
       const cols = span(cell, "colspan", 1000);
       const down = span(cell, "rowspan", physical.length - r);
       for (let dr = 0; dr < down; dr++)
@@ -159,19 +234,32 @@ function table(node: PasteNode, ctx: Ctx): string {
     `| ${Array.from({ length: width }, (_, i) => cells[i] ?? "").join(" | ")} |`;
   const [head, ...body] = rows;
   const caption = elements(node).find((child) => child.nodeName.toUpperCase() === "CAPTION");
-  const title = caption ? clean(children(caption, ctx)).replace(/\s*\n\s*/g, " ") : "";
+  const title = caption ? flatten(clean(children(caption, resolve(caption, ctx)))) : "";
   return [...(title ? [title, ""] : []), line(head), `| ${Array(width).fill("---").join(" | ")} |`, ...body.map(line)].join("\n");
 }
 
-function convert(node: PasteNode, ctx: Ctx): string {
+function resolve(node: PasteNode, parent: Ctx): Ctx {
+  const declared = [...attr(node, "style").toLowerCase().matchAll(/white-space:\s*([\w-]+)/g)].at(-1)?.[1];
+  if (declared === undefined) return parent;
+  const space = declared === "pre-line" ? "line" : /^(?:pre|break-spaces)/.test(declared) ? "pre" : "collapse";
+  return space === parent.space ? parent : { ...parent, space };
+}
+
+function convert(node: PasteNode, parent: Ctx): string {
   if (node.nodeType === 3) {
-    const text = node.textContent ?? "";
-    return ctx.pre ? text : text.replace(/\s+/g, " ");
+    const value = text(node);
+    if (parent.space === "pre") return `${FENCE_OPEN}${value.replaceAll("\u00a0", " ")}${FENCE_CLOSE}`;
+    if (parent.space === "collapse") return value.replace(/[^\S\u00a0]+/g, " ");
+    return value
+      .replace(/[^\S\n\u00a0]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
+      .replace(/\n{3,}/g, (run) => `${FENCE_OPEN}${run}${FENCE_CLOSE}`);
   }
   if (node.nodeType !== 1) return "";
   const tag = node.nodeName.toUpperCase();
   if (SKIP.has(tag)) return "";
   const style = attr(node, "style").toLowerCase();
+  const ctx = resolve(node, parent);
   switch (tag) {
     case "BR":
       return "\n";
@@ -182,11 +270,12 @@ function convert(node: PasteNode, ctx: Ctx): string {
       const href = safeHref(raw);
       const inner = children(node, ctx);
       if (!href) return inner;
-      const text = inner.trim();
-      const lead = inner.slice(0, inner.length - inner.trimStart().length);
-      const trail = inner.slice(inner.trimEnd().length);
-      if (!text || text === raw || text === href || `mailto:${text}` === raw) return `${lead}${href}${trail}`;
-      return `${lead}[${text.replace(/([[\]])/g, "\\$1")}](${href})${trail}`;
+      const [lead, text, trail] = edges(inner);
+      const plain = text.replace(MARKS, "");
+      if (!plain || plain === raw || plain === href || `mailto:${plain}` === raw) return `${lead}${href}${trail}`;
+      const linked = perParagraph(inner, (body) => `[${body.replace(/([[\]])/g, "\\$1")}](${href})`);
+      // Only code blocks inside: no link syntax can hold them, so keep the destination after them.
+      return linked === inner ? `${inner.trimEnd()}\n\n${href}\n\n` : linked;
     }
     case "STRONG":
     case "B":
@@ -202,7 +291,7 @@ function convert(node: PasteNode, ctx: Ctx): string {
     case "STRIKE":
       return wrap("~~", children(node, ctx));
     case "CODE":
-      return ctx.pre ? children(node, ctx) : codeSpan(node.textContent ?? "");
+      return `${FENCE_OPEN}${CODE}${codeSpan(text(node))}${FENCE_CLOSE}`;
     case "PRE":
       return preBlock(node);
     case "H1":
@@ -237,10 +326,14 @@ function convert(node: PasteNode, ctx: Ctx): string {
   }
 }
 
+// Non-breaking spaces outside fences are layout; inside code they may be data.
+const FINAL = new RegExp(`${FENCE_OPEN}([\\s\\S]*?)${FENCE_CLOSE}|[${INDENT}\u00a0]|[${FENCE_OPEN}${FENCE_CLOSE}${CODE}${CODE_BLOCK}]`, "g");
+
 export function htmlNodeToMarkdown(root: PasteNode): string {
-  return clean(convert(root, { pre: false, bold: false, italic: false })).replace(
-    new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"),
-    (mark) => (mark === INDENT ? " " : ""),
+  return clean(convert(root, { space: "collapse", bold: false, italic: false })).replace(
+    FINAL,
+    (mark, fenced?: string) =>
+      fenced !== undefined ? fenced.replaceAll(INDENT, " ").replaceAll(CODE, "").replaceAll(CODE_BLOCK, "") : mark === INDENT || mark === "\u00a0" ? " " : "",
   );
 }
 
@@ -257,11 +350,11 @@ export function richPasteMarkdown(
   if (!html || !STRUCTURE.test(html)) return null;
   const root = parse(html);
   if (!root) return null;
-  const markdown = htmlNodeToMarkdown(root);
+  const markdown = htmlNodeToMarkdown(root).trim();
   const plain = data.getData("text/plain");
   if (!markdown || squash(markdown) === squash(plain)) return null;
   // Restore the copied text's edge whitespace, which conversion trims.
-  return `${/^\s*/.exec(plain)?.[0] ?? ""}${markdown}${/\s*$/.exec(plain)?.[0] ?? ""}`;
+  return `${plain.slice(0, plain.length - plain.trimStart().length)}${markdown}${plain.slice(plain.trimEnd().length)}`;
 }
 
 function parseHtml(html: string): PasteNode | null {

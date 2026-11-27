@@ -622,7 +622,9 @@ def test_sdxl_measured_activation_keeps_a_t4_resident():
         plan = _t4_plan(act, mode)
         assert plan.offload_policy == OFFLOAD_NONE, mode
         assert not plan.vae_tiling and not plan.vae_slicing
-    assert _t4_plan(act, MEMORY_MODE_LOW_VRAM).offload_policy == OFFLOAD_MODEL
+    # low_vram streams the denoiser and the encoders (the applier gives a U-Net the whole-module tier).
+    low = _t4_plan(act, MEMORY_MODE_LOW_VRAM)
+    assert low.offload_policy == OFFLOAD_GROUP and low.stream_text_encoders and low.vae_tiling
     assert _t4_plan(act, MEMORY_MODE_BALANCED).offload_policy == OFFLOAD_GROUP
 
 

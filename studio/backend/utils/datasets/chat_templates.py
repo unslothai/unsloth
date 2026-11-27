@@ -4,7 +4,7 @@
 import json
 import warnings as python_warnings
 
-from .cells import cell_text
+from .cells import cell_text, content_text, only_text_parts
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
@@ -318,7 +318,16 @@ def _one_call_per_message(turns):
     return split if len(split) != len(turns) else turns
 
 
+def _flatten_text_parts(message):
+    content = message.get("content") if isinstance(message, dict) else None
+    if only_text_parts(content):
+        return {**message, "content": content_text(content)}
+    return message
+
+
 def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True,):
+    if not (hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer")):
+        conversation = [_flatten_text_parts(message) for message in conversation]
     candidates = []
     # None content for DeepSeek-style templates; one call per message for Llama 3.x and gpt-oss.
     for content in ("", None):

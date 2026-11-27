@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Cross-rank values via the c10d store: JSON, never pickle (TCPStore is unauthenticated).
-Non-plain values arrive as None."""
+"""Store values are JSON, never pickle (TCPStore is unauthenticated); non-plain ones are None."""
 
 import json
 import os

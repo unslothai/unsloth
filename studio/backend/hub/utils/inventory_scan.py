@@ -411,6 +411,11 @@ def _with_repos_dropped_by_scan(
         return scan
 
 
+def scan_of_repo(scan, repo_info):
+    """*scan* narrowed to *repo_info*, to delete from. ``delete_revisions`` looks a commit hash up in every repo of its scan and takes the first that has it, but a hash is only a ``snapshots/`` folder name: a mirror, or anything able to write the cache (sandboxed tool code), can repeat it under another repo."""
+    return replace(scan, repos = frozenset((repo_info,)))
+
+
 @in_scan_memo
 def _compute_all_hf_cache_scans() -> list:
     from huggingface_hub import HFCacheInfo, scan_cache_dir
@@ -423,24 +428,26 @@ def _compute_all_hf_cache_scans() -> list:
             if getattr(scan, "warnings", None):
                 scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
-        except OSError as exc:
-            # Filesystem errors can abort a whole root (e.g. Windows reparse points); recover read-only.
-            logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
+        except Exception as exc:
+            # Any error (reparse point, undecodable ref) aborts the whole root upstream: recover read-only.
+            logger.warning(
+                "Could not scan HF cache %s: %s", short_path_for_log(cache_root), scrub_paths(exc)
+            )
             empty_fields = dict(size_on_disk = 0, repos = frozenset(), warnings = [])
             # huggingface_hub 1.x added this required field; older versions lack it.
             if any(field.name == "incomplete_files" for field in fields(HFCacheInfo)):
                 empty_fields["incomplete_files"] = frozenset()
-            recovered = _with_repos_dropped_by_scan(
-                HFCacheInfo(**empty_fields),
-                cache_root,
-                scan_failed = True,
-            )
+            try:
+                recovered = _with_repos_dropped_by_scan(
+                    HFCacheInfo(**empty_fields),
+                    cache_root,
+                    scan_failed = True,
+                )
+            except Exception as recovery_exc:
+                logger.debug("HF cache recovery failed: %s", scrub_paths(recovery_exc))
+                continue
             if recovered.repos:
                 scans.append(recovered)
-        except Exception as exc:
-            logger.warning(
-                "Could not scan HF cache %s: %s", short_path_for_log(cache_root), scrub_paths(exc)
-            )
     return scans
 
 
@@ -750,12 +757,14 @@ _UNJUDGEABLE_FAMILY = object()
 def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     if snapshot_dir is None:
         return set()
-    # A load id can name the .gguf file itself, so resolve to its parent like the lister.
+    from core.inference.engram_tables import table_shard_skipped
     from hub.utils.gguf import _resolve_gguf_dir
 
+    # A load id can name the .gguf file itself, so resolve to its parent like the lister.
     snapshot_dir = _resolve_gguf_dir(snapshot_dir) or snapshot_dir
     # Keyed on quant, then on shard family (directory, prefix, total); one quant can cover several.
     split_groups: dict[str, dict[tuple[str, str, int], set[int]]] = {}
+    split_paths: dict[tuple[str, tuple[str, str, int], int], Path] = {}
     # Lister and loader both take the lexicographically first file, hence the sort. None = no total named; _UNJUDGEABLE_FAMILY = bad spec.
     selected: dict[str, object] = {}
     try:
@@ -806,13 +815,21 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         )
         # Record every shard: the rest of the selected family sorts after the one that selected it.
         split_groups.setdefault(quant, {}).setdefault(family, set()).add(index)
+        split_paths.setdefault((quant, family, index), path)
         selected.setdefault(quant, family)
     complete: set[str] = set()
     for quant, family in selected.items():
         if family is None:
             complete.add(quant)
         elif isinstance(family, tuple):
-            if _shard_family_is_whole(family, split_groups.get(quant, {}).get(family) or set()):
+            indices = split_groups.get(quant, {}).get(family) or set()
+            # Or a --ple download that left out the quant's own Engram table shard.
+            if _shard_family_is_whole(family, indices) or (
+                1 in indices
+                and table_shard_skipped(
+                    [split_paths[(quant, family, i)] for i in sorted(indices)], family[2]
+                )
+            ):
                 complete.add(quant)
     return complete
 

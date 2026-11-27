@@ -249,12 +249,15 @@ import weakref
 _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 
 
-def pool_bytes(device: Optional[int] = None) -> int:
-    """Unused graph-private bytes; retained outputs already count as allocated."""
+def pool_bytes(device: Optional[int] = None, only: Optional[set] = None) -> int:
+    """Unused graph-private bytes; retained outputs already count as allocated. ``only``: ids of the ``_Shared``
+    states to count (default every live one)."""
     total = 0
     tracked = 0
     pools: set = set()
     for shared in tuple(_LIVE):
+        if only is not None and id(shared) not in only:
+            continue
         index = getattr(shared, "device_index", None)
         if device is not None and index is not None and index != device:
             continue

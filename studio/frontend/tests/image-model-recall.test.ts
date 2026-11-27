@@ -59,6 +59,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
       transformerQuant: "auto",
       textEncoderQuant: "auto",
       attentionBackend: "auto",
+      int8Attention: "auto",
       memoryMode: "auto",
       transformerCache: "auto",
       selectedGpu: "auto",
@@ -78,6 +79,11 @@ test("recalling a quantized model carries the selected adapters into its load", 
       workflow: "txt2img",
       handleGenerate: () => {
         throw new Error("generation must wait for the load");
+      },
+      // The resident build can run the selection: no LoRA reload in this recall.
+      loraReload: null,
+      reloadWithLoras: () => {
+        throw new Error("no LoRA reload on a recall");
       },
       handleLoad: async (...args: unknown[]) => {
         loads.push(args);
@@ -105,6 +111,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
       familyOverride: "qwen-image",
       transformerQuant: quant,
       textEncoderQuant: "int8",
+      int8Attention: quant === "int8" ? "on" : "off",
       rememberedModel: model,
     });
     await callbacks.handleGenerateWithRecall();
@@ -122,12 +129,14 @@ test("recalling a quantized model carries the selected adapters into its load", 
           transformer_quant?: string;
           text_encoder_quant?: string;
           family_override?: string;
+          int8_attention?: string;
         }
       | undefined;
     assert.deepEqual(advanced?.loras, [{ id: "org/style", weight: 0.7 }]);
     assert.equal(advanced?.transformer_quant, quant);
     assert.equal(advanced?.text_encoder_quant, "int8");
     assert.equal(advanced?.family_override, undefined);
+    assert.equal(advanced?.int8_attention, quant === "int8" ? "on" : "off");
     assert.equal(
       callbacks.currentLoadAdvanced("org/different-model").loras,
       undefined,

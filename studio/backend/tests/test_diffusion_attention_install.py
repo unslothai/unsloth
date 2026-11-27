@@ -73,6 +73,9 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False, raising = False)
+    monkeypatch.setattr(
+        att, "_load_sage_hub_direct", lambda: (None, "direct loader stubbed"), raising = False
+    )
     backends = dispatch._AttentionBackendRegistry._backends
     saved = dict(backends)
     hub_cfg = dispatch._HUB_KERNELS_REGISTRY.get(_HUB) if _HUB is not None else None
@@ -394,7 +397,7 @@ def test_an_imported_old_kernels_is_not_papered_over(monkeypatch):
     log = _Logger()
     att._refresh_diffusers_kernels_version(log)
     assert import_utils._kernels_version == "0.12.1"
-    assert any("after Studio restarts" in w for w in log.warnings)
+    assert any("after Unsloth restarts" in w for w in log.warnings)
 
 
 def test_a_pth_installed_mid_process_is_activated(monkeypatch, tmp_path):

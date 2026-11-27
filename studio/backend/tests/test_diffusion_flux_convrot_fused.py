@@ -72,8 +72,7 @@ def _run_stock_vs_patched(
     call,
     mode = "eager",
 ):
-    """Stock, patched (eager, or traced by dynamo: the per-call gates must hold inside the regional compile) and
-    restored outputs of one block."""
+    """Block outputs: stock, patched (eager or dynamo-traced; gates must hold), restored."""
     torch.manual_seed(0)
     block = build().eval()
     with torch.no_grad():

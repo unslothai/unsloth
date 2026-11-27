@@ -12,7 +12,11 @@
 import logging
 import copy
 
-from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
+from .loader import (
+    FastModel,
+    DISABLE_SDPA_MODEL_NAMES,
+    _refuse_network_share_raw_adapter_base,
+)
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     _PLANNED_DEVICE_MAPS,
@@ -106,6 +110,11 @@ def fsdp2_st_usage_snippet(model):
         print(f"Unsloth: FSDP2 save: model card usage snippet not computed ({exc}).")
     finally:
         model.__dict__.pop("to", None)
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, training in modes:
+            module.train(training)
         for module, training in modes:
             module.training = training
     card.__dict__["run_usage_snippet"] = lambda *args, **kwargs: None
@@ -121,6 +130,95 @@ def _save_creates_model_card(save, model, args, kwargs):
     except (TypeError, ValueError):
         return kwargs.get("create_model_card", True) is not False
     return bound.arguments.get("create_model_card", True) is not False
+
+
+# A model's own sentence_bert_config.json feeds model_args / config_args / tokenizer_args into
+# from_pretrained. These keys run code from the repo (an unrestricted torch.load of its pickle, a Hub
+# kernel import) or reach outside it, so the repo may not set them; the caller's kwargs still can.
+_ST_CONFIG_REFUSED_ARGS = frozenset(
+    {
+        "weights_only",
+        "allow_all_kernels",
+        "use_kernels",
+        "kernel_config",
+        "offload_folder",
+        "code_revision",
+    }
+)
+_ST_PLAIN_ATTN = re.compile(r"[A-Za-z0-9_|]+")
+
+
+def _st_config_path_escapes(value):
+    if not isinstance(value, str):
+        return False
+    norm = value.replace("\\", "/")
+    return (
+        norm.startswith("/") or re.match(r"[A-Za-z]:", norm) is not None or ".." in norm.split("/")
+    )
+
+
+def _scrub_st_config_load_args(config):
+    if not isinstance(config, dict):
+        return config
+    dropped = []
+    for section in ("model_args", "config_args", "tokenizer_args"):
+        args = config.get(section)
+        if not isinstance(args, dict):
+            continue
+        for key in list(args):
+            value = args[key]
+            if (
+                key in _ST_CONFIG_REFUSED_ARGS
+                or (key == "use_safetensors" and value is not True)
+                or (
+                    key in ("attn_implementation", "_attn_implementation")
+                    and not (isinstance(value, str) and _ST_PLAIN_ATTN.fullmatch(value))
+                )
+            ):
+                args.pop(key)
+                dropped.append(f"{section}.{key}")
+    if _st_config_path_escapes(config.get("tokenizer_name_or_path")):
+        config.pop("tokenizer_name_or_path")
+        dropped.append("tokenizer_name_or_path")
+    if dropped:
+        logging.getLogger(__name__).warning(
+            "Unsloth: ignoring loader arguments set by the model's own sentence-transformers config: %s",
+            ", ".join(dropped),
+        )
+    return config
+
+
+def _install_st_config_load_args_guard():
+    """Idempotent: wrap sentence-transformers' Transformer / MLMTransformer load_config so the arguments
+    a repo sets for itself are scrubbed (also when nested in a Router or a nested SentenceTransformer)."""
+    targets = []
+    for module_name, class_name in (
+        ("sentence_transformers.models", "Transformer"),
+        ("sentence_transformers.sparse_encoder.models", "MLMTransformer"),
+    ):
+        try:
+            targets.append(getattr(importlib.import_module(module_name), class_name))
+        except Exception:
+            continue
+    for cls in targets:
+        original = vars(cls).get("load_config")
+        if not isinstance(original, classmethod):
+            continue
+        func = original.__func__
+        if getattr(func, "_unsloth_scrubs_load_args", False):
+            continue
+
+        def load_config(
+            klass,
+            *args,
+            _original = func,
+            **kwargs,
+        ):
+            return _scrub_st_config_load_args(_original(klass, *args, **kwargs))
+
+        load_config._unsloth_scrubs_load_args = True
+        load_config.__wrapped__ = func
+        cls.load_config = classmethod(load_config)
 
 
 def _install_fsdp2_collective_st_save(SentenceTransformer):
@@ -532,6 +630,14 @@ def _save_pretrained_gguf(
         print(f"Unsloth: Uploading to {repo_id}...")
         try:
             api.create_repo(repo_id = repo_id, exist_ok = True, private = kwargs.get("private", False))
+        except Exception as e:
+            print(f"Unsloth: Upload failed: {e}")
+            return result
+        from ..save import _refuse_private_push_to_public_repo
+
+        # Outside the try below: a refusal must stop the upload, not print as a failed one.
+        _refuse_private_push_to_public_repo(repo_id, kwargs.get("private", False), api = api)
+        try:
             api.upload_folder(
                 folder_path = save_directory,
                 repo_id = repo_id,
@@ -636,6 +742,9 @@ def _push_to_hub_gguf(
         )
     except Exception as e:
         print(f"Unsloth Warning: Could not create repo: {e}")
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(full_repo_id, private, api = api)
 
     with tempfile.TemporaryDirectory(prefix = "unsloth_st_gguf_") as temp_dir:
         print(f"Unsloth: Converting SentenceTransformer to GGUF format...")
@@ -1512,6 +1621,21 @@ class FastSentenceTransformer(FastModel):
     _MAX_SUB_MODULE_DEPTH = 8
 
     @staticmethod
+    def _folder_escapes_model(folder):
+        """A module folder that leaves the model: rooted, a drive, a UNC share, or above it once normalized.
+        modules/../1_Pooling stays inside."""
+        if not isinstance(folder, str):
+            return False
+        normalized = posixpath.normpath(folder.replace("\\", "/"))
+        return (
+            os.path.isabs(folder)
+            or folder.startswith(("/", "\\"))
+            or folder[1:2] == ":"
+            or normalized == ".."
+            or normalized.startswith("../")
+        )
+
+    @staticmethod
     def _is_transformer_module_ref(class_ref):
         """Match the ST Transformer by name without importing it, since importing is the execution
         the gate refuses; other spellings or subclasses are caught by issubclass after gating."""
@@ -1652,7 +1776,17 @@ class FastSentenceTransformer(FastModel):
 
         # Router.load runs the same unchecked loaders one folder down for each route, so
         # each route is checked the way this module was, where the loader will read it.
+        try:
+            is_local = os.path.isdir(model_name)
+        except (OSError, TypeError, ValueError):
+            is_local = False
         for route, value in routes:
+            # A Hub repo's UNC / rooted route would reach a host the repo chose (SMB, NTLM on Windows).
+            if not is_local and FastSentenceTransformer._folder_escapes_model(route):
+                raise ValueError(
+                    f"Unsloth: {model_name} names the {class_ref} route folder {route!r}, which is "
+                    f"outside the model. Module folders must stay inside the model folder."
+                )
             if depth >= FastSentenceTransformer._MAX_SUB_MODULE_DEPTH:
                 raise ValueError(
                     f"Unsloth: The model {model_name} nests its {class_ref} modules more than "
@@ -1984,17 +2118,7 @@ class FastSentenceTransformer(FastModel):
             if not isinstance(module_config, dict):
                 continue
             folder = module_config.get("path")
-            # modules/../1_Pooling stays inside: only a folder that normalizes above the model escapes.
-            normalized = (
-                posixpath.normpath(folder.replace("\\", "/")) if isinstance(folder, str) else ""
-            )
-            if isinstance(folder, str) and (
-                os.path.isabs(folder)
-                or folder.startswith(("/", "\\"))
-                or folder[1:2] == ":"
-                or normalized == ".."
-                or normalized.startswith("../")
-            ):
+            if FastSentenceTransformer._folder_escapes_model(folder):
                 raise ValueError(
                     f"Unsloth: {model_name} names the module folder {folder!r}, which is "
                     f"outside the model. Module folders must stay inside the model folder."
@@ -2469,7 +2593,9 @@ class FastSentenceTransformer(FastModel):
         try:
             from sentence_transformers import SentenceTransformer
             from sentence_transformers.models import Transformer, Pooling, Normalize
+
             _install_fsdp2_collective_st_save(SentenceTransformer)
+            _install_st_config_load_args_guard()
         except ImportError:
             raise ImportError(
                 "Unsloth: To use `FastSentenceTransformer`, you must install `sentence-transformers`.\n"
@@ -2577,6 +2703,14 @@ class FastSentenceTransformer(FastModel):
             # pin the validated commit so a moving branch cannot change between checking and loading.
             if _validated:
                 st_kwargs["revision"] = _validated
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = st_kwargs.get("revision"),
+                # hf_hub_download ignores SENTENCE_TRANSFORMERS_HOME; SentenceTransformer reads it.
+                cache_dir = st_kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            )
             st_model = SentenceTransformer(model_name, **st_kwargs)
             check_mixed_gpu_placement(getattr(st_model[0], "auto_model", st_model), dtype)
             # unsupported GPUs emulate bfloat16 slowly; float16 can yield non-finite activations.
@@ -2657,6 +2791,13 @@ class FastSentenceTransformer(FastModel):
                 disable_sdpa_model_names = DISABLE_SDPA_MODEL_NAMES,
                 **_remote_class_probe_kwargs,
             )
+            if (
+                encoder_attn_impl == "sdpa"
+                and model_type.lower() == "modernbert"
+                and Version(transformers.__version__).major < 5
+            ):
+                # transformers 4 ModernBERT self-selects FA2 and skips padding; forcing SDPA is slower.
+                encoder_attn_impl = None
             supports_sdpa = encoder_attn_impl == "sdpa"
             if encoder_attn_impl is not None:
                 model_kwargs["attn_implementation"] = encoder_attn_impl
@@ -2705,6 +2846,14 @@ class FastSentenceTransformer(FastModel):
                 trust_remote_code,
                 cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
                 revision = revision,
+            )
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = _validated or revision,
+                cache_dir = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             )
             # the delegated route has the same race and revision pin.
             st_model = SentenceTransformer(
@@ -2786,6 +2935,9 @@ class FastSentenceTransformer(FastModel):
                     )
                 except:
                     pass
+                from ..save import _refuse_private_push_to_public_repo
+
+                _refuse_private_push_to_public_repo(repo_id, push_kwargs.get("private"), api = api)
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self.save_pretrained_merged(temp_dir, **push_kwargs)
                     api.upload_folder(
@@ -3059,6 +3211,9 @@ class FastSentenceTransformer(FastModel):
                 )
             except:
                 pass
+            from ..save import _refuse_private_push_to_public_repo
+
+            _refuse_private_push_to_public_repo(repo_id, private, api = api)
 
             with tempfile.TemporaryDirectory() as temp_dir:
                 self.save_pretrained_merged(temp_dir, **kwargs)
@@ -3071,6 +3226,9 @@ class FastSentenceTransformer(FastModel):
 
         st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
         st_model._unsloth_trust_remote_code = trust_remote_code
+        from ._sentence_transformer_unpadding import enable_sentence_transformer_decoder_packing
+
+        enable_sentence_transformer_decoder_packing(st_model)
         FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
         return st_model
 
@@ -3114,6 +3272,10 @@ class FastSentenceTransformer(FastModel):
             if is_fast_encoder:
                 transformer_module = model[0]
                 inner_model = transformer_module.auto_model
+
+                from ._utils import reject_alora
+
+                reject_alora(inner_model, kwargs.get("alora_invocation_tokens"))
 
                 is_quantized = (
                     getattr(inner_model, "is_quantized", False)
@@ -3189,6 +3351,7 @@ class FastSentenceTransformer(FastModel):
                 from transformers import set_seed as transformers_set_seed
 
                 transformers_set_seed(random_state)
+                lora_options = inspect.signature(LoraConfig).parameters
                 lora_config = LoraConfig(
                     r = r,
                     lora_alpha = lora_alpha,
@@ -3202,10 +3365,13 @@ class FastSentenceTransformer(FastModel):
                     modules_to_save = modules_to_save,
                     init_lora_weights = init_lora_weights,
                     loftq_config = loftq_config or {},
-                    task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
+                    **{k: v for k, v in kwargs.items() if k in lora_options},
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
+                if os.environ.get("UNSLOTH_ST_LEAN_LORA", "1") != "0":
+                    from ._lean_lora import apply_lean_lora
+                    apply_lean_lora(peft_model)
                 from ._utils import _mark_unsloth_disable_data_parallel
                 from .llama import _unfreeze_modules_to_save
 
@@ -3384,8 +3550,11 @@ def _patch_sentence_transformer_trainer():
         _original_init(self, *args, **kwargs)
         _check_live_placement(self)
 
-        # Disable mixed precision when FORCE_FLOAT32 is active (matches rl.py behavior)
-        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+        # Disable mixed precision for a forced float32 model (matches rl.py). Read from the model, not
+        # UNSLOTH_FORCE_FLOAT32: that is process wide, and the fast encoder route never resets it.
+        from ._utils import _model_forced_float32
+
+        if _model_forced_float32(getattr(self, "model", None)):
             if hasattr(self, "args") and self.args is not None:
                 if self.args.fp16 or self.args.bf16:
                     print(
@@ -3413,6 +3582,9 @@ def _patch_sentence_transformer_trainer():
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer.train = _patched_train
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
+    from ._sentence_transformer_prefetch import patch_train_dataloader
+
+    patch_train_dataloader(SentenceTransformerTrainer)
 
 
 def _patch_st_trainer_load_from_checkpoint():

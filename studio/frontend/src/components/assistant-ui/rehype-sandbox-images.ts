@@ -9,6 +9,7 @@ import {
 	decodeSegment,
 	markdownSandboxImageSrc,
 	markdownSandboxLinkHref,
+	markdownSandboxVideoSrc,
 } from "./sandbox-files.ts";
 
 type SandboxScope = Parameters<typeof markdownSandboxImageSrc>[1];
@@ -42,7 +43,9 @@ export const rehypeSandboxImages: Plugin<[SandboxScope], Root> =
 						const safe = safeMarkdownUrl(src, "src", node);
 						node.properties.src =
 							safe && !unsafeImagePath(safe)
-								? (markdownSandboxImageSrc(safe, scope) ?? safe)
+								? (markdownSandboxImageSrc(safe, scope) ??
+									markdownSandboxVideoSrc(safe, scope) ??
+									safe)
 								: undefined;
 					}
 				}

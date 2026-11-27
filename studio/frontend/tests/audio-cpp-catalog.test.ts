@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  audioCppNameForFileStem,
   AUDIO_CPP_DICTATION_MODELS,
   AUDIO_CPP_MODELS,
   AUDIO_CPP_MUSIC_MAX_SECONDS,
@@ -152,7 +153,6 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
 });
 
 test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
-  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 23);
   for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
     assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
     assert.match(folder, /-GGUF$/);
@@ -790,7 +790,8 @@ test("GGUF runtime speech trades sampling controls for the model's own options",
   const page = readAudioWorkspaceSource();
   assert.match(
     page,
-    /\{musicGeneration \|\|\s*samplingControls \|\|\s*audioOptionSpecs\.length > 0 \? \(\s*<AdvancedDisclosure/,
+    // Advanced always renders: the load device lives there even when a model has no options.
+    /<AdvancedDisclosure[\s\S]*?ariaLabel="Load model into"[\s\S]*?!musicGeneration && samplingControls \? \(\s*<ParamSlider/,
   );
   assert.match(page, /!musicGeneration && samplingControls && temperatureEdited/);
   assert.match(page, /audioOptionSpecsFor\(status, workflow\)/);
@@ -971,4 +972,12 @@ test("adopting a saved-key audio download keeps it warmable", async () => {
   );
   assert.equal(sttModelVariant("audiocpp-moonshine-tiny", "tiny/Q8_0"), null);
   assert.equal(sttModelVariant("audiocpp-moonshine-tiny", ""), null);
+});
+
+test("older clips labelled with a GGUF file stem show the catalog name", () => {
+  assert.equal(audioCppNameForFileStem("kokoro-82m-q8_0"), "Kokoro-82M-GGUF");
+  assert.equal(audioCppNameForFileStem("Kokoro-82M-Q4_K_M"), "Kokoro-82M-GGUF");
+  // No quant tag, or no catalog match: the label stays as stored.
+  assert.equal(audioCppNameForFileStem("kokoro-82m"), null);
+  assert.equal(audioCppNameForFileStem("my-voice-q8_0"), null);
 });

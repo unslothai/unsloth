@@ -115,6 +115,23 @@ test("stem file names read '<title> - <Label>.wav' and are safe on disk", () => 
   assert.equal(sanitizeFileNamePart("", "fallback"), "fallback");
 });
 
+test("long multi-byte titles keep stem and zip names under 255 bytes", () => {
+  const bytes = (name: string) => new TextEncoder().encode(name).byteLength;
+  for (const title of ["音".repeat(120), "🎵".repeat(120)]) {
+    const stem = stemFileName(title, "Instrumental");
+    assert.ok(stem.endsWith(" - Instrumental.wav"));
+    assert.ok(bytes(stem) <= 255, `${bytes(stem)} bytes`);
+    assert.ok(bytes(stemZipName(title)) <= 255);
+    const clip = clipFileName({ prompt: title, workflow: "speak" });
+    assert.ok(clip.endsWith(" - Text to Speech.wav"));
+    assert.ok(bytes(clip) <= 255, `${bytes(clip)} bytes`);
+  }
+  assert.equal(
+    stemFileName("音".repeat(70), "Vocals"),
+    `${"音".repeat(70)} - Vocals.wav`,
+  );
+});
+
 test("clip file names read '<prompt> - <Workflow>.wav' instead of the clip id", () => {
   const cases: [Parameters<typeof clipFileName>[0], string][] = [
     [{ prompt: "Hello there.", workflow: "speak" }, "Hello there - Text to Speech.wav"],

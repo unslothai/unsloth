@@ -182,14 +182,16 @@ export default function SamplingFooter({
             status.reasoning_always_on === true || state.reasoningEnabled,
           )
         : null;
-      state.setParams({
-        ...state.params,
+      const recommended = {
         ...recommendedSampling(
           status.inference as Record<string, unknown> | undefined,
           defaults,
         ),
         ...qwen,
-      });
+      };
+      state.setParams({ ...state.params, ...recommended });
+      // Otherwise the next model keeps this one's recommendation as if the user had picked it.
+      state.releasePresetEditedKeys(Object.keys(recommended));
     });
 
   const status = samplingSaveStatus(remember, saved, current);

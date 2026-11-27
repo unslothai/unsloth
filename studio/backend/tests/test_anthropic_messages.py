@@ -193,6 +193,19 @@ def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
     assert '"signature": ""' in thinking_start
 
 
+def test_anthropic_emitter_new_pass_status_reopens_thinking():
+    # The final-answer retry (#18802) starts a fresh pass without a tool_end.
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "<think>First.</think>"})
+    events += emitter.feed({"type": "status", "text": "", "new_pass": True})
+    events += emitter.feed({"type": "content", "text": "<think>Second.</think>Answer."})
+    events += emitter.finish()
+
+    assert _emitter_client_thinking(events) == "First.Second."
+    assert _emitter_client_text(events) == "Answer."
+
+
 def test_anthropic_emitter_splits_think_from_answer():
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
@@ -1445,6 +1458,148 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == f"Title: Handbook\nContext: Internal\n{body}"
+
+    @pytest.mark.parametrize("tool_result_images", [True, False])
+    def test_tool_result_pdf_document_reaches_the_model_as_text(self, tool_result_images):
+        import pymupdf
+
+        with pymupdf.open() as doc:
+            doc.new_page().insert_text((72, 100), "Invoice total 4242 EUR")
+            pdf = _b64.b64encode(doc.tobytes()).decode()
+        request = AnthropicMessagesRequest(
+            messages = [
+                {"role": "user", "content": "What is the invoice total in inv.pdf?"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "Read",
+                            "input": {"file_path": "/work/inv.pdf"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "PDF file read: /work/inv.pdf (597 bytes)",
+                                },
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "application/pdf",
+                                        "data": pdf,
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        )
+        result = anthropic_messages_to_openai(
+            [m.model_dump() for m in request.messages],
+            tool_result_images = tool_result_images,
+        )
+        tool_message = next(m for m in result if m["role"] == "tool")
+        assert "Invoice total 4242 EUR" in tool_message["content"]
+        assert DOCUMENT_OMITTED not in tool_message["content"]
+
+    def test_warmed_pdf_document_converts_while_indexing_holds_the_mupdf_lock(self):
+        import pymupdf
+        from core.inference import anthropic_compat
+        from core.inference.anthropic_compat import warm_anthropic_pdf_documents
+        from core.rag.parsers import MUPDF_LOCK
+
+        with pymupdf.open() as doc:
+            doc.new_page().insert_text((72, 100), "Quarterly revenue 42 million")
+            pdf = _b64.b64encode(doc.tobytes()).decode()
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": pdf,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        anthropic_compat._PDF_TEXTS.clear()
+        warm_anthropic_pdf_documents(AnthropicMessagesRequest(messages = msgs).messages)
+        held, release, result = threading.Event(), threading.Event(), []
+
+        def indexer():
+            with MUPDF_LOCK:
+                held.set()
+                release.wait(10)
+
+        holder = threading.Thread(target = indexer, daemon = True)
+        holder.start()
+        held.wait(5)
+        try:
+            converter = threading.Thread(
+                target = lambda: result.append(anthropic_messages_to_openai(msgs)),
+                daemon = True,
+            )
+            converter.start()
+            converter.join(5)
+            assert result, "conversion waited on MUPDF_LOCK"
+        finally:
+            release.set()
+            holder.join(5)
+        assert "Quarterly revenue 42 million" in str(result[0])
+
+    def test_warmed_pdf_text_survives_cache_eviction(self, monkeypatch):
+        import pymupdf
+        from core.inference import anthropic_compat, tools
+        from core.inference.anthropic_compat import warm_anthropic_pdf_documents
+
+        def pdf(i):
+            with pymupdf.open() as doc:
+                doc.new_page().insert_text((72, 100), f"Report {i}")
+                return _b64.b64encode(doc.tobytes()).decode()
+
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf(i),
+                        },
+                    }
+                ],
+            }
+            for i in range(12)
+        ]
+        request = AnthropicMessagesRequest(messages = msgs)
+        warm_anthropic_pdf_documents(request.messages)
+        anthropic_compat._PDF_TEXTS.clear()
+        monkeypatch.setattr(tools, "_extract_pdf_text", lambda data: pytest.fail("reparsed"))
+        result = str(anthropic_messages_to_openai([m.model_dump() for m in request.messages]))
+        assert all(f"Report {i}" in result for i in range(12))
 
     def test_top_level_search_result_and_document_reach_the_user_turn(self):
         request = AnthropicMessagesRequest(
@@ -4946,7 +5101,7 @@ def test_user_unknown_block_rejected_not_silently_dropped():
 @pytest.mark.parametrize(
     "source",
     [
-        {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+        {"type": "base64", "media_type": "text/plain", "data": "aGk="},
         {"type": "url", "url": "https://example.com/a.pdf"},
         {"type": "file", "file_id": "file_1"},
     ],
@@ -6021,6 +6176,44 @@ class TestReasoningProvenanceIsBoundToItsSynthesisTurn:
         assert self._reduced(monkeypatch, streams) == expected
         assert self._norm(self._streamed(monkeypatch, streams)) == self._norm(expected)
 
+    def test_call_only_final_answer_retry_keeps_both_traces(self, monkeypatch):
+        """#18802: the final pass answers with only a call, so it is re-asked without tools; that
+        retry is its own turn and its trace must not land in the answer text."""
+        call = "<|tool_call_start|>[get_weather(city='LA')]<|tool_call_end|>"
+        streams = [
+            [self._tool_call_sse("call_1", "SF"), "data: [DONE]\n"],
+            [
+                self._sse({"reasoning_content": "check LA too"}),
+                self._sse({"content": call}),
+                "data: [DONE]\n",
+            ],
+            [
+                self._sse({"reasoning_content": "answer now"}),
+                self._sse({"content": "Sunny."}),
+                "data: [DONE]\n",
+            ],
+        ]
+        monkeypatch.setattr(
+            self,
+            "_generator",
+            lambda mp, st, prov: self._backend(mp, st).generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "weather?"}],
+                tools = self.TOOLS,
+                max_tool_iterations = 1,
+                reasoning_provenance = prov,
+            ),
+        )
+        expected = [
+            ("tool_use", "get_weather"),
+            ("thinking", "check LA too"),
+            ("thinking", "answer now"),
+            ("text", "Sunny."),
+        ]
+        assert self._reduced(monkeypatch, [list(x) for x in streams]) == expected
+        assert self._norm(self._streamed(monkeypatch, [list(x) for x in streams])) == self._norm(
+            expected
+        )
+
 
 class TestALiteralTagAfterBlankSpaceIsNotDuplicated:
     """A blank lead before a literal think tag is emitted once, not again by the literal-text fallback."""
@@ -7088,3 +7281,20 @@ class TestInProcessMessages:
             assert body["usage"]["input_tokens"] == 9 and body["stop_reason"] == "end_turn"
         tool_blocks = ["server_tool_use", "web_search_tool_result"]
         assert kinds == ["thinking", "text", *tool_blocks, "thinking", "text"]
+
+
+def test_server_tool_end_then_blank_status_still_ends_the_turn():
+    from routes.inference import _AnthropicToolEventRules
+
+    emitter = AnthropicStreamEmitter()
+    lines = list(emitter.start("msg_1", "m"))
+    rules = _AnthropicToolEventRules(emitter, None, False, None)
+    for event in (
+        {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "c1", "arguments": {}},
+        {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "c1", "result": "r"},
+        {"type": "status", "text": ""},
+        {"type": "metadata", "usage": {}, "finish_reason": "stop"},
+    ):
+        lines.extend(rules.feed(event))
+    lines.extend(rules.finish())
+    assert '"stop_reason": "end_turn"' in "".join(lines)

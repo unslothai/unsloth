@@ -282,6 +282,9 @@ export function buildQuantSizeLabels(
   return out;
 }
 
+export const MOE_GGUF_ADAPTER_HINT =
+  "This adapter trains MoE expert weights. If your llama.cpp cannot convert those yet, the export stops and says so; the full-model GGUF export works either way.";
+
 export function getEstimatedSize(
   method: ExportMethod | null,
   quantLevels: string[],
@@ -388,4 +391,10 @@ export function adapterCompatibilityTip(
 // The image LoRA route reports a path relative to the exports folder unless the user typed an absolute one.
 export function savedLabel(path: string): string {
   return /^([a-zA-Z]:[\\/]|[\\/])/.test(path) ? path : `exports/${path}`;
+}
+
+export type ExportTab = "llm" | "diffusion-lora" | "q4nx";
+
+export function resolveExportTab(tab: ExportTab, hasNpu: boolean): ExportTab {
+  return tab === "q4nx" && !hasNpu ? "llm" : tab;
 }

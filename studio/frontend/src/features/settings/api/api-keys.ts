@@ -11,7 +11,11 @@ export interface ApiKey {
   last_used_at: string | null;
   expires_at: string | null;
   is_active: boolean;
+  /** Older servers omit it; their keys are all full access. */
+  access?: ApiKeyAccess;
 }
+
+export type ApiKeyAccess = "full" | "inference";
 
 /** a refused create or revoke, carrying the server's own reason when it gave one */
 export class ApiKeyActionError extends Error {}
@@ -37,11 +41,29 @@ export async function fetchApiKeys(): Promise<ApiKey[]> {
 export async function createApiKey(
   name: string,
   expiresInDays: number | null,
+  access: ApiKeyAccess = "full",
 ): Promise<{ key: string; api_key: ApiKey }> {
   const res = await authFetch("/api/auth/api-keys", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, expires_in_days: expiresInDays }),
+    body: JSON.stringify({
+      name,
+      expires_in_days: expiresInDays,
+      ...(access === "inference" ? { access } : {}),
+    }),
+  });
+  if (!res.ok) throw await actionError(res);
+  return res.json();
+}
+
+export async function updateApiKeyAccess(
+  keyId: number,
+  access: ApiKeyAccess,
+): Promise<ApiKey> {
+  const res = await authFetch(`/api/auth/api-keys/${keyId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ access }),
   });
   if (!res.ok) throw await actionError(res);
   return res.json();

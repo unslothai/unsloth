@@ -377,3 +377,16 @@ def test_custom_parameter_enumeration_is_used_for_fast_lora(switch):
     weight._fast_lora = weight.detach().clone()
     switch(model, True)
     assert not hasattr(weight, "_fast_lora")
+
+
+def test_keeps_fast_lora_while_decode_graphs_read_it(switch):
+    # _decode_graphs.release_for_training kept the graphs through training: they read these casts.
+    model = _build()
+    weight = model.model.layers[0].proj.weight
+    weight._fast_lora = weight.detach().clone()
+    model.__dict__["_unsloth_decode_keep_casts"] = True
+    switch(model, True)
+    assert hasattr(weight, "_fast_lora")
+    model.__dict__["_unsloth_decode_keep_casts"] = False
+    switch(model, True)
+    assert not hasattr(weight, "_fast_lora")

@@ -124,17 +124,71 @@ def _mlx_adapter():
     nodes = [
         n
         for n in ast.parse(source).body
-        if (isinstance(n, ast.FunctionDef) and n.name == "_adapt_for_mlx_vlm")
-        or (isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "_MLX_VIDEO_UNSUPPORTED")
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_adapt_for_mlx_vlm", "_own_mlx_video_values")
     ]
-    namespace = {"_resize_mlx_vlm_image": lambda image, *a, **k: image}
+    namespace = {
+        "_resize_mlx_vlm_image": lambda image, *a, **k: image,
+        "_resize_mlx_vlm_images": lambda images, *a, **k: images,
+    }
     exec(compile(ast.Module(nodes, []), "worker.py", "exec"), namespace)
     return namespace["_adapt_for_mlx_vlm"]
 
 
-def test_mlx_refuses_video_rather_than_dropping_it():
-    with pytest.raises(ValueError, match = "video"):
-        _mlx_adapter()(_format(_messages_rows()))
+def test_mlx_adapter_keeps_video_instead_of_dropping_it():
+    out = _mlx_adapter()(_format(_messages_rows()))
+    for row, clip in zip(out, CLIPS):
+        assert row["videos"] == clip
+        assert [
+            part
+            for message in row["messages"]
+            for part in message["content"]
+            if part.get("type") == "video"
+        ] == [{"type": "video"}]
+
+
+def test_mlx_adapter_reads_a_top_level_video_column():
+    out = _mlx_adapter()(_format(_flat_rows()))
+    for row, clip in zip(out, CLIPS):
+        assert row["videos"] == clip
+
+
+def test_mlx_adapter_hoists_a_row_image_as_images_beside_a_video():
+    row = {
+        "messages": [
+            {"role": "user", "content": [{"type": "image"}, {"type": "video", "video": CLIPS[0]}]}
+        ],
+        "image": "img.png",
+    }
+    out = _mlx_adapter()(
+        [row, {**row, "messages": [{"role": "user", "content": [{"type": "image"}]}]}]
+    )
+    assert out[0]["images"] == "img.png" and "image" not in out[0]
+    assert out[1]["image"] == "img.png" and "images" not in out[1]
+
+
+def test_mlx_adapter_keeps_decode_hints_on_the_placeholder():
+    rows = _messages_rows().to_list()
+    rows[0]["messages"][0]["content"][0].update(fps = 4.0, nframes = 12)
+    out = _mlx_adapter()(_format(Dataset.from_list(rows)))
+    assert out[0]["videos"] == CLIPS[0]
+    assert {"type": "video", "fps": 4.0, "nframes": 12} in out[0]["messages"][0]["content"]
+
+
+def test_mlx_adapter_skips_rows_whose_video_column_is_null():
+    def row(parts, clips):
+        return {
+            "messages": [
+                {"role": "user", "content": parts + [{"type": "text", "text": QUESTION}]},
+                {"role": "assistant", "content": [{"type": "text", "text": ANSWERS[0]}]},
+            ],
+            "videos": clips,
+        }
+
+    ds = Dataset.from_list([row([{"type": "video"}], [CLIPS[0]]), row([], None)])
+    out = _mlx_adapter()(_format(ds))
+    assert out[0]["videos"] == [CLIPS[0]]
+    assert "videos" not in out[1]
 
 
 @pytest.mark.parametrize("url", ["https://example.com/clip.mp4", "HTTP://example.com/clip.mov?x=1"])
@@ -382,7 +436,16 @@ def test_hub_relative_clips_resolve_from_the_dataset_repo(monkeypatch, tmp_path)
     )
     own_message_videos(messages, dataset_name = "someone/clips", dataset_revision = "abc123")
     assert revisions and {revision for _, revision in revisions} == {"abc123"}
-    assert {kind for kind, _ in revisions} == {"list", "download"}
+
+    adapt = _mlx_adapter()
+    bare = {
+        "messages": [{"role": "user", "content": [{"type": "video"}]}],
+        "videos": ["clip00.mp4"],
+    }
+    from utils.datasets.format_conversion import _HubClips
+
+    out = adapt([bare], hub = _HubClips("someone/clips"))
+    assert out[0]["videos"] == [str(tmp_path / "videos/clip00.mp4")]
 
 
 def test_the_dataset_revision_reaches_the_clip_resolver_from_every_trainer():
@@ -566,7 +629,58 @@ def test_a_decoded_audio_dict_with_an_mp4_path_is_not_video():
     assert detect_video_columns({"audio": cell, "text": "hi"}) == []
 
 
-def test_mlx_refuses_video_before_formatting_fetches_clips():
+def _mlx_video_guards(zoo_has_video):
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(source)
+    nodes = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_mlx_video_preflight", "_require_mlx_video_collation")
+        or isinstance(n, ast.Assign)
+        and ast.unparse(n.targets[0]) == "_MLX_ZOO_VIDEO_TOO_OLD"
+    ]
+    namespace = {"_mlx_zoo_collates_video": lambda: zoo_has_video}
+    exec(compile(ast.Module(nodes, []), "worker.py", "exec"), namespace)
+    return namespace["_mlx_video_preflight"], namespace["_require_mlx_video_collation"]
+
+
+def test_mlx_video_preflight_refuses_only_an_old_zoo():
+    preflight, _ = _mlx_video_guards(zoo_has_video = True)
+    preflight(_flat_rows())
+    old_zoo, _ = _mlx_video_guards(zoo_has_video = False)
+    with pytest.raises(ValueError, match = "newer unsloth-zoo"):
+        old_zoo(_flat_rows())
+    old_zoo(Dataset.from_dict({"text": ["a", "b"]}))
+
+
+def test_mlx_adapter_checks_inline_clips_the_formatter_never_saw():
+    row = {
+        "messages": [
+            {"role": "user", "content": [{"type": "video", "video": "https://example.com/c.mp4"}]}
+        ]
+    }
+    with pytest.raises(ValueError, match = "Remote video URLs"):
+        _mlx_adapter()([row])
+
+
+def test_mlx_old_zoo_refuses_clips_in_any_forwarded_split():
+    _, require = _mlx_video_guards(zoo_has_video = False)
+    images_only = [{"messages": [], "images": "img.png"}]
+    require(images_only, None)
+    with pytest.raises(ValueError, match = "newer unsloth-zoo"):
+        require(images_only, [{"messages": [], "videos": [CLIPS[0]]}])
+    require(images_only, [{"messages": [], "images": "img.png", "videos": []}])
+    _, new_zoo = _mlx_video_guards(zoo_has_video = True)
+    new_zoo(images_only, [{"messages": [], "videos": [CLIPS[0]]}])
+
+
+def test_mlx_training_runs_both_video_guards_around_formatting():
     import ast
     from pathlib import Path
 
@@ -578,21 +692,25 @@ def test_mlx_refuses_video_before_formatting_fetches_clips():
         for n in ast.parse(source).body
         if isinstance(n, ast.FunctionDef) and n.name == "_run_mlx_training"
     )
-    calls = [
-        node.func.id
-        for node in ast.walk(run)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    ]
-    lines = {
-        name: min(
-            n.lineno
-            for n in ast.walk(run)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
+    lines = {}
+    for node in ast.walk(run):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            lines.setdefault(node.func.id, []).append(node.lineno)
+    assert len(lines["_mlx_video_preflight"]) == 1
+    guard = next(
+        n
+        for n in ast.walk(run)
+        if isinstance(n, ast.If)
+        and any(
+            isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_mlx_video_preflight"
+            for c in ast.walk(n)
         )
-        for name in ("detect_video_columns", "format_and_template_dataset")
-        if name in calls
-    }
-    assert lines["detect_video_columns"] < lines["format_and_template_dataset"]
+    )
+    # Audio runs are VLM runs too, but their rows never carry clips.
+    assert ast.unparse(guard.test) == "is_vlm and (not is_dataset_audio)"
+    assert len(lines["_require_mlx_video_collation"]) == 1
+    assert lines["_mlx_video_preflight"][0] < min(lines["format_and_template_dataset"])
+    assert lines["_require_mlx_video_collation"][0] > max(lines["_adapt_for_mlx_vlm"])
 
 
 @pytest.mark.parametrize("name", ["user_prompt", "problem", "inputs"])

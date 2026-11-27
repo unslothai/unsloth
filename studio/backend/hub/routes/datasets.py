@@ -57,6 +57,14 @@ def list_local_datasets(
     return local.list_local_datasets_response()
 
 
+@router.delete("/local/upload")
+def delete_uploaded_dataset(
+    dataset_id: str = Body(..., embed = True, alias = "id"),
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    return local.delete_uploaded_dataset_response(dataset_id)
+
+
 @router.get(
     "/cached",
     response_model = CachedDatasetsResponse,

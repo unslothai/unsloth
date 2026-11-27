@@ -124,3 +124,36 @@ def test_a_managed_account_cannot_swap_in_another_catalog_checkpoint(client, mon
     # The owner still picks any catalog entry.
     assert decide("laya-english", owner).status_code == 200
     assert laya_runtime._loaded.name == "laya-english"
+
+
+def test_an_inference_only_key_cannot_swap_in_another_checkpoint(client, monkeypatch):
+    from auth import storage
+
+    loads = []
+    monkeypatch.setattr(
+        laya_runtime,
+        "_load_checkpoint",
+        lambda checkpoint: (loads.append(checkpoint.name), (SimpleNamespace(), "cpu"))[1],
+    )
+    owner = _login(client, "unsloth")
+    saved = client.put(
+        "/api/settings/systemone",
+        json = {"enabled": True, "model": "laya-multilingual"},
+        headers = owner,
+    )
+    assert saved.status_code == 200, saved.text
+    raw, _row = storage.create_api_key("unsloth", name = "lan", access = "inference")
+    key = {"Authorization": f"Bearer {raw}"}
+
+    def decide(model, headers):
+        return client.post(
+            "/v1/systemone",
+            json = {"model": model, "state": "x", "questions": QUESTIONS},
+            headers = headers,
+        )
+
+    assert decide("laya-multilingual", key).status_code == 200
+    swap = decide("laya-english", key)
+    assert swap.status_code == 403, swap.text
+    assert "Inference only" in swap.json()["detail"]["message"]
+    assert "laya-english" not in loads

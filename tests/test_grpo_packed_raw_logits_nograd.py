@@ -297,6 +297,8 @@ def _run_packed_block(
         "token_type_ids": None,
         "mm_token_type_ids": None,
         "_pg_skip_pk": False,
+        "_eos_rows": None,  # pad != eos here
+        "_real": None,
         "logit_scale_multiply": 0.0,
         "logit_scale_divide": 0.0,
         "logit_softcapping": 0.0,

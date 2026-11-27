@@ -12,6 +12,7 @@ import { useGpuInfo } from "./use-gpu-info";
 export function useHostClass(): HostClass {
   const gpu = useGpuInfo();
   const deviceType = usePlatformStore((s) => s.deviceType);
+  const appleSilicon = usePlatformStore((s) => s.appleSilicon);
   return useMemo(
     () =>
       classifyHost({
@@ -19,8 +20,9 @@ export function useHostClass(): HostClass {
         deviceBackend: gpu.backend,
         budgetKnown: gpu.budgetKnown,
         denseQuantSupported: gpu.denseQuantSupported,
+        appleSilicon,
       }),
-    [deviceType, gpu.backend, gpu.budgetKnown, gpu.denseQuantSupported],
+    [deviceType, appleSilicon, gpu.backend, gpu.budgetKnown, gpu.denseQuantSupported],
   );
 }
 

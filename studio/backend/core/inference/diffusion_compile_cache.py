@@ -279,6 +279,8 @@ def _switch_value(name: str, default: str) -> Optional[str]:
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
+    if value is None and name == "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE" and raw == "fallback":
+        return raw
     if value is None:
         return None
     return None if value == default else value
@@ -373,15 +375,22 @@ def _stored_weight(module: Any) -> tuple[Any, bool]:
     return packed, packed is not None
 
 
-def graph_variant(transformer: Any) -> dict[str, Any]:
+def _adapter_path(name: str) -> bool:
+    return any(part.startswith("lora_") for part in str(name).split("."))
+
+
+def graph_variant(transformer: Any, *, skip_adapters: bool = False) -> dict[str, Any]:
     """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
     plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises."""
+    # skip_adapters: describe the base build (PEFT adapter modules ignored), for the learned-peak key.
     variant: dict[str, Any] = {}
     try:
         import torch  # noqa: PLC0415
 
         counts: dict[str, int] = {}
-        for module in transformer.modules():
+        for name, module in transformer.named_modules():
+            if skip_adapters and _adapter_path(name):
+                continue
             weight, packed = _stored_weight(module)
             if not isinstance(weight, torch.Tensor):
                 continue

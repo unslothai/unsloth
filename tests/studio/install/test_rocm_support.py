@@ -6883,29 +6883,12 @@ class TestServerStartupRocmFixes:
         source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
         assert '"BNB_ROCM_VERSION" not in os.environ' in source
 
-    # bnb runs hipinfo.exe via PATH at import; the venv Scripts dir is on PATH only when activated.
+    # The venv hipInfo.exe is an unsigned uv launcher Smart App Control blocks; never put its dir on PATH.
 
-    def test_main_py_prepends_hipinfo_dir_to_path(self):
-        """main.py must make hipInfo.exe resolvable before bnb imports."""
-        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
-        assert "hipInfo.exe" in source
-        # Prepend must precede the BNB_ROCM_VERSION block so bnb sees the fixed PATH.
-        assert source.find("hipInfo.exe") < source.find("BNB_ROCM_VERSION")
-
-    def test_main_py_hipinfo_prepend_gated_on_file_presence(self):
-        """Prepend must check hipInfo.exe exists first (only AMD wheels ship it; leave NVIDIA/CPU untouched)."""
-        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
-        assert 'os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe"))' in source
-
-    def test_worker_py_prepends_hipinfo_dir_to_path(self):
-        """worker.py must mirror the prepend for standalone-spawned workers."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
-        assert "hipInfo.exe" in source
-
-    def test_install_stack_prepends_hipinfo_dir_to_path(self):
-        """install_python_stack.py must prepend so child import checks inherit a PATH where bnb's probe works."""
-        source = _STACK_PATH.read_text(encoding = "utf-8")
-        assert "hipInfo.exe" in source
+    @pytest.mark.parametrize("path_attr", ["_MAIN_PY_PATH", "_WORKER_PATH", "_STACK_PATH"])
+    def test_no_venv_scripts_prepended_to_path(self, path_attr):
+        source = globals()[path_attr].read_text(encoding = "utf-8")
+        assert "_scripts_dir + os.pathsep" not in source
 
     def test_hardware_py_injects_distributed_c10d_stub(self):
         """hardware.py must inject torch._C._distributed_c10d into sys.modules."""
@@ -6967,12 +6950,16 @@ class TestHipSdkInstalledButDeviceInaccessible:
         assert "HipSdkInstalled" in source
 
     def test_install_ps1_sets_flag_when_hipinfo_binary_found(self):
-        """install.ps1 must set HipSdkInstalled=true inside the 'if ($hipinfoExe)' block."""
+        """install.ps1 must set HipSdkInstalled=true as the first statement of the hipinfo block.
+
+        The gate may carry more conditions than the binary (the notice-only probe on a mixed
+        NVIDIA + AMD host runs no HIP tool), but it must still test $hipinfoExe itself.
+        """
         source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
-        hipinfo_block_idx = source.find("if ($hipinfoExe)")
-        sdk_flag_idx = source.find("$HipSdkInstalled = $true", hipinfo_block_idx)
-        assert hipinfo_block_idx != -1 and sdk_flag_idx != -1
-        assert sdk_flag_idx > hipinfo_block_idx
+        gate = re.search(r"^(\s*)if \(\$hipinfoExe\b[^\n]*\) \{\n", source, re.MULTILINE)
+        assert gate, "install.ps1: no 'if ($hipinfoExe ...)' block"
+        body = [line.strip() for line in source[gate.end() :].splitlines() if line.strip()]
+        assert body[0].startswith("$HipSdkInstalled = $true"), body[:2]
 
     def test_setup_ps1_sets_flag_when_hipinfo_binary_found(self):
         """setup.ps1 must set HipSdkInstalled=true inside the 'if ($hipinfoExe)' block."""

@@ -516,6 +516,13 @@ def add_lexical_chunks(conn: sqlite3.Connection, scope: str, document_id: str, c
         _insert_chunk(conn, scope, document_id, chunk, None)
 
 
+def _connection_moved(model_name: str, identity: str) -> bool:
+    if not config.is_connection_model(model_name):
+        return False
+    from .embed_connection import connection_identity
+    return connection_identity(model_name) != identity
+
+
 def replace_document_vectors(
     conn: sqlite3.Connection,
     document_id: str,
@@ -528,8 +535,9 @@ def replace_document_vectors(
     """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
 
     Writes only while the row is still the one that was encoded: present, still under
-    ``stale_model``, with the same chunks, and ``model_name`` still the configured model. A delete,
-    a re-upload, another re-embed or a model switch in between wins, and False is returned."""
+    ``stale_model``, with the same chunks, and ``model_name`` still the configured model on the same
+    connection server. A delete, a re-upload, another re-embed, a model switch or a connection moved
+    to another server in between wins, and False is returned."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -549,6 +557,7 @@ def replace_document_vectors(
             or not current
             # Uncached, under the write lock: old-width vectors would drop every row the new model wrote.
             or config.effective_embedding_model(fresh = True) != model_name
+            or _connection_moved(model_name, identity)
         ):
             conn.rollback()
             return False
@@ -788,6 +797,35 @@ def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
     )
 
 
+def _lexical_scope_filter(conn: sqlite3.Connection, scopes: list[str], placeholders: str):
+    """scope IN (...) on this snapshot as (SQL, params); (None, None) when no scope has a row."""
+    if not rag_db.fts_scope_index_exists(conn):
+        return f"chunks_fts.scope IN ({placeholders})", scopes
+    lo = hi = None
+    for scope in scopes:
+        first, last = conn.execute(
+            "SELECT (SELECT min(id) FROM chunks_fts_content WHERE c2=?), "
+            "(SELECT max(id) FROM chunks_fts_content WHERE c2=?)",
+            (scope, scope),
+        ).fetchone()
+        if first is not None:
+            lo = first if lo is None else min(lo, first)
+            hi = last if hi is None else max(hi, last)
+    if lo is None:
+        return None, None
+    if len(scopes) > 1:
+        # The index probe costs one seek per scope per match; past one scope the content read is cheaper.
+        return f"chunks_fts.rowid BETWEEN ? AND ? AND chunks_fts.scope IN ({placeholders})", [
+            lo,
+            hi,
+            *scopes,
+        ]
+    return (
+        f"chunks_fts.rowid BETWEEN ? AND ? AND EXISTS (SELECT 1 FROM chunks_fts_content x "
+        f"INDEXED BY {rag_db.FTS_SCOPE_INDEX} WHERE x.c2=? AND x.id=chunks_fts.rowid)"
+    ), [lo, hi, *scopes]
+
+
 def search_lexical(
     conn: sqlite3.Connection,
     scope,
@@ -812,6 +850,9 @@ def search_lexical(
     if own_read_txn:
         conn.execute("BEGIN")
     try:
+        scope_filter, scope_params = _lexical_scope_filter(conn, scopes, placeholders)
+        if scope_filter is None:
+            return []
         # Subqueries run before LIMIT; skip them unless a folder is linked (linked_folder_rows_exist).
         if oldest_first:
             # Mirrors _conversation_order; uses document rowid since re-embeds rewrite chunk rows.
@@ -819,7 +860,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC, "
                 f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
@@ -829,7 +870,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s, d.archive_ordinal IS NULL, d.archive_ordinal DESC, "
                 f"d.created_at DESC, d.rowid DESC, c.chunk_index DESC LIMIT ?"
             )
@@ -838,7 +879,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"AND NOT EXISTS "
                 f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
                 f"AND (d.linked_folder_id IS NULL OR EXISTS "
@@ -847,11 +888,11 @@ def search_lexical(
             )
         else:
             sql = (
-                f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
-                f"WHERE chunks_fts MATCH ? AND scope IN ({placeholders}) "
+                f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s LIMIT ?"
             )
-        rows = conn.execute(sql, (mq, *scopes, k)).fetchall()
+        rows = conn.execute(sql, (mq, *scope_params, k)).fetchall()
     finally:
         if own_read_txn:
             conn.commit()
@@ -917,7 +958,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
         widen: list[str] = []
         for s in pending:
             fetch = fetches[s]
-            rows, cap = _knn(conn, db_file, s, vector, query, fetch)
+            rows, cap, complete = _knn(conn, db_file, s, vector, query, fetch)
             kept[s] = _drop_incompatible(
                 conn,
                 # A NaN vector written by an fp16 embedder reads back as a NULL distance: skip it, or the
@@ -926,9 +967,17 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
                 embedding_model,
                 untagged,
             )
-            if len(kept[s]) < k and len(rows) >= fetch and fetch < cap:
-                fetches[s] = min(fetch * 4, cap)
-                widen.append(s)
+            if len(kept[s]) < k and len(rows) >= fetch and not complete:
+                if fetch < cap:
+                    fetches[s] = min(fetch * 4, cap)
+                    widen.append(s)
+                else:
+                    # Merge, not replace: an ANN pass can hold more hits than vec0's fallback cap.
+                    merged = dict(kept[s])
+                    merged.update(
+                        _search_compatible_dense(conn, s, query, embedding_model, untagged)
+                    )
+                    kept[s] = list(merged.items())
         pending = widen
     out = [hit for s in scopes for hit in kept[s]]
     out.sort(key = lambda t: t[1], reverse = True)
@@ -940,7 +989,8 @@ _MAX_DENSE_FETCH = 4096
 
 
 def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
-    """(chunk_id, distance) rows plus the largest fetch worth asking for: the cache's row count, or vec0's cap."""
+    """(chunk_id, distance) rows, the largest fetch worth asking for (the cache's row count, or vec0's cap), and
+    whether the rows already cover the whole scope."""
     if db_file is not None:
         hit = vec_cache.search(conn, db_file, scope, vector, fetch)
         if hit is not None:
@@ -951,11 +1001,36 @@ def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
         "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
         (scope, query, min(fetch, _MAX_DENSE_FETCH)),
     ).fetchall()
-    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH
+    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH, False
 
 
 # One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
 _ID_BATCH = 900
+
+_COMPATIBLE_CHUNKS = (
+    "NOT EXISTS (SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+    "AND (d.linked_folder_id IS NULL OR EXISTS "
+    "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
+    "AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
+    "OR d.embedding_model=?)"
+)
+
+
+def _search_compatible_dense(conn, scope, query, embedding_model, untagged):
+    # Prefilter on rowid, not chunk_id: vec0 matches a TEXT metadata IN list per row x per value.
+    rows = conn.execute(
+        "SELECT chunk_id, distance FROM chunks_vec "
+        "WHERE scope=? AND embedding MATCH ? AND k=? AND rowid IN ("
+        "SELECT v.rowid FROM chunks_vec v WHERE v.scope=? AND v.chunk_id IN ("
+        "SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
+        f"WHERE c.scope=? AND {_COMPATIBLE_CHUNKS})) ORDER BY distance",
+        (scope, query, _MAX_DENSE_FETCH, scope, scope, embedding_model, embedding_model, untagged),
+    ).fetchall()
+    return [
+        (r["chunk_id"], 1.0 - r["distance"])
+        for r in rows
+        if r["distance"] is not None and math.isfinite(r["distance"])
+    ]
 
 
 def _drop_incompatible(
@@ -975,12 +1050,7 @@ def _drop_incompatible(
             r["id"]
             for r in conn.execute(
                 f"SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
-                f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
-                f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
-                f"AND (d.linked_folder_id IS NULL OR EXISTS "
-                f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
-                f"AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
-                f"OR d.embedding_model=?)",
+                f"WHERE c.id IN ({placeholders}) AND {_COMPATIBLE_CHUNKS}",
                 (*batch, embedding_model, embedding_model, untagged),
             ).fetchall()
         )
@@ -1040,6 +1110,36 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
         list(scopes),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def opening_chunks(
+    conn: sqlite3.Connection,
+    scope: str,
+    min_tokens: int,
+    document_id: str,
+    max_chunks: int = 3,
+) -> list[dict]:
+    doc = conn.execute(
+        "SELECT id, filename FROM documents d WHERE scope=? AND id=? AND status='completed' "
+        "AND num_chunks > 0 AND NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope)",
+        (scope, document_id),
+    ).fetchone()
+    if doc is None:
+        return []
+    rows, total = [], 0
+    for r in conn.execute(
+        "SELECT id, text, document_id, chunk_index, page_number, source_page_index, "
+        "page_char_start, page_char_end, token_count "
+        # Chunks never span pages, so a sparse deck would otherwise pull in a chunk per page.
+        "FROM chunks WHERE document_id=? ORDER BY chunk_index LIMIT ?",
+        (doc["id"], max_chunks),
+    ):
+        rows.append({**dict(r), "filename": doc["filename"]})
+        total += r["token_count"] or max(1, len(r["text"] or "") // 4)
+        if total >= min_tokens:
+            break
+    return rows
 
 
 def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:

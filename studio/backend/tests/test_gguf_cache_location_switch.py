@@ -136,6 +136,24 @@ def test_duplicate_quant_prefers_active_cache_and_deletes_only_that_copy(
     assert cached_gguf_for_load(repo_id, "Q4_K_M") == str(surviving[0])
 
 
+def test_whole_model_delete_leaves_a_repo_that_repeats_its_commit(cache_locations):
+    """A commit hash is only a snapshots/ folder name, and delete_revisions takes the first repo of its scan that has one."""
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    active_repo = next(repo for repo, _ in expected.values() if repo.parent == active)
+    twins = []
+    # Several, so that an unscoped lookup all but surely meets one before the model (the scan's repos are a set).
+    for n in range(64):
+        twin = active / f"spaces--twin--{n}" / "snapshots" / ("d" * 40) / "README.md"
+        twin.parent.mkdir(parents = True)
+        twin.write_bytes(b"0" * 8)
+        twins.append(twin)
+    inventory_scan.invalidate_hf_cache_scans()
+    deletion._delete_cached_model_blocking(repo_id, None, None)
+    assert not active_repo.exists()
+    assert all(twin.exists() for twin in twins)
+
+
 def test_explicit_snapshot_remains_scoped(cache_locations):
     repo_id, expected = cache_locations
     for quant, (repo, path) in expected.items():

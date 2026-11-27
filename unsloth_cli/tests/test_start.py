@@ -1628,6 +1628,10 @@ def fake_studio(tmp_path, monkeypatch):
             if state.get("providers_status"):
                 raise urllib.error.HTTPError(url, state["providers_status"], "error", None, None)
             return state.get("providers", [])
+        if "/served-window?" in url:
+            if state.get("served_window_error"):
+                raise state["served_window_error"]
+            return {"context_length": state.get("served_window")}
         if url.endswith("/api/inference/load"):
             already_loaded = state["models"][0]["id"] == payload["model_path"]
             state["models"] = [
@@ -3801,7 +3805,11 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == [
-        ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": "unsloth/Qwen3.5-35B-A3B", "use_saved_settings": True},
+        )
     ]
     assert result.output.index(
         f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
@@ -3934,6 +3942,7 @@ def test_connect_model_flag_forwards_load_options(fake_studio):
                 "max_seq_length": 8192,
                 "load_in_4bit": False,
                 "tensor_parallel": True,
+                "use_saved_settings": True,
             },
         )
     ]
@@ -4793,6 +4802,20 @@ def test_connect_loaded_ollama_model_keeps_its_tag(fake_studio):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "ollama/qwen3:8b")
 
 
+def test_connect_a_loaded_quant_alias_still_splits_for_another_quant(fake_studio):
+    repo = MODEL["id"]
+    fake_studio.state["models"] = [
+        {"id": repo, "context_length": 4096},
+        {"id": f"{repo}:Q8_0", "quant": "Q8_0", "context_length": 4096},
+    ]
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", f"{repo}:Q8_0", "--gguf-variant", "Q4_K_M"],
+    )
+    loads = [c[2] for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads and loads[0]["model_path"] == repo and loads[0]["gguf_variant"] == "Q4_K_M"
+
+
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
     result = CliRunner().invoke(
         start.start_app, ["claude", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"]
@@ -4803,7 +4826,7 @@ def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL"},
+            {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL", "use_saved_settings": True},
         )
     ]
     assert f"Reusing loaded model: {MODEL['id']}:UD-Q4_K_XL\n" in result.output
@@ -4818,7 +4841,11 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == [
-        ("POST", f"{BASE}/api/inference/load", {"model_path": MODEL["id"], "gguf_variant": "Q8_0"})
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": MODEL["id"], "gguf_variant": "Q8_0", "use_saved_settings": True},
+        )
     ]
 
 
@@ -4838,13 +4865,17 @@ def test_start_agents_expose_gpu_memory_mode_option(command_name):
 @pytest.mark.parametrize(
     "mode,expected",
     [
-        ("auto", {"model_path": MODEL["id"], "gpu_memory_mode": "auto"}),
+        (
+            "auto",
+            {"model_path": MODEL["id"], "gpu_memory_mode": "auto", "use_saved_settings": True},
+        ),
         (
             "manual",
             {
                 "model_path": MODEL["id"],
                 "gpu_memory_mode": "manual",
                 "gpu_layers": -1,
+                "use_saved_settings": True,
             },
         ),
     ],
@@ -4886,7 +4917,11 @@ def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+            {
+                "model_path": "unsloth/Qwen3-4B-GGUF",
+                "gguf_variant": "UD-Q4_K_XL",
+                "use_saved_settings": True,
+            },
         )
     ]
 
@@ -4910,7 +4945,11 @@ def test_connect_explicit_gguf_variant_wins_over_suffix(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+            {
+                "model_path": "unsloth/Qwen3-4B-GGUF",
+                "gguf_variant": "UD-Q4_K_XL",
+                "use_saved_settings": True,
+            },
         )
     ]
 
@@ -5279,6 +5318,13 @@ def _gguf_only_host(monkeypatch):
     # The GGUF gate defers on an MLX host, and this suite also runs on Apple Silicon.
     monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: False)
     monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
+
+
+@pytest.fixture(autouse = True)
+def _private_last_start(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        start, "_last_start_path", lambda: tmp_path / "last_start.json", raising = False
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -5796,7 +5842,13 @@ def test_resolve_model_loads_a_kept_model_at_another_quant(monkeypatch, capsys):
         preload_check = lambda *args: gated.append(args),
     )
 
-    assert payloads == [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"}]
+    assert payloads == [
+        {
+            "model_path": "unsloth/Qwen3-1.7B-GGUF",
+            "gguf_variant": "Q4_K_M",
+            "use_saved_settings": True,
+        }
+    ]
     assert gated, "the kept model is at Q8_0, so the Q4_K_M load must pass the preload gate"
     out = capsys.readouterr().out
     assert (
@@ -5940,7 +5992,12 @@ def test_resolve_model_reload_option_keeps_the_running_quant(monkeypatch):
     start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(max_seq_length = 8192))
 
     assert payloads == [
-        {"model_path": "owner/model-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 8192}
+        {
+            "model_path": "owner/model-GGUF",
+            "gguf_variant": "Q8_0",
+            "max_seq_length": 8192,
+            "use_saved_settings": True,
+        }
     ]
 
 
@@ -6075,7 +6132,7 @@ def test_resolve_model_warns_before_replacing_another_accounts_resident(monkeypa
     start._resolve_model(BASE, "key", "owner/model-GGUF")
 
     [(payload, before_load)] = state["loads"]
-    assert payload == {"model_path": "owner/model-GGUF"}
+    assert payload == {"model_path": "owner/model-GGUF", "use_saved_settings": True}
     assert "from another account's model to owner/model-GGUF." in before_load
     assert "unloads it for every attached session" in before_load
 
@@ -7303,6 +7360,62 @@ def test_a_connection_model_without_a_window_says_how_to_give_one(fake_studio):
     )
     assert result.exit_code == 0, result.output
     assert "Pass --max-seq-length with the model's context window" in result.output
+
+
+OLLAMA_CONNECTION = {
+    "id": "c2",
+    "display_name": "Ollama",
+    "is_enabled": True,
+    "models": ["qwen3:8b"],
+}
+OLLAMA_ID = "external::c2::qwen3%3A8b"
+
+
+def test_a_connection_model_takes_the_window_its_server_loaded(fake_studio):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window"] = 65_536
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert ("POST", f"{BASE}/api/providers/c2/served-window?model=qwen3%3A8b", None) in (
+        fake_studio
+    )
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", OLLAMA_ID)
+    _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "65536")
+    assert "Pass --max-seq-length" not in result.output
+
+
+@pytest.mark.parametrize("agent", ["claude", "opencode"])
+@pytest.mark.parametrize("given", [[], ["--max-seq-length", "40960"]])
+def test_a_connection_too_small_for_the_agent_is_refused(fake_studio, launched, agent, given):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window"] = 4_096
+    result = CliRunner().invoke(start.start_app, [agent, "--model", "qwen3:8b", *given])
+    assert result.exit_code == 1, result.output
+    assert f"{OLLAMA_ID} is loaded with 4,096 tokens of context, too few" in result.output
+    assert "OLLAMA_CONTEXT_LENGTH" in result.output
+    assert not launched
+
+
+@pytest.mark.parametrize(
+    "error", [http.client.RemoteDisconnected("closed"), json.JSONDecodeError("bad", "", 0)]
+)
+def test_an_unreadable_served_window_falls_back_to_the_hint(fake_studio, error):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window_error"] = error
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert "Pass --max-seq-length with the model's context window" in result.output
+
+
+def test_max_seq_length_below_the_served_window_still_applies(fake_studio):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window"] = 262_144
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", "qwen3:8b", "--max-seq-length", "65536"],
+    )
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "65536")
 
 
 @pytest.mark.parametrize("agent", ["pi", "hermes", "openclaw"])
@@ -10243,6 +10356,127 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
         assert "--continue" not in captured["command"]
 
 
+def test_bare_continue_reopens_the_last_agent_and_model(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    first = _capture_launch(monkeypatch, ["codex", "--persist"])
+    resumed = _capture_launch(monkeypatch, ["--continue"])
+    assert resumed["command"] == [*first["command"], "resume", "--last"]
+    assert resumed["env"]["CODEX_HOME"] == str(tmp_path / "agents" / "codex")
+
+
+def test_short_continue_reopens_claude_with_its_own_continue(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    _capture_launch(monkeypatch, ["claude"])
+    resumed = _capture_launch(monkeypatch, ["-c"])
+    assert resumed["command"][1:] == ["--model", MODEL["id"], "--continue"]
+
+
+def test_continue_replays_typed_options_but_not_yolo(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    _capture_launch(
+        monkeypatch, ["claude", "--temperature", "0.3", "--no-serve", "--yolo", "--print", "hi"]
+    )
+    last = json.loads((tmp_path / "last_start.json").read_text())
+    assert last["args"] == ["--temperature", "0.3", "--no-serve"]
+    replayed = []
+    monkeypatch.setattr(
+        start, "_typed_options", lambda ctx: replayed.append(dict(ctx.params)) or []
+    )
+    _capture_launch(monkeypatch, ["--continue"])
+    assert replayed[0]["temperature"] == 0.3
+    assert replayed[0]["serve"] is False
+    assert replayed[0]["yolo"] is False
+
+
+def test_continue_keeps_positional_variant_and_server(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    _capture_launch(monkeypatch, ["claude", f"{MODEL['id']}:Q8_0", "--print", "hi"])
+    last = json.loads((tmp_path / "last_start.json").read_text())
+    assert last["model"] == f"{MODEL['id']}:Q8_0"
+    assert last["server"] == BASE
+
+
+def test_continue_allows_pi_subagent_without_persist(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/pi")
+    _capture_launch(monkeypatch, ["pi", "--as-subagent"])
+    resumed = _capture_launch(monkeypatch, ["--continue"])
+    assert resumed["command"][-1] == "--continue"
+    assert "UNSLOTH_PI_SUBAGENT_CONFIG" in resumed["env"]
+
+
+def test_continue_does_not_pin_a_path_loaded_residents_bare_name(
+    fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    fake_studio.state["models"] = [{**MODEL, "id": "foo"}]
+    _capture_launch(monkeypatch, ["claude"])
+    assert json.loads((tmp_path / "last_start.json").read_text())["model"] is None
+    resumed = _capture_launch(monkeypatch, ["--continue"])
+    assert resumed["command"][1:] == ["--model", "foo", "--continue"]
+
+
+def test_continue_keeps_the_quant_a_subagent_resolved(fake_studio, tmp_path, monkeypatch):
+    start._agent_ctx = SimpleNamespace(
+        info_name = "codex",
+        params = {"model": MODEL["id"], "persist": True, "as_subagent": True},
+        meta = {"unsloth_raw_args": []},
+        command = SimpleNamespace(params = []),
+    )
+    try:
+        start._remember_start(BASE, {"id": f"{MODEL['id']}:Q8_0"})
+    finally:
+        start._agent_ctx = None
+    assert json.loads((tmp_path / "last_start.json").read_text())["model"] == (
+        f"{MODEL['id']}:Q8_0"
+    )
+
+
+@pytest.mark.parametrize("has_sessions", [True, False])
+def test_continue_codex_subagent_kept_only_with_shared_sessions(
+    fake_studio, tmp_path, monkeypatch, has_sessions
+):
+    source = tmp_path / "user_codex"
+    (source / "sessions" if has_sessions else source).mkdir(parents = True)
+    monkeypatch.setattr(start, "_codex_source_home", lambda **_: source)
+    start._agent_ctx = SimpleNamespace(
+        info_name = "codex",
+        params = {"model": MODEL["id"], "as_subagent": True},
+        meta = {"unsloth_raw_args": []},
+        command = SimpleNamespace(params = []),
+    )
+    try:
+        start._remember_start(BASE, {"id": MODEL["id"]})
+    finally:
+        start._agent_ctx = None
+    assert json.loads((tmp_path / "last_start.json").read_text())["kept"] is has_sessions
+
+
+def test_continue_pins_a_primary_residents_quant(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    fake_studio.state["models"] = [{**MODEL, "quant": "Q8_0"}]
+    _capture_launch(monkeypatch, ["claude"])
+    last = json.loads((tmp_path / "last_start.json").read_text())
+    assert last["model"] == f"{MODEL['id']}:Q8_0"
+
+
+def test_continue_refuses_a_session_that_was_not_kept(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
+    _capture_launch(monkeypatch, ["hermes"])
+    result = CliRunner().invoke(start.start_app, ["--continue"])
+    assert result.exit_code == 1
+    assert "nothing to resume" in result.output
+    assert "unsloth start hermes --persist" in result.output
+
+
+def test_continue_with_nothing_started_says_so(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["--continue"])
+    assert result.exit_code == 1
+    assert "Nothing to continue yet" in result.output
+
+
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
@@ -11733,6 +11967,26 @@ def test_require_gguf_for_agent_accepts_an_mlx_model(monkeypatch, capsys):
             {"device_type": "mac", "apple_silicon": True, "chat_only_reason": "mlx_unavailable"},
             False,
         ),
+        (
+            {
+                "device_type": "mac",
+                "apple_silicon": True,
+                "chat_only_reason": "no_torch",
+                "mlx_inference": True,
+            },
+            True,
+        ),
+        (
+            {
+                "device_type": "mac",
+                "apple_silicon": True,
+                "chat_only_reason": "no_torch",
+                "mlx_inference": False,
+            },
+            False,
+        ),
+        # An older server sends no mlx_inference: no_torch never had MLX there.
+        ({"device_type": "mac", "apple_silicon": True, "chat_only_reason": "no_torch"}, False),
         ({"device_type": "mac", "apple_silicon": False}, False),
         ({"device_type": "linux", "apple_silicon": False}, False),
         ({"status": "healthy"}, False),
@@ -12573,3 +12827,10 @@ def test_hermes_carries_only_referenced_mcp_secrets_into_the_session_env(
     )
     assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
     assert "MCP_REMOTE_API_KEY=shared" in (home / ".env").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    "window,pct", [(32_768, "90"), (200_000, "90"), (400_000, "91"), (1_000_000, "96")]
+)
+def test_claude_compacts_with_bounded_headroom_on_large_windows(window, pct):
+    assert start.claude_autocompact_pct(window) == pct
