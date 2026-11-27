@@ -6561,7 +6561,7 @@ class MLXInferenceBackend:
         if store is None:
             pass
         elif has_video:
-            # Keyed by token ids the clip does not vary, so the row prefills cold on the same layout.
+            # The store keys on token ids, which a clip does not vary: prefill cold on the same layout.
             store = None
         elif images and (not media_ids or self._vlm_bidirectional_vision(self._model)):
             # Unplaceable, or prefilled by the single path as a media block: nothing serves it.
@@ -9734,7 +9734,6 @@ class MLXInferenceBackend:
         if not self._is_vlm or not self._reads_vision_input() or not _mlx_vlm_decodes_video():
             return "a reply carries a video clip this load does not read"
         if self._kv_quant_bits() is not None:
-            # A clip has not been validated on a quantized row cache.
             return "a quantized batch does not decode a video clip"
         try:
             from unsloth_zoo.mlx import generate as engine
