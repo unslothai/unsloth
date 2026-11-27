@@ -1543,6 +1543,8 @@ function scheduleGenerationRecovery(
           ),
       resolve: (partId) =>
         useChatRuntimeStore.getState().clearToolConfirmation(partId),
+      network: (partId, request, requestId) =>
+        useChatRuntimeStore.getState().setToolNetworkRequest(partId, request, requestId),
     });
     // Settled before disarmAll so an arm cannot land after the run is over.
     let seededApprovals: Promise<void> | null = null;

@@ -64,6 +64,7 @@ function harness({ owner = true, disclosure = false, grantedThread = "", scopedF
         ToolApprovalGoneError: class Gone extends Error {},
       },
       "@/features/chat/stores/chat-runtime-store": { useChatRuntimeStore: store },
+      "@/features/hub": { formatBytes: (bytes: number) => `${bytes} B` },
       "@/features/computer-use/summary": { COMPUTER_USE_TOOL: "computer", alwaysAllowableApp },
       "@/features/computer-use/store": {
         alwaysAllowComputerUseApp: async (app: string) => { alwaysApps.push(app); },

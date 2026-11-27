@@ -12,6 +12,8 @@ from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
 
+from utils import network_firewall
+
 _DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _MAX_DOMAINS_PER_LIST = 100
 # Cache keys pin raw strings for process life, so only domain-length entries are cached.
@@ -109,7 +111,7 @@ def hostname_allowed(hostname: str, policy: dict[str, Any] | None) -> bool:
         normalized = normalize_website_policy(policy)
     except ValueError:
         return False
-    blocked = normalized["blockedDomains"]
+    blocked = (*normalized["blockedDomains"], *network_firewall.blocked_domains())
     if any(_matches_domain(host, domain) for domain in blocked):
         return False
     allowed = normalized["allowedDomains"]

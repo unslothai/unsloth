@@ -77,6 +77,51 @@ if os.environ.get("_UNSLOTH_SANDBOX_BLOCK_METADATA") == "1" and not getattr(
     sys._unsloth_metadata_hook = True
 
 
+_EGRESS_ONLY = os.environ.get("_UNSLOTH_EGRESS_ONLY", "")
+_EGRESS_EVENTS = frozenset(
+    ("socket.connect", "socket.sendto", "socket.getaddrinfo", "socket.gethostbyname")
+)
+
+
+def _local_host(host):
+    import ipaddress
+
+    if not isinstance(host, str):
+        return host is None
+    host = host.split("%", 1)[0].rstrip(".").lower()
+    if host in ("", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _egress_only_hook(event, args):
+    """Where no OS sandbox holds this call, the only way out is the checkpoint named in _UNSLOTH_EGRESS_ONLY."""
+    if event not in _EGRESS_EVENTS:
+        return
+    if event in ("socket.getaddrinfo", "socket.gethostbyname"):
+        # A lookup of an outside name is traffic too; the checkpoint resolves names itself.
+        host = args[0] if args else None
+        host = host.decode("ascii", "replace") if isinstance(host, bytes) else host
+    else:
+        address = args[1] if len(args) > 1 else None
+        if not (isinstance(address, tuple) and address):
+            return
+        host = address[0]
+    if not _local_host(host):
+        raise PermissionError(
+            f"Blocked: this call reaches the network only through the proxy at {_EGRESS_ONLY} "
+            f"(see HTTPS_PROXY), not {host} directly"
+        )
+
+
+if _EGRESS_ONLY and not getattr(sys, "_unsloth_egress_hook", False):
+    sys.addaudithook(_egress_only_hook)
+    sys._unsloth_egress_hook = True
+
+
 # Prefixes remapped only when ABSENT (see _remap), so a real host mount is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # /tmp exists on the host; separate only to note that. The absence gate applies alike.

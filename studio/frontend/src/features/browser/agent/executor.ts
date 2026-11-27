@@ -112,8 +112,9 @@ const whole = (value: unknown): number | undefined =>
 const MAX_EDIT_CHARS = 500_000;
 // browser_agent._MAX_WORKSPACE_FILE_BYTES, as base64
 const MAX_WORKSPACE_DATA_CHARS = Math.ceil((2 * 1024 * 1024) / 3) * 4;
+// A chat's 100 sites plus the installation's 200 (network_firewall.MAX_SITES).
 const strings = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 100) : [];
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 300) : [];
 
 /** The `browser_action` of a tool_output event, checked: it reaches here off the chat stream. */
 export function parseBrowserAction(value: unknown): BrowserAction | null {
