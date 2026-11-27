@@ -629,8 +629,10 @@ def get_device_stats() -> tuple[str, str, float]:
 
 def clean_gpu_cache() -> None:
     """Clear GPU cache for current device type."""
-    if _DEVICE_MODULE is not None:
-        _DEVICE_MODULE.empty_cache()
+    # torch.cpu has no empty_cache: a CPU-only host has nothing to free.
+    empty_cache = getattr(_DEVICE_MODULE, "empty_cache", None)
+    if empty_cache is not None:
+        empty_cache()
 
 
 def get_current_device() -> int:
