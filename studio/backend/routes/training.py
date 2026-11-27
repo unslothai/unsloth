@@ -4048,7 +4048,7 @@ async def start_diffusion_training(
     from core.training.diffusion_train_common import training_precision_preflight_error
 
     _precision_reason = training_precision_preflight_error(
-        normalized_cfg.resolved_family, normalized_cfg.base_precision
+        normalized_cfg.resolved_family, normalized_cfg.base_precision, cfg = normalized_cfg
     )
     if _precision_reason:
         raise HTTPException(status_code = 400, detail = _precision_reason)

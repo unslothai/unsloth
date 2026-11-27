@@ -65,3 +65,72 @@ def test_opt_in_env_values(monkeypatch, value, expected):
     monkeypatch.setenv(swap.ROCM_W8A8_TRAIN_ENV, value)
     assert swap.rocm_w8a8_train_opt_in("int8") is expected
     assert swap.rocm_w8a8_train_opt_in("bf16") is False
+
+
+@pytest.fixture
+def rocm_preflight(rocm):
+    """The route's pre-eviction precision preflight on a spoofed ROCm GPU host."""
+    import torch
+
+    for name in ("bf16_unsupported_reason", "dit_accelerator_missing_reason"):
+        rocm.setattr(common, name, lambda *a, **k: None)
+    rocm.setattr(common, "dit_fp16_fallback", lambda fam: False)
+    rocm.setattr(common, "has_functional_torchao", lambda: False)
+    rocm.setattr(torch.cuda, "is_available", lambda: True)
+    rocm.setenv(swap.ROCM_W8A8_TRAIN_ENV, "1")
+    return rocm
+
+
+def _resume_kernel(monkeypatch, kernel):
+    from core.training import diffusion_checkpoint as ckpt
+    monkeypatch.setattr(ckpt, "recorded_int8_resume_kernel", lambda path: kernel)
+
+
+def _both_guards(cfg):
+    """(preflight reason, trainer child verdict) for one run config."""
+    pre = common.training_precision_preflight_error(
+        cfg.resolved_family, cfg.base_precision, cfg = cfg
+    )
+    try:
+        child = dit._resolve_base_precision(cfg, None, "cuda")
+    except ValueError as e:
+        child = e
+    return pre, child
+
+
+def test_preflight_refuses_a_weight_only_int8_resume_like_the_child(rocm_preflight):
+    _resume_kernel(rocm_preflight, "weight-only")
+    pre, child = _both_guards(_cfg(base_precision = "int8", resume_from_checkpoint = "ckpt"))
+    assert pre is not None and _ROCM_MSG in pre
+    assert isinstance(child, ValueError) and _ROCM_MSG in str(child)
+
+
+def test_preflight_accepts_a_w8a8_resume_like_the_child(rocm_preflight):
+    _resume_kernel(rocm_preflight, "w8a8")
+    pre, child = _both_guards(_cfg(base_precision = "int8", resume_from_checkpoint = "ckpt"))
+    assert pre is None and child == "int8"
+
+
+def test_preflight_fresh_int8_run_unchanged(rocm_preflight):
+    _resume_kernel(rocm_preflight, "weight-only")  # never read: no resume
+    pre, child = _both_guards(_cfg(base_precision = "int8"))
+    assert pre is None and child == "int8"
+    # Without cfg (older callers) the preflight still assumes a fresh run.
+    assert common.training_precision_preflight_error("qwen-image", "int8") is None
+
+
+def test_route_passes_the_resume_config_to_the_preflight():
+    """The start route threads normalized_cfg into the preflight, so it reads the resumed kernel before eviction."""
+    import ast
+    import inspect
+
+    import routes.training as tr
+
+    tree = ast.parse(inspect.getsource(tr))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "training_precision_preflight_error"
+    ]
+    assert calls and all(any(k.arg == "cfg" for k in c.keywords) for c in calls)

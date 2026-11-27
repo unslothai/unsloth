@@ -1005,7 +1005,11 @@ def make_lora_optimizer(
     return torch.optim.AdamW(params, lr = lr)
 
 
-def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
+def training_precision_preflight_error(
+    resolved_family: str,
+    base_precision: str,
+    cfg: Any = None,
+) -> Optional[str]:
     """Reason the requested DiT precision cannot run on this host, else None -- checked by the start
     route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
     child, after eviction). Every gate mirrors one in _resolve_base_precision, so a doomed run is
@@ -1013,7 +1017,8 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     too); the dense precisions needing CUDA; the torchao precisions against a ROCm build, which
     clears the stub test and hands the sm100 floor an AMD gfx version; explicit int8 needing a
     FUNCTIONAL torchao; explicit fp8/mxfp8 against the Windows-ROCm stub; explicit fp8 needing
-    sm89+ and mxfp8 Blackwell. Add a gate there, add it here. Never raises."""
+    sm89+ and mxfp8 Blackwell. Add a gate there, add it here. Pass the run ``cfg`` so a resume is judged on the
+    int8 kernel its checkpoint trained on, as the child does; without it the run counts as fresh. Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
@@ -1025,9 +1030,9 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     mode = (base_precision or "").strip().lower()
     # The W8A8 int8 base (the default; UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only opts out) computes in fp16 too, as
     # the trainer allows.
-    from core.training.diffusion_block_swap import int8_w8a8_requested
+    from core.training.diffusion_block_swap import int8_w8a8_for_run
 
-    w8a8 = mode == "int8" and int8_w8a8_requested()
+    w8a8 = mode == "int8" and int8_w8a8_for_run(cfg)
     if mode in ("bf16", "int8", "fp8", "mxfp8") and not w8a8 and dit_fp16_fallback(fam):
         return dit_fp16_dense_reason(mode)
     if w8a8 and dit_fp16_fallback(fam):
@@ -1070,7 +1075,7 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         # Reject before eviction; _resolve_base_precision repeats this in the child.
         from core.training.diffusion_block_swap import rocm_w8a8_train_opt_in
 
-        rocm_w8a8 = torch_is_rocm() and rocm_w8a8_train_opt_in(mode)
+        rocm_w8a8 = torch_is_rocm() and rocm_w8a8_train_opt_in(mode, cfg)
         if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm() and not rocm_w8a8:
             return (
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
