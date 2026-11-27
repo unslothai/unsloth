@@ -25,6 +25,7 @@ convolutions, fused experts), which it sizes as if they were matrices and then f
 import contextlib
 import json
 import os
+import sys
 import weakref
 
 import torch
@@ -121,9 +122,54 @@ def _step_kind(optimizer):
     return None
 
 
-def _in_backward_pass():
+def _graph_task():
     graph_task = getattr(torch._C, "_current_graph_task_id", None)
-    return graph_task is not None and graph_task() != -1
+    return graph_task() if graph_task is not None else -1
+
+
+def _in_backward_pass():
+    return _graph_task() != -1
+
+
+def _compiling():
+    # Constant True while dynamo traces: a hook inlined into a compiled region adds no graph break.
+    is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    if is_compiling is None:
+        is_compiling = getattr(getattr(torch, "_dynamo", None), "is_compiling", None)
+    return bool(is_compiling()) if is_compiling is not None else False
+
+
+def _in_block_trial():
+    """Unsloth's compiled decoder blocks run one throwaway grad-mode forward on their first call (the trial that
+    checks the compiled region); it makes no gradient, so it is not a second use of the block's weights."""
+    module = sys.modules.get("unsloth.models._block_compile")
+    flag = getattr(module, "_IN_TRIAL", None) if module is not None else None
+    return bool(flag[0]) if isinstance(flag, list) and flag else False
+
+
+def _norms(grads):
+    """float32 L2 norm of each gradient, in one multi-tensor launch where torch has it."""
+    foreach_norm = getattr(torch, "_foreach_norm", None)
+    if foreach_norm is not None:
+        try:
+            return list(foreach_norm(grads, 2.0, dtype = torch.float32))
+        except (TypeError, RuntimeError):
+            pass
+    return [torch.linalg.vector_norm(g, 2.0, dtype = torch.float32) for g in grads]
+
+
+def _queue_callback(callback):
+    """Run `callback` when the current backward graph task ends (a reentrant checkpoint's inner backward is its
+    own task, so with Unsloth's checkpointing that is once per decoder layer). False when it cannot be queued."""
+    engine = getattr(getattr(torch.autograd, "Variable", None), "_execution_engine", None)
+    queue = getattr(engine, "queue_callback", None)
+    if queue is None:
+        return False
+    try:
+        queue(callback)
+        return True
+    except RuntimeError:
+        return False
 
 
 @contextlib.contextmanager
@@ -157,17 +203,22 @@ _ACTIVE = weakref.WeakValueDictionary()  # id(param) -> the InBackwardOptimizer 
 
 
 class InBackwardOptimizer(torch.optim.Optimizer):
-    """Steps `optimizer` one weight at a time from post-accumulate-grad hooks, then frees that gradient.
+    """Steps `optimizer` inside backward from post-accumulate-grad hooks, then frees those gradients.
 
-    Shares the wrapped optimizer's param_groups and state (the LR scheduler, bfloat16 stochastic rounding,
-    bitsandbytes overrides and checkpoints see the optimizer the Trainer built). step() only steps weights whose
-    gradient did not pass through a hook. `max_grad_norm` > 0 clips each gradient by its own norm."""
+    Ready gradients are stepped together when the backward graph task that produced them ends (with reentrant
+    checkpointing, after each block's backward) or once they reach `batch_bytes`, so the optimizer, the norms and
+    the clipping run as a few multi-tensor launches per block instead of several per weight; each weight's update
+    is the one the standard step makes. Shares the wrapped optimizer's param_groups and state (the LR scheduler,
+    bfloat16 stochastic rounding, bitsandbytes overrides and checkpoints see the optimizer the Trainer built).
+    step() only steps weights whose gradient did not pass through a hook. `max_grad_norm` > 0 clips each gradient
+    by its own norm. `batch_bytes` = 0 steps each weight on its own as soon as its gradient is ready."""
 
     def __init__(
         self,
         optimizer,
         max_grad_norm = 0.0,
         model = None,
+        batch_bytes = None,
     ):
         kind = _step_kind(optimizer)
         if kind is None:
@@ -186,11 +237,22 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self.deferred_steps = 0
         self._calls = {}
         self._owners = {}
+        self._shared = set()
+        self._pending = []
+        self._pending_ids = set()
+        self._pending_bytes = 0
+        self._queued = set()
         groups = list(optimizer.param_groups)
         state = optimizer.state
         # Optimizer.__init__ re-adds the same group dicts through the forwarding properties below.
         super().__init__(groups, optimizer.defaults)
         optimizer.state = state
+        if batch_bytes is None:
+            # The largest weight's gradient (the planner budgets it alive next to the one being stepped).
+            batch_bytes = max(
+                (p.numel() * p.element_size() for g in groups for p in g["params"]), default = 0
+            )
+        self.batch_bytes = int(batch_bytes)
         self._register_hooks()
         if model is not None:
             self._watch_reuse(model)
@@ -255,6 +317,10 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self._done = set()
         self._norm_sq = {}
         self._calls = {}
+        self._pending = []
+        self._pending_ids = set()
+        self._pending_bytes = 0
+        self._queued = set()
 
     def zero_grad(self, set_to_none = True):
         self._reset()
@@ -266,7 +332,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         def hook(p):
             opt = ref()
             if opt is not None and opt._armed and _ACTIVE.get(id(p)) is opt:
-                opt._step_param(p)
+                opt._ready(p)
 
         for group in self.param_groups:
             for p in group["params"]:
@@ -283,14 +349,26 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         when a module that owns it ran more than once in total (a tied embedding and head), or any module containing
         it ran more than once (a looped block, even when the weight is read functionally, as Inkling-2's loop
         convolutions are). Under reentrant checkpointing such a weight gets one gradient per call, so it is stepped
-        at optimizer.step() instead."""
+        at optimizer.step() instead. A weight the model reaches through several modules (tied, shared) always is.
+
+        Calls inside a compiled region are not counted (the hook compiles to nothing, so it does not split the
+        graph; they run within one call of an eager parent, which is counted), nor are Unsloth's first-call block
+        trials, which make no gradient."""
         mine = {id(p) for group in self.param_groups for p in group["params"]}
         self._names = {id(p): n for n, p in model.named_parameters() if id(p) in mine}
+        paths = {}
+        for name, module in model.named_modules(remove_duplicate = False):
+            for p in module.parameters(recurse = False):
+                if id(p) in mine:
+                    paths.setdefault(id(p), set()).add(name)
+        self._shared = {k for k, v in paths.items() if len(v) > 1}
         ref = weakref.ref(self)
 
         def count(module, args):
+            if _compiling():
+                return
             opt = ref()
-            if opt is not None and opt._armed and not _in_backward_pass():
+            if opt is not None and opt._armed and not _in_backward_pass() and not _in_block_trial():
                 opt._calls[id(module)] = opt._calls.get(id(module), 0) + 1
 
         owners, within = {}, {}
@@ -313,6 +391,8 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self._owners = {k: (tuple(v), tuple(within[k])) for k, v in owners.items()}
 
     def _reused(self, p):
+        if id(p) in self._shared:
+            return True
         entry = self._owners.get(id(p))
         if not entry:
             return False
@@ -353,53 +433,107 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             self._where_key = key
         return self._where.get(id(p))
 
-    def _step_param(
-        self,
-        p,
-        final = False,
-    ):
+    def _second_gradient(self, p):
+        name = getattr(self, "_names", {}).get(id(p), "a weight")
+        return RuntimeError(
+            "Unsloth: the optimizer steps inside backward (each gradient is used and freed as soon as it "
+            f"is ready), but {name} received a second gradient before optimizer.step(): this training "
+            "step runs more than one backward (gradient accumulation, a split micro-batch, or a weight "
+            "reused across checkpointed blocks). Set UNSLOTH_AUTO_FIT_OPTIMIZER=0 to keep every gradient "
+            "until the step."
+        )
+
+    def _ready(self, p):
+        """p's gradient is accumulated: queue it for the batch this graph task steps."""
         grad = p.grad
-        if grad is None:
+        if grad is None or self._locate(p) is None:
             return
-        where = self._locate(p)
-        if where is None:
-            return
-        if not final and self._reused(p):
+        if self._reused(p):
             return  # more gradients may still arrive: stepped by flush()
         if id(p) in self._done:
-            name = getattr(self, "_names", {}).get(id(p), "a weight")
-            raise RuntimeError(
-                "Unsloth: the optimizer steps inside backward (each gradient is used and freed as soon as it "
-                f"is ready), but {name} received a second gradient before optimizer.step(): this training "
-                "step runs more than one backward (gradient accumulation, a split micro-batch, or a weight "
-                "reused across checkpointed blocks). Set UNSLOTH_AUTO_FIT_OPTIMIZER=0 to keep every gradient "
-                "until the step."
-            )
-        self._done.add(id(p))
-        norm = torch.linalg.vector_norm(grad.detach(), 2.0, dtype = torch.float32)
-        square = norm * norm
-        device = str(norm.device)
-        self._norm_sq[device] = (
-            square if device not in self._norm_sq else self._norm_sq[device] + square
-        )
-        if self.max_grad_norm > 0:
-            # torch.nn.utils.clip_grad_norm_'s coefficient, from this gradient's norm alone.
-            coef = torch.clamp(self.max_grad_norm / (norm + 1e-6), max = 1.0)
-            grad.detach().mul_(coef.to(grad.device))
-        gi, pi = where
+            raise self._second_gradient(p)
+        if id(p) in self._pending_ids:
+            return  # accumulated again before its batch was stepped: stepped once, with the sum
+        nbytes = grad.numel() * grad.element_size()
+        if self._pending and self._pending_bytes + nbytes > self.batch_bytes:
+            self._flush_pending()  # a batch never exceeds batch_bytes (one larger weight steps alone)
+        self._pending.append(p)
+        self._pending_ids.add(id(p))
+        self._pending_bytes += nbytes
+        if self._pending_bytes >= self.batch_bytes or not self._queue_flush():
+            self._flush_pending()
+
+    def _queue_flush(self):
+        task = _graph_task()
+        if task == -1:
+            return False
+        if task in self._queued:
+            return True
+        ref = weakref.ref(self)
+
+        def flush_at_end_of_task():
+            opt = ref()
+            if opt is not None:
+                opt._queued.discard(task)
+                opt._flush_pending()
+
+        if not _queue_callback(flush_at_end_of_task):
+            return False
+        self._queued.add(task)
+        return True
+
+    def _flush_pending(self):
+        pending = self._pending
+        if not pending:
+            return
+        self._pending = []
+        self._pending_ids = set()
+        self._pending_bytes = 0
+        self._step_params(pending)
+
+    def _step_params(self, params):
+        """Step these weights with their gradients now (each by its own update), then free the gradients."""
+        params = [p for p in params if p.grad is not None and self._locate(p) is not None]
+        if not params:
+            return
+        for p in params:
+            if id(p) in self._done:
+                raise self._second_gradient(p)
+        for p in params:
+            self._done.add(id(p))
+        by_device = {}
+        for p in params:
+            by_device.setdefault(p.grad.device, []).append(p)
+        for device, group in by_device.items():
+            grads = [p.grad.detach() for p in group]
+            norms = torch.stack(_norms(grads))
+            square = (norms * norms).sum()
+            key = str(norms.device)
+            self._norm_sq[key] = square if key not in self._norm_sq else self._norm_sq[key] + square
+            if self.max_grad_norm > 0:
+                # torch.nn.utils.clip_grad_norm_'s coefficient, from each gradient's own norm.
+                coef = torch.clamp(self.max_grad_norm / (norms + 1e-6), max = 1.0)
+                torch._foreach_mul_(grads, list(coef.unbind(0)))
         with _no_global_step_hooks():
             if self._kind == "bitsandbytes":
-                self._step_bitsandbytes(gi, pi, p)
+                for p in params:
+                    gi, pi = self._locate(p)
+                    self._step_bitsandbytes(gi, pi, p)
             else:
-                self._step_torch(gi, p)
-        p.grad = None
+                self._step_torch(params)
+        for p in params:
+            p.grad = None
 
-    def _step_torch(self, gi, p):
+    def _step_torch(self, params):
         base = self.optimizer
         groups = base.param_groups
+        by_group = {}
+        for p in params:
+            by_group.setdefault(self._locate(p)[0], []).append(p)
         try:
-            base.param_groups = [dict(groups[gi], params = [p])]
-            base.step()
+            for gi, batch in by_group.items():
+                base.param_groups = [dict(groups[gi], params = batch)]
+                base.step()
         finally:
             base.param_groups = groups
 
@@ -424,9 +558,12 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             _sync(p)
 
     def flush(self):
-        """Step the weights left for the end: reused ones, and gradients that reached .grad without a hook."""
+        """Step the weights left for the end: the last batch, reused ones, and gradients that reached .grad
+        without a hook."""
+        self._flush_pending()
+        left = []
         for group in self.optimizer.param_groups:
-            for p in list(group["params"]):
+            for p in group["params"]:
                 if p.grad is None:
                     continue
                 if id(p) not in self._done:
@@ -434,8 +571,19 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                         self.deferred_steps += 1
                     else:
                         self.late_steps += 1
-                # A weight the hook already stepped raises here: it received a second gradient.
-                self._step_param(p, final = True)
+                # A weight the hook already stepped raises in _step_params: it received a second gradient.
+                left.append(p)
+        # In batches of at most batch_bytes, each freed before the next: a multi-tensor step's temporaries span
+        # its whole batch, and the planner budgets them for one batch.
+        batch, size = [], 0
+        for p in left:
+            nbytes = p.grad.numel() * p.grad.element_size()
+            if batch and size + nbytes > self.batch_bytes:
+                self._step_params(batch)
+                batch, size = [], 0
+            batch.append(p)
+            size += nbytes
+        self._step_params(batch)
 
     def total_norm(self):
         """L2 norm over every gradient this step saw (before clipping)."""
@@ -612,18 +760,18 @@ def plan_auto_fit(
         "8bit" in label or "bnb" in label or "paged" in label or "fused" in label or _sr_on(params)
     )
     step_temp = 0 if per_weight else states // 2
-    # In backward: the weight being stepped's gradient and a tied head gradient still accumulating. The
-    # largest weight (the embedding) is stepped last, once activations are freed, so it overlaps them.
-    # The SGD tier (LOMO's update) keeps no state but steps a float32 copy of that weight and its gradient.
-    live = largest_bytes * 2
-    live_lomo = largest_bytes + largest * 8
+    # In backward: the batch of ready gradients being stepped (at most the largest weight's size) and the
+    # gradient that arrived while it waited. A multi-tensor update without a one-pass kernel (torch foreach
+    # AdamW on float32 weights, or with stochastic rounding off) also holds a moment-sized temporary over that
+    # batch. The largest weight (the embedding) is stepped last, once activations are freed, so it overlaps them.
+    # The SGD tier (LOMO's update) keeps no state but steps a float32 copy of a weight and its gradient.
+    live = largest_bytes * 2 + (0 if per_weight else largest_bytes)
+    live_lomo = largest_bytes * 2 + largest * 8
     seq, batch = _seq_and_batch(trainer, model)
     activations = _activation_bytes(model, seq, batch)
     margin = activations // 16 + (256 << 20)  # split allocator blocks + a fixed safety margin
     # Reused weights (tied, shared, looped) keep their gradient until the step in both in-backward tiers.
     deferred = _reused_bytes(model, params)
-    if deferred:
-        live -= largest_bytes  # the tied head gradient is part of the deferred bytes
     standard = grads + states + max(activations, step_temp) + margin
     in_backward = states + deferred + max(activations, live) + margin
     lomo = deferred + max(activations, live_lomo) + margin
