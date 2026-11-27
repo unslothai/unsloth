@@ -1513,6 +1513,7 @@ function VideoGenerator({
   // Rate of a preset or clip applied before the family is known; boxed so a null rate (family default) still waits.
   const [pendingPresetFps, setPendingPresetFps] = useState<{ fps: number | null } | null>(null);
   const [loadProbed, setLoadProbed] = useState(false);
+  const [recoveringVideo, setRecoveringVideo] = useState(true);
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
   );
@@ -3183,11 +3184,18 @@ function VideoGenerator({
   }, [busy, stopQueuePoll]);
 
   useEffect(() => {
+    const recoveryController = new AbortController();
+    const { signal } = recoveryController;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+    setRecoveringVideo(true);
     void (async () => {
       await refreshStatus();
+      if (signal.aborted) return;
       // Loads run on a backend daemon thread that survives navigation, so resume tracking.
       try {
-        const p = await readAfterUnload(pendingUnload, () => getVideoLoadProgress());
+        const p = await readAfterUnload(pendingUnload, () => getVideoLoadProgress(signal));
+        if (signal.aborted) return;
         if (p.phase === "downloading" || p.phase === "finalizing") {
           setBusy("loading");
           dismissLoadToast();
@@ -3198,7 +3206,12 @@ function VideoGenerator({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      if (signal.aborted) return;
       setLoadProbed(true);
+      // Reconcile the old job before a new submit can take over this tab. Keep recovery best-effort.
+      timeout = setTimeout(() => recoveryController.abort(), 5_000);
+      const getProgress = (id?: string) => getVideoGenerateProgress(id, signal);
+      const getQueue = () => getVideoQueue(signal);
       // Generation also runs on a daemon thread, so a reload re-enters the poll loop.
       let savedJob: string | null = null;
       try {
@@ -3210,13 +3223,13 @@ function VideoGenerator({
       try {
         const recovery = savedJob
           ? await readAfterUnload(pendingUnload, () =>
-              recoverVideoJob(savedJob, getVideoGenerateProgress, getVideoQueue),
+              recoverVideoJob(savedJob, getProgress, getQueue),
             )
           : {
               kind: "progress" as const,
-              progress: await readAfterUnload(pendingUnload, getVideoGenerateProgress),
+              progress: await readAfterUnload(pendingUnload, getProgress),
             };
-        if (!isMounted.current) return;
+        if (signal.aborted) return;
         if (recovery.kind !== "progress") {
           if (recovery.kind === "queued") {
             setBusy("generating");
@@ -3255,10 +3268,10 @@ function VideoGenerator({
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
       // A job still waiting in the server queue (from this page, the API or chat) resumes its queued view.
-      if (!savedJob && !resumedRender) {
+      if (!signal.aborted && !savedJob && !resumedRender) {
         try {
-          const queued = oldestQueuedVideo(await getVideoQueue());
-          if (queued && isMounted.current) {
+          const queued = oldestQueuedVideo(await getQueue());
+          if (queued && !signal.aborted) {
             setBusy("generating");
             setGenStep(null);
             startQueuePoll(queued);
@@ -3267,8 +3280,14 @@ function VideoGenerator({
           // Older backends have no queue route.
         }
       }
-    })();
+    })().finally(() => {
+      clearTimeout(timeout);
+      if (!disposed) setRecoveringVideo(false);
+    });
     return () => {
+      disposed = true;
+      clearTimeout(timeout);
+      recoveryController.abort();
       if (pollTimer.current) clearTimeout(pollTimer.current);
       stopGenPoll();
       stopQueuePoll();
@@ -5565,7 +5584,7 @@ function VideoGenerator({
                   variant="primary"
                   className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
-                  disabled={busy !== null || !status?.loaded || !statusKnown || pendingPresetFps != null}
+                  disabled={recoveringVideo || busy !== null || !status?.loaded || !statusKnown || pendingPresetFps != null}
                 >
                   Generate
                 </Button>

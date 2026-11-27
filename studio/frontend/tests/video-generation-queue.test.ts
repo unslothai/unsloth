@@ -186,12 +186,20 @@ test("the queue route returns the account's jobs", async () => {
 test("the page queues on submit, cancels by id and resumes the queue on mount", () => {
   const page = readSrc("features/video/video-page.tsx");
   assert.match(page, /storeVideoJob\(accepted\.video_id\)/);
-  assert.match(page, /recoverVideoJob\(savedJob, getVideoGenerateProgress, getVideoQueue\)/);
+  assert.match(page, /recoverVideoJob\(savedJob, getProgress, getQueue\)/);
   assert.match(page, /if \(accepted\.status === "queued" && accepted\.video_id\) \{\s*startQueuePoll\(/);
   assert.match(page, /startGenPoll\(accepted\.video_id \?\? null\);/);
-  assert.match(page, /const queued = oldestQueuedVideo\(await getVideoQueue\(\)\);/);
+  assert.match(page, /const queued = oldestQueuedVideo\(await getQueue\(\)\);/);
   assert.match(page, /if \(next\.kind === "started"\) \{\s*startGenPoll\(job\.videoId\);/);
   assert.match(page, /queuedVideoLabel\(queuedVideo\.position, queuedVideo\.etaSeconds\)/);
+});
+
+test("Generate waits for tab recovery, and stale probes cannot change the current view", () => {
+  const page = readSrc("features/video/video-page.tsx");
+  assert.match(page, /disabled=\{recoveringVideo \|\| busy !== null/);
+  assert.match(page, /getVideoGenerateProgress\(id, signal\)/);
+  assert.match(page, /if \(signal\.aborted\) return;\s*if \(recovery\.kind/);
+  assert.match(page, /if \(!disposed\) setRecoveringVideo\(false\);/);
 });
 
 test("a new Generate drops the finished clip's id, and a Cancel during the POST stops the clip it creates", () => {
