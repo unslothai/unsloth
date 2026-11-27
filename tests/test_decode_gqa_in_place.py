@@ -437,7 +437,7 @@ def test_grouped_decode_rule_matches_whole_card_names(monkeypatch, name, rule):
 
 
 def test_t4_one_prompt_grpo_batches_take_the_grouped_route(monkeypatch):
-    # GRPO rollouts of one prompt group are equal-length rows (no mask): SDPA GQA was 1.1x - 3.8x slower.
+    # GRPO rollouts of one prompt group are equal-length rows (no mask): SDPA GQA was 1.1x - 4x slower.
     monkeypatch.setattr(llama, "GROUPED_DECODE", "auto")
     monkeypatch.setattr(llama, "_grouped_decode_rules", {})
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: "Tesla T4")

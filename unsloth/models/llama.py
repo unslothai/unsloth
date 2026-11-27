@@ -683,7 +683,7 @@ GROUPED_DECODE_CALLS = [0]
 # (equal-length rows, e.g. one GRPO prompt per batch) is faster than the grouped route on L4 / A100;
 # on an A100 short caches lose too (the grouped route's extra launches are not hidden). On a T4 (fp16,
 # torch 2.11) the grouped route won every batch 2-16 x prompt 128-2048 cell with or without CUDA graphs,
-# unmasked by 1.1x to 3.8x (GRPO's one-prompt batches), so it starts at the smallest cache measured.
+# unmasked by 1.1x to 4x (GRPO's one-prompt batches), so it starts at the smallest cache measured.
 _GROUPED_DECODE_MIN_TOKENS = {
     "T4": (256, 256, 256),
     "L4": (None, 2048, 1024),
