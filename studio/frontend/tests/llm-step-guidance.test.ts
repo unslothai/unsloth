@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { DEFAULT_HYPERPARAMS } from "../src/config/training.ts";
 import {
@@ -208,4 +209,43 @@ test("the Max Steps hint takes the run's data-parallel size", () => {
     /useTrainingParallelStore\(\(s\) =>\s*runDataParallelSize\(/,
   );
   assert.match(params, /store\.gradientAccumulation,\s*dataParallelSize,\s*\)/);
+});
+
+test("a plan for an older GPU selection gives no replicas until the new plan lands", () => {
+  const ddp4 = { mode: "ddp" as const, worldSize: 4, spec: "dp=4" };
+  const base = { capabilitiesStatus: "ready", gpuCount: 4, plan: ddp4 };
+  assert.equal(runDataParallelSize({ ...base, planFresh: true }), 4);
+  assert.equal(runDataParallelSize({ ...base, planFresh: false }), null);
+  // Single-GPU hosts never wait on a plan.
+  assert.equal(
+    runDataParallelSize({
+      capabilitiesStatus: "ready",
+      gpuCount: 1,
+      plan: null,
+      planFresh: false,
+    }),
+    1,
+  );
+});
+
+test("plan freshness is keyed by the request, marked before the debounce", async () => {
+  const hook = await readFile(
+    new URL(
+      "../src/features/training/hooks/use-parallel-plan.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const wanted = hook.indexOf("store.setWantedPlanKey(requestKey)");
+  assert.ok(wanted > 0 && wanted < hook.indexOf("setTimeout("));
+  assert.match(hook, /s\.setPlan\(result\.value, requestKey\)/);
+  const section = await readFile(
+    new URL(
+      "../src/features/studio/sections/params-section.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(section, /s\.planRequestKey === s\.wantedPlanKey/);
+  assert.match(section, /s\.planStatus === "ready"/);
 });

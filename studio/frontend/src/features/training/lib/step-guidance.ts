@@ -86,12 +86,14 @@ export function runDataParallelSize(state: {
   capabilitiesStatus: string;
   gpuCount: number | null;
   plan: (PlanLayout & { error?: unknown }) | null;
+  /** False while the plan answers an older selection (debounced or loading); no hint then. */
+  planFresh?: boolean;
 }): number | null {
   if (state.gpuCount == null) {
     return state.capabilitiesStatus === "loading" ? null : 1;
   }
   if (!showsGpuSection(state.gpuCount)) return 1;
-  if (!state.plan || state.plan.error) return null;
+  if (!state.plan || state.plan.error || state.planFresh === false) return null;
   return planDataParallelSize(state.plan);
 }
 

@@ -146,6 +146,10 @@ export function ParamsSection({
       capabilitiesStatus: s.capabilitiesStatus,
       gpuCount: s.capabilities ? s.capabilities.gpus.length : null,
       plan: s.plan,
+      planFresh:
+        s.planStatus === "ready" &&
+        s.planRequestKey !== null &&
+        s.planRequestKey === s.wantedPlanKey,
     }),
   );
   const stepGuidance = store.isDecision
