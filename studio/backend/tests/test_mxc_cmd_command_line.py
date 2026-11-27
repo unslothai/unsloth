@@ -224,7 +224,10 @@ def test_a_download_launch_denies_what_the_egress_proxy_refuses(tmp_path, system
     env = dict(entry.split("=", 1) for entry in config["process"]["env"])
     assert env["PATH"] == plan.env["PATH"]
     rc_dir = env["CURL_HOME"]
-    assert rc_dir in config["filesystem"]["readonlyPaths"]
+    # A readonly grant over a parent (a runtime root above the Studio home) covers it too.
+    assert any(
+        os.path.commonpath([rc_dir, root]) == root for root in config["filesystem"]["readonlyPaths"]
+    )
     assert os.path.commonpath([rc_dir, plan.workdir]) != plan.workdir
     assert Path(rc_dir, ".curlrc").read_text(encoding = "utf-8") == (
         'proto = "=http,https"\nproto-redir = "=http,https"\n'
