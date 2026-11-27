@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bfloat16 stochastic rounding on DTensor weights (FSDP2 / TP shards), gloo world 2.
+"""bfloat16 stochastic rounding on DTensor weights (FSDP2 / TP shards), world 2 (gloo on CPU, NCCL on 2 GPUs).
 
 Before, every DTensor weight was skipped, so FSDP2 / TP bfloat16 full finetuning silently fell back to
 round-to-nearest and lost every update below half a bfloat16 spacing. The update and the rounding are
@@ -24,7 +24,12 @@ STEPS = 8
 LR = 1e-3  # under half the bfloat16 spacing below 1.0 (2**-9): round-to-nearest never moves a 1.0 weight
 
 
-def _init(rank, world, port):
+def _init(
+    rank,
+    world,
+    port,
+    backend = "gloo",
+):
     import datetime
 
     import torch.distributed as dist
@@ -33,7 +38,7 @@ def _init(rank, world, port):
         MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port), RANK = str(rank), WORLD_SIZE = str(world)
     )
     dist.init_process_group(
-        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 120)
+        backend, rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 120)
     )
     return dist
 
@@ -85,15 +90,15 @@ def _dtensor_worker(rank, world, port, out, root, device, fused, sr_env):
             os.environ.pop("UNSLOTH_BF16_STOCHASTIC_ROUNDING", None)
         else:
             os.environ["UNSLOTH_BF16_STOCHASTIC_ROUNDING"] = sr_env
-        dist = _init(rank, world, port)
+        if device == "cuda":
+            torch.cuda.set_device(rank)  # DTensor collectives on CUDA need NCCL: one GPU per rank
+        dist = _init(rank, world, port, "nccl" if device == "cuda" else "gloo")
         from torch.distributed.device_mesh import init_device_mesh
 
         try:
             from torch.distributed.tensor import Replicate, Shard, distribute_tensor
         except ImportError:  # torch < 2.5
             from torch.distributed._tensor import Replicate, Shard, distribute_tensor
-        if device == "cuda":
-            torch.cuda.set_device(0)  # both ranks share one GPU over gloo
         sr = _load(root)
         mesh = init_device_mesh(device, (world,))
         data, _ = _inputs(device)
@@ -260,10 +265,10 @@ CASES = [
 @pytest.mark.parametrize("device, fused", CASES)
 def test_dtensor_shards_round_stochastically(device, fused):
     if device == "cuda":
-        if not torch.cuda.is_available():
-            pytest.skip("requires CUDA (both ranks share one GPU over gloo)")
-        if sys.platform == "win32":
-            pytest.skip("gloo collectives on GPU tensors are not supported on Windows")
+        if torch.cuda.device_count() < 2:
+            pytest.skip("requires 2 CUDA devices (NCCL, one per rank)")
+        if not torch.distributed.is_nccl_available():
+            pytest.skip("requires NCCL")
         pytest.importorskip("triton")
     ranks = _run(_dtensor_worker, device, fused, None)
     r0, r1 = ranks
