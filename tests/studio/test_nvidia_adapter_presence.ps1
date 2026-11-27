@@ -175,8 +175,7 @@ try {
         @{ N = "an arch the installer forwarded";   Env = @{ _UNSLOTH_ROCM_GFX_ARCH_HANDOFF = "gfx1100" } },
         @{ N = "hipinfo on PATH";                    Cmd = @("hipinfo") },
         @{ N = "a HIP SDK under HIP_PATH";           Env = @{ HIP_PATH = $hipRoot } },
-        @{ N = "a HIP SDK under ROCM_PATH";          Env = @{ ROCM_PATH = $hipRoot } },
-        @{ N = "an opted-in amd-smi";                Env = @{ UNSLOTH_ENABLE_AMD_SMI = "1" }; Cmd = @("amd-smi") }
+        @{ N = "a HIP SDK under ROCM_PATH";          Env = @{ ROCM_PATH = $hipRoot } }
     )) {
         if ($case.Env) { foreach ($k in @($case.Env.Keys)) { [Environment]::SetEnvironmentVariable($k, $case.Env[$k]) } }
         $script:FakeCommands = @($case.Cmd)
@@ -184,8 +183,13 @@ try {
         if ($case.Env) { foreach ($k in @($case.Env.Keys)) { [Environment]::SetEnvironmentVariable($k, $null) } }
         $script:FakeCommands = @()
     }
+    # The installers never run amd-smi (#19615), so it is no AMD evidence here, opted in or not.
     $script:FakeCommands = @("amd-smi")
-    Check "amd-smi without the opt-in does not veto (the AMD route would not run it)" ((Test-OtherVendorAdapterPresent) -eq $false)
+    Check "amd-smi does not veto (the installers never run it)" ((Test-OtherVendorAdapterPresent) -eq $false)
+    [Environment]::SetEnvironmentVariable("UNSLOTH_ENABLE_AMD_SMI", "1")
+    Check "amd-smi with UNSLOTH_ENABLE_AMD_SMI=1 does not veto either" ((Test-OtherVendorAdapterPresent) -eq $false)
+    [Environment]::SetEnvironmentVariable("UNSLOTH_ENABLE_AMD_SMI", $null)
+    $script:FakeCommands = @()
 } finally {
     Remove-Item Function:\Get-Command -ErrorAction SilentlyContinue
     foreach ($v in $savedAmdEnv.Keys) { [Environment]::SetEnvironmentVariable($v, $savedAmdEnv[$v]) }
