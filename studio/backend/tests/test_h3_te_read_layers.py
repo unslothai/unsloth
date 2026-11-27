@@ -190,7 +190,8 @@ def test_h3_image_bf16_loader_builds_the_read_layers(release):
 
 
 def test_video_spec_swap_loads_the_read_layers_and_restores(release):
-    from diffusers.modular_pipelines import ComponentSpec
+    modular = pytest.importorskip("diffusers.modular_pipelines")
+    ComponentSpec = modular.ComponentSpec
 
     spec = ComponentSpec(
         name = "text_encoder",
@@ -231,7 +232,7 @@ def test_video_spec_swap_stays_off(pipe_kwargs):
 def test_video_h3_load_components_runs_under_the_read_layer_spec():
     """The H3 modular loader's load_components_strict call sits inside ``h3_read_layers_spec``."""
     src = Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
-    tree = ast.parse(src.read_text())
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
     fn = next(
         n
         for n in ast.walk(tree)
@@ -354,7 +355,7 @@ def test_h3_image_plan_refused_at_the_whole_encoder_is_admitted_at_the_read_laye
 def test_h3_image_status_text_names_the_read_layer_size():
     from core.inference import diffusion_minimax_h3_image as h3i
 
-    src = Path(h3i.__file__).read_text()
+    src = Path(h3i.__file__).read_text(encoding = "utf-8")
     assert "66.7 GB bf16" not in src
     assert src.count("{H3_IMAGE_TE_BF16_READ_GB:.1f} GB bf16") == 2
 
@@ -452,6 +453,8 @@ def test_h3_video_others_bytes_follow_the_spec():
 
 def test_h3_video_runtime_checks_price_the_loaded_encoder():
     """Every runtime H3 budget in video.py sizes the bf16 encoder from the loaded pipeline, none from the constant."""
-    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(
+        encoding = "utf-8"
+    )
     assert "bf16_gb = H3_TEXT_ENCODER_BF16_GB" not in src
     assert src.count("h3_bf16_te_gb(H3_TEXT_ENCODER_BF16_GB, pipe = state.pipe)") == 3
