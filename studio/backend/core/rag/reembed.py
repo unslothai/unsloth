@@ -108,12 +108,15 @@ def stale_counts() -> dict:
     return {"documents": len(rows) - archived, "archived": archived}
 
 
-def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
+def _reembed_document(job: _Job, doc: dict, model: str, vec_rowids: dict) -> bool:
     conn = rag_db.get_connection()
     try:
         rows = conn.execute(
             "SELECT id, text FROM chunks WHERE document_id=? ORDER BY chunk_index", (doc["id"],)
         ).fetchall()
+        # One partition scan per scope and job, not per document: vec0 does not index chunk_id.
+        if doc["scope"] not in vec_rowids:
+            vec_rowids[doc["scope"]] = store.vec_rowids_by_document(conn, doc["scope"])
     finally:
         conn.close()
     # Per document: an ST failure can hand the model to llama-server, whose tokenizer and limit differ.
@@ -140,6 +143,7 @@ def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
             vectors,
             identity,
             model,
+            vec_rowids[doc["scope"]],
         )
     finally:
         conn.close()
@@ -170,6 +174,7 @@ def _run(job: _Job) -> None:
 
     queue: collections.deque = collections.deque()
     scanned_for, scanned_at = None, 0.0
+    vec_rowids: dict[str, dict[str, list[int]]] = {}
     try:
         while True:
             if job.stop.is_set() or account_is_retired():
@@ -206,7 +211,7 @@ def _run(job: _Job) -> None:
                 return
             job.current = 0.0
             try:
-                if not _reembed_document(job, doc, model):
+                if not _reembed_document(job, doc, model, vec_rowids):
                     refused.add((doc["id"], doc["embedding_model"], identity))
                 failures = 0
             except _Stopped:
