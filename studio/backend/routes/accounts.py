@@ -73,13 +73,27 @@ def retire_account_roots(account: AccountContext):
     from core.training.account_jobs import retire_account_jobs
 
     retire_account_jobs(account)
-    from core.inference.video import generation_account_in_flight, get_video_backend
+    from core.inference.video import (
+        encode_account_in_flight,
+        generation_account_in_flight,
+        generation_accounts_in_flight,
+        get_video_backend,
+    )
     from core.training.account_jobs import AccountRetirementError
 
     from core.inference.diffusion_engine_router import cancel_generation_for_account
 
     # Signal both media generations before raising, so one delete retry stops them all.
-    video_active = generation_account_in_flight() == account.account_id
+    # Its clip may be the running job's own, one riding that job's shared denoise, or one encoding after it
+    # handed the GPU on.
+    video_active = (
+        account.account_id
+        in (
+            generation_account_in_flight(),
+            encode_account_in_flight(),
+        )
+        or account.account_id in generation_accounts_in_flight()
+    )
     if video_active:
         get_video_backend().cancel_generate(expected_account = account.account_id)
     from routes.inference import retire_account_image_jobs

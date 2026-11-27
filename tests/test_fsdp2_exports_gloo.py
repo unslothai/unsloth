@@ -30,6 +30,8 @@ import sys  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402
 
+pytestmark = pytest.mark.xdist_group("test_fsdp2_exports_gloo")
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"  # tokenizer only; the weights are built here
 
@@ -132,8 +134,7 @@ def _all_dtensor(model):
 
 
 class _StubGGUF:
-    """Stands in for unsloth.save.save_to_gguf: records the call and writes a fake GGUF that lists
-    the 16-bit checkpoint it was handed."""
+    """Stub for unsloth.save.save_to_gguf: writes a fake GGUF listing the 16-bit checkpoint."""
 
     def __init__(
         self,
@@ -171,8 +172,7 @@ class _StubHub:
 
 
 def _run_cases(rank, world_size, base, out):
-    """Every export once, each case on its own so one refusal does not hide the others. `world_size`
-    0 is the one-process reference (no process group). A case's exception lands in `<case>_raised`."""
+    """Each case isolated; world_size 0 = one-process reference; errors go to <case>_raised."""
     import huggingface_hub
     import unsloth.save as save
     from unsloth.models import fsdp2_save
@@ -243,8 +243,7 @@ def _run_cases(rank, world_size, base, out):
         result["ram_wrote"] = os.path.isdir(mine("gguf_ram"))
 
     def estimate():
-        # An eval forward leaves the root unit gathered; the RAM and placement estimates must
-        # still count those weights, as the gather (which reshards first) will move them.
+        # Eval forward leaves root unit gathered, so estimates must still count those weights.
         model, tokenizer = load()
         full = fsdp2_save._gathered_host_bytes(model, offload_to_cpu = True, offload_4bit = True)
         model.eval()
@@ -276,8 +275,7 @@ def _run_cases(rank, world_size, base, out):
             result["qat_loss_after"] = float(loss)
 
     def qat_fallback():
-        # Too big for rank 0's GPU: gathered to the CPU and converted one module at a time on the
-        # accelerator (the CPU stands in here), which must equal the whole-model convert.
+        # Too big for rank 0's GPU: module-by-module convert must match whole-model convert.
         from unsloth.models import _utils
 
         calls = []
@@ -345,9 +343,8 @@ def _run_cases(rank, world_size, base, out):
             builtins.open = real_open
 
     def restore_devices():
-        # A replicated bias on another device than the gathered weight goes back to its own device
-        # (the meta device stands in for the GPU; CPU <-> CUDA keeps the Parameter object via .data,
-        # CPU -> meta cannot, so it gets a new one). A tensor already home is left untouched.
+        # A replicated bias on a device other than its gathered weight's goes home; CPU<->CUDA keeps
+        # the Parameter via .data, CPU to meta makes a new one; home tensors are untouched.
         from unsloth.models import _utils
 
         layer = torch.nn.Linear(4, 4)
@@ -511,7 +508,6 @@ def test_gguf_runs_on_rank0_only_from_the_same_merge(runs):
     assert r0["gguf_calls"] == [["q8_0"]] and r1["gguf_calls"] == [], (r0, r1)
     assert not r1["gguf_wrote"]
     assert r0["all_dtensor_after_gguf"] and r1["all_dtensor_after_gguf"]
-    # Every rank returns rank 0's answer.
     assert r0["gguf_return"] == r1["gguf_return"]
     single = runs["single"]["gguf_return"]
     assert [os.path.basename(p) for p in single["gguf_files"]] == [

@@ -2399,6 +2399,10 @@ export const ja = {
         confirmDescriptionChatOnly:
           "サーバーを停止してインストーラーを再実行します。これはチャット専用インストールのため、インストーラーは PyTorch を含むフルインストールにもアップグレードします (合計数 GB)。チャットと設定は保持されます。数分かかる場合があります。",
         confirmAction: "今すぐ修復",
+        recommendedTorch:
+          "修復を推奨: このインストールの PyTorch {torch} は、RTX 50 シリーズ GPU がサポートされる管理対象の {managedTorch} より古いバージョンです。",
+        recommendedDriver:
+          "PyTorch {torch} は RTX 50 シリーズ GPU がサポートされる管理対象の {managedTorch} より古いですが、この GPU ドライバーは CUDA 13 に対応していません。先に GPU ドライバーを更新してから、インストールを修復してください。",
       },
       resetPreferences: {
         sectionTitle: "危険ゾーン",
@@ -4095,8 +4099,8 @@ export const ja = {
       summary: {
         single: "1 台の GPU でトレーニング",
         layerSplit: "モデルをレイヤーごとに GPU {count} 台へ分割",
-        ddp: "モデルは 1 台の GPU に収まります: GPU {count} 台でデータ並列",
-        fsdp2: "モデルが 1 台の GPU に収まりません: GPU {count} 台にシャード化",
+        ddp: "各 GPU が完全なコピーを学習: GPU {count} 台でデータ並列",
+        fsdp2: "重みとオプティマイザー状態を GPU {count} 台にシャード化",
         tp: "各レイヤーを GPU {count} 台に分割",
         pp: "レイヤーを {count} 段のパイプラインで実行（GPU ごとに 1 段）",
         cp: "各シーケンスを GPU {count} 台に分割",
@@ -4107,7 +4111,7 @@ export const ja = {
         noGpu: "GPU を 1 台以上選択してください。",
         singleNeedsOne: "単一 GPU は 1 台だけを使います。ほかのチェックを外してください。",
         needsTwo: "このモードには GPU が 2 台以上必要です。",
-        customSpec: "構成を入力してください（例: dp=2,tp=2）。",
+        customSpec: "構成を入力してください（例: {example}）。",
       },
     },
     preview: {
@@ -4488,6 +4492,12 @@ export const ja = {
       epochs: "エポック数",
       useMaxSteps: "最大ステップ数を使用",
       useEpochs: "エポック数を使用",
+      stepGuidancePass: "約 {steps} ステップで、実効バッチ {batch} のとき {rows} 行を 1 周します。",
+      stepGuidanceFloor: "実効バッチ {batch} では {rows} 行の 1 周はわずか {passSteps} ステップなので、約 {steps} ステップ (数周) が妥当な最小値です。",
+      stepGuidanceCap: "実効バッチ {batch} では {rows} 行の 1 周は {passSteps} ステップです。{steps} ステップはその一部を学習し、最初の実行には十分なことが多いです。",
+      stepGuidanceEpoch: "1 エポックは実効バッチ {batch} で {rows} 行を約 {passSteps} ステップで回ります。",
+      stepGuidancePacking: "パッキングは短い行をまとめるため、1 周のステップ数が少なくなることがあります。",
+      useSuggestedSteps: "{steps} を使用",
       maxStepsTooltip: "オプティマイザーの総ステップ数を上書きします。",
       epochsTooltip: "データセット全体の完全な学習回数。",
       contextLength: "コンテキスト",
@@ -5017,6 +5027,7 @@ export const ja = {
       showPromptDescription: "モデルに送られる正確な指示を表示します。",
     },
     history: {
+      notSaved: "履歴に保存されませんでした: ブラウザのストレージがいっぱいです。",
       title: "履歴",
       search: "履歴を検索",
       empty: "翻訳はここに表示されます。",
@@ -5982,6 +5993,12 @@ export const ja = {
     maximize: "ウィンドウを最大化",
     restore: "ウィンドウを元のサイズに戻す",
     close: "ウィンドウを閉じる",
+    mediaCodecs: {
+      title: "生成した動画が再生されない場合があります",
+      // {command}: an apt command line, never translated.
+      description: "このシステムには GStreamer の動画デコーダーがありません。次のコマンドでインストールしてください: {command}",
+      copy: "コマンドをコピー",
+    },
   },
   runtimeUpdate: {
     installAudio: "オーディオランタイムをインストール",

@@ -987,11 +987,12 @@ def _raw_config_has_vision_config(
             return None
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
-        explicit_vision = (
-            "vision_config" in config
-            or "img_processor" in config
-            or "image_token_index" in config
-            or "projector_config" in config
+        # Empty modality fields mean text only on a causal LM (LFM3); Qwen3-Omni and Molmo2 VLMs ship them too.
+        causal_lm = any(isinstance(x, str) and x.endswith("ForCausalLM") for x in architectures)
+        explicit_vision = any(
+            config[key] not in (None, {}) or not causal_lm
+            for key in ("vision_config", "img_processor", "image_token_index", "projector_config")
+            if key in config
         )
         vlm_types, vlm_classes, audio_types = _detection_sets()
         # Audio-only models are vision only if they carry an explicit vision sub-config.
@@ -1333,6 +1334,13 @@ def _hub_model_info(
 def read_hub_model_info_ahead(repo_id: str, hf_token: HfTokenArg) -> Optional[threading.Thread]:
     """Fill the open scope from a thread. Join it before the first probe; a failed read leaves the answer to that probe."""
     if is_local_path(repo_id):
+        return None
+
+    # Resolve the lazy import before the thread can race the MLX hardware probe's Hub imports.
+    try:
+        from huggingface_hub import model_info  # noqa: F401
+    except Exception as exc:
+        logger.debug("model_info import for read ahead failed for %s: %s", repo_id, exc)
         return None
 
     def read():

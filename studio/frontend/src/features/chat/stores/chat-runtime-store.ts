@@ -62,6 +62,7 @@ import {
   type Preset,
   type RecommendedSamplingKey,
   RECOMMENDED_SAMPLING_KEYS,
+  type PresetOwnedParams,
   getPresetOwnedParams,
   isRecommendedSamplingKey,
   getPresetSource,
@@ -1221,6 +1222,7 @@ export function localMediaToolsForTurn(
 }
 
 type MediaStatusSnapshot = {
+  chat_swap_available?: boolean;
   loaded?: boolean;
   /** False when the resident model belongs to another account this one may not use. */
   yours?: boolean;
@@ -1239,9 +1241,9 @@ export function localMediaReadyFromStatus(
 ): { image: boolean; video: boolean } {
   return {
     image: Boolean(
-      image?.loaded &&
-        image.yours !== false &&
-        (!image.workflows || image.workflows.includes("txt2img")),
+      image && image.yours !== false && (image.loaded
+        ? !image.workflows || image.workflows.includes("txt2img")
+        : image.chat_swap_available),
     ),
     // Ref2VA needs reference media the chat tool never sends.
     video: Boolean(
@@ -3368,9 +3370,7 @@ function forgetModelParams(
   }
   const current = outgoing ?? state.paramsByModel;
   const chatOwnsSampling = threadCapturesSampling();
-  const forgotten = Object.keys(getPresetOwnedParams(state.params)).filter(
-    (key) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
-  );
+  const forgotten: string[] = presetPickForgetsKeys(state.params);
   if (!chatOwnsSampling) {
     modelsShowingPresetPick.add(modelId);
   }
@@ -3386,6 +3386,13 @@ function forgetModelParams(
     Object.entries(current).filter(([id]) => id !== modelId),
   );
   return hasKeys(kept) ? { ...rest, [modelId]: kept } : rest;
+}
+
+// With a chat open, the pick leaves the sampling that chat captures in model memory.
+function presetPickForgetsKeys(params: InferenceParams): (keyof PresetOwnedParams)[] {
+  const chatOwnsSampling = threadCapturesSampling();
+  const keys = Object.keys(getPresetOwnedParams(params)) as (keyof PresetOwnedParams)[];
+  return keys.filter((key) => !(chatOwnsSampling && isThreadScopedParamKey(key)));
 }
 
 /** Every preset-owned value the installation keeps, minus the sampling an open chat captures. */
@@ -3446,6 +3453,29 @@ function notePresetOnLoad(
     // A same-model poll under edited values replaces nothing, so it keeps the mark.
     modelsShowingPresetPick.delete(modelId);
   }
+}
+
+// Unknown after a reload, so a switch then fills nothing.
+let presetForgottenKeys: readonly (keyof PresetOwnedParams)[] = [];
+
+/** What a custom preset's pick forgot and `remembered` lacks comes from the preset, not the model being
+ *  left. Callers skip it for loads that keep the visible settings (`trackQueuedSettings: false`). */
+function withSelectedPreset(
+  state: ChatRuntimeStore,
+  params: InferenceParams,
+  remembered: PersistedInferenceParams | undefined,
+): InferenceParams {
+  if (!(state.rememberParamsPerModel && state.activePresetSource === "custom")) {
+    return params;
+  }
+  const preset = state.customPresets.find((p) => p.name === state.activePreset);
+  if (!preset) return params;
+  const owned = getPresetOwnedParams(preset.params);
+  const filled = presetForgottenKeys.filter(
+    (key) => remembered?.[key] === undefined && params[key] !== owned[key],
+  );
+  if (filled.length === 0) return params;
+  return { ...params, ...Object.fromEntries(filled.map((key) => [key, owned[key]])) };
 }
 
 /** Snapshot the model being switched away from, so a model that was never edited still keeps what it ran with. */
@@ -4935,10 +4965,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const incomingParams = fromModelDefaults
         ? { ...params, minPMode: withoutActiveThreadParams(state, params).minPMode }
         : params;
+      const loadBase =
+        checkpointChanged && fromModelDefaults && options?.trackQueuedSettings !== false
+          ? withSelectedPreset(
+              state,
+              incomingParams,
+              (outgoing ?? state.paramsByModel)[params.checkpoint],
+            )
+          : incomingParams;
       const nextParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
-        incomingParams,
+        loadBase,
         params.checkpoint,
         replayed,
         options?.maxTokensCap,
@@ -4973,6 +5011,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // An edit belongs to the model the params now describe, so a call moving checkpoint and
       // sliders at once files them under the destination.
       const fromPreset = options?.fromPreset === true;
+      if (fromPreset) presetForgottenKeys = presetPickForgetsKeys(state.params);
       const paramsByModel = fromPreset
         ? forgetModelParams(state, outgoing, nextParams.checkpoint)
         : getParamsByModelAfterEdit(
@@ -5247,7 +5286,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       let baseParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
-        state.params,
+        checkpointChanged && options?.trackQueuedSettings !== false
+          ? withSelectedPreset(state, state.params, (outgoing ?? state.paramsByModel)[modelId])
+          : state.params,
         modelId,
         checkpointChanged,
         options?.maxTokensCap,

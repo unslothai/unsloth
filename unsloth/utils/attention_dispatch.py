@@ -63,16 +63,21 @@ def _compiling():
 
 
 def _xformers_runs_on_device(device = "cuda", supports_bf16 = None) -> bool:
-    """One tiny attention forward; True iff the xformers kernel actually runs here."""
+    """One tiny attention forward + backward; True iff both xformers kernels actually run here.
+    A build can ship the forward kernel for a card but not the backward one, which would pass a
+    forward-only probe and then fail on the first training step."""
     try:
         # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel but run xformers fine in
         # float16, so pick the dtype the device supports.
         if supports_bf16 is None:
             supports_bf16 = SUPPORTS_BFLOAT16
         dtype = torch.bfloat16 if supports_bf16 else torch.float16
-        q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype)
-        attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
-        xformers_attention(q, q, q, attn_bias = attn_bias)
+        # The lazy per-device probe can run during generation, so force autograd on here.
+        with torch.inference_mode(False), torch.enable_grad():
+            q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype, requires_grad = True)
+            attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
+            out = xformers_attention(q, q, q, attn_bias = attn_bias)
+            out.backward(torch.ones_like(out))
         # Launches are async, so synchronize or a deferred kernel failure escapes this probe.
         torch.cuda.synchronize(device)
         return True
@@ -90,7 +95,7 @@ def _xformers_disabled_for_capability(
     fa3_enabled = _xformers_fa3_enabled,
 ) -> bool:
     # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (it caps at sm_90) and its
-    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide.
+    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward + backward to decide.
     # On sm_90 FA3 is off only for builds without sm_90a (_utils), which may also ship no sm_90 kernel
     # at all (conda-forge xformers >= 0.0.33), so probe those too; elsewhere xformers works.
     if capability[0] >= 12 or (tuple(capability) == (9, 0) and not fa3_enabled()):
@@ -1880,9 +1885,9 @@ def _load_saved_attention():
         saved_attention_call = sa.saved_attention_call
     except Exception:
         return None, None
+    register = getattr(sa, "register_rocm_saved_attention_selector", None)
     # Older zoo: save_attention_enabled() is the configuration (and keeps ROCm off).
     if getattr(sa, "save_attention_requested", sa.save_attention_enabled)():
-        register = getattr(sa, "register_rocm_saved_attention_selector", None)
         if _ROCM_SDPA_GUARD and register is not None:
             register(_select_rocm_saved_sdpa)
         return saved_attention_call, None
@@ -1893,6 +1898,9 @@ def _load_saved_attention():
         return None, None
     if min_seq is None:
         return None, None
+    # Auto mode on ROCm also needs the selector: zoo keeps calls only where its SDPA kernel is kept.
+    if _ROCM_SDPA_GUARD and register is not None:
+        register(_select_rocm_saved_sdpa)
     return saved_attention_call, min_seq
 
 

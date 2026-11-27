@@ -3873,6 +3873,27 @@ def test_fields_the_load_sent_beat_the_saved_ones(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "saved, sent, context",
+    [
+        ({"gpu_memory_mode": "manual"}, {"gpu_memory_mode": "auto"}, 4096),
+        ({"gpu_memory_mode": "manual"}, {"gpu_memory_mode": "manual", "gpu_layers": 20}, 4096),
+        ({}, {"gpu_memory_mode": "manual"}, 0),
+        ({}, {"gpu_memory_mode": "manual", "llama_extra_args": ["-ngl", "0"]}, 4096),
+        (
+            {},
+            {"gpu_memory_mode": "manual", "gpu_layers": 20, "llama_extra_args": ["-ngl", "auto"]},
+            0,
+        ),
+    ],
+)
+def test_the_saved_context_follows_the_placement_the_load_sent(monkeypatch, saved, sent, context):
+    _saved(monkeypatch, {"max_seq_length": 4096, **saved})
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True, **sent)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert filled.max_seq_length == context
+
+
+@pytest.mark.parametrize(
     "sent, saved, kept",
     [
         (True, ["--split-mode", "tensor", "-cmoe"], ["-cmoe"]),
@@ -12298,6 +12319,33 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
         monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
         monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
     return backend, recorder
+
+
+def test_transformers_auto_switch_registers_image_swap_recipe(monkeypatch):
+    from core.inference import chat_media_swap
+    from models.inference import LoadResponse
+
+    llama, _ = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    orchestrator = inference_route._peek_inference_backend()
+    monkeypatch.setattr(chat_media_swap, "_transformers_load", None)
+    monkeypatch.setenv(chat_media_swap.SWAP_ENV, "1")
+
+    async def load(request, *_args, **_kwargs):
+        llama.is_loaded = False
+        orchestrator.active_model_name = request.model_path
+        orchestrator.models[request.model_path] = {}
+        orchestrator._proc = object()
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "Model B", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", load)
+    _run_hook("org/B-GGUF")
+
+    assert chat_media_swap.chat_can_swap()
+    assert chat_media_swap._transformers_load.launch.model_path == orchestrator.active_model_name
+    assert chat_media_swap._transformers_load.launch._advertised_id == "org/B-GGUF"
+    assert not chat_media_swap._transformers_load.extra["user_loaded"]
 
 
 def _chat_image_request(*urls):

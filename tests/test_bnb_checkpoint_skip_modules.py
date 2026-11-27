@@ -64,8 +64,7 @@ def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
 
 
 def test_the_runtime_skip_list_is_still_built_for_on_the_fly_quantization():
-    """A full-precision checkpoint has no config to defer to, so Unsloth's own skip list keeps
-    heads, routers and towers in compute dtype; the fix removed a write, not the list build."""
+    """Full-precision checkpoints lack a config, so the runtime skip list must still be built."""
     source = open(VISION, encoding = "utf-8").read()
     assert "_skip_modules = SKIP_QUANTIZATION_MODULES.copy()" in source
     assert "llm_int8_skip_modules = _skip_modules" in source
@@ -97,16 +96,14 @@ def test_the_bnb_config_chain_is_still_one_piece():
 
 
 def test_the_stamp_keeps_the_list_the_load_actually_used():
-    """A dynamic-quant repo's per-layer entries have to survive into the saved config, or
-    the adapter records a base topology that cannot be rebuilt."""
+    """Per-layer dynamic-quant entries must reach saved config, or the base topology is lost."""
     real = GLIMMER + ["model.layers.27.mlp.up_proj"]
     config = _Config(quantization_config = {"llm_int8_skip_modules": real})
     assert loaded_skip(config) == real
 
 
 def test_the_stamp_still_reports_none_when_there_was_no_list():
-    """None is the instruction Llama-3.2-11B-Vision-bnb-4bit ships: quantize everything.
-    Inventing a list here is the same mistake in a different place."""
+    """None means Llama-3.2-11B-Vision-bnb-4bit quantizes everything; do not invent a list."""
     for config in (
         _Config(quantization_config = {}),
         _Config(quantization_config = {"llm_int8_skip_modules": None}),
@@ -117,8 +114,7 @@ def test_the_stamp_still_reports_none_when_there_was_no_list():
 
 
 def test_the_stamp_preserves_an_explicit_empty_list():
-    """[] and None are not interchangeable: None lets transformers pick the output head
-    itself, [] says it was told to exclude nothing."""
+    """[] and None differ: None lets transformers pick the output head; [] excludes nothing."""
     config = _Config(quantization_config = {"llm_int8_skip_modules": []})
     assert loaded_skip(config) == []
 
@@ -129,8 +125,7 @@ def test_the_stamp_reads_an_object_config_too():
 
 
 def test_the_stamp_is_applied_at_every_site_that_writes_a_synthetic_config():
-    """There are two of these, one per loader class. Fixing one and not the other leaves
-    half the models still saving a config that describes nothing."""
+    """Two loader classes write this config; fixing one leaves a config describing nothing."""
     source = open(LOADER, encoding = "utf-8").read()
     assert source.count('"llm_int8_skip_modules": _loaded_skip_modules(model.config)') == 2
     assert '"llm_int8_skip_modules": None' not in source

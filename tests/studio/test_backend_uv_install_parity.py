@@ -40,7 +40,6 @@ PARITY_ENV = {
     # No uv.toml / user config can add an index or change resolution (pip reads none either here).
     "UV_NO_CONFIG": "1",
 }
-# The only pip calls left: pip upgrading itself and installing uv off PATH.
 PIP_ALLOWED = (["--upgrade", "pip"], ["--target", "$RUNNER_TEMP/uv-tool", "uv"])
 TORCH_INDEX = ["--index-url", "https://download.pytorch.org/whl/cpu"]
 PYPI_EXTRA = ["--extra-index-url", "https://pypi.org/simple"]

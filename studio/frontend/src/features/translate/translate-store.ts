@@ -87,6 +87,8 @@ type TranslateState = {
   error: TranslateError | null;
   result: Result | null;
   attempt: Result | null;
+  /** The browser's storage had no room for the shown translation's history entry. */
+  historyUnsaved: boolean;
   /** Models that served a translation this session: translating as you type never starts a download. */
   readyModels: string[];
   setSource: (source: string) => void;
@@ -210,16 +212,16 @@ function loadPrefs(): TranslatePrefs {
   });
 }
 
+/** Drops the oldest entries until the rest fits; null when not even the newest fits, leaving storage as it was. */
 function saveHistory(
   history: TranslateHistoryEntry[],
-): TranslateHistoryEntry[] {
-  let kept = history;
-  // A full storage drops the oldest half until the rest fits, but never writes over it with nothing.
-  while (!writeJson(HISTORY_KEY, kept)) {
-    if (kept.length <= 1) return history;
-    kept = kept.slice(0, Math.floor(kept.length / 2));
+): TranslateHistoryEntry[] | null {
+  const least = Math.min(1, history.length);
+  for (let keep = history.length; keep >= least; keep -= 1) {
+    const kept = history.slice(0, keep);
+    if (writeJson(HISTORY_KEY, kept)) return kept;
   }
-  return kept;
+  return null;
 }
 
 const storedHistory = () => parseHistory(readJson(HISTORY_KEY));
@@ -300,6 +302,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   error: null,
   result: null,
   attempt: null,
+  historyUnsaved: false,
   readyModels: [],
 
   setSource: (source) => {
@@ -447,6 +450,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
       const state = get();
       // Onto the stored list, not this window's: another window may have added entries since.
       let history = state.history;
+      let historyUnsaved = false;
       if (state.prefs.saveHistory) {
         const stored = storedHistory();
         const previous = stored[0];
@@ -465,8 +469,10 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
           model,
         });
         if (added[0] !== rest[0]) {
-          autoEntryId = auto ? added[0].id : null;
-          history = saveHistory(added);
+          const saved = saveHistory(added);
+          if (saved) autoEntryId = auto ? added[0].id : null;
+          history = saved ?? stored;
+          historyUnsaved = saved === null;
         } else {
           history = stored;
         }
@@ -476,6 +482,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         output,
         result: request,
         history,
+        historyUnsaved,
         readyModels: state.readyModels.includes(request.modelKey)
           ? state.readyModels
           : [...state.readyModels, request.modelKey],
@@ -537,12 +544,15 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
       error: null,
       result: { ...attempt, from, ...(target ? { target } : {}) },
       attempt,
+      historyUnsaved: false,
     });
   },
 
   removeHistory: (id) => {
     set({
-      history: saveHistory(storedHistory().filter((entry) => entry.id !== id)),
+      history:
+        saveHistory(storedHistory().filter((entry) => entry.id !== id)) ??
+        storedHistory(),
     });
   },
 

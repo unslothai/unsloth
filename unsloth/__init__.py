@@ -34,6 +34,12 @@ if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
     _apply_debug_distributed_env()
     del _apply_debug_distributed_env
 
+# Also before any process group (torchrun, accelerate, the Trainer): NCCL reads it at the first communicator.
+from .nccl_env import apply_nccl_default_env as _apply_nccl_default_env
+
+_apply_nccl_default_env()
+del _apply_nccl_default_env
+
 # UNSLOTH_PARALLEL="dp=..,tp=..,pp=..,cp=.." -> UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_CP_SIZE / UNSLOTH_FSDP2,
 # before anything below reads those. A conflict with a variable set by hand raises here, on every rank.
 from .parallel_env import apply_parallel_env as _apply_parallel_env, parallelize
@@ -409,6 +415,10 @@ if _IS_MLX:
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
     def _mlx_from_pretrained(*args, **kwargs):
+        # mlx-lm reads safetensors only: a GGUF request fails loudly here instead of loading something else.
+        from ._gguf_load import refuse_gguf_on_mlx
+
+        refuse_gguf_on_mlx(args[0] if args else kwargs.get("model_name"), kwargs.get("gguf_file"))
         # CUDA's vLLM options and defaults; zoo's loader takes none of them.
         fast_inference = kwargs.pop("fast_inference", False)
         gpu_memory_utilization = kwargs.pop("gpu_memory_utilization", 0.5)
@@ -2367,7 +2377,7 @@ else:
 
     if any(
         os.environ.get(_name, "").strip() not in ("", "1")
-        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     ):
         from .models.tp_env import (
             install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,

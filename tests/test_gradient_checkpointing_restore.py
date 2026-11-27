@@ -59,8 +59,7 @@ class _Self:
         self.args = args
 
 
-# (recorded on model, args.gradient_checkpointing, expected restored value)
-# A recorded mode, including None, wins over args.
+# A recorded mode, including None, wins over args; rows are (recorded, args, expected).
 _MATRIX = [
     ("unsloth", False, "unsloth"),  # args=False must NOT win
     (True, False, True),

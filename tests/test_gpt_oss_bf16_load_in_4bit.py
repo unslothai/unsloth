@@ -48,8 +48,7 @@ def test_fused_4bit_refused_in_float16():
 
 
 def test_fused_4bit_float32_refused_without_bfloat16():
-    # gpt-oss is FORCE_FLOAT32: without bfloat16 a float32 request still loads float16 weights, so the
-    # fused 4-bit path ran float16 hidden states into a float32 router (Half and Float addmm on T4).
+    # Without bfloat16, float32 still loads float16 weights; Half and Float addmm fails on T4.
     with pytest.raises(NotImplementedError, match = "dtype = torch.float32 does not help"):
         loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.float32, supports_bfloat16 = False)
     with pytest.raises(NotImplementedError, match = "overflow"):

@@ -7,6 +7,7 @@ from core.training.account_jobs import account_hf_token
 import json
 from pathlib import Path
 import tempfile
+import unicodedata
 
 from utils.paths import recipe_datasets_root, resolve_dataset_path
 
@@ -25,6 +26,40 @@ _BATCH_FILE_PATTERN = "batch_" + "[0-9]" * 5 + ".parquet"
 
 class RecipeDatasetPublishError(ValueError):
     """Raised when a recipe dataset cannot be published to Hugging Face."""
+
+
+# The main dataset's top-level Hub paths, plus the folders the Hub refuses.
+_HUB_TOP_LEVEL_NAMES = frozenset(
+    {
+        "data",
+        "images",
+        "readme.md",
+        "metadata.json",
+        "builder_config.json",
+        ".gitattributes",
+        ".git",
+        ".cache",
+    }
+)
+
+
+def processor_folder_name_error(names) -> str | None:
+    # Windows drops trailing dots and spaces; macOS and Windows ignore case.
+    seen: dict[str, str] = {}
+    for name in names:
+        key = unicodedata.normalize("NFC", name).rstrip(" .").casefold()
+        if key in _HUB_TOP_LEVEL_NAMES:
+            return (
+                f"Processor name {name!r} is taken by the main dataset's files on "
+                "Hugging Face. Rename the processor."
+            )
+        if key in seen:
+            return (
+                f"Processor names {seen[key]!r} and {name!r} would share one folder. "
+                "Rename one of them."
+            )
+        seen[key] = name
+    return None
 
 
 def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
@@ -126,6 +161,15 @@ def publish_recipe_dataset(
         client = HuggingFaceHubClient(token = hf_token)
         client._validate_repo_id(repo_id = repo_id)
         client._validate_dataset_path(base_dataset_path = dataset_path)
+        processors_folder = dataset_path / PROCESSORS_OUTPUTS_FOLDER_NAME
+        processor_dirs = (
+            sorted(d for d in processors_folder.iterdir() if d.is_dir())
+            if processors_folder.is_dir()
+            else []
+        )
+        name_error = processor_folder_name_error(d.name for d in processor_dirs)
+        if name_error:
+            raise RecipeDatasetPublishError(name_error)
         client._create_or_get_repo(repo_id = repo_id, private = private)
         if private:
             _ensure_hub_repo_private(client._api, repo_id)
@@ -167,9 +211,7 @@ def publish_recipe_dataset(
             repo_id = repo_id,
             images_folder = dataset_path / "images",
         )
-        processors_folder = dataset_path / PROCESSORS_OUTPUTS_FOLDER_NAME
-        processor_dirs = processors_folder.iterdir() if processors_folder.is_dir() else ()
-        for processor_dir in sorted(d for d in processor_dirs if d.is_dir()):
+        for processor_dir in processor_dirs:
             try:
                 _replace_batch_files(
                     client._api,

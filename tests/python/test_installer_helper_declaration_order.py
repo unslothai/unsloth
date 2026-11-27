@@ -27,8 +27,7 @@ SOURCE = INSTALL_PS1.read_text(encoding = "utf-8")
 
 
 def _blank_here_strings(text: str) -> str:
-    """Blank here-string bodies, keeping offsets, so embedded Python braces are not counted as
-    PowerShell."""
+    """Blank here-strings, keeping offsets, so embedded Python is not counted as PowerShell."""
     out, inside = [], False
     for line in text.split("\n"):
         if inside:
@@ -156,8 +155,7 @@ def test_the_helper_is_declared_before_anything_that_reaches_it(name: str):
 
 
 def test_the_rule_is_not_vacuous():
-    """Guards against the scan finding nothing, which would let every ordering check pass on an
-    empty set."""
+    """Fails if the scan finds nothing, since every ordering check would then pass vacuously."""
     assert len(FUNCTIONS) > 50, f"only {len(FUNCTIONS)} nested functions found"
     reached = set()
     for start, end in _top_level_spans():

@@ -33,8 +33,7 @@ _PASS_STATE_DEFAULTS = {
 
 @functools.lru_cache(maxsize = None)
 def _realpath(path: str) -> str:
-    """A module __file__ never changes once imported, so the scan below can resolve each
-    distinct path once instead of syscalling over all of sys.modules twice per test."""
+    """Cached: a module's __file__ never changes, so each path is resolved once, not per test."""
     return os.path.realpath(path)
 
 

@@ -799,6 +799,39 @@ def test_a_load_that_publishes_before_begin_load_returns_still_commits_its_pick(
     assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "explicit"
 
 
+class _Weakrefable:
+    pass
+
+
+def test_the_pending_pick_does_not_keep_the_torn_down_state_alive():
+    import gc
+    import weakref
+
+    engine = SimpleNamespace(_state = _Weakrefable())
+    r._engine_pick = None
+    r._pending_engine_pick = None
+    gone = weakref.ref(engine._state)
+    before = r.loaded_state_of(engine)
+    r.note_engine_pick("sd_cpp", engine, before)
+    del before
+    engine._state = None  # _unload_locked
+    gc.collect()
+    assert gone() is None
+    assert r._pending_engine_pick is not None and r._engine_pick is None
+    engine._state = _Weakrefable()
+    assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "explicit"
+    assert r._engine_pick == ENGINE_SD_CPP
+
+
+def test_a_same_state_snapshot_held_weakly_does_not_commit_early():
+    engine = SimpleNamespace(_state = _Weakrefable())
+    r._engine_pick = None
+    r._pending_engine_pick = None
+    r.note_engine_pick("sd_cpp", engine, r.loaded_state_of(engine))
+    assert r._engine_pick is None
+    assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "auto"
+
+
 def test_the_native_disable_hides_the_native_actions(monkeypatch):
     # A pick refuse_engine_pick would 400 is never advertised: no Native select, no "Reload with native engine".
     status = {

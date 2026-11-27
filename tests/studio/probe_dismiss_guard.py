@@ -132,8 +132,20 @@ WATCH_NEUTRAL_JS = """
       if (el.closest('[role="menu"],[data-radix-popper-content-wrapper]')) continue;
       const focusable = Boolean(el.closest(FOCUSABLE));
       if (wantUnfocusable && focusable) continue;
-      window.__dismissProbe = { neutralClicks: 0 };
+      window.__dismissProbe = { neutralClicks: 0, el, x, y };
       el.addEventListener("click", () => { window.__dismissProbe.neutralClicks += 1; });
+      if (!window.__dismissProbeDocWatch) {
+        window.__dismissProbeDocWatch = true;
+        // On a slow runner the thread can shift while the menu closes, so the click at this point
+        // lands on another element. One that reached the document's bubble phase was not
+        // swallowed (the guard stops it in capture), so it counts too.
+        document.addEventListener("click", (e) => {
+          const p = window.__dismissProbe;
+          if (!p || !p.el || p.el.contains(e.target)) return;
+          if (Math.abs(e.clientX - p.x) > 1 || Math.abs(e.clientY - p.y) > 1) return;
+          p.neutralClicks += 1;
+        });
+      }
       return { x, y, tag: el.tagName, focusable };
     }
   }

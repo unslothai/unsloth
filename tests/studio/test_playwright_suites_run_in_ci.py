@@ -17,14 +17,11 @@ NOT_IN_CI = {
     "playwright_tauri_python_tool_images.py",
     # Needs dataset/model resolution via huggingface_hub; UI workflows boot API-only.
     "playwright_train_pickers.py",
-    # A measurement harness with no budget; its verdict logic is covered by
-    # test_autoscroll_harness_contract.py.
+    # Measurement harness, no budget; verdict covered by test_autoscroll_harness_contract.py.
     "playwright_thread_weight.py",
-    # A measurement harness with no budget; the non-staling parts are covered by
-    # studio/frontend/tests/reasoning-grid-collapse.test.ts.
+    # Measurement harness, no budget; non-staling parts in reasoning-grid-collapse.test.ts
     "playwright_collapse_layout.py",
-    # Half of it is about WebKit, which Frontend CI does not install; thread-fast-copy.test.ts
-    # covers the gate's branches.
+    # WebKit half: not installed in Frontend CI; thread-fast-copy.test.ts covers gate branches
     "playwright_thread_fast_copy.py",
 }
 
@@ -161,8 +158,7 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
         (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
     )
     job = document["jobs"]["ui-indicator"]
-    # Uncommented lines only, and only steps that invoke the helper: an install step names all
-    # three engines regardless.
+    # Uncommented lines of steps calling the helper; an install step names all three engines.
     runs = _uncommented(
         "\n".join(
             str(step.get("run", ""))

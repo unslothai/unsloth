@@ -321,3 +321,38 @@ def test_malformed_scales_are_refused(tmp_path, monkeypatch):
     assert pel.install_packed_expert_loading()
     with pytest.raises(Exception):
         _load(str(tmp_path))
+
+
+@pytest.mark.parametrize("pread", ["1", "0"])
+def test_packed_experts_read_with_pread_where_wanted(checkpoint, monkeypatch, pread):
+    """UNSLOTH_SAFETENSORS_PREAD=1 (what a unified-memory GPU gets by default) opens every expert shard with pread,
+    0 keeps mmap; the installed bytes are the checkpoint's either way."""
+    import sys
+
+    import safetensors
+    from unsloth.models import _windows_safetensors as ws
+
+    if not ws._supports_backend():
+        pytest.skip("safetensors < 0.8 has no backend keyword")
+    fmt, path, want = checkpoint
+    monkeypatch.delenv(pel.PACKED_EXPERTS_ENV, raising = False)
+    monkeypatch.setenv(ws.PREAD_ENV, pread)
+    backends = []
+    real = safetensors.safe_open
+
+    def spy(*args, **kwargs):
+        if sys._getframe(1).f_code.co_name == "get":  # the expert reader, not the header scan
+            backends.append(kwargs.get("backend"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(safetensors, "safe_open", spy)
+    assert pel.install_packed_expert_loading()
+    model, _ = _load(path)
+    assert backends and set(backends) == ({"pread"} if pread == "1" else {None})
+    for layer in range(2):
+        experts = model.model.layers[layer].mlp.experts
+        for stack, (codes, scales, glob) in _expected_stack(want, layer, fmt).items():
+            param = experts._parameters[stack]
+            assert torch.equal(param.data, codes) and torch.equal(param.packed_scales, scales)
+            if glob is not None:
+                assert torch.equal(param.packed_global, glob)

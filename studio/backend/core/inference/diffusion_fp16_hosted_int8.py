@@ -26,9 +26,14 @@ from typing import Any, Optional
 
 FP16_CARD_HOSTED_INT8_ENV = "UNSLOTH_FP16_CARD_HOSTED_INT8"
 # Families whose hosted read was scored on a T4 against a dense float16 reference (Qwen-Image-2.1 16 prompts, FLUX.3
-# klein 8). Others keep the at-load build until measured: the hosted codes are not the at-load codes (see the module
-# docstring).
-FP16_CARD_HOSTED_INT8_FAMILIES = frozenset({"qwen-image-2.1", "flux.3-klein"})
+# klein 8; MOSS-Image against float32, see below). Others keep the at-load build until measured: the hosted codes are
+# not the at-load codes (see the module docstring).
+FP16_CARD_HOSTED_INT8_FAMILIES = frozenset({"qwen-image-2.1", "flux.3-klein", "moss-image"})
+# AUTO takes the hosted build on any host: MOSS-Image SFT on a T4, hosted 14.51 s/step LPIPS 0.023 vs per-row int8
+# 37.35 s/step LPIPS 0.029 and dense float32 36.01 s/step.
+FP16_CARD_HOSTED_INT8_AUTO_FAMILIES = frozenset({"moss-image"})
+# Measured host RAM peak (VmHWM, MiB, T4 51 GB host); a host below it plus the small-host reserve keeps the per-row build.
+FP16_CARD_HOSTED_INT8_AUTO_HOST_PEAK_MIB: dict[str, int] = {"moss-image": 30000}
 _TAG = "diffusion.fp16_hosted_int8"
 
 
@@ -164,6 +169,126 @@ def fp16_card_hosted_int8_transformer(
         return None
 
 
+def _dense_dit_fits_host(
+    fam: Any, base: Optional[str], cache_dir: Optional[str]
+) -> tuple[Optional[bool], str]:
+    """(fits, why) for the dense float16 DiT in host RAM via ``dense_load_fits``; fits is None when unpriced."""
+    import torch
+
+    from .diffusion_small_host import (
+        StoredComponent,
+        dense_load_fits,
+        host_commit_mib,
+        host_ram_mib,
+        resolve_snapshot_dir,
+        snapshot_weights_complete,
+        stored_components,
+    )
+
+    comp = None
+    source = "family table"
+    snapshot = resolve_snapshot_dir(base, cache_dir) if base else None
+    if snapshot is not None:
+        stored = stored_components(snapshot)
+        if "transformer" in stored and snapshot_weights_complete(
+            snapshot, skip = tuple(n for n in stored if n != "transformer")
+        ):
+            comp, source = stored["transformer"], "snapshot"
+    if comp is None:
+        from .diffusion_auto_policy import family_bf16_components_gb
+
+        table = family_bf16_components_gb(fam, base)
+        if not table or not table[0]:
+            return None, "DiT size unknown"
+        comp = StoredComponent(
+            "transformer", int(table[0] * 1000.0**3 / (1024.0 * 1024.0)), "bfloat16"
+        )
+    total, available = host_ram_mib()
+    fits, dense = dense_load_fits(
+        {"transformer": comp},
+        torch.float16,
+        host_total_mib = total,
+        host_available_mib = available,
+        host_commit_mib = host_commit_mib(),
+    )
+    return fits, f"dense float16 DiT ~{dense} MiB ({source}), {available} MiB available host RAM"
+
+
+def hosted_auto_host_ram_shortfall(fam: Any) -> Optional[str]:
+    """Why this host is too small for AUTO's measured hosted build of ``fam``, else None. Never raises."""
+    try:
+        name = getattr(fam, "name", None)
+        peak = FP16_CARD_HOSTED_INT8_AUTO_HOST_PEAK_MIB.get(name)
+        if name not in FP16_CARD_HOSTED_INT8_AUTO_FAMILIES or peak is None:
+            return None
+        from .diffusion_small_host import host_ram_mib, host_reserve_mib
+
+        total, available = host_ram_mib()
+        if available is None:
+            return "host RAM unreadable"
+        need = int(peak) + host_reserve_mib(total)
+        if available >= need:
+            return None
+        return (
+            f"the hosted int8 ConvRot build peaks at ~{peak} MiB of host RAM (+{need - int(peak)} MiB reserve), "
+            f"{available} MiB available: AUTO keeps the at-load per-row int8 build"
+        )
+    except Exception:  # noqa: BLE001 - unanswerable keeps the at-load route
+        return "host RAM unreadable"
+
+
+def small_host_hosted_int8_reason(
+    fam: Any,
+    target: Any,
+    *,
+    base: Optional[str],
+    cache_dir: Optional[str] = None,
+    require_cached: bool = False,
+    has_lora: bool = False,
+) -> Optional[str]:
+    """Why AUTO takes int8 from the hosted ConvRot file on this fp16-only card, else None (AUTO is unchanged).
+    Replaces the small-host per-row quantise at load (~200 s on a 12.7 GB T4) when the dense DiT does not fit, and on
+    any host for ``FP16_CARD_HOSTED_INT8_AUTO_FAMILIES``. Never raises."""
+    try:
+        if fam is None or has_lora or not _official_hub_base(fam, base):
+            return None
+        from .diffusion_small_host import small_host_disabled
+        from .diffusion_transformer_quant import TQ_INT8, fp16_card_native_scheme
+
+        if small_host_disabled():
+            return None
+        name = getattr(fam, "name", None)
+        scheme = fp16_card_native_scheme(target, TQ_INT8, family = name)
+        if scheme != TQ_INT8 or fp16_card_hosted_int8_reason(fam, scheme, target) is None:
+            return None
+        measured = name in FP16_CARD_HOSTED_INT8_AUTO_FAMILIES
+        if measured and hosted_auto_host_ram_shortfall(fam) is not None:
+            return None
+        if not measured:
+            fits, why = _dense_dit_fits_host(fam, base, cache_dir)
+            if fits is not False:
+                return None
+        if (
+            require_cached
+            and fp16_card_hosted_int8_cached(fam, scheme, target, base = base, cache_dir = cache_dir)
+            is None
+        ):
+            return None
+        if measured:
+            return (
+                "measured on a T4: the hosted int8 ConvRot W8A8 build is faster and closer to the float32 reference "
+                f"than the at-load int8 build, and this host's RAM covers its ~"
+                f"{FP16_CARD_HOSTED_INT8_AUTO_HOST_PEAK_MIB.get(name)} MiB peak "
+                f"({FP16_CARD_HOSTED_INT8_ENV}=0 keeps the at-load route)"
+            )
+        return (
+            f"{why}: the low-RAM route would quantise the dense DiT per row at load; the hosted int8 ConvRot file "
+            f"holds this card's W8A8 build ({FP16_CARD_HOSTED_INT8_ENV}=0 keeps the at-load route)"
+        )
+    except Exception:  # noqa: BLE001 - unanswerable keeps the old route
+        return None
+
+
 def fp16_card_hosted_int8_planned_scheme(
     fam: Any,
     target: Any,
@@ -173,9 +298,12 @@ def fp16_card_hosted_int8_planned_scheme(
     speed_mode: Optional[str] = None,
     forces_offload: bool = False,
     has_lora: bool = False,
+    base: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ) -> Optional[str]:
     """The native scheme the load will build on this fp16-only card, settled before any download the way the load
-    settles it (an explicit pick, or AUTO's measured Turing int8), else None. Never raises."""
+    settles it (an explicit pick, AUTO's measured Turing int8, or AUTO on a host the dense DiT does not fit:
+    ``small_host_hosted_int8_reason``), else None. Never raises."""
     try:
         if kind != "pipeline" or fam is None or has_lora:
             return None
@@ -193,7 +321,11 @@ def fp16_card_hosted_int8_planned_scheme(
             # Speed off rewrites AUTO to off (``diffusion_speed.SPEED_OFF``).
             if speed_mode is not None and str(speed_mode).strip().lower() == "off":
                 return None
-            if forces_offload or turing_auto_int8_reason(target, name) is None:
+            if forces_offload or (
+                turing_auto_int8_reason(target, name) is None
+                and small_host_hosted_int8_reason(fam, target, base = base, cache_dir = cache_dir)
+                is None
+            ):
                 return None
             pinned = TQ_INT8
         else:

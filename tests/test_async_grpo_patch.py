@@ -56,6 +56,7 @@ NAMES = (
     "_async_grpo_tensor_sync_scope",
     "_async_grpo_masked_compute_loss",
     "_import_trl_async_grpo_module",
+    "_wrap_grpo_vllm_lora_rounding",
     "patch_trl_async_grpo",
 )
 
