@@ -13028,7 +13028,7 @@ class DiffusionBackend:
                         )
                     from .diffusion_te_truncate import truncate_text_encoders
 
-                    truncate_text_encoders(pipe, logger = logger)
+                    truncate_text_encoders(pipe, logger = logger, family = fam.name)
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
                     te_outcome = quantize_text_encoders(
