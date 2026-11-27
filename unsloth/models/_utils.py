@@ -7143,6 +7143,13 @@ def patch_gradient_accumulation_fix(Trainer):
                     install_flat_adamw8bit_hook(self)
                 except Exception as e:
                     logger.warning_once(f"Unsloth: fused 8-bit AdamW step not installed ({e})")
+            try:
+                # Full finetuning predicted to run out of memory: step the optimizer inside backward
+                # (UNSLOTH_AUTO_FIT_OPTIMIZER); also repairs AdaLomo's state for 3-D weights.
+                from ..optimizers.auto_fit import install_auto_fit_optimizer
+                install_auto_fit_optimizer(self)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: auto-fit optimizer not installed ({e})")
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
