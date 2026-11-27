@@ -54,14 +54,11 @@ export function rowsAfterAutomaticEvalHoldout(
   >,
   isMlx: boolean,
 ): number {
+  // Raw text can drop blank rows before deciding whether any holdout is possible.
+  // The preview only knows the unfiltered count, so keep the existing estimate.
+  if (config.trainingMethod === "cpt" || isRawTextDatasetFormat(config.datasetFormat)) return rows;
   const standaloneAudio = config.isAudioModel && !config.isVisionModel;
-  const torchAudioVlm =
-    !isMlx &&
-    config.isAudioModel &&
-    config.isVisionModel &&
-    config.isDatasetAudio &&
-    config.trainingMethod !== "cpt" &&
-    !isRawTextDatasetFormat(config.datasetFormat);
+  const torchAudioVlm = !isMlx && config.isAudioModel && config.isDatasetAudio;
   if (rows < 32 || standaloneAudio || torchAudioVlm) return rows;
   return rows - Math.min(
     Math.floor(rows / 2),

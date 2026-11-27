@@ -86,6 +86,8 @@ test("an automatic eval holdout shrinks the one-pass recommendation", () => {
   assert.equal(rowsAfterAutomaticEvalHoldout(48, audioVlm, false), 48);
   assert.equal(rowsAfterAutomaticEvalHoldout(48, audioVlm, true), 32);
   assert.equal(rowsAfterAutomaticEvalHoldout(48, { ...audioVlm, isDatasetAudio: false }, false), 32);
+  assert.equal(rowsAfterAutomaticEvalHoldout(32, { ...text, datasetFormat: "raw" }, false), 32);
+  assert.equal(rowsAfterAutomaticEvalHoldout(32, { ...text, trainingMethod: "cpt" }, false), 32);
   assert.equal(rowsAfterAutomaticEvalHoldout(1, text, false), 1);
   assert.equal(rowsAfterAutomaticEvalHoldout(20_000, text, false), 19_872);
 });
