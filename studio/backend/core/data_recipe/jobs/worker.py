@@ -91,8 +91,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
     """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
-    # data_designer reads this once at import and otherwise POSTs usage events after every
-    # preview and batch, blocking job completion on the round trip. Users can still opt in.
+    # Read once at data_designer import; else each preview/batch blocks on a telemetry POST.
     os.environ.setdefault("NEMO_TELEMETRY_ENABLED", "false")
 
     from utils.security.dataset_media import install as guard_dataset_media
