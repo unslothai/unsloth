@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MTP crash fallback on every MTP launch, and its reload surviving its thread (#13253)."""
+"""Mid-generation speculative recovery for every draft mode, and its reload surviving its thread (#13253, #19239)."""
 
 from __future__ import annotations
 
 import inspect
 import os
 import re
+import struct
+import subprocess
 import sys
 import threading
 import time
 import types as _types
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -27,13 +30,112 @@ sys.modules.setdefault("loggers", _loggers_stub)
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
 from utils import process_lifetime  # noqa: E402
 
+_REAL_POPEN = subprocess.Popen
+
 
 def test_runtime_fallback_armed_without_tensor_parallel():
     src = inspect.getsource(LlamaCppBackend.load_model)
-    m = re.search(r"_mtp_active_for_launched_server = bool\(([^)]*)\)", src)
-    assert m, "load_model must record whether the launched server runs MTP"
-    assert m.group(1).strip() == "_spec_requested_mtp"
+    m = re.search(r"_mtp_active_for_launched_server = bool\(\s*([^)]*?)\s*\)", src, re.DOTALL)
+    assert m, "load_model must record whether the launched server runs a draft speculative mode"
+    armed = re.sub(r"\s+", " ", m.group(1)).strip()
+    assert "_spec_requested_mtp" in armed
+    assert "_spec_requested_dspark" in armed
+    assert "_spec_requested_dflash" in armed
+    assert "_spec_requested_eagle3" in armed
     assert "self._mtp_runtime_fallback_active = _mtp_active_for_launched_server" in src
+
+
+def _write_gguf(path: Path) -> Path:
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    metadata = string("general.architecture") + struct.pack("<I", 8) + string("qwen35")
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    return path
+
+
+def _load(tmp_path, monkeypatch, *, dspark: bool):
+    caps = dict(LlamaCppBackend.probe_server_capabilities("/nonexistent/llama-server"))
+    caps.update(
+        found = True,
+        supports_dspark = True,
+        supports_ngram_mod = True,
+        mtp_probe_inconclusive = False,
+        spec_draft_n_max_flag = "--spec-draft-n-max",
+        help_probe_ok = True,
+        flags = {
+            "--no-spec-draft-backend-sampling": "",
+            "--spec-draft-backend-sampling": "",
+        },
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_server_capabilities", classmethod(lambda cls, b = None: caps)
+    )
+    backend = LlamaCppBackend()
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+    backend._read_gguf_metadata = lambda _path: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _path: 1024
+    backend._mmproj_vram_bytes = lambda _path: 0
+    backend._resolve_launch_mmproj_path = lambda **kwargs: None
+    backend._apu_ram_shortfall_message = lambda *a, **k: None
+    backend._amd_apu_wants_unified_memory = lambda *a, **k: False
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: False
+    backend._wait_for_health = lambda timeout, **_kw: True
+    backend._detect_audio_type_strict = lambda: None
+    backend._apply_detected_audio = lambda _detected: True
+
+    draft = None
+    if dspark:
+        draft = tmp_path / "dspark-model-F16.gguf"
+        draft.write_bytes(b"GGUF")
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(_write_gguf(tmp_path / "model.gguf")),
+                dspark_draft_path = str(draft) if draft is not None else None,
+                model_identifier = "unsloth/Inkling-2-Mini-GGUF",
+                speculative_type = "dspark" if dspark else "off",
+                n_ctx = 4096,
+            )
+        )
+    return backend
+
+
+def test_load_model_arms_runtime_fallback_for_draft_dspark(tmp_path, monkeypatch):
+    backend = _load(tmp_path, monkeypatch, dspark = True)
+    assert backend._speculative_type == "draft-dspark"
+    assert backend._mtp_runtime_fallback_active is True
+
+
+def test_load_model_leaves_runtime_fallback_off_without_a_drafter(tmp_path, monkeypatch):
+    backend = _load(tmp_path, monkeypatch, dspark = False)
+    assert backend._speculative_type in (None, "default", "none", "off") or (
+        backend._speculative_type is not None
+        and "draft-" not in str(backend._speculative_type)
+        and "mtp" not in str(backend._speculative_type)
+    )
+    assert backend._mtp_runtime_fallback_active is False
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PDEATHSIG is Linux-only")

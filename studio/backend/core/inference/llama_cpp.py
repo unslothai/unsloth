@@ -35934,9 +35934,16 @@ class LlamaCppBackend:
                 ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
                 # A paired EAGLE-3 drafter (Studio export) can abort the server the same way.
                 _spec_requested_eagle3 = any("draft-eagle3" in str(t).lower() for t in spec_flags)
-                # Any MTP launch, not only tensor: a respawn would replay a drafter that
-                # aborts every decode (#13253). Cleared if the MTP-drop fallback wins.
-                _mtp_active_for_launched_server = bool(_spec_requested_mtp)
+                # Arms mid-generation recovery for every draft speculative mode
+                # (MTP, DSpark, DFlash, EAGLE-3), not only MTP: a respawn would
+                # otherwise replay a drafter that aborts every decode (#13253,
+                # #19239). Cleared if the drafter-drop fallback wins.
+                _mtp_active_for_launched_server = bool(
+                    _spec_requested_mtp
+                    or _spec_requested_dspark
+                    or _spec_requested_dflash
+                    or _spec_requested_eagle3
+                )
                 # MTP can pass /health then crash the flash-attn kernel on the
                 # first decode under tensor; probe one generation so the fallback
                 # catches that too. Tensor-only, so ordinary MTP stays probe-free.
@@ -39252,7 +39259,7 @@ class LlamaCppBackend:
                     return
                 if not sidecar_oom:
                     logger.warning(
-                        "llama-server exited mid-generation with MTP speculative "
+                        "llama-server exited mid-generation with speculative "
                         "decoding (%s); reloading without speculative decoding.",
                         type(exc).__name__ if exc is not None else "server exited",
                     )
