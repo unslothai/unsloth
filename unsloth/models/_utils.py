@@ -11654,6 +11654,11 @@ def _check_block_swap(model_or_config):
 
 
 def _new_block_swap(layers, n, *args, placement, **kwargs):
+    try:
+        from ._layer_major_ga import note_block_swap_installed
+        note_block_swap_installed()
+    except Exception:
+        pass
     if args and args[0] == "auto" and not hasattr(BlockSwap, "stats"):
         # unsloth_zoo before prefetch_depth = "auto" takes a count only.
         args = (2,) + args[1:]
