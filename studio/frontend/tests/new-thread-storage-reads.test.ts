@@ -39,12 +39,10 @@ function loadStorage() {
     {
       "../api/chat-api": {
         ChatThreadDeletedError: class extends Error {},
-        // getChatThread returns null on 404.
         getChatThread: (threadId: string) => {
           requests.push(`GET thread ${threadId}`);
           return Promise.resolve(rows.get(threadId) ?? null);
         },
-        // listChatMessages returns [] on 404.
         listChatMessages: (threadId: string) => {
           requests.push(`GET messages ${threadId}`);
           return Promise.resolve([]);
@@ -104,7 +102,6 @@ test("other threads, and a thread once it stops being new, still ask the backend
   let newThreadId: string | undefined = NEW_ID;
   storage.registerNewThreadIdSource(() => newThreadId);
   await storage.getStoredChatThreadReadResult("saved");
-  // initialize() clears newThreadId before saving.
   newThreadId = undefined;
   await storage.getStoredChatThreadReadResult(NEW_ID);
   assert.deepEqual(requests, ["GET thread saved", `GET thread ${NEW_ID}`]);
@@ -127,7 +124,6 @@ test("a row written while the runtime still calls the thread new is read back", 
 
 test("each registered runtime answers for its own id until it is unregistered", async () => {
   const { storage, requests } = loadStorage();
-  // Each compare pane has its own runtime.
   const unregister = storage.registerNewThreadIdSource(() => NEW_ID);
   storage.registerNewThreadIdSource(() => "__LOCALID_other_pane");
   await storage.getStoredChatThreadReadResult(NEW_ID);

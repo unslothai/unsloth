@@ -62,8 +62,7 @@ def _consume(pacer: Pacer, *, stop_after_bytes: int | None = None) -> None:
 
 
 class _Page:
-    """Just enough page for `send_turn`: a composer, a keyboard, and an `isRunning` that is true
-    for as long as the follow-up's client is draining the stream."""
+    """Minimal page for `send_turn`: `isRunning` stays true while the follow-up is draining."""
 
     def __init__(self, pacer: Pacer) -> None:
         self.pacer = pacer
@@ -259,8 +258,7 @@ class _CellPage:
 
 
 class _RecordedPacer:
-    """A pacer whose streams are dictated by the test, so the cell path can be driven over both
-    outcomes without a socket."""
+    """Pacer whose streams the test dictates, so both cell outcomes run without a socket."""
 
     def __init__(self, streams: list[dict]) -> None:
         self.streams = streams
@@ -491,9 +489,8 @@ def test_a_follow_up_that_was_sent_but_never_streamed_fails_the_cell(cell_runner
 def test_a_follow_up_that_streamed_but_never_joined_the_thread_fails_the_cell(
     cell_runner, monkeypatch
 ):
-    """The other half. The pacer served every byte, so the stream check alone passes; the thread
-    did not grow, so every later action, the peak census and the equivalence mirror still read a
-    thread one turn short."""
+    """The other half: the pacer served every byte, so the stream check passes; the thread never
+    grew, so later actions and the census read one turn short."""
 
     monkeypatch.setattr(session_mod, "SceneRunner", _scene_with([SEND_TURN_THAT_FAILED]))
     runner = cell_runner(
@@ -562,9 +559,8 @@ def test_an_ordinary_action_whose_assertion_failed_does_not_fail_the_cell(cell_r
 
 
 def test_a_send_turn_that_did_not_run_is_not_demanded_of_the_pacer(cell_runner, monkeypatch):
-    """The other control, and the reason the planned list is built from the ACTION rows. At the
-    small rungs the queue is empty and `send_turn` reports NOT RUN; nothing was streamed for it and
-    nothing must be required of it."""
+    """The other control: the planned list is built from ACTION rows, so a `send_turn` that reports
+    NOT RUN on small rungs (empty queue) is not required of the pacer."""
 
     class _NoTurn(_SceneRunner):
         def run(self, scene, t0) -> list:
@@ -652,8 +648,7 @@ class _WirePage:
 
 
 class _RealSendTurnScene:
-    """The film, reduced to the two `send_turn` slots that matter here, running the SHIPPED action
-    against the shipped base_args the session builds."""
+    """Film cut to two `send_turn` slots, running the shipped action on the shipped base_args."""
 
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
@@ -685,9 +680,8 @@ class _RealSendTurnScene:
 
 
 def test_a_healthy_multi_turn_cell_passes_the_check_over_real_wire_bytes(monkeypatch, tmp_path):
-    """The control the fix most needs: a cell that streamed everything it planned, with the pacer,
-    the action and the check all real, must still complete. The dictated-stream tests above prove
-    the failure path; this proves the ordinary path was not broken to get it."""
+    """Control for the fix: a cell that streams everything it planned, with real pacer, action and
+    check, must still complete; the ordinary path was not broken."""
 
     from studiobench.runtime.session import CellRunner, Session
     from studiobench.runtime.types import BenchContext, Paths, Recorder

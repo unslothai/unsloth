@@ -3,6 +3,7 @@
 
 import { getAuthSessionEpoch } from "@/features/auth";
 import { extractDocumentText } from "@/features/rag/api/rag-api";
+import { toast } from "@/lib/toast";
 import { MAX_SERVER_DOCUMENT_BYTES } from "./open-document-accept";
 import { MAX_TEXT_ATTACHMENT_BYTES } from "./text-attachment-accept";
 
@@ -25,7 +26,7 @@ async function extract(file: File): Promise<string> {
       throw new Error("The account changed while reading the file.");
     }
   };
-  let result: { text: string; truncated: boolean };
+  let result: { text: string; truncated: boolean; warning?: string };
   try {
     result = await extractDocumentText(file, sameAccount);
     sameAccount();
@@ -38,6 +39,7 @@ async function extract(file: File): Promise<string> {
   if (!result.text.trim()) {
     throw new NoDocumentTextError(`${file.name} has no text to read.`);
   }
+  if (result.warning) toast.warning(result.warning);
   return result.truncated
     ? `${result.text}\n\n[Truncated: the text stops after ${MAX_TEXT_ATTACHMENT_BYTES.toLocaleString("en-US")} bytes.]`
     : result.text;

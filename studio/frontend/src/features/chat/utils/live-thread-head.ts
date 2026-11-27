@@ -41,7 +41,6 @@ function liveThreadState(threadId: string) {
     try {
       const item = view.threadListItem().getState();
       if (item.remoteId !== threadId) continue;
-      // A chat opened earlier keeps its runtime alive, but its thread() reads the chat on screen.
       if (item.id !== view.threads().getState().mainThreadId) continue;
       return view.thread().getState();
     } catch {

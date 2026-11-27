@@ -14,8 +14,7 @@ _SAVE_PY = _BACKEND.parents[1] / "unsloth" / "save.py"
 
 @pytest.fixture
 def lce():
-    # Imported per test: a collection-time import of utils.transformers_version reorders the
-    # utils.hardware import chain other modules rely on.
+    # Imported per test: a collection-time import reorders utils.hardware imports.
     import utils.llm_compressor_export as module
     return module
 
@@ -25,7 +24,6 @@ def lce():
     [
         (True, False, False, False, False, True, None, False),
         (False, False, False, False, False, False, "shadow", False),
-        # export.py prefers the shadow over a workspace copy, so that still needs consent.
         (False, False, False, True, False, False, "shadow", False),
         (False, True, False, True, False, True, None, False),
         (False, False, True, True, False, True, None, False),
@@ -49,7 +47,7 @@ def test_probe_routing(
 ):
     monkeypatch.setattr(lce, "_llmcompressor_shadow_is_valid", lambda: shadow_valid)
     monkeypatch.setattr(lce, "_llmcompressor_main_disabled", lambda: shadow_disabled)
-    monkeypatch.setattr(lce, "_env_offline", lambda: offline)
+    monkeypatch.setattr(lce, "hf_env_offline", lambda: offline)
     monkeypatch.setattr(lce, "_workspace_llmcompressor_ok", lambda spec: workspace_ok)
     monkeypatch.setenv(
         "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "1" if autoinstall_off else "0"

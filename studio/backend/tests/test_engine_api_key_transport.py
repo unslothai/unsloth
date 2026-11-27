@@ -65,7 +65,7 @@ def test_the_launcher_guards_every_path(monkeypatch):
 
 
 def test_the_launcher_guards_every_path_on_vllm_030(monkeypatch):
-    # vLLM 0.30 moved the prefix to serve/middleware/authenticate.
+    # vLLM 0.30 moved the prefix to serve/middleware/authenticate
     _fake_vllm(monkeypatch)
     authenticate = types.SimpleNamespace(GUARDED_PREFIX = ("/v1", "/v2", "/inference", "/cohere"))
     monkeypatch.setitem(sys.modules, "vllm.entrypoints.serve.middleware", types.ModuleType("m"))

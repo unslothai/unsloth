@@ -62,7 +62,6 @@ export interface SeparationGroup {
   durationS: number;
   createdAt: string;
   stems: AudioGalleryClip[];
-  /** False when some of the run's stems were deleted. */
   complete: boolean;
   expectedStems: number;
   pinned: boolean;
@@ -75,7 +74,17 @@ function settingsStems(clip: AudioGalleryClip): string[] | null {
     : null;
 }
 
-/** A clip with no group is its own item. */
+/** A row's summary: "4 stems", "2 of 4 stems", or a lone output's name ("Voice"). */
+export function separationGroupSummary(
+  group: Pick<SeparationGroup, "stems" | "complete" | "expectedStems">,
+): string {
+  if (!group.complete) {
+    return `${group.stems.length} of ${group.expectedStems} stems`;
+  }
+  if (group.stems.length === 1) return stemLabel(group.stems[0]?.role ?? "");
+  return `${group.stems.length} stems`;
+}
+
 export function groupSeparationClips(
   clips: readonly AudioGalleryClip[],
   hasMore = false,
@@ -115,8 +124,7 @@ export function groupSeparationClips(
       pinned: ordered.some((clip) => clip.pinned),
     };
   });
-  // The oldest group may continue on the next page: hide it until it has loaded, so its row
-  // never acts on part of the run.
+  // The oldest group may continue on the next page: hide it until loaded.
   const tail = groups[groups.length - 1];
   return hasMore && tail && !tail.complete ? groups.slice(0, -1) : groups;
 }

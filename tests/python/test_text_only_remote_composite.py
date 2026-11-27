@@ -4,6 +4,7 @@
 """text_only on repo-code composites: load only the language model when the checkpoint stores it whole under one prefix."""
 
 import ast
+import importlib.util
 import copy
 import functools
 import json
@@ -13,6 +14,22 @@ import textwrap
 from pathlib import Path
 
 import pytest
+
+
+def _load_source_segments():
+    """tests/_shared/source_segments.py, by path: collects without tests/conftest.py too."""
+    name = "unsloth_tests_shared_source_segments"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parents[1] / "_shared" / "source_segments.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+cached_source_segment = _load_source_segments().cached_source_segment
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -50,33 +67,118 @@ _HELPERS = (
 )
 
 _CONSTANTS = ("_REMOTE_CODE_HUB_KWARGS", "_QC_MODULE_NAME_FIELDS")
+IMPORT_FIXES_PATH = REPO_ROOT / "unsloth" / "import_fixes.py"
+
+
+@pytest.fixture(scope = "module", autouse = True)
+def _config_commit_hash_fix():
+    # `import unsloth` stamps config._commit_hash again on transformers >= 5.18, which dropped it; a no-op before.
+    import logging
+
+    from transformers import configuration_utils as cu
+
+    source = IMPORT_FIXES_PATH.read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "fix_transformers_config_commit_hash"
+    )
+    ns = {"logger": logging.getLogger(__name__)}
+    exec(ast.get_source_segment(source, node), ns)
+    base = cu.PreTrainedConfig if hasattr(cu, "PreTrainedConfig") else cu.PretrainedConfig
+    saved = {k: base.__dict__[k] for k in ("get_config_dict", "from_dict")}
+    ns["fix_transformers_config_commit_hash"]()
+    yield
+    for k, v in saved.items():
+        setattr(base, k, v)
+    if "_unsloth_commit_hash_patched" in base.__dict__:
+        del base._unsloth_commit_hash_patched
+
+
+def _utils_segments(
+    source: str, constant_names: frozenset
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Top-level function sources and the selected constant assignments of _utils.py. Parsed per
+    call; only the slicing is memoised (cached_source_segment). Each test execs them afresh."""
+    tree = ast.parse(source)
+    funcs = {
+        n.name: cached_source_segment(source, n)
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef)
+    }
+    constants = tuple(
+        cached_source_segment(source, n)
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id in constant_names for t in n.targets)
+    )
+    return funcs, constants
 
 
 def _ns():
     from packaging.version import Version
 
-    source = UTILS_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(source)
-    funcs = {
-        n.name: ast.get_source_segment(source, n)
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef)
-    }
+    funcs, constants = _utils_segments(
+        UTILS_PATH.read_text(encoding = "utf-8"), frozenset(_CONSTANTS)
+    )
     ns = {
         "copy": copy,
         "re": re,
         "Version": Version,
         "transformers_version": transformers.__version__,
     }
-    for n in tree.body:
-        if isinstance(n, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id in _CONSTANTS for t in n.targets
-        ):
-            exec(ast.get_source_segment(source, n), ns)
+    # The helpers run outside the package, so `from ..import_fixes import ...` (the torch < 2.6 pickle guard in
+    # _adapter_fits_text_model) would raise ImportError inside its own try and read every .bin adapter as unreadable.
+    # Serve that one relative import with the real guard functions, without importing the unsloth package. It is set
+    # before the helpers are defined: a function keeps the builtins of the globals it was defined in.
+    import builtins
+
+    fixes = _import_fixes_namespace()
+
+    def _import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        if level == 2 and name == "import_fixes":
+            return fixes
+        return builtins.__import__(name, globals, locals, fromlist, level)
+
+    ns["__builtins__"] = {**vars(builtins), "__import__": _import}
+    for segment in constants:
+        exec(segment, ns)
     for name in _HELPERS:
         if name in funcs:
             exec(funcs[name], ns)
     return ns
+
+
+def _pickle_guard_segments(source: str) -> tuple[str, ...]:
+    """The two pickle-guard function sources of import_fixes.py (parsed per call)."""
+    tree = ast.parse(source)
+    return tuple(
+        cached_source_segment(source, n)
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_torch_pickle_load_unsafe", "refuse_pickle_checkpoint_on_old_torch")
+    )
+
+
+def _import_fixes_namespace():
+    import os
+    import types
+
+    from packaging.version import Version
+
+    source = (UTILS_PATH.parents[1] / "import_fixes.py").read_text(encoding = "utf-8")
+    module = types.ModuleType("unsloth.import_fixes")
+    module.__dict__.update(os = os, TrueVersion = Version)
+    for segment in _pickle_guard_segments(source):
+        exec(segment, module.__dict__)
+    return module
 
 
 # Nemotron-3-Nano-Omni shape: llm_config text decoder, vision config, CausalLM as `language_model`.

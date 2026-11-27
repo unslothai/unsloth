@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TorchAO API compatibility for the pinned SGLang server.
-
-Executed by the isolated engine Python, including multiprocessing children.
-No engine packages are imported into Studio's environment.
-"""
+"""TorchAO compat for the pinned SGLang server; runs in the isolated engine Python, not Studio's."""
 
 import os
 import runpy
@@ -56,8 +52,7 @@ if torchao_utils is not None:
     torchao_utils.apply_torchao_config_to_model = _apply_torchao_config
 
 if __name__ == "__main__":
-    # The key arrives in the environment so it never shows in the process list; this argv is
-    # the interpreter's own copy, not /proc/<pid>/cmdline.
+    # Key arrives via env, never ps; the argv append only changes the interpreter copy, not /proc/pid/cmdline.
     key = os.environ.pop("UNSLOTH_ENGINE_API_KEY", None)
     if key:
         sys.argv += ["--api-key", key]

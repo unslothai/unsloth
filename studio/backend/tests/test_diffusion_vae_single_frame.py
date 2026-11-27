@@ -54,7 +54,7 @@ def test_multi_frame_and_tiled_calls_take_the_stock_path(monkeypatch):
     sf.install(fast)
     z = torch.randn(1, 4, 3, 16, 16)
     with torch.no_grad():
-        # Bit-identical: the first chunk of the walk also reaches every conv with no cache and one frame.
+        # bit-identical: the first chunk also hits every conv with no cache and one frame
         assert torch.equal(fast.decode(z).sample, stock.decode(z).sample)
         x = torch.rand(1, 3, 5, 64, 64) * 2 - 1
         assert torch.equal(fast.encode(x).latent_dist.mean, stock.encode(x).latent_dist.mean)
@@ -113,5 +113,4 @@ def test_compile_cache_key_matches_the_later_vae_compile(monkeypatch, single_fra
         key = ds.vae_decode_compile_allowed(pipe, mode)
         applied = ds.apply_speed_optims(pipe, target, is_gguf = False, family = family, speed_mode = mode)
         assert applied["compiled_vae_decode"] is key, (mode, single_frame, compile_env)
-        # A second load of the same weights asks again with the path already armed.
         assert ds.vae_decode_compile_allowed(pipe, mode) is key

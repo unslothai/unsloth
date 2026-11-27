@@ -10,7 +10,6 @@ import {
   useSidebarOrganizationStore,
 } from "./sidebar-organization-store";
 
-/** Deletes a section (not its rows); returns an undo that restores it in place. */
 export function removeCustomSectionWithUndo(section: SidebarCustomSection): () => void {
   const state = useSidebarOrganizationStore.getState();
   const index = state.customSections.findIndex((s) => s.id === section.id);
@@ -25,7 +24,6 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
   );
   const order = state.manualOrder[customSectionScope(section.id)];
   const hidden = state.hiddenSections.includes(section.id);
-  // Undo reinserts it above the first of these that still exists.
   const drawnOrder = resolveSectionOrder(state.sectionOrder, state.customSections);
   const followers = drawnOrder.slice(drawnOrder.indexOf(section.id) + 1);
   state.deleteCustomSection(section.id);
@@ -48,7 +46,6 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
         section.id,
       );
       return {
-        // Match the sidebar's current order, which may have changed since the delete.
         customSections: inSectionOrder(restored, sectionOrder),
         sectionOrder,
         sectionByChatId,

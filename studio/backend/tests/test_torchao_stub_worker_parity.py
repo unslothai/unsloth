@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: the inference subprocess must install the torchao Windows-ROCm stub before it imports
-transformers.
-
-``core/_torchao_stub.py:install_torchao_windows_rocm_stub`` stubs torchao so transformers can import
-without an absent RCCL backend on Windows ROCm (no-op on every other runtime). If transformers imports
-first, a legacy Windows-ROCm venv that still carries a real torchao crashes on import (issue #6833).
-Three entrypoints already guard this (the training and export workers, and the main-process rag
-embedder); the inference worker -- the most-used path -- never had the call.
-
-CPU-only: parses source with ``ast``, no torch/transformers/GPU/weights needed.
-"""
+"""The inference subprocess installs the torchao Windows-ROCm stub before transformers loads."""
 
 from __future__ import annotations
 
@@ -23,7 +13,7 @@ from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
 )
 
-_BACKEND = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND = Path(__file__).resolve().parent.parent
 _CORE = _BACKEND / "core"
 _STUB = install_torchao_windows_rocm_stub.__name__  # a rename breaks the import loudly
 # The export worker loads real torchao when it can, falling back to the same stub.
@@ -56,10 +46,7 @@ def _func(tree, name):
 
 
 def test_all_entrypoints_call_stub():
-    """Every entrypoint that imports transformers must call the stub at all -- this is the exact
-    gap that shipped (the inference worker never gained the call). This is a presence check (the call
-    exists in the file); ordering is asserted only for the inference worker below, the path this fix
-    hardened. The other three import transformers at structurally different sites."""
+    """Every entrypoint that imports transformers must call the stub; this is a presence check."""
     for path in _ENTRYPOINTS:
         assert _stub_call_linenos(ast.parse(path.read_text(encoding = "utf-8"))), (
             f"{path.relative_to(_BACKEND)} never calls {_STUB}() -- transformers would import "
@@ -71,10 +58,7 @@ _INFERENCE_MOD = "core.inference.inference"
 
 
 def _imports_transformers(node) -> bool:
-    """A statement that imports transformers directly (``import transformers[.x]`` /
-    ``from transformers[.x] import ...``) or transitively at load: any absolute or relative import
-    form resolving to ``core.inference.inference`` (whose module imports transformers), so a style
-    refactor of the section-2 import can't slip past the anchor."""
+    """Matches any import form reaching transformers, directly or via core.inference.inference."""
     if isinstance(node, ast.Import):
         return any(
             a.name.split(".")[0] == "transformers"
@@ -100,13 +84,7 @@ def _imports_transformers(node) -> bool:
 
 
 def test_inference_worker_stubs_before_transformers():
-    """In ``run_inference_process`` the stub must precede every path that reaches transformers: the
-    section-2 imports (direct ``import transformers`` and the transitive ``core.inference.inference``
-    import), and -- the reason it sits at the top of the function -- the ``_resolve_base_model`` call,
-    which pulls transformers via ``utils.models`` for a local LoRA adapter with no recorded base.
-    Scoped to the function (mirrors ``test_ssm_runtime``) so a stub call elsewhere in the module can't
-    mask a drop from the function that actually runs the import. The ``_activate_transformers_version``
-    call inside the MLX branch is not an anchor: MLX is never Windows ROCm, so it needs no stub."""
+    """The stub must run first in run_inference_process, before transformers is reached by any path."""
     tree = ast.parse((_CORE / "inference" / "worker.py").read_text(encoding = "utf-8"))
     fn = _func(tree, "run_inference_process")
     assert (

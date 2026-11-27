@@ -112,6 +112,8 @@ def stub_sizing(monkeypatch):
     monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
     monkeypatch.setattr(S, "free_bytes", fake_free)
     monkeypatch.setattr(S, "kaggle_tmp_redirect", fake_redirect)
+    # Charge the cache with the export, wherever the host keeps it (a Windows runner: D: vs C:).
+    monkeypatch.setattr(S, "_hub_cache_directory", lambda: None)
     monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
     monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
 
@@ -330,8 +332,7 @@ class TestPrewarmContextManager:
 
 class TestNoLeakIntoSaveKwargs:
     def test_preflight_locals_never_reach_unsloth_generic_save(self):
-        """arguments = dict(locals()) forwards every local; a new one without a del breaks the GGUF
-        export."""
+        """dict(locals()) forwards every local; new ones need a del or the GGUF export breaks."""
         import inspect
 
         source = inspect.getsource(S.unsloth_save_pretrained_gguf)
@@ -742,8 +743,7 @@ class TestTheRecipesIgnoredModulesStay16Bit:
 
 
 class TestTorchaoStagingSharesTheRedirectDestination:
-    """Torchao staging and the redirect target share /tmp, so a destination too small for both is
-    refused."""
+    """Torchao staging and the redirect target share /tmp; one too small for both is refused."""
 
     @pytest.fixture
     def redirected(self, monkeypatch, tmp_path):
@@ -959,8 +959,7 @@ class TestASeparateStagingFilesystemIsStillMeasured:
         assert capsys.readouterr().out == ""
 
     def test_the_warning_carries_the_merge_guards_own_reserve(self, separate, capsys):
-        """Between staging_bytes and staging_bytes / 0.95 the merge dies, so the TMPDIR warning uses
-        that."""
+        """Merge dies between staging_bytes and staging_bytes / 0.95; the warning uses that."""
         separate["staging"] = self._STAGING
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         assert "TMPDIR" in capsys.readouterr().out
@@ -1298,8 +1297,7 @@ class TestFullModelSavedAsLora:
         assert "model.save_pretrained(save_directory, **_save_kwargs)" in source
 
     def test_a_caller_state_dict_is_what_gets_measured(self, sized):
-        """Only 16bit saves cast the dict, so a lora save can write fp32 weights that double the
-        estimate."""
+        """Only 16bit saves cast the dict; lora saves may write fp32, doubling the estimate."""
         import torch
 
         model = torch.nn.Linear(8, 8, dtype = torch.float16)
@@ -1318,8 +1316,7 @@ class TestFullModelSavedAsLora:
         assert sized == [_merge_preflight_ask(n_parameters * 4, 0)]
 
     def test_an_explicitly_empty_state_dict_is_not_no_state_dict(self, sized):
-        """An empty state_dict means write nothing, so it must not fall back to sizing the resident
-        model."""
+        """Empty state_dict writes nothing; never fall back to sizing the resident model."""
         model = self._float32_model()
         assert S._full_model_checkpoint_bytes(model, {}) == 0
         assert S._preflight_merge_disk(model, "model", "lora", state_dict = {}) == "model"
@@ -1336,8 +1333,7 @@ class TestFullModelSavedAsLora:
         )
 
     def test_both_call_sites_forward_the_dict(self, monkeypatch):
-        """Both call sites must forward state_dict; driven, not grepped, since the text appears
-        elsewhere too."""
+        """Both call sites must forward state_dict; driven, not grepped, since the text recurs."""
         import torch
 
         seen = []
@@ -1524,8 +1520,7 @@ class TestTheGgufSiblingIsMeasuredToo:
         monkeypatch.setattr(S, "free_bytes", fake_free)
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
-        # Only the save-dir / sibling pair is split; the conversion travels with the sibling, so the
-        # save directory's filesystem holds the checkpoint alone.
+        # Only save-dir and sibling split; conversion goes with sibling, checkpoint is alone.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
@@ -1684,8 +1679,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
 
     def test_the_split_carries_the_merge_guards_own_reserve(self, split):
-        """The split keeps the merge's 0.95 reserve on the checkpoint, or it passes what the merge
-        rejects."""
+        """The split keeps the 0.95 reserve on the checkpoint, else it passes what merge rejects."""
         split.update(free = 16 * GB, sibling_free = 1000 * GB)
         with pytest.raises(RuntimeError):
             S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m")
@@ -1760,8 +1754,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
             assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == expected
 
     def test_one_filesystem_that_moved_between_the_probes_is_still_one(self, split):
-        """Two disk_usage reads on one filesystem can differ, so the device id, not free space,
-        decides it."""
+        """disk_usage reads on one filesystem can differ; device id, not free space, decides."""
         split.update(free = 20 * GB, sibling_free = 20 * GB - 4096, separate = False)
         with pytest.raises(RuntimeError) as error:
             S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
@@ -1818,8 +1811,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
                     assert before == "raises", (free_gb, sibling_gb)
 
     def test_the_probe_matches_free_bytes_on_one_filesystem(self, tmp_path):
-        """A directory and its unmade sibling share one filesystem, so the split is inert on
-        ordinary setups."""
+        """Inert on ordinary setups: the unmade sibling shares the directory's filesystem."""
         directory = tmp_path / "model"
         directory.mkdir()
         assert S._on_separate_filesystems(str(directory), f"{directory}_gguf") is False
@@ -1951,8 +1943,7 @@ class TestIgnoredModulesAreSizedFromLogicalShapes:
 
     @pytest.fixture
     def logical(self, monkeypatch):
-        """Stubs logical_numel; the test checks save.py asks for each parameter and passes its name
-        along."""
+        """Stubs logical_numel; checks save.py asks per parameter and passes its name along."""
         seen = []
 
         def fake_logical_numel(parameter, name = ""):
@@ -2081,6 +2072,8 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        # Without bf16 the preflight lowers a bf16 first conversion to f16, which adds a quantize pass.
+        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
         state["directory"] = str(tmp_path / "model")
         return state
 
@@ -2355,6 +2348,7 @@ class TestTheConversionWorkingDirectoryIsMeasured:
             lambda left, right: str(left).startswith("/tmp") != str(right).startswith("/tmp"),
         )
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: state["conversion"])
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
         return state
@@ -2401,6 +2395,16 @@ class TestTheConversionWorkingDirectoryIsMeasured:
         monkeypatch.setenv("UNSLOTH_DISK_PREFLIGHT", "0")
         assert self._preflight() == ("/kaggle/working/model", True)
 
+    def test_a_staged_conversion_does_not_charge_the_working_directory(self, kaggle, monkeypatch):
+        """Staged inside the `_gguf` folder, the intermediate never touches /kaggle/working."""
+        seen = []
+        monkeypatch.setattr(
+            S, "_gguf_conversion_is_staged", lambda directory: seen.append(directory) or True
+        )
+        kaggle.update(cwd_free = 1 * GB)
+        assert self._preflight() == (self.TMP, True)
+        assert seen == [f"{self.TMP}_gguf"]
+
 
 class TestWhereTheConversionWrites:
     """`_gguf_conversion_directory` mirrors `convert_to_gguf`'s own rule."""
@@ -2420,6 +2424,26 @@ class TestWhereTheConversionWrites:
         monkeypatch.setattr(S.os, "getcwd", boom)
         assert S._gguf_conversion_directory("model") is None
 
+
+class TestTheStagingPrediction:
+    """`_gguf_conversion_is_staged` must agree with `_gguf_conversion_staging`."""
+
+    def test_a_writable_parent_stages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(S, "IS_WINDOWS", False)
+        target = tmp_path / "a" / "model_gguf"
+        assert S._gguf_conversion_is_staged(str(target))
+        staging, created = S._gguf_conversion_staging(str(target))
+        assert staging is not None and created
+
+    def test_an_unwritable_parent_does_not(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(S, "IS_WINDOWS", False)
+        monkeypatch.setattr(S, "_directory_is_writable", lambda directory: False)
+        assert not S._gguf_conversion_is_staged(str(tmp_path / "model_gguf"))
+
+    def test_windows_keeps_the_working_directory_charge(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(S, "IS_WINDOWS", True)
+        assert not S._gguf_conversion_is_staged(str(tmp_path / "model_gguf"))
+
     def test_the_probe_answers_for_real_directories(self, tmp_path):
         assert S._directory_is_writable(str(tmp_path)) is True
         assert S._directory_is_writable(str(tmp_path / "nope")) is False
@@ -2430,8 +2454,7 @@ class TestWhereTheConversionWrites:
 
 
 class TestAColocatedConversionIsChargedWithTheCheckpoint:
-    """Colocated split: the conversion sits beside the checkpoint until moved, so charge both on one
-    disk."""
+    """Colocated: the conversion sits beside checkpoint until moved; both count on one disk."""
 
     CHECKPOINT = 60 * GB
     SIBLING = 60 * GB
@@ -2455,6 +2478,7 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(S, "_filesystem_id", lambda path: state["devices"].get(str(path)))
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
@@ -2483,6 +2507,7 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
     def test_an_unmeasurable_working_directory_charges_nothing_extra(self, colocated, monkeypatch):
         """`_shares_filesystem` says no to what it cannot see, so this is unchanged."""
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: None)
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         assert self._preflight() == ("model", True)
 
     def test_the_predicate_never_guesses(self, monkeypatch):
@@ -2515,6 +2540,7 @@ class TestTheMergeGuardAndTheConversionAreTwoPhases:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(
             S,
             "_filesystem_id",
@@ -2573,9 +2599,9 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
         def __init__(self, directory):
             self.config = type("cfg", (), {"_name_or_path": directory})()
 
-    def test_the_reused_checkpoint_is_the_input_folder(self, tmp_path):
+    def test_the_reused_checkpoint_is_staged_inside_the_gguf_folder(self, tmp_path):
         model = self._NonPeftFromDisk(str(tmp_path))
-        assert S._gguf_model_input_directory(model, "model") == str(tmp_path)
+        assert S._gguf_model_input_directory(model, "model") == "model_gguf"
 
     def test_a_merged_model_still_reads_the_output(self, tmp_path, monkeypatch):
         """A PEFT merge writes the checkpoint into `save_directory` and converts it."""
@@ -2589,8 +2615,8 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
     def test_a_model_with_no_config_reads_the_output(self):
         assert S._gguf_model_input_directory(_FakeModel(), "model") == "model"
 
-    def test_the_probe_measures_the_checkpoints_filesystem(self, tmp_path, monkeypatch):
-        """End to end: the refusal names the checkpoint, not the requested output."""
+    def test_the_probe_measures_the_staged_inputs_filesystem(self, tmp_path, monkeypatch):
+        """End to end: the refusal names the GGUF folder holding the staged copy, never the checkpoint."""
         checkpoint = tmp_path / "base"
         checkpoint.mkdir()
         model = self._NonPeftFromDisk(str(checkpoint))
@@ -2603,7 +2629,7 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
         monkeypatch.setattr(
             S,
             "free_bytes",
-            lambda path: 1 * GB if str(path) == str(checkpoint) else 1000 * GB,
+            lambda path: 1 * GB if str(path) == "output_gguf" else 1000 * GB,
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (a[0], None))
         monkeypatch.setattr(
@@ -2617,8 +2643,8 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
                 model, "output", "q4_k_m", first_conversion = "bf16", needs_merge = False
             )
         message = str(error.value)
-        assert str(checkpoint) in message
-        assert "1.0GB free" in message and "20.0GB" in message
+        assert "output_gguf" in message and str(checkpoint) not in message
+        assert "1.0GB free" in message
 
     def test_the_converter_really_falls_back_to_its_input_folder(self):
         """The redirect is only worth following while llama_cpp does this."""
@@ -3035,6 +3061,7 @@ class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(
             S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
         )
@@ -3206,6 +3233,7 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: self.WORK)
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(S, "_hub_cache_directory", lambda: self.CACHE)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
@@ -3306,6 +3334,7 @@ class TestACacheOnAnotherFilesystemIsNotChargedToTheOutputDisk:
         monkeypatch.setattr(S, "free_bytes", lambda path: state["free"])
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(
             S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
         )

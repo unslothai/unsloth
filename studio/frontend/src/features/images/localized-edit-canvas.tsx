@@ -11,9 +11,9 @@ import {
 
 import type { LocalizedEditMode } from "./api";
 import { ANNOTATION_COLORS, TRANSPARENCY_CHECKER } from "./edit-conditioning";
+import type { AppliedMask } from "./lib/mask-from-text";
+import { applyMaskToLayer } from "./mask-apply";
 
-/** Draws the localized-edit layer over the source at its NATIVE resolution: an RGBA layer of
- *  coloured strokes for annotate, a white-on-black mask for paint and mask. */
 export function LocalizedEditCanvas({
   image,
   mode,
@@ -22,6 +22,7 @@ export function LocalizedEditCanvas({
   resetKey,
   onLayerChange,
   onColorsChange,
+  applyMask,
 }: {
   image: string;
   mode: LocalizedEditMode;
@@ -30,6 +31,8 @@ export function LocalizedEditCanvas({
   resetKey: number;
   onLayerChange: (dataUrl: string | null) => void;
   onColorsChange: (names: string[]) => void;
+  /** A "Mask from text" result for the paint and mask modes; each new key is drawn into the layer once. */
+  applyMask?: AppliedMask | null;
 }) {
   const dispRef = useRef<HTMLCanvasElement | null>(null);
   const layerRef = useRef<HTMLCanvasElement | null>(null);
@@ -38,13 +41,11 @@ export function LocalizedEditCanvas({
   const dirty = useRef(false);
   const last = useRef<{ x: number; y: number } | null>(null);
   const used = useRef<Set<string>>(new Set());
-  // Drawing waits until the layer for THIS source, mode and clear has been sized.
   const layerKey = `${resetKey}|${mode}|${image}`;
   const [readyFor, setReadyFor] = useState<string | null>(null);
   const ready = readyFor === layerKey;
 
-  // A new source, a new mode or Clear starts a blank layer at the source's natural size. The old
-  // layer is dropped at once, not on load, so Generate never pairs it with the new source.
+  // The old layer is dropped at once so Generate never pairs it with the new source.
   useEffect(() => {
     let live = true;
     drawing.current = false;
@@ -83,9 +84,40 @@ export function LocalizedEditCanvas({
     };
   }, [image, mode, resetKey, onLayerChange, onColorsChange]);
 
+  // A "Mask from text" result lands in the layer like a stroke, so the brush can still extend or Clear can drop it.
+  // Annotate layers are coloured outlines, not a mask, so they never take one.
+  // A result from before this canvas mounted (another painter) is not replayed.
+  const appliedKey = useRef<number | null>(applyMask?.key ?? null);
+  useEffect(() => {
+    if (!applyMask || !ready || mode === "annotate") return;
+    if (appliedKey.current === applyMask.key) return;
+    appliedKey.current = applyMask.key;
+    const disp = dispRef.current;
+    const layer = layerRef.current;
+    if (!disp || !layer) return;
+    let live = true;
+    applyMaskToLayer({
+      layer,
+      display: disp,
+      dataUrl: applyMask.dataUrl,
+      additive: applyMask.additive,
+      overlay: mode === "paint" ? "paint" : "mask",
+      isCurrent: () => live,
+    })
+      .then((url) => {
+        if (!live || url === null) return;
+        // An empty Replace leaves the layer black: nothing is selected, so the page's empty-layer checks still hold.
+        dirty.current = !applyMask.empty;
+        onLayerChange(applyMask.empty ? null : url);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [applyMask, ready, mode, onLayerChange]);
+
   const radius = useCallback(() => {
     const base = Math.min(dims.current.w, dims.current.h) || 1024;
-    // Annotations are outlines, so a fraction of the region brush.
     const pct = mode === "annotate" ? brushPct / 4 : brushPct;
     return Math.max(1.5, (pct / 100) * base);
   }, [brushPct, mode]);
@@ -174,7 +206,7 @@ export function LocalizedEditCanvas({
 
   return (
     <div
-      className="relative overflow-hidden rounded-[10px] border border-border"
+      className="relative overflow-hidden rounded-lg border border-border"
       style={TRANSPARENCY_CHECKER}
     >
       <img

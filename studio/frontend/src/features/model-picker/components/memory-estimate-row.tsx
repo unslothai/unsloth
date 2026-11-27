@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChevronDown } from "lucide-react";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Tooltip,
@@ -11,9 +12,11 @@ import {
 import type { MemoryEstimate } from "../api/memory-estimate";
 import {
   type MemoryFitVerdict,
+  NOTE_SEPARATOR,
   formatMemoryGb,
   glueNoteItems,
   memoryFigureCandidates,
+  mlxOffloadPercent,
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
@@ -26,7 +29,6 @@ const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
   unknown: "text-foreground",
 };
 
-/** Match the size and type of the surrounding numeric controls. */
 function MemoryFigure({
   label,
   bytes,
@@ -54,8 +56,7 @@ function MemoryFigure({
     let active = true;
     const fit = () => {
       if (!active) return;
-      // Measured on the row, never on the pill or its label: both give way to the figure,
-      // so either would just confirm whatever the first pass picked.
+      // Measured on the row: the pill and label shrink to the figure and would confirm the first pass.
       const style = getComputedStyle(button);
       const gutters =
         Number.parseFloat(style.paddingLeft) +
@@ -94,11 +95,9 @@ function MemoryFigure({
   }, [candidates]);
   return (
     <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
-      {/* No min-w-0: the label holds its width, so the figure shortens instead. */}
       <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
         {label}
       </span>
-      {/* Sizes to the figure it holds, in the same h-8 pill as the controls below. */}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -155,7 +154,43 @@ function MemoryBreakdownLine({
   );
 }
 
-/** Show the loader's estimate and an optional breakdown for the requested settings. */
+function MemoryEstimateHeader({
+  expanded,
+  contentId,
+  onExpandedChange,
+}: {
+  expanded: boolean;
+  contentId: string;
+  onExpandedChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onExpandedChange(!expanded)}
+      aria-expanded={expanded}
+      aria-controls={contentId}
+      aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
+      className="group flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
+          Estimated Memory Usage
+        </span>
+        <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+          Beta
+        </span>
+      </span>
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
+        aria-hidden="true"
+        className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-hover:text-foreground motion-reduce:transition-none ${expanded ? "rotate-0" : "-rotate-90"}`}
+      />
+    </button>
+  );
+}
+
+const PLACEHOLDER_LINES = ["Weights", "KV cache", "Compute buffers"];
+
 export function MemoryEstimateRow({
   estimate,
   loading,
@@ -179,24 +214,20 @@ export function MemoryEstimateRow({
   estimate: MemoryEstimate | null;
   loading: boolean;
   stale: boolean;
-  /** GPU or shared capacity in GiB; 0 means unknown. */
+  /** GiB; 0 means unknown. */
   gpuCapacityGb: number;
-  /** Combined capacity in GiB; 0 means unknown. */
+  /** GiB; 0 means unknown. */
   totalCapacityGb: number;
-  /** Host RAM capacity in GiB. */
   systemRamCapacityGb: number;
-  /** Free GPU memory in GiB; warnings only, since replacement can free memory. */
+  /** Warnings only, since replacement can free memory. */
   freeGpuCapacityGb: number;
   freeGpuCapacityKnown?: boolean;
   freeGpuReserveDeficitGb?: number;
-  /** Available host RAM minus the loader reserve, in GiB. */
   usableSystemRamGb: number;
   usableSystemRamKnown?: boolean;
   systemRamReserveDeficitGb?: number;
   isUnifiedMemory: boolean;
-  /** Whether GPU and CPU share one memory pool. */
   singleMemoryPool: boolean;
-  /** What the resident copy of this model hands back when it is unloaded for the reload. */
   reclaimableTotalBytes?: number;
   reclaimableGpuBytes?: number;
   expanded: boolean;
@@ -204,8 +235,43 @@ export function MemoryEstimateRow({
 }) {
   const contentId = useId();
   if (!estimate?.available) {
-    // Hide unavailable estimates without flickering during loading.
-    return null;
+    if (!loading) return null;
+    // Same frame as the loaded row, so the panel keeps its shape until the first answer lands.
+    return (
+      <div data-memory-estimate="" className="flex flex-col border-b border-border pb-5">
+        <MemoryEstimateHeader
+          expanded={expanded}
+          contentId={contentId}
+          onExpandedChange={onExpandedChange}
+        />
+        <div aria-busy="true" className="space-y-3">
+          {(singleMemoryPool
+            ? [isUnifiedMemory ? "Unified" : "Shared"]
+            : gpuCapacityGb > 0
+              ? ["GPU", "Total"]
+              : ["RAM"]
+          ).map((label) => (
+            <div
+              key={label}
+              className="flex min-h-8 min-w-0 items-center justify-between gap-3"
+            >
+              <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+                {label}
+              </span>
+              <span
+                data-memory-placeholder=""
+                className="h-8 w-[calc(96px*var(--ui-space-scale,1))] shrink-0 animate-pulse rounded-full bg-[var(--panel-input-surface)] motion-reduce:animate-none"
+              />
+            </div>
+          ))}
+        </div>
+        <div id={contentId} hidden={!expanded} className="mt-3 space-y-3">
+          {PLACEHOLDER_LINES.map((label) => (
+            <MemoryBreakdownLine key={label} label={label} value="…" muted />
+          ))}
+        </div>
+      </div>
+    );
   }
   const { gpuFit, totalFit, cpuOnly, bounded, advisory } = resolveMemoryFit(
     estimate,
@@ -225,38 +291,32 @@ export function MemoryEstimateRow({
     },
   );
   const kvNote = resolveKvNote(estimate);
+  const weightsNote = [
+    estimate.gpuLayers != null && estimate.layerCount != null
+      ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
+      : null,
+    estimate.mlxPleOffload ? `PLE ${mlxOffloadPercent(estimate.mlxPleOffload)} on disk` : null,
+    estimate.mlxExpertOffload
+      ? `experts ${mlxOffloadPercent(estimate.mlxExpertOffload)} on disk`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(NOTE_SEPARATOR);
   const draftCacheNote = resolveDraftCacheNote(
     estimate.drafterRuntimeGpuBytes,
     estimate.drafterRuntimeBytes,
   );
   return (
-    <div className="flex flex-col border-b border-border pb-5">
-      <button
-        type="button"
-        onClick={() => onExpandedChange(!expanded)}
-        aria-expanded={expanded}
-        aria-controls={contentId}
-        aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
-        className="group flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
-            Estimated Memory Usage
-          </span>
-          <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
-            Beta
-          </span>
-        </span>
-        <ChevronDown
-          aria-hidden="true"
-          className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-hover:text-foreground motion-reduce:transition-none ${expanded ? "rotate-0" : "-rotate-90"}`}
-        />
-      </button>
+    <div data-memory-estimate="" className="flex flex-col border-b border-border pb-5">
+      <MemoryEstimateHeader
+        expanded={expanded}
+        contentId={contentId}
+        onExpandedChange={onExpandedChange}
+      />
       <div
         aria-busy={loading || stale}
         className={`space-y-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
       >
-        {/* A shared pool uses the total, regardless of CPU offloading. */}
         <MemoryFigure
           label={
             cpuOnly
@@ -290,11 +350,7 @@ export function MemoryEstimateRow({
         <MemoryBreakdownLine
           label="Weights"
           value={formatMemoryGb(estimate.weightsBytes)}
-          note={
-            estimate.gpuLayers != null && estimate.layerCount != null
-              ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
-              : undefined
-          }
+          note={weightsNote || undefined}
         />
         <MemoryBreakdownLine
           label="KV cache"
@@ -317,14 +373,21 @@ export function MemoryEstimateRow({
           label="Compute buffers"
           value={formatMemoryGb(estimate.computeBytes)}
         />
-        {/* Projector weights are already included above. */}
         {estimate.projectorRuntimeBytes > 0 && (
           <MemoryBreakdownLine
             label="Vision encoder"
             value={formatMemoryGb(estimate.projectorRuntimeBytes)}
           />
         )}
-        {/* Draft cache is additional to the drafter's weights. */}
+        {/* Streamed: outside Weights and Total, only the rows in use page in. Resident:
+            already inside Weights, so the note says so rather than adding it twice. */}
+        {(estimate.lookupTableBytes ?? 0) > 0 && (
+          <MemoryBreakdownLine
+            label="Lookup tables"
+            value={formatMemoryGb(estimate.lookupTableBytes ?? 0)}
+            note={estimate.lookupTableOnDisk ? "on disk" : "in RAM, part of Weights"}
+          />
+        )}
         {estimate.drafterRuntimeBytes > 0 && (
           <MemoryBreakdownLine
             label="Draft cache"
@@ -335,6 +398,7 @@ export function MemoryEstimateRow({
       </div>
       {advisory && (
         <p
+          data-memory-advisory=""
           className={`mt-1.5 text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
         >
           {advisory.text}

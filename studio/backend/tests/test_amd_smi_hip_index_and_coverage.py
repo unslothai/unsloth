@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The amd-smi VRAM branch must answer in HIP's index space, for every visible device.
-
-Two index spaces exist on an AMD host and they are not the same number. amd-smi's
-``gpu`` id is "an enumeration index assigned in discovery order" over the KFD/sysfs
-view; HIP's id is what ``HIP_VISIBLE_DEVICES`` names, what torch reports as
-``cuda:N``, and what ``_get_gpu_memory``'s callers feed back to the llama-server
-child. AMD ships the mapping between them as ``amd-smi list -e`` (``hip_id``, ROCm
-6.4.0+, ``amdsmi_get_gpu_enumeration_info``), whose whole documented purpose is
-"mapping physical-to-logical GPU IDs"; the library derives it from the KFD node id,
-not from the discovery order, and the two disagree on real hardware (MI350X in
-SPX/NPS1). Answering with the wrong one associates a card's VRAM with another
-card's id, so the planner pins the wrong GPU.
-
-amd-smi also enumerates every card regardless of ``ROCR_VISIBLE_DEVICES`` /
-``HIP_VISIBLE_DEVICES`` (it reads KFD directly), so the branch has to apply the mask
-itself, and a mask it cannot read is not the same thing as no mask at all.
-
-Third: the branch either answers for every visible device or declines. A subset is
-indistinguishable from a complete answer to the caller, which reads a non-empty list
-as the final word and never asks torch.
-
-torch, ROCm detection and amd-smi are all mocked; this repository has no AMD GPU.
-"""
+"""amd-smi's gpu ids differ from HIP's, so the VRAM branch maps to HIP ids or declines entirely."""
 
 from __future__ import annotations
 
@@ -56,10 +34,7 @@ def _hip_sees(
 
 @pytest.fixture
 def rocm(monkeypatch):
-    """A ROCm host whose nvidia-smi probe finds nothing, with no APUs and no mask.
-
-    HIP reachability and its device count are declared, not inherited: unpatched
-    they read this host's own GPU, and CI has none."""
+    """HIP reachability and device count are declared rather than inherited, since CI has no GPU."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_is_reachable", staticmethod(lambda: True))
     monkeypatch.setattr(
@@ -137,8 +112,7 @@ class TestTheAmdSmiIdIsTranslatedToHip:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 96256, 98304)]
 
     def test_a_multi_gpu_host_declines_when_the_mapping_is_unavailable(self, rocm, monkeypatch):
-        """amd-smi before ROCm 6.4.0 has no ``list -e``. Identity is an assumption
-        there, not a fact, so hand the host to torch."""
+        """Before ROCm 6.4.0 amd-smi lacks list -e, so identity is unproven; defer to torch."""
         monkeypatch.setattr(
             amd,
             "_run_amd_smi",
@@ -159,8 +133,7 @@ class TestTheAmdSmiIdIsTranslatedToHip:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_a_single_gpu_host_needs_no_mapping(self, rocm, monkeypatch):
-        """One card on both sides forces the mapping, so the common ROCm desktop
-        keeps the context saving on any amd-smi version."""
+        """One card on both sides forces the mapping, so any amd-smi version keeps the saving."""
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None))
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
 
@@ -189,13 +162,7 @@ class TestAnUnreadableMaskDeclines:
 
 
 class TestAPartialAnswerDefersToTorch:
-    """Defect B: a row amd-smi cannot size is dropped, and what is left is a
-    non-empty list the caller takes as the whole host.
-
-    The field shape: an APU beside a dGPU, where the shared pool reports total 0.
-    ``_get_gpu_memory`` returns one device, so the "fewer than 2 usable GPUs" arm
-    disables tensor parallelism on a host the torch branch reports as two.
-    """
+    """A row amd-smi cannot size is dropped, so a partial list must defer to torch."""
 
     @pytest.fixture
     def apu_plus_dgpu(self, rocm, monkeypatch):
@@ -213,8 +180,7 @@ class TestAPartialAnswerDefersToTorch:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_the_probe_still_sees_both_devices(self, apu_plus_dgpu, monkeypatch):
-        """End to end: the torch branch answers, and both GPUs survive, so the
-        tensor-parallel decision is the one main makes."""
+        """End to end: torch answers and both GPUs survive, so tensor-parallel sees both."""
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary: False)
         )
@@ -240,8 +206,7 @@ class TestAPartialAnswerDefersToTorch:
         assert LlamaCppBackend._get_gpu_memory() == [(0, 16384, 32768), (1, 7168, 8192)]
 
     def test_a_visible_device_amd_smi_never_enumerated_declines(self, rocm, monkeypatch):
-        """The mask names two cards and amd-smi answered for one; the other is not
-        "absent", it is unmeasured."""
+        """Unenumerated visible devices are unmeasured, not absent, so the probe declines."""
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
         _hip_sees(monkeypatch, 2)
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 1024, 16384)), None))

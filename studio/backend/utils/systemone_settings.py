@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from typing import Any
 
@@ -15,7 +16,7 @@ MODEL_KEY = "systemone_model"
 DEVICE_KEY = "systemone_device"
 BACKEND_KEY = "systemone_backend"
 NATIVE_CTX_KEY = "systemone_native_ctx"
-# What the configured Decision API connection reads, declared by the owner: {"name": ..., "input_modalities": [...]}.
+# {"name": <connection>, "input_modalities": [...]}: the owner's claim, Studio cannot probe a remote server.
 CONNECTION_MODALITIES_KEY = "systemone_connection_modalities"
 DEFAULT_MODEL = "laya-multilingual"
 DEVICES = ("cpu", "gpu")
@@ -67,7 +68,7 @@ def runtime_unavailable_reason() -> str | None:
     try:
         from importlib.util import find_spec
         if find_spec("torch") is None:
-            return "The Decision API needs PyTorch, which this Studio install does not include."
+            return "The Decision API needs PyTorch, which this Unsloth install does not include."
     except Exception:
         pass
     return None
@@ -135,29 +136,29 @@ def get_native_ctx() -> int:
     return stored if _valid_ctx(stored) else DEFAULT_NATIVE_CTX
 
 
+def _normalized(values: list[str]) -> list[str]:
+    return [m for m in INPUT_MODALITIES if m == "text" or m in values]
+
+
 def connection_input_modalities(name: str) -> list[str]:
-    """What the owner declared the connection ``name`` reads. Text only until they say otherwise."""
     stored = _owner_setting(CONNECTION_MODALITIES_KEY)
     if not isinstance(stored, dict) or stored.get("name") != name:
         return ["text"]
     declared = stored.get("input_modalities")
-    if not isinstance(declared, list):
-        return ["text"]
-    return ["text", *(m for m in INPUT_MODALITIES if m != "text" and m in declared)]
+    return _normalized(declared) if isinstance(declared, list) else ["text"]
 
 
 def _validated_modalities(values: Any) -> list[str]:
     if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
         raise ValueError("input_modalities must be a list of modality names.")
-    unknown = sorted(set(values) - set(INPUT_MODALITIES))
-    if unknown:
+    if unknown := sorted(set(values) - set(INPUT_MODALITIES)):
         raise ValueError(
             f"Unknown Decision API input modality: {', '.join(unknown)}. "
             f"Supported: {', '.join(INPUT_MODALITIES)}."
         )
     if "text" not in values:
         raise ValueError('input_modalities must include "text".')
-    return ["text", *(m for m in INPUT_MODALITIES if m != "text" and m in values)]
+    return _normalized(values)
 
 
 def validate(
@@ -254,34 +255,45 @@ def gpu_available() -> bool:
 
 
 _LLAMA_GPU_CACHE: list = []  # [(monotonic time, (binary, mtime), answer)]
+_LLAMA_GPU_REFRESH = threading.Lock()
 
 
 def _llama_cpp_has_gpu() -> bool:
-    """Without torch the detector reports CPU: ask the installed llama-server for its GPUs.
-
-    Cached 60 s per binary path and mtime, so a switched or reinstalled build is probed again.
-    """
+    """Asks llama-server for its GPUs without torch; past 60 s, answers from cache and re-probes in the background."""
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
         from core.systemone.native_worker import resolve_binary
 
         binary = resolve_binary()
         if not binary:
             return False
         key = (binary, os.stat(binary).st_mtime_ns)
-        if (
-            _LLAMA_GPU_CACHE
-            and _LLAMA_GPU_CACHE[0][1] == key
-            and time.monotonic() - _LLAMA_GPU_CACHE[0][0] < 60
-        ):
-            return _LLAMA_GPU_CACHE[0][2]
-        # The binary's own devices: a CPU-only build exposes none even with a GPU present.
-        answer = bool(
-            LlamaCppBackend._enumerated_gpu_devices(
-                binary, LlamaCppBackend._llama_server_env_for_binary(binary)
-            )
-        )
+        if _LLAMA_GPU_CACHE and _LLAMA_GPU_CACHE[0][1] == key:
+            checked, _, answer = _LLAMA_GPU_CACHE[0]
+            if time.monotonic() - checked >= 60 and _LLAMA_GPU_REFRESH.acquire(blocking = False):
+                threading.Thread(target = _refresh_llama_gpu, args = (binary, key), daemon = True).start()
+            return answer
+        return _probe_llama_gpu(binary, key)
     except Exception:
         return False
+
+
+def _probe_llama_gpu(binary: str, key: tuple) -> bool:
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    # The binary's own devices: a CPU-only build exposes none even with a GPU present.
+    answer = bool(
+        LlamaCppBackend._enumerated_gpu_devices(
+            binary, LlamaCppBackend._llama_server_env_for_binary(binary)
+        )
+    )
     _LLAMA_GPU_CACHE[:] = [(time.monotonic(), key, answer)]
     return answer
+
+
+def _refresh_llama_gpu(binary: str, key: tuple) -> None:
+    try:
+        _probe_llama_gpu(binary, key)
+    except Exception:
+        pass
+    finally:
+        _LLAMA_GPU_REFRESH.release()

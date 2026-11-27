@@ -441,3 +441,133 @@ def test_identically_named_mcp_sources_have_distinct_citations(monkeypatch):
     )
     sources = asyncio.run(supervisor._search_mcp_tools({"id": "r"}, tools, "query", 0, 10))
     assert len({_document_source_citation(source) for source in sources}) == 2
+
+
+def test_step_lookups_run_alongside_the_web_search(notes_server, monkeypatch):
+    import threading
+
+    from core import research_runs as worker
+    from routes.research_runs import CreateResearchRun, _sanitize_config
+
+    config = _sanitize_config(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+            ragScope = {"thread_id": "thread-1"},
+            mcpSources = [{"serverId": "notes", "tool": "search_notes"}],
+        ),
+        {"modelId": "local-model"},
+    )
+    research_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = None,
+        config = config,
+        created_at = 10,
+    )
+    plan = research_db.set_plan("run-1", PLAN)
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+
+    decisions = iter(
+        (
+            json.dumps({"action": "search", "title": "Launch", "query": "zephyr beta launch"}),
+            json.dumps({"action": "finish", "title": "Enough"}),
+        )
+    )
+    report = "# Zephyr\n\nThe beta shipped on 14 March 2031 [MCP: Project Notes · search_notes]."
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        if "iterative research process" in messages[0]["content"]:
+            return next(decisions), "", "stop", None
+        research_db.set_report_progress(run["id"], report)
+        return report, "", "stop", None
+
+    kb_started = threading.Event()
+    mcp_started = threading.Event()
+    seen_during_web = {}
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        if name == "web_search":
+            seen_during_web["kb"] = kb_started.wait(5)
+            seen_during_web["mcp"] = mcp_started.wait(5)
+            return "No results found."
+        if name == "search_knowledge_base":
+            kb_started.set()
+            return "No relevant documents found."
+        mcp_started.set()
+        return f"Zephyr notes for {arguments['query']}: the beta shipped on 14 March 2031."
+
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    monkeypatch.setattr(worker, "execute_mcp_tool", fake_tool)
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    completed = research_db.get_run("run-1")
+    assert completed["status"] == "completed"
+    assert seen_during_web == {"kb": True, "mcp": True}
+    assert [(s["kind"], s["filename"]) for s in completed["documentSources"]] == [
+        ("mcp", "Project Notes · search_notes"),
+    ]
+
+
+def test_side_lookups_are_told_to_stop_when_the_web_search_fails(notes_server, monkeypatch):
+    import threading
+
+    from core import research_runs as worker
+    from routes.research_runs import CreateResearchRun, _sanitize_config
+
+    config = _sanitize_config(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+            mcpSources = [{"serverId": "notes", "tool": "search_notes"}],
+        ),
+        {"modelId": "local-model"},
+    )
+    research_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = None,
+        config = config,
+        created_at = 10,
+    )
+    plan = research_db.set_plan("run-1", PLAN)
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        decision = {"action": "search", "title": "Launch", "query": "zephyr beta launch"}
+        return json.dumps(decision), "", "stop", None
+
+    mcp_started = threading.Event()
+    mcp_stopped = threading.Event()
+
+    def fake_tool(
+        name,
+        arguments,
+        *args,
+        cancel_event = None,
+        **kwargs,
+    ):
+        if name == "web_search":
+            mcp_started.wait(5)
+            raise RuntimeError("search backend crashed")
+        mcp_started.set()
+        if cancel_event.wait(5):
+            mcp_stopped.set()
+        return "Error: cancelled"
+
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    monkeypatch.setattr(worker, "execute_mcp_tool", fake_tool)
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    assert research_db.get_run("run-1")["status"] == "failed"
+    assert mcp_stopped.wait(5)

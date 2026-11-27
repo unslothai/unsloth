@@ -37,13 +37,6 @@ export function getTrainingMethodLabel(
   return TRAINING_METHOD_LABELS.full;
 }
 
-export function isTrainingMethodSupportedOnDevice(
-  trainingMethod: TrainingMethod,
-  deviceType?: string,
-): boolean {
-  return deviceType !== "mac" || trainingMethod !== "cpt";
-}
-
 export function isTrainingModelTypeSupportedOnDevice(
   modelType: ModelType | null,
   deviceType?: string,

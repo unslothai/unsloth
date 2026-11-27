@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI file detection: separator-insensitive family names and header-based DiT recognition.
-
-The fixture holds the real tensor names/shapes (trimmed to the first block of each stack) of 216
-ComfyUI-ecosystem files (Comfy-Org repackages, Kijai fp8, Lightricks, BFL, city96 / QuantStack /
-unsloth GGUFs) plus the diffusers layout of every supported transformer class. Expectations are
-reviewed per file; the name columns also record what main detected before this change."""
+"""ComfyUI detection: separator-insensitive family names and header-based DiT recognition."""
 
 from __future__ import annotations
 
@@ -142,9 +137,7 @@ _INTENDED_RENAMES = {("qwen-image", "qwen-image-2.1")}
 
 
 def test_every_previously_detected_name_keeps_its_family():
-    """Regression over the whole alias table and the audit's file names: separator normalisation
-    only ADDS matches (None -> family), never moves a name to another family, except the
-    documented Qwen-Image-2.1 correction."""
+    """Separator normalisation only adds matches; the one move allowed is the Qwen-Image-2.1 correction."""
     changed = []
     for needle in sorted(_corpus()):
         low = needle.lower()
@@ -162,8 +155,7 @@ def test_every_previously_detected_name_keeps_its_family():
 
 
 def test_audit_name_table_before_vs_after():
-    """The recorded before/after name verdicts for the 216 audit files: no regression, the listed
-    gaps closed."""
+    """Before/after name verdicts for the audit files: no regression, listed gaps closed."""
     regressions, gained, renamed = [], 0, 0
     for rel, row in _AUDIT.items():
         base = rel.split("/")[-1]

@@ -17,9 +17,12 @@ import {
   defaultInferenceParams,
   getPresetOwnedConfigKey,
   getUniquePresetName,
+  isRecommendedSamplingKey,
   normalizeCustomPresets,
+  RECOMMENDED_SAMPLING_KEYS,
   type ChatPresetSource,
   type Preset,
+  type RecommendedSamplingKey,
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 import { MAX_SAMPLING_SEED } from "../types/runtime";
@@ -158,9 +161,8 @@ function sanitizeInferenceParams(
   if (typeof value.fastMode === "boolean") {
     params.fastMode = value.fastMode;
   }
-  // Bounded here as well as in the panel: this gates the hydration read and the outgoing PUT alike.
   if (value.seed === null) {
-    // Kept, not dropped: the server merge overwrites the keys it receives and removes none.
+    // Kept as null: the server merge overwrites received keys and removes none.
     params.seed = null;
   } else if (
     typeof value.seed === "number" &&
@@ -173,9 +175,7 @@ function sanitizeInferenceParams(
   return hasKeys(params) ? params : undefined;
 }
 
-// Not capped. The server merge never removes keys and keeps an existing key in its original
-// position, so a load-time trim would permanently hide the oldest entries: editing one of those
-// models would write an update the next reload silently drops. Entries are a dozen numbers each.
+// Not capped: the server never removes keys, so trimming would hide entries permanently.
 function sanitizeInferenceParamsByModel(
   value: unknown,
 ): Record<string, PersistedInferenceParams> | undefined {
@@ -239,6 +239,17 @@ function sanitizePresetSource(value: unknown): ChatPresetSource | undefined {
     : undefined;
 }
 
+function sanitizePresetEditedKeys(
+  value: unknown,
+): Partial<Record<RecommendedSamplingKey, boolean>> | undefined {
+  if (!isRecord(value)) return undefined;
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([key, kept]) => isRecommendedSamplingKey(key) && typeof kept === "boolean",
+    ),
+  );
+}
+
 function sanitizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
   return typeof value === "string" && REASONING_EFFORTS.has(value)
     ? (value as ReasoningEffort)
@@ -255,7 +266,6 @@ function sanitizeInt(value: unknown, min: number): number | undefined {
     : undefined;
 }
 
-/** Read-only migration; outgoing numeric patches do not imply user intent. */
 export function normalizeSavedChatSettings(value: unknown): PersistedChatSettings {
   const settings = sanitizeChatSettings(value);
   if (settings.inferenceParams) {
@@ -289,6 +299,7 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const rememberParamsPerModel = sanitizeBool(value.rememberParamsPerModel);
   const customPresets = sanitizeCustomPresets(value.customPresets);
   const activePresetSource = sanitizePresetSource(value.activePresetSource);
+  const presetEditedKeys = sanitizePresetEditedKeys(value.presetEditedKeys);
   const reasoningEffort = sanitizeReasoningEffort(value.reasoningEffort);
   const autoTitle = sanitizeBool(value.autoTitle);
   const preserveThinking = sanitizeBool(value.preserveThinking);
@@ -300,6 +311,7 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
   const deduplicateToolCalls = sanitizeBool(value.deduplicateToolCalls);
   const autoCompactEnabled = sanitizeBool(value.autoCompactEnabled);
+  const keepRunningWhenTabClosed = sanitizeBool(value.keepRunningWhenTabClosed);
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 0);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
@@ -307,14 +319,33 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (inferenceParamsByModel) {
     settings.inferenceParamsByModel = inferenceParamsByModel;
   }
+  if (isRecord(value.forgetInferenceParamsByModel)) {
+    const forget: Record<string, string[]> = {};
+    for (const [id, keys] of Object.entries(value.forgetInferenceParamsByModel)) {
+      if (!id || !Array.isArray(keys)) continue;
+      const named = keys.filter((key): key is string => typeof key === "string");
+      if (named.length > 0) forget[id] = named;
+    }
+    if (hasKeys(forget)) settings.forgetInferenceParamsByModel = forget;
+  }
   if (rememberParamsPerModel !== undefined) {
     settings.rememberParamsPerModel = rememberParamsPerModel;
   }
   if (customPresets !== undefined) settings.customPresets = customPresets;
+  if (isRecord(value.editCustomPresets)) {
+    const edits: Record<string, PersistedChatPreset | null> = {};
+    for (const [name, preset] of Object.entries(value.editCustomPresets)) {
+      const [saved] = sanitizeCustomPresets([preset]) ?? [];
+      if (preset === null) edits[name] = null;
+      else if (saved?.name === name) edits[name] = saved;
+    }
+    if (hasKeys(edits)) settings.editCustomPresets = edits;
+  }
   if (typeof value.activePreset === "string" && value.activePreset.trim()) {
     settings.activePreset = value.activePreset.trim();
   }
   if (activePresetSource) settings.activePresetSource = activePresetSource;
+  if (presetEditedKeys) settings.presetEditedKeys = presetEditedKeys;
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)
@@ -336,6 +367,9 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   }
   if (autoCompactEnabled !== undefined) {
     settings.autoCompactEnabled = autoCompactEnabled;
+  }
+  if (keepRunningWhenTabClosed !== undefined) {
+    settings.keepRunningWhenTabClosed = keepRunningWhenTabClosed;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
@@ -394,6 +428,7 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&
+    settings.presetEditedKeys === undefined &&
     settings.autoTitle === undefined &&
     settings.reasoningEffort === undefined &&
     settings.preserveThinking === undefined &&
@@ -403,6 +438,7 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.nudgeToolCalls === undefined &&
     settings.deduplicateToolCalls === undefined &&
     settings.autoCompactEnabled === undefined &&
+    settings.keepRunningWhenTabClosed === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined &&
     hasNoMirroredSettings(settings)
@@ -448,6 +484,12 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   }
   if (activePreset?.trim()) settings.activePreset = activePreset.trim();
   if (activePresetSource) settings.activePresetSource = activePresetSource;
+  // Saved before the edited keys existed, when `modified` kept every key.
+  if (activePresetSource === "modified") {
+    settings.presetEditedKeys = Object.fromEntries(
+      RECOMMENDED_SAMPLING_KEYS.map((key) => [key, true]),
+    );
+  }
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)
@@ -474,16 +516,9 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
 
 export interface LoadedChatSettings {
   settings: PersistedChatSettings;
-  /** The GET answered, so a mirrored field missing from `settings` is missing on the server too.
-   *  False when the read fell back to this browser's legacy storage: nothing is then known about the
-   *  server, and treating every field as absent would back this browser's stale values over another's. */
+  /** False after a legacy-storage fallback, when nothing is known about the server. */
   fromServer: boolean;
-  /**
-   * Whether these values are what the server holds. False when a legacy import
-   * merged local values but failed to save them: the server answered, so
-   * absence is still authoritative, but the merge exists only in this session
-   * and a later re-read would silently drop it.
-   */
+  /** False when a legacy merge failed to save; it exists only in this session. */
   persisted: boolean;
 }
 
@@ -516,7 +551,6 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
         persisted: true,
       };
     } catch {
-      // The GET still answered (empty), so absence remains authoritative.
       return { settings: legacySettings, fromServer: true, persisted: false };
     }
   }

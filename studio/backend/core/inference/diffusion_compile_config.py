@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""torch 2.12+ keeps dynamo / inductor config writes in a ContextVar, so knobs set on the load thread are invisible on
-the render thread that compiles. Knobs are recorded here and ``apply()`` re-writes them into the current context."""
+"""torch 2.12+ stores dynamo/inductor config in a ContextVar; apply() re-sets knobs per thread."""
 
 from __future__ import annotations
 
@@ -10,10 +9,9 @@ import os
 import threading
 from contextvars import ContextVar
 from typing import Any
+from .rocm_bf16 import is_rocm_torch
 
-# dynamic_scale_rblock benchmarks R0_BLOCK vs R0_BLOCK/2 per process (never cached); the two sum in different orders,
-# so renders differed across servers on one seed (FLUX.1-schnell int8, B200). =1 restores inductor's default, and also
-# drops the per-family reduction-config filter (diffusion_speed.pin_reduction_configs).
+# dynamic_scale_rblock benchmarks per process, so renders differed across servers on one seed.
 DYNAMIC_SCALE_RBLOCK_ENV = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
 
 
@@ -35,7 +33,8 @@ def reduction_config_filter_available() -> bool:
 
 
 def family_filters_reductions(family: Any) -> bool:
-    """``filter_reduction_configs`` on every arch, or the current CUDA device listed in ``filter_reduction_configs_archs``."""
+    """``filter_reduction_configs`` on every arch, or the current device listed in ``filter_reduction_configs_archs``:
+    a CUDA (major, minor) capability, or a ROCm gfx name such as ``"gfx1151"``."""
     if family is None:
         return False
     if bool(getattr(family, "filter_reduction_configs", False)):
@@ -43,14 +42,37 @@ def family_filters_reductions(family: Any) -> bool:
     archs = getattr(family, "filter_reduction_configs_archs", None) or ()
     if not archs:
         return False
-    cap = _device_capability()
-    return cap is not None and cap in {tuple(int(v) for v in a) for a in archs}
+    gfx = {str(a).strip().lower() for a in archs if isinstance(a, str)}
+    caps = {tuple(int(v) for v in a) for a in archs if not isinstance(a, str)}
+    if caps:
+        cap = _device_capability()
+        if cap is not None and cap in caps:
+            return True
+    if gfx:
+        arch = _rocm_gfx_arch()
+        if arch and arch in gfx:
+            return True
+    return False
+
+
+def _rocm_gfx_arch() -> Any:
+    """The current ROCm device's gfx name (``gfx1151``), else None (CUDA, CPU, unreadable)."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or not is_rocm_torch(torch):
+            return None
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        name = str(getattr(props, "gcnArchName", "") or "").split(":", 1)[0].strip().lower()
+        return name or None
+    except Exception:  # noqa: BLE001 - no device: nothing pinned
+        return None
 
 
 def _device_capability() -> Any:
     try:
         import torch
-        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
             return None
         return tuple(int(v) for v in torch.cuda.get_device_capability())
     except Exception:  # noqa: BLE001 - no CUDA: nothing pinned
@@ -121,6 +143,20 @@ def apply() -> None:
     for (module_name, attr), value in knobs:
         cfg = _module(module_name)
         if cfg is not None:
+            if (module_name, attr) == ("torch.compiler.config", "cache_key_tag"):
+                current = getattr(cfg, attr, "")
+                value = ";".join(
+                    [
+                        p
+                        for p in _cache_tag_parts(current)
+                        if p and not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)
+                    ]
+                    + [
+                        p
+                        for p in _cache_tag_parts(value)
+                        if p.startswith(_STUDIO_CACHE_TAG_PREFIXES)
+                    ]
+                )
             _write(cfg, attr, value)
     _applied.set(generation)
 
@@ -140,3 +176,39 @@ def _reset_for_tests() -> None:
     with _LOCK:
         _KNOBS.clear()
         _generation += 1
+
+
+_STUDIO_CACHE_TAG_PREFIXES = ("unsloth_fp8_unit_scale=", "unsloth_nvfp4_act_quant=")
+
+
+def _cache_tag_parts(tag: str) -> list[str]:
+    # Unsloth/Zoo append comma-delimited kernel and correctness tags.
+    return tag.replace(",", ";").split(";")
+
+
+def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> str:
+    """``prefix``'s token set to ``tag`` (None drops it); Studio's sorted so setter order never changes torch's cache key."""
+    parts = [p for p in _cache_tag_parts(current) if p and not p.startswith(prefix)]
+    if tag:
+        parts.append(prefix + tag)
+    foreign = [p for p in parts if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+    owned = sorted(p for p in parts if p.startswith(_STUDIO_CACHE_TAG_PREFIXES))
+    return ";".join(foreign + owned)
+
+
+def set_compile_cache_tag(prefix: str, tag: str | None) -> None:
+    cfg = _module("torch.compiler.config")
+    if cfg is None:
+        return
+    current = getattr(cfg, "cache_key_tag", None)
+    if not isinstance(current, str):
+        return
+    # Studio's patches outlive the load: keep recorded tokens; preserve foreign caller tokens.
+    recorded_tag = get_knob("torch.compiler.config", "cache_key_tag", current)
+    current = ";".join(
+        [p for p in _cache_tag_parts(current) if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+        + [p for p in _cache_tag_parts(recorded_tag) if p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+    )
+    set_knob(
+        "torch.compiler.config", "cache_key_tag", canonical_compile_cache_tag(current, prefix, tag)
+    )

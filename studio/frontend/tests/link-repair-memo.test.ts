@@ -26,6 +26,9 @@ function harness() {
         },
       },
       streamdown: {},
+      "../../lib/math-safe-remend.ts": {
+        mathSafeRemendOptions: (options?: object) => options,
+      },
       "../../lib/parse-markdown-blocks.ts": { parseMarkdownIntoBlocks: (s: string) => [s] },
     },
   );

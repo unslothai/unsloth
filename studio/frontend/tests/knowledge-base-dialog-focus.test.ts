@@ -9,9 +9,7 @@ import {
   type StubElement,
 } from "./helpers/module-stubs.ts";
 
-// Runs the real KnowledgeBaseDialog and its documents view on a small hook host. Each
-// component instance keeps its own hook slots, and a StrictMode mount runs its effects,
-// their cleanups, and the effects again on the same state and refs, as React 19 does.
+// A small hook host; a StrictMode mount runs effects, cleanups, then effects again, as React 19 does.
 
 type Effect = {
   deps?: unknown[];
@@ -96,20 +94,22 @@ const react = {
   },
 };
 
-// The documents view defers its upload with window.setTimeout.
 globalThis.window = { setTimeout, clearTimeout } as unknown as Window &
   typeof globalThis;
 
 const KB = { id: "kb-1", name: "Product docs", documentCount: 0 };
 const ITEM = { kind: "native", token: "tok-notes", name: "notes.md" };
 
-function harness(rows: Array<typeof KB> = [KB]) {
+function harness(
+  rows: Array<typeof KB> = [KB],
+  lister: () => Promise<Array<typeof KB>> = async () => rows,
+) {
   const state = { uploading: false };
   const uploads: unknown[][] = [];
   const abandoned: unknown[][] = [];
   const errors: string[] = [];
-  const { KnowledgeBaseDialog } = loadWithStubs<{
-    KnowledgeBaseDialog: (props: Record<string, unknown>) => StubElement;
+  const { KnowledgeBaseManager } = loadWithStubs<{
+    KnowledgeBaseManager: (props: Record<string, unknown>) => StubElement;
   }>(
     new URL(
       "../src/features/rag/components/knowledge-base-dialog.tsx",
@@ -119,6 +119,9 @@ function harness(rows: Array<typeof KB> = [KB]) {
       react,
       "react/jsx-runtime": stubJsxRuntime(),
       "@hugeicons/core-free-icons": {},
+      "@/lib/hugeicons-derived": {},
+      "@/lib/folder-icons": {},
+      "@/lib/chevron-icons": {},
       "@hugeicons/react": {},
       "lucide-react": {},
       "@/components/ui/alert-dialog": {},
@@ -139,7 +142,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
       },
       "@/lib/utils": { cn: () => "" },
       "../api/rag-api": {
-        listKnowledgeBases: async () => rows,
+        listKnowledgeBases: () => lister(),
         listKnowledgeBaseDocuments: async () => [],
       },
       "../api/rag-availability": {
@@ -155,9 +158,9 @@ function harness(rows: Array<typeof KB> = [KB]) {
       "./document-status-chip": {},
       "./linked-folders-manager": {},
       "./source-drop-policy": { RAG_SOURCE_UPLOAD_ACCEPT: "" },
+      "./source-folder-copy": { embeddedSummary: () => "" },
       "./use-rag-documents": {
-        // Like the real hook: a fresh `upload` every render (its scope argument is a new
-        // object each time), and an unmount cleanup that abandons uploads already running.
+        // Like the real hook: a fresh `upload` every render, and unmount abandons running uploads.
         useRagDocuments: () => {
           const generation = react.useRef(0) as { current: number };
           react.useEffect(
@@ -219,8 +222,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
     return find(element.props.children, match);
   }
 
-  // Radix renders DialogContent only while the dialog is open, so a closed dialog has no
-  // documents view mounted, whatever its view state says.
+  // Radix renders DialogContent only while open, so a closed dialog has no documents view.
   const documentsView = () =>
     props.open
       ? find(
@@ -230,12 +232,15 @@ function harness(rows: Array<typeof KB> = [KB]) {
         )
       : undefined;
 
-  // One render pass: the dialog, then its documents view if it shows one. A view that
-  // just appeared mounts the way StrictMode mounts it.
   function render() {
     current = dialog;
     dialog.begin();
-    tree = KnowledgeBaseDialog(props);
+    // The props KnowledgeBaseDialog passes; the manager's hooks sit at Dialog level, outside the content.
+    tree = KnowledgeBaseManager({
+      ...props,
+      frame: (content: unknown) => (props.open ? content : null),
+      renderHeader: (title: string) => ({ type: "DialogTitle", props: { children: title } }),
+    });
     dialog.flushEffects();
     const view = documentsView();
     if (!view) {
@@ -285,6 +290,18 @@ function harness(rows: Array<typeof KB> = [KB]) {
     set uploading(value: boolean) {
       state.uploading = value;
     },
+    get rowCount() {
+      let count = 0;
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) return node.forEach(walk);
+        if (!node || typeof node !== "object" || !("props" in node)) return;
+        const element = node as StubElement;
+        if (element.props.title === "Open to add or remove documents") count += 1;
+        walk(element.props.children);
+      };
+      walk(tree);
+      return count;
+    },
     openRow() {
       const row = find(tree, (e) => e.props.title === "Open to add or remove documents");
       (row!.props.onClick as () => void)();
@@ -302,7 +319,6 @@ test("files handed to a knowledge base upload once, on the StrictMode mount that
   assert.deepEqual(app.uploads, [[ITEM]]);
   assert.deepEqual(app.abandoned, []);
 
-  // Later renders hand the view a new `upload` each time; the batch must not go again.
   await app.settle();
   assert.deepEqual(app.uploads, [[ITEM]]);
 });
@@ -326,8 +342,7 @@ test("reopening the dialog on the same knowledge base without files uploads noth
   assert.equal(app.documentsView, undefined);
   await app.open({ kbId: KB.id });
   assert.equal(app.title, KB.name);
-  // Closing unmounted the view, so this is a fresh mount. The host lets that mount's timer
-  // fire before the open effect's reset renders, which is stricter than React's ordering.
+  // The host fires the mount's timer before the open effect's reset, stricter than React.
   assert.equal(app.documentsMounts, 2);
   assert.deepEqual(app.uploads, [[ITEM]]);
 });
@@ -368,13 +383,11 @@ test("a handoff that arrives while another waits joins it instead of replacing i
   const app = harness();
   await app.open({ kbId: "kb-deleted", uploads: [ITEM] });
   assert.deepEqual(app.uploads, []);
-  // The chat's next drop is handed over while the first batch is still waiting here.
   const LATER = { kind: "native", token: "tok-faq", name: "faq.md" };
   await app.open({ kbId: KB.id, uploads: [LATER] });
   assert.equal(app.title, KB.name);
   assert.deepEqual(app.uploads, [[ITEM, LATER]]);
 
-  // Once uploading, the batch is no longer waiting, so a later handoff goes alone.
   const LAST = { kind: "native", token: "tok-last", name: "last.md" };
   await app.open({ kbId: KB.id, uploads: [LAST] });
   assert.deepEqual(app.uploads, [[ITEM, LATER], [LAST]]);
@@ -385,7 +398,6 @@ test("a handoff into the knowledge base on screen waits for its running upload w
   await app.open({ kbId: KB.id, uploads: [ITEM] });
   assert.deepEqual(app.uploads, [[ITEM]]);
   app.uploading = true;
-  // A second drop's "Add" while the first batch is still uploading in this view.
   const LATER = { kind: "native", token: "tok-faq", name: "faq.md" };
   await app.open({ kbId: KB.id, uploads: [LATER] });
   assert.equal(app.documentsMounts, 1);
@@ -394,4 +406,50 @@ test("a handoff into the knowledge base on screen waits for its running upload w
   await app.settle();
   assert.deepEqual(app.uploads, [[ITEM], [LATER]]);
   assert.deepEqual(app.abandoned, []);
+});
+
+test("an older list answer never replaces a newer one", async () => {
+  const OTHER = { ...KB, id: "kb-2", name: "Old notes" };
+  const answers: Array<(rows: Array<typeof KB>) => void> = [];
+  const app = harness([KB], () => new Promise((resolve) => answers.push(resolve)));
+  const openWith = app.open(null);
+  answers.shift()!([KB, OTHER]);
+  await openWith;
+  assert.equal(app.rowCount, 2);
+
+  app.openRow();
+  await app.settle();
+  app.back();
+  const stale = answers.shift()!;
+  await app.settle();
+  app.openRow();
+  await app.settle();
+  app.back();
+  answers.shift()!([KB]);
+  await app.settle();
+  stale([KB, OTHER]);
+  await app.settle();
+  assert.equal(app.rowCount, 1);
+});
+
+test("a failed progress poll still schedules the next one", async () => {
+  const embedding = { ...KB, documentCount: 2, indexedCount: 1, indexingCount: 1 };
+  const answers = [
+    async () => [embedding],
+    async () => {
+      throw new Error("network");
+    },
+    async () => [{ ...embedding, indexedCount: 2, indexingCount: 0 }],
+  ];
+  let calls = 0;
+  const realTimeout = window.setTimeout;
+  window.setTimeout = ((fn: () => void) => realTimeout(fn, 0)) as typeof window.setTimeout;
+  try {
+    const app = harness([KB], () => (answers[Math.min(calls++, answers.length - 1)])());
+    await app.open(null);
+    for (let i = 0; i < 6 && calls < 3; i++) await app.settle();
+    assert.equal(calls, 3);
+  } finally {
+    window.setTimeout = realTimeout;
+  }
 });

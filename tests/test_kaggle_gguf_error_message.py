@@ -193,8 +193,7 @@ def test_an_implicit_context_is_inspected():
 
 
 def test_the_quantize_wrapper_chains_its_cause():
-    """The build-llama.cpp branch must chain too, else the 137 is unreachable
-    from the outer handler."""
+    """build-llama.cpp must chain too, else the 137 is unreachable from the outer handler."""
     src = Path(save.__file__).read_text(encoding = "utf-8")
     i = src.index("You might have to compile llama.cpp yourself")
     assert "from e" in src[i : i + 900]
@@ -214,8 +213,7 @@ def test_a_disk_failure_is_not_called_an_oom():
 
 
 def test_the_oom_branch_runs_before_the_kaggle_disk_branch():
-    """A SIGKILL on Kaggle with a full-ish disk would otherwise be reported as
-    a disk problem, which is the wrong advice."""
+    """A SIGKILL on Kaggle must not be reported as a disk problem; the OOM branch runs first."""
     import inspect
     from unsloth import save as _s
 
@@ -226,8 +224,7 @@ def test_the_oom_branch_runs_before_the_kaggle_disk_branch():
 
 
 def test_the_message_says_host_ram_not_gpu_or_disk():
-    """The whole point: SIGKILL names no resource, and the user's first guess
-    is usually VRAM."""
+    """SIGKILL names no resource; the first guess is VRAM, so the message must say host RAM."""
     import inspect
     from unsloth import save as _s
 

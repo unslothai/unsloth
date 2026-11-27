@@ -9,13 +9,7 @@ import {
   stripTrailingTemplatePlaceholder,
 } from "../src/features/chat/utils/trailing-template-placeholder.ts";
 
-/**
- * The one property that matters: the watch never says no when the strip would
- * cut. Saying yes when it would not is allowed, and costs one scan.
- *
- * Everything else in the adapter is downstream of that, because the strip only
- * runs on an arrival the watch admits.
- */
+/** The watch must never say no when the strip would cut; a false yes only costs a scan. */
 function assertSound(text: string, candidate: boolean, label: string): void {
   const stripped = stripTrailingTemplatePlaceholder(text);
   if (stripped.length !== text.length) {
@@ -69,8 +63,6 @@ test("the watch admits every fragment the strip would cut", () => {
       states += 1;
       if (candidate) admitted += 1;
       assertSound(text, candidate, `seed ${seed} step ${step}`);
-      // What the adapter does with a yes: run the strip, and if it cut, tell
-      // the watch what is left.
       if (candidate) {
         const stripped = stripTrailingTemplatePlaceholder(text);
         if (stripped.length !== text.length) {
@@ -83,8 +75,7 @@ test("the watch admits every fragment the strip would cut", () => {
   }
   assert.equal(cuts > 500, true, `only ${cuts} strips exercised`);
   assert.equal(states > 10_000, true, `only ${states} states exercised`);
-  // The point of the watch is that most arrivals never reach the strip. If
-  // this ever admitted everything it would be sound and useless.
+  // A watch that admitted everything would be sound and useless.
   assert.equal(
     admitted < states / 2,
     true,
@@ -93,8 +84,6 @@ test("the watch admits every fragment the strip would cut", () => {
 });
 
 test("the watch admits every fragment the strip would cut, on prose", () => {
-  // Brace-heavy prose, which is what a code fence looks like: plenty of lines
-  // ending in `}` with no `${` in front of them.
   const lines = [
     "function step(input) {\n",
     "  return { ...input };\n",
@@ -112,7 +101,6 @@ test("the watch admits every fragment the strip would cut, on prose", () => {
     let text = "";
     for (let step = 0; step < 40; step += 1) {
       const piece = lines[random() % lines.length];
-      // Split each piece into small arrivals, the way tokens land.
       for (let at = 0; at < piece.length; at += 3) {
         const delta = piece.slice(at, at + 3);
         text += delta;

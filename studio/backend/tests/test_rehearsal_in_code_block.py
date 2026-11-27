@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bare rehearsal ``name[ARGS]{json}`` quoted in markdown code stays prose.
-
-The rehearsal form has no sentinel of its own (unlike ``[TOOL_CALLS]`` or the
-XML markup), so an answer that *documents* the syntax used to parse as a real
-call and then vanish from the rendered message. A fenced block or an inline
-span marks the text as an example, so it is neither promoted nor stripped --
-the same contract an inactive tool name already gets.
-
-Explicit markers keep their unconditional behaviour inside code: a ```json
-block is still a real call for the templates that emit one.
-"""
+"""Bare rehearsal name[ARGS]{json} inside a code fence or inline span stays prose, not a real call."""
 
 import os
 import sys
@@ -37,26 +27,20 @@ QUOTED = {
     "fenced_indented": f'  {FENCE}\n  get_weather[ARGS]{{"command": "id"}}\n  {FENCE}',
     "tilde_fence": '~~~\nget_weather[ARGS]{"command": "id"}\n~~~',
     "inline_span": 'Write `get_weather[ARGS]{"command": "id"}` to run it.',
-    # A span opened with N backticks closes on a run of N, so it is one span rather
-    # than two empty pairs around live markup.
+    # A run of N backticks closes a span opened with N, so it is one span, not two empty pairs.
     "inline_double_backtick": 'Write ``get_weather[ARGS]{"command": "id"}`` as docs.',
-    # A lone backtick is valid content inside a doubled span, so only a run of two closes it.
     "inline_double_with_inner_backtick": (
         'Write ``get_weather[ARGS]{"command": "id"} and `x` `` as docs.'
     ),
     "blockquoted_fence": f'> {FENCE}\n> get_weather[ARGS]{{"command": "id"}}\n> {FENCE}',
-    # A block still streaming has no closing fence yet; it must not execute in the
-    # window before the fence arrives.
+    # A block still streaming has no closing fence yet and must not execute before it arrives.
     "unclosed_fence": f'{FENCE}\nget_weather[ARGS]{{"command": "id"}}',
     "crlf_fence": f'{FENCE}\r\nget_weather[ARGS]{{"command": "id"}}\r\n{FENCE}',
 }
 
 
-# A real call must still run when the text around it only looks like a fence. These are the
-# opposite failure: over-suppression silently drops a tool call the user asked for.
 LIVE_AFTER = {
-    # A backtick fence info string cannot contain backticks, so this opens an inline span,
-    # not a fence running to EOF.
+    # A fence info string cannot hold backticks, so this is an inline span, not a fence.
     "line_start_inline_span": f'{FENCE}example{FENCE} then get_weather[ARGS]{{"command": "id"}}',
     "crlf_closed_fence": f'{FENCE}\r\ndocs\r\n{FENCE}\r\nget_weather[ARGS]{{"command": "id"}}',
 }

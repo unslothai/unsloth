@@ -33,13 +33,12 @@ test("a pinned quant row shows its size and vision mark", () => {
   assert.match(pickers, /sizes: new Map\(groups\.flatMap\(\(group\) => group\.sizes\)\)/);
   assert.match(
     pickers,
-    /meta=\{\s*sizeBytes \? `GGUF · \$\{formatBytes\(sizeBytes\)\}` : "GGUF"\s*\}/,
+    /meta=\{\s*sizeBytes \? `GGUF · \$\{compactBytes\(sizeBytes\)\}` : "GGUF"\s*\}/,
   );
   assert.match(pickers, /quantChip=\{ggufQuantChipLabel\(entry\.quant\)\}\s*showVision=\{hasVision\}/);
 });
 
 test("that repo's pinned row is its own sole-quant row", () => {
-  // Same load target, filename and selection state as the row it replaces.
   assert.match(
     pickers,
     /const renderPinnedQuantRow = [^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*const soleRow = pinnedSoleQuantRows\.get\(pinKey\(entry\.repoId, entry\.quant\)\);\n\s*if \(soleRow\) return renderSoleQuantGgufRow\(soleRow\.repo, soleRow\.sole\);/,

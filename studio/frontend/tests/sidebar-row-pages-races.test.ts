@@ -108,6 +108,7 @@ function hookHarness(fetchSidebarRows: (request: { limit: number; cursor: string
       },
       "../utils/repair-legacy-chat-titles": { repairLegacyChatTitles: async () => 0 },
       "../utils/chat-thread-tombstones": { isChatThreadDeleted: () => false },
+      "../utils/remote-history-watch": { watchRemoteHistory: () => () => {} },
       "../utils/sidebar-row-pager": { RowPager },
       "../utils/sidebar-row-query": rowQuery,
       "./use-chat-sidebar-items": { groupThreads: () => [] },

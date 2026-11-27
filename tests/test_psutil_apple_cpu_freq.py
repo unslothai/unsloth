@@ -363,13 +363,8 @@ class TestPatchApplication:
     reason = "Apple Silicon only: reads this host's real IORegistry tables",
 )
 def _raw_apple_reading():
-    """This host's own psutil reading, or None when it has none to give.
-
-    psutil gates cpu_freq on a runtime probe on macOS, so on Apple Silicon the
-    attribute can be missing outright (virtualised runners) or present and
-    raising (M5, whose tables are not at the indexes psutil hardcodes). Both are
-    supported hosts, so a test that needs a raw reading skips rather than fails.
-    """
+    """Returns this host's psutil cpu_freq reading or None; on Apple Silicon it can be missing
+    (virtualised runners) or raise (M5, tables off psutil's hardcoded indexes), so tests skip."""
     import psutil
 
     reader = getattr(psutil, "cpu_freq", None)

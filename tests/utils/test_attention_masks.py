@@ -769,9 +769,8 @@ def test_run_attention_sdpa_ignores_a_zero_window(monkeypatch):
 
 
 def test_the_window_mask_is_built_once_per_shape(monkeypatch):
-    """Every layer asks for the identical mask, and at 32K that tensor is 1 GiB with two more
-    alive while it is built. Rebuilding it per layer is how this SDPA fallback OOMs a run that
-    xFormers or flash would have carried."""
+    """Every layer asks for the same mask (1 GiB at 32K, two more alive while built); rebuilding it
+    per layer makes the SDPA fallback OOM where xFormers or flash would not."""
     attention_dispatch._WINDOW_MASK_CACHE.clear()
     built = []
     real_arange = torch.arange
@@ -794,6 +793,23 @@ def test_the_window_mask_is_built_once_per_shape(monkeypatch):
     assert third is not first
     assert [bool(v) for v in third[0, 0, 5]] == [False, False, False, False, True, True]
     assert attention_dispatch._windowed_causal_mask(4, 4, 3, torch.device("cpu")) is not third
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+
+def test_an_inference_mode_window_mask_is_not_served_to_training():
+    """Eval under inference_mode then a training step of the same shape: the cached mask must not
+    be an inference tensor, which SDPA backends that save the mask cannot keep for backward."""
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    cpu = torch.device("cpu")
+    with torch.inference_mode():
+        evaluated = attention_dispatch._windowed_causal_mask(6, 6, 3, cpu)
+        assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is evaluated
+    trained = attention_dispatch._windowed_causal_mask(6, 6, 3, cpu)
+    assert not torch.is_inference(trained)
+    assert torch.equal(trained, evaluated)
+    assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is trained
+    with torch.inference_mode():
+        assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is trained
     attention_dispatch._WINDOW_MASK_CACHE.clear()
 
 

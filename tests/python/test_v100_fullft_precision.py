@@ -74,10 +74,14 @@ def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_prec
         model = types.SimpleNamespace(
             config = types.SimpleNamespace(dtype = dtype, torch_dtype = dtype),
             get_input_embeddings = lambda: emb,
+            # from_pretrained stamps this; the trainer reads it rather than the process-wide flag.
+            _unsloth_forced_float32 = force_float32,
         )
         raised = None
         try:
-            exec(CODE, {"torch": torch, "os": os}, {"args": args, "model": model})
+            # One namespace, as in the trainer's function scope: with separate locals, a
+            # generator or comprehension in the template cannot see `args` (NameError).
+            exec(CODE, {"torch": torch, "os": os, "args": args, "model": model})
         except TypeError:
             raised = "TypeError"
         return args.fp16, args.bf16, os.environ.get("ACCELERATE_MIXED_PRECISION"), raised

@@ -53,6 +53,39 @@ def test_studio_extra_exists():
     )
 
 
+def test_s3_sdk_is_only_in_the_s3_extra():
+    from packaging.requirements import Requirement
+
+    project = _load_pyproject()["project"]
+    extras = project["optional-dependencies"]
+    assert extras["s3"] == ["boto3>=1.34.0"]
+    aws_packages = {"boto3", "botocore", "s3transfer", "jmespath"}
+    default_requirements = (
+        project["dependencies"] + extras["studio"] + _requirement_lines(STUDIO_TXT)
+    )
+    assert not aws_packages.intersection(
+        Requirement(entry).name.lower() for entry in default_requirements
+    )
+
+
+def test_the_hnsw_pair_is_in_no_pip_requirement():
+    # Optional native pair, fetched on demand by studio/install_hnsw_prebuilt.py (hash-pinned,
+    # probed): no extra or requirements file may pull it, so no install can fail over it.
+    from packaging.requirements import Requirement
+
+    project = _load_pyproject()["project"]
+    no_torch = REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
+    every_requirement = (
+        project["dependencies"]
+        + [entry for extra in project["optional-dependencies"].values() for entry in extra]
+        + _requirement_lines(STUDIO_TXT)
+        + _requirement_lines(no_torch)
+    )
+    assert not {"usearch", "numkong"}.intersection(
+        Requirement(entry).name.lower() for entry in every_requirement
+    )
+
+
 def test_huggingface_extra_contains_no_diffusers_vcs_reference():
     from packaging.requirements import Requirement
 

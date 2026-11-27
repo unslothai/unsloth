@@ -209,7 +209,7 @@ def test_verified_families_are_unblocked(model_type):
     assert not _blocked(model = _Model(_Cfg(model_type = model_type)))
 
 
-@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe", "qwen4_exp"])
 def test_qwen3_5_processor_on_text_is_unblocked_despite_mrope(model_type):
     """Qwen3.5 text models take 2D position_ids as the text row, so packed text rows stay per document."""
     cfg = _Cfg(

@@ -54,6 +54,9 @@ class _SavingTrainer:
 
 def _train(monkeypatch, trainer, *args):
     monkeypatch.setattr(train_module, "_create_cli_trainer", lambda *a: trainer)
+    monkeypatch.setattr(
+        train_module, "_dataset_modalities", lambda *args: (False, False), raising = False
+    )
     app = typer.Typer()
     app.command()(train_module.train)
     return CliRunner().invoke(

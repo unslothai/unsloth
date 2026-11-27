@@ -4,16 +4,35 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-export type ModelAlias = { name: string; model: string };
+export type AliasLoadSettings = {
+  max_seq_length?: number;
+  kv_cache_dtype?: string;
+  speculative_type?: string;
+};
+
+export type ModelAlias = {
+  name: string;
+  model: string;
+  load_settings: AliasLoadSettings;
+};
+
+let revision: string | undefined;
 
 function parseAliases(body: unknown): ModelAlias[] {
+  revision = (body as { revision?: string } | null)?.revision;
   const aliases = (body as { aliases?: unknown } | null)?.aliases;
   if (!Array.isArray(aliases)) {
     return [];
   }
   return aliases.flatMap((entry) =>
     typeof entry?.name === "string" && typeof entry?.model === "string"
-      ? [{ name: entry.name, model: entry.model }]
+      ? [
+          {
+            name: entry.name,
+            model: entry.model,
+            load_settings: entry.load_settings ?? {},
+          },
+        ]
       : [],
   );
 }
@@ -35,7 +54,7 @@ export async function saveModelAliases(
   const res = await authFetch("/api/settings/model-aliases", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ aliases }),
+    body: JSON.stringify({ aliases, revision }),
   });
   if (!res.ok) {
     throw new Error(

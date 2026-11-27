@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Vision-model helpers for ingestion: figure captioning and scanned-page OCR.
-
-Both turn pixels into indexable text and are a no-op (never raise) without a loaded
-vision model. They reuse the chat model's vision endpoint, so it must be served with
-``--ubatch-size`` >= one image's tokens (some encoders, e.g. Gemma, attend
-non-causally and abort otherwise); Unsloth's vision chat already requires this."""
+"""Figure captioning and scanned-page OCR for ingestion; no-op (never raises) without a loaded
+vision model; chat endpoint needs --ubatch-size >= the tokens of one image."""
 
 from __future__ import annotations
 
@@ -45,9 +41,7 @@ def _collapse_runaway(
     max_repeat: int = 3,
     max_total: int = 8,
 ) -> str:
-    """Cap runaway repetition: vision models sometimes loop a line many times. Keep
-    each distinct line to ``max_repeat`` in a row and ``max_total`` total, and collapse
-    blank-line floods, so a degenerate page cannot flood the index."""
+    """Caps repeated lines: ``max_repeat`` in a row, ``max_total`` per line; blank runs collapsed."""
     out: list[str] = []
     seen: dict[str, int] = {}
     prev: str | None = None
@@ -213,9 +207,8 @@ def ocr_pages(
     endpoint: tuple[str, str] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[int, str]:
-    """OCR rendered page PNGs (keyed by 1-based page number) to text; ``{}`` when there
-    is no vision model or no pages. The caller (`ingestion._ocr_scanned_pages`) owns the
-    on/off policy. Bounded by ``OCR_MAX_PAGES``."""
+    """OCR of page PNGs to text via the vision model, returned keyed by 1-based page number; {} if
+    no model or no pages; caller owns the on/off policy; capped by OCR_MAX_PAGES."""
     if not page_pngs:
         return {}
     ep = endpoint or vision_endpoint()
@@ -235,9 +228,7 @@ def ocr_pages(
 
 
 def merge_page_captions(captions: dict[int, list[str]]) -> dict[int, list[str]]:
-    """Merge a page's per-tile captions into one deduped block: drop lines repeated
-    across overlapping tiles (first kept, order preserved), then ``_collapse_runaway``,
-    so ``splice_captions`` adds a single figure block per page."""
+    """Dedupes overlapping tile captions per page, keeping first occurrences, then collapses runaways."""
     out: dict[int, list[str]] = {}
     for page, caps in captions.items():
         seen: set[str] = set()
@@ -257,8 +248,7 @@ def merge_page_captions(captions: dict[int, list[str]]) -> dict[int, list[str]]:
 
 
 def splice_captions(pages: list, captions: dict[int, list[str]]) -> list:
-    """Append captions to their page's text so the chunker indexes them, keeping
-    figures attributable in retrieved chunks. Returns new ``Page`` objects."""
+    """Appends captions to page text so chunks keep figures attributable; returns new Pages."""
     if not captions:
         return pages
     from .parsers import Page

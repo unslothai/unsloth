@@ -14,10 +14,7 @@ const { computeModelMemory, formatKvRate, formatMemoryGb } = await import(
 
 const GB = 1024 ** 3;
 
-// 16 GiB card -> 15.52 GiB usable at the shared 0.97 fraction, which is what
-// the loader admits at (_CTX_FIT_VRAM_FRACTION). This was 0.90 / 14.4, a value
-// llama_cpp.py records as already tried and reverted: "0.90 dropped 91-94% fits
-// to CPU offload, #5106".
+// 16 GiB at the shared 0.97 fraction (_CTX_FIT_VRAM_FRACTION) is 15.52 GiB usable.
 const GPU_GB = 16;
 const BUDGET_GB = 15.52;
 
@@ -45,8 +42,6 @@ test("weights and context inside the budget report fits", () => {
   assert.ok(Math.abs(result.budgetGb - BUDGET_GB) < 1e-9);
 });
 
-// The case the warning exists for: nothing wrong with the model, everything
-// wrong with the settings on top of it.
 test("weights fit but context pushes past the budget", () => {
   const result = computeModelMemory({
     weightsBytes: 12 * GB,
@@ -74,14 +69,12 @@ test("speculative reserve counts toward the context segment", () => {
   const withSpec = computeModelMemory({
     weightsBytes: 10 * GB,
     kvBytes: 3 * GB,
-    // 3, not 2: at the 0.97 budget the old figure no longer tipped this over,
-    // so the test would have passed while measuring nothing.
+    // 3, not 2: at the 0.97 budget 2 would not tip this over.
     specBytes: 3 * GB,
     gpuGb: GPU_GB,
   });
   assert.equal(withoutSpec.status, "fits");
   assert.equal(withSpec.kvGb + withSpec.specGb, 6);
-  // Turning on speculative decoding is what tips this one over.
   assert.equal(withSpec.status, "context-exceeds");
 });
 
@@ -131,7 +124,6 @@ test("KV and speculative reserve are separate segments", () => {
   });
   assert.equal(result.kvGb, 2);
   assert.equal(result.specGb, 1);
-  // Still summed for callers that draw context as one block.
   assert.equal(result.kvGb + result.specGb, 3);
 });
 
@@ -168,19 +160,15 @@ test("no context length means no rate rather than a wrong one", () => {
 });
 
 test("KV rate labels pick sane units", () => {
-  // KiB/MiB, not KB/MB. The divides are by 1024, so the old labels were the
-  // same mislabel as the GB/GiB one a scale up.
+  // Divides are by 1024, so units are KiB/MiB.
   assert.equal(formatKvRate(0), "0 KiB");
   assert.equal(formatKvRate(6234), "6.1 KiB");
   assert.equal(formatKvRate(1024 * 1024 * 3), "3.0 MiB");
-  // Non-finite input has no honest rendering and must not print "NaN KiB".
   assert.equal(formatKvRate(Number.NaN), "0 KiB");
   assert.equal(formatKvRate(-1), "0 KiB");
 });
 
 test("an unloadable model is flagged, not silently drawn as full", () => {
-  // 184 GB of weights on a 128 GB host: no context setting can rescue this,
-  // so it must still say something rather than rely on a fit badge elsewhere.
   const result = computeModelMemory({
     weightsBytes: 184 * GB,
     kvBytes: 4 * GB,
@@ -193,7 +181,6 @@ test("an unloadable model is flagged, not silently drawn as full", () => {
 });
 
 test("bar holds the accent below 80% of budget", () => {
-  // 14.4 GB budget; 11 GB total is ~76%.
   const result = computeModelMemory({
     weightsBytes: 9 * GB,
     kvBytes: 2 * GB,
@@ -204,8 +191,7 @@ test("bar holds the accent below 80% of budget", () => {
 });
 
 test("bar warns from 80% and turns critical from 90%", () => {
-  // Figures rescaled for the 15.52 GiB budget: 13/15.52 = 83.8%, 14.5/15.52 =
-  // 93.4%. The bands themselves are unchanged.
+  // Totals against the 15.52 GiB budget: 13 GiB is 83.8%, 14.5 GiB is 93.4%.
   const high = computeModelMemory({
     weightsBytes: 11 * GB,
     kvBytes: 2 * GB,

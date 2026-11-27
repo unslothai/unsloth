@@ -9,11 +9,7 @@ import {
   stripTrailingTemplatePlaceholder,
 } from "../src/features/chat/utils/trailing-template-placeholder.ts";
 
-/**
- * What the adapter used to run over the whole buffer on every arrival. The
- * bounded scan must agree with it character for character on anything that fits
- * in the window, or the strip has changed what reaches the bubble.
- */
+/** The old unbounded scan; the bounded one must agree on anything that fits the window. */
 const UNBOUNDED = /\s*\$\{[^}]*\}\s*$/;
 function stripUnbounded(text: string): string {
   return text.replace(UNBOUNDED, "");
@@ -57,12 +53,7 @@ test("bounded strip matches the unbounded pattern on fixed cases", () => {
   }
 });
 
-/**
- * Deterministic pseudo-random generator. A plain `seed * 1103515245` loop is not
- * usable here: the product runs past 2^53, so the sampled low bits come out
- * constant and half of any alphabet is never drawn, which is how the first draft
- * of this test came to compare 20,000 strings the pattern could not match.
- */
+/** `seed * 1103515245` overflows 2^53, leaving constant low bits, so use mulberry32. */
 function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -74,10 +65,6 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-/**
- * Random strings over the characters that matter, each ending in a tail the
- * pattern has a real chance of matching.
- */
 function* randomInputs(count: number, seed = 20260816): Generator<string> {
   const alphabet = ["$", "{", "}", " ", "\n", "\t", "a", "b", "x", "${", "a}"];
   const tails = [
@@ -119,8 +106,7 @@ test("bounded strip matches the unbounded pattern on random inputs", () => {
     if (reference !== input) stripped += 1;
   }
   assert.equal(checked, 20_000);
-  // Without this the comparison above also holds for an implementation that
-  // returns its argument, which is what the first draft of this test did.
+  // Without this, an identity implementation would also pass.
   assert.equal(
     stripped > 2_000,
     true,
@@ -129,8 +115,6 @@ test("bounded strip matches the unbounded pattern on random inputs", () => {
 });
 
 test("bounded strip matches the unbounded pattern behind a long reply", () => {
-  // The window makes the scan cheap, but a placeholder at the end of a long
-  // reply still has to be stripped exactly, whatever precedes it.
   const prefixes = [
     "word ".repeat(20_000),
     "}".repeat(5_000),
@@ -153,11 +137,9 @@ test("bounded strip matches the unbounded pattern behind a long reply", () => {
 test("a placeholder past the window is left whole, never cut in half", () => {
   const inner = "a".repeat(TRAILING_PLACEHOLDER_WINDOW + 100);
   const input = `answer \${${inner}}`;
-  // The unbounded pattern would take it; this is the documented bound.
   assert.equal(stripUnbounded(input), "answer");
   const stripped = stripTrailingTemplatePlaceholder(input);
   assert.equal(stripped, input, "an oversized fragment must be left alone");
-  // Never acceptable: half a fragment kept, or a result that is not a prefix.
   assert.equal(input.startsWith(stripped), true);
 });
 
@@ -169,8 +151,7 @@ test("a whitespace run past the window cannot restart the whole-buffer scan", ()
 });
 
 test("a narrow window only ever strips less than the unbounded pattern", () => {
-  // Whatever the window, the scan may keep text the unbounded pattern would
-  // have removed, but never remove text the unbounded pattern kept.
+  // The scan may keep text the unbounded pattern removes, never remove text it keeps.
   let differed = 0;
   for (const window of [1, 2, 4, 8, 16]) {
     for (const input of randomInputs(4_000)) {
@@ -194,8 +175,6 @@ test("a narrow window only ever strips less than the unbounded pattern", () => {
       if (bounded !== input) differed += 1;
     }
   }
-  // The property is trivial for a scan that never strips, so the inputs have to
-  // reach the strip for it to mean anything.
   assert.equal(
     differed > 1_000,
     true,
@@ -204,9 +183,7 @@ test("a narrow window only ever strips less than the unbounded pattern", () => {
 });
 
 test("an out-of-window opener strips the nested placeholder, not the outer one", () => {
-  // The window's guarantee is about what is REMOVED, not about leaving an oversized
-  // fragment whole. The outer `${` sits past the window so it is not an opener here, and
-  // the inner `${nested}` is a complete trailing placeholder, so stripping it is correct.
+  // The outer `${` sits past the window, so stripping only the inner `${nested}` is correct.
   const input = `answer \${${"a".repeat(4196)}\${nested}`;
   const bounded = stripTrailingTemplatePlaceholder(input);
   const unbounded = stripUnbounded(input);
@@ -216,7 +193,6 @@ test("an out-of-window opener strips the nested placeholder, not the outer one",
     input.slice(0, input.length - "${nested}".length),
     "the inner placeholder, and only it, should be removed",
   );
-  // The unbounded `[^}]*` takes 4,208 characters of model text here; bounded takes 9.
   assert.equal(input.length - unbounded.length, 4208);
   assert.equal(input.length - bounded.length, 9);
   assert.equal(

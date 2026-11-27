@@ -90,3 +90,17 @@ def test_a_parent_key_revoked_mid_request_mints_nothing(client, monkeypatch):
     assert [row["name"] for row in storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME)] == [
         "parent"
     ]
+
+
+@pytest.mark.parametrize("days", [0, -5, 36501, 10**9, 10**12])
+def test_out_of_range_expiry_is_rejected(client, days):
+    raw = _parent(None)
+    response = client.post(
+        "/api/auth/api-keys",
+        headers = {"Authorization": f"Bearer {raw}"},
+        json = {"name": "child", "expires_in_days": days},
+    )
+    assert response.status_code == 422
+    assert [row["name"] for row in storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME)] == [
+        "parent"
+    ]

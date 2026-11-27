@@ -55,8 +55,7 @@ def test_instantiating_it_raises_too():
 
 
 def test_it_never_pretends_to_be_a_real_value():
-    """A stub returning None or 0 would flow into a float8 config and produce
-    silently wrong behaviour instead of an error."""
+    """A stub returning None or 0 would silently misconfigure float8 instead of raising."""
     ph = _make_torch_symbol_placeholder("ScalingType", "d")
     for attr in ("DYNAMIC", "STATIC", "value", "name"):
         with pytest.raises(RuntimeError):
@@ -74,8 +73,7 @@ def test_it_is_marked_as_ours():
 
 
 def test_it_is_a_no_op_when_torch_already_has_the_symbols():
-    """On torch >= 2.10 overwriting the real enum with a raising placeholder
-    would BREAK float8 rather than fix anything."""
+    """On torch >= 2.10 a raising placeholder over the real enum would break float8."""
     import torch.nn.functional as F
 
     added = [n for n in _TORCHAO_TORCH_SYMBOLS if not hasattr(F, n)]
@@ -84,8 +82,7 @@ def test_it_is_a_no_op_when_torch_already_has_the_symbols():
 
 
 def test_a_healthy_torchao_is_left_alone():
-    """0.17 and earlier guard their own import, so patching there would put a
-    placeholder into torch for no reason."""
+    """torchao 0.17 and earlier guard their own import, so the fix must leave them alone."""
     if importlib.util.find_spec("torchao") is None:
         pytest.skip("torchao not installed")
     from importlib.metadata import version
@@ -119,8 +116,7 @@ def test_calling_it_twice_is_stable():
 
 
 def test_it_runs_before_unsloth_zoo_is_imported():
-    """unsloth_zoo pulls in transformers and therefore torchao, so calling the
-    fix after that import would be pointless."""
+    """unsloth_zoo pulls in torchao via transformers, so the fix must run before importing it."""
     lines = GPU_INIT.read_text(encoding = "utf-8").splitlines()
     call = next(i for i, l in enumerate(lines) if l.strip() == "fix_torchao_torch_symbol_skew()")
     zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
@@ -157,8 +153,7 @@ def test_symbols_torch_already_provides_are_never_replaced():
 
 
 def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
-    """The decisive test: run torchao 0.18's own import line on this torch and
-    show it goes from raising to succeeding. Everything above is gating."""
+    """The decisive test: torchao 0.18's own import line goes from raising to succeeding."""
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
@@ -167,6 +162,8 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
         if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
             delattr(F, n)
 
+    if IF.TORCHAO_DISABLED_FOR_OLD_TORCH:
+        pytest.skip("import unsloth disabled torchao for this torch; there is no torchao to shim")
     # Gate on these two: `any` over the tuple is always true via scaled_dot_product_attention.
     if all(hasattr(F, n) for n in ("ScalingType", "SwizzleType")):
         pytest.skip("this torch already provides ScalingType/SwizzleType")
@@ -193,8 +190,7 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
 
 
 def test_the_cleanup_in_the_test_above_is_real():
-    """Guards the fixture, not the product: a failed delattr above would let
-    every later test see a patched torch and pass vacuously."""
+    """Guards the fixture: a failed delattr leaves torch patched; later tests pass vacuously."""
     import torch.nn.functional as F
     for n in _TORCHAO_TORCH_SYMBOLS:
         obj = getattr(F, n, None)
@@ -207,9 +203,7 @@ INIT = ROOT / "unsloth" / "__init__.py"
 
 
 def test_the_mlx_path_applies_the_fix_too():
-    """The MLX branch imports unsloth_zoo directly and never reaches
-    _gpu_init, so without the fix there Apple Silicon hits the same dead
-    import."""
+    """MLX imports unsloth_zoo without _gpu_init, so the fix must precede it on Apple Silicon."""
     lines = INIT.read_text(encoding = "utf-8").splitlines()
     fix = next(i for i, l in enumerate(lines) if "_fix_torchao()" in l)
     zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
@@ -247,8 +241,7 @@ def test_the_mlx_call_is_inside_the_mlx_branch():
 
 
 def test_the_mlx_call_cannot_break_the_import():
-    """On Mac this runs first, so an exception here would replace a torchao
-    problem with an unsloth problem."""
+    """On Mac it runs first: an exception would replace a torchao problem with an unsloth one."""
     src = INIT.read_text(encoding = "utf-8")
     i = src.index("_fix_torchao()")
     window = src[max(0, i - 400) : i + 200]
@@ -268,8 +261,7 @@ def test_the_mlx_call_cannot_break_the_import():
     ],
 )
 def test_the_version_gate(version, affected):
-    """The gate decides whether we touch torch at all, so it must cope with
-    local versions and dev builds, not just clean releases."""
+    """The gate decides if torch is touched; it must handle local versions and dev builds."""
     from unsloth.import_fixes import Version
     assert (Version(version) >= Version("0.18.0")) is affected
 
@@ -290,6 +282,75 @@ def test_a_missing_version_is_not_patched(monkeypatch):
 
     monkeypatch.setattr(IF, "importlib_version", _boom)
     assert IF.fix_torchao_torch_symbol_skew() is False
+
+
+def _fake_torchao(monkeypatch, version):
+    import unsloth.import_fixes as IF
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        IF.importlib.util,
+        "find_spec",
+        lambda name, *a, **k: object() if name == "torchao" else real_find_spec(name, *a, **k),
+    )
+    monkeypatch.setattr(IF, "importlib_version", lambda name: version)
+    return IF
+
+
+def test_register_constant_pass_through_on_a_torch_without_it(monkeypatch):
+    """torch 2.6 has no torch.utils._pytree.register_constant; torchao >= 0.16 calls it at import."""
+    import torch.utils._pytree as pytree
+
+    IF = _fake_torchao(monkeypatch, "0.18.0")
+    had = hasattr(pytree, "register_constant")
+    monkeypatch.delattr(pytree, "register_constant", raising = False)
+    try:
+        assert IF.fix_torchao_pytree_register_constant() is True
+        assert pytree.register_constant.__unsloth_placeholder__ is True
+
+        class Enumish:
+            pass
+
+        assert pytree.register_constant(Enumish) is None
+        assert IF.fix_torchao_pytree_register_constant() is False, "a second call must not stack"
+    finally:
+        # monkeypatch restores only what existed; on torch 2.6 the placeholder must not outlive the test.
+        if not had and hasattr(pytree, "register_constant"):
+            delattr(pytree, "register_constant")
+
+
+def test_register_constant_left_alone_where_torch_has_it_or_torchao_is_older(monkeypatch):
+    import torch.utils._pytree as pytree
+
+    IF = _fake_torchao(monkeypatch, "0.18.0")
+    sentinel = lambda cls: cls
+    monkeypatch.setattr(pytree, "register_constant", sentinel, raising = False)
+    assert IF.fix_torchao_pytree_register_constant() is False
+    assert pytree.register_constant is sentinel
+
+    IF = _fake_torchao(monkeypatch, "0.16.0")
+    monkeypatch.delattr(pytree, "register_constant", raising = False)
+    assert IF.fix_torchao_pytree_register_constant() is False
+    assert not hasattr(pytree, "register_constant")
+
+
+def test_register_constant_fix_runs_before_unsloth_zoo_and_is_cleaned_up():
+    src = GPU_INIT.read_text(encoding = "utf-8")
+    lines = src.splitlines()
+    call = next(
+        i for i, l in enumerate(lines) if l.strip() == "fix_torchao_pytree_register_constant()"
+    )
+    zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
+    assert call < zoo
+    assert "fix_torchao_pytree_register_constant," in src
+    assert "del fix_torchao_pytree_register_constant" in src
+
+
+def test_the_mlx_path_applies_the_register_constant_fix_too():
+    lines = INIT.read_text(encoding = "utf-8").splitlines()
+    fix = next(i for i, l in enumerate(lines) if "_fix_pytree()" in l)
+    zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
+    assert fix < zoo, "the fix must precede the MLX unsloth_zoo import"
 
 
 if __name__ == "__main__":

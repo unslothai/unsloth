@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A download racing the torch warm's ``import torch._dynamo`` must not poison the process.
-
-The warm enters the torch._dynamo / torch._inductor import cycle at ``torch._dynamo``; a load
-thread's first download imports ``unsloth_zoo`` (via ``utils.hf_xet_fallback``), which enters
-the same cycle at ``torch._inductor``. The two threads then take the two package locks in
-opposite order, CPython's import deadlock detector hands one of them a half-built module, and
-the process keeps failing with ``partially initialized module 'torch._dynamo' ... has no
-attribute 'utils'`` until a restart.
-
-The race is made deterministic with real torch in a fresh subprocess: the warm thread is
-paused INSIDE ``import torch._dynamo`` (holding its module lock) until the download thread is
-either blocked on that import or waiting at Studio's gate, then released. ``unsloth_zoo`` is a
-stand-in whose ``hf_xet_fallback`` imports ``torch._inductor.utils``, as the real one does.
-"""
+"""A download racing the torch._dynamo import must not poison the process."""
 
 from __future__ import annotations
 

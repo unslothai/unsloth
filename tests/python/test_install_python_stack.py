@@ -7,6 +7,8 @@ import contextlib
 import importlib
 import inspect
 import io
+import json
+import threading
 import os
 import re
 import shutil
@@ -17,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from packaging.version import Version
 
 
 def _shared_setup_1(installs, monkeypatch):
@@ -362,6 +365,115 @@ class TestUvSafePathHardening:
         assert Path(value).read_text() == "transformers>=4.57.6\n"
 
 
+class TestUvSafePathWindowsNo8dot3:
+    """Windows volumes without 8.3 names (#14487: D:\\Program Files) must still get a space-free path."""
+
+    def _spaced_constraints(self, tmp_path):
+        src = tmp_path / "Program Files" / "constraints.txt"
+        src.parent.mkdir(parents = True)
+        src.write_text("idna<4\n")
+        return src
+
+    def test_no_short_name_copies_to_a_space_free_path(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
+        assert any(out.startswith(d) for d in uvps._UV_SAFE_PATH_TMPDIRS)
+
+    def test_resolving_short_name_is_used_without_a_copy(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: "C:\\PROGRA~1\\constraints.txt")
+        before = list(uvps._UV_SAFE_PATH_TMPDIRS)
+
+        assert uvps.uv_safe_path(str(src)) == "C:\\PROGRA~1\\constraints.txt"
+        assert uvps._UV_SAFE_PATH_TMPDIRS == before
+
+    def test_spaced_temp_without_short_name_keeps_the_original(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        spaced_tmp = tmp_path / "First Last" / "Temp"
+        spaced_tmp.mkdir(parents = True)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+        monkeypatch.setattr(uvps.tempfile, "mkdtemp", lambda *a, **k: str(spaced_tmp))
+
+        assert uvps.uv_safe_path(str(src)) == str(src)
+
+    def test_uv_accepts_the_returned_constraint_path(self, tmp_path, monkeypatch):
+        """End to end against the real uv. uv < 0.13 cuts a spaced -c path at the space; 0.13 reads it."""
+        import shutil
+        import subprocess
+        import sys
+
+        from backend.utils import uv_path_safety as uvps
+
+        if shutil.which("uv") is None:
+            pytest.skip("uv not available")
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+
+        def dry_run(constraint):
+            return subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--dry-run",
+                    "--offline",
+                    "--python",
+                    sys.executable,
+                    "-c",
+                    constraint,
+                    "pytest",  # installed wherever this runs, so the offline plan resolves
+                ],
+                capture_output = True,
+                text = True,
+            )
+
+        safe = uvps.uv_safe_path(str(src))
+        spaced = dry_run(str(src))
+        if spaced.returncode != 0:
+            assert "File not found" in spaced.stderr, spaced.stderr
+            assert str(src).split(" ")[0] in spaced.stderr, spaced.stderr
+            if " " in uvps.tempfile.gettempdir():
+                pytest.skip("temp dir has a space and no short name: nothing uv < 0.13 can read")
+            assert " " not in safe
+        accepted = dry_run(safe)
+        assert accepted.returncode == 0, accepted.stderr
+
+    @pytest.mark.skipif(not ips.IS_WINDOWS, reason = "real NTFS 8.3 names")
+    def test_real_directory_without_a_short_name(self, tmp_path):
+        """A real spaced directory whose 8.3 alias was stripped, as on a D: with 8.3 creation off."""
+        import subprocess
+
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        if uvps._windows_short_path(str(src)) is not None:
+            # Needs admin (SeRestorePrivilege), which CI runners have.
+            subprocess.run(
+                ["fsutil", "file", "setshortname", str(src.parent), ""], capture_output = True
+            )
+        if uvps._windows_short_path(str(src)) is not None:
+            pytest.skip("could not remove the 8.3 name on this volume")
+
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
+
+
 class TestPinnedIndexClearsUvEnv:
     """Pinned installs must clear inherited UV_INDEX and UV_EXTRA_INDEX_URL, so the pinned index wins."""
 
@@ -446,9 +558,8 @@ class TestPinnedIndexClearsUvEnv:
         assert "UV_CONFIG_FILE" not in env
 
     def test_pinned_cmd_disables_pip_config_files(self):
-        """devnull is the ONLY spelling that reaches a SITE or GLOBAL pip.conf. Measured
-        on pip 26.2: naming a real file suppresses the per-user file alone, so a
-        venv-level `no-index` still killed the pin."""
+        """Only devnull reaches a SITE or GLOBAL pip.conf; measured on pip 26.2, naming a real file
+        suppresses only the per-user file, so a venv-level no-index still killed the pin."""
         env = ips._install_env_for_cmd(
             ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
         )
@@ -615,9 +726,8 @@ class TestHardenedPipConfigRelaxation:
             assert ips._install_env_for_cmd(["python", "-m", "ensurepip", "--upgrade"]) is None
 
     def test_pinned_cmd_clears_hash_mode_only(self):
-        """Hash enforcement, which our unhashed requirements cannot satisfy, and nothing
-        else the operator hardened: dropping only-binary would let a compromised mirror
-        run a source build they had forbidden."""
+        """Only hash enforcement is cleared, since unhashed requirements cannot satisfy it; other
+        hardening such as only-binary stays, or a compromised mirror could run a source build."""
         with mock.patch.dict(os.environ, self.HOSTILE):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
@@ -847,9 +957,8 @@ class TestHardenedPipConfigRelaxation:
 
     @pytest.mark.reads_real_pip_config
     def test_a_wedged_pip_costs_the_run_one_budget_not_one_per_command(self, monkeypatch):
-        """Failures are deliberately not memoised, so a transient miss cannot cost the
-        operator their cert for the whole run. Unbounded, a HANG paid the timeout once per
-        pinned command instead of once."""
+        """Failures are not memoised, so a transient miss cannot cost the operator their cert; a
+        wedged pip must spend one timeout budget for the whole run, not one per pinned command."""
         attempts = []
 
         def always_fails(cmd, **kwargs):
@@ -867,9 +976,8 @@ class TestHardenedPipConfigRelaxation:
 
     @pytest.mark.reads_real_pip_config
     def test_a_cheap_failure_does_not_spend_the_budget(self, monkeypatch):
-        """A fresh venv has no pip for the first part of the run. That answer is instant,
-        so budgeting it would mean the operator's cert is lost for the rest of the run the
-        moment pip does appear."""
+        """A fresh venv has no pip at first and that answer is instant, so it must not spend the
+        timeout budget, or the cert is lost once pip appears."""
         calls = []
 
         def missing_then_present(cmd, **kwargs):
@@ -1104,6 +1212,51 @@ class TestProgressLineNotes:
         assert msg not in bar_lines[0], f"note glued onto the bar: {bar_lines[0]!r}"
         assert any(ln.strip() == msg for ln in out.split("\n")), out
 
+    def _heartbeat(self, *, tty: bool, beats: int) -> str:
+        seen = threading.Event()
+        count = [0]
+        real_draw, real_note = ips._draw_progress, ips._note
+
+        def counted(real):
+            def wrapper(*args, **kwargs):
+                real(*args, **kwargs)
+                if threading.current_thread().name == "flash-attn-heartbeat":
+                    count[0] += 1
+                    if count[0] >= beats:
+                        seen.set()
+
+            return wrapper
+
+        def emit():
+            ips._progress("flash-attn")
+            with ips._install_heartbeat("flash-attn"):
+                assert seen.wait(10), "the heartbeat never fired"
+
+        with (
+            mock.patch.object(ips, "_stdout_is_tty", return_value = tty),
+            mock.patch.object(ips, "_HEARTBEAT_TICK_SECONDS", 0.01),
+            mock.patch.object(ips, "_HEARTBEAT_NOTE_SECONDS", 0.01),
+            mock.patch.object(ips, "_draw_progress", counted(real_draw)),
+            mock.patch.object(ips, "_note", counted(real_note)),
+        ):
+            return self._render(emit)
+
+    def test_captured_install_gets_a_still_installing_note(self):
+        out = self._heartbeat(tty = False, beats = 2)
+        notes = [ln.strip() for ln in out.split("\n") if "still installing" in ln]
+        assert notes[:2] == ["still installing flash-attn (0 min)"] * 2, out
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert all("still installing" not in ln for ln in bar_lines), bar_lines
+
+    def test_terminal_install_redraws_elapsed_time_on_the_bar_line(self):
+        out = self._heartbeat(tty = True, beats = 2)
+        assert "\n" not in out, "the heartbeat must stay on the bar line"
+        frames = out.split("\r")[1:]
+        assert all(" 5/14  flash-attn" in frame for frame in frames), frames
+        assert "flash-attn 0:00" in frames[1]
+        assert frames[-1].rstrip().endswith("flash-attn")
+        assert len(frames[-1]) >= max(len(frame) for frame in frames[1:-1])
+
     def test_note_aligns_under_the_step_value_column(self):
         out = self._render(lambda: (ips._progress("dependency overrides"), ips._note("hello")))
         note_line = next(ln for ln in out.split("\n") if ln.strip() == "hello")
@@ -1136,9 +1289,8 @@ class TestProgressLineNotes:
         assert "\n\n" not in out, out
 
     def test_uv_fallback_warning_does_not_glue_onto_the_bar(self):
-        """A real producer, not _note() directly: pip_install() warns on the uv
-        fallback while the bar for its own step is still open. This path survived
-        the first pass of the fix, which only converted '   message' call sites."""
+        """Uses a real producer, not _note(): pip_install() warns on the uv fallback while its step
+        bar is open; the first fix pass only converted ' message' call sites and missed it."""
         fake = mock.Mock(returncode = 1, stdout = "uv output")
         with (
             mock.patch.object(ips, "USE_UV", True),
@@ -1186,7 +1338,7 @@ class TestProgressLineNotes:
         allowed = [
             (n.lineno, n.end_lineno)
             for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name in {"_progress", "_end_progress_line"}
+            if isinstance(n, ast.FunctionDef) and n.name in {"_draw_progress", "_end_progress_line"}
         ]
         offenders = [
             n.lineno
@@ -1201,7 +1353,7 @@ class TestProgressLineNotes:
         ]
         assert not offenders, (
             f"install_python_stack.py:{offenders} write to sys.stdout directly; "
-            "only _progress()/_end_progress_line() may, everything else uses _safe_print()"
+            "only _draw_progress()/_end_progress_line() may, everything else uses _safe_print()"
         )
 
     def test_no_message_starts_with_a_newline(self):
@@ -1235,7 +1387,7 @@ class TestProgressLineNotes:
         test makes it wrap: every message fits one line at COLUMNS=100."""
         msg = (
             "AMD GPU detected but ROCm PyTorch could not be auto-installed. Manual install "
-            "may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd"
+            "may be required. See: https://unsloth.ai/docs/get-started/install/amd"
         )
         out = self._render(lambda: ips._note(msg), columns = "60")
         lines = [ln for ln in out.split("\n") if ln.strip()]
@@ -1243,7 +1395,7 @@ class TestProgressLineNotes:
         for line in lines:
             assert len(line) - len(line.lstrip()) == ips._INDENT + ips._COL, repr(line)
         assert " ".join(ln.strip() for ln in lines) == msg
-        assert any("https://docs.unsloth.ai" in ln for ln in lines), out
+        assert any("https://unsloth.ai/docs" in ln for ln in lines), out
 
     def test_note_falls_back_to_the_flat_indent_in_verbose_mode(self):
         """Verbose prints no bar and no step line, so the value column would indent
@@ -1318,9 +1470,8 @@ class TestBuildPipCmdUpgradeIntent:
 
 
 class TestDamagedCorePayloadRepair:
-    """An upgrade of a distribution already at the wanted version installs
-    nothing: uv audits it, pip calls it satisfied, and both read metadata a
-    quarantine of the payload leaves intact."""
+    """An upgrade of a distribution already at the wanted version installs nothing: uv audits it and
+    pip calls it satisfied, both reading metadata a payload quarantine leaves intact."""
 
     def test_the_uv_command_targets_only_the_named_package(self):
         cmd = ips._build_uv_cmd(
@@ -1730,9 +1881,8 @@ class TestDuplicateCoreMetadataRepair:
         assert installs[0][2]["constrain"] is False
 
     def test_the_repair_runs_again_before_the_manifest_is_written(self):
-        """The first pass runs before the core packages are installed, so an
-        upgrade that leaves a superseded record behind would survive it and
-        write_manifest would record a null version under a successful exit."""
+        """The first repair pass runs before core packages install, so a superseded record left by
+        an upgrade would survive it and write_manifest would record a null version."""
         source = inspect.getsource(ips.install_python_stack)
         first = source.index("_repair_duplicate_core_metadata")
         second = source.index("_repair_duplicate_core_metadata", first + 1)
@@ -1826,9 +1976,8 @@ class TestDuplicateCoreMetadataRepair:
         assert calls[0][1]["input"] == b"unsloth-zoo"
 
     def test_a_falling_index_aborts_the_repair_rather_than_substituting(self, monkeypatch, capsys):
-        """uv fails the compile outright when a higher-priority index is unreachable,
-        which is the behaviour first-index exists to give: a public release must not
-        stand in for a private one just because the private mirror was down."""
+        """uv fails the compile when a higher-priority index is unreachable, as first-index intends;
+        a public release must not stand in for a private one just because its mirror is down."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         self._uv_plan(monkeypatch, returncode = 1)
@@ -1873,11 +2022,9 @@ class TestDuplicateCoreMetadataRepair:
         ),
     )
     def test_a_direct_reference_is_staged_as_written(self, monkeypatch, requirement):
-        """The overlay paths hand staging a git URL or a checkout, not a bare name.
-        Such a requirement is its own provenance -- no index chose it -- and uv
-        appends the resolved commit to what it emits, so asking uv would compare a
-        bare spec against a pinned one and never match, aborting every local
-        duplicate-zoo repair before it started."""
+        """Overlay direct references (git URL or checkout) are their own provenance; uv appends the
+        resolved commit, so asking it would never match and abort every local duplicate-zoo
+        repair."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         calls = self._uv_plan(monkeypatch)
@@ -1955,9 +2102,8 @@ class TestDuplicateCoreMetadataRepair:
         assert Path(ips._pip_config_without_sources(str(tmp_path))).read_text() == ""
 
     def test_uv_artifact_policy_is_replayed_from_its_configuration(self, monkeypatch):
-        """A no-binary or only-binary rule would otherwise change the artifact type
-        during the repair: a wheel downloaded under a no-binary rule, or an sdist
-        built under an only-binary one."""
+        """A no-binary or only-binary rule must be replayed during repair, or the artifact type
+        changes: a wheel downloaded under no-binary, or an sdist built under only-binary."""
         self._uv_only(monkeypatch)
         self._uv_plan(
             monkeypatch,
@@ -1967,9 +2113,8 @@ class TestDuplicateCoreMetadataRepair:
         assert options == ["--only-binary", ":all:"]
 
     def test_the_env_spelling_of_the_artifact_policy_is_translated(self, monkeypatch):
-        """Measured on uv 0.10.7: --emit-build-options surfaces the policy from
-        uv.toml but not the environment-variable spelling, so that half is
-        translated by hand."""
+        """On uv 0.10.7, --emit-build-options surfaces the policy from uv.toml but not the
+        UV_ONLY_BINARY spelling, so that half is translated by hand."""
         self._uv_only(monkeypatch)
         monkeypatch.setenv("UV_ONLY_BINARY", ":all:")
         monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
@@ -2060,9 +2205,8 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._strip_userinfo(url) == bare
 
     def test_offline_still_stages_a_local_checkout(self, tmp_path, monkeypatch):
-        """--local hands the repair a checkout on disk. It needs no network, so
-        UV_OFFLINE has nothing to say about it, and refusing left the conflict in
-        place and failed the update for no reason."""
+        """A --local checkout needs no network, so UV_OFFLINE does not apply to it; refusing would
+        leave the conflict in place and fail the update for no reason."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         monkeypatch.setenv("UV_OFFLINE", "1")
@@ -2137,9 +2281,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "Version: 1.2.3" in written
 
     def test_a_record_without_a_manifest_fails_closed(self, tmp_path):
-        """No RECORD means neither pip nor this installer knows which files belong
-        to the package, so a replacement laid over them would leave whatever the new
-        release no longer ships behind."""
+        """Without a RECORD, neither pip nor this installer knows which files belong to the package,
+        so a replacement would leave files the new release drops behind."""
         record = tmp_path / "realpkg-1.2.3.dist-info"
         record.mkdir()
         (record / "METADATA").write_bytes(b"\xff\xfe")
@@ -2466,9 +2609,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "ci_source_overlay=ci_source_overlay" in source
 
     def test_the_replacement_is_staged_before_any_record_is_removed(self, monkeypatch):
-        """The uninstall loop deletes every record, so the replacement has to be
-        in hand first. Otherwise an index that is unreachable at that moment
-        leaves the venv with no unsloth and nothing to reinstall from."""
+        """The uninstall loop deletes every record, so the replacement must be staged first;
+        otherwise an unreachable index leaves the venv with no unsloth to reinstall."""
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
         order = []
 
@@ -2587,9 +2729,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "Name: unsloth" in (backup / "METADATA").read_text()
 
     def test_staging_builds_a_wheel_so_the_offline_install_can_work(self):
-        """pip download leaves an sdist for a source-only index, and the install
-        that follows runs --no-index, so its isolated build cannot fetch
-        setuptools and the package stays uninstalled."""
+        """pip download leaves an sdist for a source-only index, and the following --no-index
+        install cannot fetch setuptools for its isolated build, so staging must build a wheel."""
         source = inspect.getsource(ips._stage_replacement).replace(" ", "")
         assert '"wheel",\n"--no-deps",' in source
         assert '"--wheel-dir",\nstaging,' in source
@@ -2597,9 +2738,8 @@ class TestDuplicateCoreMetadataRepair:
         assert 'glob.glob(os.path.join(staging,"*.whl"))' in source
 
     def test_a_git_overlay_is_staged_before_the_uninstall_loop(self, monkeypatch):
-        """--local pulls unsloth-zoo from git, so an overlay is a network fetch
-        too. Skipping staging for it meant an unreachable GitHub left the
-        package uninstalled."""
+        """A --local overlay pulls unsloth-zoo from git, a network fetch too; skipping its staging
+        meant an unreachable GitHub left the package uninstalled."""
         probes = {"unsloth-zoo": iter((["old", "new"], ["new"], [], ["new"]))}
         order = []
 
@@ -2646,9 +2786,8 @@ class TestDuplicateCoreMetadataRepair:
         assert installs and "--find-links" in installs[0]
 
     def test_a_partial_uninstall_restores_the_payload(self, monkeypatch, capsys):
-        """The first uninstall deletes the package tree. Returning after a later
-        one fails would leave a dist-info claiming an install whose files are
-        gone."""
+        """The first uninstall deletes the package tree, so a failure on a later one must restore
+        the payload rather than leave a dist-info claiming files that are gone."""
         probes = iter((["a", "b", "c"], ["b", "c"]))
         uninstalls = iter([True, False])
         installs = []
@@ -2720,29 +2859,193 @@ class TestDuplicateCoreMetadataRepair:
 
 
 class TestDesktopBackendVersionConstraint:
-    """Verify that UNSLOTH_DESKTOP_BACKEND_VERSION adds the floor pin when upgrading unsloth."""
+    """UNSLOTH_DESKTOP_BACKEND_VERSION floors the unsloth upgrade, lowered only for a lagging index (#14031)."""
 
-    def test_spec_includes_floor_when_env_set(self):
-        with mock.patch.dict(os.environ, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}):
-            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-            package_name = "unsloth"
-            unsloth_spec = (
-                f"{package_name}>={desktop_min_ver}"
-                if (desktop_min_ver and package_name == "unsloth")
-                else package_name
-            )
-            assert unsloth_spec == "unsloth>=2026.8.15"
+    @staticmethod
+    def _fake_uv(
+        have,
+        zoo = None,
+        floors = None,
+    ):
+        """uv pip compile over a fake index (unsloth 2026.10.2..have, unsloth-zoo 2026.10.2..zoo);
+        each unsloth requires its own zoo unless floors says otherwise; the zoo floor is enforced
+        only when the probe resolves dependencies."""
+        from packaging.requirements import Requirement
 
-    def test_spec_bare_when_env_unset(self):
-        with mock.patch.dict(os.environ, {}, clear = True):
-            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-            package_name = "unsloth"
-            unsloth_spec = (
-                f"{package_name}>={desktop_min_ver}"
-                if (desktop_min_ver and package_name == "unsloth")
-                else package_name
-            )
-            assert unsloth_spec == "unsloth"
+        def releases(top):
+            return [f"2026.10.{n}" for n in range(2, 10) if Version(f"2026.10.{n}") <= Version(top)]
+
+        unsloth = releases(have)
+        zoos = releases(zoo or have)
+        floor_of = {v: (floors or {}).get(v, v) for v in unsloth}
+
+        def run(
+            argv,
+            input = None,
+            **kwargs,
+        ):
+            assert argv[:3] == ["uv", "pip", "compile"]
+            deps = "--no-deps" not in argv
+            out = Path(argv[argv.index("--output-file") + 1])
+            reqs = {r.name: r.specifier for r in map(Requirement, input.split())}
+            u_ok = [v for v in unsloth if v in reqs.get("unsloth", v)]
+            z_ok = [v for v in zoos if v in reqs.get("unsloth-zoo", v)]
+            picked = {}
+            if "unsloth" in reqs:
+                for v in sorted(u_ok, key = Version, reverse = True):
+                    fit = [z for z in z_ok if not deps or Version(z) >= Version(floor_of[v])]
+                    if fit:
+                        picked["unsloth"] = v
+                        if deps or "unsloth-zoo" in reqs:
+                            picked["unsloth-zoo"] = max(fit, key = Version)
+                        break
+                else:
+                    return subprocess.CompletedProcess(argv, 1)
+            elif z_ok:
+                picked["unsloth-zoo"] = max(z_ok, key = Version)
+            else:
+                return subprocess.CompletedProcess(argv, 1)
+            out.write_text("".join(f"{k}=={v} \\\n" for k, v in picked.items()), encoding = "utf-8")
+            return subprocess.CompletedProcess(argv, 0)
+
+        return run
+
+    def _spec(
+        self,
+        tmp_path,
+        env,
+        have = "2026.10.3",
+        package = "unsloth",
+        zoo = None,
+        floors = None,
+        full = False,
+        no_torch = False,
+    ):
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.sys, "prefix", str(tmp_path)),
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "NO_TORCH", no_torch),
+            mock.patch.object(
+                ips,
+                "_uv_config_index_policy",
+                return_value = {
+                    "unreadable": False,
+                    "no_index": None,
+                    "extra_indexes": [],
+                    "default_index": None,
+                },
+            ),
+            mock.patch.object(
+                ips.subprocess, "run", side_effect = self._fake_uv(have, zoo, floors)
+            ) as run,
+        ):
+            specs = ips._desktop_unsloth_spec(package)
+            return (specs if full else specs[0]), run.call_count
+
+    def test_spec_includes_floor_when_env_set(self, tmp_path):
+        spec, calls = self._spec(
+            tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}, full = True
+        )
+        assert spec == ("unsloth>=2026.8.15", "unsloth-zoo>=2026.10.3")
+        assert calls == 1, "an index that has the release answers the one probe"
+
+    def test_spec_bare_when_env_unset(self, tmp_path):
+        assert self._spec(tmp_path, {}, full = True)[0] == ("unsloth", "unsloth-zoo")
+        assert (
+            self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}, package = "x")[0]
+            == "x"
+        )
+
+    def test_lagging_index_lowers_floor_and_writes_marker(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_DEFAULT_INDEX": "https://feed.example/simple",
+        }
+        spec, _ = self._spec(tmp_path, env)
+        assert spec == "unsloth==2026.10.3"
+        marker = json.loads((tmp_path / ips.FEED_CEILING_MARKER).read_text(encoding = "utf-8"))
+        assert marker == {"requested": "2026.10.6", "available": "2026.10.3"}
+
+        # Once the index has the release, the floor stays and the marker goes.
+        spec, _ = self._spec(tmp_path, env, have = "2026.10.6")
+        assert spec == "unsloth>=2026.10.6"
+        assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
+
+    def test_lowered_unsloth_carries_its_zoo_pin(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
+        assert self._spec(tmp_path, env, full = True)[0] == (
+            "unsloth==2026.10.3",
+            "unsloth-zoo==2026.10.3",
+        )
+
+    def test_zoo_behind_requested_unsloth_lowers_to_resolvable_pair(self, tmp_path):
+        # unsloth 2026.10.6 is on the index but its zoo floor is not: the requested floor
+        # cannot resolve, the 2026.10.3 pair can.
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
+        spec, _ = self._spec(tmp_path, env, have = "2026.10.6", zoo = "2026.10.3", full = True)
+        assert spec == ("unsloth==2026.10.3", "unsloth-zoo==2026.10.3")
+        marker = json.loads((tmp_path / ips.FEED_CEILING_MARKER).read_text(encoding = "utf-8"))
+        assert marker == {"requested": "2026.10.6", "available": "2026.10.3"}
+
+    def test_unsloth_ahead_of_zoo_with_met_floor_is_untouched(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
+        spec, calls = self._spec(
+            tmp_path,
+            env,
+            have = "2026.10.6",
+            zoo = "2026.10.3",
+            floors = {"2026.10.6": "2026.10.3"},
+            full = True,
+        )
+        assert spec == ("unsloth>=2026.10.6", "unsloth-zoo>=2026.10.3")
+        assert calls == 1
+        assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
+
+    def test_lowered_pair_prefers_newest_unsloth_whose_floor_is_met(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
+        spec, _ = self._spec(
+            tmp_path,
+            env,
+            have = "2026.10.6",
+            zoo = "2026.10.3",
+            floors = {"2026.10.5": "2026.10.3"},
+            full = True,
+        )
+        assert spec == ("unsloth==2026.10.5", "unsloth-zoo==2026.10.3")
+
+    def test_extra_index_beside_pypi_counts(self, tmp_path):
+        # first-index: a lagging UV_INDEX mirror shadows PyPI for the packages it carries.
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_EXCLUDE_NEWER_PACKAGE": "unsloth=2026-10-09",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+
+    def test_zoo_lagging_unsloth_caps_the_backend(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env, zoo = "2026.10.2", full = True)[0] == (
+            "unsloth==2026.10.2",
+            "unsloth-zoo==2026.10.2",
+        )
+
+    def test_upload_cutoff_alone_counts(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6", "UV_EXCLUDE_NEWER": "2026-10-09"}
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+
+    def test_core_installs_pass_the_zoo_spec(self):
+        src = inspect.getsource(ips)
+        assert src.count("unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)") == 2
+        assert src.count("                unsloth_spec,\n                zoo_spec,\n") == 1
+        assert src.count("            unsloth_spec,\n            zoo_spec,\n") == 1
 
 
 class TestRecordlessDistributionRecovery:

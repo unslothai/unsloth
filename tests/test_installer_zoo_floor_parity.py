@@ -24,6 +24,11 @@ INSTALL_PS1 = REPO / "install.ps1"
 EXPECTED_NO_DEPS_SITES = 4
 
 _ZOO_SPEC = re.compile(r"""unsloth[-_]zoo\s*(?:>=|==)\s*[0-9][^"'\s]*""")
+_ZOO_VAR_ASSIGN = re.compile(
+    r"""^\s*\$?(?:_unsloth_zoo_install_spec|_unslothZooInstallSpec)\s*=\s*"(unsloth-zoo>=[0-9][^"]*)"$""",
+    re.MULTILINE,
+)
+_ZOO_VAR_USE = re.compile(r"\$(?:_unsloth_zoo_install_spec|_unslothZooInstallSpec)\b")
 
 
 def _logical_lines(path: Path) -> list[tuple[int, str]]:
@@ -85,9 +90,16 @@ def _installer_sites() -> list[tuple[str, int, str, bool]]:
             if path.suffix == ".sh"
             else list(enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1))
         )
+        # The install lines name the floor through one variable, which the lagging-index
+        # fallback may lower at run time (#14031); its assignment carries the shipped floor.
+        assigned = _ZOO_VAR_ASSIGN.findall(path.read_text(encoding = "utf-8"))
+        assert (
+            len(assigned) == 1
+        ), f"{path.name}: expected one zoo floor variable assignment, found {assigned}"
         for number, text in lines:
             if "pip install" not in text:
                 continue
+            text = _ZOO_VAR_USE.sub(assigned[0], text)
             no_deps = "--no-deps" in text
             for spec in _ZOO_SPEC.findall(text):
                 sites.append((path.name, number, spec, no_deps))

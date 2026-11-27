@@ -10,6 +10,7 @@ install.sh's own heredocs and compare it with the pre-fix shape, which must stil
 translated on the same host, or the run proves nothing and skips.
 """
 
+import json
 import os
 import platform
 import plistlib
@@ -44,6 +45,16 @@ def _heredoc(tag: str) -> str:
 
 def _plist() -> dict:
     return plistlib.loads(_heredoc("PLIST_EOF").encode())
+
+
+def test_launcher_has_a_distinct_bundle_identifier() -> None:
+    desktop_id = json.loads(
+        (REPO_ROOT / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    )["identifier"]
+    launcher_id = _plist()["CFBundleIdentifier"]
+
+    assert launcher_id == "ai.unsloth.studio.launcher"
+    assert launcher_id != desktop_id
 
 
 def _old_stub() -> str:

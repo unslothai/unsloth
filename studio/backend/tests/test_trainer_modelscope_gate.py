@@ -16,16 +16,7 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Register a stub module for a dep the backend pytest job does not install.
-
-    Same helper and reason as test_trainer_stdout_quiet.py: core.training.trainer imports
-    unsloth (and through it unsloth_zoo) and trl at module scope, while the pytest matrix in
-    studio-backend-ci.yml installs studio.txt plus torch and transformers and deliberately
-    stops there, because the repo-cpu-tests job beside it is the one that installs
-    unsloth_zoo, for the REPO-ROOT tests/ tree. Unstubbed, this module fails COLLECTION and
-    takes the whole job down. A real install is left alone. __spec__ = None keeps the
-    trainer's own _ensure_real_packages namespace-shadow guard a no-op on the stub.
-    """
+    """Stubs a dep the backend pytest job lacks, so collection succeeds; real installs are left alone."""
     if name in sys.modules:
         return
     try:
@@ -93,7 +84,7 @@ def test_gate_check_reports_a_repo_missing_on_modelscope(monkeypatch, gone, expe
     monkeypatch.setattr(utils.cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: None)
     monkeypatch.setattr(trainer_module, "detect_audio_type_checked", lambda *a, **k: (None, True))
     monkeypatch.setattr(trainer_module, "is_vision_model", lambda *a, **k: False)
-    monkeypatch.setattr(trainer_module, "_env_offline", lambda: False)
+    monkeypatch.setattr(trainer_module, "hf_env_offline", lambda: False)
     trainer = object.__new__(UnslothTrainer)
     trainer.model = trainer.tokenizer = trainer.trainer = None
     errors = []

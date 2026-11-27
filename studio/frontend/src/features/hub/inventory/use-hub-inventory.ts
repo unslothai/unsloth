@@ -56,6 +56,8 @@ import {
 export interface HubInventory {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
+  /** Complete hf_cache GGUF load ids from before dedupe, which can drop a snapshot's GGUF row. */
+  hfCacheGgufLoadIds: ReadonlySet<string>;
   availableSet: Set<string>;
   partialSet: Set<string>;
   downloadingSet: Set<string>;
@@ -198,6 +200,7 @@ function shouldSurfaceLiveJob(
   if (isDatasetMode !== (job.kind === "dataset")) return false;
   if (job.state === "running" || job.state === "cancelling") return true;
   if (job.state !== "cancelled" && job.state !== "error") return false;
+  if (job.retained) return false;
   return Math.max(job.downloadedBytes, job.completedBytes) > 0;
 }
 
@@ -282,7 +285,6 @@ function liveDownloadInventoryRows(
           load_id: job.repoId,
           model_format: modelFormat,
           size_bytes: job.displayBytes,
-          // live jobs already use epoch milliseconds
           last_modified: job.startedAt,
           partial: true,
           partial_transport: null,
@@ -602,6 +604,16 @@ export function useHubInventory(
       .sort((a, b) => a.title.localeCompare(b.title));
   }, [localDatasetsSource.rows]);
 
+  const hfCacheGgufLoadIds = useMemo(
+    () =>
+      new Set(
+        localRows
+          .filter((row) => row.source === "hf_cache" && row.modelFormat === "gguf" && !row.partial)
+          .map((row) => row.loadId),
+      ),
+    [localRows],
+  );
+
   const dedupedModelInventory = useMemo(
     () =>
       dedupeSameSourceHubCacheRows({
@@ -814,6 +826,7 @@ export function useHubInventory(
   return {
     cachedRows,
     localRows: effectiveLocalRows,
+    hfCacheGgufLoadIds,
     availableSet,
     partialSet,
     downloadingSet,

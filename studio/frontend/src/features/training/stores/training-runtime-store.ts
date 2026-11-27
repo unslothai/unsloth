@@ -2,11 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-// Module state outlives a logout, so this store clears with the session. Relative and
-// extensioned like the sibling below: the store's test runs under
-// `node --experimental-strip-types`, which cannot resolve the `@/` alias.
+// Clears with the session. Relative and extensioned because the test runs under
+// `node --experimental-strip-types`, which cannot resolve `@/`.
 import { AUTH_SESSION_CLEARED_EVENT } from "../../auth/session-events.ts";
+import { normalizeRunParallel } from "../lib/parallel-plan.ts";
 import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
+import type { RunParallelInfo } from "../types/parallel";
 import type {
   TrainingMetricsResponse,
   TrainingPhase,
@@ -50,6 +51,18 @@ export function isTrainingStartPending(
   );
 }
 
+/** Absent key = unchanged (older backend, partial status); the same layout keeps its object. */
+function nextRunParallel(
+  current: RunParallelInfo | null,
+  payload: TrainingStatusResponse,
+): RunParallelInfo | null {
+  if (!("parallel" in payload)) return current;
+  const next = normalizeRunParallel(payload.parallel);
+  return current && next && JSON.stringify(current) === JSON.stringify(next)
+    ? current
+    : next;
+}
+
 const initialState: TrainingRuntimeState = {
   jobId: null,
   phase: "idle",
@@ -58,6 +71,7 @@ const initialState: TrainingRuntimeState = {
   message: "Ready to train",
   error: null,
   warnings: [],
+  parallel: null,
   isHydrating: false,
   hasHydrated: false,
   isStarting: false,
@@ -310,6 +324,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           message,
           error: null,
           warnings: [],
+          parallel: null,
           startError: null,
           phase: "configuring",
           modelDownloadRepoId: null,
@@ -386,6 +401,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               ...state,
               jobId: payload.job_id,
               warnings: [],
+              parallel: null,
               isStarting: state.isStarting,
               startModelName: localStartStatus ? state.startModelName : null,
               startDatasetName: localStartStatus
@@ -445,6 +461,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           message: payload.message,
           error: payload.error,
           warnings: nextWarnings,
+          parallel: nextRunParallel(runtimeState.parallel, payload),
           currentStep:
             detailStep !== null
               ? Math.max(detailStep, runtimeState.currentStep, 0)
@@ -569,7 +586,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
             totalSteps !== null && totalSteps > 0
               ? Math.max(totalSteps, state.totalSteps)
               : state.totalSteps,
-          // A null loss at a new step means non-finite; clear the display rather than keep a stale value.
+          // A null loss at a new step means non-finite; clear rather than keep a stale value.
           currentLoss:
             currentLoss ??
             (step > state.currentStep ? null : state.currentLoss),
@@ -619,9 +636,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
   }),
 );
 
-// startHfToken holds a raw Hub credential in module state that outlives a logout:
-// reconcile() in __root remounts rather than reloading, so the next account in the tab
-// would poll with the previous one's token. useHfTokenStore already clears on this event.
+// startHfToken outlives a logout and reconcile() remounts without reloading, so clear it.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     useTrainingRuntimeStore.getState().resetRuntime();

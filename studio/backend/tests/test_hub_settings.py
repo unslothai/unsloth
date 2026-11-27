@@ -317,9 +317,32 @@ def test_route_saves_and_reports(client, store):
         "datasets_server_follows_endpoint": True,
         "source": "huggingface",
         "active_source": "huggingface",
+        "page_base": None,
+        "page_base_relay": None,
     }
-    assert client.get("/hub").json() == body
+    reported = client.get("/hub").json()
+    assert reported == {**body, "page_base": MIRROR, "page_base_relay": reported["page_base_relay"]}
+    # Built like /api/health's hub_proxy, which keys the browser's relay endpoint.
+    from hub import endpoint_proxy
+
+    assert reported["page_base_relay"] == endpoint_proxy.relay_path(
+        endpoint_proxy.HUB_PREFIX, MIRROR, "https://huggingface.co"
+    )
     assert os.environ["HF_DATASETS_SERVER"] == MIRROR
+
+
+def test_page_base_follows_what_the_relay_lets_this_client_reach(client, store, monkeypatch):
+    loopback = "http://127.0.0.1:9000"
+    assert (
+        client.put(
+            "/hub", json = {"hf_endpoint": loopback, "datasets_server_follows_endpoint": False}
+        ).status_code
+        == 200
+    )
+    monkeypatch.setattr("utils.client_ip.client_ip", lambda request: "203.0.113.9")
+    assert client.get("/hub").json()["page_base"] is None
+    monkeypatch.setattr("utils.client_ip.client_ip", lambda request: "127.0.0.1")
+    assert client.get("/hub").json()["page_base"] == loopback
 
 
 def test_only_the_owner_reads_the_endpoint(client, monkeypatch):
@@ -373,7 +396,6 @@ def test_the_owner_is_told_once_and_the_automatic_source_is_kept(client, store, 
     claim = studio_db.compare_and_set_app_setting
 
     def endpoint_saved_meanwhile(*args, **kwargs):
-        # Another tab saves an endpoint between this claim's read and its insert.
         store[hub_settings.HF_ENDPOINT_KEY] = MIRROR
         return claim(*args, **kwargs)
 
@@ -695,7 +717,7 @@ def test_live_switch_does_not_abort_a_streaming_download(store, monkeypatch):
     threading.Thread(target = server.serve_forever, daemon = True).start()
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
     for name in ("NO_PROXY", "no_proxy"):
-        monkeypatch.setenv(name, "127.0.0.1")  # the test server itself is reachable
+        monkeypatch.setenv(name, "127.0.0.1")
     monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://localhost:1234")
     out = {}
 

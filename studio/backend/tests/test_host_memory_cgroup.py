@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One cgroup-aware "usable host RAM" reader for every place Studio sizes host memory.
-
-Fake cgroup trees (v2, v1, nested, unlimited, malformed) drive ``utils.host_memory`` and the three
-consumers that must agree on it: the diffusion pin budget, the MiniMax-H3 host-RAM guard and the
-``/api/system`` memory figures the model picker's RAM tiers compare against.
-"""
+"""Fake cgroup trees drive the single usable-host-RAM reader that all memory sizing consumers share."""
 
 import os
 import sys
@@ -376,3 +371,138 @@ def test_api_system_memory_without_a_limit_is_unchanged(fake_cgroup, host, monke
     assert memory["total_gb"] == round(host["total"] / GIB, 2)
     assert memory["available_gb"] == round(host["available"] / GIB, 2)
     assert memory["percent_used"] == 20.0
+
+
+def _stat(directory: Path, **counters) -> None:
+    _write(directory / "memory.stat", "".join(f"{k} {v}\n" for k, v in counters.items()))
+
+
+@reader
+def test_v2_active_file_cache_is_reclaimable(fake_cgroup, host):
+    """Kaggle: twice-read model files sit on active_file; counting them as used shrank headroom 17 -> 3 GiB."""
+    fake_cgroup.membership("0::/\n")
+    _v2(fake_cgroup.root, "/", limit = 32 * GIB, current = 30 * GIB)
+    _stat(
+        fake_cgroup.root,
+        anon = 15 * GIB,
+        file = 15 * GIB,
+        inactive_file = 1 * GIB,
+        active_file = 14 * GIB,
+        shmem = 0,
+    )
+    # 32 - (30 - 1 inactive - 14 active) = 17 GiB, not 32 - (30 - 1) = 3 GiB.
+    assert host_memory.cgroup_headroom_mib() == 17 * 1024
+    assert host_memory.usable_host_ram_mib() == 17 * 1024
+    assert host_memory.cgroup_limit_mib() == 32 * 1024
+
+
+@reader
+def test_v2_shmem_is_never_counted_as_free(fake_cgroup, host):
+    """shmem/tmpfs is in ``file`` but on the anon LRU: not droppable."""
+    fake_cgroup.membership("0::/\n")
+    _v2(fake_cgroup.root, "/", limit = 32 * GIB, current = 28 * GIB)
+    _stat(
+        fake_cgroup.root,
+        anon = 8 * GIB,
+        file = 20 * GIB,
+        shmem = 12 * GIB,
+        inactive_anon = 4 * GIB,
+        active_anon = 16 * GIB,
+        inactive_file = 2 * GIB,
+        active_file = 6 * GIB,
+    )
+    headroom = host_memory.cgroup_headroom_mib()
+    # 32 - (28 - 2 - 6) = 12 GiB; crediting ``file`` (incl. the 12 GiB shmem) would claim 24 GiB.
+    assert headroom == 12 * 1024
+    assert headroom < (32 - (28 - 20)) * 1024
+
+
+@reader
+def test_v2_mapped_dirty_and_writeback_active_pages_are_not_credited(fake_cgroup, host):
+    fake_cgroup.membership("0::/\n")
+    _v2(fake_cgroup.root, "/", limit = 32 * GIB, current = 30 * GIB)
+    _stat(
+        fake_cgroup.root,
+        inactive_file = 2 * GIB,
+        active_file = 10 * GIB,
+        file_mapped = 4 * GIB,
+        file_dirty = 1 * GIB,
+        file_writeback = 1 * GIB,
+    )
+    # Active credit = 10 - 4 - 1 - 1 = 4 GiB: 32 - (30 - 2 - 4) = 8 GiB.
+    assert host_memory.cgroup_headroom_mib() == 8 * 1024
+
+
+@reader
+def test_v2_never_below_the_inactive_only_reading(fake_cgroup, host):
+    """Over-subtraction clamps at zero."""
+    fake_cgroup.membership("0::/\n")
+    _v2(fake_cgroup.root, "/", limit = 32 * GIB, current = 30 * GIB)
+    _stat(fake_cgroup.root, inactive_file = 2 * GIB, active_file = 3 * GIB, file_mapped = 9 * GIB)
+    assert host_memory.cgroup_headroom_mib() == 4 * 1024
+
+
+@reader
+def test_v2_host_meminfo_still_bounds_the_reading(fake_cgroup, host):
+    fake_cgroup.membership("0::/\n")
+    host["available"] = 5 * GIB
+    _v2(fake_cgroup.root, "/", limit = 32 * GIB, current = 30 * GIB)
+    _stat(fake_cgroup.root, inactive_file = 1 * GIB, active_file = 14 * GIB)
+    assert host_memory.cgroup_headroom_mib() == 17 * 1024
+    assert host_memory.usable_host_ram_mib() == 5 * 1024
+
+
+@reader
+def test_v2_ancestor_level_uses_its_own_file_cache(fake_cgroup, host):
+    fake_cgroup.membership("0::/kaggle.slice/run.scope\n")
+    leaf = _v2(fake_cgroup.root, "kaggle.slice/run.scope", limit = "max", current = 10 * GIB)
+    parent = _v2(fake_cgroup.root, "kaggle.slice", limit = 20 * GIB, current = 19 * GIB)
+    _stat(leaf, inactive_file = 0, active_file = 9 * GIB)
+    _stat(parent, inactive_file = 1 * GIB, active_file = 10 * GIB)
+    assert host_memory.cgroup_headroom_mib() == 12 * 1024
+
+
+@reader
+def test_v1_hierarchical_active_file_is_reclaimable_and_shmem_is_not(fake_cgroup, host):
+    fake_cgroup.membership("12:memory:/docker/abc\n")
+    d = fake_cgroup.root / "memory" / "docker" / "abc"
+    _write(d / "memory.limit_in_bytes", str(16 * GIB))
+    _write(d / "memory.usage_in_bytes", str(14 * GIB))
+    _stat(
+        d,
+        inactive_file = 50 * GIB,
+        active_file = 50 * GIB,
+        total_cache = 9 * GIB,
+        total_shmem = 2 * GIB,
+        total_inactive_file = 1 * GIB,
+        total_active_file = 6 * GIB,
+        total_mapped_file = 1 * GIB,
+        total_dirty = 0,
+        total_writeback = 0,
+    )
+    # 16 - (14 - 1 - (6 - 1)) = 8 GiB; total_cache (incl. 2 GiB shmem) would claim 11 GiB.
+    assert host_memory.cgroup_headroom_mib() == 8 * 1024
+
+
+@reader
+def test_v1_without_total_counters_uses_the_level_ones(fake_cgroup, host):
+    fake_cgroup.membership("12:memory:/docker/abc\n")
+    d = fake_cgroup.root / "memory" / "docker" / "abc"
+    _write(d / "memory.limit_in_bytes", str(16 * GIB))
+    _write(d / "memory.usage_in_bytes", str(14 * GIB))
+    _stat(d, cache = 8 * GIB, inactive_file = 1 * GIB, active_file = 6 * GIB, mapped_file = 2 * GIB)
+    assert host_memory.cgroup_headroom_mib() == 7 * 1024
+
+
+@reader
+def test_v1_memsw_headroom_credits_active_file_cache(fake_cgroup, host):
+    fake_cgroup.membership("12:memory:/docker/abc\n")
+    d = fake_cgroup.root / "memory" / "docker" / "abc"
+    _write(d / "memory.limit_in_bytes", str(16 * GIB))
+    _write(d / "memory.usage_in_bytes", str(14 * GIB))
+    _write(d / "memory.memsw.limit_in_bytes", str(24 * GIB))
+    _write(d / "memory.memsw.usage_in_bytes", str(15 * GIB))
+    _stat(d, total_inactive_file = 1 * GIB, total_active_file = 6 * GIB)
+    assert host_memory.cgroup_v1_memsw_headroom_bytes() == (24 - (15 - 7)) * GIB
+    # RAM room 16 - (14 - 7) = 9, combined room 16: 7 GiB of swap left.
+    assert host_memory.cgroup_swap_allowance_bytes(100 * GIB) == 7 * GIB

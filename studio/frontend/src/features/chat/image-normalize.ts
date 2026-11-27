@@ -55,7 +55,17 @@ export function convertedImageType(file: {
   return kind === null ? null : (CONVERTED_IMAGE_TYPES[kind] ?? null);
 }
 
-const MAX_CONVERTED_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_CHAT_IMAGE_BYTES = 20 * 1024 * 1024;
+
+export function getChatImageSizeError(file: {
+  name: string;
+  size: number;
+}): string | null {
+  return file.size > MAX_CHAT_IMAGE_BYTES
+    ? `${file.name} is over the 20 MB image limit.`
+    : null;
+}
+
 // iOS Safari, the one browser that decodes HEIC, refuses canvases past 16.7 megapixels.
 const MAX_CONVERTED_IMAGE_PIXELS = 16_777_216;
 
@@ -99,7 +109,7 @@ export async function normalizeChatImage(file: File): Promise<File> {
     if (!blob) {
       throw new Error(`Could not convert ${file.name}.`);
     }
-    if (blob.size > MAX_CONVERTED_IMAGE_BYTES) {
+    if (blob.size > MAX_CHAT_IMAGE_BYTES) {
       throw new Error(`${file.name} is over 20 MB once converted.`);
     }
     const extension = type === "image/jpeg" ? ".jpg" : ".png";

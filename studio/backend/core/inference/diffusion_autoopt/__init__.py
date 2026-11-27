@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Diffusion / video auto-optimizer: one orchestrator over Studio's speed primitives.
-
-* ``targets``  denoiser and runner resolution (attribute contracts + by-type discovery).
-* ``profile``  static introspection of a denoiser class (repeated blocks, graph-break screen), cached by digest.
-* ``patches``  the PatchSpec registry: one install / uninstall lifecycle and one fingerprint util for every
-               per-architecture source / forward patch.
-* ``plan``     the ordered steps, their predicted decision + reason, the canonical compile-cache kwargs.
-* ``apply``    ``run_speed_layer``: the single image + video entry, per-step audit.
-* ``runtime``  call-time checks against the runner that actually executes a request.
-
-Import is torch-free; every submodule imports torch / diffusers lazily.
-"""
+"""Diffusion/video auto-optimizer orchestrator; import is torch-free, submodules load torch lazily."""
 
 from __future__ import annotations
 

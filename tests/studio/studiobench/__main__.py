@@ -665,8 +665,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
             time.sleep(1.0)
             procs = new_roots(os.getpid(), procs_before)
 
-        # Init scripts carry the access token and re-run on every navigation, so the seed script defers
-        # to the later `exp` after a re-mint.
+        # Init scripts carry the token and re-run per navigation; seed defers to later `exp`.
         for side in sides:
             side["auth"].on_rotate = lambda auth_now, side = side: bundle.context.add_init_script(
                 side["seed_script"](auth_now)
