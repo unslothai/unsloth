@@ -50,6 +50,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -792,8 +793,17 @@ export function ModelsPage() {
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
   const [sortBrowseActive, setSortBrowseActive] = useState(false);
 
+  const catalogPaneRef = useRef<HTMLDivElement>(null);
+  const focusTabOnMount = useRef<ModelsTab | null>(null);
   const handleTabChange = useCallback(
     (next: ModelsTab) => {
+      // On compact screens the tab switch mounts the toolbar in the incoming pane.
+      focusTabOnMount.current =
+        isCompactViewport &&
+        next !== tab &&
+        document.activeElement?.closest('[data-tour="hub-tabs"]')
+          ? next
+          : null;
       setSortBrowseActive(false);
       // The filters control is Discover-only, so a hidden filter must not reapply on return.
       setSearchFilters({});
@@ -802,8 +812,16 @@ export function ModelsPage() {
       setFirstPickArmed(true);
       setModelsTab(next);
     },
-    [setModelsTab],
+    [isCompactViewport, setModelsTab, tab],
   );
+
+  useLayoutEffect(() => {
+    if (focusTabOnMount.current !== tab) return;
+    focusTabOnMount.current = null;
+    catalogPaneRef.current
+      ?.querySelector<HTMLButtonElement>('[data-tour="hub-tabs"] [aria-checked="true"]')
+      ?.focus({ preventScroll: true });
+  }, [tab]);
 
   const handleResourceTypeChange = useCallback(
     (next: ResourceTypeFilter) => {
@@ -2172,7 +2190,6 @@ export function ModelsPage() {
   const splitMode = showNpuCatalog || allModelsView === "split";
   const catalogCovered = detailOpen && !splitMode;
 
-  const catalogPaneRef = useRef<HTMLDivElement>(null);
   const splitWidth = useHubSplitWidth();
 
   const tour = useGuidedTourController({
@@ -2180,57 +2197,62 @@ export function ModelsPage() {
     steps: useMemo(() => buildHubTourSteps({ catalogCovered }), [catalogCovered]),
   });
 
+  const topBar = (
+    <HubTopBar>
+      <ModelsHeader
+        cachedCount={visibleCachedCount}
+        localCount={visibleLocalCount}
+        isDataset={isDatasetMode}
+        gpuLabel={gpuLabel}
+        gpuSharedLabel={gpuSharedLabel}
+        ramLabel={ramLabel}
+        coreLabel={coreLabel}
+        onTitleClick={handleResetToDiscover}
+      />
+      <ModelsToolbar
+        tab={tab}
+        onTabChange={handleTabChange}
+        query={query}
+        onQueryChange={handleQueryChange}
+        isLoading={isLoading}
+        sortBy={effectiveSort}
+        onSortChange={handleSortChange}
+        resourceType={resourceType}
+        onResourceTypeChange={handleResourceTypeChange}
+        formatFilter={formatFilter}
+        onFormatFilterChange={setFormatFilter}
+        searchFilters={storedSearchFilters}
+        onSearchFiltersChange={handlePopoverSearchFiltersChange}
+        uploaders={uploaders}
+        uploadersChanged={uploaderPick !== null}
+        onUploadersChange={handlePopoverUploadersChange}
+        onResetFilters={handleResetPopoverFilters}
+        capabilityFilters={capabilityFilters}
+        onCapabilityFiltersChange={handlePopoverCapabilitiesChange}
+        isolateFirstCapability={firstPickArmed}
+        datasetModalities={datasetModalities}
+        onDatasetModalitiesChange={handlePopoverModalitiesChange}
+        fitOnDeviceOnly={fitOnDeviceOnly}
+        onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
+        onManageLocalFolders={handleManageLocalFolders}
+        onFreeUpSpace={handleFreeUpSpace}
+        onOpenFineTune={() => handleOpenList("finetune")}
+        npuAvailable={npuSource !== undefined}
+        inventorySort={inventorySort}
+        onInventorySortChange={setInventorySort}
+        inventoryCapabilities={inventoryCapabilities}
+        onInventoryCapabilitiesChange={handleInventoryCapabilitiesChange}
+        isolateFirstInventoryCapability={inventoryFirstPickArmed}
+        onResetInventoryFilters={handleResetInventoryFilters}
+      />
+    </HubTopBar>
+  );
+  const scrollHeader = isCompactViewport ? topBar : null;
+
   return (
     <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
       <GuidedTour {...tour.tourProps} />
-      <HubTopBar>
-        <ModelsHeader
-          cachedCount={visibleCachedCount}
-          localCount={visibleLocalCount}
-          isDataset={isDatasetMode}
-          gpuLabel={gpuLabel}
-          gpuSharedLabel={gpuSharedLabel}
-          ramLabel={ramLabel}
-          coreLabel={coreLabel}
-          onTitleClick={handleResetToDiscover}
-        />
-        <ModelsToolbar
-          tab={tab}
-          onTabChange={handleTabChange}
-          query={query}
-          onQueryChange={handleQueryChange}
-          isLoading={isLoading}
-          sortBy={effectiveSort}
-          onSortChange={handleSortChange}
-          resourceType={resourceType}
-          onResourceTypeChange={handleResourceTypeChange}
-          formatFilter={formatFilter}
-          onFormatFilterChange={setFormatFilter}
-          searchFilters={storedSearchFilters}
-          onSearchFiltersChange={handlePopoverSearchFiltersChange}
-          uploaders={uploaders}
-          uploadersChanged={uploaderPick !== null}
-          onUploadersChange={handlePopoverUploadersChange}
-          onResetFilters={handleResetPopoverFilters}
-          capabilityFilters={capabilityFilters}
-          onCapabilityFiltersChange={handlePopoverCapabilitiesChange}
-          isolateFirstCapability={firstPickArmed}
-          datasetModalities={datasetModalities}
-          onDatasetModalitiesChange={handlePopoverModalitiesChange}
-          fitOnDeviceOnly={fitOnDeviceOnly}
-          onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
-          onManageLocalFolders={handleManageLocalFolders}
-          onFreeUpSpace={handleFreeUpSpace}
-          onOpenFineTune={() => handleOpenList("finetune")}
-          npuAvailable={npuSource !== undefined}
-          inventorySort={inventorySort}
-          onInventorySortChange={setInventorySort}
-          inventoryCapabilities={inventoryCapabilities}
-          onInventoryCapabilitiesChange={handleInventoryCapabilitiesChange}
-          isolateFirstInventoryCapability={inventoryFirstPickArmed}
-          onResetInventoryFilters={handleResetInventoryFilters}
-        />
-      </HubTopBar>
+      {!isCompactViewport && topBar}
 
       <div
         className={cn(
@@ -2263,6 +2285,7 @@ export function ModelsPage() {
         >
           {showNpuCatalog ? (
             <NpuCatalogList
+              scrollHeader={scrollHeader}
               catalog={npuCatalog}
               query={query}
               onDevice={!isDiscoverTab}
@@ -2272,6 +2295,7 @@ export function ModelsPage() {
             />
           ) : (
             <ModelsCatalog
+              scrollHeader={scrollHeader}
               state={catalogState}
               pagination={catalogPagination}
               handlers={catalogHandlers}
