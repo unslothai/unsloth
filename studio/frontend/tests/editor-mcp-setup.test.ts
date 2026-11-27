@@ -78,6 +78,6 @@ test("editors that run code outside the sandbox say so before consent", () => {
   assert.match(SETUP, /t\("settings\.sandbox\.editorMcpWarning", \{ name: copy\.name \}\)/);
   // Run automatically must not promise the sandbox covers MCP tools (#19769).
   assert.doesNotMatch(PERMISSION, /keep code in the sandbox/);
-  assert.match(PERMISSION, /Sandbox covers Python and Terminal, not MCP/);
+  assert.match(PERMISSION, /Never ask\. MCP runs outside the sandbox/);
   assert.match(SETUP, /aria-describedby=\{copy\.sandboxWarning \? `\$\{editorId\}-mcp-sandbox-warning` : undefined\}/);
 });

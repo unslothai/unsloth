@@ -102,7 +102,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   {
     value: "off",
     label: "Run automatically",
-    description: "Never ask. Sandbox covers Python and Terminal, not MCP",
+    description: "Never ask. MCP runs outside the sandbox",
     icon: SparklesGlyph,
   },
   {
