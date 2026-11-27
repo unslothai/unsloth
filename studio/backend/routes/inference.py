@@ -31984,9 +31984,10 @@ async def _proxy_to_external_provider(
             may_use_saved = _request_may_use_saved_provider_key(request)
             if provider_type == "github_copilot":
                 from routes.github_copilot_auth import resolve_access
-
                 api_key = await resolve_access(
-                    payload.provider_id, payload.encrypted_api_key, allow_saved_key = may_use_saved,
+                    payload.provider_id,
+                    payload.encrypted_api_key,
+                    allow_saved_key = may_use_saved,
                 )
             else:
                 api_key = await asyncio.to_thread(

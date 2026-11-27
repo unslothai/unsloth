@@ -28,10 +28,14 @@ def flow_store(monkeypatch, tmp_path):
     monkeypatch.setattr(auth, "current_credential_write", lambda _: nullcontext())
     monkeypatch.setattr(auth, "studio_db_path", lambda: tmp_path / "studio.db")
     monkeypatch.setattr(
-        auth.credential_secrets, "get_or_create_credential_encryption_key", lambda: None,
+        auth.credential_secrets,
+        "get_or_create_credential_encryption_key",
+        lambda: None,
     )
     monkeypatch.setattr(
-        auth.credential_secrets, "get_connection", lambda: sqlite3.connect(":memory:"),
+        auth.credential_secrets,
+        "get_connection",
+        lambda: sqlite3.connect(":memory:"),
     )
     monkeypatch.setattr(
         auth.credential_secrets,
@@ -42,7 +46,9 @@ def flow_store(monkeypatch, tmp_path):
         auth.credential_secrets, "get_secret", lambda kind, scope: vault.get((kind, scope))
     )
     monkeypatch.setattr(
-        auth.credential_secrets, "delete_secret", lambda kind, scope, **_: vault.pop((kind, scope), None)
+        auth.credential_secrets,
+        "delete_secret",
+        lambda kind, scope, **_: vault.pop((kind, scope), None),
     )
     monkeypatch.setattr(
         auth.credential_secrets,
@@ -223,7 +229,7 @@ def test_unsupported_python_fails_before_authorization(monkeypatch, flow_store):
 
 @pytest.mark.parametrize("new_connection", [False, True])
 def test_fresh_studio_uses_default_client_id_without_locking_auth_db(
-    monkeypatch, tmp_path, new_connection,
+    monkeypatch, tmp_path, new_connection
 ):
     from auth import storage as auth_storage
     from routes import providers
@@ -282,7 +288,9 @@ def test_fresh_studio_uses_default_client_id_without_locking_auth_db(
             provider_id
         ]
         await auth.cancel(scope, flow["flow_id"], credential, False)
-        assert await auth.resolve_access(provider_id, None, allow_saved_key = True) == "live-test-token"
+        assert (
+            await auth.resolve_access(provider_id, None, allow_saved_key = True) == "live-test-token"
+        )
         await providers.delete_provider_config(provider_id, credential, False)
         assert auth.providers_db.get_own_provider(provider_id) is None
         assert auth.credential_secrets.get_secret(auth.OAUTH_KIND, provider_id) is None
@@ -291,14 +299,19 @@ def test_fresh_studio_uses_default_client_id_without_locking_auth_db(
 
 
 def test_concurrent_requests_refresh_with_the_original_app_and_rotate_the_tokens(
-    monkeypatch, flow_store,
+    monkeypatch, flow_store
 ):
     vault, now = flow_store
     key = (auth.OAUTH_KIND, "connection")
-    vault[key] = json.dumps({
-        "client_id": "original-app", "access_token": "old-access", "expires_at": now[0] - 1,
-        "refresh_token": "old-refresh", "refresh_expires_at": now[0] + 50,
-    })
+    vault[key] = json.dumps(
+        {
+            "client_id": "original-app",
+            "access_token": "old-access",
+            "expires_at": now[0] - 1,
+            "refresh_token": "old-refresh",
+            "refresh_expires_at": now[0] + 50,
+        }
+    )
     calls = []
 
     async def post(path, data):
@@ -306,32 +319,41 @@ def test_concurrent_requests_refresh_with_the_original_app_and_rotate_the_tokens
         assert path == "login/oauth/access_token"
         await asyncio.sleep(0.05)
         return {
-            "access_token": "new-access", "expires_in": 3600,
-            "refresh_token": "new-refresh", "refresh_token_expires_in": 7200,
+            "access_token": "new-access",
+            "expires_in": 3600,
+            "refresh_token": "new-refresh",
+            "refresh_token_expires_in": 7200,
         }
 
     async def run():
-        tokens = await asyncio.gather(*[
-            auth.resolve_access("connection", None, allow_saved_key = True)
-            for _ in range(2)
-        ])
+        tokens = await asyncio.gather(
+            *[auth.resolve_access("connection", None, allow_saved_key = True) for _ in range(2)]
+        )
         assert tokens == ["new-access", "new-access"]
 
     monkeypatch.setattr(auth, "_github_post", post)
     asyncio.run(run())
-    assert calls == [{
-        "client_id": "original-app", "grant_type": "refresh_token", "refresh_token": "old-refresh",
-    }]
+    assert calls == [
+        {
+            "client_id": "original-app",
+            "grant_type": "refresh_token",
+            "refresh_token": "old-refresh",
+        }
+    ]
     assert json.loads(vault[key])["refresh_token"] == "new-refresh"
 
 
 def test_expired_refresh_marks_connection_for_reauthorization(monkeypatch, flow_store):
     vault, now = flow_store
     key = (auth.OAUTH_KIND, "connection")
-    vault[key] = json.dumps({
-        "client_id": "our-oauth-app", "access_token": "old-access", "expires_at": now[0] - 1,
-        "refresh_token": "old-refresh",
-    })
+    vault[key] = json.dumps(
+        {
+            "client_id": "our-oauth-app",
+            "access_token": "old-access",
+            "expires_at": now[0] - 1,
+            "refresh_token": "old-refresh",
+        }
+    )
 
     async def post(*_):
         return {"error": "bad_refresh_token"}
@@ -437,9 +459,7 @@ def test_models_use_sdk_and_filter_disabled_models(fake_sdk):
 
 
 @pytest.mark.parametrize("auto_available", [True, False])
-def test_empty_model_catalog_uses_auto_only_when_the_sdk_confirms_it(
-    monkeypatch, auto_available,
-):
+def test_empty_model_catalog_uses_auto_only_when_the_sdk_confirms_it(monkeypatch, auto_available):
     async def empty_models():
         return []
 

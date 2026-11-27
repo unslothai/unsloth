@@ -402,7 +402,8 @@ def list_provider_configs(
     responses = [_provider_response(row, hide_headers = via_api_key) for row in rows]
     # Earlier versions created an empty Copilot row before sign-in completed.
     return [
-        response for response in responses
+        response
+        for response in responses
         if not (
             response.provider_type == "github_copilot"
             and response.auth_status == "disconnected"
@@ -1197,7 +1198,9 @@ async def test_provider(
 
     if payload.provider_type == "github_copilot":
         api_key = await github_copilot_auth.resolve_access(
-            payload.provider_id, payload.encrypted_api_key, allow_saved_key = not via_api_key,
+            payload.provider_id,
+            payload.encrypted_api_key,
+            allow_saved_key = not via_api_key,
         )
     else:
         api_key = resolve_provider_api_key_or_400(
@@ -1598,7 +1601,9 @@ async def list_provider_models(
 
     if payload.provider_type == "github_copilot":
         api_key = await github_copilot_auth.resolve_access(
-            payload.provider_id, payload.encrypted_api_key, allow_saved_key = not via_api_key,
+            payload.provider_id,
+            payload.encrypted_api_key,
+            allow_saved_key = not via_api_key,
         )
     else:
         api_key = resolve_provider_api_key_or_400(

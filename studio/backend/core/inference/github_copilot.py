@@ -58,7 +58,6 @@ async def list_models(token: str) -> list[dict[str, Any]]:
                 # Some accounts can use Copilot Auto even when the SDK returns no named models.
                 # Confirm Auto in the authenticated session without sending a prompt.
                 from copilot.rpc import PermissionDecisionReject
-
                 async with await client.create_session(
                     model = "auto",
                     tools = {"available_tools": []},

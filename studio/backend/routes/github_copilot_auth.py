@@ -109,7 +109,11 @@ def auth_status(provider_id: str) -> str:
     bundle = _load_bundle(provider_id)
     if bundle is None:
         # Preserve connections made before refresh support: they stored the access token alone.
-        return "connected" if credential_secrets.provider_api_key_saved(provider_id) else "disconnected"
+        return (
+            "connected"
+            if credential_secrets.provider_api_key_saved(provider_id)
+            else "disconnected"
+        )
     if bundle.get("reauthorization_required"):
         return "reauthorization_required"
     now = time.time()
@@ -137,7 +141,9 @@ async def resolve_access(
 ) -> str:
     if encrypted_api_key or not provider_id or not allow_saved_key:
         return resolve_provider_api_key_or_400(
-            provider_id, encrypted_api_key, allow_saved_key = allow_saved_key,
+            provider_id,
+            encrypted_api_key,
+            allow_saved_key = allow_saved_key,
         )
     bundle = _load_bundle(provider_id)
     if bundle is None:
@@ -165,7 +171,9 @@ async def resolve_access(
         error = body.get("error")
         if error in ("bad_refresh_token", "invalid_grant", "expired_token"):
             credential_secrets.upsert_secret(
-                OAUTH_KIND, provider_id, json.dumps({"reauthorization_required": True}),
+                OAUTH_KIND,
+                provider_id,
+                json.dumps({"reauthorization_required": True}),
             )
             raise HTTPException(401, _RECONNECT)
         if error or not isinstance(body.get("access_token"), str) or not body["access_token"]:
@@ -181,7 +189,12 @@ def delete_credentials(provider_id: str, *, connection: sqlite3.Connection) -> N
     credential_secrets.delete_provider_api_key(provider_id, connection = connection)
 
 
-def _require_provider(provider_id: str, via_api_key: bool, *, allow_new: bool = False):
+def _require_provider(
+    provider_id: str,
+    via_api_key: bool,
+    *,
+    allow_new: bool = False,
+):
     require_ui_session(via_api_key)
     if allow_new and provider_id == _NEW_CONNECTION:
         return
@@ -301,7 +314,10 @@ async def poll(
         if provider_id == _NEW_CONNECTION:
             new_id = uuid.uuid4().hex[:16]
             info = PROVIDER_REGISTRY["github_copilot"]
-            with current_credential_write(credential), providers_db.provider_bundle_transaction() as conn:
+            with (
+                current_credential_write(credential),
+                providers_db.provider_bundle_transaction() as conn,
+            ):
                 providers_db.create_provider(
                     id = new_id,
                     provider_type = "github_copilot",
@@ -310,14 +326,20 @@ async def poll(
                     connection = conn,
                 )
                 credential_secrets.upsert_secret(
-                    OAUTH_KIND, new_id, json.dumps(bundle), connection = conn,
+                    OAUTH_KIND,
+                    new_id,
+                    json.dumps(bundle),
+                    connection = conn,
                 )
                 credential_secrets.delete_secret(FLOW_KIND, provider_id, connection = conn)
             return {"status": "connected", "provider_id": new_id}
         with current_credential_write(credential):
             with closing(credential_secrets.get_connection()) as conn, conn:
                 credential_secrets.upsert_secret(
-                    OAUTH_KIND, provider_id, json.dumps(bundle), connection = conn,
+                    OAUTH_KIND,
+                    provider_id,
+                    json.dumps(bundle),
+                    connection = conn,
                 )
                 credential_secrets.delete_provider_api_key(provider_id, connection = conn)
                 credential_secrets.delete_secret(FLOW_KIND, provider_id, connection = conn)
