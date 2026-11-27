@@ -289,11 +289,12 @@ def _render_turn(group: list[dict]) -> tuple[str, str | None]:
             lines.append(f"tool result: {text}")
         else:
             lines.append(f"{role or 'message'}: {text}")
-    legacy_hash = None
-    if clipped:
-        legacy = "\n".join(clipped.get(index, line) for index, line in enumerate(lines)).strip()
-        legacy_hash = hashlib.sha256(legacy.encode("utf-8", "ignore")).hexdigest()
-    return "\n".join(lines).strip(), legacy_hash
+    full = "\n".join(lines).strip()
+    legacy = "\n".join(clipped.get(index, line) for index, line in enumerate(lines)).strip()
+    # A read ending in the marker can clip to itself; retiring that "legacy" copy would drop the new one.
+    if not clipped or legacy == full:
+        return full, None
+    return full, hashlib.sha256(legacy.encode("utf-8", "ignore")).hexdigest()
 
 
 def _retire_clipped_web_read(

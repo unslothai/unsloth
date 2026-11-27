@@ -5456,3 +5456,12 @@ def test_a_capped_web_read_is_archived_exactly_as_delivered(monkeypatch):
         {"role": "tool", "tool_call_id": "c1", "content": delivered},
     ]
     assert conversation_archive.render_turn(group).endswith(f"tool result: {delivered.strip()}")
+
+
+def test_a_web_read_that_clips_to_itself_has_no_legacy_copy():
+    group = [
+        _assistant_call("web_search", json.dumps({"url": "https://example.com/a"})),
+        {"role": "tool", "tool_call_id": "c1", "content": "A" * 4000 + " ..."},
+    ]
+    text, legacy_hash = conversation_archive._render_turn(group)
+    assert text.endswith("A ...") and legacy_hash is None
