@@ -22,8 +22,7 @@ export function diffusionBlockSwapApplies(opts: {
   );
 }
 
-/** The request value: omitted where the control is hidden or off, so an older backend and today's default see
- * the same request as before. */
+/** Omitted when hidden or off, so an older backend and today's default see the same request. */
 export function diffusionBlockSwapPayload(
   applies: boolean,
   mode: DiffusionBlockSwapMode,

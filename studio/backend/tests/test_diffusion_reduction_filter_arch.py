@@ -21,8 +21,7 @@ from torch.torch_version import TorchVersion  # noqa: E402
 from core.inference import diffusion_compile_config as cc  # noqa: E402
 from core.inference import diffusion_speed as ds  # noqa: E402
 
-# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
-# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+# Studio reads +rocm too (AMD wheels leave torch.version.hip unset); fake NVIDIA clears both.
 _CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 _SM120 = (12, 0)
@@ -229,8 +228,7 @@ def test_flux3_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch
     assert fam.cudnn_benchmark is False
 
 
-# Krea-2 pins on every arch: fresh Studio homes on one A100 rendered one INT8 seed two ways (the compile cache keeps
-# its cold benchmark's reduction configs), and forcing the slowest reduction config reproduced the other image.
+# Krea-2 pins on all arches: cached reduction configs made one INT8 seed render two ways.
 @pytest.mark.parametrize("cap", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
 def test_krea2_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch, cap):
     _on(monkeypatch, cap)

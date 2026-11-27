@@ -164,8 +164,7 @@ async def resolve_export(caller: Caller, name: str, variant: Optional[str]) -> T
     if export_type == "gguf":
         from hub.utils.gguf import extract_quant_token
 
-        # The scan picks one .gguf file; the folder plus a variant picks the quantization, and a
-        # variant is what makes the load (and device="cpu") treat it as GGUF.
+        # A variant names the quant and makes the load (and device="cpu") treat it as GGUF.
         gguf_variant = variant or extract_quant_token(leaf_name(path))
         if gguf_variant:
             path = _parent(path)

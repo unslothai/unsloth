@@ -53,8 +53,7 @@ def test_cpu_only_host_keeps_the_cpu_mesh(native_env, monkeypatch):
 
 
 def test_cpu_mesh_refuses_gpu_resident_quantized_weights(native_env, monkeypatch):
-    """use_cpu = True with a 4-bit model already on the GPU: the CPU mesh does not replicate frozen
-    weights, so fully_shard would move packed storage away from its quantization state."""
+    """CPU mesh refuses GPU-resident 4-bit weights: fully_shard would move packed storage."""
     native = native_env
     model = _FakeModel([_T("cuda:0"), Params4bit("cuda:0")])
     with pytest.raises(RuntimeError, match = "CPU mesh .*quantized weights are on the GPU"):
@@ -62,5 +61,4 @@ def test_cpu_mesh_refuses_gpu_resident_quantized_weights(native_env, monkeypatch
     monkeypatch.setenv("ACCELERATE_USE_CPU", "true")
     with pytest.raises(RuntimeError, match = "CPU mesh .*quantized weights are on the GPU"):
         native._shard_device(model)
-    # Unquantized GPU weights on a CPU mesh still move as before.
     assert native._shard_device(_FakeModel([_T("cuda:0")]), "cpu").type == "cpu"

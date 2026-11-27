@@ -59,20 +59,17 @@ middle_unchanged() {
 
 hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 
-# Give a new file the default mode and the OWNER of its directory, so a host-owned bind
-# mount does not get root:root notebooks.
+# New files get the default mode and the directory's owner, not root:root, on host bind mounts.
 own_like_dir() {
     chmod "$(printf '%03o' "$(( 0666 & ~0$(umask) ))")" "$1" 2>/dev/null || true
     chown --reference="$2" "$1" 2>/dev/null || true
     return 0
 }
 
-# rename swaps the DIRECTORY ENTRY, so without this the clone's root:root 0644 lands
-# on a bind-mounted notebook the host user owns. Best effort.
+# Rename swaps the dir entry, so the clone's root:root 0644 would hit host files. Best effort.
 stage_metadata() {
     if [ ! -e "$2" ]; then
-        # A notebook upstream just added: no destination metadata exists, and
-        # returning here published the clone's ownership unchanged.
+        # New upstream notebook: returning early would publish the clone's ownership unchanged.
         own_like_dir "$1" "$(dirname "$2")"
         return 0
     fi
@@ -81,8 +78,7 @@ stage_metadata() {
     return 0
 }
 
-# plain `cp` truncates the existing inode and leaves its metadata alone, where
-# `cp -a` would chown the host user's file to root
+# Plain cp truncates the existing inode and keeps its metadata; cp -a would chown it to root.
 cp_keep_meta() {
     if [ -e "$2" ]; then cp "$1" "$2" 2>/dev/null; else cp -a "$1" "$2" 2>/dev/null; fi
 }
@@ -115,8 +111,7 @@ mkdir_keep_owner() {
 mkdir_keep_owner "$DEST"
 [ -d "$DEST" ] || exit 0
 
-# The refresh runs in a detached child, so both copies mutate $DEST/$STATE; one lock
-# per invocation serialises them.
+# Refresh runs detached, so both script copies mutate $DEST/$STATE; one lock serialises them.
 _LOCK_HELD=0
 lock_acquire() {
     [ "$_LOCK_HELD" = "1" ] && return 0
@@ -213,14 +208,11 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
     # -- which needs write on $DEST, not on the file -- then publishes the FOREIGN
     rm -f "$STATE.tmp" 2>/dev/null || true
     populate_failed=0
-    # Set when the merge loop loses a record; those are the only records for upstream-only
-    # notebooks.
+    # Set if the merge loop loses a record; for upstream-only notebooks it is the only record.
     merge_lost=0
     stage_ok=1
     if ! : > "$STATE.tmp" 2>/dev/null; then
-        # Still unstageable, so $DEST itself is the problem. Nothing has been copied
-        # yet, so bail like the refresh child does: leave the marker off and retry on
-        # the next start rather than publish notebooks we cannot record.
+        # Unstageable $DEST is the problem: nothing is copied yet, so leave the marker off.
         echo "[unsloth-nb] the sync state could not be staged in $DEST; leaving the sync marker off so the next start retries"
         stage_ok=0
     fi
@@ -250,8 +242,7 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
             populate_failed=$((populate_failed + 1))
         fi
     done < <(cd "$TEMPLATE" && find . -type f -print0)
-    # A retry must keep records the refresh already manages. -r, not just -f: an unreadable
-    # $STATE would silently contribute nothing.
+    # Retry keeps records: -r, not just -f, since an unreadable $STATE would contribute nothing.
     if [ "$stage_ok" = 1 ] && [ -f "$STATE" ] && [ ! -r "$STATE" ]; then
         echo "[unsloth-nb] the sync state in $DEST is unreadable; leaving it alone rather than republishing it without the records it holds"
         stage_ok=0
@@ -266,8 +257,7 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
             p="${line#*  }"
             [ -n "$p" ] && [ "$p" != "$line" ] || continue
             [ -n "${POPULATED[$p]:-}" ] && continue
-            # same reason as the copy loop: a dropped record here hands a notebook the
-            # refresh already manages to the user permanently
+            # Same reason: a dropped record hands a managed notebook to the user for good.
             printf '%s\n' "$line" >> "$STATE.tmp" \
                 || { populate_failed=$((populate_failed + 1)); merge_lost=1; }
         done < "$STATE"
@@ -333,7 +323,6 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
         printf '%s\n' "$line" >> "$RS_TMP" || rs_ok=0
     done < "$STATE"
     if [ "$rs_ok" = 1 ]; then
-        # Loud, and drop the marker, like the sibling branch below.
         mv "$RS_TMP" "$STATE" 2>/dev/null || {
             echo "[unsloth-nb] the sync state could not be published in $DEST; keeping the previous state and dropping the sync marker so the next start retries"
             rm -f "$RS_TMP"
@@ -397,8 +386,7 @@ fi
 
 # Beside $STATE, not /tmp, so the publish is an atomic rename that fails with the notebooks.
 TMPSTATE="$STATE.tmp"
-# No /tmp fallback: it would record nothing when $DEST is unwritable. Clear a leftover
-# from a different uid first.
+# No /tmp fallback: it records nothing if $DEST is unwritable; drop a foreign-uid leftover.
 rm -f "$TMPSTATE" 2>/dev/null || true
 if ! : > "$TMPSTATE" 2>/dev/null; then
     echo "[unsloth-nb] the sync state could not be staged in $DEST; leaving the sync marker so the next start retries"
@@ -406,14 +394,12 @@ if ! : > "$TMPSTATE" 2>/dev/null; then
     exit 0
 fi
 updated=0; kept=0; unchanged=0; failed=0
-# Check every append: a lost record with `failed` at 0 publishes a truncated state and
-# advances the marker, stranding notebooks as user edits.
+# Check every append: a lost record with `failed` at 0 strands notebooks as user edits.
 record_tmpstate() {
     printf '%s  %s\n' "$1" "$2" >> "$TMPSTATE"
 }
 
-# Remove our own unrecordable copy (only while it still has our hash); otherwise the next
-# refresh reads it as a user edit.
+# Drop our copy only while it still has our hash; otherwise refresh reads it as a user edit.
 drop_unrecordable() {
     local _d="$DEST/$1"
     [ -e "$_d" ] || return 0
@@ -432,8 +418,7 @@ while IFS= read -r -d '' f; do
     if [ -e "$dst" ]; then
         rec="${LAST[$rel]:-}"
         if [ -z "$rec" ]; then
-            # An unrecorded file byte-identical to the clone is ours (e.g. EBUSY on a file bind mount);
-            # adopt its record.
+            # Byte-identical unrecorded file is ours (EBUSY on bind mount); adopt its record.
             adopted="$(hash_of "$dst")"
             if [ -n "$adopted" ] && [ "$adopted" = "$(hash_of "$f")" ]; then
                 record_tmpstate "$adopted" "$rel" || failed=$((failed + 1))
@@ -464,8 +449,7 @@ while IFS= read -r -d '' f; do
     # cp -a exposes half-written JSON and destroys a save made since the hash check.
     new="$(dirname "$dst")/.unsloth_nb_new.$$"
     if cp -a "$f" "$new" 2>/dev/null; then
-        # hash what is about to be PUBLISHED: re-reading $dst after the rename would
-        # record a save that landed meanwhile as the pristine version
+        # Hash the staged copy, not $dst, or a save landing meanwhile is recorded as pristine.
         staged="$(hash_of "$new")"
         if [ -e "$dst" ] && [ "$(hash_of "$dst")" != "${LAST[$rel]:-}" ]; then
             rm -f "$new"
@@ -481,13 +465,11 @@ while IFS= read -r -d '' f; do
                 updated=$((updated + 1))
             else
                 failed=$((failed + 1))
-                # Published but not recordable: remove it (it held no user edit) so the next refresh
-                # re-copies and re-records it.
+                # Unrecordable: remove it (held no user edit) so the next refresh re-copies it.
                 rm -f "$dst" 2>/dev/null || true
             fi
         else
-            # carry the PREVIOUS record forward, or the next refresh reads $dst as
-            # user-owned and keeps the stale copy forever
+            # Carry the old record, else refresh reads $dst as user-owned and keeps it forever.
             record_tmpstate "${LAST[$rel]:-}" "$rel" || drop_unrecordable "$rel"
             failed=$((failed + 1))
         fi
@@ -515,8 +497,7 @@ if [ "${#LAST[@]}" -gt 0 ]; then
         [ -n "${LAST[$rel]}" ] || continue
         [ "$(hash_of "$dst")" = "${LAST[$rel]}" ] || continue
         if [ "${UNSLOTH_KEEP_REMOVED_NOTEBOOKS:-0}" = "1" ]; then
-            # Keep the record with the kept file, and never drop the file on a failed append: upstream
-            # deleted it, so this is the last copy.
+            # Keep the record; never drop the file on a failed append, as upstream deleted it.
             record_tmpstate "${LAST[$rel]}" "$rel" || failed=$((failed + 1))
             continue
         fi

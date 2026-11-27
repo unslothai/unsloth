@@ -16,8 +16,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 # Control map types. "passthrough": the supplied image IS the control map. "canny": derive an edge map here.
 CONTROL_TYPES = ("passthrough", "canny")
 
-# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated off like LoRA, along
-# with GGUF-via-diffusers.
+# Torchao tensor subclasses can't host ControlNet; gated off like LoRA and GGUF-via-diffusers.
 _DIFFUSERS_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
 
 
@@ -75,7 +74,6 @@ def controlnets_dir() -> Path:
 
 
 def sanitize_id(raw: str) -> str:
-    """Filesystem-safe id from a repo id / folder name."""
     stem = raw.rsplit("/", 1)[-1]
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
     return stem or "controlnet"
@@ -129,8 +127,7 @@ def _scan_local() -> list[ControlNetCatalogEntry]:
 
 
 def list_controlnets(*, family: Optional[str] = None) -> list[ControlNetCatalogEntry]:
-    """Merged catalog (curated + local), optionally family-filtered. Cheap: one dir scan
-    plus the in-memory curated list. Network is only touched on resolve()."""
+    """Curated + local ControlNets, optionally family-filtered; network only in resolve()."""
     merged = list(_CURATED) + _scan_local()
     if family:
         fam = family.strip().lower()
@@ -144,8 +141,7 @@ def _catalog_by_id() -> dict[str, ControlNetCatalogEntry]:
 
 
 def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> ResolvedControlNet:
-    """Refuses a ControlNet tagged for another family; it is architecture-specific and would load
-    wrongly."""
+    """Refuses a ControlNet tagged for another family (architecture-specific; loads wrongly)."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)

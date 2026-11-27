@@ -13,14 +13,12 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Optional
 
-# Companions converted to float32 at load (convolutions, no per-layer cast): video VAE, latent upsampler, audio VAE +
-# vocoder, decimal GB at bf16; their float32 copies are anonymous memory. The 6.34 GB connectors are Linears and stay
-# bf16, memory-mapped, read only while a prompt is encoded.
+# Video VAE, latent upsampler, audio VAE and vocoder widen to float32 (convs, no per-layer cast):
+# anonymous memory; 6.34 GB Linear connectors stay bf16, mapped, read only while encoding.
 _WIDENED_COMPANIONS_GB = 1.45 + 1.0 + 0.37
 _CONNECTORS_GB = 6.34
-# Host GB beside the weights: two torch + CUDA processes (Studio and the encoder worker), the offload staging and the
-# page cache the kernel keeps. Calibrated on a Colab T4 High-RAM host: 42.8 GiB peak in use (MemTotal - MemAvailable)
-# rendering 768x512x121, which this prices at 42.7 GiB.
+# Host RAM beside the weights: two torch+CUDA processes, offload staging and page cache; calibrated
+# on a Colab T4 High-RAM host at 42.8 GiB peak for 768x512x121, priced here at 42.7 GiB.
 _RUNTIME_GB = 10.5
 _FALLBACK_INT8_DIT_GB = 25.11
 # Turing: the floor of the fp16-card int8 path (diffusion_transformer_quant._FP16_CARD_INT8_CAPS).
@@ -83,10 +81,9 @@ def lowram_need_gb(
     *,
     hosted_dit: bool = True,
 ) -> Optional[float]:
-    """Host GB the route needs: what it holds as anonymous memory (float32 copies of the convolution companions and of
-    the encoder's dense tensors, the two processes' runtime) plus the larger of its two memory-mapped working sets,
-    the int8 DiT file while denoising or the encoder's int8 codes and the connectors while encoding. A mapped set
-    that is idle can be paged out and read back from its file."""
+    """Host GB: anonymous memory (float32 conv companions, encoder's dense tensors, two processes'
+    runtime) plus the larger of two mapped working sets (int8 DiT while denoising, or encoder
+    int8 codes and connectors while encoding); an idle mapped set is paged out and re-read."""
     sizes = tuple(float(x) for x in (getattr(fam, "bf16_components_gb", None) or ()))
     if len(sizes) != 3:
         return None
@@ -134,10 +131,8 @@ def decide_lowram(
     loras_active: bool = False,
     resolve_te: bool = True,
 ) -> Ltx25LowRam:
-    """Whether this LTX-2.5 load takes the low-RAM route; ``refusal`` when even the route cannot fit. Never raises.
-
-    Priced at what the load will read: the encoder the loader resolves (``resolve_te``: from the raw request, as the
-    loader does, Speed "off" keeping the dense one) and the hosted int8 DiT only where the loader reads it."""
+    """Whether this LTX-2.5 load takes the low-RAM route, else a refusal; never raises. Prices the
+    encoder (resolve_te; Speed off keeps dense) and the hosted int8 DiT where read."""
     skip = lowram_ineligible(fam, target, model_kind = model_kind)
     if skip:
         return Ltx25LowRam(False, skip)
@@ -211,9 +206,8 @@ def storage_target(target: Any) -> Any:
 
 
 def eager_target(target: Any) -> Any:
-    """The real card with torch.compile off: the route's per-layer casts are Python hooks, and its float32 compute
-    is unmeasured under compile. ``compile_eligible`` already declines the fp16-incompatible family on an fp16 card;
-    this keeps that true if the family flag or the card ever change."""
+    """Real card with torch.compile off: casts are Python hooks and float32 compute is unmeasured
+    under compile; flag keeps compile_eligible's fp16 decline true if family or card change."""
     try:
         return dataclasses.replace(target, supports_default_torch_compile = False)
     except TypeError:
@@ -243,9 +237,7 @@ _CAST_HOOK = "layerwise_casting"
 
 
 def _storage_cast_hook_class():
-    """A diffusers layerwise-casting hook (``module.dtype`` reports its compute dtype) that casts this module's bf16
-    parameters for the call only and puts the stored tensors back in a ``finally``: an exception never leaves a
-    float32 weight behind, and a memory-mapped weight keeps its mapping instead of being replaced by a copy."""
+    """Diffusers hook: casts bf16 weights per call, restored even on error; mapping kept."""
     from diffusers.hooks.layerwise_casting import LayerwiseCastingHook
 
     class StorageCastHook(LayerwiseCastingHook):
@@ -276,11 +268,9 @@ def _storage_cast_hook_class():
 
 
 def upcast_compute_(pipe: Any, compute_dtype: Any) -> dict[str, int]:
-    """Run the bf16-stored pipeline in ``compute_dtype``. Linear and convolution weights keep bf16 and are cast for
-    each call (``module.dtype`` reports ``compute_dtype``); int8 codes keep their storage and are never read here
-    (a native int8 Linear's ``weight`` property dequantizes); every other bf16 tensor (norms, embeddings, loose
-    parameters, buffers) converts now. Returns the MiB per component left at bf16. The route stays eager: the casts
-    are Python hooks, and ``compile_eligible`` declines an fp16-incompatible family on the fp16 card."""
+    """Runs the bf16-stored pipeline in compute_dtype: Linear/conv weights stay bf16, cast per call;
+    int8 codes never read; other bf16 tensors convert now; returns MiB left at bf16; eager as
+    casts are Python hooks (compile_eligible declines fp16-incompatible families on fp16)."""
     import torch
     from diffusers.hooks import HookRegistry
 

@@ -3,8 +3,7 @@
 
 import { type Ref, type RefCallback, useMemo } from "react";
 
-// Shortcut checks read the elements that register here plus whatever is outside the app root
-// (third-party portals), instead of walking a long chat's whole document on every press.
+// Shortcuts read registered surfaces and portals outside the app root, not the whole document.
 
 /** Every element that can match MODAL_BACKDROP_SELECTOR or an open dialog's content. */
 export const MODAL_SURFACE = "modal";
@@ -118,8 +117,7 @@ function attachRef<T>(ref: Ref<T> | undefined, value: T): () => void {
   return () => undefined;
 }
 
-/** Undoes `attach` once, via the returned cleanup or `ref(null)`: use-composed-ref (react-textarea-autosize)
- * drops cleanups, and ignoring its `ref(null)` leaked the composer on every chat switch. */
+/** use-composed-ref drops cleanups, so undo via ref(null) too; ignoring it leaked the composer. */
 function undoableRef<T>(attach: (element: T) => () => void): RefCallback<T> {
   let held: (() => void) | null = null;
   return (element: T | null) => {

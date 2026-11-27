@@ -19,6 +19,7 @@ import {
   isTrainingStatusRequestCurrent,
   trainingStatusRequestKey,
 } from "../lib/training-status-request";
+import { registerTrainingStatusPoller } from "../lib/training-status-poll-owner";
 import {
   createTrainingStreamScope,
   isTrainingProgressForScope,
@@ -335,13 +336,18 @@ export function useTrainingRuntimeLifecycle(): void {
       return s.phase === "idle" && !s.isTrainingRunning;
     };
 
+    // Exactly when statusTimer below polls, so the completion watch can skip its own tick.
+    const pollsStatus = () => {
+      const s = runtimeStore.getState();
+      return !disposed && s.hasHydrated && !s.isHydrating && !isIdle();
+    };
+    const unregisterStatusPoller = registerTrainingStatusPoller(
+      () => pollsStatus() && hasAuthToken(),
+    );
+
     // Not gated on document.hidden: drives the native finished / failed notifications.
     const statusTimer = setInterval(() => {
-      const s = runtimeStore.getState();
-      if (!s.hasHydrated || s.isHydrating) {
-        return;
-      }
-      if (isIdle()) {
+      if (!pollsStatus()) {
         return;
       }
       void pollStatus();
@@ -385,6 +391,7 @@ export function useTrainingRuntimeLifecycle(): void {
 
     return () => {
       disposed = true;
+      unregisterStatusPoller();
       clearInterval(statusTimer);
       clearInterval(metricsTimer);
       clearInterval(idleTimer);

@@ -47,8 +47,7 @@ export function createStaleSafeMessageResolver<P, M extends MessageLike<P>>(
         lastParts.set(selector.index, resolved);
         return resolved;
       };
-      // Not `new Proxy(message)`: the client is a Proxy reporting absent keys as non-configurable, which
-      // trips the get invariant. Receiver stays `message`, since the client rebinds methods per receiver.
+      // Not new Proxy(message): non-configurable absent keys trip get; receiver stays message.
       proxy = new Proxy({} as M, {
         get: (_, prop) => (prop === "part" ? part : Reflect.get(message, prop)),
         has: (_, prop) => prop === "part" || Reflect.has(message, prop),

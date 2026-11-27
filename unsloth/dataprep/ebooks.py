@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Loads EPUB books, and MOBI books when Calibre is installed, on CPU. Pass a Hugging Face fast
-tokenizer, not model weights; token counts exclude special tokens a trainer adds later, so
-reserve room for them in chunk_size."""
+"""Loads EPUB books (and MOBI with Calibre installed) on CPU; pass a Hugging Face fast tokenizer,
+not model weights; reserve chunk_size room for the special tokens a trainer adds later."""
 
 from bisect import bisect_right
 from html.parser import HTMLParser

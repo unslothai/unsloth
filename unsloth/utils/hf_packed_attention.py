@@ -22,8 +22,7 @@ _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
 # True inside _block_compile's own compiled blocks (not a user's outer compile); see _leaves_block.
 IN_COMPILED_BLOCK = [False]
-# efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens;
-# int32_split: fast calls run in document groups to keep flash's varlen backward under int32.
+# efficient: fast SDPA mem-efficient calls; int32_split: doc groups keep flash under int32.
 HF_PACKED_ATTENTION_STATS = {
     "fast": 0,
     "fallback": 0,
@@ -530,8 +529,7 @@ def _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
     with a C++ backward (varlen_attn's Python custom op cost ~37 us of host time per call in a
     compiled step) that takes grouped K / V heads as they are."""
     query, key, value = (x[0].transpose(0, 1) for x in (query, key, value))
-    # torch's FA4 / FA3 impls return a contiguous output and grads where the op's fake kernel follows
-    # the input layout, so a compiled graph fails its stride check: give them contiguous rows.
+    # Op's fake kernel follows input layout, so FA4 / FA3 need contiguous rows under compile.
     if torch.compiler.is_compiling() and active_flash_impl() is not None:
         query, key, value = query.contiguous(), key.contiguous(), value.contiguous()
     out = torch.ops.aten._flash_attention_forward(
@@ -734,7 +732,6 @@ def _sdpa_packed_varlen(
                 )
                 if groups is None:
                     torch_varlen, backend = None, None
-            # Refused shape and no flash-attn / xformers: the efficient kernel.
             if refused and backend not in (FLASH_VARLEN, XFORMERS):
                 efficient = _efficient_varlen_takes(query, window)
         if efficient or torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
@@ -844,8 +841,7 @@ def _sdpa_packed_varlen(
             kv_seq_len = query.shape[2],
             n_heads = n_heads,
             head_dim = head_dim,
-            # Not grad mode: xformers needs a backward op for grad tensors even under no_grad
-            # (reentrant checkpointing), and that op rejects the grouped 5D layout.
+            # xformers' backward (reentrant checkpoint, even under no_grad) rejects grouped 5D.
             requires_grad = query.requires_grad or key.requires_grad or value.requires_grad,
             seq_info = seq_info,
             attention_mask = None,
@@ -958,8 +954,7 @@ def _no_saved_tensor_hooks():
 
 
 def _detach_saved(tensor):
-    # A pack hook returning its input saves an op's output on that op's own node, a cycle gc cannot
-    # break: a probe graph whose backward never runs (aborted, or the ROCm check's error terms) leaks.
+    # Pack hook returning its input forms a cycle gc cannot break; an unrun probe graph leaks.
     return tensor.detach()
 
 
@@ -1186,9 +1181,8 @@ def _block_varlen_prepare(
     _, cu_seqlens, max_seqlen = seq_info
     # The segment count changes every step: one graph for all of them.
     torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
-    # The longest document as a dynamic tensor length (prepare_packed_block's carrier): a Python int
-    # was guarded on, so every new longest document recompiled the block. 2+: a length of 1 would
-    # specialise; an upper bound is still exact for varlen.
+    # Longest document as a dynamic length (prepare_packed_block's carrier): a guarded Python int
+    # recompiled per new max; min 2 avoids specialising on 1; upper bound is exact for varlen.
     carrier = torch.empty(max(int(max_seqlen), 2), dtype = torch.uint8, device = hidden_states.device)
     torch._dynamo.maybe_mark_dynamic(carrier, 0)
     HF_PACKED_ATTENTION_STATS["compiled"] += 1

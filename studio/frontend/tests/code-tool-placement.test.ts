@@ -82,8 +82,7 @@ test("a provider with no sandbox uses Unsloth's own tools", () => {
 });
 
 test("edit_file is local-only, never a stand-in for a hosted sandbox", () => {
-  // It must not creep into the hosted branch just because the Tools pill is
-  // what turns it on.
+  // edit_file must not creep into the hosted branch just because the Tools pill turns it on.
   for (const hosted of [true, false]) {
     const names = selectCodeToolNames({
       codeToolsEnabled: true,
@@ -156,8 +155,7 @@ test("response details record Code from the placement, local or hosted", () => {
 
 // ── Whether the pill is offered at all ─────────────────────────────
 
-// Keying the Tools pill on the Unsloth-tools flag offered it everywhere, even where nothing runs,
-// so the user got a lit toggle that sent enable_tools: false.
+// The Unsloth-tools flag offered it even where nothing runs, sending enable_tools: false.
 
 test("a model with its provider's sandbox can run code", () => {
   assert.equal(

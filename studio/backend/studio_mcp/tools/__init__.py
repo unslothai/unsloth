@@ -39,7 +39,6 @@ async def route_json(
 
 
 async def try_json(caller: Caller, path: str, **kwargs: Any) -> Any:
-    # Best effort: the JSON of a 200 answer, else None; never raises.
     try:
         response = await forward(caller, "GET", path, **kwargs)
         return response.json() if response.status_code == 200 else None

@@ -178,8 +178,7 @@ def _probe(
         dev = torch.device("cuda", index) if device is None else device
         dtype = torch.bfloat16
         gen = torch.Generator(device = "cpu").manual_seed(0)
-        # Built on meta and filled from the private generator: the shared CPU RNG is never read or rewound, so a
-        # concurrent load or generation drawing from it is untouched.
+        # Private generator fills the block, so the shared CPU RNG is never read or rewound.
         with torch.device("meta"):
             block = _Block()
         block = block.to_empty(device = dev)

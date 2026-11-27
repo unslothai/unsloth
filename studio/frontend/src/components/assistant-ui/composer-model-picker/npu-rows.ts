@@ -33,8 +33,7 @@ export function npuPickerRows(
     }));
 }
 
-/** Whether Discover shows the NPU notice: setup before the runtime is ready, its spinner while the
- * first listing loads (else the section vanishes right after Enable), or a failed listing. */
+/** NPU notice: setup pending, listing loading (else it vanishes after Enable), or it failed. */
 export function npuNoticeShown(
   catalog: {
     ready: boolean;

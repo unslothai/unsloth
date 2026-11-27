@@ -116,13 +116,11 @@ def test_a_user_initiated_load_still_calls_every_one_of_them(monkeypatch, tmp_pa
 
     assert backend._loading is None, getattr(backend._loading, "error", None)
     assert seen.get("local_files_only") in (False, None)
-    # The byte estimate probes the checkpoint repo and the base; the base prefetch probes it again. The base's sizes
-    # are read from its byte-identical unsloth mirror, so the listing never leaves unsloth/*.
+    # Base sizes come from its byte-identical unsloth mirror, so the base repo is never listed.
     from core.inference.diffusion_families import mirror_repo
 
     assert WAN_GGUF in calls.model_info and mirror_repo(WAN_BASE) in calls.model_info
     assert WAN_BASE not in calls.model_info
-    # And the checkpoint is FETCHED, not looked up.
     assert calls.downloads == [(WAN_GGUF, WAN_FILE, False)]
 
 
@@ -154,8 +152,7 @@ def test_the_native_h3_path_binds_the_flag_instead_of_swallowing_it(monkeypatch)
 
 
 def test_load_pipeline_carries_the_flag_into_the_native_path(monkeypatch):
-    """load_pipeline is reachable without _run_load (tests, and the keep-warm path), so the
-    dispatch has to pass the flag rather than let the parameter default re-enable downloads."""
+    """Pass the flag: the default re-enables downloads, and load_pipeline can skip _run_load."""
     from core.inference.video_minimax_h3 import H3_GGUF_REPO
 
     backend = VideoBackend()
@@ -249,8 +246,7 @@ def test_the_xet_wrapper_resolves_offline_without_the_shared_backend(monkeypatch
 
 
 def test_the_xet_wrapper_is_unchanged_for_every_existing_caller(monkeypatch, tmp_path):
-    """Default False: the online path still goes through the shared transport, and the flag is not
-    even forwarded, so an older shared backend cannot trip over it."""
+    """Default False: the flag is not forwarded, so an older shared backend never sees it."""
     seen: dict = {}
 
     def _shared(*args, **kwargs):

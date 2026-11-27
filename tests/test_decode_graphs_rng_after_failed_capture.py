@@ -90,8 +90,7 @@ def test_rng_usable_after_failed_decode_capture(monkeypatch):
     real_run_step = G._run_step
 
     def run_step(*args, **kwargs):
-        # A host sync is illegal while capturing: it invalidates the capture, so capture_end raises
-        # too, which is how a real capture failure ends.
+        # A host sync while capturing invalidates the capture, so capture_end raises as well.
         if torch.cuda.is_current_stream_capturing():
             torch.cuda.synchronize()
         return real_run_step(*args, **kwargs)

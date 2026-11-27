@@ -157,6 +157,9 @@ class _UnslothDeviceStats:
         self.major = 0
         self.minor = 0
         self.multi_processor_count = 0
+        # MLX hosts return this from torch.cuda.get_device_properties. Inductor's cache key reads gcnArchName when
+        # torch.version.cuda is None (CacheBase.get_system), so every CPU torch.compile raised AttributeError there.
+        self.gcnArchName = name
 
 
 class _CPUBackendSelected(Exception):
@@ -415,6 +418,10 @@ if _IS_MLX:
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
     def _mlx_from_pretrained(*args, **kwargs):
+        # mlx-lm reads safetensors only: a GGUF request fails loudly here instead of loading something else.
+        from ._gguf_load import refuse_gguf_on_mlx
+
+        refuse_gguf_on_mlx(args[0] if args else kwargs.get("model_name"), kwargs.get("gguf_file"))
         # CUDA's vLLM options and defaults; zoo's loader takes none of them.
         fast_inference = kwargs.pop("fast_inference", False)
         gpu_memory_utilization = kwargs.pop("gpu_memory_utilization", 0.5)

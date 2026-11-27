@@ -318,9 +318,23 @@ def _check_hardware(
         else:
             _probe_float8_gemm(device, recipe)
     except Exception as e:
+        hint = ""
+        if _recipe_scaling(recipe) == "rowwise" and (
+            torch.version.hip is not None or (major, minor) >= (9, 0)
+        ):
+            # Some torch builds (e.g. the Windows wheels) ship only the tensorwise _scaled_mm kernel.
+            # Below 9.0 tensorwise is refused above, so the hint is not offered there. The named recipe
+            # (True) passes the gate only where it was measured faster; elsewhere point at the config.
+            if torch.version.hip is None and (major, minor) in _MEASURED_FASTER.get(
+                "tensorwise", ()
+            ):
+                fallback = "float8_training = True (the tensorwise recipe)"
+            else:
+                fallback = "torchao.float8.Float8LinearConfig.from_recipe_name('tensorwise') as float8_training"
+            hint = f" This torch build has no row-wise fp8 GEMM here; use {fallback} instead."
         raise RuntimeError(
             f"Unsloth: float8_training ({probe_recipe}) is not supported by torch {torch.__version__} on "
-            f"{torch.cuda.get_device_name(device)} ({type(e).__name__}: {str(e)[:200]})."
+            f"{torch.cuda.get_device_name(device)} ({type(e).__name__}: {str(e)[:200]}).{hint}"
         ) from e
 
 
@@ -418,6 +432,101 @@ def convert_model_to_float8_training(
 FP8_LORA_RECIPE = "fp8_lora_tensorwise"
 _FP8_LORA_BY_NAME = ("tensorwise",)
 _FP8_LORA_EXPLICIT = ("fp8_lora", FP8_LORA_RECIPE)
+INT8_LORA_RECIPE = "int8_lora_rotated"
+_INT8_LORA_NAMES = ("int8_lora", INT8_LORA_RECIPE)
+
+
+def int8_lora_requested() -> bool:
+    """UNSLOTH_LORA_BASE_INT8=1: LoRA on a 16-bit base runs the frozen base GEMMs as rotated int8 (opt-in)."""
+    import os
+    return os.environ.get("UNSLOTH_LORA_BASE_INT8", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def int8_lora_unavailable(gpu = "current"):
+    """Why the int8 LoRA base cannot run on this GPU class (registry gate, Triton, device), else None."""
+    if gpu == "current":
+        gpu = _precision.current_gpu_class()
+    if gpu is None:
+        return "no CUDA GPU is visible"
+    gate = _precision.get_recipe(INT8_LORA_RECIPE).gate(gpu)
+    if gate.status == "refused":
+        return f"{gpu}: {gate.reason}"
+    try:
+        from ..kernels import int8_lora
+    except ImportError as exc:
+        return f"the int8 kernels do not import ({exc})"
+    return int8_lora.int8_lora_supported(torch.device("cuda"))
+
+
+def _parallel_layout_requested() -> bool:
+    try:
+        from .tp_env import env_layout
+        from .ep_native import ep_env_size
+        return env_layout() is not None or ep_env_size() > 1
+    except Exception:
+        return False
+
+
+def _loaded_base_kind(model):
+    """'quantized', 'float32' or None (a 16-bit base) from the loaded model's Linear weights."""
+    for module in model.modules():
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        weight = getattr(module, "weight", None)
+        if weight is None:
+            continue
+        if (
+            type(weight).__name__ in ("Params4bit", "Int8Params")
+            or getattr(weight, "quant_state", None) is not None
+        ):
+            return "quantized"
+        if weight.dtype not in (torch.bfloat16, torch.float16):
+            return "float32" if weight.dtype == torch.float32 else "quantized"
+        return None
+    return None
+
+
+def int8_lora_from_env(
+    model,
+    full_finetuning = False,
+    qat_scheme = None,
+):
+    """UNSLOTH_LORA_BASE_INT8=1 with float8_training unset: INT8_LORA_RECIPE when the LOADED model is a 16-bit
+    base the int8 base can run on, else None. Decided after loading, so precision normalization (a '-bf16'
+    checkpoint loading 16 bit despite the load_in_4bit default) is already applied. Never fails a load: where it
+    cannot run it says why and training stays as loaded (float8_training = 'int8_lora' refuses instead)."""
+    if not int8_lora_requested() or model is None:
+        return None
+    why = None
+    if full_finetuning:
+        why = "full finetuning trains the base weight"
+    elif qat_scheme is not None:
+        why = f"qat_scheme = {qat_scheme!r} fake-quantizes the base weight"
+    elif _parallel_layout_requested():
+        why = "tensor / pipeline / expert parallel runs keep the frozen base in 16 bit"
+    else:
+        kind = _loaded_base_kind(model)
+        if kind == "quantized":
+            why = "the base is loaded quantized (load_in_4bit / 8bit / fp8)"
+        elif kind == "float32":
+            why = "the int8 base needs bf16 / fp16 activations, the model loaded in float32"
+    why = why or int8_lora_unavailable()
+    if why is not None:
+        print(f"Unsloth: UNSLOTH_LORA_BASE_INT8=1 is ignored here ({why}).")
+        return None
+    gpu = _precision.current_gpu_class()
+    if _precision.get_recipe(INT8_LORA_RECIPE).gate(gpu).status == "unprobed":
+        print(f"Unsloth: the int8 LoRA base has not been timed on {gpu}; running it as requested.")
+    return INT8_LORA_RECIPE
+
+
+def is_int8_lora_recipe(recipe) -> bool:
+    return isinstance(recipe, str) and recipe in _INT8_LORA_NAMES
 
 
 def resolve_fp8_lora(
@@ -435,6 +544,15 @@ def resolve_fp8_lora(
     if float8_training is None or float8_training is False:
         return None
     refused = _precision.PrecisionRefused
+    if isinstance(float8_training, str) and float8_training.strip().lower() in _INT8_LORA_NAMES:
+        return _resolve_int8_lora(
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            load_in_fp8 = load_in_fp8,
+            qat_scheme = qat_scheme,
+            gpu = gpu,
+        )
     if float8_training is True:
         explicit = False
     elif isinstance(float8_training, str) and float8_training.strip().lower() in (
@@ -475,6 +593,34 @@ def resolve_fp8_lora(
     if gate.status == "unprobed":
         print(f"Unsloth: fp8 LoRA has not been tested on {gpu}; running it as requested.")
     return recipe
+
+
+def _resolve_int8_lora(*, dtype, load_in_4bit, load_in_8bit, load_in_fp8, qat_scheme, gpu):
+    refused = _precision.PrecisionRefused
+    if load_in_4bit or load_in_8bit or (load_in_fp8 not in (False, None)):
+        raise refused(
+            "Unsloth: the int8 LoRA base (UNSLOTH_LORA_BASE_INT8=1) quantizes a 16-bit base itself; pass "
+            "load_in_4bit = False (and no load_in_8bit / load_in_fp8), or unset UNSLOTH_LORA_BASE_INT8."
+        )
+    if qat_scheme is not None:
+        raise refused(
+            "Unsloth: the int8 LoRA base and qat_scheme cannot be combined: QAT fake-quantizes the base weight."
+        )
+    if gpu == "current":
+        gpu = _precision.current_gpu_class()
+    if gpu is None:
+        raise refused(
+            "Unsloth: the int8 LoRA base needs an NVIDIA GPU (RTX 50 / RTX PRO 6000 class); no CUDA device is visible."
+        )
+    from ..kernels import int8_lora
+
+    why = int8_lora.int8_lora_supported(torch.device("cuda"))
+    if why is not None:
+        raise refused(f"Unsloth: the int8 LoRA base cannot run here: {why}.")
+    gate = _check_precision_recipe(INT8_LORA_RECIPE, gpu = gpu, input_dtype = dtype, mode = "lora")
+    if gate.status == "unprobed":
+        print(f"Unsloth: the int8 LoRA base has not been timed on {gpu}; running it as requested.")
+    return INT8_LORA_RECIPE
 
 
 def fp8_lora_recipe_for(gpu):
@@ -934,6 +1080,23 @@ def restore_fp8_lora_for_inference(model):
     owner.__dict__["_unsloth_fp8_lora_bases"] = ()
 
 
+def _model_hidden_size(model):
+    seen = set()
+    stack = [model]
+    while stack and len(seen) < 8:
+        m = stack.pop()
+        if m is None or id(m) in seen:
+            continue
+        seen.add(id(m))
+        config = getattr(m, "config", None)
+        for cfg in (getattr(config, "text_config", None), config):
+            hidden = getattr(cfg, "hidden_size", None)
+            if isinstance(hidden, int):
+                return hidden
+        stack.extend(getattr(m, attr, None) for attr in ("base_model", "model"))
+    return None
+
+
 def enable_fp8_lora(
     model,
     recipe = None,
@@ -944,18 +1107,33 @@ def enable_fp8_lora(
     recipe = recipe or _fp8_lora_request(model)
     if recipe is None:
         return []
-    kernels = _load_fp8_lora_kernels()
+    int8 = is_int8_lora_recipe(recipe)
+    fp8_kernels = _load_fp8_lora_kernels()
+    if int8:
+        from ..kernels import int8_lora as kernels
+    else:
+        kernels = fp8_kernels
     policy = _precision.get_recipe(recipe).hp_layers
     try:
         is_hp = _precision.hp_filter(model, policy)
     except Exception:
         is_hp = lambda module, fqn: False
     converted, skipped = [], {}
+    if int8:
+        hidden = _model_hidden_size(model)
+        if hidden is not None and hidden < kernels.MIN_HIDDEN:
+            print(
+                f"Unsloth: the int8 LoRA base is off for hidden size {hidden} (below {kernels.MIN_HIDDEN}, where it "
+                "was measured slower than bfloat16); training stays in 16 bit. UNSLOTH_INT8_LORA_MIN_HIDDEN=0 forces it."
+            )
+            _record_engagement(model, recipe, 0, detail = {"skipped": "hidden size"})
+            _require_engagement(recipe, 0, f"hidden size {hidden} below {kernels.MIN_HIDDEN}")
+            return []
     uses = {}
     for _, p in model.named_parameters(remove_duplicate = False):
         uses[id(p)] = uses.get(id(p), 0) + 1
     swapped = _block_swapped_modules(model)
-    offload = kernels.offload_supported()
+    offload = fp8_kernels.offload_supported()
     offloaded = 0
     for name, module in model.named_modules():
         base = getattr(module, "base_layer", None)
@@ -970,8 +1148,8 @@ def enable_fp8_lora(
             device = state.device if state is not None and state.offloaded else base.weight.device
             if device.type != "cuda" or torch.version.hip is not None:
                 why = f"weight on {device}"
-            elif torch.cuda.get_device_capability(device) < (8, 9):
-                why = "compute capability below 8.9"
+            elif torch.cuda.get_device_capability(device) < ((8, 0) if int8 else (8, 9)):
+                why = "compute capability below " + ("8.0" if int8 else "8.9")
         if why is None and id(base) in swapped:
             why = "block-swapped layer"
         if why is None and uses.get(id(base.weight), 0) > 1:
@@ -980,7 +1158,8 @@ def enable_fp8_lora(
             skipped[name] = why
             continue
         reads_raw = _has_variant(module) or _mamba_raw_weight_leaf(model, name)
-        state = kernels.attach_fp8_lora_base(base, offload = offload and not reads_raw)
+        attach = kernels.attach_int8_lora_base if int8 else kernels.attach_fp8_lora_base
+        state = attach(base, offload = offload and not reads_raw)
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)
         converted.append(name)
@@ -995,12 +1174,13 @@ def enable_fp8_lora(
     _record_engagement(model, recipe, len(converted), detail = detail or None)
     if not _require_engagement(recipe, len(converted), "no frozen 16-bit LoRA base Linear layers"):
         print(
-            "Unsloth: float8_training with LoRA found no eligible base layers"
+            ("Unsloth: the int8 LoRA base" if int8 else "Unsloth: float8_training with LoRA")
+            + " found no eligible base layers"
             + (f" ({next(iter(skipped.values()))})" if skipped else "")
             + "; training stays in 16 bit."
         )
     else:
-        print(f"Unsloth: fp8 LoRA base on {len(converted)} Linear layers.")
+        print(f"Unsloth: {'int8' if int8 else 'fp8'} LoRA base on {len(converted)} Linear layers.")
     if converted:
         _prepare_fp8_lora_loss(model)
         _prepare_fp8_lora_operators(model)

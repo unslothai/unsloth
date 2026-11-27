@@ -65,7 +65,6 @@ def test_a_failed_portable_fold_is_marked_and_not_retried(failing_fold, monkeypa
     # one fold attempt in all: this decode retried without it, the later ones skipped it
     assert len(attempts) == 1
     assert vae.decoder.__dict__.get("_unsloth_vae_fold_failed") is True
-    # the portable path never marks the kernels as failed
     assert "_unsloth_vae_strips_failed" not in vae.decoder.__dict__
 
 

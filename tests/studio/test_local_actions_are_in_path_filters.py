@@ -135,8 +135,7 @@ def test_a_helper_file_beside_the_manifest_is_checked_too(tmp_path):
 
 
 def test_the_pre_existing_list_does_not_outlive_the_problem():
-    """An entry that is now listed everywhere it is used must leave the waiver, or the
-    waiver quietly re-permits a regression someone already paid to fix."""
+    """An entry listed everywhere it's used must leave the waiver, or the regression returns."""
     still_unlisted = set()
     for workflow in _workflows():
         doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))

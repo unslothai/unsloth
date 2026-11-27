@@ -218,7 +218,6 @@ def test_vae_and_vision_tower_see_the_fitted_images(policy, monkeypatch):
     assert stock_calls == []
 
     assert [ref.kind for ref in normalized] == ["image"] * len(fitted)
-    # The very images Studio sized, pixel for pixel: no second resample.
     assert all(ref.image is image for ref, image in zip(normalized, fitted))
     assert _vae_input_sizes(pipe, normalized, monkeypatch) == sizes
     tokens, grids = _vision_token_counts(pipe, normalized)

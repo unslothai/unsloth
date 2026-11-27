@@ -67,8 +67,7 @@ def test_the_short_control_is_present_and_is_the_opposite_claim():
 
 
 def test_a_refusal_is_a_failure_rather_than_a_pass():
-    """A context-length error is a failure, not compaction, so it is checked structurally, not by
-    message."""
+    """Context-length refusals are failures, not passes; matched structurally, not by message."""
     func = _func("assert_compaction")
     refusals = [
         n
@@ -89,8 +88,7 @@ def test_a_refusal_is_a_failure_rather_than_a_pass():
 
 
 def test_the_overflow_is_built_past_the_budget_and_not_merely_to_it():
-    """The budget subtracts the reply reserve and the template's own framing,
-    so a prompt equal to the context length is not reliably over it."""
+    """The budget subtracts reply reserve and template framing, so the prompt must exceed it."""
     body = _body()
     assert "for i in range(40):" in body
     assert "self.args.studio_ctx" in body
@@ -171,8 +169,7 @@ def test_the_refusal_is_checked_by_CODE_and_not_by_the_status_alone():
 
 
 def test_the_over_length_conversation_is_sent_twice_under_two_policies():
-    """One request cannot compare two policies; both calls must exist and send identical messages,
-    or the pair compares a policy against a different conversation."""
+    """Both calls must exist with identical messages, or the pair compares different chats."""
     func = _func("assert_compaction")
     calls = [
         node

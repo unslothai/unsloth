@@ -18,7 +18,6 @@ def get_cache_kwarg(kwargs, default = None):
 
 
 def pop_cache_kwarg(kwargs, default = None):
-    """Like ``get_cache_kwarg`` but removes every cache alias from ``kwargs``."""
     value = get_cache_kwarg(kwargs, default)
     for name in CACHE_KWARG_NAMES:
         kwargs.pop(name, None)

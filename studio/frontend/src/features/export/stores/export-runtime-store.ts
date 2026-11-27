@@ -48,9 +48,9 @@ const RECOVERY_MAX_STATUS_FAILS = 5;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Settle a phase whose POST hit a tunnel timeout by polling status. A record is ours once
- *  the op is inactive and we saw it active or its seq passed `baseline`. */
+/** Settle a phase whose POST hit a tunnel timeout by polling for its operation id. */
 async function recoverViaStatus(
+  opId: string,
   baseline: number | null,
   isCurrent: () => boolean,
 ): Promise<{ outputPath: string | null }> {
@@ -82,8 +82,11 @@ async function recoverViaStatus(
       continue;
     }
 
-    const seq = st.last_op_seq ?? 0;
-    const isOurs = sawActive || (baseline !== null && seq > baseline);
+    // Older backends omit the field. Null on a current backend is an untagged op.
+    const isOurs =
+      st.last_op_id !== undefined
+        ? st.last_op_id === opId
+        : sawActive || (baseline !== null && (st.last_op_seq ?? 0) > baseline);
     if (isOurs) {
       if (st.last_op_status === "success") {
         return { outputPath: st.last_op_output_path ?? null };
@@ -92,11 +95,8 @@ async function recoverViaStatus(
       throw new Error(st.last_op_error || "Export failed");
     }
 
-    // Our op was never observed: the POST likely died first. Fail after a grace window.
     if (Date.now() - start > RECOVERY_GRACE_MS) {
-      throw new Error(
-        "The export request failed before the server started the operation.",
-      );
+      throw new Error("Could not confirm the export operation on the server.");
     }
   }
   throw new Error("Timed out waiting for the export to finish.");
@@ -449,7 +449,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         if (!isRecoverableTransportError(err)) throw err;
         set({ reconnecting: true });
         try {
-          return await recoverViaStatus(baseline, isCurrent);
+          return await recoverViaStatus(opId, baseline, isCurrent);
         } finally {
           if (isCurrent()) set({ reconnecting: false });
         }

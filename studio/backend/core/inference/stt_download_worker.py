@@ -90,8 +90,7 @@ def terminate_download(process: subprocess.Popen) -> None:
 
 
 def reap_download(process: subprocess.Popen) -> bytes:
-    """Every spawn must be reaped: a PID kept after exit can be reused and then signalled by
-    terminate_all."""
+    """Reap every spawn: a PID kept after exit can be reused and signalled by terminate_all."""
     from utils.process_lifetime import forget_pid
 
     try:

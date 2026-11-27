@@ -101,5 +101,4 @@ def test_cpu_staged_4bit_replica_merges_on_its_gpu(nested, triton_nf4, monkeypat
     got, _ = _merge_lora(proj, "proj")
     assert got.device.type == "cpu", got.device
     assert got.dtype == want.dtype and torch.equal(got, want)
-    # The staged weight itself stays on the CPU.
     assert base.weight.device.type == "cpu"

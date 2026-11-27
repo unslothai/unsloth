@@ -86,8 +86,7 @@ _LEAF_TYPES = (
 class FSDP2Config:
     param_dtype: Optional[torch.dtype] = None  # None = model compute dtype (bf16; fp16 on T4)
     reduce_dtype: torch.dtype = torch.float32
-    # None = auto: fit-on-one-GPU models keep frozen weights replicated; otherwise reshard every
-    # block but the last.
+    # None = auto: frozen weights stay replicated if one GPU fits; else reshard all but last.
     reshard_after_forward: Optional[Union[bool, int]] = None
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
@@ -904,8 +903,7 @@ def _resolve_param_dtype(model, config):
     if compute == torch.float16 and any(
         p.requires_grad and p.dtype == torch.float32 for p in model.parameters()
     ):
-        # Gather fp32 masters as they are: a float16 gather overflows scaled grads and GradScaler
-        # skips steps.
+        # A float16 gather overflows scaled grads: GradScaler skips steps; keep fp32 masters.
         return None
     return compute
 
@@ -1069,8 +1067,7 @@ def _unify_dtypes(
             ignored.update(picked)
             float32_kept.extend(picked)
         if can_ignore and param_dtype in (torch.bfloat16, torch.float16):
-            # Frozen float32 weights next to 16-bit ones (GDN A_log / dt_bias, fp32 norms, routers): the
-            # gather would cast them to 16-bit, which one GPU never does. Keep small ones replicated.
+            # Small frozen fp32 weights stay replicated: a gather would cast them to 16-bit.
             floats = [p for p in params if _floating(p)]
             frozen32 = [
                 p
@@ -1735,8 +1732,7 @@ def _wrap_generate(model):
                     target, request_bytes = _generate_request_bytes(target, args, kwargs)
                 )
                 with native_fsdp2_unsharded(target, stream_blocks = stream, resident_blocks = resident):
-                    # Eager only when a block really streams: with every block resident (or no
-                    # decoder block list) nothing all-gathers per step and CUDA graphs stay on.
+                    # Eager only when blocks stream; resident blocks keep CUDA graphs on.
                     with torch.no_grad(), _eager_decode_scope(_generate_stream_installed(target)):
                         return _generate(*args, **kwargs)
             finally:
@@ -2100,8 +2096,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         and _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN") is not False
         and _supports_ignored_params(fully_shard)
     ):
-        # A frozen split table (Gemma4 / Gemma3n per-layer embeddings, 4.4 GiB) would be all-gathered whole
-        # every step: keep it whole on every rank like a frozen lookup table, as on 1 GPU.
+        # Frozen split tables (Gemma4 / Gemma3n, 4.4 GiB) stay whole: no per-step all-gather.
         frozen_split = [m for m in extra_units if not any(p.requires_grad for p in m.parameters())]
         if frozen_split:
             extra_units = [m for m in extra_units if not any(m is f for f in frozen_split)]
@@ -2282,8 +2277,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     _post_shard(model, units, device, root_only = layout.root_only)
     from .fsdp2_reduce import install_half_transport_reduce
 
-    # Opt-in: 16-bit gradients cross the wire as 16-bit and add in float32 (the float32 reduce's sum, half
-    # the bytes). Off (the default) installs nothing.
+    # Opt-in: 16-bit grads cross the wire and add in float32 (half the bytes); off by default.
     model._unsloth_fsdp2_half_transport = install_half_transport_reduce(
         [*wrapped, *model._unsloth_fsdp2_extra_units, model], enabled = half_transport
     )
@@ -2820,8 +2814,7 @@ def _generate_request_bytes(model, args, kwargs):
         # Without a cache every step forwards the whole growing sequence: decline instead of under-counting.
         if pick("use_cache") is False:
             return None
-        # A supplied cache holds history the suffix-only ids do not show; the decode allocator sizes its
-        # new paged cache from the whole length, so count it (or decline when it cannot be read).
+        # Caches hold unseen history: count it for decode sizing, or decline if unreadable.
         cached = 0
         past = get_cache_kwarg(kwargs)
         if past is not None:
@@ -2836,11 +2829,9 @@ def _generate_request_bytes(model, args, kwargs):
             max_length = pick("max_length")
             if max_length is None:
                 return None
-            # generate bounds the output by max_length minus the ids it was given; cached history
-            # counts toward the cache rows below, not toward this subtraction (requested_new_tokens).
+            # new = max_length - prompt; cached history counts in cache rows below, not here.
             new = max(0, int(max_length) - prompt)
-        # Outputs generate keeps for the whole call: scores / logits are one fp32 batch x vocab tensor per
-        # generated token; attentions and hidden states per step cannot be sized here, so decline.
+        # Scores: fp32 batch x vocab per token; attentions and hidden states: decline.
         retained_per_token = 0
         if pick("return_dict_in_generate"):
             if pick("output_attentions") or pick("output_hidden_states"):
@@ -2892,8 +2883,7 @@ def _generate_request_bytes(model, args, kwargs):
         else:
             keep_rows = prompt if int(keep) <= 0 else int(keep)
         keep_rows = max(1, min(prompt, keep_rows))
-        # Eager attention materialises one layer's prefill scores in the model dtype, their float32
-        # softmax and the cast back.
+        # Eager attention: prefill scores in model dtype, float32 softmax, then cast back.
         attn = getattr(config, "_attn_implementation", None)
         if attn == "eager" or pick("output_attentions"):
             act += batch * heads * prompt * (cached + prompt) * (2 * width + 4)
@@ -2908,8 +2898,7 @@ def _generate_request_bytes(model, args, kwargs):
         dense = dense or (isinstance(window, int) and window > 0 and keys >= window - 1)
         if dense:
             act += batch * prompt * keys * (3 * width + 2)
-        # Mixture of experts: each token is copied to its top-k experts (input, gate / up / activation and
-        # output per copy) next to the float32 router logits.
+        # MoE: token copied per top-k expert (input, gate/up/act, output); fp32 router logits.
         experts = 0
         for name in ("num_experts", "num_local_experts", "n_routed_experts"):
             value = getattr(config, name, None)
@@ -3044,8 +3033,7 @@ class _GenerateBlockStream:
 
     def __init__(self, units):
         self.units = units  # {block index: FSDP unit}
-        # CPU-offloaded shards live on the host between gathers: the decode loops must not repair
-        # per-layer devices from them (the gathered blocks publish their own device on enter).
+        # CPU-offloaded shards stay on host: decode loops must not repair devices from them.
         self.keeps_weights_on_device = not _units_offload_to_cpu(units.values())
 
     def enter(self, index):
@@ -3136,8 +3124,7 @@ def native_fsdp2_unsharded(
     if FSDPModule is None or not is_native_fsdp2(model):
         yield model
         return
-    # Re-entrant: the wrapped generate() enters again inside an outer block. Only the outermost
-    # enter gathers and only the outermost exit reshards (per sharded root).
+    # Re-entrant: only the outermost enter gathers and the outermost exit reshards, per root.
     root = _native_root(model)
     depth = root.__dict__.get("_unsloth_unsharded_depth", 0)
     root.__dict__["_unsloth_unsharded_depth"] = depth + 1
@@ -3218,7 +3205,10 @@ def _ga_mode(model = None):
       accumulators held across micro-batches, the leanest and the slowest;
     "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
       backward, so keeping them gathered adds no peak memory); "each" for the sharded full fine-tune
-      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip"."""
+      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip", except
+      that units whose own parameters are mostly trainable (the root holding trainable embed_tokens /
+      lm_head, ~4 GiB of whole fp32 gradients for a Llama-8B vocab) still reduce-scatter every
+      micro-batch. An explicit "skip" skips every unit."""
     mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
     if mode in ("skip", "defer", "each"):
         return mode
@@ -3240,6 +3230,31 @@ def _mostly_trainable(model):
     return trainable > frozen
 
 
+def _mostly_trainable_units(model):
+    """FSDP units of `model` whose own parameters (not those of nested units) are mostly trainable."""
+    FSDPModule = _fsdp_module_class()
+    if FSDPModule is None:
+        return []
+    found = []
+    for unit in (m for m in model.modules() if isinstance(m, FSDPModule)):
+        nested = set()  # parameters owned by this unit's descendant units
+        for child in unit.modules():
+            if child is not unit and isinstance(child, FSDPModule):
+                nested.update(id(p) for p in child.parameters())
+        trainable = frozen = 0
+        for p in unit.parameters():
+            if id(p) in nested:
+                continue
+            if p.requires_grad and _floating(p):
+                trainable += p.numel()
+            else:
+                frozen += p.numel()
+        # modules_to_save keeps a frozen original next to each trainable copy: half and half.
+        if trainable and trainable * 2 >= frozen:
+            found.append(unit)
+    return found
+
+
 @contextlib.contextmanager
 def _no_grad_sync(model):
     mode = _ga_mode(model)
@@ -3248,13 +3263,26 @@ def _no_grad_sync(model):
         return
     defer = mode == "defer" and hasattr(model, "set_reshard_after_backward")
     model.set_requires_gradient_sync(False)
+    if mode == "skip" and os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() in (
+        "",
+        "auto",
+    ):
+        # Skipping a mostly trainable unit holds its whole fp32 gradient on every rank between
+        # micro-batches; reduce-scattering it each time keeps only the 1 / world shard (same sum).
+        for unit in _mostly_trainable_units(model):
+            try:
+                unit.set_requires_gradient_sync(True, recurse = False)
+            except TypeError:  # no per-unit switch on this torch: skip it like the rest
+                break
     if defer:
         model.set_reshard_after_backward(False)
         if hasattr(model, "set_is_last_backward"):
             model.set_is_last_backward(False)
+    model.__dict__["_unsloth_ga_no_sync"] = True  # fsdp2_save._fsdp_grad_sync_deferred
     try:
         yield
     finally:
+        model.__dict__.pop("_unsloth_ga_no_sync", None)
         model.set_requires_gradient_sync(True)
         if defer:
             model.set_reshard_after_backward(True)
@@ -3400,8 +3428,7 @@ def _install_accelerate_hooks():
                 self, model, device_placement = device_placement, evaluation_mode = evaluation_mode
             )
         _refuse_untrusted_accelerator(self, [model])
-        # Already sharded by Unsloth: keep accelerate's autocast wrap of forward (as one GPU gets),
-        # skip device placement and the DDP / FSDP wrap (evaluation_mode skips exactly those).
+        # Sharded by Unsloth: skip placement and DDP / FSDP wrap; keep autocast on forward.
         if getattr(model, "_is_accelerate_prepared", False):
             if model not in self._models:
                 self._models.append(model)
@@ -3444,8 +3471,7 @@ def _install_accelerate_hooks():
 
     @functools.wraps(original_prepare_optimizer)
     def prepare_optimizer(self, optimizer, *args, **kwargs):
-        # From the optimizer's own parameters too: prepare(optimizer, model) prepares in the order
-        # given, so the native model may not be registered in `_models` yet.
+        # Optimizer params too: prepare(optimizer, model) can run before _models lists it.
         native = bool(_native_models(self)) or _native_optimizer(optimizer)
         if native:
             _refuse_untrusted_accelerator(self, [optimizer] if _native_optimizer(optimizer) else [])
@@ -3542,6 +3568,34 @@ def _inner_optimizer(optimizer):
     return optimizer
 
 
+@contextlib.contextmanager
+def _host_state_gatherable(optimizer):
+    """UNSLOTH_OFFLOAD_OPTIMIZER_STATE keeps a DTensor state's local shard in host memory under its original
+    (device) wrapper. torch's full state gather moves a DTensor to its mesh's device only when the wrapper
+    reports another device, so it would hand NCCL a host tensor. For the gather each such state is wrapped
+    with its host device instead: torch then moves it to the device one tensor at a time, and the offloaded
+    state (the objects the offloader tracks) is put back afterwards."""
+    from .fsdp2_save import _dtensor_class
+
+    DTensor = _dtensor_class()
+    swapped = []
+    if DTensor is not None:
+        for state in list(getattr(optimizer, "state", {}).values()):
+            if not isinstance(state, dict):
+                continue
+            for key, value in list(state.items()):
+                if isinstance(value, DTensor) and value._local_tensor.device != value.device:
+                    state[key] = DTensor(
+                        value._local_tensor, value._spec, requires_grad = value.requires_grad
+                    )
+                    swapped.append((state, key, value))
+    try:
+        yield
+    finally:
+        for state, key, value in swapped:
+            state[key] = value
+
+
 def native_save_optimizer(
     model,
     optimizer,
@@ -3563,7 +3617,7 @@ def native_save_optimizer(
     if writer_rank == 0:
         from .fsdp2_bnb_optim import full_cpu_state_export
         export = full_cpu_state_export(optimizer)
-    with export:
+    with export, _host_state_gatherable(optimizer):
         state = get_optimizer_state_dict(
             model,
             optimizer,
@@ -3571,8 +3625,8 @@ def native_save_optimizer(
                 full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0
             ),
         )
-    if writer_rank != 0:
-        state = _gather_to_writer(state, writer_rank)
+        if writer_rank != 0:
+            state = _gather_to_writer(state, writer_rank)
     dist = _dist()
     if should_save is None or writer_rank != 0:
         # Only the sub-mesh writer holds the state; a global-rank-0 should_save would write nothing.
@@ -3622,8 +3676,7 @@ def native_load_optimizer(model, optimizer, path_or_state):
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
     rename_optimizer_state_for(inner, state)
     unstepped = _unstepped_optimizer_params(root, inner, state)
-    # torch refuses a trainable parameter without saved state, and strict = False would keep the
-    # fresh init state for it. Hiding these (requires_grad off) leaves them stateless, as saved.
+    # Torch refuses trainable params without state; requires_grad off keeps them stateless.
     try:
         for param in unstepped:
             param.requires_grad_(False)
@@ -3942,8 +3995,7 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     for index, key, value in unsaved:
         state["param_groups"][index].setdefault(key, value)
     if unstepped:
-        # Parameters the saved optimizer held but never stepped: listed in its (now loaded) param
-        # groups, without state. Anything else without state is not this optimizer's checkpoint.
+        # Never-stepped params are listed in groups; other stateless params are foreign.
         saved = {f for g in state.get("param_groups", []) for f in (g.get("params") or [])}
         unknown = [f for f in unstepped if f not in saved]
         if unknown:
@@ -4019,8 +4071,7 @@ def _match_saved_optimizer_keys(
         for name in [n for n in entry if f"state.{fqn}.{n}" not in metadata]:
             del entry[name]
         for name, value in list(entry.items()):
-            # Saved as a tensor where this optimizer keeps a plain value (torch AdamW's tensor step
-            # resumed into bitsandbytes' int step): read the tensor, the rename converts it.
+            # Torch AdamW tensor steps are read as tensors; the rename converts them to int.
             md = metadata[f"state.{fqn}.{name}"]
             size = getattr(md, "size", None)
             dtype = getattr(getattr(md, "properties", None), "dtype", None)
@@ -4156,8 +4207,7 @@ def _native_load_hf_sharded(root, checkpoint):
     group, usable = _dcp_group(root)
     if not usable:
         return None
-    # Everything else is read per rank (environment, torch build, files, checkpoint metadata) and
-    # decided by one vote, so no rank can take the full load while another waits in dcp.load.
+    # Rest is read per rank and voted on: no rank full-loads while another waits in dcp.load.
     state = reader = None
     try:
         reader_cls = _hf_reader_class()
@@ -4612,8 +4662,7 @@ def _install_trainer_hooks():
             return original_save_model(self, output_dir, _internal_call = _internal_call)
         if output_dir is None:
             output_dir = self.args.output_dir
-        # Gather on every rank from the sharded root, not a compile or DDP wrapper, so keys carry no
-        # prefix.
+        # Every rank gathers from the sharded root (not a compile/DDP wrapper): no key prefix.
         root = _native_root(model)
         if _is_peft(root):
             # The adapter save also writes frozen tensors (resized embeddings, inactive adapters,
@@ -4785,8 +4834,7 @@ def _install_trainer_hooks():
         ]
         group, usable = _dcp_group(_native_root(model))
         if usable:
-            # Each rank's view of node-local storage is voted on, so all ranks read one format or
-            # skip together.
+            # Each rank's node-local view is voted on: all read one format or skip together.
             sharded, full, scheduler, none_saved, no_scheduler = _all_ranks_agree(
                 local + [not (local[0] or local[1]), not local[2]], group
             )
@@ -4950,8 +4998,7 @@ def _scaler_for_native(trainer):
         return False
 
     class _ShardedGradScaler(ShardedGradScaler):
-        # ShardedGradScaler.unscale_ makes found_inf shape [1]; fused optimizers subtract it in place
-        # from their 0-dim step counts, which fails. Keep it 0-dim as GradScaler does.
+        # Fused optimizers fail on found_inf [1] from unscale_; keep it 0-dim like GradScaler.
         def unscale_(self, optimizer):
             super().unscale_(optimizer)
             if not self.is_enabled():
@@ -4959,8 +5006,7 @@ def _scaler_for_native(trainer):
             self._one_flag(optimizer)
 
         def _check_inf_per_device(self, optimizer):
-            # Fused step() without unscale_ (no clipping) lands here; ShardedGradScaler does not
-            # all-reduce here, so ranks diverged on overflow skips. Agree over ranks.
+            # Unscale-free steps skip all-reduce; overflow skips diverge, so agree over ranks.
             super()._check_inf_per_device(optimizer)
             state = self._per_optimizer_states[id(optimizer)]
             works, copies = [], []
@@ -5008,10 +5054,8 @@ def _scaler_for_native(trainer):
                     t = getattr(optimizer, name, None)
                     if isinstance(t, torch.Tensor) and t.device.type != "cpu":
                         setattr(optimizer, name, t.cpu())
-                # GradScaler calls a fused optimizer's step on inf grads too (the kernel skips), so
-                # accelerate counts a step and the Trainer advances the lr schedule; a foreach
-                # optimizer is not called. Skip here as well (found_inf is a host tensor, no sync):
-                # CPU offload switches adamw_torch to fused and would run one lr step ahead.
+                # Fused optimizers step on inf grads (advancing lr); skip here too (host found_inf,
+                # no sync). CPU offload switches adamw_torch to fused, one lr step ahead.
                 found_inf = getattr(optimizer, "found_inf", None)
                 if isinstance(found_inf, torch.Tensor) and bool(found_inf.sum() > 0):
                     return None
@@ -5027,8 +5071,7 @@ def _scaler_for_native(trainer):
                     del optimizer.step
 
         def _one_flag(self, optimizer):
-            # found_inf is summed over ranks and devices, but fused kernels skip only on == 1.
-            # One 0 / 1 flag on the first device, zeros elsewhere (consumers sum them).
+            # Fused kernels skip only on == 1: one 0/1 flag on device 0, zeros elsewhere.
             state = self._per_optimizer_states[id(optimizer)]
             found = state["found_inf_per_device"]
             if not found:
@@ -5045,8 +5088,7 @@ def _scaler_for_native(trainer):
     if handler is not None and hasattr(handler, "to_kwargs"):
         kwargs = handler.to_kwargs()
     kwargs.setdefault("device", getattr(scaler, "_device", "cuda"))
-    # The Trainer scales each rank's loss by the number of processes, so float16 activation grads are
-    # that many times one GPU's and overflow at its scale. Divide init_scale by it unless the user set it.
+    # Loss scales by world size, so fp16 overflows; divide init_scale by it unless user-set.
     world = _loss_scale_ranks(trainer)
     if world > 1 and "init_scale" not in kwargs:
         kwargs["init_scale"] = 2.0**16 / world
@@ -5272,8 +5314,7 @@ def _localize_bnb_optimizer(optimizer):
     return localize_bnb_optimizer(inner)
 
 
-# Trainer.__init__'s positional order (the same in transformers 4.57 and 5.x), for an __init__ whose
-# signature cannot be read (a wrapper without functools.wraps).
+# Trainer.__init__ order (transformers 4.57 and 5.x) for wrappers without functools.wraps.
 _TRAINER_INIT_ORDER = (
     "model",
     "args",
@@ -5630,7 +5671,6 @@ def _refuse_projection_optim(training_args):
             "UNSLOTH_FSDP2."
         )
     if "adafactor" in name:
-        # Factored second moments need whole rows / columns; step one fails on DTensor shards.
         raise ValueError(
             f"Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with optim = '{name}': Adafactor "
             "factors each weight's second moment over whole rows and columns, and native FSDP2 hands "
@@ -5720,8 +5760,6 @@ def native_fsdp2_trainer_setup(
         if tp_dp_mesh is None:
             _refuse_tensor_parallel_model(model)
         if model_init is not None:
-            # Trainer.train / hyperparameter_search call model_init again for a fresh model (and
-            # rebuild the accelerator per trial), which would train unsharded.
             raise RuntimeError(
                 "Unsloth: native FSDP2 does not support `Trainer(model_init = ...)` or "
                 "`hyperparameter_search`: the model model_init returns would not be sharded. Build "
@@ -5733,8 +5771,7 @@ def native_fsdp2_trainer_setup(
         )
         _refuse_bnb_optimizer_instance(optimizer)
         if is_native_fsdp2(model) and optimizer is not None and _mixed_param_groups(optimizer):
-            # Split only a fresh optimizer: a late split breaks the scheduler's base LRs or loaded
-            # state.
+            # Split only a fresh optimizer: later splits break base LRs or loaded state.
             if scheduler is not None or getattr(_inner_optimizer(optimizer), "state", None):
                 raise RuntimeError(_MIXED_GROUPS_REFUSAL)
         if is_native_fsdp2(model):

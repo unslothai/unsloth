@@ -278,6 +278,7 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
         {"role": "assistant", "content": "", "tool_calls": [{"id": "0"}]},
         {"role": "tool", "content": "h" * old_result_chars},
     ]
+    progress = Mock()
     truncated, prompts, branches = _run_loop(
         monkeypatch,
         [old, *(old_exchange if old_result_chars else []), ANSWERED, QUESTION],
@@ -285,6 +286,7 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
         2400,
         max_tool_iterations = 3,
         context_policy = policy,
+        perf_callback = progress,
     )
 
     final = prompts[-1]
@@ -299,6 +301,7 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     # The recall query comes from the client's turns, never from a re-prompt the loop added (#16187).
     assert [m for m in last_fit["query_messages"] if m["role"] == "user"][-1] is QUESTION
     assert len(truncated) == fits and all(event["fits"] for event in truncated)
+    assert progress.compacting.call_count == fits
     assert bool(truncated[0].get("checkpoint_started")) is (policy == "checkpoint")
     assert last_fit["thread_id"] == "thread-1"
 

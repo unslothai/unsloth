@@ -39,8 +39,7 @@ def _clean(monkeypatch):
 
 
 def _fake_card(monkeypatch, long_fails = False):
-    """A CPU stand-in for an sm89 card. Returns the (keys, selected config) of every kernel call; with
-    ``long_fails`` a call that selects the long variant raises at launch, as a failed compile or launch would."""
+    """sm89 stand-in: logs (keys, config) per call; long_fails makes long-variant calls raise."""
     from core.inference import rocm_bf16
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -156,8 +155,7 @@ def test_the_card_check_compiles_and_verifies_the_long_variant(monkeypatch):
 
 
 def test_a_long_variant_that_fails_its_check_leaves_long_calls_on_the_short_kernel(monkeypatch):
-    """(b) The long variant raises in the check: the card keeps INT8 (the short kernel is verified), short calls run
-    it, and long calls run the short config instead of native attention."""
+    """Failed long check keeps INT8: long calls run the short config, not native attention."""
     calls, _ = _fake_card(monkeypatch, long_fails = True)
     long_keys = int(I.kernel_config(CAPABILITY, LONG_HD)["long_keys"])
     found = I._check("cuda", torch.float32, 24, LONG_HD, None, timed = False)
@@ -228,8 +226,7 @@ def test_a_short_kernel_failure_still_turns_the_card_off(monkeypatch):
 
 
 def test_a_config_without_long_keys_is_checked_and_run_as_before(monkeypatch):
-    """(c) No long_keys (sm89 hd128): the check runs only the plain and the sharp probe at 1000 tokens, records no
-    long verdict, and every call length runs the one config."""
+    """No long_keys (sm89 hd128): 1000-token probes, no long verdict; one config for all calls."""
     calls, _ = _fake_card(monkeypatch)
     found = I._check("cuda", torch.float32, 24, PLAIN_HD, None, timed = False)
     assert found["ok"] and "long" not in found

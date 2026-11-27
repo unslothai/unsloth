@@ -44,8 +44,7 @@ export function ProgressiveRows<T extends { id: string }>({
   end?: ReactNode;
   hasMore?: boolean;
   onReachEnd?: () => Promise<void> | void;
-  /** Mount every row it is given and only page the server: for lists whose rows already arrive a
-   *  page at a time, so the rows navigation and selection see are the rows on screen. */
+  /** Mounts every row for paged lists; navigation and selection then see the shown rows. */
   mountAll?: boolean;
 }) {
   const [limit, setLimit] = useState(mountAll ? Number.POSITIVE_INFINITY : pageSize);

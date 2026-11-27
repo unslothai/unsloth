@@ -32,8 +32,7 @@ if [[ -n "${SSH_KEY:-${PUBLIC_KEY:-}}" ]] && (( UNSLOTH_STUDIO_PORT == 22 )); th
     printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_PORT=22 is sshd's port inside the container when SSH_KEY or PUBLIC_KEY is set.\n" >&2
     exit 1
 fi
-# JupyterLab binds first, so Studio would silently move; compare ports via int() as
-# traitlets does.
+# JupyterLab binds first so Studio would silently move; compare ports via int() like traitlets.
 jupyter_port_digits="${JUPYTER_PORT//[[:space:]_]/}"
 jupyter_port_digits="${jupyter_port_digits#+}"
 if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == UNSLOTH_STUDIO_PORT )); then
@@ -52,8 +51,7 @@ export UNSLOTH_STUDIO_STOP_WAIT_S=$(( 10#$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 
-# SSH login shells lack the `docker run -e` vars. Secrets excluded; values shlex.quote()d
-# because every login shell sources this file.
+# Login shells lack docker run -e vars; no secrets; values shlex.quote()d as shells source it.
 python - > /etc/profile.d/unsloth_env.sh <<'PY' || true
 import os, re, shlex
 keep   = re.compile(r"^(HF_|CUDA_|NCCL_|HSA_|HIP_|ROCM_|ROCR_|ROCBLAS_|JUPYTER_|UNSLOTH_|WANDB_|TRITON_)|^PATH$")
@@ -94,8 +92,7 @@ EOF
           && "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" != "1" \
           && "${_view_dir}" == "${_root_dir}/"* ]]; then
         _view_rel="${_view_dir#${_root_dir}/}"
-        # default_url must be set on BOTH ServerApp and LabApp. repr() via env, not heredoc
-        # interpolation, so quotes or backslashes in the path cannot break the config.
+        # Set default_url on ServerApp and LabApp; env, not heredoc, so quotes cannot break it.
         UNSLOTH_VIEW_REL="${_view_rel}" UNSLOTH_VIEW_DIR="${_view_dir}" \
         python - >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<'PY'
 import os
@@ -128,8 +125,7 @@ fi
 
 mkdir -p /workspace
 
-# AGPLv3: refuse to start if the Unsloth attribution is stripped. The same checker
-# runs at build time and as a jupyter_server extension.
+# AGPLv3: refuse to start if attribution is stripped; same checker also runs as an extension.
 if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
     if ! /opt/unsloth-venv/bin/python -m unsloth_branding --verify; then
         echo "Refusing to start the container." >&2

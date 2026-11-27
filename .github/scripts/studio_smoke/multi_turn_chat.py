@@ -58,14 +58,12 @@ PROMPTS = [
 
 
 def _server() -> tuple[str, str]:
-    """Returns (BASE_URL, TOKEN) from the environment, since each workflow boots its server on its
-    own port; read at call time, not import, so the checks run without a server or SDKs."""
+    """Read BASE_URL and TOKEN at call time, not import, so checks need no server or SDKs."""
     return os.environ["BASE_URL"], os.environ["TOKEN"]
 
 
 def _read_backend_status() -> dict:
-    """What the server says it loaded. Split out so the assertion below is reachable
-    from a test without standing a server up, the same reason _server() exists."""
+    """Returns what the server says it loaded; split out so tests can skip a live server."""
     base, token = _server()
     request = urllib.request.Request(
         f"{base}/api/inference/status", headers = {"Authorization": f"Bearer {token}"}
@@ -147,8 +145,7 @@ def run_anthropic() -> list[str]:
     from anthropic import Anthropic
 
     BASE, KEY = _server()
-    # base_url must not include /v1 (the SDK appends it), and auth must go via default_headers
-    # because Unsloth only accepts Bearer, not x-api-key.
+    # base_url omits /v1 (SDK appends it); Unsloth accepts only Bearer via default_headers.
     client = Anthropic(
         base_url = BASE,
         api_key = "unused",
@@ -197,8 +194,7 @@ def check(label: str, first: list[str], second: list[str]) -> None:
 def main() -> int:
     assert_reproducible_backend()
     for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
-        # Only replay disagreement is retried: the second replay meets different cache and slot state.
-        # Do not soften check(); a softened warning once went unnoticed for months.
+        # Retry only replay disagreement (cache and slot state differ); never soften check().
         for attempt in range(1, ATTEMPTS + 1):
             try:
                 check(label, runner(), runner())

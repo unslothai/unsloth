@@ -163,6 +163,9 @@ class FrozenInt8Linear(nn.Module):
         if in_f % 8 or out_f % 8:
             raise ValueError(f"int8 W8A8 needs 8-aligned dims, got {out_f}x{in_f}")
         self.in_features, self.out_features = in_f, out_f
+        # The int8 weight buffer is storage, not the input dtype: callers that cast inputs to a Linear's
+        # weight dtype (MOSS-Image's _compute_dtype) read this instead.
+        self.compute_dtype = linear.weight.dtype
         q, s = quantize_weight(linear.weight.detach())
         self.register_buffer("weight", q)
         self.register_buffer("weight_scale", s.reshape(1, out_f).contiguous())
@@ -203,9 +206,8 @@ def convert_frozen_int8(
     names,
     device = None,
 ) -> tuple[int, int]:
-    """Swap each frozen nn.Linear in ``names`` for FrozenInt8Linear one at a time; with ``device`` a host Linear
-    moves there just before it is quantized, so the bf16 base is never whole on the device. A layer that fails
-    stays as it was. Returns (converted, failed)."""
+    """Swap frozen nn.Linear in names for FrozenInt8Linear in turn (moved to device first when
+    given, so the bf16 base is never whole there); failures stay; returns (converted, failed)."""
     done = failed = 0
     for fqn in sorted(names):
         parent_name, _, child = fqn.rpartition(".")

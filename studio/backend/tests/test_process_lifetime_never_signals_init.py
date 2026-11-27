@@ -45,8 +45,7 @@ def test_unsignalable_values_are_rejected(pid):
 
 
 def test_the_public_name_is_the_internal_one():
-    """Other modules import the public spelling. If the two ever come apart, the
-    floor stops meaning one thing across Unsloth, which is how a site gets missed."""
+    """Other modules import the public name; if the two diverge, the floor means two things."""
     assert pl._signalable is pl.is_signalable_pid
 
 
