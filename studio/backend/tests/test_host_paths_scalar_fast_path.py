@@ -81,7 +81,6 @@ def test_mixed_payload_matches_the_full_walk():
         "repo_path": "",
         "cache_ref": cache_reference(HOME),
     }
-    # The inventory redactor also references the ambiguous `path` field.
     inventory = redact_inventory_host_paths({"path": HOME, "size": 12}, via_api_key = True)
     assert inventory == {"path": "", "size": 12}
 

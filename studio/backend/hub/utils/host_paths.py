@@ -208,8 +208,7 @@ def restore_inventory_handles(payload: Any) -> Any:
     return _restore(payload, known)
 
 
-# Exact types only: a subclass can carry model_dump or be a Mapping, so it takes the full walk.
-# These five have no model_dump and are neither Mapping nor sequence, so the walk returns them as is.
+# Exact types only: a subclass may carry model_dump or be a Mapping, so it takes the full walk.
 _REDACT_PASSTHROUGH_TYPES = frozenset({type(None), bool, int, float, str})
 # str is absent: _restore rewrites handles inside text.
 _RESTORE_PASSTHROUGH_TYPES = frozenset({type(None), bool, int, float})
