@@ -9187,6 +9187,10 @@ def snapshot_residual_lora_init(model, init_lora_weights):
 CONVERT_ON_SAVE_LORA_WEIGHTS = ("lora_ga",)
 
 
+_RESIDUAL_LOAD = threading.local()
+_RESIDUAL_LOAD_HOOK = {"lock": threading.Lock(), "users": 0, "original": None}
+
+
 @contextlib.contextmanager
 def snapshot_residual_lora_load(config):
     """Wrap PeftModel.from_pretrained: PEFT re-runs a residual init there, then overwrites its factors with the saved
@@ -9202,18 +9206,31 @@ def snapshot_residual_lora_load(config):
         return
     from peft import PeftModel
 
-    original = PeftModel.load_adapter
+    hook = _RESIDUAL_LOAD_HOOK
+    with hook["lock"]:
+        if hook["users"] == 0:
+            original = hook["original"] = PeftModel.load_adapter
 
-    @functools.wraps(original)
-    def load_adapter(model, *args, **kwargs):
-        snapshot_residual_lora_init(model, init)
-        return original(model, *args, **kwargs)
+            @functools.wraps(original)
+            def load_adapter(model, *args, **kwargs):
+                # Only this thread's from_pretrained, and only its first load: later ones bring trained factors.
+                pending = getattr(_RESIDUAL_LOAD, "init", None)
+                if pending is not None:
+                    _RESIDUAL_LOAD.init = None
+                    snapshot_residual_lora_init(model, pending)
+                return original(model, *args, **kwargs)
 
-    PeftModel.load_adapter = load_adapter
+            PeftModel.load_adapter = load_adapter
+        hook["users"] += 1
+    _RESIDUAL_LOAD.init = init
     try:
         yield
     finally:
-        PeftModel.load_adapter = original
+        _RESIDUAL_LOAD.init = None
+        with hook["lock"]:
+            hook["users"] -= 1
+            if hook["users"] == 0:
+                PeftModel.load_adapter = hook["original"]
 
 
 def _residual_lora_rows(model, adapters):

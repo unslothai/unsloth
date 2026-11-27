@@ -9,6 +9,8 @@ import contextlib
 import copy
 import functools
 import pathlib
+import threading
+import types
 
 import pytest
 import torch
@@ -25,7 +27,12 @@ _KEY = "model.layers.0.self_attn.q_proj.weight"
 
 
 def _utils():
-    names = {"RESIDUAL_INIT_LORA_WEIGHTS", "CONVERT_ON_SAVE_LORA_WEIGHTS"}
+    names = {
+        "RESIDUAL_INIT_LORA_WEIGHTS",
+        "CONVERT_ON_SAVE_LORA_WEIGHTS",
+        "_RESIDUAL_LOAD",
+        "_RESIDUAL_LOAD_HOOK",
+    }
     functions = {
         "_lora_factors",
         "snapshot_residual_lora_init",
@@ -39,7 +46,12 @@ def _utils():
         if (isinstance(node, ast.FunctionDef) and node.name in functions)
         or (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in names)
     ]
-    namespace = {"torch": torch, "contextlib": contextlib, "functools": functools}
+    namespace = {
+        "torch": torch,
+        "contextlib": contextlib,
+        "functools": functools,
+        "threading": threading,
+    }
     exec(compile(ast.Module(body, []), "_utils.py", "exec"), namespace)
     return namespace
 
@@ -120,3 +132,36 @@ def test_merged_save_after_reload_keeps_trained_weights(tmp_path, monkeypatch, p
     torch.testing.assert_close(merged, want, atol = 1e-5, rtol = 1e-5)
     # The live model is left as it was loaded.
     torch.testing.assert_close(_effective(reloaded), want)
+
+
+def test_load_hook_is_thread_scoped_and_restored(monkeypatch):
+    utils = _utils()
+    calls = []
+    monkeypatch.setitem(
+        utils, "snapshot_residual_lora_init", lambda model, init: calls.append((model, init))
+    )
+    stub = lambda model, *args, **kwargs: None
+    monkeypatch.setattr(PeftModel, "load_adapter", stub)
+    config = types.SimpleNamespace(init_lora_weights = "olora")
+    entered, release = threading.Event(), threading.Event()
+
+    def other_load():
+        with utils["snapshot_residual_lora_load"](config):
+            entered.set()
+            release.wait(5)
+            PeftModel.load_adapter("other")
+
+    worker = threading.Thread(target = other_load)
+    with utils["snapshot_residual_lora_load"](config):
+        worker.start()
+        entered.wait(5)
+        unrelated = threading.Thread(target = lambda: PeftModel.load_adapter("unrelated"))
+        unrelated.start()
+        unrelated.join(5)
+        PeftModel.load_adapter("first")
+        PeftModel.load_adapter("second")
+    # Exits interleave: this load leaves first, the other one still needs the hook.
+    release.set()
+    worker.join(5)
+    assert PeftModel.load_adapter is stub
+    assert calls == [("first", "olora"), ("other", "olora")]
