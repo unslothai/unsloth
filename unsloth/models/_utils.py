@@ -7165,6 +7165,13 @@ def patch_gradient_accumulation_fix(Trainer):
     # Idempotent: already installed at import unless Trainer was reloaded since.
     _patch_trainer_train_gc_scope(Trainer)
 
+    # offload_layers: run a step's micro-batches layer by layer (outermost, over the GA fix above).
+    try:
+        from ._layer_major_ga import patch_layer_major_gradient_accumulation
+        patch_layer_major_gradient_accumulation(Trainer)
+    except Exception as e:
+        logger.warning_once(f"Unsloth: layer-major gradient accumulation not installed ({e})")
+
 
 def _unsloth_model_parallel_marker(model, flag):
     """Walk the wrapper levels for an apply_*_parallel marker (dict lookups, no tp / pp import)."""
