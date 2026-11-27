@@ -47,10 +47,16 @@ def _shard_entries() -> list:
 
 
 def _shards() -> dict:
-    """{shard name: (roots, ignores)} parsed out of both jobs' matrices."""
-    shards = {}
+    """{shard name: (roots, ignores)} parsed out of both jobs' matrices; a split shard's parts count as one."""
+    shards, names = {}, set()
     for entry in _shard_entries():
-        assert entry["shard"] not in shards, f"shard {entry['shard']} is defined twice"
+        assert entry["shard"] not in names, f"shard {entry['shard']} is defined twice"
+        names.add(entry["shard"])
+        name = entry["shard"]
+        if entry.get("split"):
+            name = "split: " + " ".join(entry["selection"].split())
+            if name in shards:
+                continue
         roots, ignores = [], []
         tokens = entry["selection"].split()
         index = 0
@@ -65,7 +71,7 @@ def _shards() -> dict:
             else:
                 roots.append(token.rstrip("/"))
             index += 1
-        shards[entry["shard"]] = (roots, ignores)
+        shards[name] = (roots, ignores)
     return shards
 
 
@@ -195,6 +201,8 @@ class TestTheSplitKeepsTheSelectionItInherited:
         run = _shard_pytest_step()["run"]
         assert "--timeout=330" in run
         assert "timeout --signal=INT --kill-after=60" in run
+        # SIGALRM cannot interrupt a test blocked in C code; only the thread method names it.
+        assert "--timeout-method=thread" in run
 
     def test_the_split_out_shards_run_the_same_step_and_install(self):
         """The multi-rank shards moved workflows, not behaviour: same pytest step, same
@@ -221,6 +229,36 @@ class TestTheSplitKeepsTheSelectionItInherited:
         jobs = [_workflow(path)["jobs"][job] for path, job in _SHARD_JOBS]
         for field in ("runs-on", "timeout-minutes", "name"):
             assert jobs[0][field] == jobs[1][field], f"the two jobs differ in {field!r}"
+
+
+class TestTheDistributedShardsForkTheirRanks:
+    """Job-level env, so the shared pytest step stays byte-identical."""
+
+    def _env(self, path, job):
+        return _workflow(path)["jobs"][job].get("env") or {}
+
+    def test_the_distributed_job_turns_the_zygote_on(self):
+        env = self._env(*_SHARD_JOBS[1])
+        assert env.get("UNSLOTH_TEST_RANK_ZYGOTE") == "${{ matrix.rank_zygote || '1' }}"
+        entries = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["strategy"]["matrix"][
+            "include"
+        ]
+        assert all(entry.get("rank_zygote", "1") in ("0", "1") for entry in entries)
+        assert any("rank_zygote" not in entry for entry in entries)
+        assert env.get("UNSLOTH_TEST_RANK_ZYGOTE_STATS"), "the summary step reads this directory"
+        steps = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["steps"]
+        summary = [s for s in steps if "rank_zygote.py --summary" in (s.get("run") or "")]
+        assert summary and summary[0].get("if") == "always()"
+        assert env["UNSLOTH_TEST_RANK_ZYGOTE_STATS"] in summary[0]["run"]
+
+    def test_backend_ci_does_not(self):
+        assert "UNSLOTH_TEST_RANK_ZYGOTE" not in self._env(*_SHARD_JOBS[0])
+        assert "UNSLOTH_TEST_RANK_ZYGOTE" not in str(_shard_pytest_step().get("env"))
+
+    def test_the_conftest_installs_it_only_under_the_flag(self):
+        text = (_TESTS_DIR / "conftest.py").read_text(encoding = "utf-8")
+        assert 'if os.environ.get("UNSLOTH_TEST_RANK_ZYGOTE") == "1":' in text
+        assert "rank_zygote.install()" in text
 
 
 class TestTheDistributedWorkflowSeesWhatItsTestsRead:
@@ -323,7 +361,9 @@ def _selection_text(shard: str | None = None) -> str:
     return " ".join(
         " ".join(entry["selection"].split())
         for entry in _shard_entries()
-        if shard is None or entry["shard"] == shard
+        if shard is None
+        or entry["shard"] == shard
+        or (entry.get("split") and shard == "split: " + " ".join(entry["selection"].split()))
     )
 
 
@@ -332,3 +372,35 @@ def _shard_pytest_step() -> dict:
         if "${{ matrix.selection }}" in str(step.get("run", "")):
             return step
     raise AssertionError("the sharded pytest step is gone from repo-cpu-tests")
+
+
+class TestASplitShardRunsEveryPartOnce:
+    def _groups(self):
+        groups = {}
+        for entry in _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["strategy"][
+            "matrix"
+        ]["include"]:
+            if entry.get("split"):
+                groups.setdefault(" ".join(entry["selection"].split()), []).append(entry)
+        return groups
+
+    def test_every_part_of_each_split_shard_is_there_once(self):
+        groups = self._groups()
+        assert groups, "no shard is split any more; drop this class with the mechanism"
+        for selection, entries in groups.items():
+            specs = sorted(entry["split"] for entry in entries)
+            n = len(entries)
+            assert specs == sorted(f"{k}/{n}" for k in range(1, n + 1)), (selection, specs)
+            assert len({entry.get("workers", 4) for entry in entries}) == 1, selection
+
+    def test_the_job_passes_the_part_to_pytest(self):
+        env = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"].get("env") or {}
+        assert env.get("UNSLOTH_TEST_SPLIT") == "${{ matrix.split || '' }}"
+        backend = _workflow(_SHARD_JOBS[0][0])["jobs"][_SHARD_JOBS[0][1]]
+        assert "UNSLOTH_TEST_SPLIT" not in str(
+            backend.get("env")
+        ), "Backend CI shards are never split"
+
+    def test_the_conftest_applies_the_split(self):
+        text = (_TESTS_DIR / "conftest.py").read_text(encoding = "utf-8")
+        assert "from shard_split import select" in text and "select(config, items)" in text

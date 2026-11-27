@@ -226,7 +226,10 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "return savedPath !== null" not in helper
 
     assert helper.index("if (isTauri)") < helper.index("  const blob =")
-    assert "downloadFile(" in history
+    # Chat backups stream through bounded IPC chunks (#19372); either native-files helper is the native boundary.
+    assert 'from "@/lib/native-files"' in history
+    assert "downloadFile(" in history or "downloadBlobStreaming(" in history
+    assert 'invoke<string | null>("begin_native_file_save"' in helper
     assert "downloadFile(" in prompt_storage
     assert "pickNativeChatImport" in data_tab
     assert "if (!isTauri)" in data_tab

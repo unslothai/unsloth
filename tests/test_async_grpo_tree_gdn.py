@@ -313,7 +313,8 @@ def _samples(perturb = None):
 def _pack(async_module, samples):
     row = async_module.TreeRow()
     for sample in samples:
-        row.add(sample)
+        # RolloutSample holds numpy arrays; TRL 1.19's TreeRow walks them with numpy ops.
+        row.add({k: v.numpy() if isinstance(v, torch.Tensor) else v for k, v in sample.items()})
     packed = row.pack()
     assert int((packed["tree_segment_parents"] >= 0).sum()) > 0, "nothing shared"
     assert packed["input_ids"].numel() < sum(len(s["input_ids"]) for s in samples)

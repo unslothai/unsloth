@@ -21,6 +21,8 @@ import datetime
 import functools
 import logging
 import os
+import threading
+import time
 
 import torch
 
@@ -97,6 +99,82 @@ def _dist():
 
 
 _SAVE_COUNTER = {}
+
+
+# Each rank counts the writer handshakes it has finished (after its last store access for one) under
+# one store key per handshake index. Rank 0 hosts the default TCPStore, so when rank 0 returns from a
+# save and its process exits (or destroys the process group), a rank still between its store reads
+# would hit a closed store. A background thread on rank 0 holds the store and keeps the process
+# alive at exit until every rank has counted rank 0's latest handshake. Every rank of the world takes
+# part in each save, so the indices line up; a rank that never catches up delays rank 0's exit by at
+# most UNSLOTH_FSDP2_SAVE_EXIT_WAIT seconds, and never delays a save.
+_HANDSHAKE_PREFIX = "unsloth_fsdp2_handshake_done_"
+_STORE_GUARD = {
+    "lock": threading.Lock(),
+    "store": None,
+    "count": 0,
+    "deadline": 0.0,
+    "thread": None,
+}
+
+
+def _exit_wait_seconds():
+    try:
+        return max(0.0, float(os.environ.get("UNSLOTH_FSDP2_SAVE_EXIT_WAIT", 300)))
+    except ValueError:
+        return 300.0
+
+
+def _keep_store_for_readers(store, world):
+    delay = 0.002
+    while True:
+        with _STORE_GUARD["lock"]:
+            key = _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"])
+        try:
+            done = store.add(key, 0) >= world
+        except Exception:
+            done = True  # the store is gone already: nothing left to keep alive
+        with _STORE_GUARD["lock"]:
+            if (
+                _STORE_GUARD["store"] is not store  # the process group was re-initialized
+                or (done and key == _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"]))
+                or time.monotonic() >= _STORE_GUARD["deadline"]
+            ):
+                if _STORE_GUARD["thread"] is threading.current_thread():
+                    _STORE_GUARD["thread"] = None
+                return
+        time.sleep(delay)
+        delay = min(delay * 2, 0.1)
+
+
+def _handshake_done(dist, store):
+    """Every rank, after its last store access of a writer handshake (any outcome)."""
+    with _STORE_GUARD["lock"]:
+        if _STORE_GUARD["store"] is not store:
+            # A new process group: a guard still running for the old store does not cover this one.
+            _STORE_GUARD.update(store = store, count = 0, thread = None)
+        _STORE_GUARD["count"] += 1
+        key = _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"])
+    try:
+        store.add(key, 1)
+        world = dist.get_world_size()
+        if dist.get_rank() != 0 or world < 2:
+            return
+    except Exception:
+        return
+    with _STORE_GUARD["lock"]:
+        _STORE_GUARD["deadline"] = time.monotonic() + _exit_wait_seconds()
+        if _STORE_GUARD["thread"] is not None:
+            return
+        # Not a daemon: interpreter shutdown joins it, so rank 0 outlives every reader.
+        thread = threading.Thread(
+            target = _keep_store_for_readers,
+            args = (store, world),
+            name = "unsloth_fsdp2_store_guard",
+            daemon = False,
+        )
+        _STORE_GUARD["thread"] = thread
+        thread.start()
 
 
 def _save_timeout():
@@ -224,13 +302,24 @@ def writes_off_rank0(model, writer_rank):
             module.__dict__.pop("should_save_on_this_rank", None)
 
 
+class WriterFailed(RuntimeError):
+    """Raised on a rank that waited for the FSDP2 writer when the writer's save failed."""
+
+
+def _failure_text(failed):
+    return f"{type(failed).__name__}: {failed}"[:2000]
+
+
 def _wait_for_writer(
     dist,
     writer,
     writer_rank = 0,
+    failed = None,
 ):
     """Store key, not a barrier: other ranks wait so no later collective overtakes the write, and a
-    long export can outlast the collective timeout; keyed per writer rank."""
+    long export can outlast the collective timeout; keyed per writer rank. The writer publishes
+    whether its write failed (`failed`, its exception): the others then raise WriterFailed too, so
+    no rank runs on into a collective the failed writer never joins."""
     _SAVE_COUNTER[writer_rank] = _SAVE_COUNTER.get(writer_rank, 0) + 1
     count = _SAVE_COUNTER[writer_rank]
     key = (
@@ -243,12 +332,111 @@ def _wait_for_writer(
     except Exception:
         store = None
     if store is None:
-        dist.barrier()
+        # Without a store every rank of the world collective agrees on a failure flag instead.
+        from .tp_native import _flag_device
+
+        flag = torch.tensor(
+            [int(writer and failed is not None)], dtype = torch.int32, device = _flag_device()
+        )
+        dist.all_reduce(flag, op = dist.ReduceOp.MAX)
+        if flag.item() and failed is None:
+            raise WriterFailed(
+                f"Unsloth: the FSDP2 save failed on rank {writer_rank}, the rank that writes; "
+                "see that rank's error."
+            )
         return
     if writer:
-        store.set(key, "done")
-    else:
+        try:
+            store.set(key, "done" if failed is None else "failed:" + _failure_text(failed))
+        finally:
+            _handshake_done(dist, store)
+        return
+    try:
         store.wait([key], _save_timeout())
+        if failed is not None:
+            return  # this rank's own error is already on its way out
+        value = store.get(key)
+    finally:
+        _handshake_done(dist, store)
+    if value != b"done":
+        detail = value.decode("utf-8", errors = "replace").removeprefix("failed:")
+        raise WriterFailed(
+            f"Unsloth: the FSDP2 save failed on rank {writer_rank}, the rank that writes: {detail}"
+        )
+
+
+def _writers_in_turn(
+    dist,
+    writers,
+    action,
+    group = None,
+    name = "unsloth_fsdp2_turn",
+):
+    """Every rank of `group` calls this. The ranks in `writers` (global ranks) run `action` one after
+    another, each once the previous one has published its outcome under its store key ("done" or
+    "failed:<error>"), so writers sharing a filesystem never race. Every rank then waits for all of
+    them, as _wait_for_writer does: a failed writer re-raises its own error, the others raise
+    WriterFailed naming it."""
+    me = dist.get_rank()
+    ranks = (
+        tuple(dist.get_process_group_ranks(group))
+        if group is not None
+        else tuple(range(dist.get_world_size()))
+    )
+    counter = (name, ranks)
+    _SAVE_COUNTER[counter] = _SAVE_COUNTER.get(counter, 0) + 1
+    prefix = f"{name}_{ranks[0]}_{len(ranks)}_{_SAVE_COUNTER[counter]}"
+    keys = [f"{prefix}_w{r}" for r in writers]
+    own = None
+    try:
+        store = dist.distributed_c10d._get_default_store()
+    except Exception:
+        store = None
+    if store is None:
+        # Without a store: in turn between barriers, then one failure flag for every rank.
+        from .tp_native import _flag_device
+
+        for r in writers:
+            if r == me:
+                try:
+                    action()
+                except BaseException as exc:
+                    own = exc
+            dist.barrier(group = group)
+        flag = torch.tensor([int(own is not None)], dtype = torch.int32, device = _flag_device(group))
+        dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = group)
+        if own is not None:
+            raise own
+        if flag.item():
+            raise WriterFailed(
+                "Unsloth: the FSDP2 save failed on a rank that writes; see that rank's error."
+            )
+        return
+    values = []
+    try:
+        if me in writers:
+            index = writers.index(me)
+            if index:
+                store.wait([keys[index - 1]], _save_timeout())
+            try:
+                action()
+            except BaseException as exc:
+                own = exc
+            store.set(keys[index], "done" if own is None else "failed:" + _failure_text(own))
+        store.wait(keys, _save_timeout())
+        if own is not None:
+            raise own
+        values = [store.get(key) for key in keys]
+    finally:
+        # Each rank of the world runs this as often (the group is the world or one of the 1-D
+        # sub-meshes that split it), so it counts toward rank 0's store guard like the others.
+        _handshake_done(dist, store)
+    for r, value in zip(writers, values):
+        if value != b"done":
+            detail = value.decode("utf-8", errors = "replace").removeprefix("failed:")
+            raise WriterFailed(
+                f"Unsloth: the FSDP2 save failed on rank {r}, a rank that writes: {detail}"
+            )
 
 
 def _gather_full(param, DTensor):
@@ -386,6 +574,7 @@ def fsdp2_gathered(
     staged = {}
     seen = set()
     pushed = False
+    failure = None
     try:
         for name, param in model.named_parameters():
             if id(param) in seen:
@@ -428,6 +617,9 @@ def fsdp2_gathered(
         pushed = True
         with writes_off_rank0(model, writer_rank if writer else 0):
             yield writer
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
         if pushed:
             _ACTIVE.pop()
@@ -438,7 +630,7 @@ def fsdp2_gathered(
                 module._parameters[name] = old
         replaced.clear()
         if dist is not None:
-            _wait_for_writer(dist, writer, writer_rank)
+            _wait_for_writer(dist, writer, writer_rank, failed = failure)
 
 
 def _is_4bit_base(base_layer):
@@ -775,11 +967,18 @@ def _share_from_writer(
     counter[tag] = counter.get(tag, 0) + 1
     key = f"unsloth_fsdp2_export_r{writer_rank}_{tag}_{counter[tag]}"
     if writer:
-        store.set(key, _store_codec.encode(payload))
+        try:
+            store.set(key, _store_codec.encode(payload))
+        finally:
+            _handshake_done(dist, store)
         return payload
-    store.wait([key], _save_timeout())
     try:
-        return _store_codec.decode(store.get(key))
+        store.wait([key], _save_timeout())
+        value = store.get(key)
+    finally:
+        _handshake_done(dist, store)
+    try:
+        return _store_codec.decode(value)
     except ValueError:
         return (
             ("error", "the writer left an unreadable result in the store")
@@ -896,6 +1095,15 @@ def fsdp2_export_on_writer(
             _share_from_writer(
                 dist, True, writer_rank, "result", ("error", f"{type(e).__name__}: {e}")
             )
+        elif not writer and dist is not None and isinstance(e, WriterFailed):
+            # The writer failed and published its result: read it, so the next export's keys line
+            # up, and report the export's own error.
+            failed = _share_from_writer(dist, False, writer_rank, "result")
+            if failed is not None and failed[0] == "error":
+                raise RuntimeError(
+                    f"Unsloth: `{method}` failed on rank {writer_rank}, the FSDP2 rank that "
+                    "exports: " + failed[1]
+                ) from e
         raise
     if error is not None:
         raise error
@@ -1601,7 +1809,9 @@ def reduce_unsharded_trainable_grads(model):
         if isinstance(param, DTensor):
             if managed is False:
                 managed = _fsdp_managed_param_ids(model)
-            if managed is None or id(param) in managed or not _tp_shard_outside(param, mesh, dist):
+            if not getattr(param, "_unsloth_fsdp2_float32_replicate", False) and (
+                managed is None or id(param) in managed or not _tp_shard_outside(param, mesh, dist)
+            ):
                 continue
         seen.add(id(param))
         if getattr(param, "_unsloth_grad_all_reduce", False):

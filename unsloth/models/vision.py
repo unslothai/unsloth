@@ -245,6 +245,8 @@ from ..kernels import (
 )
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..kernels.rope_embedding import register_split_model
+from ._cache_kwarg import get_cache_kwarg
+from ._lora_scale_warning import warn_low_rank_lora_alpha
 from ._utils import (
     __version__,
     importlib_version,
@@ -902,6 +904,22 @@ def _unsloth_generate_accepts_kwarg(model, key):
     return key in model_args
 
 
+def _router_logits_off_for_generate(model, kwargs):
+    """generate never needs the MoE aux loss; TRL < 1.18 leaves config.output_router_logits on after SFT, and a hybrid
+    model then feeds generate's per-layer-type attention_mask dict to load_balancing_loss_func. Explicit kwarg kept."""
+    if "output_router_logits" in kwargs:
+        return
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    if not (
+        getattr(text, "output_router_logits", False)
+        or getattr(config, "output_router_logits", False)
+    ):
+        return
+    if _unsloth_generate_accepts_kwarg(model, "output_router_logits"):
+        kwargs["output_router_logits"] = False
+
+
 def _is_scaled_word_embedding_forward(cls, forward):
     """Exactly transformers' `*ScaledWordEmbedding.forward` over nn.Embedding.forward: the op
     reproduces only that product (Unsloth's float32 Gemma patch, or any extra work, is declined)."""
@@ -1343,6 +1361,8 @@ VLLM_SUPPORTED_VLM = [
     "gemma4_unified_text",
     "muse_glimmer",
     "muse_glimmer_text",
+    # Qwen3.8-Flash-Next: GDN + QSA + hyper-connections + PLE; the zoo shares it via vllm_qwen4_exp
+    "qwen4_exp",
 ]
 
 
@@ -1398,6 +1418,30 @@ def _zoo_supports_dense_gemma4_fast_inference():
         return False
 
 
+def _deepseek_v41_fast_inference_check(
+    config,
+    load_in_4bit = False,
+    load_in_8bit = False,
+):
+    """Raise before vLLM allocates when fast_inference cannot share this DeepSeek-V4.1 load with vLLM."""
+    try:
+        from unsloth_zoo.vllm_deepseek_v41 import deepseek_v41_fast_inference_refusal
+    except Exception:
+        raise NotImplementedError(
+            "Unsloth: DeepSeek-V4.1 fast_inference needs a newer unsloth_zoo "
+            "(`pip install --upgrade unsloth_zoo`), or set fast_inference = False."
+        )
+    reason = deepseek_v41_fast_inference_refusal(
+        config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+    )
+    if reason is not None:
+        raise NotImplementedError(
+            f"Unsloth: fast_inference = True cannot share DeepSeek-V4.1 with vLLM: {reason}.\n"
+            "Load a 16-bit (BF16) copy with load_in_4bit = False and fast_inference = True, "
+            "or set fast_inference = False."
+        )
+
+
 def _is_sparse_moe_config(config):
     text_config = getattr(config, "text_config", None) or config
     return bool(
@@ -1448,6 +1492,15 @@ def _fp8_moe_fast_inference_refusal(config):
     ):
         return None
     return "this unsloth_zoo cannot share FP8 MoE experts with vLLM (upgrade unsloth_zoo)"
+
+
+def _zoo_supports_qwen4_exp_fast_inference():
+    # Older unsloth_zoo cannot map vLLM's hyper-connection, PLE and QSA weights onto the training model.
+    try:
+        from unsloth_zoo.vllm_qwen4_exp import is_qwen4_exp_config  # noqa: F401
+        return True
+    except Exception:
+        return False
 
 
 def _zoo_supports_moe_fast_inference():
@@ -1815,7 +1868,7 @@ class _NonFlexGenerate:
             else:
                 decode = scope.steps > 0
             scope.steps += 1
-            static = _static_cache(kwargs.get("past_key_values"))
+            static = _static_cache(get_cache_kwarg(kwargs))
             ids = args[0] if args else kwargs.get("input_ids")
             batch = ids.shape[0] if isinstance(ids, torch.Tensor) and ids.dim() >= 1 else None
             scope._set(decode, static, batch)
@@ -2143,7 +2196,7 @@ def _static_cache_bytes(
     from transformers import StaticCache
 
     config = model.config
-    if getattr(config, "is_encoder_decoder", False) or kwargs.get("past_key_values") is not None:
+    if getattr(config, "is_encoder_decoder", False) or get_cache_kwarg(kwargs) is not None:
         return None
     text_config = config.get_text_config(decoder = True)
     # transformers fills a caller config's unset fields from the model's before its defaults.
@@ -2383,6 +2436,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     bsz = input_ids.shape[0]
 
     FastBaseModel.for_inference(self)
+    _router_logits_off_for_generate(self, kwargs)
     dtype = _get_dtype(dtype_from_config(self.config))
     # Stamped by from_pretrained: the env var stays "1" after one float32 mixed precision load, so it only answers for unstamped models.
     do_bfloat16_mixed_precision = getattr(self, "_unsloth_bfloat16_mixed_precision", None)
@@ -2483,6 +2537,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
+    # The caller's cache: transformers 5.24 spells it cache=, past_key_values= is its deprecated alias.
+    # Inline, not a helper: tests exec this function's source with a hand-built namespace.
+    _caller_cache = kwargs.get("cache")
+    if _caller_cache is None:
+        _caller_cache = kwargs.get("past_key_values")
     # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
     # Inline, not a helper: tests exec this function's source with a hand-built namespace.
     unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
@@ -2491,7 +2550,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     )
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None and not rejects_cache_fields:
+        if _caller_cache is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
             with (
@@ -2538,15 +2597,15 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
     # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
     generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
-    if kwargs.get("past_key_values") is not None or any(
+    if _caller_cache is not None or any(
         (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
         for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
     ):
         cache_implementation = None
     # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
-    force_dynamic_cache = kwargs.get(
-        "past_key_values"
-    ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
+    force_dynamic_cache = _caller_cache is None and _needs_bidirectional_multimodal_mask(
+        self, kwargs
+    )
     # A static cache is sized for the longest reply up front, so on a tight or unified memory
     # device it can OOM where a growing cache would not (#2590).
     if not force_dynamic_cache and cache_implementation is not None:
@@ -2654,7 +2713,7 @@ def unsloth_nested_fast_generate(self, *args, **kwargs):
     Relies on the parent's inference mode/autocast; outside a parent call (or with a caller cache) it is stock."""
     if (
         not torch.is_inference_mode_enabled()
-        or kwargs.get("past_key_values") is not None
+        or get_cache_kwarg(kwargs) is not None
         or "cache_implementation" in kwargs
         or kwargs.get("generation_config") is not None
         # FlashAttention builds no mask for unpadded rows, so a static cache's empty slots would be attended.
@@ -3474,6 +3533,7 @@ _TEXT_BATCH_KEYS = frozenset(
         "labels",
         "position_ids",
         "past_key_values",
+        "cache",
         "use_cache",
         "output_attentions",
         "output_hidden_states",
@@ -4054,6 +4114,9 @@ class FastBaseModel:
         text_intent = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         user_config = kwargs.pop("config", None)
         user_rope_scaling = kwargs.pop("rope_scaling", None)
         if auto_config is None and user_config is not None:
@@ -4241,6 +4304,15 @@ class FastBaseModel:
 
         vllm_enable_lora = True
 
+        if fast_inference and any(mt.startswith("deepseek_v41") for mt in model_types):
+            # Unsloth's native DeepSeek-V4.1 is a text model: vLLM serves it text-only, sharing every weight.
+            _deepseek_v41_fast_inference_check(
+                auto_config,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+            )
+            is_vlm_config = False
+
         if is_vlm_config and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
@@ -4277,6 +4349,16 @@ class FastBaseModel:
             raise RuntimeError(
                 f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
                 "Please run `pip install --upgrade unsloth_zoo`."
+            )
+
+        if (
+            fast_inference
+            and "qwen4_exp" in model_types
+            and not _zoo_supports_qwen4_exp_fast_inference()
+        ):
+            raise RuntimeError(
+                "Unsloth: qwen4_exp fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`, or set fast_inference = False."
             )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
@@ -4894,6 +4976,7 @@ class FastBaseModel:
 
         # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
+        kwargs = gguf_dequantize_kwargs(kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)
         if config_attn_impl is None:
@@ -5220,6 +5303,9 @@ class FastBaseModel:
                     bnb_config,
                     is_vision_model = is_vlm_config,
                 )
+                if getattr(model, "_unsloth_vllm_nvfp4_layers", 0):
+                    # NVFP4 layers hold vLLM's kept compressed-tensors tensors: run them W4A16 like a plain load.
+                    _prepare_compressed_tensors_model(model)
                 model.vllm_engine = llm
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate
@@ -5242,7 +5328,13 @@ class FastBaseModel:
         if _modelopt_rewritten:
             keep_fp8_scale_names_on_save(model)
 
-        if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
+        # Qwen4Exp under fast_inference: its norms are views of vLLM's bf16 weights and already compute in float32
+        # ((1 + weight.float())); a float32 copy would stop sharing them with the rollout engine. DeepSeek-V4.1
+        # (weight.float() * x) marks its vLLM-shared model the same way.
+        if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1" and not (
+            (fast_inference and "qwen4_exp" in model_types)
+            or getattr(model, "_unsloth_vllm_shared_norms", False)
+        ):
             for jj, (name, module) in enumerate(model.named_modules()):
                 if (
                     name.endswith(("norm", "norm1", "norm2", "norm3", "norm4"))
@@ -5747,6 +5839,7 @@ class FastBaseModel:
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
+        warn_low_rank_lora_alpha(r, lora_alpha, use_rslora)
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
         _audio_explicitly_requested = bool(finetune_audio_layers)

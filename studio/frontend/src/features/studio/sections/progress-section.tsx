@@ -33,6 +33,7 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import { useGpuUtilization } from "@/hooks";
+import type { RunParallelInfo } from "@/features/training/types/parallel";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -62,6 +63,7 @@ import {
   sessionStepsPerSecond,
 } from "./progress-section-lib";
 import type { RunConfigOverride } from "./run-config-override";
+import { RankMemoryStrip, RunParallelChip } from "./run-parallel";
 
 type ConfigGroup = {
   section: string;
@@ -338,6 +340,7 @@ export function ProgressSection({
                 {data.projectName}
               </span>
             )}
+            {data.parallel && <RunParallelChip parallel={data.parallel} />}
             <span className="text-ui-10 tabular-nums text-muted-foreground">
               {t("studio.progress.epoch", {
                 value: formatNumber(data.currentEpoch, 2),
@@ -443,7 +446,10 @@ export function ProgressSection({
         </div>
 
         {!isHistorical && (
-          <LiveGpuPanel isTrainingRunning={data.isTrainingRunning} />
+          <LiveGpuPanel
+            isTrainingRunning={data.isTrainingRunning}
+            parallel={data.parallel ?? null}
+          />
         )}
       </div>
     </SectionCard>
@@ -452,11 +458,14 @@ export function ProgressSection({
 
 function LiveGpuPanel({
   isTrainingRunning,
+  parallel,
 }: {
   isTrainingRunning: boolean;
+  parallel: RunParallelInfo | null;
 }): ReactElement {
   const t = useT();
-  const [selectedGpu, setSelectedGpu] = useState(0);
+  // null: follow the run's first GPU until the user picks one.
+  const [selectedGpu, setSelectedGpu] = useState<number | null>(null);
   const gpuData = useGpuUtilization(isTrainingRunning);
   const gpus: GpuUtilization[] =
     Array.isArray(gpuData?.devices) && gpuData.devices.length > 0
@@ -466,7 +475,11 @@ function LiveGpuPanel({
         : [];
 
   const gpuCount = gpus.length;
-  const selectedGpuIndex = selectedGpu >= 0 && selectedGpu < gpuCount ? selectedGpu : 0;
+  const runGpu = parallel?.gpuIds.length
+    ? gpus.findIndex((device) => device.index === parallel.gpuIds[0])
+    : -1;
+  const wanted = selectedGpu ?? Math.max(runGpu, 0);
+  const selectedGpuIndex = wanted >= 0 && wanted < gpuCount ? wanted : 0;
   const currentGpu: Partial<GpuUtilization> = gpus[selectedGpuIndex] || {};
 
   return (
@@ -501,6 +514,7 @@ function LiveGpuPanel({
           {t("studio.progress.live")}
         </span>
       </div>
+      {parallel && <RankMemoryStrip parallel={parallel} devices={gpus} />}
       <div className="grid grid-cols-2 gap-2.5">
         <GpuStat
           label={t("studio.progress.utilization")}

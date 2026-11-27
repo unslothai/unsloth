@@ -24,6 +24,7 @@ from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
 import re
+import json
 import logging
 import textwrap
 import warnings
@@ -2029,12 +2030,133 @@ _TOKENIZER_FILES_READ_BY_LOADER = (
 )
 
 
+_TOKENIZER_HOST_PATH_PATCH_FLAG = "_unsloth_refuses_tokenizer_host_paths"
+# Loader bookkeeping keys; a locally saved legacy config can hold a real path here.
+_TOKENIZER_CONFIG_PATH_KEYS_IGNORED = frozenset(
+    ("name_or_path", "tokenizer_config_file", "special_tokens_map_file", "added_tokens_file")
+)
+# A string `"vocab": "..."` / `"merges": "..."` in tokenizer.json; real files hold a dict or list.
+_TOKENIZER_JSON_STRING_MODEL_FILE = re.compile(rb'"(?:vocab|merges)"\s*:\s*"')
+
+
+def _tokenizer_value_names_host_file(value, repo_dirs):
+    """True when a config string names an existing file outside the repo folder."""
+    if not isinstance(value, str) or not value or len(value) > 4096 or "\n" in value:
+        return False
+    if not (os.path.isabs(value) or "/" in value or os.sep in value):
+        return False
+    try:
+        if not os.path.isfile(value):
+            return False
+        candidates = {os.path.abspath(value), os.path.realpath(value)}
+    except (OSError, ValueError):
+        return False
+    for repo_dir in repo_dirs:
+        for candidate in candidates:
+            try:
+                if os.path.commonpath([candidate, repo_dir]) == repo_dir:
+                    return False
+            except ValueError:
+                continue
+    return True
+
+
+def _tokenizer_files_naming_host_paths(resolved_vocab_files, caller_kwargs):
+    """Entries of tokenizer_config.json, special_tokens_map.json and tokenizer.json naming a host
+    file outside the repo. Repo-resolved files and caller kwargs are skipped."""
+    files = {k: v for k, v in dict(resolved_vocab_files or {}).items() if isinstance(v, str)}
+    repo_dirs = set()
+    for path in files.values():
+        parent = os.path.dirname(os.path.abspath(path))
+        repo_dirs.update((parent, os.path.realpath(parent)))
+    if not repo_dirs:
+        return []
+    skip = set(_TOKENIZER_CONFIG_PATH_KEYS_IGNORED) | set(resolved_vocab_files or {})
+    skip.update(k for k, v in (caller_kwargs or {}).items() if v is not None)
+    found = []
+    for file_key in ("tokenizer_config_file", "special_tokens_map_file"):
+        path = files.get(file_key)
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding = "utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            continue  # transformers reports the broken file itself
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.items():
+            # *_file keys reach the class only when resolved in the repo (skipped above).
+            if key in skip or key.endswith("_file"):
+                continue
+            values = value if isinstance(value, (list, tuple)) else [value]
+            if any(_tokenizer_value_names_host_file(v, repo_dirs) for v in values):
+                found.append(f"{os.path.basename(path)}:{key}")
+    path = files.get("tokenizer_file")
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            if _TOKENIZER_JSON_STRING_MODEL_FILE.search(raw):
+                model = json.loads(raw).get("model") or {}
+                for key in ("vocab", "merges"):
+                    if _tokenizer_value_names_host_file(model.get(key), repo_dirs):
+                        found.append(f"{os.path.basename(path)}:model.{key}")
+        except Exception:
+            pass
+    return found
+
+
+def fix_transformers_tokenizer_config_host_paths():
+    """Refuse a tokenizer whose own JSON names a host file outside its folder: transformers 5.x
+    opens a string vocab / merges / init_inputs / special token entry or tokenizer.json
+    model.vocab as a path, so a repo could read any host file back as tokens. Idempotent."""
+    try:
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+        current = PreTrainedTokenizerBase.__dict__["_from_pretrained"]
+        if not isinstance(current, classmethod):
+            return
+        original = current.__func__
+        function = original
+        while function is not None:
+            if getattr(function, _TOKENIZER_HOST_PATH_PATCH_FLAG, False):
+                return
+            function = getattr(function, "__wrapped__", None)
+        params = list(inspect.signature(original).parameters)
+        if params[1:2] != ["resolved_vocab_files"]:
+            logger.info("Unsloth: Skipping the tokenizer host path guard (unknown signature)")
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the tokenizer host path guard ({e})")
+        return
+
+    @functools.wraps(original)
+    def _from_pretrained(cls, resolved_vocab_files, *args, **kwargs):
+        found = _tokenizer_files_naming_host_paths(resolved_vocab_files, kwargs)
+        if found:
+            raise ValueError(
+                "Unsloth: Refusing to load this tokenizer: "
+                + ", ".join(found)
+                + " names a file outside the tokenizer folder. Remove that entry from the file."
+            )
+        return original(cls, resolved_vocab_files, *args, **kwargs)
+
+    setattr(_from_pretrained, _TOKENIZER_HOST_PATH_PATCH_FLAG, True)
+    try:
+        PreTrainedTokenizerBase._from_pretrained = classmethod(_from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed installing the tokenizer host path guard ({e})")
+
+
 def fix_transformers_tokenizer_config_vocab_file_override():
     """Back-port of the 5.17.0 vocab file precedence: below it `_from_pretrained` keeps a
     `vocab_file` / `merges_file` / `tokenizer_file` from tokenizer_config.json over the file it
     resolved inside the repo, and the tokenizer opens that path as given, even outside the repo.
     save_pretrained never writes these keys. Hand the resolved paths over as keyword arguments,
-    which apply after the config, so only an explicit caller path overrides them."""
+    which apply after the config, so only an explicit caller path overrides them.
+    Also installs the host path guard for the keys not covered here."""
+    fix_transformers_tokenizer_config_host_paths()
     try:
         import transformers
 
@@ -5196,6 +5318,87 @@ def fix_vllm_lora_tokenizer_module():
     )
 
 
+# TRL >= 1.11 imports vllm.distributed.weight_transfer.nccl_engine at module scope whenever vLLM is importable, but
+# vLLM added it in 0.16, so `from trl import GRPOTrainer` fails on vLLM 0.11.2 - 0.15.x. Only TRL's vLLM server
+# client (vllm_mode="server") uses it; fast_inference does not. A finder appended after the real ones serves
+# placeholders that raise on use, only when the real modules are missing.
+_VLLM_WEIGHT_TRANSFER_MODULES = (
+    "vllm.distributed.weight_transfer",
+    "vllm.distributed.weight_transfer.nccl_engine",
+)
+_VLLM_WEIGHT_TRANSFER_STUB_SENTINEL = "__unsloth_vllm_weight_transfer_stub__"
+_VLLM_WEIGHT_TRANSFER_MESSAGE = (
+    "Unsloth: TRL's vLLM server weight transfer needs vLLM >= 0.16, but this vLLM has no "
+    "`vllm.distributed.weight_transfer`. Upgrade vLLM, or use fast_inference = True (colocated vLLM)."
+)
+
+
+class _VllmWeightTransferUnavailableMeta(type):
+    def __getattr__(cls, name):
+        # TRL calls static methods on the class (trainer_init, trainer_send_weights): fail at the call.
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def _unavailable(*args, **kwargs):
+            raise ImportError(_VLLM_WEIGHT_TRANSFER_MESSAGE)
+
+        return _unavailable
+
+
+class _VllmWeightTransferUnavailable(metaclass = _VllmWeightTransferUnavailableMeta):
+    def __init__(self, *args, **kwargs):
+        raise ImportError(_VLLM_WEIGHT_TRANSFER_MESSAGE)
+
+
+class _VllmWeightTransferStubLoader(importlib.abc.Loader):
+    def create_module(self, spec):
+        import types
+
+        module = types.ModuleType(spec.name)
+        module.__file__ = f"<unsloth stub: {spec.name}>"
+        setattr(module, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, True)
+        if spec.name == _VLLM_WEIGHT_TRANSFER_MODULES[0]:
+            module.__path__ = []
+            module.__package__ = spec.name
+        else:
+            module.__package__ = spec.name.rpartition(".")[0]
+            for name in ("NCCLTrainerSendWeightsArgs", "NCCLWeightTransferEngine"):
+                setattr(module, name, type(name, (_VllmWeightTransferUnavailable,), {}))
+        return module
+
+    def exec_module(self, module):
+        return None
+
+
+class _VllmWeightTransferStubFinder(importlib.abc.MetaPathFinder):
+    def __init__(self):
+        setattr(self, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname not in _VLLM_WEIGHT_TRANSFER_MODULES:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _VllmWeightTransferStubLoader(),
+            is_package = fullname == _VLLM_WEIGHT_TRANSFER_MODULES[0],
+        )
+
+
+def fix_vllm_weight_transfer_module():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so the real module on vLLM >= 0.16 always wins.
+    sys.meta_path.append(_VllmWeightTransferStubFinder())
+
+
 def fix_vllm_guided_decoding_params():
     def _maybe_raise_vllm_transformers_mismatch(error):
         error_text = str(error)
@@ -5927,10 +6130,23 @@ def patch_enable_input_require_grads():
         PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
+    def _sub_model_hook(owner):
+        # transformers >= 5 hooks every sub-model; a frozen tower's backward is wasted, downstream still gets grad.
+        def make_inputs_require_grads(module, input, output):
+            # Traced: keep the flag, since a graph need not retrace when a tower is unfrozen later.
+            if torch.compiler.is_compiling() or any(p.requires_grad for p in owner.parameters()):
+                return outer_hook(module, input, output)
+
+        return make_inputs_require_grads
+
+    outer_hook = make_inputs_require_grads
+
     @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
         hooks = []
         seen_modules = set()
+        # Read per call, so setting the env after `import unsloth` still applies.
+        keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
 
         for module in self.modules():
             if not (
@@ -5961,7 +6177,12 @@ def patch_enable_input_require_grads():
                 continue
 
             seen_modules.add(embedding_id)
-            hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
+            hook = (
+                make_inputs_require_grads
+                if module is self or keep_frozen_towers
+                else _sub_model_hook(module)
+            )
+            hooks.append(input_embeddings.register_forward_hook(hook))
 
         self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
@@ -8317,7 +8538,8 @@ def fix_dynamo_config_thread_visibility():
     except Exception:
         return
 
-    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+    # functorch too: pp_schedules.split_backward_scope turns donated_buffer off for every thread during a step.
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config", "torch._functorch.config")
 
     # config.patch()/load_config() writes are thread-local by design; a per-thread depth counter
     # keeps them out of the global default.
@@ -8386,6 +8608,22 @@ def fix_dynamo_config_thread_visibility():
         _patched_load_config.__unsloth_patched__ = True
         ConfigModule.load_config = _patched_load_config
 
+    # The get_hash() / config view caches are ContextVars too: fresh ones make every thread recompute, else
+    # Inductor's FX-graph cache key goes stale (as unsloth_zoo.torch_config._invalidate_caches).
+    _cache_vars = (
+        ("_hash_dirty_var", True),
+        ("_hash_cache_var", None),
+        ("_get_dict_dirty_keys_var", None),
+        ("_get_dict_cache_var", None),
+    )
+
+    def _invalidate_config_caches(module):
+        module_dict = module.__dict__
+        module_name = module_dict.get("__name__", "torch_config")
+        for attr, default in _cache_vars:
+            if isinstance(module_dict.get(attr, None), ContextVar):
+                original_setattr(module, attr, ContextVar(f"{module_name}.{attr}", default = default))
+
     @functools.wraps(original_setattr)
     def _patched_setattr(self, name, value):
         original_setattr(self, name, value)
@@ -8400,6 +8638,7 @@ def fix_dynamo_config_thread_visibility():
                     # A process-wide value (set_torch_config, TORCHINDUCTOR_* env) shadows default: replace it too.
                     if _unset is not None and entry.env_value_default is not _unset:
                         entry.env_value_default = value
+                    _invalidate_config_caches(self)
             except Exception:
                 pass
 
@@ -12227,6 +12466,52 @@ _VLLM_COMPILED_EXTENSIONS = (
     "vllm._moe_C",
     "vllm._rocm_C",
 )
+
+
+# Importing vllm.platforms.cuda turns cuDNN SDPA off process-wide (a torch 2.5.0 workaround, diffusers#9704,
+# fixed in 2.5.1). Unsloth's import probes vLLM, so restore the caller's value after import and re-apply
+# vLLM's only on Unsloth loads. Known-bad cuDNN cases are avoided per call (fix_cudnn_sdpa_known_bad_shapes).
+_CUDNN_SDPA_BEFORE_IMPORT = [None]
+_CUDNN_SDPA_OFF_FOR_LOADS = [False]
+
+
+def _cudnn_sdpa_enabled():
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        return bool(torch.backends.cuda.cudnn_sdp_enabled())
+    except Exception:
+        return None
+
+
+def snapshot_cudnn_sdpa_before_import():
+    """torch not imported yet means torch's default (on)."""
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is None:
+        enabled = _cudnn_sdpa_enabled()
+        _CUDNN_SDPA_BEFORE_IMPORT[0] = True if enabled is None else enabled
+
+
+def restore_cudnn_sdpa_after_import():
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is not True or _cudnn_sdpa_enabled() is not False:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(True)
+    except Exception as e:
+        logger.info(f"Unsloth: could not restore cuDNN SDPA after import ({e})")
+        return
+    _CUDNN_SDPA_OFF_FOR_LOADS[0] = True
+
+
+def apply_cudnn_sdpa_for_unsloth_load():
+    if not _CUDNN_SDPA_OFF_FOR_LOADS[0] or _cudnn_sdpa_enabled() is not True:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(False)
+    except Exception:
+        pass
 
 
 def disable_broken_vllm(error = None):

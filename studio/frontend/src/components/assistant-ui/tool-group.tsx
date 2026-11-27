@@ -4,6 +4,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   memo,
   useCallback,
+  useMemo,
   useRef,
   useState,
   type FC,
@@ -258,6 +259,12 @@ type ToolGroupComponent = FC<
   Content: typeof ToolGroupContent;
 };
 
+function sameStrings(a: readonly string[], b: readonly string[]): boolean {
+  return (
+    a.length === b.length && a.every((value, index) => value === b[index])
+  );
+}
+
 const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 > = ({ children, startIndex, endIndex }) => {
@@ -297,27 +304,32 @@ const ToolGroupImpl: FC<
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.toolVisibility === "collapsed",
   );
-  const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
   const unresolvedScope = useUnresolvedToolPaneScope();
-  const hasLiveOutput = useMessageMemo(
+  const toolCallIds = useMessageMemo(
     (message) =>
       message.parts
         .slice(startIndex, endIndex + 1)
-        .some(
-          (part) =>
-            part.type === "tool-call" &&
-            // Either scope: a first turn writes under the unresolved scope for its whole life.
-            (Object.prototype.hasOwnProperty.call(
-              toolLiveOutput,
-              toolOutputKey(paneScope, part.toolCallId),
-            ) ||
-              Object.prototype.hasOwnProperty.call(
-                toolLiveOutput,
-                toolOutputKey(unresolvedScope, part.toolCallId),
-              )),
+        .flatMap((part) =>
+          part.type === "tool-call" ? [part.toolCallId] : [],
         ),
-    [startIndex, endIndex, toolLiveOutput, paneScope, unresolvedScope],
+    [startIndex, endIndex],
+    sameStrings,
+  );
+  // Either scope: a first turn writes under the unresolved scope for its whole life.
+  const liveKeys = useMemo(
+    () =>
+      toolCallIds.flatMap((id) => [
+        toolOutputKey(paneScope, id),
+        toolOutputKey(unresolvedScope, id),
+      ]),
+    [toolCallIds, paneScope, unresolvedScope],
+  );
+  // Select the boolean, not the map: each tool_output replaces the map and would re-render every group.
+  const hasLiveOutput = useChatRuntimeStore((s) =>
+    liveKeys.some((key) =>
+      Object.prototype.hasOwnProperty.call(s.toolLiveOutput, key),
+    ),
   );
   // Keep the group open once forced so allow/deny does not snap it shut between calls. Only latch
   // what could have forced it, or turning collapsed off would snap them all open.

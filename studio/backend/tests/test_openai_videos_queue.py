@@ -245,29 +245,27 @@ def test_invalid_input_is_refused_at_once_rather_than_queued(client, backend):
     backend.gate.set()
 
 
-def test_the_chat_tool_path_still_refuses_while_a_video_renders(client, backend):
-    from fastapi import HTTPException
-
-    from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG
+def test_the_chat_tool_create_queues_behind_a_rendering_video(client, backend):
     from models.inference import VideoJobCreateRequest
 
-    _render_one(client, backend)
+    first = _render_one(client, backend)
 
     async def _create_now():
-        return await video_routes._create_openai_video(
-            VideoJobCreateRequest(prompt = "tool"), None, "test-user", None
+        return await video_routes._create_or_queue_chat_video(
+            VideoJobCreateRequest(prompt = "tool"), "test-user"
         )
 
     try:
-        asyncio.run(_create_now())
-    except HTTPException as exc:
-        assert exc.status_code == 409
-        assert exc.detail["error"]["message"] == VIDEO_GENERATION_BUSY_MSG
-    else:
-        raise AssertionError("the chat tool's create must not queue")
+        job = asyncio.run(_create_now())
+        assert job.status == "queued" and job.queue_position == 1
+        [entry] = video_routes._VIDEO_QUEUE
+        assert (entry.id, entry.kind) == (job.id, "chat")
     finally:
         backend.gate.set()
-    assert video_routes._VIDEO_QUEUE == []
+    _wait_terminal(client, first["id"])
+    _drain()
+    assert _wait_terminal(client, job.id)["status"] == "completed"
+    assert backend.last_generate_kwargs["prompt"] == "tool"
 
 
 def test_a_delete_during_the_drains_busy_check_keeps_the_video_from_starting(

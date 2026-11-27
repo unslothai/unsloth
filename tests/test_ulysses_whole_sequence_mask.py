@@ -120,3 +120,208 @@ def test_window_at_or_past_the_length_is_plain_causal(window):
     total = 5
     causal = uh._whole_sequence_mask(total, "cpu", torch.float32, None, None)
     assert torch.equal(uh._whole_sequence_mask(total, "cpu", torch.float32, window, None), causal)
+
+
+# Query-chunked sdpa: the long-sequence replacement for the dense mask.
+
+
+def _sdpa():
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+    return sdpa_attention_forward
+
+
+class _Attn(torch.nn.Module):
+    def __init__(self, groups):
+        super().__init__()
+        self.num_key_value_groups = groups
+        self.is_causal = True
+
+
+def _starts(cu_seqlens):
+    return None if cu_seqlens is None else [int(x) for x in cu_seqlens.tolist()]
+
+
+def _qkv(
+    total,
+    dtype,
+    heads = 4,
+    kv_heads = 2,
+    dim = 8,
+    seed = 0,
+):
+    g = torch.Generator().manual_seed(seed)
+    q = torch.randn(2, heads, total, dim, generator = g, dtype = dtype).requires_grad_()
+    k = torch.randn(2, kv_heads, total, dim, generator = g, dtype = dtype).requires_grad_()
+    v = torch.randn(2, kv_heads, total, dim, generator = g, dtype = dtype).requires_grad_()
+    return q, k, v, torch.randn(2, total, heads, dim, generator = g, dtype = dtype)
+
+
+def _dense_and_chunked(
+    total,
+    window,
+    cu_seqlens,
+    rows,
+    dtype = torch.float64,
+    attention_fn = None,
+):
+    fn = attention_fn or _sdpa()
+    module = _Attn(2)
+    q, k, v, g = _qkv(total, dtype)
+    mask = uh._whole_sequence_mask(total, q.device, dtype, window, cu_seqlens)
+    dense = fn(module, q, k, v, mask, scaling = 0.3)[0]
+    dense_grads = torch.autograd.grad(dense, (q, k, v), g)
+    chunked = uh._chunked_masked_attention(
+        module, q, k, v, fn, {"scaling": 0.3}, window, cu_seqlens, _starts(cu_seqlens), rows
+    )
+    chunked_grads = torch.autograd.grad(chunked, (q, k, v), g)
+    return (dense, *dense_grads), (chunked, *chunked_grads)
+
+
+def test_chunked_attention_matches_the_dense_mask_in_fp64():
+    """Forward and dq / dk / dv of the chunked, key-cropped path equal the dense mask's: causal, windows
+    shorter and longer than a chunk, packed documents, the cp padding tail, chunk sizes that do not divide T."""
+    rng = random.Random(1)
+    worst, cropped = 0.0, 0
+    for _ in range(24):
+        total = rng.randint(40, 300)
+        window = rng.choice([None, 1, rng.randint(2, 64), rng.randint(64, 400)])
+        cu_seqlens = _random_cu_seqlens(rng, total) if rng.random() < 0.7 else None
+        rows = rng.choice([7, 16, 32, 50, 64])
+        if window is None and cu_seqlens is None:
+            window = 17
+        want, got = _dense_and_chunked(total, window, cu_seqlens, rows)
+        for a, b in zip(want, got):
+            assert a.shape == b.shape
+            worst = max(worst, float((a - b).detach().abs().max()))
+        cropped += total > 64 and (window or total) < total // 2
+    assert worst < 1e-12, worst
+    assert cropped > 0
+
+
+def test_chunked_keys_are_cropped_to_what_the_chunk_can_see():
+    """The key slice of a chunk starts at its first row's document or window start (rounded down to 16)."""
+    seen = []
+
+    def recording(module, q, k, v, mask, **kwargs):
+        seen.append((q.shape[2], k.shape[2], tuple(mask.shape[-2:])))
+        return _sdpa()(module, q, k, v, mask, **kwargs)
+
+    cu_seqlens = torch.tensor([0, 100, 230])
+    _dense_and_chunked(256, 40, cu_seqlens, 64, attention_fn = recording)
+    forward, backward = seen[1:5], seen[5:]
+    # Rows 0:64 see keys 0:64; 64:128 from 64 - 39 = 25 -> 16; 128:192 from document start 100 -> 96;
+    # 192:256 from 192 - 39 = 153 -> 144.
+    assert forward == [
+        (64, 64, (64, 64)),
+        (64, 112, (64, 112)),
+        (64, 96, (64, 96)),
+        (64, 112, (64, 112)),
+    ]
+    assert sorted(backward) == sorted(forward)  # checkpoint recomputes each chunk once
+
+
+class _SavesMask(torch.autograd.Function):
+    """Attention that keeps its mask for backward, as CUDA's efficient sdpa kernel does with attn_bias."""
+
+    @staticmethod
+    def forward(ctx, out, mask):
+        ctx.save_for_backward(mask)
+        return out.clone()
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad, None
+
+
+@pytest.mark.parametrize("checkpointed", [True, False])
+def test_chunk_masks_do_not_live_until_backward(checkpointed, monkeypatch):
+    masks = []
+    build = uh._chunk_mask
+
+    def recorded(*args):
+        mask = build(*args)
+        masks.append(weakref.ref(mask))
+        return mask
+
+    def saving(module, q, k, v, mask, **kwargs):
+        out, _ = _sdpa()(module, q, k, v, mask, **kwargs)
+        return _SavesMask.apply(out, mask), None
+
+    monkeypatch.setattr(uh, "_chunk_mask", recorded)
+    if not checkpointed:
+        monkeypatch.setattr(uh, "_torch_checkpoint", lambda: lambda fn, *a, **k: fn(*a))
+    q, k, v, g = _qkv(256, torch.float32)
+    out = uh._chunked_masked_attention(_Attn(2), q, k, v, saving, {}, 40, None, None, 64)
+    alive = sum(ref() is not None for ref in masks)
+    assert len(masks) == 4
+    assert alive == (0 if checkpointed else 4)
+    torch.autograd.grad(out, (q, k, v), g)
+    if checkpointed:
+        assert len(masks) == 8  # each chunk's slice rebuilt once in backward
+
+
+@pytest.mark.parametrize(
+    "implementation, total, env, rows",
+    [
+        ("sdpa", 8192, {}, 0),  # short: the dense mask, one call
+        ("sdpa", 8193, {}, 0),  # one chunk would hold the whole mask
+        ("sdpa", 16384, {}, 8192),
+        ("sdpa", 8192, {"UNSLOTH_CP_MASK_CHUNK_ROWS": "1024"}, 0),  # the short path stays dense
+        ("sdpa", 8193, {"UNSLOTH_CP_MASK_CHUNK_ROWS": "1024"}, 1024),
+        ("sdpa", 32768, {}, 4096),
+        ("sdpa", 65536, {}, 2048),
+        ("sdpa", 131072, {}, 1024),
+        ("sdpa", 1 << 20, {}, 256),
+        ("eager", 65536, {}, 0),  # eager materializes [T, T] scores anyway
+        ("sdpa", 65536, {"UNSLOTH_CP_CHUNKED_MASK": "0"}, 0),
+        (
+            "sdpa",
+            64,
+            {"UNSLOTH_CP_DENSE_MASK_MAX_TOKENS": "0", "UNSLOTH_CP_MASK_CHUNK_ROWS": "16"},
+            16,
+        ),
+        (
+            "sdpa",
+            64,
+            {"UNSLOTH_CP_DENSE_MASK_MAX_TOKENS": "0", "UNSLOTH_CP_MASK_CHUNK_ROWS": "64"},
+            0,
+        ),
+    ],
+)
+def test_chunk_rows(implementation, total, env, rows, monkeypatch):
+    for name in (
+        "UNSLOTH_CP_CHUNKED_MASK",
+        "UNSLOTH_CP_DENSE_MASK_MAX_TOKENS",
+        "UNSLOTH_CP_MASK_CHUNK_ROWS",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert uh._mask_chunk_rows(implementation, total) == rows
+
+
+def test_bf16_key_gradients_sum_over_chunks_in_float32():
+    """dk / dv sum over every chunk that sees a key; summed in bf16 their error would grow with the chunk
+    count (here 6.7e-3 vs the dense mask's 3.8e-3 relative error for dk). With 96 chunks over one long
+    document, summed in float32 they stay at the dense mask's error against float64."""
+    total, rows = 768, 8
+    cu_seqlens = torch.tensor([0, total - 5])
+    fn = _sdpa()
+    module = _Attn(2)
+    q, k, v, g = _qkv(total, torch.bfloat16, seed = 3)
+    ref = [x.detach().double().requires_grad_() for x in (q, k, v)]
+    mask = uh._whole_sequence_mask(total, "cpu", torch.float64, None, cu_seqlens)
+    want = torch.autograd.grad(fn(module, *ref, mask, scaling = 0.3)[0], ref, g.double())
+    mask = uh._whole_sequence_mask(total, "cpu", torch.bfloat16, None, cu_seqlens)
+    dense = torch.autograd.grad(fn(module, q, k, v, mask, scaling = 0.3)[0], (q, k, v), g)
+    out = uh._chunked_masked_attention(
+        module, q, k, v, fn, {"scaling": 0.3}, None, cu_seqlens, _starts(cu_seqlens), rows
+    )
+    chunked = torch.autograd.grad(out, (q, k, v), g)
+
+    def rel(a, b):
+        return float((a.double() - b).norm() / b.norm())
+
+    for name, d, c, w in zip(("dq", "dk", "dv"), dense, chunked, want):
+        assert c.dtype == torch.bfloat16
+        assert rel(c, w) <= 1.05 * rel(d, w), (name, rel(c, w), rel(d, w))

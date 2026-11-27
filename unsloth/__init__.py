@@ -34,6 +34,12 @@ if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
     _apply_debug_distributed_env()
     del _apply_debug_distributed_env
 
+# Also before any process group (torchrun, accelerate, the Trainer): NCCL reads it at the first communicator.
+from .nccl_env import apply_nccl_default_env as _apply_nccl_default_env
+
+_apply_nccl_default_env()
+del _apply_nccl_default_env
+
 # UNSLOTH_PARALLEL="dp=..,tp=..,pp=..,cp=.." -> UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_CP_SIZE / UNSLOTH_FSDP2,
 # before anything below reads those. A conflict with a variable set by hand raises here, on every rank.
 from .parallel_env import apply_parallel_env as _apply_parallel_env, parallelize
@@ -2305,6 +2311,12 @@ if _IS_MLX:
 
 else:
     try:
+        from .import_fixes import snapshot_cudnn_sdpa_before_import as _snapshot_cudnn_sdpa
+        _snapshot_cudnn_sdpa()
+        del _snapshot_cudnn_sdpa
+    except Exception:
+        pass
+    try:
         # GPU path: load everything from _gpu_init
         from ._gpu_init import *
         from ._gpu_init import __version__
@@ -2361,7 +2373,7 @@ else:
 
     if any(
         os.environ.get(_name, "").strip() not in ("", "1")
-        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     ):
         from .models.tp_env import (
             install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
@@ -2427,11 +2439,6 @@ try:
 except Exception:
     pass
 
-from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
-
-_uninstall_metadata_cache(_metadata_cache_token)
-del _uninstall_metadata_cache, _metadata_cache_token
-
 # GPU backend only: the CPU backend (and MLX) never loads unsloth.kernels, and sets no compile cache tag.
 if not globals().get("_IS_CPU_BACKEND", True):
     try:
@@ -2440,6 +2447,27 @@ if not globals().get("_IS_CPU_BACKEND", True):
         del _sync_tag
     except Exception:
         pass
+
+# Last, after every import that may pull in vLLM (import_fixes.restore_cudnn_sdpa_after_import).
+if not globals().get("_IS_CPU_BACKEND", True):
+    try:
+        from .import_fixes import restore_cudnn_sdpa_after_import as _restore_cudnn_sdpa
+        _restore_cudnn_sdpa()
+        del _restore_cudnn_sdpa
+    except Exception:
+        pass
+    # Zoo's fused forward and mask patch only for models Unsloth loads or trains.
+    try:
+        from unsloth_zoo.fused_losses.forward_install import require_model_marker as _require_marker
+        _require_marker()
+        del _require_marker
+    except Exception:
+        pass
+
+from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
+
+_uninstall_metadata_cache(_metadata_cache_token)
+del _uninstall_metadata_cache, _metadata_cache_token
 
 from ._import_gc import restore_gc_threshold as _restore_gc_threshold
 

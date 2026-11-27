@@ -564,7 +564,9 @@ _add(
         input_dtypes = ("bf16", "fp16"),
         grad_scaler = "per_dtype",
         compile = "opaque",
-        backend = "unsloth.kernels.fp8_lora (UNSLOTH_FP8_LORA_SCALING=row; the default on sm120)",
+        backend = "unsloth.kernels.fp8_lora (UNSLOTH_FP8_LORA_SCALING=row; the default on sm120; torch builds "
+        "without the row-wise _scaled_mm kernel, the Windows wheels, run its GEMMs at unit scale on the "
+        "tensorwise kernel)",
         gates = {
             "sm75": _NO_FP8_HW,
             "sm80": _NO_FP8_HW,

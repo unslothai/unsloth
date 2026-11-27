@@ -958,6 +958,10 @@ class HubSettingsResponse(BaseModel):
     datasets_server_follows_endpoint: bool
     source: Literal["huggingface", "modelscope"]
     active_source: Literal["huggingface", "modelscope"]
+    # GET only: the Hub's web origin for links this client opens, None where only the relay reaches it.
+    page_base: Optional[str] = None
+    # The relay path (as /api/health's hub_proxy) page_base belongs to, so a stale request can tell.
+    page_base_relay: Optional[str] = None
 
 
 class HubSourceNoticeResponse(BaseModel):
@@ -2225,8 +2229,25 @@ def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
 
 # Owner only: the endpoint can name a private address that other accounts' clients must not learn.
 @_owner_settings_router.get("/hub", response_model = HubSettingsResponse)
-def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
-    return _hub_settings_response(get_hub_settings())
+def get_hub(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> HubSettingsResponse:
+    from hub import endpoint_proxy
+    from utils.client_ip import client_ip
+    from utils.hf_endpoint import (
+        DEFAULTS_BY_HEALTH_KEY,
+        browser_hf_endpoint,
+        endpoint_is_reachable_by,
+    )
+
+    response = _hub_settings_response(get_hub_settings())
+    endpoint = browser_hf_endpoint()
+    if active_source() == "huggingface" and endpoint_is_reachable_by(endpoint, client_ip(request)):
+        response.page_base = endpoint
+        response.page_base_relay = endpoint_proxy.relay_path(
+            endpoint_proxy.HUB_PREFIX, endpoint, DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]
+        )
+    return response
 
 
 @_owner_settings_router.put("/hub", response_model = HubSettingsResponse)
@@ -3320,7 +3341,7 @@ class EmbeddingModelPayload(BaseModel):
     # The repo /resolve named, stored so the loader opens what was downloaded.
     gguf_repo: Optional[str] = Field(default = None, max_length = MAX_EMBEDDING_MODEL_LENGTH)
     # And the backend it needs, so a model with no GGUF is not sent to llama-server.
-    backend: Optional[Literal["llama", "sentence-transformers"]] = None
+    backend: Optional[Literal["llama", "sentence-transformers", "connection"]] = None
     # Token for gated/private repos during verification (not stored).
     hf_token: Optional[str] = Field(default = None, max_length = 512)
     # Skip HF verification (offline installs, local paths HF can't see).
@@ -3539,7 +3560,7 @@ def get_embedding_model(
 
 class EmbeddingModelResolveResponse(BaseModel):
     embedding_model: str
-    backend: Literal["llama", "sentence-transformers"]
+    backend: Literal["llama", "sentence-transformers", "connection"]
     # download source; split plans include every shard; both fields are None on no fetch or error
     download_repo: Optional[str] = None
     files: Optional[list[str]] = None
@@ -3946,6 +3967,11 @@ def _resolve_embedding_model_plan(
             return False
         return not cached_read_refused(token, repo_id = repo, is_cached = lambda: True)
 
+    from core.rag import config as rag_config
+
+    if rag_config.is_connection_model(resolved):
+        return _connection_embedding_plan(resolved)
+
     # Cache lookups are authorized per matched repo; a pre-gate would probe the Hub on every
     # resolve.
 
@@ -4091,6 +4117,31 @@ def _resolve_embedding_model_plan(
     )
 
 
+def _connection_embedding_plan(model: str) -> EmbeddingModelResolveResponse:
+    """Nothing to download; only whether the named connection exists, without a network call."""
+    from core.rag.embed_connection import ConnectionEmbedderError, resolve_connection_model
+
+    try:
+        resolve_connection_model(model)
+        error = None
+    except ConnectionEmbedderError as exc:
+        error = str(exc)
+    return EmbeddingModelResolveResponse(embedding_model = model, backend = "connection", error = error)
+
+
+def _probe_connection_embedder(model: str) -> None:
+    """One live embed, so a chat-only endpoint or a wrong model id is caught at save time (409)."""
+    from core.rag.embed_connection import ConnectionEmbeddingBackend
+
+    probe = ConnectionEmbeddingBackend(attempts = 1)
+    try:
+        probe.warm(model_name = model)
+    except Exception as exc:  # noqa: BLE001 - any failure is the forceable verification error
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    finally:
+        probe.close()
+
+
 @_owner_settings_router.get(
     "/embedding-model/resolve", response_model = EmbeddingModelResolveResponse
 )
@@ -4163,6 +4214,19 @@ def update_embedding_model(
             status_code = 400,
             detail = "The embedding download repository was not validated for this model.",
         )
+    if plan.backend == "connection":
+        if not payload.force:
+            if plan.error:
+                raise HTTPException(status_code = 409, detail = plan.error)
+            _probe_connection_embedder(model)
+        set_rag_embedding_model(model, backend = "connection")
+        logger.info(
+            "settings.embedding_model_updated subject=%s model=%s forced=%s",
+            current_subject,
+            model,
+            payload.force,
+        )
+        return _embedding_model_response()
     destination_is_llama = plan.backend == "llama"
     # Scan the repo the loader opens (slashless aliases resolve under sentence-transformers/).
     verify_target = model
@@ -5716,7 +5780,7 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
-    # Walk prefers the first root; file logging may be off before logs/ exists, so reveal the home.
+    # File logging may be off before logs/ exists, so reveal the home.
     roots = debug_log_sources.candidate_roots()
     log_root = None
     if roots:
@@ -6013,7 +6077,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     from utils import mxc_isolation_settings as saved
 
     try:
-        mxc_runtime.installation_identity()
+        mxc_runtime.verified_installation_identity()
         installed = True
     except Exception:
         installed = False
@@ -6317,7 +6381,7 @@ async def start_sandbox_prepare(
     if sys.platform != "win32":
         raise HTTPException(status_code = 409, detail = "Host preparation is Windows-only.")
     try:
-        await asyncio.to_thread(mxc_runtime.installation_identity)
+        await asyncio.to_thread(mxc_runtime.verified_installation_identity)
     except Exception as exc:
         raise HTTPException(
             status_code = 409,
@@ -6372,7 +6436,7 @@ async def start_sandbox_setup(
     """
     import sys
 
-    from core.inference import mxc_policy, sandbox_setup_job, sandbox_setup_plan
+    from core.inference import mxc_policy, mxc_runtime, sandbox_setup_job, sandbox_setup_plan
     from utils import mxc_isolation_settings as saved
     from utils.client_ip import is_direct_local_request
 
@@ -6402,6 +6466,7 @@ async def start_sandbox_setup(
     consent = (
         payload.operation == sandbox_setup_plan.WINDOWS_SETUP
         and payload.consent_dacl_fallback
+        and mxc_runtime.selected_pin().has_host_prep
         and not mxc_policy.dacl_fallback_enabled()
     )
     if consent and saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):

@@ -17,15 +17,10 @@ How the values are quantised (ideas from the cited papers, written from scratch 
   accumulator lane (SageAttention2, arXiv 2411.10958), so scores are rescaled without a per-key load.
 * The probabilities are 8-bit integers too, rescaled per key tile so every tile uses the full range, and the softmax
   denominator is summed over the rounded values (INT-FlashAttention, arXiv 2409.16997).
-* V is centred and divided by a per-channel gain taken over every key (both undone on the output), with one scale per
-  key tile. A head whose V has an attention sink (a few keys far from the rest in most channels: the first text
-  tokens of a joint sequence) takes the range without the stats chunk that holds it, clips that chunk in place and
-  adds the far-out parts back exactly in a launch after the kernel, so the sink no longer costs every other key its
-  resolution (CUDA kernel; the Triton kernel keeps the range over every key). A launch plan none of whose first
-  calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did; one
-  with sinks keeps the path only where it still beats torch's attention on its own inputs (a race at that call).
-  A seed renders the same image on the first render of a load as on the next: a plan whose sink-path calls were used
-  in a render where V clipped keeps that path for the load.
+* V is centred and divided by a per-channel gain (both undone on the output), one scale per key tile. A head whose V
+  has an attention sink takes the range without the sink's stats chunk, clips it and adds the far-out parts back in a
+  later launch (CUDA kernel only). Plans with no sink in their first calls drop that path; plans with sinks keep it
+  only where it beats torch's attention, and keep it for the load once V clipped in a render (seed reproducibility).
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -34,12 +29,9 @@ processor ran before. Calls it cannot take (masks, other head dims, other device
 ``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``: ``0`` never engages it, ``1`` engages it wherever it is accurate without
 the race, unset races it where INT8 attention is already wanted (an INT8 checkpoint) or it was requested by name.
 
-Where the CUDA kernel cannot be built or loaded on an NVIDIA card (no NVRTC, as on a Windows install without the CUDA
-runtime wheels, or a failed compile, module load or first launch), the same calls run the Triton kernel of
-``diffusion_int8_attention_triton`` instead (int8 Q.K^T, 16-bit P.V), when Triton imports and ``TRITON_KERNEL_CONFIGS``
-has the card. That path passes its own accuracy check, and it races the incumbent even where the kernel was asked for
-by name (only the env switch ``1`` skips that race), so it stands in only where it is faster. ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default),
-``cuda`` (never Triton on NVIDIA) or ``triton`` (skip the CUDA kernel).
+If the CUDA kernel cannot be built or loaded on NVIDIA (no NVRTC, failed compile/load/launch), the Triton kernel of
+``diffusion_int8_attention_triton`` runs instead when ``TRITON_KERNEL_CONFIGS`` has the card; it is always raced
+(except env switch ``1``). ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default), ``cuda`` or ``triton``.
 """
 
 from __future__ import annotations
@@ -86,7 +78,10 @@ LOG2E = 1.4426950408889634
 # long_keys / long: overrides from that many keys on (select_config). A card runs one block per SM, so a call of a
 # few thousand tokens is a handful of blocks per SM and the last round leaves SMs idle: smaller blocks waste less of
 # it, and bigger ones copy each tile for more rows on long calls.
-# Measured per card; a card missing here keeps native. One bn per head dim, so the output does not depend on the card.
+# Measured per card. An unlisted NVIDIA card newer than a listed one (sm90, sm100, sm121, ...) is offered the nearest
+# lower listed config that fits its shared memory (``nearest_kernel_config``), which its own accuracy verdict and the
+# timing race still have to pass; below every listed card it keeps native. One bn per head dim, so the output does not
+# depend on the card.
 KERNEL_CONFIGS: dict = {
     (7, 5): {
         128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 1, "qreg": 2, "qkw": 1, "pvw": 8},
@@ -160,6 +155,10 @@ ROCM_KERNEL_CONFIGS: dict = {
             "kscale": "tile",
             "long_keys": 8000,
             "long": {"bm": 128, "warps": 8},
+            # long calls with these head counts store V^T block by block (``vblk``, comfy-kitchen #368): one key tile
+            # is one contiguous run. Bit-identical; 56 heads (MiniMax-H3) 4.5-6.7% faster per call at 18k-37.7k keys,
+            # while 24 heads (Wan 16.8k) ran 1.3-2.5% slower and 32 heads (LTX 24.6k) flat, so only 56 takes it.
+            "long_vblk_heads": (56,),
         },
         64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "f16_t", "kscale": "tile"},
     },
@@ -199,6 +198,10 @@ _LONG_VERIFIED: set = set()
 _LONG_CHECKS: dict = {}
 # (index, head dim, impl) whose long variant failed in a real call
 _LONG_BROKEN: set = set()
+# (index, head dim, dtype, impl) whose block V^T long kernel matched the channel-major one bit for bit in the long check
+_VBLK_VERIFIED: set = set()
+# (index, head dim, impl) whose block V^T long kernel failed in a real call: channel-major from then on
+_VBLK_BROKEN: set = set()
 # long probe: queries and heads against long_keys + LONG_PROBE_EXTRA keys (a ragged last key tile)
 LONG_PROBE_QUERIES = 1000
 LONG_PROBE_HEADS = 2
@@ -238,6 +241,8 @@ def _library_versions() -> dict:
         "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
         "nvrtc": nvrtc,
         "native_p": native_p_enabled(),
+        # a verdict stored with the block V^T check off holds no ``vblk_equal``: switching it on re-checks
+        "vblk": vblk_enabled(),
     }
 
 
@@ -271,6 +276,12 @@ def sink_order_enabled() -> bool:
 
 
 NATIVE_P_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_P"
+# ``0`` keeps V^T channel-major on the long calls a config's ``long_vblk_heads`` names (read per call).
+VBLK_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_VBLK"
+
+
+def vblk_enabled() -> bool:
+    return (os.environ.get(VBLK_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
 def native_p_enabled() -> bool:
@@ -396,6 +407,122 @@ def kernel_config(capability: Any, head_dim: int) -> Optional[dict]:
     return dict(found) if found else None
 
 
+# Shared memory a block may opt into when the device does not say: the smallest sm8x+ figure (sm86 / sm89 / sm120).
+_FALLBACK_SHARED_LIMIT = 99 * 1024
+
+
+def _fits_shared(head_dim: int, config: dict, limit: int) -> bool:
+    """Both the short and the ``long`` variant of ``config`` fit ``limit`` bytes of shared memory."""
+    return all(
+        shared_bytes(head_dim, select_config(config, keys)) <= limit
+        for keys in (0, int(config.get("long_keys") or 0))
+    )
+
+
+def nearest_kernel_config(
+    capability: Any,
+    head_dim: int,
+    shared_limit: Optional[int] = None,
+) -> tuple:
+    """``(measured capability, config)`` for an NVIDIA capability: its own ``KERNEL_CONFIGS`` entry, else (an arch
+    newer than a measured one: sm90, sm100, sm103, sm121, ...) the nearest LOWER measured capability's config whose
+    tile fits ``shared_limit`` (default 99 KB). ``(None, None)`` below every measured arch or with no config for the
+    head dim. The fallback only makes the kernel a candidate: the per-card accuracy verdict and the timing race
+    against the 16-bit incumbent (``verdict``, ``_choose_path``) still decide whether it runs, and one bn per head
+    dim keeps its output bits the same as on the measured card."""
+    try:
+        cap = (int(capability[0]), int(capability[1]))
+    except Exception:  # noqa: BLE001
+        return None, None
+    exact = kernel_config(cap, head_dim)
+    if exact is not None:
+        return cap, exact
+    limit = int(shared_limit) if shared_limit else _FALLBACK_SHARED_LIMIT
+    for known in sorted((k for k in KERNEL_CONFIGS if k < cap), reverse = True):
+        found = KERNEL_CONFIGS[known].get(int(head_dim))
+        if found and _fits_shared(int(head_dim), found, limit):
+            return known, dict(found)
+    return None, None
+
+
+# device index -> {"cap": (major, minor), "via": the capability reader that answered, "smem": opt-in shared memory or
+# None, "nvrtc": whether NVRTC targets the arch}: read once per device, so a listed card's serving call reads no
+# device property (one capability read per device, ever). A replaced reader (a test or a profile mock patching
+# torch.cuda.get_device_capability) refills the entry; ``reset_device_facts`` drops them all.
+_DEVICE_FACTS: dict = {}
+_UNREAD = object()
+
+
+def reset_device_facts() -> None:
+    """Forget every card's cached facts (a new device set, a mocked profile switching cards)."""
+    _DEVICE_FACTS.clear()
+
+
+def _facts(index: int) -> dict:
+    import torch
+
+    reader = torch.cuda.get_device_capability
+    facts = _DEVICE_FACTS.get(int(index))
+    if facts is None or facts["via"] is not reader:
+        capability = reader(index)
+        facts = {
+            "cap": (int(capability[0]), int(capability[1])),
+            "via": reader,
+            "smem": _UNREAD,
+            "nvrtc": _UNREAD,
+        }
+        _DEVICE_FACTS[int(index)] = facts
+    return facts
+
+
+def _device_capability(index: int) -> tuple:
+    return _facts(index)["cap"]
+
+
+def _shared_limit(index: int) -> Optional[int]:
+    facts = _facts(index)
+    if facts["smem"] is _UNREAD:
+        try:
+            import torch
+            facts["smem"] = (
+                int(
+                    getattr(
+                        torch.cuda.get_device_properties(index), "shared_memory_per_block_optin", 0
+                    )
+                )
+                or None
+            )
+        except Exception:  # noqa: BLE001
+            facts["smem"] = None
+    return facts["smem"]
+
+
+def _nvrtc_targets(index: int) -> bool:
+    """Whether the installed NVRTC can build for this card's arch (asked once per card); read through the module
+    attribute at call time, so a profile mock pins it."""
+    facts = _facts(index)
+    if facts["nvrtc"] is _UNREAD:
+        try:
+            from . import diffusion_int8_attention_cuda as cuda_kernel
+            facts["nvrtc"] = bool(cuda_kernel.nvrtc_arch_supported(facts["cap"]))
+        except Exception:  # noqa: BLE001 - an unreadable toolchain offers no fallback
+            facts["nvrtc"] = False
+    return facts["nvrtc"]
+
+
+def cuda_kernel_config(index: int, head_dim: int) -> Optional[dict]:
+    """The CUDA kernel config the device ``index`` runs at ``head_dim``: a listed card's own entry (no device
+    property read), else ``nearest_kernel_config`` with its shared memory, only where the installed NVRTC can target
+    the arch (the kernel is compiled for the card's own arch, so an arch NVRTC predates would only fail its check)."""
+    capability = _device_capability(index)
+    exact = kernel_config(capability, head_dim)
+    if exact is not None:
+        return exact
+    if not _nvrtc_targets(index):
+        return None
+    return nearest_kernel_config(capability, head_dim, _shared_limit(index))[1]
+
+
 def _is_rocm() -> bool:
     import torch
 
@@ -455,15 +582,13 @@ def triton_decline(index: int, head_dim: int) -> str:
 def _serving(index: int, head_dim: int) -> tuple:
     """(implementation, config) for this device and head dim (``implementation``, ``device_config``), the device
     facts read once."""
-    import torch
-
     if _is_rocm():
         config = rocm_kernel_config(_gfx_arch(index), head_dim)
         return ("triton", config) if config is not None else (None, None)
     setting = impl_setting()
-    capability = torch.cuda.get_device_capability(index)
+    capability = _device_capability(index)
     if setting != "triton" and (int(index), int(head_dim)) not in _CUDA_FAILED:
-        config = kernel_config(capability, head_dim)
+        config = cuda_kernel_config(index, head_dim)
         if config is not None:
             return "cuda", config
     if setting == "cuda":
@@ -494,10 +619,10 @@ def device_config(
         return _serving(index, head_dim)[1]
     if _is_rocm():
         return rocm_kernel_config(_gfx_arch(index), head_dim)
-    capability = torch.cuda.get_device_capability(index)
+    capability = _device_capability(index)
     if impl == "triton":
         return triton_kernel_config(capability, head_dim)
-    return kernel_config(capability, head_dim)
+    return cuda_kernel_config(index, head_dim)
 
 
 def kernel_defines(head_dim: int, config: dict) -> dict:
@@ -522,7 +647,11 @@ def select_config(config: dict, keys: int) -> dict:
     chosen = (
         {**config, **config.get("long", {})} if long_keys and keys >= int(long_keys) else config
     )
-    return {key: value for key, value in chosen.items() if key not in ("long_keys", "long")}
+    return {
+        key: value
+        for key, value in chosen.items()
+        if key not in ("long_keys", "long", "long_vblk_heads")
+    }
 
 
 def shared_bytes(head_dim: int, config: dict) -> int:
@@ -1006,7 +1135,9 @@ def _plan(
 
 
 def forget_plans() -> None:
-    """Drop launch plans, sink decisions and routes: a new pipeline decides again."""
+    """Drop launch plans, sink decisions and routes: a new pipeline decides again. A raced secondary card's own floor
+    is the installed processor's (``_unsloth_int8_cards``), so another load's reset never re-enables a card whose race
+    lost while that processor stays installed."""
     _plans().clear()
     _decisions().clear()
     _sink_unsafe().clear()
@@ -1189,9 +1320,14 @@ def _sink_race(
     import torch
 
     stream = _raw_stream(index)
+    # a card the nearest-family fallback serves checks every call for non-finite inputs before the kernels
+    # (_nonfinite_inputs): the INT8 arms pay that here too, so they race what serving runs
+    guarded = _fallback_card(index, int(q.shape[-1]), "cuda")
 
     def kernels(sinks: bool) -> Callable:
         def run() -> Any:
+            if guarded:
+                _nonfinite_inputs(q, k, v)
             i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = q.device)
             out = torch.empty(plan["out_shape"], dtype = v.dtype, device = q.device)
             _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, sinks)
@@ -1432,9 +1568,32 @@ def attend(p: dict) -> Any:
     return out
 
 
+# A raced secondary card's floor where its own race lost: no call is that long, so the processor keeps its incumbent
+# there. Floors live on the installed processor (``_unsloth_int8_cards``, by card), read by ``takes_int8``.
+CARD_DECLINED = 1 << 62
+
+
+def card_floor(proc: Any, device: Any) -> int:
+    """The token floor from which ``proc`` runs the kernel on ``device``'s card: a raced secondary card's own floor
+    (``CARD_DECLINED`` where it lost), else the processor's. Traced: plain reads only."""
+    floor = proc._unsloth_int8_min_tokens
+    cards = getattr(proc, "_unsloth_int8_cards", None)
+    if cards:
+        floor = cards.get(getattr(device, "index", None), floor)
+    return floor
+
+
+def takes_int8(proc: Any, query: Any) -> bool:
+    """Whether a strided processor routes this ``[B, S, H, D]`` call to the kernel: installed, and at least its floor
+    on the call's card. A call it does not route runs the processor's own 16-bit path, the incumbent each card raced
+    against. Traced: plain reads only (the floors guard like the processor's other attributes)."""
+    return bool(proc._unsloth_int8) and query.shape[1] >= card_floor(proc, query.device)
+
+
 def _call_route(q: Any, k: Any, v: Any) -> tuple:
     """(reason, device index, implementation, config): why this call cannot run the kernel (None when it can), and
-    what serves it. Every device fact is read once per call."""
+    what serves it. Every device fact is read once per call. A raced secondary card's floor is its processor's
+    (``takes_int8``), never applied here, so the accuracy probe and the races always test the kernel itself."""
     import torch
 
     if not (q.is_cuda and k.is_cuda and v.is_cuda) or not (q.device == k.device == v.device):
@@ -1501,6 +1660,22 @@ def _uses_long(config: Optional[dict], keys: int) -> bool:
     return bool(long_keys) and int(keys) >= int(long_keys)
 
 
+def _vblk_applies(
+    config: Optional[dict], index: int, impl: Optional[str], q: Any, k: Any, v: Any
+) -> bool:
+    """Whether this Triton call runs the long kernel with V^T stored block by block: a long call whose head count
+    the config lists, on a card where the long variant and the block layout both passed their checks."""
+    heads = (config or {}).get("long_vblk_heads")
+    if impl != "triton" or not heads or int(q.shape[2]) not in heads or not vblk_enabled():
+        return False
+    head_dim = int(q.shape[-1])
+    if not _uses_long(config, k.shape[1]) or (index, head_dim, impl) in _VBLK_BROKEN:
+        return False
+    return _long_ready(index, head_dim, impl, q, k, v) and all(
+        (index, head_dim, str(x.dtype), impl) in _VBLK_VERIFIED for x in (q, k, v)
+    )
+
+
 def _run(
     q: Any,
     k: Any,
@@ -1524,7 +1699,8 @@ def _run(
             config = select_config(config, 0)
     if impl == "triton":
         from . import diffusion_int8_attention_triton as triton_kernel
-
+        if _vblk_applies(config, index, impl, q, k, v):
+            config = {**config, "vblk": 1}
         # the launches run under the card of q here, so the module's own same-card check is skipped
         with torch.no_grad(), torch.cuda.device(q.device):
             return triton_kernel._int8_attention(q, k, v, config, scale = scale)
@@ -1548,7 +1724,46 @@ def int8_attention(
     if reason is not None:
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    return _run(q, k, v, implementation(index, int(q.shape[-1])), config, scale, mode)
+    impl = implementation(index, int(q.shape[-1]))
+    # a fallback card: torch's attention for non-finite inputs, and while a graph records (the check reads the host)
+    if _fallback_card(index, int(q.shape[-1]), impl) and (
+        _capturing_on(q.device) or _nonfinite_inputs(q, k, v)
+    ):
+        return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
+    return _run(q, k, v, impl, config, scale, mode)
+
+
+def _fallback_card(index: int, head_dim: int, impl: Optional[str]) -> bool:
+    """Whether the CUDA kernel serves this card through the nearest-family fallback (no measured entry of its own)."""
+    return impl == "cuda" and kernel_config(_device_capability(index), head_dim) is None
+
+
+def _nonfinite_inputs(q: Any, k: Any, v: Any) -> bool:
+    """Whether q, k or v holds a NaN or inf (one max-|x| reduction each, one host read). Asked only on nearest-family
+    cards, where such a call runs torch's attention: the kernel's max-reduction quantisers drop NaN and turn one inf
+    into an infinite block scale, so they cannot match SDPA's non-finite semantics."""
+    import torch
+
+    inf = float("inf")
+    total = (
+        torch.linalg.vector_norm(q, inf).float()
+        + torch.linalg.vector_norm(k, inf).float()
+        + torch.linalg.vector_norm(v, inf).float()
+    )
+    return not bool(torch.isfinite(total))
+
+
+def _capturing_on(device: Any) -> bool:
+    """Whether a CUDA graph is recording on ``device``'s current stream."""
+    import torch
+
+    if getattr(device, "type", None) != "cuda" or not torch.cuda.is_available():
+        return False
+    try:
+        with torch.cuda.device(device):
+            return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - an unreadable stream state is not a capture
+        return False
 
 
 def native_attention(
@@ -1574,12 +1789,25 @@ def int8_attention_impl(
     k: Any,
     v: Any,
     mode: int = MODE_MAIN,
+    *,
+    fallback: Optional[Callable] = None,
 ) -> Any:
-    """The kernel where it can run, native attention elsewhere and after any failure (``mode``: as for
-    ``int8_attention_call``)."""
+    """The kernel where it can run, 16-bit attention elsewhere and after any failure (``mode``: as for
+    ``int8_attention_call``). The 16-bit call is ``fallback()`` when given (a caller's pinned kernel), else torch's
+    attention; always in V's dtype with autocast off, as the op's fake says. A raced secondary card that lost never
+    gets here: its processor keeps its own 16-bit path there (``takes_int8``)."""
     import torch
 
     reason, index, impl, config = _call_route(q, k, v)
+    if (
+        reason is None
+        and impl is not None
+        and _fallback_card(index, int(q.shape[-1]), impl)
+        and (_capturing_on(q.device) or _nonfinite_inputs(q, k, v))
+    ):
+        # a fallback card: non-finite inputs run torch's attention (SDPA's semantics), and so does a call a CUDA graph
+        # records (the check's host read cannot run while recording)
+        reason = "non-finite input or graph capture on a fallback card"
     if reason is None and impl is not None and _verified_at(index, q, k, v, impl):
         if _uses_long(config, k.shape[1]) and not _long_ready(
             index, int(q.shape[-1]), impl, q, k, v
@@ -1603,7 +1831,14 @@ def int8_attention_impl(
             raise
         except Exception as exc:  # noqa: BLE001 -- a JIT / launch failure keeps native attention on this card
             head_dim = int(q.shape[-1])
-            if _uses_long(config, k.shape[1]) and _long_ready(index, head_dim, impl, q, k, v):
+            if _vblk_applies(config, index, impl, q, k, v):
+                # only the block V^T layout is new in this call: drop it, keep the verified long kernel
+                _VBLK_BROKEN.add((index, head_dim, impl))
+                _log().warning(
+                    "diffusion.int8_attention: long kernel with block V^T failed, channel-major V^T from here on: %s",
+                    exc,
+                )
+            elif _uses_long(config, k.shape[1]) and _long_ready(index, head_dim, impl, q, k, v):
                 # only the long variant failed: the verified short kernel keeps every call, long ones included
                 _LONG_BROKEN.add((index, head_dim, impl))
                 _log().warning(
@@ -1617,7 +1852,9 @@ def int8_attention_impl(
                     exc,
                 )
     STATS["native"] += 1
-    return native_attention(q, k, v)
+    with torch.autocast(q.device.type, enabled = False):
+        out = fallback() if fallback is not None else native_attention(q, k, v)
+    return out if getattr(out, "dtype", v.dtype) == v.dtype else out.to(v.dtype)
 
 
 def _tracing() -> bool:
@@ -1791,7 +2028,19 @@ def _long_check(device: Any, dtype: Any, head_dim: int, impl: str) -> Optional[d
         with torch.no_grad():
             q, k, v = probe_inputs(device, dtype, keys, LONG_PROBE_HEADS, hd, seed = keys)
             q = q[:, :LONG_PROBE_QUERIES]
-            acc = accuracy(int8_attention(q, k, v, config = config), reference_attention(q, k, v))
+            out = int8_attention(q, k, v, config = config)
+            acc = accuracy(out, reference_attention(q, k, v))
+            if impl == "triton" and config.get("long_vblk_heads") and vblk_enabled():
+                # the block V^T layout runs only where it equals the channel-major long kernel bit for bit
+                try:
+                    found["vblk_equal"] = bool(
+                        torch.equal(int8_attention(q, k, v, config = {**config, "vblk": 1}), out)
+                    )
+                except torch.OutOfMemoryError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 -- the layout cannot run here: channel-major stays
+                    found.update(vblk_equal = False, vblk_error = repr(exc)[:300])
+            del out
             q, k = q * SHARP_GAIN, k * SHARP_GAIN
             sharp = int8_attention(q, k, v, config = config)
             finite = bool(torch.isfinite(sharp).all())
@@ -1809,6 +2058,17 @@ def _long_check(device: Any, dtype: Any, head_dim: int, impl: str) -> Optional[d
         )
     if found["ok"]:
         _LONG_VERIFIED.add(key)
+        if found.get("vblk_equal"):
+            _VBLK_VERIFIED.add(key)
+        elif "vblk_equal" in found:
+            _log().warning(
+                "diffusion.int8_attention: block V^T long kernel not verified on cuda:%d (head_dim=%d, %s), "
+                "channel-major runs: %s",
+                index,
+                hd,
+                impl,
+                found.get("vblk_error") or "output differs",
+            )
     else:
         _log().warning(
             "diffusion.int8_attention: long-sequence kernel not verified on cuda:%d (head_dim=%d, %s), the short one "
@@ -1831,12 +2091,9 @@ def _check(
     timed: bool,
     impl: str = "cuda",
 ) -> dict:
-    """``ok``: the kernel runs here and matches fp32 attention on the probe, also with q and k scaled up. ``ms``: int8 and incumbent milliseconds
-    per call at each RACE_TOKENS size (when ``timed``). ``min_tokens``: the sequence length from which the kernel
-    is more than 2% faster than the incumbent, or None when it is not at the larger size. ``failed``: the kernel
-    raised (it could not be built, loaded or launched) rather than missed the accuracy bar. ``impl`` is the
-    implementation ``int8_attention`` runs here; a pass is recorded for it alone. ``long``: the check of the
-    card's long variant (``_long_check``), where its config has one; it never changes ``ok``."""
+    """``ok``: matches fp32 attention on the probe (also with q, k scaled up). ``ms``: int8 / incumbent ms per
+    RACE_TOKENS size. ``min_tokens``: length from which int8 is 2% faster, else None. ``failed``: the kernel raised.
+    ``long``: the long-variant check (``_long_check``); never changes ``ok``. A pass is recorded for ``impl`` alone."""
     import torch
 
     out: dict = {"ok": False, "ms": {}, "min_tokens": None, "impl": impl}
@@ -1962,6 +2219,8 @@ def _adopt_verdict(index: int, dtype: Any, head_dim: int, key: tuple) -> Optiona
             _LONG_CHECKS[long_key] = long
             if long.get("ok"):
                 _LONG_VERIFIED.add(long_key)
+                if long.get("vblk_equal"):
+                    _VBLK_VERIFIED.add(long_key)
     return found
 
 
@@ -2075,9 +2334,12 @@ def _head_dim(attn: Any) -> Optional[int]:
 
 def int8_processors(transformer: Any) -> list:
     """The attention modules whose processor can route to the kernel (the strided processors)."""
+    from .diffusion_tp2 import shard_modules
+
+    # a tensor-parallel denoiser keeps its blocks outside the module tree (diffusion_tp2)
     return [
         m
-        for m in transformer.modules()
+        for m in (*transformer.modules(), *shard_modules(transformer))
         if hasattr(type(getattr(m, "processor", None)), "_unsloth_int8") and hasattr(m, "heads")
     ]
 
@@ -2117,6 +2379,54 @@ def _secondary_cards(primary: int, transformer: Any = None) -> tuple:
         return ()
 
 
+def _secondary_races(
+    index: int,
+    transformer: Any,
+    dtype: Any,
+    heads: int,
+    head_dim: int,
+    fn: Any,
+    name: str,
+    floor: Optional[Callable],
+    forced: bool,
+    impl: Optional[str],
+    report: dict,
+) -> dict:
+    """{card: token floor or None} for the selection's other cards that can serve this head dim. Forced: the
+    accuracy check only (``timed=False``) on the primary's implementation, as before. Auto: each card's own race,
+    through ``floor`` (``install_auto``'s, the dispatch route's floors) or a timed verdict on the primary's
+    implementation; a card that does not win keeps the processor's incumbent there. A card with no kernel, or whose
+    probe runs out of memory, declines (None): only that card, the load card's decision stands."""
+    import torch
+
+    out: dict = {}
+    for card in _secondary_cards(index, transformer):
+        if implementation(card, head_dim) is None:
+            out[card] = None
+            continue
+        dev = torch.device("cuda", card)
+        try:
+            if forced:
+                found = verdict(dev, dtype, heads, head_dim, fn, name, timed = False, impl_only = impl)
+                minimum = 0 if found.get("ok") else None
+            elif floor is not None:
+                # the primary's implementation only (a secondary whose CUDA kernel fails keeps native, not an unraced
+                # Triton stand-in), then that card's own race through the load's floor
+                found = verdict(dev, dtype, heads, head_dim, fn, name, timed = False, impl_only = impl)
+                minimum = None
+                if found.get("ok"):
+                    found, minimum = floor(dev, dtype, heads, head_dim, fn, name)
+            else:
+                found = verdict(dev, dtype, heads, head_dim, fn, name, timed = True, impl_only = impl)
+                minimum = found.get("min_tokens") if found.get("ok") else None
+        except torch.OutOfMemoryError as exc:
+            # this card's probe had no room: it keeps the incumbent, the others (the load card first) are unaffected
+            found, minimum = {"ok": False, "impl": impl, "error": f"out of memory: {exc}"}, None
+        report[(card, heads, head_dim, name)] = found
+        out[card] = None if minimum is None else int(minimum)
+    return out
+
+
 def sink_mode(dit_name: str, forced: bool) -> int:
     """The ``mode`` a route of DiT class ``dit_name`` runs the kernel in: the attention-sink path only for SINK_DITS,
     the families it was measured on."""
@@ -2137,16 +2447,12 @@ def install_int8_attention(
     floor: Optional[Callable] = None,
     policy: Any = None,
 ) -> int:
-    """Route strided attention processors to the INT8 kernel. Returns how many now run it.
+    """Route strided attention processors to the INT8 kernel. Returns how many now run it. Never raises.
 
-    ``modules`` limits the attention modules considered (default: every one with a strided processor).
-    ``incumbent`` is ``(name, callable(q, k, v))`` for what those modules run now (default: their native backend).
-    The kernel must match fp32 attention on this card; unless ``force`` (or the env switch is ``1``) it must also be
-    more than 2% faster than the incumbent on the timed probe. The Triton stand-in for a CUDA kernel that cannot load
-    must be faster also under ``force`` (not under the env switch). ``floor(device, dtype, heads, head_dim, incumbent,
-    name)`` -> ``(verdict, token floor or None)`` replaces the card race when not forced (``install_auto``: the
-    dispatch route's races and token floor). ``policy``: the load's ``Int8Policy`` (or ``int8_attention`` request);
-    None reads the env switch. Never raises."""
+    ``incumbent`` is ``(name, callable(q, k, v))`` (default: native backend). The kernel must match fp32 attention and,
+    unless ``force`` or env ``1``, beat the incumbent by 2%; the Triton stand-in must win even under ``force``.
+    ``floor(device, dtype, heads, head_dim, incumbent, name)`` -> ``(verdict, token floor or None)`` replaces the card
+    race when not forced. ``policy``: the load's ``Int8Policy``; None reads the env switch."""
     try:
         return _install(
             transformer, device, dtype, modules, incumbent, force, logger, floor, policy
@@ -2190,6 +2496,11 @@ def _install(
     int8_attention_op()
     engaged = 0
     report: dict = {}
+    # Every card's probe (accuracy check, race) runs before any processor changes: one that raises leaves every
+    # processor as it was, so the caller's 0 means nothing runs INT8 (H3 video installs its 16-bit exact start only
+    # after a nonzero install). A secondary card's probe that runs out of memory declines that card only
+    # (_secondary_races). The decisions are applied after the loop.
+    pending: list = []
     for m in candidates:
         proc = m.processor
         head_dim = _head_dim(m)
@@ -2202,34 +2513,29 @@ def _install(
             if incumbent is not None
             else _sdpa_incumbent(getattr(proc, "_attention_backend", None))
         )
+        heads = int(m.heads)
         if floor is not None and not force:
-            found, minimum = floor(dev, dtype, int(m.heads), head_dim, fn, name)
-            report[(int(m.heads), head_dim, name)] = found
-            proc._unsloth_int8_impl = found.get("impl")
+            found, minimum = floor(dev, dtype, heads, head_dim, fn, name)
+            report[(heads, head_dim, name)] = found
             if minimum is None:
+                pending.append((m, found.get("impl"), None, False, None))
                 continue
-            proc._unsloth_int8 = True
-            proc._unsloth_int8_min_tokens = int(minimum)
-            proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, False)
-            register_route(index, head_dim, _raise_processor_floor(proc, m))
-            engaged += 1
-            for card in _secondary_cards(index, transformer):
-                if implementation(card, head_dim) is None:
-                    continue
-                # only the implementation the primary card's floor raced and accepted: a secondary whose CUDA
-                # kernel fails must not adopt an unraced Triton stand-in (or one the family policy rejects)
-                report[(card, int(m.heads), head_dim, name)] = verdict(
-                    torch.device("cuda", card),
-                    dtype,
-                    int(m.heads),
-                    head_dim,
-                    fn,
-                    name,
-                    timed = False,
-                    impl_only = found.get("impl"),
-                )
+            cards = _secondary_races(
+                index,
+                transformer,
+                dtype,
+                heads,
+                head_dim,
+                fn,
+                name,
+                floor,
+                False,
+                found.get("impl"),
+                report,
+            )
+            pending.append((m, found.get("impl"), int(minimum), False, cards))
             continue
-        found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = not force)
+        found = verdict(dev, dtype, heads, head_dim, fn, name, timed = not force)
         # a Triton stand-in races even when requested by name (only the env switch or IMPL=triton skip it)
         stand_in = (
             found.get("impl") == "triton"
@@ -2238,39 +2544,55 @@ def _install(
             and not _is_rocm()
         )
         if force and stand_in and found.get("ok"):
-            found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = True)
-        report[(int(m.heads), head_dim, name)] = found
-        proc._unsloth_int8_impl = found.get("impl")
+            found = verdict(dev, dtype, heads, head_dim, fn, name, timed = True)
+        report[(heads, head_dim, name)] = found
         if not found.get("ok"):
+            pending.append((m, found.get("impl"), None, False, None))
             continue
         if force and not stand_in:
             minimum = 0
         elif found.get("min_tokens") is None:
+            pending.append((m, found.get("impl"), None, False, None))
             continue
         else:
             minimum = int(found["min_tokens"])
+        # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
+        # only on a card whose own accuracy check passed, on the primary's implementation only (a secondary whose CUDA
+        # kernel fails keeps native, not unraced Triton); under Auto each of them also runs its own race.
+        cards = _secondary_races(
+            index,
+            transformer,
+            dtype,
+            heads,
+            head_dim,
+            fn,
+            name,
+            None,
+            force,
+            found.get("impl"),
+            report,
+        )
+        pending.append((m, found.get("impl"), minimum, force, cards))
+    for m, impl, minimum, forced, cards in pending:
+        proc = m.processor
+        proc._unsloth_int8_impl = impl
+        if minimum is None:
+            continue
         proc._unsloth_int8 = True
-        proc._unsloth_int8_min_tokens = minimum
-        proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, force)
-        if not force:
+        proc._unsloth_int8_min_tokens = int(minimum)
+        proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, forced)
+        # The load card is governed by the processor's own floor; a raced secondary by its own race, kept on this
+        # processor (its incumbent, dtype, heads and head dim): another processor's or load's race never moves it.
+        # Forced: the accuracy check alone decides each passing card, in the op; a card that declined (no kernel, or
+        # its probe ran out of memory after the op had verified it) keeps its incumbent.
+        proc._unsloth_int8_cards = {
+            int(card): CARD_DECLINED if found is None else int(found)
+            for card, found in (cards or {}).items()
+            if not forced or found is None
+        }
+        if not forced:
             register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1
-        # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
-        # only on a card whose own accuracy check passed, so check each of them here (the race stays the primary's),
-        # on the primary's implementation only: a secondary whose CUDA kernel fails keeps native, not unraced Triton.
-        for card in _secondary_cards(index, transformer):
-            if implementation(card, head_dim) is None:
-                continue
-            report[(card, int(m.heads), head_dim, name)] = verdict(
-                torch.device("cuda", card),
-                dtype,
-                int(m.heads),
-                head_dim,
-                fn,
-                name,
-                timed = False,
-                impl_only = found.get("impl"),
-            )
     if logger is not None:
         for key, found in report.items():
             card, heads, head_dim, name = key if len(key) == 4 else (index, *key)

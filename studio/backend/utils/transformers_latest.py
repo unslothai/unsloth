@@ -17,7 +17,6 @@ from pathlib import Path
 from loggers import get_logger
 from utils.paths.storage_roots import studio_root as _studio_root
 from utils.transformers_version import (
-    _env_offline,
     _load_config_json,
     _model_types_from_source,
     _tier_from_config_mapping,
@@ -35,6 +34,7 @@ from utils.transformers_version import (
     ensure_latest_transformers_venv,
     latest_venv_pinned_version,
 )
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -249,7 +249,7 @@ def _get_snapshot() -> dict | None:
         if _snapshot_is_fresh(disk):
             _memory_snapshot = disk
             return disk
-        if _disabled() or _env_offline():
+        if _disabled() or hf_env_offline():
             return None
         if time.time() - _last_failure_at < _FAILURE_BACKOFF_SECONDS:
             return None
@@ -339,7 +339,7 @@ def latest_transformers_supports(model_type: str) -> dict | None:
     """Fires only when model_type is in no installed overlay or tier table (load would fail); never raises; off via UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS."""
     if not isinstance(model_type, str) or not model_type:
         return None
-    if _disabled() or _env_offline():
+    if _disabled() or hf_env_offline():
         return None
     snapshot = _get_snapshot()
     if snapshot is None:
@@ -421,7 +421,7 @@ def _remote_code_upgrade(model_name: str, cfg: dict) -> dict | None:
 def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dict | None:
     """Fires only when model_type is in no installed overlay or tier table, i.e. the load would fail."""
     try:
-        if _disabled() or _env_offline():
+        if _disabled() or hf_env_offline():
             return None
         cfg = _load_config_json(model_name, hf_token)
         if not isinstance(cfg, dict):
@@ -713,7 +713,7 @@ def auto_install_preflight(version: str) -> dict | None:
     and the package scan of its install plan is clean. Otherwise the structured result to return
     instead, before anything is reserved or unloaded. Never raises."""
     try:
-        if _disabled() or _env_offline():
+        if _disabled() or hf_env_offline():
             return _consent_required(
                 version, "Unsloth is offline, so the release could not be scanned."
             )
@@ -775,7 +775,7 @@ def _install_latest_transformers_locked(
             "message": "Latest-transformers installs are disabled "
             "(UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS).",
         }
-    if _env_offline():
+    if hf_env_offline():
         return {
             "success": False,
             "version": version,

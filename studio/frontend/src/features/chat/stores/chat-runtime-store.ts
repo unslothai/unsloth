@@ -62,7 +62,9 @@ import {
   type Preset,
   type RecommendedSamplingKey,
   RECOMMENDED_SAMPLING_KEYS,
+  type PresetOwnedParams,
   getPresetOwnedParams,
+  isRecommendedSamplingKey,
   getPresetSource,
 } from "../presets/preset-policy";
 import {
@@ -1022,13 +1024,29 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
       }
     } else {
       const live = readThreadScopedSettings(useChatRuntimeStore.getState());
-      if (live[key] !== undefined) return live[key];
+      if (live[key] !== undefined && !isUnownedSampling(key)) return live[key];
     }
   }
   return activeThreadScopedSettings?.[key];
 }
 
 const explicitlyEditedThreadFields = new Set<string>();
+
+// A model's recommendation is not an edit: storing it would pin it over the next model's.
+function isUnownedSampling(key: string): boolean {
+  return (
+    isRecommendedSamplingKey(key) &&
+    !explicitlyEditedThreadFields.has(key) &&
+    (activeThreadScopedSettings as Record<string, unknown> | null)?.[key] === undefined
+  );
+}
+
+function withoutUnownedSampling(settings: ThreadScopedSettings): ThreadScopedSettings {
+  for (const key of RECOMMENDED_SAMPLING_KEYS) {
+    if (isUnownedSampling(key)) delete (settings as Record<string, unknown>)[key];
+  }
+  return settings;
+}
 
 /** Fields a provider constraint moved without persisting; no snapshot may save them. */
 const constraintSuppressedThreadFields = new Set<string>();
@@ -1446,6 +1464,7 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   restoreChatOwnedValues(threadId, settings);
+  if (threadId === threadScopedSettingsThreadId) withoutUnownedSampling(settings);
   // Not a store field, so a snapshot read from the store lacks it and a replacement would erase it.
   Object.assign(settings, withSavedChatFullAccess(threadId, {}));
   if (threadId === threadScopedSettingsThreadId) {
@@ -2833,6 +2852,8 @@ type ChatRuntimeStore = {
       /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
+      /** A custom preset pick or save: the open chat owns every recommended value, unchanged ones too. */
+      pinsSampling?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -3348,9 +3369,7 @@ function forgetModelParams(
   }
   const current = outgoing ?? state.paramsByModel;
   const chatOwnsSampling = threadCapturesSampling();
-  const forgotten = Object.keys(getPresetOwnedParams(state.params)).filter(
-    (key) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
-  );
+  const forgotten: string[] = presetPickForgetsKeys(state.params);
   if (!chatOwnsSampling) {
     modelsShowingPresetPick.add(modelId);
   }
@@ -3366,6 +3385,13 @@ function forgetModelParams(
     Object.entries(current).filter(([id]) => id !== modelId),
   );
   return hasKeys(kept) ? { ...rest, [modelId]: kept } : rest;
+}
+
+// With a chat open, the pick leaves the sampling that chat captures in model memory.
+function presetPickForgetsKeys(params: InferenceParams): (keyof PresetOwnedParams)[] {
+  const chatOwnsSampling = threadCapturesSampling();
+  const keys = Object.keys(getPresetOwnedParams(params)) as (keyof PresetOwnedParams)[];
+  return keys.filter((key) => !(chatOwnsSampling && isThreadScopedParamKey(key)));
 }
 
 /** Every preset-owned value the installation keeps, minus the sampling an open chat captures. */
@@ -3426,6 +3452,29 @@ function notePresetOnLoad(
     // A same-model poll under edited values replaces nothing, so it keeps the mark.
     modelsShowingPresetPick.delete(modelId);
   }
+}
+
+// Unknown after a reload, so a switch then fills nothing.
+let presetForgottenKeys: readonly (keyof PresetOwnedParams)[] = [];
+
+/** What a custom preset's pick forgot and `remembered` lacks comes from the preset, not the model being
+ *  left. Callers skip it for loads that keep the visible settings (`trackQueuedSettings: false`). */
+function withSelectedPreset(
+  state: ChatRuntimeStore,
+  params: InferenceParams,
+  remembered: PersistedInferenceParams | undefined,
+): InferenceParams {
+  if (!(state.rememberParamsPerModel && state.activePresetSource === "custom")) {
+    return params;
+  }
+  const preset = state.customPresets.find((p) => p.name === state.activePreset);
+  if (!preset) return params;
+  const owned = getPresetOwnedParams(preset.params);
+  const filled = presetForgottenKeys.filter(
+    (key) => remembered?.[key] === undefined && params[key] !== owned[key],
+  );
+  if (filled.length === 0) return params;
+  return { ...params, ...Object.fromEntries(filled.map((key) => [key, owned[key]])) };
 }
 
 /** Snapshot the model being switched away from, so a model that was never edited still keeps what it ran with. */
@@ -4915,10 +4964,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const incomingParams = fromModelDefaults
         ? { ...params, minPMode: withoutActiveThreadParams(state, params).minPMode }
         : params;
+      const loadBase =
+        checkpointChanged && fromModelDefaults && options?.trackQueuedSettings !== false
+          ? withSelectedPreset(
+              state,
+              incomingParams,
+              (outgoing ?? state.paramsByModel)[params.checkpoint],
+            )
+          : incomingParams;
       const nextParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
-        incomingParams,
+        loadBase,
         params.checkpoint,
         replayed,
         options?.maxTokensCap,
@@ -4947,9 +5004,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         options?.persist !== false
           ? withoutCapturedThreadEdits(changedParams, fromModelDefaults)
           : changedParams;
+      if (options?.pinsSampling === true && options?.persist !== false) {
+        for (const key of RECOMMENDED_SAMPLING_KEYS) captureThreadScopedEdit(key);
+      }
       // An edit belongs to the model the params now describe, so a call moving checkpoint and
       // sliders at once files them under the destination.
       const fromPreset = options?.fromPreset === true;
+      if (fromPreset) presetForgottenKeys = presetPickForgetsKeys(state.params);
       const paramsByModel = fromPreset
         ? forgetModelParams(state, outgoing, nextParams.checkpoint)
         : getParamsByModelAfterEdit(
@@ -5224,7 +5285,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       let baseParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
-        state.params,
+        checkpointChanged && options?.trackQueuedSettings !== false
+          ? withSelectedPreset(state, state.params, (outgoing ?? state.paramsByModel)[modelId])
+          : state.params,
         modelId,
         checkpointChanged,
         options?.maxTokensCap,
@@ -5408,6 +5471,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       threadScopedSettingsThreadId = threadId;
       explicitlyEditedThreadFields.clear();
+      for (const field of heldFields) {
+        if (isRecommendedSamplingKey(field)) explicitlyEditedThreadFields.add(field);
+      }
       constraintSuppressedThreadFields.clear();
       const stored = hasThreadScopedSettings(settings)
         ? (settings as ThreadScopedSettings)
@@ -5501,7 +5567,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (threadId !== null && (stored === null || heldFields.size > 0)) {
         scheduleThreadScopedSettingsWrite(
           threadId,
-          stored === null ? sanitizeThreadScopedSettings(applied) : null,
+          stored === null
+            ? withoutUnownedSampling(sanitizeThreadScopedSettings(applied))
+            : null,
         );
       }
       if (!hasKeys(nextState)) {

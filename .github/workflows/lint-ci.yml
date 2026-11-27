@@ -461,9 +461,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          MERGE_BASE=$(gh api \
-            "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
-            --jq .merge_base_commit.sha)
+          # The compare API now and then answers with an empty body (`unexpected end of JSON input`):
+          # retry, and ask for one file per page since only the merge base is read.
+          MERGE_BASE=""
+          for attempt in 1 2 3 4; do
+            MERGE_BASE=$(gh api \
+              "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}?per_page=1" \
+              --jq .merge_base_commit.sha) && [ -n "$MERGE_BASE" ] && break
+            MERGE_BASE=""
+            sleep $((attempt * 5))
+          done
+          if [ -z "$MERGE_BASE" ]; then
+            echo "::error::the compare API gave no merge base after 4 attempts"
+            exit 1
+          fi
           # A fork PR's head is only reachable as refs/pull/N/head.
           git fetch --no-tags --depth=1 origin "$MERGE_BASE"
           git fetch --no-tags --depth=1 origin \
@@ -493,9 +504,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          MERGE_BASE=$(gh api \
-            "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
-            --jq .merge_base_commit.sha)
+          # The compare API now and then answers with an empty body (`unexpected end of JSON input`):
+          # retry, and ask for one file per page since only the merge base is read.
+          MERGE_BASE=""
+          for attempt in 1 2 3 4; do
+            MERGE_BASE=$(gh api \
+              "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}?per_page=1" \
+              --jq .merge_base_commit.sha) && [ -n "$MERGE_BASE" ] && break
+            MERGE_BASE=""
+            sleep $((attempt * 5))
+          done
+          if [ -z "$MERGE_BASE" ]; then
+            echo "::error::the compare API gave no merge base after 4 attempts"
+            exit 1
+          fi
           git fetch --no-tags --depth=1 origin "$MERGE_BASE"
           # refs/pull/N/head moves, so fetch it and then the pinned SHA, and refuse if it is still missing
           # rather than diffing an empty file list.

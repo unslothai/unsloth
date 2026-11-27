@@ -4,9 +4,11 @@
 """Ulysses CP for HF attention (via ALL_ATTENTION_FUNCTIONS) and hybrid models (Gated DeltaNet, Kimi
 delta, MiniMax Lightning), whose scans need full sequences so they run on heads."""
 
+import bisect
 import builtins
 import functools
 import inspect
+import os
 
 import torch
 import torch.distributed as dist
@@ -154,7 +156,7 @@ def ulysses_gated_delta_forward(
     **kwargs,
 ):
     """Training forward of a Qwen3-Next / Qwen3.5 GatedDeltaNet on a contiguous sequence shard."""
-    if cache_params is not None:
+    if cache_params is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if isinstance(attention_mask, torch.Tensor) and attention_mask.ndim == 2:
         hidden_states = (hidden_states * attention_mask[:, :, None]).to(hidden_states.dtype)
@@ -375,7 +377,7 @@ def ulysses_kimi_delta_forward(
     """Training forward of a Kimi-Linear / Kimi K3 KimiDeltaAttention on a contiguous sequence shard.
     caller_lengths (per row, the real length of the whole sequence): the output is zero past it, as the
     hub layer's pad_input leaves caller padding when it unpads on the 2D mask."""
-    if cache_params is not None:
+    if cache_params is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if kwargs.get("packed_seq_lengths") is not None or kwargs.get("cu_seqlens") is not None:
         raise NotImplementedError(
@@ -445,7 +447,7 @@ def ulysses_lightning_forward(
     **kwargs,
 ):
     """Training forward of a MiniMax LightningAttention on a contiguous sequence shard."""
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if kwargs.get("packed_seq_lengths") is not None:
         raise NotImplementedError(
@@ -691,6 +693,121 @@ def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     return mask.masked_fill_(allowed.logical_not_(), torch.finfo(dtype).min)[None, None]
 
 
+# Masked sdpa past this many tokens runs in query chunks, not one [T, T] mask (12 GiB at 64K in 16-bit).
+_DENSE_MASK_MAX_TOKENS = 8192
+# Elements of one chunk's [rows, keys] mask: 384 MiB at 16-bit (bool plus the additive mask).
+_MASK_CHUNK_ELEMENTS = 1 << 27
+
+
+def _env_int(name, default):
+    value = os.environ.get(name, "")
+    try:
+        return int(value) if value.strip() else default
+    except ValueError:
+        return default
+
+
+def _mask_chunk_rows(implementation, total) -> int:
+    """Query rows per chunk for the masked sdpa path, or 0 for the dense mask. UNSLOTH_CP_CHUNKED_MASK = 0
+    turns chunking off; UNSLOTH_CP_DENSE_MASK_MAX_TOKENS and UNSLOTH_CP_MASK_CHUNK_ROWS move the threshold
+    and the chunk size."""
+    if implementation != "sdpa" or os.environ.get("UNSLOTH_CP_CHUNKED_MASK", "1") == "0":
+        return 0
+    if torch.compiler.is_compiling():
+        # The chunk loop reads the document starts on the host; compiled attention keeps the dense mask.
+        return 0
+    if total <= _env_int("UNSLOTH_CP_DENSE_MASK_MAX_TOKENS", _DENSE_MASK_MAX_TOKENS):
+        return 0
+    rows = _env_int("UNSLOTH_CP_MASK_CHUNK_ROWS", 0)
+    if rows <= 0:
+        rows = max(256, (_MASK_CHUNK_ELEMENTS // total) // 64 * 64)
+    return rows if rows < total else 0
+
+
+def _chunk_mask(lo, hi, key_lo, device, dtype, window, cu_seqlens):
+    """Rows lo:hi and keys key_lo:hi of _whole_sequence_mask, built from [rows] and [keys] vectors."""
+    rows = torch.arange(lo, hi, device = device)
+    keys = torch.arange(key_lo, hi, device = device)
+    allowed = keys[None, :] <= rows[:, None]
+    if window is not None and window < hi:
+        allowed &= keys[None, :] > (rows - window)[:, None]
+    if cu_seqlens is not None:
+        ends = cu_seqlens[1:].to(device = device, dtype = rows.dtype)
+        doc_rows = torch.bucketize(rows, ends, right = True)
+        doc_keys = torch.bucketize(keys, ends, right = True)
+        allowed &= doc_rows[:, None] == doc_keys[None, :]
+    mask = torch.zeros(hi - lo, hi - key_lo, device = device, dtype = dtype)
+    return mask.masked_fill_(allowed.logical_not_(), torch.finfo(dtype).min)[None, None]
+
+
+def _document_starts(seq_info):
+    """Host cu_seqlens of the packed documents (the padding tail starts at the last entry)."""
+    from .packing import _cached_host_lengths
+
+    lengths, cu_seqlens = seq_info[0], seq_info[1]
+    host = _cached_host_lengths(lengths, cu_seqlens)
+    if host is None:
+        return [int(x) for x in cu_seqlens.tolist()]
+    starts = [0]
+    for n in host:
+        starts.append(starts[-1] + int(n))
+    return starts
+
+
+def _torch_checkpoint():
+    """torch's own checkpoint, also once unsloth_zoo's smart gradient checkpointing has replaced
+    torch.utils.checkpoint.checkpoint with its forced-reentrant, CPU-offloading version: chunk loops nested
+    in a checkpointed layer need non-reentrant recompute (one replay per backward, closed-over grads)."""
+    import torch.utils.checkpoint as module
+
+    for func in (
+        getattr(module, "_unsloth_pristine_checkpoint", None),
+        module.checkpoint,
+        getattr(module, "_old_checkpoint", None),
+    ):
+        if getattr(func, "__module__", None) == module.__name__:
+            return func
+    return module.checkpoint
+
+
+def _chunked_masked_attention(
+    shard, query, key, value, attention_fn, kwargs, window, cu_seqlens, starts, rows
+):
+    """attention_fn per query chunk, against only the keys the chunk can see, with its mask slice. sdpa saves
+    its mask for backward, so each chunk is checkpointed: otherwise the slices add back up to [T, T]."""
+    checkpoint = _torch_checkpoint()
+
+    total = query.shape[2]
+    grad = torch.is_grad_enabled() and any(x.requires_grad for x in (query, key, value))
+    if grad and query.dtype in (torch.float16, torch.bfloat16):
+        # dk / dv sum over chunks: in 16-bit the error grows with the chunk count (1.5x dense at 64 chunks).
+        key, value = key.float(), value.float()
+    outs = []
+    for lo in range(0, total, rows):
+        hi = min(total, lo + rows)
+        key_lo = 0
+        if window is not None and window < total:
+            key_lo = max(0, lo - window + 1)
+        if starts is not None:
+            key_lo = max(key_lo, starts[bisect.bisect_right(starts, lo) - 1])
+        key_lo -= key_lo % 16  # aligned key slices; the extra keys are masked
+
+        def run(
+            q,
+            k,
+            v,
+            lo = lo,
+            hi = hi,
+            key_lo = key_lo,
+        ):
+            mask = _chunk_mask(lo, hi, key_lo, q.device, q.dtype, window, cu_seqlens)
+            return attention_fn(shard, q, k.to(q.dtype), v.to(q.dtype), mask, **kwargs)[0]
+
+        args = (query[:, :, lo:hi], key[:, :, key_lo:hi], value[:, :, key_lo:hi])
+        outs.append(checkpoint(run, *args, use_reentrant = False) if grad else run(*args))
+    return torch.cat(outs, dim = 1)
+
+
 def _is_flash(implementation) -> bool:
     # flash_attention_2 / 3, and hub kernels ("kernels-community/...") that take transformers' flash kwargs.
     return "flash" in str(implementation) or "/" in str(implementation)
@@ -752,24 +869,46 @@ def _ulysses_hf_attention(
     shard = _HeadShard(module, **overrides)
 
     window = _sliding_window(module, kwargs)
+    chunk_rows = 0
     if _is_flash(implementation):
         # Flash takes the window and the softcap as arguments, and documents as cu_seqlens.
         mask = None
         if cu_seqlens is not None:
-            if int(cu_seqlens[-1]) < total:
-                # Padding to the cp multiple sits after the last document: its own segment.
-                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
-            cu = cu_seqlens.to(device = query.device, dtype = torch.int32)
-            longest = int((cu[1:] - cu[:-1]).max())
+            from .packing import cover_padded_cu_seqlens
+
+            # Padding to the cp multiple sits after the last document: its own segment. Host lengths, cached
+            # per batch: no device read per layer.
+            cu, longest = cover_padded_cu_seqlens(seq_info, total)
+            cu = cu.to(device = query.device, dtype = torch.int32)
             kwargs.update(
                 cu_seq_lens_q = cu, cu_seq_lens_k = cu, max_length_q = longest, max_length_k = longest
             )
     elif implementation == "sdpa" and cu_seqlens is None and window is None:
         mask = None  # sdpa's is_causal path
     else:
+        # Long sdpa sequences run in query chunks (no [T, T] mask); eager and short ones keep the dense mask.
+        chunk_rows = _mask_chunk_rows(implementation, total)
         # No data-dependent padding check here: it graph-broke compiled packed attention.
-        mask = _whole_sequence_mask(total, query.device, query.dtype, window, cu_seqlens)
-    out, _ = attention_fn(shard, query, key, value, mask, **kwargs)
+        mask = (
+            None
+            if chunk_rows
+            else _whole_sequence_mask(total, query.device, query.dtype, window, cu_seqlens)
+        )
+    if chunk_rows:
+        out = _chunked_masked_attention(
+            shard,
+            query,
+            key,
+            value,
+            attention_fn,
+            kwargs,
+            window,
+            cu_seqlens,
+            None if seq_info is None else _document_starts(seq_info),
+            chunk_rows,
+        )
+    else:
+        out, _ = attention_fn(shard, query, key, value, mask, **kwargs)
     # [B, T, H / N, D] -> [B, T / N, H, D]
     out = out.reshape(bsz, total, plan.local_heads, -1)
     if caller_lengths is not None and cu_seqlens is None:

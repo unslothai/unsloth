@@ -183,14 +183,16 @@ def _offline_window_if_unreachable(step = "loading"):
     saved_marker: list = []  # [prior value] once this window marked HF offline as auto-set
     force_ctx = None
     try:
-        from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+        from utils.transformers_version import hf_endpoint_unreachable
+        from utils.utils import hf_env_offline
+
         probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
             "0",
             "false",
             "no",
             "off",
         )
-        if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
+        if not hf_env_offline() and probe_enabled and hf_endpoint_unreachable():
             logger.warning("Hugging Face endpoint unreachable; %s offline", step)
             # Only the Hub is known to be down: mark this offline as ours so a required kernel
             # install (GitHub / PyPI) is still allowed; an operator's HF offline never enters here.

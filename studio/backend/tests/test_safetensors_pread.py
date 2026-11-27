@@ -31,8 +31,6 @@ requires_backend = pytest.mark.skipif(
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(sp.PREAD_ENV, raising = False)
-    # these cover Windows / CUDA rules: a real ROCm APU host would otherwise turn the Linux default on
-    monkeypatch.setattr(sp, "rocm_integrated", lambda: False)
     yield
     assert sp._depth == 0 and sp._original is None and not sp._active_rules()
 
@@ -202,7 +200,7 @@ def test_video_load_runs_inside_the_scope():
     from core.inference.video import VideoBackend
 
     source = inspect.getsource(VideoBackend._run_load)
-    scope = source.index("with pread_safetensors(every_shard = rocm_integrated()):")
+    scope = source.index("with pread_safetensors(integrated_cuda = integrated_cuda):")
     assert scope < source.index("self.load_pipeline(**kwargs)", scope)
 
 

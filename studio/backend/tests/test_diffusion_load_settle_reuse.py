@@ -160,7 +160,9 @@ def test_unknown_memory_keeps_settling(card, field):
 
 
 @pytest.mark.parametrize("backend,kind", [("rocm", "discrete_vram"), ("cuda", "unified_memory")])
-def test_other_cuda_memory_kinds_keep_settling(card, backend, kind):
+def test_other_cuda_memory_kinds_keep_settling(card, backend, kind, monkeypatch):
+    # The unified stable stop (test_diffusion_settle_unified_stable.py) would end this constant card after 2 reads.
+    monkeypatch.setenv(mem.SETTLE_STABLE_ENV, "0")
     card.kind = kind
     target = types.SimpleNamespace(device = "cuda", backend = backend, supports_model_cpu_offload = True)
     _replan(target = target)

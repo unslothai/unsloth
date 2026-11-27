@@ -4,8 +4,8 @@
 
 Each rank trains its own rows (rank 1 a shorter sequence: uneven all-to-all splits) through torch DDP with the
 routed experts sharded by index; LoRA on every Linear (the routers included) and on the fused expert stacks.
-Families whose experts the tensor parallel expert shard cannot cut (gpt-oss: another experts call signature) or
-models without routed experts are refused before anything changes."""
+Models without routed experts, and experts kept as per-expert Linear lists (the load_in_4bit gpt-oss layout), are
+refused before anything changes."""
 
 import multiprocessing
 import os
@@ -23,6 +23,7 @@ import pytest  # noqa: E402
 import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
 
 FAMILIES = {
     "qwen3_moe": "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
@@ -30,6 +31,82 @@ FAMILIES = {
     "glm4_moe": "trl-internal-testing/tiny-Glm4MoeForCausalLM",  # shared experts + grouped routing
     # (hidden_states, router_indices, routing_weights), transposed stacks, per-expert biases
     "gpt_oss": "trl-internal-testing/tiny-GptOssForCausalLM",
+    "mixtral": "hf-internal-testing/tiny-random-MixtralForCausalLM",
+    "qwen2_moe": "hf-internal-testing/tiny-random-Qwen2MoeForCausalLM",
+    "qwen3_next": "hf-internal-testing/tiny-random-Qwen3NextForCausalLM",
+    # The tiny repo is all dense (first_k_dense_replace=3 of 2 layers).
+    "deepseek_v3": dict(
+        repo = "trl-internal-testing/tiny-DeepseekV3ForCausalLM",
+        overrides = dict(
+            first_k_dense_replace = 0,
+            n_routed_experts = 8,
+            n_group = 2,
+            topk_group = 1,
+            num_experts_per_tok = 2,
+        ),
+    ),
+    "qwen3_5_moe": dict(
+        config = dict(
+            model_type = "qwen3_5_moe_text",
+            vocab_size = 128,
+            hidden_size = 32,
+            num_hidden_layers = 2,
+            layer_types = ["linear_attention", "full_attention"],
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            head_dim = 16,
+            linear_num_key_heads = 2,
+            linear_num_value_heads = 2,
+            linear_key_head_dim = 8,
+            linear_value_head_dim = 8,
+            num_experts = 4,
+            num_experts_per_tok = 2,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+        )
+    ),
+    # Experts directly on the decoder layer, beside a dense mlp.
+    "gemma4": dict(
+        config = dict(
+            model_type = "gemma4_text",
+            vocab_size = 128,
+            vocab_size_per_layer_input = 128,
+            hidden_size = 32,
+            hidden_size_per_layer_input = 0,
+            intermediate_size = 64,
+            num_hidden_layers = 2,
+            layer_types = ["sliding_attention", "full_attention"],
+            sliding_window = 8,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            head_dim = 16,
+            num_kv_shared_layers = 0,
+            enable_moe_block = True,
+            num_experts = 4,
+            top_k_experts = 2,
+            moe_intermediate_size = 16,
+        ),
+        experts = "experts",
+    ),
+    # Hunyuan-A13B layout (E from config, a top-k per layer, a shared expert), shrunk. Its default config has
+    # num_experts = 1, which once put the family in the ep blocked-family table.
+    "hunyuan_v1_moe": dict(
+        config = dict(
+            model_type = "hunyuan_v1_moe",
+            vocab_size = 128,
+            hidden_size = 32,
+            intermediate_size = 16,
+            num_hidden_layers = 3,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            head_dim = 16,
+            num_experts = 64,
+            moe_topk = [8, 8, 8],
+            num_shared_expert = [1, 1, 1],
+            pad_token_id = 0,
+            use_qk_norm = True,
+        )
+    ),
 }
 REFUSED = {
     "llama": "hf-internal-testing/tiny-random-LlamaForCausalLM",
@@ -41,8 +118,10 @@ _SEQ = (7, 5, 6, 4)
 def _modules():
     from test_tp_native_oracle import build, tpn
 
-    from test_tp_inkling2_gloo import _load
-    return build, tpn, _load("ep_native")
+    # Not test_tp_inkling2_gloo's loader: that file importorskips Inkling 2 at import, which on a
+    # transformers without it raised Skipped in every rank and left these families with no result.
+    from unsloth_models_loader import load_models_module
+    return build, tpn, load_models_module("ep_native")
 
 
 def _rows(vocab, rank):
@@ -64,8 +143,30 @@ def _sum_loss(model, ids, labels):
     )
 
 
-def _build(build, repo):
-    model = build(repo, **EXPERT_LORA).train()
+def _family(family):
+    spec = FAMILIES[family]
+    return dict(spec) if isinstance(spec, dict) else dict(repo = spec)
+
+
+def _local_config(tmp, rank, config):
+    from transformers import AutoConfig
+
+    path = os.path.join(tmp, f"config_{rank}")
+    config = dict(config)
+    AutoConfig.for_model(config.pop("model_type"), **config).save_pretrained(path)
+    return path
+
+
+def _build(
+    build,
+    repo,
+    overrides = None,
+    experts = None,
+):
+    lora = EXPERT_LORA
+    if experts is not None:
+        lora = dict(target_parameters = [f"{experts}.gate_up_proj", f"{experts}.down_proj"])
+    model = build(repo, overrides = overrides, **lora).train()
     g = torch.Generator().manual_seed(1234)
     with torch.no_grad():  # lora_B = 0 would leave every lora_A gradient of the first step at 0
         for name, p in model.named_parameters():
@@ -74,24 +175,86 @@ def _build(build, repo):
     return model
 
 
+def _transformers4_gpt_oss_contract():
+    """transformers 4.x gpt-oss on any version: dense [tokens, E] router scores, E read from their width."""
+    import torch.nn.functional as F
+    from transformers.models.gpt_oss import modeling_gpt_oss as mod
+
+    def router_forward(self, hidden_states):
+        hidden_states = hidden_states.reshape(-1, self.hidden_dim)
+        logits = F.linear(hidden_states, self.weight, self.bias)
+        top_value, indices = torch.topk(logits, self.top_k, dim = -1)
+        top_value = torch.nn.functional.softmax(top_value, dim = 1, dtype = top_value.dtype)
+        return torch.zeros_like(logits).scatter_(1, indices, top_value), indices
+
+    def experts_forward(
+        self,
+        hidden_states,
+        router_indices = None,
+        routing_weights = None,
+    ):
+        batch_size = hidden_states.shape[0]
+        hidden_states = hidden_states.reshape(-1, self.hidden_size)
+        num_experts = routing_weights.shape[1]
+        next_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            mask = torch.nn.functional.one_hot(router_indices, num_classes = num_experts + 1).permute(
+                2, 1, 0
+            )
+            hit = torch.greater(mask.sum(dim = (-1, -2)), 0).nonzero()
+        for expert in hit[:]:
+            expert = expert[0]
+            if expert == num_experts:
+                continue
+            with torch.no_grad():
+                _, token = torch.where(mask[expert])
+            gate_up = (
+                hidden_states[token] @ self.gate_up_proj[expert] + self.gate_up_proj_bias[expert]
+            )
+            gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+            gate = gate.clamp(min = None, max = self.limit)
+            up = up.clamp(min = -self.limit, max = self.limit)
+            out = ((up + 1) * (gate * torch.sigmoid(gate * self.alpha))) @ self.down_proj[expert]
+            out = out + self.down_proj_bias[expert]
+            next_states.index_add_(0, token, out * routing_weights[token, expert, None])
+        return next_states.view(batch_size, -1, self.hidden_size)
+
+    def mlp_forward(self, hidden_states):
+        scores, indices = self.router(hidden_states)
+        out = self.experts(hidden_states, router_indices = indices, routing_weights = scores)
+        return out.reshape(hidden_states.shape), scores
+
+    mod.GptOssTopKRouter.forward = router_forward
+    mod.GptOssExperts.forward = experts_forward
+    mod.GptOssMLP.forward = mlp_forward
+
+
 def _case_family(
     rank,
     world,
     tmp,
-    repo,
+    repo = None,
     ep = None,
+    overrides = None,
+    config = None,
+    experts = None,
+    dense_routing = False,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
     from torch.nn.parallel import DistributedDataParallel
 
+    if dense_routing:
+        _transformers4_gpt_oss_contract()
     build, tpn, epn = _modules()
+    if config is not None:
+        repo = _local_config(tmp, rank, config)
     ep = ep or world
     if ep == world:
         mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
     else:  # replica groups of ep ranks, ep innermost
         mesh = init_device_mesh("cpu", (world // ep, ep), mesh_dim_names = ("ep_rep", "ep"))
-    ref = _build(build, repo)
+    ref = _build(build, repo, overrides, experts)
     vocab = tpn._text_config(ref).vocab_size
     rows = [_rows(vocab, r) for r in range(world)]
     n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
@@ -104,7 +267,7 @@ def _case_family(
         torch.nn.utils.clip_grad_norm_([p for p in ref.parameters() if p.grad is not None], 1e9)
     )
 
-    model = _build(build, repo)
+    model = _build(build, repo, overrides, experts)
     epn.apply_expert_parallel(model, mesh)
     group = epn._mesh(model).get_group()
     ddp = DistributedDataParallel(model)
@@ -180,7 +343,10 @@ def _zoo_like_gpt_oss_decode(enable, last_expert = False):
         bsz, qlen, hd = hidden_states.shape
         if qlen == 1 and not self.training:
             flat = hidden_states.reshape(-1, hd)
-            _, scores, indices = self.router(flat)
+            router_out = self.router(
+                flat
+            )  # transformers 5: (logits, scores, indices); 4.x: (scores, indices)
+            scores, indices = router_out[-2:]
             if last_expert:
                 indices = torch.full_like(indices, self.router.num_experts - 1)
             out = type(self.experts).forward(self.experts, flat, indices, scores)
@@ -240,6 +406,65 @@ def _case_refused(rank, world, tmp, repo):
     after = {k: (id(p), tuple(p.shape)) for k, p in model.named_parameters()}
     return {
         "message": message,
+        "unchanged": before == after,
+        "is_ep": epn.is_expert_parallel(model),
+    }
+
+
+class _PerExpertListExperts(torch.nn.Module):
+    """unsloth_zoo's GptOssExpertsBnb4bit layout (every load_in_4bit gpt-oss): one Linear per expert in
+    gate_up_projs / down_projs, empty stack buffers, the gpt-oss experts call. bitsandbytes needs a GPU for real
+    Linear4bit, and the layout alone is what expert parallel reads."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.num_experts = config.num_local_experts
+        hidden, inter = config.hidden_size, config.intermediate_size
+        self.gate_up_projs = torch.nn.ModuleList(
+            [torch.nn.Linear(hidden, 2 * inter) for _ in range(self.num_experts)]
+        )
+        self.down_projs = torch.nn.ModuleList(
+            [torch.nn.Linear(inter, hidden) for _ in range(self.num_experts)]
+        )
+        for name in ("gate_up_proj", "gate_up_proj_bias", "down_proj", "down_proj_bias"):
+            self.register_buffer(name, torch.empty(0), persistent = False)
+
+    def forward(
+        self,
+        hidden_states,
+        router_indices = None,
+        routing_weights = None,
+    ):
+        raise AssertionError("never reached: the case only shards the model")
+
+
+def _case_refused_per_expert_lists(rank, world, tmp, repo):
+    from torch.distributed.device_mesh import init_device_mesh
+    import transformers.models.gpt_oss.modeling_gpt_oss as gpt_oss
+
+    build, tpn, epn = _modules()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    stock = gpt_oss.GptOssExperts
+    gpt_oss.GptOssExperts = _PerExpertListExperts
+    try:
+        model = build(repo, lora = False)
+    finally:
+        gpt_oss.GptOssExperts = stock
+    assert isinstance(model.model.layers[0].mlp.experts, _PerExpertListExperts)
+    before = {k: (id(p), tuple(p.shape)) for k, p in model.named_parameters()}
+    messages = []
+    for call in (
+        lambda: epn.ep_refuse_per_expert_lists(model),
+        lambda: epn.apply_expert_parallel(model, mesh),
+    ):
+        try:
+            call()
+            messages.append(None)
+        except NotImplementedError as exc:
+            messages.append(str(exc))
+    after = {k: (id(p), tuple(p.shape)) for k, p in model.named_parameters()}
+    return {
+        "messages": messages,
         "unchanged": before == after,
         "is_ep": epn.is_expert_parallel(model),
     }
@@ -384,7 +609,7 @@ def _worker(rank, world, tmp, case, kwargs):
     )
     try:
         res = globals()[case](rank, world, tmp, **kwargs)
-    except Exception as exc:
+    except BaseException as exc:  # pytest's Skipped / exit too: a rank must report, not vanish
         import traceback
         res = {"error": f"{type(exc).__name__}: {exc}"[:600] + traceback.format_exc()[-4000:]}
     torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
@@ -419,12 +644,16 @@ def _spawn(
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 def test_ep_family_matches_one_process(family):
-    results = _spawn("_case_family", repo = FAMILIES[family])
+    results = _spawn("_case_family", **_family(family))
     _check_family(results, 2)
     if family == "gpt_oss":  # its per-expert biases are sharded with the stacks
         assert results[0]["has_bias_shards"] == ["down_proj_bias", "gate_up_proj_bias"], results[0][
             "has_bias_shards"
         ]
+
+
+def test_ep_gpt_oss_dense_routing_weights_match_one_process():
+    _check_family(_spawn("_case_family", repo = FAMILIES["gpt_oss"], dense_routing = True), 2)
 
 
 def test_ep_three_ranks_pad_experts_and_leave_one_rank_only_padding():
@@ -510,6 +739,16 @@ def test_ep_refuses_models_it_cannot_shard(family):
     for r in results:
         assert r["message"] is not None and "no shardable MoE block" in r["message"], r["message"]
         assert r["unchanged"] and not r["is_ep"], r
+
+
+def test_ep_shards_per_expert_linear_lists():
+    """The load_in_4bit gpt-oss experts layout (one experts call over per-expert Linear lists) is no longer refused:
+    each rank keeps its experts of gate_up_projs / down_projs (parity in test_ep_expert_lists_gloo.py)."""
+    results = _spawn("_case_refused_per_expert_lists", repo = FAMILIES["gpt_oss"])
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["messages"] == [None, None], r
+        assert r["is_ep"] and not r["unchanged"], r
 
 
 _SAVED = {}

@@ -455,6 +455,24 @@ def test_runs_unsloth_head_window_reads_the_base_model_forward():
     assert mfu._runs_unsloth_head_window(model)
 
 
+def test_runs_unsloth_head_window_follows_the_pre_patch_gate():
+    from unsloth.models.llama import _gated_method
+
+    model = _model()
+    cls = type(model)
+
+    def fast(self, *args, **kwargs):
+        pass
+
+    fast.__module__ = "unsloth.models.llama"
+    gated = type("Gated", (cls,), {})
+    gated.forward = _gated_method(gated, "forward", fast, cls.forward)
+    model.__class__ = gated
+    assert not mfu._runs_unsloth_head_window(model)
+    model._unsloth_fast_path = True
+    assert mfu._runs_unsloth_head_window(model)
+
+
 def test_pause_after_a_step_excludes_only_time_after_the_gpu_finished(monkeypatch):
     # Step ends at CPU t=1 with 3 s of kernels still queued; eval until t=11.
     clock = iter([0.0, 1.0, 11.0, 12.0, 12.0])

@@ -47,6 +47,7 @@ from utils.paths import (
 from core.inference import get_inference_backend
 from core.export import q4nx
 from utils.paths.path_utils import any_not_appledouble_metadata, drop_appledouble_metadata
+from utils.utils import hf_env_offline
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
@@ -457,11 +458,7 @@ def _has_nvidia_gpu():
 
 def _hf_offline(timeout = 3):
     """Honors HF offline env vars, else a TCP probe avoids hangs; set UNSLOTH_OFFLINE_PROBE=0 to skip it."""
-    _offline = {"1", "true", "yes", "on"}
-    if (
-        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
-    ):
+    if hf_env_offline():
         return True
     if os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() in {"0", "false", "no", "off"}:
         return False
@@ -1684,13 +1681,12 @@ class ExportBackend:
                 _shadow_offered = False
                 try:
                     from utils.transformers_version import (
-                        _env_offline,
                         _llmcompressor_main_disabled,
                         llmcompressor_shadow_pythonpath,
                     )
 
                     # Same rule as the consent probe: the dialog names the shadow whenever it can be provisioned.
-                    _shadow_offered = not _llmcompressor_main_disabled() and not _env_offline()
+                    _shadow_offered = not _llmcompressor_main_disabled() and not hf_env_offline()
                     _shadow_pp = llmcompressor_shadow_pythonpath(
                         allow_provision = install_missing_dependencies,
                     )

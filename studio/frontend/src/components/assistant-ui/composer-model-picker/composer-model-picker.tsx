@@ -276,8 +276,6 @@ interface Row extends PickerRow {
   loadedCopies?: LoadedCopy[];
   partial?: boolean;
   resumable?: boolean;
-  /** Runs on the Audio page: a pick opens it there instead of loading into Chat. */
-  media?: "audio";
   favoriteQuant?: string;
   inventoryKey?: string;
 }
@@ -584,10 +582,15 @@ function rowMaker(
 }
 
 // Logo files pad their art differently: scale each so its drawn part fills the box.
-const LOGO_FIT = new Map<string, string>();
+interface LogoFitResult {
+  transform: string;
+  tile: boolean;
+}
+const LOGO_FIT = new Map<string, LogoFitResult>();
 const FIT_PX = 64;
+const TILE_ALPHA = 200;
 
-function useLogoFit(src: string): string | undefined {
+function useLogoFit(src: string): LogoFitResult | undefined {
   const [fit, setFit] = useState(() => LOGO_FIT.get(src));
   useEffect(() => {
     if (LOGO_FIT.has(src)) {
@@ -610,6 +613,19 @@ function useLogoFit(src: string): string | undefined {
       const h = (image.naturalHeight || FIT_PX) * k;
       ctx.drawImage(image, (FIT_PX - w) / 2, (FIT_PX - h) / 2, w, h);
       const { data } = ctx.getImageData(0, 0, FIT_PX, FIT_PX);
+      // 1px in from each corner, past the antialiasing.
+      const x0 = Math.ceil((FIT_PX - w) / 2) + 1;
+      const y0 = Math.ceil((FIT_PX - h) / 2) + 1;
+      const x1 = Math.floor((FIT_PX + w) / 2) - 2;
+      const y1 = Math.floor((FIT_PX + h) / 2) - 2;
+      const tile =
+        Math.abs(w - h) <= FIT_PX * 0.1 &&
+        [
+          [x0, y0],
+          [x1, y0],
+          [x0, y1],
+          [x1, y1],
+        ].every(([x, y]) => data[(y * FIT_PX + x) * 4 + 3] >= TILE_ALPHA);
       let left = FIT_PX;
       let right = -1;
       let top = FIT_PX;
@@ -625,7 +641,7 @@ function useLogoFit(src: string): string | undefined {
         }
       }
       let transform = "";
-      if (right >= left) {
+      if (!tile && right >= left) {
         const scale = Math.min(
           1.4,
           FIT_PX / Math.max(right - left + 1, bottom - top + 1),
@@ -636,9 +652,10 @@ function useLogoFit(src: string): string | undefined {
           transform = `scale(${scale.toFixed(3)}) translate(${((dx / FIT_PX) * 100).toFixed(1)}%, ${((dy / FIT_PX) * 100).toFixed(1)}%)`;
         }
       }
-      LOGO_FIT.set(src, transform);
+      const result = { transform, tile };
+      LOGO_FIT.set(src, result);
       if (live) {
-        setFit(transform);
+        setFit(result);
       }
     };
     image.src = src;
@@ -646,7 +663,7 @@ function useLogoFit(src: string): string | undefined {
       live = false;
     };
   }, [src]);
-  return fit || undefined;
+  return fit;
 }
 
 // Fitted marks still differ in weight: spiky ones scale to the solid marks' ink coverage (4x measure).
@@ -687,13 +704,16 @@ function MakerMark({
   const fit = useLogoFit(src);
   const mono = useChatRuntimeStore((s) => s.pickerMonochromeIcons);
   const k = OPTICAL_SCALE[provider.id];
-  const transform = k ? `scale(${k}) ${fit ?? ""}`.trim() : fit;
+  const transform =
+    (k ? `scale(${k}) ${fit?.transform ?? ""}` : fit?.transform)?.trim() ||
+    undefined;
+  const tile = fit?.tile === true;
   if (provider.treatment !== "original" || mono) {
     const url = `url(${src})`;
     return (
       <span
         aria-hidden={true}
-        className={cn(className, "bg-current")}
+        className={cn(className, "bg-current", tile && "rounded-full")}
         style={{
           maskImage: url,
           WebkitMaskImage: url,
@@ -713,7 +733,10 @@ function MakerMark({
       src={src}
       alt=""
       aria-hidden={true}
-      className={cn(className, "object-contain")}
+      className={cn(
+        className,
+        tile ? "rounded-full object-cover" : "object-contain",
+      )}
       style={{ transform }}
     />
   );
@@ -1201,6 +1224,14 @@ const MENU_ITEM =
   "min-h-0 gap-2 rounded-[calc(8px*var(--ui-space-scale,1))] py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
 const MENU_LABEL =
   "px-2.5 pt-[calc(6px*var(--ui-space-scale,1))] pb-[calc(3px*var(--ui-space-scale,1))] text-ui-10";
+const MEDIA_TAG: Record<
+  NonNullable<Row["media"]>,
+  { label: string; hint: string }
+> = {
+  audio: { label: "Audio", hint: "Opens on the Audio page" },
+  images: { label: "Image", hint: "Opens on the Images page" },
+  video: { label: "Video", hint: "Opens on the Video page" },
+};
 const FORMAT_DOT: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
@@ -1773,6 +1804,12 @@ export function ComposerModelPicker({
   }, [tabStrip]);
 
   const inventory = useChatPickerInventory({ enabled: open });
+  // Latched: an empty inventory's revalidation reads as unready and flipped the open panel's tab.
+  const [inventorySeenReady, setInventorySeenReady] = useState(false);
+  if (inventory.cachedReady && !inventorySeenReady) {
+    setInventorySeenReady(true);
+  }
+  const cachedReady = inventory.cachedReady || inventorySeenReady;
   const [npuStatus, setNpuStatus] = useNpuStatus(open);
   const npuCatalog = useNpuCatalog(
     npuStatus?.supported === true
@@ -1807,6 +1844,7 @@ export function ComposerModelPicker({
     enabled: open && online && onRecommended,
   });
   const hubResults = hubSearch.results;
+  const hubFirstLoad = hubSearch.isLoading && hubResults.length === 0;
   const inferenceGpu = useInferenceGpuInfo(open);
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
@@ -1944,7 +1982,10 @@ export function ComposerModelPicker({
     },
     [hubScrollRef],
   );
-  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const [chosenFormat, setFormatFilter] = useState<FormatFilter>("all");
+  // On Device only: Discover reads it as All.
+  const formatFilter: FormatFilter =
+    chosenFormat === "media" ? "all" : chosenFormat;
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyKnown = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
@@ -2007,9 +2048,15 @@ export function ComposerModelPicker({
     ) {
       return fromHub;
     }
+    // Offline or failed search only: during the first page it flashed before the Hub rows.
+    if (online && hubFirstLoad) {
+      return [];
+    }
     return (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
   }, [
     hubResults,
+    online,
+    hubFirstLoad,
     quantFormats,
     hubQuery,
     isMac,
@@ -2070,6 +2117,35 @@ export function ComposerModelPicker({
   // Compare and the API page load what they pick, so they list no audio models.
   const listsAudio = !pane;
 
+  const generationPage = useCallback(
+    (id: string, task: string | null | undefined) => {
+      const page = listsAudio
+        ? mediaPageForTask(
+            taskForMediaPick(task, mediaTaskById.get(id.toLowerCase())),
+          )
+        : null;
+      return page === "images" || page === "video" ? page : null;
+    },
+    [listsAudio, mediaTaskById],
+  );
+  const hasGenerationModels = useMemo(
+    () =>
+      inventory.cachedGguf.some((r) => generationPage(r.repo_id, r.task)) ||
+      inventory.cachedModels.some(
+        (r) =>
+          !(r.companion || hidesCheckpoints) &&
+          generationPage(r.repo_id, r.task),
+      ),
+    [
+      inventory.cachedGguf,
+      inventory.cachedModels,
+      hidesCheckpoints,
+      generationPage,
+    ],
+  );
+  const listsGeneration = chosenFormat === "media" && hasGenerationModels;
+  const deviceFormat: FormatFilter = listsGeneration ? "media" : formatFilter;
+
   const rows = useMemo<Row[]>(() => {
     const device: Row[] = [];
     const isAudio = (id: string, task: string | null | undefined) =>
@@ -2079,14 +2155,17 @@ export function ComposerModelPicker({
       ) === "audio";
     for (const repo of inventory.cachedGguf) {
       const audio = isAudio(repo.repo_id, repo.task);
+      const generation = listsGeneration
+        ? generationPage(repo.repo_id, repo.task)
+        : null;
       if (
-        !audio &&
+        !(audio || generation) &&
         (!isChatTask(repo.task) || isMediaCatalogRepo(repo.repo_id))
       ) {
         continue;
       }
       device.push({
-        media: audio ? "audio" : undefined,
+        media: audio ? "audio" : (generation ?? undefined),
         key: `gguf:${repo.repo_id}`,
         id: repo.repo_id,
         label: modelDisplayName(repo.repo_id),
@@ -2105,8 +2184,12 @@ export function ComposerModelPicker({
     }
     for (const repo of inventory.cachedModels) {
       const audio = !repo.companion && isAudio(repo.repo_id, repo.task);
+      const generation =
+        listsGeneration && !repo.companion
+          ? generationPage(repo.repo_id, repo.task)
+          : null;
       if (
-        !audio &&
+        !(audio || generation) &&
         (repo.companion ||
           !isChatTask(repo.task) ||
           isMediaCatalogRepo(repo.repo_id))
@@ -2117,7 +2200,7 @@ export function ComposerModelPicker({
         continue;
       }
       device.push({
-        media: audio ? "audio" : undefined,
+        media: audio ? "audio" : (generation ?? undefined),
         key: `cached:${repo.repo_id}`,
         id: repo.repo_id,
         label: modelDisplayName(repo.repo_id),
@@ -2313,6 +2396,8 @@ export function ComposerModelPicker({
     mediaTaskById,
     listsAudio,
     hidesCheckpoints,
+    listsGeneration,
+    generationPage,
   ]);
   routeMediaPick.current = (id, meta) => {
     if (!listsAudio) {
@@ -2659,7 +2744,7 @@ export function ComposerModelPicker({
         ? { kind: "loaded", id: checkpoint }
         : undefined);
   const hasModels =
-    !inventory.cachedReady ||
+    !cachedReady ||
     (externalModels?.length ?? 0) > 0 ||
     rows.some((row) => row.tab === DEVICE_TAB);
   const hasDeviceRows = rows.some((row) => row.tab === DEVICE_TAB);
@@ -2677,10 +2762,10 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [browseOnly, open]);
   useEffect(() => {
-    if (browseOnly && open && inventory.cachedReady) {
+    if (browseOnly && open && cachedReady) {
       setBrowseDevice((known) => known ?? hasDeviceRows);
     }
-  }, [browseOnly, open, inventory.cachedReady, hasDeviceRows]);
+  }, [browseOnly, open, cachedReady, hasDeviceRows]);
   const viewed =
     tab ??
     (browseOnly
@@ -2833,7 +2918,7 @@ export function ComposerModelPicker({
       return found;
     }
     const sorted = sortDeviceRows(
-      found.filter((row) => matchesFormat(row, formatFilter)),
+      found.filter((row) => matchesFormat(row, deviceFormat)),
       deviceSort,
       lastLoaded,
       deviceSortDesc,
@@ -2849,6 +2934,7 @@ export function ComposerModelPicker({
     hubResults.length,
     isFavorite,
     formatFilter,
+    deviceFormat,
     deviceSort,
     deviceSortDesc,
     loadTimes,
@@ -4468,8 +4554,8 @@ export function ComposerModelPicker({
             {row.media ? (
               <StatusTag
                 tone="accent"
-                label="Audio"
-                hint="Opens on the Audio page"
+                label={MEDIA_TAG[row.media].label}
+                hint={MEDIA_TAG[row.media].hint}
               />
             ) : null}
             {row.partial ? (
@@ -5145,7 +5231,7 @@ export function ComposerModelPicker({
       : !(
           viewed.startsWith(EXT_PREFIX) ||
           viewed === CONNECTED_TAB ||
-          inventory.cachedReady
+          cachedReady
         );
   const renderEmpty = () => {
     if (listLoading) {
@@ -5342,15 +5428,19 @@ export function ComposerModelPicker({
     return out;
   };
 
-  const formatGroup = (
+  const formatGroup = (value: FormatFilter, withMedia: boolean) => (
     <>
       <DropdownMenuLabel className={MENU_LABEL}>Format</DropdownMenuLabel>
       <DropdownMenuRadioGroup
-        value={formatFilter}
+        value={value}
         onValueChange={(next) => setFormatFilter(next as FormatFilter)}
       >
         {(Object.keys(FORMAT_FILTER_LABEL) as FormatFilter[])
-          .filter((key) => key !== "npu" || npuCatalog !== null)
+          .filter(
+            (key) =>
+              (key !== "npu" || npuCatalog !== null) &&
+              (key !== "media" || withMedia),
+          )
           .map((key) => (
             <DropdownMenuRadioItem
               key={key}
@@ -5591,10 +5681,10 @@ export function ComposerModelPicker({
         onOpenAutoFocus={(event) => {
           const byTouch = touchPress.current;
           touchPress.current = false;
+          // Radix would focus the first tab and flash its tooltip.
+          event.preventDefault();
           if (isExpanded && !(byTouch && smallScreen)) {
             requestAnimationFrame(() => searchRef.current?.focus());
-          } else {
-            event.preventDefault();
           }
         }}
       >
@@ -5776,7 +5866,7 @@ export function ComposerModelPicker({
                     <button
                       ref={ref}
                       type="button"
-                      aria-label={`Sort and filter: ${DEVICE_SORT_LABEL[deviceSort]} ${deviceSortDesc ? "descending" : "ascending"}, ${FORMAT_FILTER_LABEL[formatFilter]}`}
+                      aria-label={`Sort and filter: ${DEVICE_SORT_LABEL[deviceSort]} ${deviceSortDesc ? "descending" : "ascending"}, ${FORMAT_FILTER_LABEL[deviceFormat]}`}
                       className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent max-md:size-8"
                     >
                       <HugeiconsIcon
@@ -5785,7 +5875,7 @@ export function ComposerModelPicker({
                         // Lifts the glyph's ink 0.5px to centre.
                         className="size-4 -translate-y-[0.5px]"
                       />
-                      {formatFilter !== "all" ? (
+                      {deviceFormat !== "all" ? (
                         <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
                       ) : null}
                     </button>
@@ -5846,7 +5936,7 @@ export function ComposerModelPicker({
                     )}
                   </DropdownMenuRadioGroup>
                   <DropdownMenuSeparator />
-                  {formatGroup}
+                  {formatGroup(deviceFormat, hasGenerationModels)}
                 </NonModalDropdownMenu>
               ) : null}
               {source && viewed === CONNECTED_TAB ? (
@@ -5892,7 +5982,7 @@ export function ComposerModelPicker({
                     </button>
                   )}
                 >
-                  {formatGroup}
+                  {formatGroup(formatFilter, false)}
                   <DropdownMenuSeparator />
                   <Hint
                     label="Hides models larger than this device's memory budget. Downloaded models stay visible."

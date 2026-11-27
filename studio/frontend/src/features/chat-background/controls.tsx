@@ -120,7 +120,11 @@ export function GlassControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.glassTheme")}
-			badge={<Badge variant="accent">{t("shell.beta")}</Badge>}
+			badge={
+				<Badge variant="accent" className="pt-px pb-0 leading-none">
+					{t("shell.beta")}
+				</Badge>
+			}
 			action={
 				<Switch
 					aria-label={t("chatBackground.glassTheme")}
@@ -272,7 +276,11 @@ export function ChatBackgroundControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
-			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
+			badge={
+				<Badge variant="accent" className="pt-px pb-0 leading-none">
+					{t("shell.navigation.newBadge")}
+				</Badge>
+			}
 			action={
 				// With an image: one-word, icon-free actions; empty keeps the icon Upload.
 				<div className="flex max-w-full flex-wrap items-center justify-end gap-2">
