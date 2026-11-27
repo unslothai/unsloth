@@ -10,10 +10,11 @@ Trainer.training_step runs the N micro-batches of the step together through unsl
 through the trainer's own training_step: same shapes, loss, num_items_in_batch normalisation and accumulation order,
 so losses and gradients match standard accumulation bitwise.
 
-Opt-in, off by default (_DEFAULT_MODE). UNSLOTH_OFFLOAD_LAYER_MAJOR: "1" runs a window whenever eligible, for any
-decoder; "auto" only for the standard dense decoders in _AUTO_LAYERS (each proven bitwise against standard
+"auto" by default (_DEFAULT_MODE). UNSLOTH_OFFLOAD_LAYER_MAJOR: "1" runs a window whenever eligible, for any
+decoder; "auto" (or unset) only for the standard dense decoders in _AUTO_LAYERS (each proven bitwise against standard
 accumulation), after two steps whose swap copies stalled the GPU for more than 5% of the swapped layers' time (always
-on with UNSLOTH_OFFLOAD_STATS = 0, which removes the measurement); "0" or unset: never. Every refusal below applies to
+on with UNSLOTH_OFFLOAD_STATS = 0, which removes the measurement), and only while the held layer inputs fit on the
+card beside the standard step's peak measured in the second step; "0": never. Every refusal below applies to
 both. Without an active block swap nothing here runs.
 
 Data parallel (torch DDP, 2+ ranks): the window's micro-batches run on the module inside DDP, so DDP's reducer never
@@ -47,9 +48,9 @@ except Exception:  # unsloth_zoo without layer-major windows
     run_layer_major = None
 
 _TLS = threading.local()
-# With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "off", so windows are opt-in (UNSLOTH_OFFLOAD_LAYER_MAJOR=1, or "auto" for
-# the allowlisted decoders below after measured copy stalls).
-_DEFAULT_MODE = "off"
+# With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "auto" (the allowlisted decoders below, after measured copy stalls, when the
+# held layer inputs fit beside the standard step's measured peak); "0" turns windows off, "1" runs them whenever eligible.
+_DEFAULT_MODE = "auto"
 # Packages whose module forward hooks are trusted to be deterministic and order-independent across micro-batches
 # (input-grad hooks, block swap, gradient checkpointing owners, transformers' own hooks). A hook from anywhere else (a
 # user's) could draw random numbers or keep state the window would reorder, so it keeps the step standard.
@@ -531,8 +532,40 @@ def _usable_cuda_bytes(device):
     return usable_cuda_bytes(device)
 
 
-def _fits(model, layers, samples):
-    """Whether every micro-batch's layer inputs fit on the card at once (standard checkpointing holds one)."""
+def _cuda_devices(model):
+    return sorted({p.device for p in model.parameters() if p.is_cuda}, key = str)
+
+
+def _peak_probe_start(model):
+    """auto's measurement step: reset each card's peak counter, keep the allocation the step starts from."""
+    if not torch.cuda.is_available():
+        return None
+    start = {}
+    for device in _cuda_devices(model):
+        torch.cuda.reset_peak_memory_stats(device)
+        start[device] = torch.cuda.memory_allocated(device)
+    return start
+
+
+def _peak_probe_end(start):
+    """Bytes the measured standard step allocated above its start, per card (its activations, logits, gradients)."""
+    if not start:
+        return None
+    return {
+        device: max(0, torch.cuda.max_memory_allocated(device) - before)
+        for device, before in start.items()
+    }
+
+
+def _fits(
+    model,
+    layers,
+    samples,
+    step_peak = None,
+):
+    """Whether every micro-batch's layer inputs fit on the card at once (standard checkpointing holds one). With
+    `step_peak` (auto's measured standard step, per card) they must also fit beside that step's own peak: a window
+    holds them on top of what a standard step allocates."""
     tokens = [_tokens(s) for s in samples]
     if any(t is None for t in tokens):
         return False, "unknown micro-batch shapes"
@@ -560,20 +593,45 @@ def _fits(model, layers, samples):
             False,
             f"{need / 2**30:.2f} GiB of layer inputs for {len(samples)} micro-batches vs {free / 2**30:.2f} GiB free",
         )
+    for device, peak in (step_peak or {}).items():
+        if device not in devices:
+            continue
+        usable = _usable_cuda_bytes(device)
+        if need + peak > 0.9 * usable:
+            return (
+                False,
+                f"{need / 2**30:.2f} GiB of layer inputs for {len(samples)} micro-batches on top of the standard "
+                f"step's {peak / 2**30:.2f} GiB peak vs {usable / 2**30:.2f} GiB free on {device}",
+            )
     return True, need
 
 
-def _auto_ready(trainer, swapper):
-    """auto: two standard steps, then on only if the second one's swap copies stalled the GPU."""
-    state = trainer.__dict__.setdefault(
-        "_unsloth_layer_major_auto", {"steps": 0, "since": None, "on": None}
+def _auto_state(trainer):
+    return trainer.__dict__.setdefault(
+        "_unsloth_layer_major_auto",
+        {"steps": 0, "since": None, "on": None, "peak_start": None, "peak": None},
     )
+
+
+def _auto_ready(
+    trainer,
+    swapper,
+    model = None,
+):
+    """auto: two standard steps, then on only if the second one's swap copies stalled the GPU. The second step
+    also measures each card's peak above the step's start (_fits keeps the held layer inputs beside it)."""
+    state = _auto_state(trainer)
     if state["on"] is not None:
         return state["on"]
+    if state["steps"] == _AUTO_PROBE_STEPS and model is not None:
+        state["peak"] = _peak_probe_end(state["peak_start"])
     if not getattr(sys.modules.get(type(swapper).__module__), "_TIMING", True):
-        state["on"] = True  # UNSLOTH_OFFLOAD_STATS = 0: nothing to measure with
-        return True
+        state["on"] = True  # UNSLOTH_OFFLOAD_STATS = 0: no stall measurement
     state["steps"] += 1
+    if state["steps"] == _AUTO_PROBE_STEPS and model is not None:
+        state["peak_start"] = _peak_probe_start(model)
+    if state["on"] is not None:
+        return state["on"]
     if state["steps"] == _AUTO_PROBE_STEPS:
         state["since"] = swap_totals(swapper)
     elif state["steps"] > _AUTO_PROBE_STEPS:
@@ -729,9 +787,10 @@ def _plan(trainer, model, ddp, samples, mode):
             "blocker",
             f"Unsloth: offload_layers runs micro-batches one after another: {blocker}.",
         )
-    if mode == "auto" and not _auto_ready(trainer, swapper):
+    if mode == "auto" and not _auto_ready(trainer, swapper, model):
         return None, None, None
-    ok, need = _fits(model, layers, samples)
+    peak = _auto_state(trainer)["peak"] if mode == "auto" else None
+    ok, need = _fits(model, layers, samples, peak)
     if not ok:
         return (
             None,
@@ -897,21 +956,6 @@ def patch_layer_major_gradient_accumulation(Trainer):
                 ok = agreed
             if ok:
                 self._unsloth_layer_major_batch = (samples, items)
-        elif (
-            isinstance(samples, list)
-            and len(samples) > 1
-            and _mode() == "off"
-            and not os.environ.get("UNSLOTH_OFFLOAD_LAYER_MAJOR", "").strip()
-            and "opt-in hint" not in self.__dict__.get("_unsloth_layer_major_said", ())
-            and _block_swap_layers(getattr(self, "model", None) or torch.nn.Module())[1] is not None
-        ):
-            _say_once(
-                self,
-                "opt-in hint",
-                "Unsloth: offload_layers with gradient accumulation can run each step's micro-batches layer by "
-                "layer, fetching every swapped layer once per step instead of once per micro-batch. It is opt-in: "
-                "set UNSLOTH_OFFLOAD_LAYER_MAJOR=1.",
-            )
         return out
 
     @functools.wraps(training_step)
