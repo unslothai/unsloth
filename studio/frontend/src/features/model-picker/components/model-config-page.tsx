@@ -7,6 +7,7 @@ import { VramBudgetControl } from "@/features/settings/components/vram-budget-co
 import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
+import { looksLikeLocalPath } from "@/lib/local-path";
 import { modelDisplayName } from "../model-config/model-identity";
 import {
   cachedStagedDims,
@@ -234,7 +235,6 @@ import {
   isDefaultConfig,
   isReasoningBudgetMessageValid,
   contextPinPatch,
-  isLocalMlxCheckpoint,
   isServedByMlx,
   NPU_POWER_MODES,
   type NpuPowerMode,
@@ -3550,11 +3550,9 @@ export function ModelConfigPage({
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
   const targetIsMlx = servedByMlx;
-  const localMlxCheckpoint = isLocalMlxCheckpoint(
-    targetIsMlx,
-    target.meta.loadId || target.id,
-    target.meta.isLora,
-  );
+  const localMlxCheckpoint =
+    targetIsMlx && !target.meta.isLora && looksLikeLocalPath(target.meta.loadId || target.id);
+  const weightPrecisionLabel = localMlxCheckpoint ? "Use saved precision" : "Load in 4-bit";
   const pinsContextLength = targetIsMlx || targetIsNpu;
   const atBaseline = perModelConfigsEqual(config, baseline, {
     followGlobal: true,
@@ -3629,7 +3627,7 @@ export function ModelConfigPage({
       ? {
           modelPath: target.id,
           loadIn4bit: localMlxCheckpoint
-            ? runtimeConfig.mlxLoadIn4bit === true
+            ? runtimeConfig.loadIn4bit !== false
             : undefined,
           ggufVariant: target.ggufVariant ?? null,
           hfToken: hfToken || null,
@@ -3734,7 +3732,7 @@ export function ModelConfigPage({
     residentContext,
     targetIsMlx && !residentModelLoading
       ? {
-          loadIn4bit: loadedConfig?.mlxLoadIn4bit,
+          loadIn4bit: localMlxCheckpoint ? loadedConfig?.loadIn4bit : undefined,
           kvQuant: loadedMlxKvQuantRequested ?? null,
           pleOffload: loadedMlxPleOffload,
           expertOffload: loadedMlxExpertOffload,
@@ -4535,22 +4533,18 @@ export function ModelConfigPage({
           (config.engine ?? "auto") === "auto" && (
           <div className={ROW_CLASS}>
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className={LABEL_CLASS}>Load in 4-bit</span>
+              <span className={LABEL_CLASS}>{weightPrecisionLabel}</span>
               <InfoHint>
                 {localMlxCheckpoint
-                  ? "Quantize dense weights to 4-bit as they load to use less memory. Leave this off to load dense FP16 or BF16 weights at their saved precision."
+                  ? "Load dense FP16 or BF16 weights at their saved precision. This can use more memory than the default 4-bit load."
                   : "Quantizes the model to 4 bits as it loads, using about a quarter of the memory. Turn it off to run the model in 16-bit, the same precision as a 16-bit LoRA or full fine-tune."}
               </InfoHint>
             </div>
             <Switch
               className="shrink-0"
-              aria-label="Load in 4-bit"
-              checked={
-                localMlxCheckpoint ? config.mlxLoadIn4bit === true : config.loadIn4bit !== false
-              }
-              onCheckedChange={(checked) =>
-                update(localMlxCheckpoint ? { mlxLoadIn4bit: checked } : { loadIn4bit: checked })
-              }
+              aria-label={weightPrecisionLabel}
+              checked={localMlxCheckpoint ? config.loadIn4bit === false : config.loadIn4bit !== false}
+              onCheckedChange={(checked) => update({ loadIn4bit: localMlxCheckpoint ? !checked : checked })}
             />
           </div>
         )}

@@ -1262,8 +1262,6 @@ class ModelOverridePayload(BaseModel):
 
     # Default-engine 16-bit load; only False is stored.
     load_in_4bit: bool = True
-    # Local MLX precision defaults to the checkpoint; only a 4-bit opt-in is stored.
-    mlx_load_in_4bit: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -3038,7 +3036,6 @@ def update_openai_auto_switch_override(
                 and not payload.mlx_ane_prefill
                 and not payload.mlx_fast_verify
                 and payload.load_in_4bit
-                and not payload.mlx_load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
                 and not {
                     "mlx_ple_offload",
@@ -3059,7 +3056,6 @@ def update_openai_auto_switch_override(
                         "mlx_ane_prefill",
                         "mlx_fast_verify",
                         "load_in_4bit",
-                        "mlx_load_in_4bit",
                     )
                 }
             )
@@ -3296,7 +3292,6 @@ def update_openai_auto_switch_override(
                 mlx_ane_prefill = payload.mlx_ane_prefill,
                 mlx_fast_verify = payload.mlx_fast_verify,
                 load_in_4bit = payload.load_in_4bit,
-                mlx_load_in_4bit = payload.mlx_load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,

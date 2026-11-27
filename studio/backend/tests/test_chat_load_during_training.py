@@ -872,22 +872,6 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
         cfg = SimpleNamespace(is_lora = False, path = None, base_model = None)
         self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
 
-    def test_local_mlx_uses_native_weights_unless_quantization_is_requested(self):
-        from models.inference import EstimateMemoryRequest, LoadRequest, ValidateModelRequest
-
-        local = _model_cfg(is_local = True)
-        hub = _model_cfg(is_local = False)
-        for model in (LoadRequest, ValidateModelRequest, EstimateMemoryRequest):
-            with self.subTest(request = model.__name__):
-                default = model(model_path = "/models/export")
-                four_bit = model(model_path = "/models/export", load_in_4bit = True)
-                with patch("utils.hardware.get_device", return_value = DeviceType.MLX):
-                    self.assertFalse(self.route._requested_load_in_4bit(local, default))
-                    self.assertTrue(self.route._requested_load_in_4bit(local, four_bit))
-                    self.assertTrue(self.route._requested_load_in_4bit(hub, default))
-                with patch("utils.hardware.get_device", return_value = DeviceType.CPU):
-                    self.assertTrue(self.route._requested_load_in_4bit(local, default))
-
     def test_lora_method_flips_to_16bit(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

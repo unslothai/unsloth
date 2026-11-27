@@ -16,7 +16,6 @@ import { gpuFieldsSignature } from "./config-signature";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
-  isLocalMlxCheckpoint,
   normalizeEngramPrecision,
   normalizeMaxSeqLength,
   sameEngramPrecision,
@@ -152,9 +151,6 @@ export function currentRuntimePerModelConfig(
     engineSeed: s.params.engineSeed ?? null,
     engineGpuMemoryUtilization: s.params.engineGpuMemoryUtilization ?? null,
     loadIn4bit: s.params.loadIn4bit !== false,
-    ...(isLocalMlxCheckpoint(s.loadedIsMlx === true, s.activeLoadId || s.params.checkpoint)
-      ? { mlxLoadIn4bit: s.params.loadIn4bit === true }
-      : {}),
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -220,7 +216,6 @@ export function perModelConfigsEqual(
     (a.engineGpuMemoryUtilization ?? null) ===
       (b.engineGpuMemoryUtilization ?? null) &&
     (a.loadIn4bit !== false) === (b.loadIn4bit !== false) &&
-    (a.mlxLoadIn4bit === true) === (b.mlxLoadIn4bit === true) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&

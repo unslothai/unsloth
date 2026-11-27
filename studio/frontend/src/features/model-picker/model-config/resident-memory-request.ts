@@ -98,7 +98,7 @@ export function resolveResidentEstimateRequest(
     ...(mlx
       ? {
           maxSeqLength: Math.floor(context),
-          loadIn4bit: mlx.loadIn4bit,
+          ...(mlx.loadIn4bit === undefined ? {} : { loadIn4bit: mlx.loadIn4bit }),
           mlxKvQuant: mlx.kvQuant,
           mlxPleOffload: mlx.pleOffload ?? "off",
           mlxExpertOffload: mlx.expertOffload ?? "off",

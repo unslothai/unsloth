@@ -7128,6 +7128,7 @@ class MLXInferenceBackend:
         prefill_step = None,
         prefill_batch = None,
         prompt_cache_mib = None,
+        preserve_dtype: bool = False,
     ) -> bool:
         import mlx.core as mx
 
@@ -7135,7 +7136,6 @@ class MLXInferenceBackend:
 
         # Keep the token so the native-template fallback can fetch a gated model's repo template during generation.
         self._hf_token = hf_token
-        self._resume_load_args = (bool(load_in_4bit), repr(dtype), repr(tuple(offload or ())))
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
         is_lora = getattr(config, "is_lora", False)
@@ -7284,9 +7284,19 @@ class MLXInferenceBackend:
             from hub.utils.mlx_variants import download_precision_folder
             load_source = download_precision_folder(model_name, precision_folder, hf_token)
 
-        if dtype is None and not (load_in_4bit or is_lora) and getattr(config, "is_local", False):
+        if (
+            preserve_dtype
+            and dtype is None
+            and not (load_in_4bit or is_lora)
+            and getattr(config, "is_local", False)
+        ):
             from core.inference.mlx_memory import mlx_saved_16bit_dtype
             load_kwargs["dtype"] = mlx_saved_16bit_dtype(load_source, vision = use_vlm)
+        self._resume_load_args = (
+            bool(load_in_4bit),
+            repr(load_kwargs["dtype"]),
+            repr(tuple(offload or ())),
+        )
 
         knobs = offload
 

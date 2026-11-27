@@ -50,7 +50,6 @@ export function loadedConfigSignature(
     config.engineSeed ?? "",
     config.engineGpuMemoryUtilization ?? "",
     config.loadIn4bit === false ? "16" : "4",
-    config.mlxLoadIn4bit === true ? "4" : "native",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",

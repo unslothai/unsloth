@@ -30,17 +30,6 @@ def test_an_older_client_that_never_sends_the_field_stores_nothing(monkeypatch):
     assert "load_in_4bit" not in settings.get_model_override("org/m")
 
 
-def test_local_mlx_opt_in_is_stored_and_cleared_independently(monkeypatch):
-    _mock_override_store(monkeypatch)
-    model = "/models/dense"
-    _put(model, mlx_load_in_4bit = True, **DEFAULTS)
-    saved = settings.get_model_override(model)
-    assert saved == {"mlx_load_in_4bit": True}
-    assert settings.model_override_load_kwargs(saved, is_gguf = False) == {"load_in_4bit": True}
-    _put(model, mlx_load_in_4bit = False, **DEFAULTS)
-    assert model not in settings.get_model_overrides()
-
-
 def test_a_saved_16_bit_choice_reaches_the_load_request():
     kwargs = settings.model_override_load_kwargs({"load_in_4bit": False}, is_gguf = False)
     assert kwargs == {"load_in_4bit": False}

@@ -4,11 +4,11 @@
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { usePlatformStore } from "@/config/env";
 import { isNpuModelId } from "@/features/npu";
+import { looksLikeLocalPath } from "@/lib/local-path";
 import { useMemo } from "react";
 import {
   type PerModelConfig,
   isServedByLlamaCpp,
-  isLocalMlxCheckpoint,
   residentIsServedByMlx,
 } from "../model-config/per-model-config";
 
@@ -33,6 +33,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   );
   const loadIn4bit = useChatRuntimeStore((s) => s.params.loadIn4bit !== false);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeLoadId = useChatRuntimeStore((s) => s.activeLoadId);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const activeNativePathToken = useChatRuntimeStore(
@@ -153,11 +154,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       disableVision: disableVision ?? false,
       engramPrecision: isGguf ? (engramPrecision ?? null) : null,
       chatTemplateOverride: chatTemplateOverride ?? null,
-      ...(isLocalMlxCheckpoint(isMlx, checkpoint)
-        ? { mlxLoadIn4bit: loadIn4bit }
-        : isGguf || isMlx
-          ? {}
-          : { loadIn4bit }),
+      ...(!isGguf && (!isMlx || looksLikeLocalPath(activeLoadId || checkpoint))
+        ? { loadIn4bit }
+        : {}),
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"
@@ -186,6 +185,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     };
   }, [
     checkpoint,
+    activeLoadId,
     isGguf,
     isMlx,
     maxSeqLength,

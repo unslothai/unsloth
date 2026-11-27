@@ -95,7 +95,6 @@ function sameGpuPlacement(
 
 /** Unset values the applier fills in; required so callers cannot forget them. */
 export type StandingConfigDefaults = {
-  localMlxCheckpoint?: boolean;
   speculativeType: string | null;
   gpuMemoryMode: "auto" | "manual";
   gpuLayers: number;
@@ -584,13 +583,10 @@ export function residentRuntimeMatchesConfig(
     return true;
   }
   if ((status.engine ?? "auto") !== (config.engine ?? "auto")) return false;
-  const loadIn4bit = standing.localMlxCheckpoint
-    ? config.mlxLoadIn4bit === true
-    : config.loadIn4bit !== false;
   if (
     (status.engine ?? "auto") === "auto" &&
     typeof status.load_in_4bit === "boolean" &&
-    status.load_in_4bit !== loadIn4bit
+    status.load_in_4bit !== (config.loadIn4bit !== false)
   )
     return false;
   if (status.engine === "vllm" || status.engine === "sglang") {
