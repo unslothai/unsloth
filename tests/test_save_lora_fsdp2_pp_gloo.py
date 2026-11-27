@@ -67,7 +67,8 @@ def _reload(ckpt, directory):
     base = AutoModelForCausalLM.from_pretrained(
         ckpt, torch_dtype = torch.float32, attn_implementation = "eager"
     )
-    model = PeftModel.from_pretrained(base, directory)
+    # gloo / CPU: say so, rather than let PEFT read the device off a probe the CUDA spoof patches.
+    model = PeftModel.from_pretrained(base, directory, torch_device = "cpu")
     return {n: p.detach().clone() for n, p in model.named_parameters() if "lora_" in n}
 
 
