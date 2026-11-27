@@ -13228,6 +13228,9 @@ class DiffusionBackend:
 
                     skip_text_encoder_kv_cache(pipe, logger = logger)
                     select_final_hidden_state(pipe, logger = logger)
+                    from .diffusion_te_lean import lean_text_encode
+
+                    lean_text_encode(pipe, logger = logger)
                     from .diffusion_qwen_vl_mm_types import forward_mm_token_type_ids
 
                     forward_mm_token_type_ids(pipe, logger = logger)
