@@ -114,7 +114,7 @@ def test_rows_come_from_trl_padded_tensor(monkeypatch, patches):
     calls = _count_full_row_conversions(monkeypatch, examples)
     got = cls(pad_token_id = 0).torch_call(examples)
     _assert_same(got, want)
-    assert calls == []  # no row was converted a second time
+    assert calls == []
 
 
 def test_left_padded_trl_tensor_falls_back(monkeypatch):
@@ -133,7 +133,7 @@ def test_left_padded_trl_tensor_falls_back(monkeypatch):
     want = _reference(examples)
     calls = _count_full_row_conversions(monkeypatch, examples)
     _assert_same(cls(pad_token_id = 0).torch_call(examples), want)
-    assert calls  # converted again
+    assert calls
 
 
 @pytest.mark.parametrize("case", ["dtype", "missing", "flat"])
