@@ -87,7 +87,7 @@ from hub.utils.gguf_plan import (
     precision_folder_plans,
     sibling_sha256,
 )
-from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.path_utils import file_contents_available_locally, is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -2704,6 +2704,7 @@ async def get_gguf_variants_answer(
                             or blob.parent != blobs_dir
                             or re.fullmatch(r"[0-9a-f]{64}", blob.name) is None
                             or files.get(name.lower(), 0) < 24
+                            or not file_contents_available_locally(blob)
                         ):
                             break
                         with blob.open("rb") as model_file:

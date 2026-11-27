@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
+from pathlib import Path
 
 import pytest
 
@@ -121,9 +123,9 @@ def test_inactive_source_uses_scoped_online_status(
     )
 
 
-@pytest.mark.parametrize("complete", [True, False])
+@pytest.mark.parametrize("blob_state", ["complete", "incomplete", "online-only"])
 def test_a_larger_remote_revision_offers_an_update_for_a_completed_old_blob(
-    cache_locations, monkeypatch, complete
+    cache_locations, monkeypatch, blob_state
 ):
     from hub.utils.download_manifest import ExpectedFile
     from hub.utils.gguf import GgufVariantInfo
@@ -136,10 +138,40 @@ def test_a_larger_remote_revision_offers_an_update_for_a_completed_old_blob(
         if source[0].parent == hf_cache_settings.get_hf_cache_paths().hub_cache
     )
     path.unlink()
-    blob = repo / "blobs" / ("a" * 64 + ("" if complete else ".incomplete"))
+    blob = repo / "blobs" / ("a" * 64 + (".incomplete" if blob_state == "incomplete" else ""))
     blob.parent.mkdir(exist_ok = True)
     blob.write_bytes(b"GGUF" + bytes(996))
     path.symlink_to(blob)
+
+    if blob_state == "online-only":
+        original_stat = os.stat
+        original_open = Path.open
+
+        class CloudPlaceholderStat:
+            st_file_attributes = 0x00400000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+
+            def __init__(self, stat_result):
+                self.stat_result = stat_result
+
+            def __getattr__(self, name):
+                return getattr(self.stat_result, name)
+
+        def stat_without_recall(file, *args, **kwargs):
+            result = original_stat(file, *args, **kwargs)
+            if (
+                isinstance(file, (Path, str))
+                and Path(file) in (blob, path)
+                and kwargs.get("follow_symlinks", True)
+            ):
+                return CloudPlaceholderStat(result)
+            return result
+
+        def reject_recall(file, *args, **kwargs):
+            assert file not in (blob, path), "listing opened a cloud-only model blob"
+            return original_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", stat_without_recall)
+        monkeypatch.setattr(Path, "open", reject_recall)
 
     variant = GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 1200)
     requirement = plan_from_expected_files(quant, [ExpectedFile(path.name, 1200, "b" * 64)])
@@ -151,8 +183,8 @@ def test_a_larger_remote_revision_offers_an_update_for_a_completed_old_blob(
 
     response = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
     [online] = [item for item in response.variants if item.quant == quant]
-    assert online.downloaded is complete
-    assert online.update_available is complete
+    assert online.downloaded is (blob_state == "complete")
+    assert online.update_available is (blob_state == "complete")
 
 
 def test_memory_estimate_uses_the_copy_selected_for_load(cache_locations):
