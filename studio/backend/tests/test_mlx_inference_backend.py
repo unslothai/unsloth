@@ -8796,19 +8796,34 @@ def test_an_mlx_count_that_fails_is_not_retried_on_another_conversation(monkeypa
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("audio_type", ["csm", "whisper"])
-def test_an_mlx_speech_load_refuses_a_count_without_claiming_nothing_is_loaded(
-    monkeypatch, audio_type
+@pytest.mark.parametrize(
+    "entry, detail",
+    [
+        (
+            {"is_mlx": True, "is_audio": True, "audio_type": "csm"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        (
+            {"is_mlx": True, "is_audio": True, "audio_type": "whisper"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        (
+            {"is_mlx": False, "is_audio": True, "audio_type": "snac"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        ({"is_mlx": False}, "Token counting is not available on the transformers backend."),
+    ],
+    ids = ["mlx_tts", "mlx_whisper", "transformers_tts", "transformers_chat"],
+)
+def test_a_resident_model_that_cannot_count_is_named_not_reported_unloaded(
+    monkeypatch, entry, detail
 ):
     from fastapi import HTTPException
 
-    models = {"mlx/model": {"is_mlx": True, "is_audio": True, "audio_type": audio_type}}
     with pytest.raises(HTTPException) as excinfo:
-        _count_hi(monkeypatch, _RenderRecordingBackend(), models = models)
+        _count_hi(monkeypatch, _RenderRecordingBackend(), models = {"mlx/model": entry})
     assert excinfo.value.status_code == 503
-    assert excinfo.value.detail == (
-        "Token counting is not available for speech or transcription models."
-    )
+    assert excinfo.value.detail == detail
     assert not excinfo.value.headers, "no not_loaded problem code for a loaded model"
 
 

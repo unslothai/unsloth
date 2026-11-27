@@ -7325,6 +7325,59 @@ def test_a_busy_server_is_not_taken_for_a_refusal(refusing_client):
     assert backend._empty_chat_render_refused is False
 
 
+class _NoUserQueryClient(_RefusingEmptyRenderClient):
+    """llama-server with the stock Qwen3.5 template: 'No user query found' without a user turn."""
+
+    def post(
+        self,
+        url,
+        json = None,
+    ):
+        messages = (json or {}).get("messages")
+        if url.endswith("/apply-template") and not any(
+            m.get("role") == "user" for m in messages or []
+        ):
+            type(self).sent.append(("apply-template", messages))
+            return _CountResponse(
+                {"error": {"code": 500, "message": "No user query found in messages."}},
+                status_code = 500,
+            )
+        return super().post(url, json = json)
+
+
+_RULES = {"role": "system", "content": "rules"}
+_USER = {"role": "user", "content": ""}
+_CALL = {"role": "assistant", "content": '{"name": "terminal"}'}
+
+
+@pytest.mark.parametrize("remembered", [False, True])
+@pytest.mark.parametrize(
+    "messages, retried",
+    [([_RULES], [_RULES, _USER]), ([_RULES, _CALL], [_RULES, _USER, _CALL])],
+    ids = ["instructions_alone", "instructions_and_pending_call"],
+)
+def test_instructions_a_template_will_not_render_alone_are_priced_behind_an_empty_user_turn(
+    monkeypatch, remembered, messages, retried
+):
+    _NoUserQueryClient.sent = []
+    _NoUserQueryClient.down = False
+    _NoUserQueryClient.empty_status = 500
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _NoUserQueryClient)
+    backend = _CountBackend()
+    backend._empty_chat_render_refused = remembered
+    assert backend.count_chat_tokens(messages, None, None, strict = True) > 0
+    assert [m for _, m in _NoUserQueryClient.sent] == [messages, retried]
+    assert backend._empty_chat_render_refused is remembered, "only an empty chat's refusal is kept"
+
+
+def test_instructions_a_template_renders_alone_are_priced_as_sent(refusing_client):
+    """A remembered empty-chat refusal says nothing of instructions alone, which this template renders."""
+    backend = _CountBackend()
+    backend._empty_chat_render_refused = True
+    backend.count_chat_tokens([_RULES], None, None, strict = True)
+    assert refusing_client.sent == [("apply-template", [_RULES])]
+
+
 def test_a_count_never_spawns_mcp_servers():
     """The count path pins mcp_allowed False, since get_enabled_mcp_tools would spawn stdio MCP servers."""
     import ast

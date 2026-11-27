@@ -45390,15 +45390,20 @@ async def _mlx_count_chat_tokens(
     if not active:
         return None
     entry = getattr(backend, "models", {}).get(active) or {}
-    managed = entry.get("engine") in ("vllm", "sglang")
-    if not (entry.get("is_mlx") or managed):
+    if not entry:
         return None
-    # Speech and transcription replies render no chat prompt; vision serves text turns through
-    # the same render, so it is counted.
+    # A resident model is named, never reported as nothing loaded. Vision serves text turns
+    # through the chat render, so it is counted; speech and transcription render no chat prompt.
     if entry.get("is_audio"):
         raise HTTPException(
             status_code = 503,
             detail = "Token counting is not available for speech or transcription models.",
+        )
+    managed = entry.get("engine") in ("vllm", "sglang")
+    if not (entry.get("is_mlx") or managed):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Token counting is not available on the transformers backend.",
         )
     if entry.get("engine") == "sglang":
         raise HTTPException(
