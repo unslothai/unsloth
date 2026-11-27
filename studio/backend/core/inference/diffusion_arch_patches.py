@@ -426,19 +426,18 @@ def _krea2_block_forward(
     attention_mask = None,
 ):
     """``Krea2TransformerBlock.forward`` with the two inline modulations
-    ``(1 + scale) * norm(x) + shift`` and the two gated residuals each fused to ``torch.addcmul``."""
+    ``(1 + scale) * norm(x) + shift`` and the two gated residuals each fused to ``torch.addcmul``. The norms stay
+    inline like stock: a named norm output would stay live through ``self.attn`` / ``self.ff``, one extra [B, S, D]."""
     modulation = temb.unflatten(-1, (6, -1)) + self.scale_shift_table
     prescale, preshift, pregate, postscale, postshift, postgate = modulation.unbind(-2)
 
-    norm1 = self.norm1(hidden_states)
     attn_out = self.attn(
-        torch.addcmul(preshift, norm1, 1 + prescale),
+        torch.addcmul(preshift, self.norm1(hidden_states), 1 + prescale),
         attention_mask = attention_mask,
         image_rotary_emb = image_rotary_emb,
     )
     hidden_states = torch.addcmul(hidden_states, pregate, attn_out)
-    norm2 = self.norm2(hidden_states)
-    ff_out = self.ff(torch.addcmul(postshift, norm2, 1 + postscale))
+    ff_out = self.ff(torch.addcmul(postshift, self.norm2(hidden_states), 1 + postscale))
     return torch.addcmul(hidden_states, postgate, ff_out)
 
 
