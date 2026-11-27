@@ -1129,6 +1129,16 @@ def _base_state_items(model, dtype):
         yield name, value
 
 
+_CHECKPOINT_FILES = (
+    "model.safetensors",
+    "model-*.safetensors",
+    "model.safetensors.index.json",
+    "pytorch_model.bin",
+    "pytorch_model-*.bin",
+    "pytorch_model.bin.index.json",
+)
+
+
 def write_gguf_dense_base(
     model,
     directory,
@@ -1141,7 +1151,14 @@ def write_gguf_dense_base(
 
     from safetensors.torch import save_file
 
+    import glob
+
     os.makedirs(directory, exist_ok = True)
+    # A checkpoint already there would shadow or mix with this one (transformers prefers model.safetensors over a
+    # sharded index): replace it, as save_pretrained does.
+    for pattern in _CHECKPOINT_FILES:
+        for stale in glob.glob(os.path.join(glob.escape(str(directory)), pattern)):
+            os.remove(stale)
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
     if dtype is None:
         dtype = next(

@@ -468,7 +468,14 @@ def test_merged_16bit_save_of_an_unwrapped_packed_model(tmp_path):
     want = want.state_dict()
     with pytest.raises(RuntimeError, match = "merged_16bit"):
         unsloth_generic_save(merged, None, str(tmp_path / "bad"), save_method = "merged_4bit_forced")
+    # An older single-file export in the destination must not shadow the new shards.
+    os.makedirs(tmp_path / "out")
+    from safetensors.torch import save_file
+
+    save_file({"stale": torch.zeros(1)}, str(tmp_path / "out" / "model.safetensors"))
+    (tmp_path / "out" / "pytorch_model.bin").write_bytes(b"stale")
     unsloth_generic_save(merged, None, str(tmp_path / "out"), save_method = "merged_16bit")
+    assert not (tmp_path / "out" / "pytorch_model.bin").exists()
     reloaded = AutoModelForCausalLM.from_pretrained(tmp_path / "out", dtype = torch.float32)
     got = reloaded.state_dict()
     assert set(got) == set(want)
