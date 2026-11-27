@@ -3,7 +3,8 @@
 #
 # Vendored from ROCm/aiter (https://github.com/ROCm/aiter), commit 9e5e03626fa119f2429fa1c1578d5a715a6c2401,
 # aiter/ops/triton/_triton_kernels/conv/conv3d_3x3x3.py; gfx1151 conv3d configs from ROCm/aiter PR #6973 (065f9f99c9d8a412bd63935c2a89b196d3f110d7).
-# Changes: import paths only.
+# Changes: import paths; _conv3d_3x3x3_cblocked_kernel: N / D / H / W_in / OD / P / Q / M_total are runtime ints (do_not_specialize)
+# instead of tl.constexpr, so a new resolution reuses the compiled kernel (upstream recompiles per spatial size).
 # The vendored portions remain under the MIT License below:
 #
 # SPDX-License-Identifier: MIT
@@ -37,6 +38,9 @@ from ._activation import (
 )
 from ._kernel_repr import make_kernel_repr
 from ._config import get_conv_config, has_conv_config
+
+# Spatial sizes stay runtime ints: one compile per channel / tile config, not per resolution.
+_SIZE_ARGS = ["N", "D", "H", "W_in", "OD", "P", "Q", "M_total"]
 
 
 def _get_config_ndhwc(shape_key = None, M = None):
@@ -203,7 +207,7 @@ def _conv3d_3x3x3_ndhwc_kernel(
     tl.store(y_ptrs, acc, mask = (m_mask[:, None] & kout_mask[None, :]))
 
 
-@triton.jit(repr = _conv3d_3x3x3_cblocked_kernel_repr)
+@triton.jit(repr = _conv3d_3x3x3_cblocked_kernel_repr, do_not_specialize = _SIZE_ARGS)
 def _conv3d_3x3x3_cblocked_kernel(
     X,
     W,
@@ -211,13 +215,13 @@ def _conv3d_3x3x3_cblocked_kernel(
     Y,
     N,
     C: tl.constexpr,
-    D: tl.constexpr,
-    H: tl.constexpr,
-    W_in: tl.constexpr,
+    D,
+    H,
+    W_in,
     K_out: tl.constexpr,
-    OD: tl.constexpr,
-    P: tl.constexpr,
-    Q: tl.constexpr,
+    OD,
+    P,
+    Q,
     C_pad: tl.constexpr,
     Cb: tl.constexpr,
     stride_d,
@@ -245,20 +249,20 @@ def _conv3d_3x3x3_cblocked_kernel(
     # X: [N, C_blocks, D, H, W_in, Cb] where C_blocks = C_pad // Cb
     stride_x_cb: tl.constexpr = 1
     stride_x_w: tl.constexpr = Cb
-    stride_x_h: tl.constexpr = W_in * Cb
-    stride_x_d: tl.constexpr = H * W_in * Cb
-    stride_x_cblock: tl.constexpr = D * H * W_in * Cb
-    stride_x_n: tl.constexpr = (C_pad // Cb) * D * H * W_in * Cb
+    stride_x_h = W_in * Cb
+    stride_x_d = H * W_in * Cb
+    stride_x_cblock = D * H * W_in * Cb
+    stride_x_n = (C_pad // Cb) * D * H * W_in * Cb
     # W: [K_out, 27, C_pad] contiguous
     stride_w_c: tl.constexpr = 1
     stride_w_trs: tl.constexpr = C_pad
     stride_w_kout: tl.constexpr = 27 * C_pad
     # Y: [N, K_out, OD, P, Q] contiguous NCDHW
     stride_y_q: tl.constexpr = 1
-    stride_y_p: tl.constexpr = Q
-    stride_y_o: tl.constexpr = P * Q
-    stride_y_k: tl.constexpr = OD * P * Q
-    stride_y_n: tl.constexpr = K_out * OD * P * Q
+    stride_y_p = Q
+    stride_y_o = P * Q
+    stride_y_k = OD * P * Q
+    stride_y_n = K_out * OD * P * Q
 
     pid = tl.program_id(axis = 0)
 

@@ -7,7 +7,9 @@ gfx1151 Wan 2.2 5B VAE decode 1.61x, PSNR 54.7 dB vs MIOpen, but peak memory 11.
 free memory first. ``Conv3d._conv_forward`` is wrapped per instance (covers ``WanCausalConv3d`` and the ``nn.Conv3d``
 in ``LTX2VideoCausalConv3d``); unsupported calls stay on MIOpen, a shape that failed once is not retried, and OOM /
 torch._dynamo errors are re-raised. ``UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D``: 1 on for any gfx11, 0 off, unset = only
-``DEFAULT_ON_ARCHES``; ``UNSLOTH_DIFFUSION_ROCM_AITER_CONV3D=1`` is an alias for 1.
+``DEFAULT_ON_ARCHES``; ``UNSLOTH_DIFFUSION_ROCM_AITER_CONV3D=1`` is an alias for 1. 3x3x3 convs run the direct
+(cblocked / general) kernels, bf16 per-conv error 0.70x MIOpen's; ``UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D_WINOGRAD=1``
+opts into upstream's H/W Winograd routes (faster on wide layers, but 1.45-1.48x MIOpen's error, so never by default).
 """
 
 from __future__ import annotations
@@ -19,6 +21,10 @@ from typing import Any, Optional
 ENABLE_ENV = "UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D"
 LEGACY_ENABLE_ENV = "UNSLOTH_DIFFUSION_ROCM_AITER_CONV3D"
 SELFCHECK_ENV = "UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D_SELFCHECK"
+WINOGRAD_ENV = "UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D_WINOGRAD"
+# Self-check bound on rel L2 vs fp32 F.conv3d: observed <= 3.4e-3 in bf16 on gfx1151 (bf16 output rounding alone is
+# ~1e-3); a broken tile, mask or stride is O(1).
+SELFCHECK_REL_L2 = 1e-2
 # Archs / VAE classes routed with the env unset (measured end to end).
 DEFAULT_ON_ARCHES: tuple = ("gfx1151",)
 DEFAULT_ON_VAES: tuple = ("AutoencoderKLWan",)
@@ -57,6 +63,11 @@ def _env_mode() -> Optional[bool]:
     if (os.environ.get(LEGACY_ENABLE_ENV) or "").strip().lower() in _TRUE:
         return True
     return None
+
+
+def winograd_enabled() -> bool:
+    """Opt-in only: the Winograd routes exceed MIOpen's bf16 error by ~1.5x, the direct routes stay below it."""
+    return (os.environ.get(WINOGRAD_ENV) or "").strip().lower() in _TRUE
 
 
 def arch_enabled(arch: str) -> bool:
@@ -131,6 +142,7 @@ def plan(
     contiguous: bool = True,
 ) -> tuple:
     """(route, extra bytes the call allocates beyond MIOpen's output, largest element count any kernel indexes).
+    The route follows ``mod.ALLOW_WINOGRAD`` (set by ``install`` from ``WINOGRAD_ENV``).
 
     y = N*K*OD*P*Q*elt (output, also MIOpen's); copy of x when not contiguous; per route:
       1x1x1      : the squeezed weight
@@ -177,7 +189,7 @@ def _free_bytes(torch: Any, device: Any) -> int:
 
 def _selfcheck(torch: Any, mod: Any, device: Any, dtype: Any) -> bool:
     """One small conv per route against F.conv3d in fp32, once per (device, dtype); a miss keeps MIOpen."""
-    key = ("selfcheck", str(device), str(dtype))
+    key = ("selfcheck", str(device), str(dtype), bool(getattr(mod, "ALLOW_WINOGRAD", False)))
     if key in _STATE:
         return _STATE[key]
     ok = True
@@ -185,22 +197,24 @@ def _selfcheck(torch: Any, mod: Any, device: Any, dtype: Any) -> bool:
         import torch.nn.functional as F
 
         gen = torch.Generator(device = "cpu").manual_seed(0)
-        cases = (  # 1x1x1, general (small C), cblocked, winograd H/W
-            ((1, 32, 2, 6, 7), (48, 32, 1, 1, 1), (0, 0, 0)),
-            ((1, 8, 3, 6, 6), (16, 8, 3, 3, 3), (1, 1, 1)),
-            ((1, 64, 3, 6, 6), (64, 64, 3, 3, 3), (0, 1, 1)),
-            ((1, 160, 3, 28, 28), (96, 160, 3, 3, 3), (1, 1, 1)),
+        cases = (  # 1x1x1, general (small C), cblocked, strided cblocked, (3,1,1) general, Winograd-eligible
+            ((1, 32, 2, 6, 7), (48, 32, 1, 1, 1), (0, 0, 0), (1, 1, 1)),
+            ((1, 8, 3, 6, 6), (16, 8, 3, 3, 3), (1, 1, 1), (1, 1, 1)),
+            ((1, 64, 3, 6, 6), (64, 64, 3, 3, 3), (0, 1, 1), (1, 1, 1)),
+            ((1, 64, 3, 9, 9), (64, 64, 3, 3, 3), (0, 1, 1), (1, 2, 2)),
+            ((1, 32, 5, 6, 6), (32, 32, 3, 1, 1), (1, 0, 0), (2, 1, 1)),
+            ((1, 160, 3, 28, 28), (96, 160, 3, 3, 3), (1, 1, 1), (1, 1, 1)),
         )
         try:
             with torch.no_grad():
-                for xs, ws, pad in cases:
+                for xs, ws, pad, st in cases:
                     x = torch.randn(xs, generator = gen).to(device = device, dtype = dtype)
                     w = (torch.randn(ws, generator = gen) * 0.05).to(device = device, dtype = dtype)
                     b = torch.randn(ws[0], generator = gen).to(device = device, dtype = dtype)
-                    y = mod.conv3d(x, w, b, (1, 1, 1), pad, (1, 1, 1))
-                    ref = F.conv3d(x.float(), w.float(), b.float(), padding = pad)
+                    y = mod.conv3d(x, w, b, st, pad, (1, 1, 1))
+                    ref = F.conv3d(x.float(), w.float(), b.float(), stride = st, padding = pad)
                     rel = float((y.float() - ref).norm() / ref.norm())
-                    if not (y.shape == ref.shape and rel < 2e-2):
+                    if not (y.shape == ref.shape and rel < SELFCHECK_REL_L2):
                         ok = False
                         _STATE["selfcheck_error"] = f"{xs}x{ws}: rel L2 {rel:.3g}"
                         break
@@ -348,6 +362,8 @@ def install(vae: Any, logger: Any = None) -> int:
                 _STATE.get("import_error"),
             )
         return 0
+    mod = _kernels()
+    mod.ALLOW_WINOGRAD = winograd_enabled()
     n = 0
     for m in vae.modules():
         if not isinstance(m, torch.nn.Conv3d) or m.groups != 1 or m.padding_mode != "zeros":
@@ -360,20 +376,28 @@ def install(vae: Any, logger: Any = None) -> int:
     if n and logger is not None:
         tuned = arch.split(":")[0] in TUNED_ARCHES
         logger.info(
-            "diffusion.rocm_triton_conv3d: %d %s Conv3d routed to the Triton conv3d on %s%s",
+            "diffusion.rocm_triton_conv3d: %d %s Conv3d routed to the Triton conv3d on %s%s%s",
             n,
             type(vae).__name__,
             arch,
             "" if tuned else " (gfx1151 kernel tables)",
+            " (Winograd routes on)" if mod.ALLOW_WINOGRAD else "",
         )
     return n
 
 
 def uninstall(vae: Any) -> int:
+    """Unwrap ``vae`` and drop the weight packs (they also go when their weight is freed: weak references)."""
     n = 0
     for m in getattr(vae, "modules", lambda: [])():
         fwd = m.__dict__.get("_conv_forward")
         if getattr(fwd, "_unsloth_triton_conv3d", False):
             del m.__dict__["_conv_forward"]
             n += 1
+    if n and _STATE.get("mod") is not None:
+        try:
+            from .rocm_triton_conv3d._prepack import clear_conv3d_weight_pack_caches
+            clear_conv3d_weight_pack_caches()
+        except Exception:  # noqa: BLE001 - stand-in module / no Triton: nothing cached
+            pass
     return n

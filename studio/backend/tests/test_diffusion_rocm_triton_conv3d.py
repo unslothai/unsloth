@@ -56,7 +56,7 @@ class _Kernels:
 @pytest.fixture
 def gpu(monkeypatch):
     """A gfx1151 ROCm card with plenty of free memory; CPU tensors stand in for device tensors."""
-    for k in (R.ENABLE_ENV, R.LEGACY_ENABLE_ENV):
+    for k in (R.ENABLE_ENV, R.LEGACY_ENABLE_ENV, R.WINOGRAD_ENV):
         monkeypatch.delenv(k, raising = False)
     monkeypatch.setenv(R.SELFCHECK_ENV, "0")
     monkeypatch.setattr(torch.version, "hip", "7.13.0-fake", raising = False)
@@ -245,13 +245,98 @@ def test_old_triton_keeps_miopen(monkeypatch):
     assert not R._triton_ok()
 
 
-def test_memory_estimate_counts_winograd_buffers():
+_WAN_720P = ((1, 384, 4, 176, 320), (384, 384, 3, 3, 3), 2, (1, 1, 1), (0, 1, 1), (1, 1, 1))
+
+
+def test_default_routes_3x3x3_to_direct_kernels_not_winograd(monkeypatch):
     pytest.importorskip("triton")
+    from core.inference.rocm_triton_conv3d import conv3d as real
+
     k = _Kernels()
-    # Wan 2.2 decoder, 720p, 384 channels, 4 frames with cache: H/W Winograd
-    route, extra, biggest = R.plan(
-        k, (1, 384, 4, 176, 320), (384, 384, 3, 3, 3), 2, (1, 1, 1), (0, 1, 1), (1, 1, 1)
-    )
+    monkeypatch.setattr(real, "ALLOW_WINOGRAD", False)
+    route, extra, _ = R.plan(k, *_WAN_720P)
+    assert route.name == "CBLOCKED_NCDHW"  # Winograd-eligible shape, direct kernel by default
+    y, pack, wpack = 384 * 2 * 176 * 320 * 2, 384 * 4 * 176 * 320 * 2, 384 * 27 * 384 * 2
+    assert (
+        extra == y + pack + wpack
+    )  # output (OD = 2) + NCDHWc input pack + weight pack, no Winograd temporaries
+    monkeypatch.setattr(real, "ALLOW_WINOGRAD", True)
+    assert R.plan(k, *_WAN_720P)[0].name.startswith("WINOGRAD_HW")
+
+
+def test_winograd_only_on_explicit_opt_in(gpu, monkeypatch):
+    monkeypatch.setattr(R, "DEFAULT_ON_VAES", ("Module",))
+    assert not R.winograd_enabled()
+    assert R.install(_vae()) == 2 and gpu.ALLOW_WINOGRAD is False
+    for v in ("0", "", "maybe"):
+        monkeypatch.setenv(R.WINOGRAD_ENV, v)
+        assert not R.winograd_enabled()
+    monkeypatch.setenv(R.ENABLE_ENV, "1")  # routing on everywhere still leaves Winograd off
+    monkeypatch.delenv(R.WINOGRAD_ENV)
+    assert R.install(_vae()) == 2 and gpu.ALLOW_WINOGRAD is False
+    monkeypatch.setenv(R.WINOGRAD_ENV, "1")
+    assert R.install(_vae()) == 2 and gpu.ALLOW_WINOGRAD is True
+    monkeypatch.setenv(R.ENABLE_ENV, "0")  # the kill switch wins over the Winograd opt-in
+    R._DEVICE_OK.clear()
+    assert R.install(_vae()) == 0
+
+
+def test_selfcheck_bound_and_coverage(monkeypatch):
+    monkeypatch.setenv(R.SELFCHECK_ENV, "1")
+    assert R.SELFCHECK_REL_L2 <= 1e-2
+    seen = []
+
+    class _Stub:
+        ALLOW_WINOGRAD = False
+        noise = 0.0
+
+        def conv3d(self, x, w, b, stride, padding, dilation):
+            seen.append((tuple(w.shape[2:]), tuple(stride)))
+            y = F.conv3d(x.float(), w.float(), b.float(), stride = stride, padding = padding)
+            return (y * (1 + self.noise)).to(x.dtype)
+
+    def _forget():
+        for k in [k for k in R._STATE if isinstance(k, tuple) and k[0] == "selfcheck"]:
+            R._STATE.pop(k)
+        R._STATE.pop("selfcheck_error", None)
+
+    stub = _Stub()
+    _forget()
+    assert R._selfcheck(torch, stub, "cpu", torch.bfloat16)  # bf16 output rounding only
+    assert ((3, 3, 3), (1, 2, 2)) in seen and ((3, 1, 1), (2, 1, 1)) in seen
+    stub.noise = 0.02
+    stub.ALLOW_WINOGRAD = True  # separate cache entry
+    assert not R._selfcheck(torch, stub, "cpu", torch.bfloat16)
+    assert "rel L2" in R._STATE["selfcheck_error"]
+    _forget()
+
+
+def test_direct_kernels_keep_spatial_sizes_out_of_the_compile_key():
+    pytest.importorskip("triton")
+    from core.inference.rocm_triton_conv3d import conv3d_1x1x1, conv3d_3x3x3, conv3d_general
+
+    sizes = {"N", "D", "H", "W_in", "OD", "P", "Q", "M_total"}
+    for kern in (
+        conv3d_1x1x1._conv3d_1x1x1_kernel,
+        conv3d_general._conv3d_general_kernel,
+        conv3d_3x3x3._conv3d_3x3x3_cblocked_kernel,
+    ):
+        params = {p.name: p for p in kern.params}
+        for name in sizes:
+            assert not params[name].is_constexpr, (kern.fn.__name__, name)
+            assert params[name].do_not_specialize, (kern.fn.__name__, name)
+        for name in ("C", "K_out", "BLOCK_M", "BLOCK_N", "BLOCK_K"):
+            assert params[name].is_constexpr, (kern.fn.__name__, name)
+
+
+def test_memory_estimate_counts_winograd_buffers(monkeypatch):
+    pytest.importorskip("triton")
+    from core.inference.rocm_triton_conv3d import conv3d as real
+
+    monkeypatch.setattr(real, "ALLOW_WINOGRAD", True)
+    k = _Kernels()
+    # Wan 2.2 decoder, 720p, 384 channels, 4 frames with cache: H/W Winograd (opt-in)
+    route, extra, biggest = R.plan(k, *_WAN_720P)
     assert route.name.startswith("WINOGRAD_HW")
     tiles = 44 * 80
     assert extra >= 36 * 4 * tiles * 384 * 2 + 36 * 2 * tiles * 384 * 4  # V + M
@@ -324,23 +409,30 @@ C._is_amd_wave32 = lambda: True
 torch.cuda.device = lambda d: contextlib.nullcontext()
 torch.manual_seed(0)
 seen = set()
-for (N, c, D, H, W, K, k, s, p) in [
-    (1, 32, 2, 6, 7, 48, (1, 1, 1), 1, 0),
-    (1, 8, 3, 6, 6, 16, (3, 3, 3), 1, 1),
-    (1, 64, 3, 6, 6, 64, (3, 3, 3), 1, (0, 1, 1)),
-    (1, 160, 3, 28, 28, 96, (3, 3, 3), 1, (1, 1, 1)),
-    (1, 16, 3, 8, 8, 16, (1, 3, 3), (1, 2, 2), 0),
+for (wino, N, c, D, H, W, K, k, s, p) in [
+    (False, 1, 32, 2, 6, 7, 48, (1, 1, 1), 1, 0),
+    (False, 1, 8, 3, 6, 6, 16, (3, 3, 3), 1, 1),
+    (False, 1, 64, 3, 6, 6, 64, (3, 3, 3), 1, (0, 1, 1)),
+    (False, 1, 64, 3, 9, 9, 64, (3, 3, 3), (1, 2, 2), (0, 1, 1)),
+    (False, 1, 32, 5, 6, 6, 32, (3, 1, 1), (2, 1, 1), (1, 0, 0)),
+    (False, 1, 160, 3, 28, 28, 96, (3, 3, 3), 1, (1, 1, 1)),
+    (False, 1, 160, 2, 20, 12, 96, (3, 3, 3), 1, (1, 1, 1)),
+    (True, 1, 160, 3, 28, 28, 96, (3, 3, 3), 1, (1, 1, 1)),
+    (False, 1, 16, 3, 8, 8, 16, (1, 3, 3), (1, 2, 2), 0),
 ]:
+    C.ALLOW_WINOGRAD = wino
     x = torch.randn(N, c, D, H, W, dtype = torch.float16)
     w = (torch.randn(K, c, *k) * 0.05).half()
     b = torch.randn(K).half()
     st, pd, dl = C._normalize_conv3d_params(s, p, 1)
-    seen.add(C._resolve_route(*k, st, dl, N, c, D, H, W, K, "ncdhw", padding = pd).name)
+    seen.add((wino, C._resolve_route(*k, st, dl, N, c, D, H, W, K, "ncdhw", padding = pd).name))
     y = C.conv3d(x, w, b, s, p, 1)
     ref = F.conv3d(x.float(), w.float(), b.float(), stride = s, padding = p)
     rel = float((y.float() - ref).norm() / ref.norm())
     assert y.dtype == x.dtype and y.shape == ref.shape and rel < 1e-2, (k, rel)
-assert seen == {"ONE_X_ONE_X_ONE", "GENERAL", "CBLOCKED_NCDHW", "WINOGRAD_HW"}, seen
+assert seen == {
+    (False, "ONE_X_ONE_X_ONE"), (False, "GENERAL"), (False, "CBLOCKED_NCDHW"), (True, "WINOGRAD_HW")
+}, seen
 print("INTERP_OK")
 """
 

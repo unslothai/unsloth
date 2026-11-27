@@ -3,7 +3,8 @@
 #
 # Vendored from ROCm/aiter (https://github.com/ROCm/aiter), commit 9e5e03626fa119f2429fa1c1578d5a715a6c2401,
 # aiter/ops/triton/conv/conv3d.py; gfx1151 conv3d configs from ROCm/aiter PR #6973 (065f9f99c9d8a412bd63935c2a89b196d3f110d7).
-# Changes: NCDHW, zeros padding, no activation (NDHWC / logger dropped); conv3d() is the upstream entry with layout fixed to ncdhw.
+# Changes: NCDHW, zeros padding, no activation (NDHWC / logger dropped); conv3d() is the upstream entry with layout fixed to ncdhw;
+# the H/W Winograd routes are taken only when ALLOW_WINOGRAD is True (off by default: bf16 error 1.45-1.48x MIOpen's).
 # The vendored portions remain under the MIT License below:
 #
 # SPDX-License-Identifier: MIT
@@ -60,6 +61,11 @@ from ._utils import (
     _require_winograd_hw_3d_eligible,
     _validate_conv_devices,
 )
+
+
+# Local: the H/W Winograd routes (bf16 error 1.45-1.48x MIOpen's, direct routes 0.70x) only on opt-in; when False a
+# Winograd-eligible 3x3x3 runs the direct cblocked kernel instead.
+ALLOW_WINOGRAD = False
 
 
 class Route3D(Enum):
@@ -159,6 +165,8 @@ def _resolve_route(
         if layout == "ndhwc":
             return Route3D.NDHWC_3X3X3
         method = _select_3x3x3_ncdhw_method(N, C, D, H, W, K_out, stride, padding, dilation)
+        if method.startswith("winograd") and not ALLOW_WINOGRAD:
+            method = "cblocked"
         if method == "general":
             return Route3D.GENERAL
         if method == "winograd_hw_cblocked":
