@@ -124,8 +124,7 @@ def _adler32_combine(first: int, second: int, second_len: int) -> int:
 def _strip(
     pixels: Any, bpp: int, level: int, start: int, stop: int, last: bool
 ) -> tuple[bytes, int, int]:
-    """One strip as raw deflate ending byte-aligned on a non-final block (the last one final), primed
-    with the previous strip's filtered tail so the ratio matches one stream."""
+    """One strip as byte-aligned raw deflate (final block only last), primed with the previous strip's tail."""
     data = _filtered(pixels, bpp, start, stop)
     compressor_args = (level, zlib.DEFLATED, -15, 9, zlib.Z_FILTERED)
     if start:
@@ -140,8 +139,7 @@ def _strip(
 
 
 def _strip_deflated(pixels: Any, bpp: int, level: int, threads: int) -> Iterator[bytes]:
-    """A standard zlib stream: header, the strips' raw deflate concatenated, Adler-32 of all filtered rows.
-    Strip bounds depend on the image only, so the bytes do not depend on ``threads``."""
+    """zlib stream of the strips; bounds follow the image only, so bytes never depend on ``threads``."""
     from concurrent.futures import ThreadPoolExecutor
 
     height, stride = pixels.shape
@@ -311,11 +309,7 @@ def encode(
     compress_level: int,
     threads: Optional[int] = None,
 ) -> Optional[bytes]:
-    """``image.save(fp, "PNG", pnginfo = ..., compress_level = ...)``'s bytes, or None: the caller uses Pillow.
-
-    Images of at least ``_STRIP_MIN_BYTES`` pixel bytes deflate in strips on up to ``threads`` threads
-    (default: the CPU count; off with UNSLOTH_IMAGE_PNG_STRIPS=0). Those bytes differ from Pillow's
-    but decode to the same pixels with the same chunks."""
+    """``image.save(fp, "PNG", ...)``'s bytes, or None (Pillow encodes); large images use strips (same pixels, other bytes)."""
     global engaged
     mode = getattr(image, "mode", None)
     if (
