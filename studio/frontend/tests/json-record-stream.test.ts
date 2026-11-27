@@ -443,7 +443,6 @@ test("damaged and multi-line files give the same records, damage and errors at e
 });
 
 test("a backup that is one multi-line record is searched for damage once, not once per chunk", async () => {
-  // The "Export all chats" shape: one top-level object over many indented lines.
   const messages = Array.from({ length: 4000 }, (_, i) => ({
     id: `m${i}`,
     content: [{ type: "text", text: `message ${i} `.repeat(20) }],
@@ -467,7 +466,6 @@ test("a backup that is one multi-line record is searched for damage once, not on
 });
 
 test("a whitespace run longer than a chunk is walked back once, not once per chunk", async () => {
-  // A pending record holding a long run of spaces and newlines: the boundary walk-back must not re-walk it.
   const run = "  \n".repeat(40000);
   const text = `{"a": 1,${run}"b": 2}\n{"c": 3}\n`;
   const test = RegExp.prototype.test;

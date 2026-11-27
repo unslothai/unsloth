@@ -126,14 +126,11 @@ export async function* streamJsonRecords(
   let sawArrayEnd = false;
   let emittedRecord = false;
   let lineFramed = false;
-  // Reading a concatenated `buffer` copies all of it, so a record spanning the whole file (a Studio
-  // backup) would be re-copied and re-searched per chunk. Scan `src` and search `carry` instead.
+  // Not one concatenated buffer: a whole-file record would be re-copied and re-searched per chunk.
   let src = "";
   let srcOffset = 0;
-  // buffer.slice(carryStart): where the next boundary search starts, then the rest of the buffer.
   let carry = "";
   let carryStart = 0;
-  // The lastNewline the pending record was last searched up to, or -1.
   let searched = -1;
 
   for await (const chunk of chunks) {
@@ -237,13 +234,11 @@ export async function* streamJsonRecords(
           if (boundary) {
             at = carryStart + boundary.index + boundary[0].length - 1;
           } else {
-            // Nothing matched before lastNewline, so a later match spans it and starts at the last
-            // non-space character before it, or later: the same leftmost match as a full search.
+            // No match before lastNewline, so the leftmost match starts at its last non-space char or later.
             const previous = searched;
             searched = lastNewline;
             let resume = lastNewline - 1;
             while (resume > start && SPACE_CHAR.test(carry[resume - carryStart])) {
-              // Back at the previous search's newline: only space lies between it and carryStart.
               if (resume === previous) {
                 resume = carryStart;
                 break;
