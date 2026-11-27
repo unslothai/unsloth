@@ -5042,10 +5042,9 @@ def prime_coalesce_tokenizers(family: Any, pipe: Any) -> None:
 
 
 def prime_coalesce_tokenizers_for(state: Any) -> None:
-    """Resident loads always render serially, so they never need tokenizer copies."""
-    if (getattr(state, "offload_policy", OFFLOAD_NONE) or OFFLOAD_NONE) == OFFLOAD_NONE:
-        return
-    prime_coalesce_tokenizers(state.family, state.pipe)
+    """Resident denoisers render serially (request_batching), so they need no tokenizer copies."""
+    if _denoiser_streams_from_host(state):
+        prime_coalesce_tokenizers(state.family, state.pipe)
 
 
 class _NoKeyTokenizer(Exception):

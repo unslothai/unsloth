@@ -260,6 +260,26 @@ def test_a_resident_load_never_copies_tokenizers_it_cannot_batch_with(family):
     assert backend.coalesce_plan("a red fox", False) is None
 
 
+def test_a_group_load_primes_only_while_its_denoiser_streams(monkeypatch):
+    from core.inference import diffusion
+    from core.inference.diffusion_memory import DENOISER_PARTIAL, DENOISER_RESIDENT
+
+    family = types.SimpleNamespace(name = "flux.1", textual_inversion = None)
+    tok = _CopyCounted()
+    _CopyCounted.copies = 0
+    placement = [DENOISER_RESIDENT]
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: placement[0])
+    backend = types.SimpleNamespace()
+    _plan(backend, family, types.SimpleNamespace(tokenizer_2 = tok), offload_policy = "group")
+    diffusion.prime_coalesce_tokenizers_for(backend._state)
+    assert _CopyCounted.copies == 0
+    assert backend.request_batching()["mode"] == "serial"
+    placement[0] = DENOISER_PARTIAL
+    diffusion.prime_coalesce_tokenizers_for(backend._state)
+    assert _CopyCounted.copies == 1
+    assert backend.request_batching()["mode"] == "any"
+
+
 @pytest.mark.parametrize("offload_policy", ["sequential", "model"])
 def test_a_streamed_load_still_primes_and_keys_as_before(offload_policy):
     from core.inference import diffusion
