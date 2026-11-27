@@ -1285,8 +1285,11 @@ def _collect_models_from_default_sources(
     seen_hf: set[str] = set()
     for label, cache_dir, active in (
         ("HF cache", hf_cache_dir, True),
-        ("legacy HF cache", legacy_hf, False),
-        ("default HF cache", hf_default, False),
+        *(
+            (label, path, False)
+            for label, path in (("legacy HF cache", legacy_hf), ("default HF cache", hf_default))
+            if _safe_is_dir(path)
+        ),
         *(("previous HF cache", path, False) for path in known_hf_caches),
         *(("oMLX HF cache", path, False) for path in omlx_dirs),
     ):

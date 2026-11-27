@@ -314,11 +314,15 @@ def test_direct_custom_model_root_dedupes_split_shards(tmp_path):
 def test_direct_split_prefix_matching_follows_the_loader(tmp_path):
     root = tmp_path / "direct-model-root"
     first = _write_gguf(root / "Model-Q4_K_M-00001-of-00002.gguf", 11)
-    _write_gguf(root / "model-Q4_K_M-00002-of-00002.gguf", 7)
+    second = _write_gguf(root / "model-Q4_K_M-00002-of-00002.gguf", 7)
 
     rows = _custom_rows(root)
 
-    assert [(Path(row.path), row.size_bytes) for row in rows] == [(first, 18)]
+    # llama.cpp opens shard 2 under shard 1's prefix, so only a case-insensitive filesystem loads this set.
+    if (root / "Model-Q4_K_M-00002-of-00002.gguf").is_file():
+        assert [(Path(row.path), row.size_bytes) for row in rows] == [(first, 18)]
+    else:
+        assert {Path(row.path) for row in rows} == {first, second}
 
 
 def test_incomplete_direct_split_is_not_collapsed(tmp_path):
