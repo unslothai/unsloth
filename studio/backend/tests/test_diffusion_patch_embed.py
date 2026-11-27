@@ -71,6 +71,26 @@ def test_gate_matches_torch_29_use_cudnn_window(version, cudnn, expected):
 
 
 @pytest.mark.parametrize(
+    "version, runtime, compiled, expected",
+    [
+        (
+            "2.9.0+cu128",
+            91501,
+            91002,
+            True,
+        ),  # 2.9.0 reads the compile-time 9.10.2 whatever is loaded
+        ("2.9.0+cu128", 92801, 90800, True),
+        ("2.9.0+cu128", 91002, 90700, False),
+        ("2.9.1+cu128", 91501, 91002, False),  # 2.9.1 reads the runtime cuDNN
+        ("2.9.1+cu128", 91002, 92801, True),
+        ("2.9.0rc1", 91501, 91002, True),
+    ],
+)
+def test_torch_290_gates_on_the_compile_time_cudnn(version, runtime, compiled, expected):
+    assert pe.conv3d_skips_cudnn(version, runtime, compiled) is expected
+
+
+@pytest.mark.parametrize(
     "p, out, bias", [(14, 1280, False), (16, 1152, True)]
 )  # Qwen2.5-VL, Qwen3-VL
 def test_linear_equals_conv3d(p, out, bias):

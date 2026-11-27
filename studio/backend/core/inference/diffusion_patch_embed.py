@@ -12,6 +12,7 @@ Convolution.cpp; fixed in 2.10), and the 2.9 wheels ship 9.10.2, so it hits slow
 from __future__ import annotations
 
 import os
+import re
 import types
 from typing import Any, Optional
 
@@ -21,20 +22,38 @@ _TRUE = ("1", "true", "yes", "on", "force")
 _CUDNN_REFUSED = (90800, 91500)
 
 
-def _torch_minor(version: str) -> Optional[tuple[int, int]]:
+def _torch_version(version: str) -> Optional[tuple[int, int, int]]:
     try:
-        major, minor = str(version).split("+", 1)[0].split(".")[:2]
-        return int(major), int(minor)
-    except (TypeError, ValueError):
+        parts = str(version).split("+", 1)[0].split(".")
+        m = re.match(r"\d+", parts[2] if len(parts) > 2 else "0")
+        return int(parts[0]), int(parts[1]), int(m.group(0)) if m else 0
+    except (IndexError, TypeError, ValueError):
         return None
 
 
-def conv3d_skips_cudnn(torch_version: str, cudnn_version: Optional[int]) -> bool:
-    """True when this torch build runs half / bf16 Conv3d (kernel != 1) on the native kernel."""
-    if _torch_minor(torch_version) != (2, 9) or cudnn_version is None:
+def conv3d_skips_cudnn(
+    torch_version: str,
+    cudnn_version: Optional[int],
+    compiled_cudnn: Optional[int] = None,
+) -> bool:
+    """True when this torch build runs half / bf16 Conv3d (kernel != 1) on the native kernel.
+    2.9.0 checks its compile-time cuDNN with no upper bound; 2.9.1+ checks the runtime one in [9.8, 9.15)."""
+    v = _torch_version(torch_version)
+    if v is None or v[:2] != (2, 9):
         return False
     lo, hi = _CUDNN_REFUSED
-    return lo <= int(cudnn_version) < hi
+    if v[2] == 0:
+        ref = compiled_cudnn if compiled_cudnn is not None else cudnn_version
+        return ref is not None and int(ref) >= lo
+    return cudnn_version is not None and lo <= int(cudnn_version) < hi
+
+
+def _compiled_cudnn(torch: Any) -> Optional[int]:
+    try:
+        major, minor, patch = torch._C._cudnn.getCompileVersion()
+        return int(major) * 10000 + int(minor) * 100 + int(patch)
+    except Exception:  # noqa: BLE001 - no compile-time cuDNN version: use the runtime one
+        return None
 
 
 def _mode() -> str:
@@ -57,7 +76,7 @@ def _runtime_affected() -> bool:
         cudnn = torch.backends.cudnn.version()
     except Exception:  # noqa: BLE001 - no cuDNN: nothing to work around
         return False
-    return conv3d_skips_cudnn(torch.__version__, cudnn)
+    return conv3d_skips_cudnn(torch.__version__, cudnn, _compiled_cudnn(torch))
 
 
 def is_patchify_conv3d(conv: Any) -> bool:
