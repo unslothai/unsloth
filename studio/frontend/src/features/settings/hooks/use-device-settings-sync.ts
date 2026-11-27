@@ -41,6 +41,8 @@ import {
 } from "../lib/client-prefs-pending";
 
 const PUSH_DEBOUNCE_MS = 800;
+const LOAD_RETRY_INITIAL_MS = 1000;
+const LOAD_RETRY_MAX_MS = 30_000;
 
 type Prefs = Record<string, unknown>;
 
@@ -152,7 +154,11 @@ export function startClientPreferencesSync(): () => void {
   let applying = false;
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let loadTimer: ReturnType<typeof setTimeout> | undefined;
+  let loadRetryDelay = LOAD_RETRY_INITIAL_MS;
   const touched = readPending();
+  const pendingAtStart = { ...touched };
+  const changedBeforeLoad: Partial<Record<keyof Pending, Set<string>>> = {};
   let edits = 0;
   const touch = (section: keyof Pending) => {
     touched[section] = true;
@@ -194,39 +200,70 @@ export function startClientPreferencesSync(): () => void {
       const next = all[section].read();
       if (applying || same(next, last[section])) return;
       if (switched()) return;
+      if (
+        !loaded &&
+        !pendingAtStart[section] &&
+        next &&
+        last[section] &&
+        typeof next === "object" &&
+        typeof last[section] === "object"
+      ) {
+        const previous = last[section] as Prefs;
+        const current = next as Prefs;
+        const changed = (changedBeforeLoad[section] ??= new Set<string>());
+        for (const key of Object.keys(current)) {
+          if (!same(previous[key], current[key])) changed.add(key);
+        }
+      }
       last[section] = next;
       touch(section);
       if (loaded) pushAll();
     });
   });
 
-  void loadClientPreferences()
-    .then((remote) => {
-      if (cancelled || switched()) return;
-      loaded = true;
-      applying = true;
-      for (const section of PENDING_SECTIONS) {
-        const value = remote[all[section].field];
-        if (value != null && !touched[section]) all[section].apply(value);
-        last[section] = all[section].read();
-      }
-      applying = false;
-      for (const section of PENDING_SECTIONS) {
-        if (
-          remote[all[section].field] == null &&
-          !same(last[section], all[section].fallback)
-        )
-          touch(section);
-      }
-      if (PENDING_SECTIONS.some((section) => touched[section])) pushAll();
-    })
-    .catch(() => {
-      loaded = true;
-    });
+  // A failed read must not turn a local edit into a write of unseen account defaults.
+  const load = () => {
+    if (cancelled || switched()) return;
+    void loadClientPreferences()
+      .then((remote) => {
+        if (cancelled || switched()) return;
+        loaded = true;
+        applying = true;
+        for (const section of PENDING_SECTIONS) {
+          const value = remote[all[section].field];
+          const changed = changedBeforeLoad[section];
+          if (value != null && !touched[section]) all[section].apply(value);
+          else if (value && typeof value === "object" && changed?.size) {
+            const local = all[section].read() as Prefs;
+            all[section].apply({
+              ...value,
+              ...Object.fromEntries([...changed].map((key) => [key, local[key]])),
+            });
+          }
+          last[section] = all[section].read();
+        }
+        applying = false;
+        for (const section of PENDING_SECTIONS) {
+          if (
+            remote[all[section].field] == null &&
+            !same(last[section], all[section].fallback)
+          )
+            touch(section);
+        }
+        if (PENDING_SECTIONS.some((section) => touched[section])) pushAll();
+      })
+      .catch(() => {
+        if (cancelled || switched()) return;
+        loadTimer = setTimeout(load, loadRetryDelay);
+        loadRetryDelay = Math.min(loadRetryDelay * 2, LOAD_RETRY_MAX_MS);
+      });
+  };
+  load();
 
   return () => {
     cancelled = true;
     clearTimeout(timer);
+    clearTimeout(loadTimer);
     for (const stop of stops) stop();
   };
 }
