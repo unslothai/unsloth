@@ -1428,11 +1428,33 @@ def test_windows_dlls_are_not_physical_gpu_evidence(tmp_path, monkeypatch):
     assert path_settings.host_gpu_vendors(reachable = False) is None
 
 
-def _counting_resolver_run(monkeypatch, *, delay = 0.0):
+def _hold_until_joined(waiters: int) -> None:
+    """Block the single-flight leader until ``waiters`` other callers are parked on its call, so a sharing test does not depend on how fast its threads start (a fixed sleep let a slow runner's last thread arrive after the leader finished and start its own call)."""
+    from utils.prebuilt import single_flight
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        with single_flight._lock:
+            entries = list(single_flight._inflight.values())
+        # Event.wait parks each joiner on the event's condition (CPython keeps them in _waiters).
+        if entries and all(len(e["done"]._cond._waiters) >= waiters for e in entries):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"{waiters} callers never joined the in-flight call")
+
+
+def _counting_resolver_run(
+    monkeypatch,
+    *,
+    delay = 0.0,
+    hold_for = 0,
+):
     calls: list = []
 
     def _run(cmd, **kwargs):
         calls.append(list(cmd))
+        if hold_for and len(calls) == 1:
+            _hold_until_joined(hold_for)
         time.sleep(delay)
         payload = {"backends": [{"backend": "auto", "available": True, "resolved_backend": "cuda"}]}
         return type("Result", (), {"returncode": 0, "stdout": json.dumps(payload)})()
@@ -1454,7 +1476,7 @@ def _resolver_kwargs(tmp_path, memo, **overrides):
 
 
 def test_concurrent_forced_resolves_share_one_child(monkeypatch, tmp_path):
-    calls = _counting_resolver_run(monkeypatch, delay = 0.3)
+    calls = _counting_resolver_run(monkeypatch, hold_for = 2)
     memo: dict = {}
     results: list = []
     threads = [
@@ -1526,7 +1548,8 @@ def test_concurrent_forced_asset_reads_share_one_fetch(monkeypatch):
 
     def _fetch(repo, timeout = 5.0):
         fetched.append(repo)
-        time.sleep(0.3)
+        if len(fetched) == 1:
+            _hold_until_joined(1)
         return {"a.tar.gz": 1}
 
     monkeypatch.setattr(freshness, "_fetch_latest_release_assets", _fetch)
