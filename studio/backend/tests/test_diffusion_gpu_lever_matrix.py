@@ -361,41 +361,49 @@ def probe_int8_gemm_tiles(p: GpuProfile) -> dict:
 
 # Race-outcome model for the int8 CUTLASS GEMM race (R5 / R8 / R9). The race (``diffusion_int8_cutlass.race``) times
 # each weight shape's best prebuilt tiles against today's path in short interleaved bursts, then back to back for
-# ``_SUSTAIN_S`` each (the clock of a power-capped card follows the kernel's draw). Which way it falls decides how many
-# Linears run CUTLASS: the tester's RTX 6000 Ada logged 104 (R6), 52 (R7, R8) and 313 (R9) of MiniMax-H3 video's 313
-# int8 Linears with no change to the race code, and the 313-Linear outcome ran at ~1035 instead of ~1240 MHz at the
-# 300 W cap (133.6 vs 121.6-125.4 s with UNSLOTH_DIFFUSION_INT8_CUTLASS=0). The cells below run the REAL race, plan
-# and routing (``_cutlass_plan``, ``race``, ``pick``, ``sustained_decides``, ``_cutlass_fused``, ``slot``) with the
-# timers replaced by a card model, so the outcome is a pure function of the profile and a policy change moves it.
+# ``_SUSTAIN_S`` each (the clock of a power-capped card follows the kernel's draw), and since #19807 re-times the
+# 16384-row race's sustained winners as (candidate, today's path) pairs (``paired_cost_us``: both halves run at the
+# clock they set together, as in a denoise step). Which way it falls decides how many Linears run CUTLASS: the
+# tester's RTX 6000 Ada logged 104 (R6), 52 (R7, R8) and 313 (R9) of MiniMax-H3 video's 313 int8 Linears with no
+# change to the race code, and the 313-Linear outcome ran at ~1035 instead of ~1240 MHz at the 300 W cap (133.6 vs
+# 121.6-125.4 s with UNSLOTH_DIFFUSION_INT8_CUTLASS=0). The cells below run the REAL race, pair check, plan and
+# routing (``_cutlass_plan``, ``race``, ``pick``, ``sustained_decides``, ``paired_cost_us``, ``_cutlass_fused``,
+# ``slot``) with the timers replaced by a card model, so the outcome is a pure function of the profile and a policy
+# change moves it.
 
 
 @dataclasses.dataclass(frozen = True)
 class PowerModel:
-    """A card's SM clock under the int8 GEMM race, per kernel class. ``steady_mhz`` is the clock a kernel class settles
-    at when it runs for a while at ``rows >= cut._HUGE_M`` (video token counts); below that every class runs at
-    ``boost_mhz`` (image-sized calls: R9's deferred-vs-load A/B kept CUTLASS on the Ada with no loss). The clock moves
-    from where the previous candidate left it toward the steady value with time constant ``settle_s``."""
+    """A card's SM clock under the int8 GEMM race, per kernel class, at ``rows >= cut._HUGE_M`` (video token counts;
+    below that every class runs at ``boost_mhz``: R9's deferred-vs-load A/B kept CUTLASS on the Ada's image cells with
+    no loss). ``steady_mhz``: ``today`` and ``cutlass`` are the clocks each settles at run alone, ``paired`` the clock a
+    (CUTLASS tile, today's path) pair settles at, the clock a denoise step with CUTLASS in it runs at. The clock moves
+    from where the previous timing left it toward the steady value with time constant ``settle_s``."""
 
     boost_mhz: float
     settle_s: float
-    steady_mhz: dict  # {"today": MHz, "cutlass": MHz} at rows >= cut._HUGE_M
+    steady_mhz: dict  # {"today": MHz, "cutlass": MHz, "paired": MHz} at rows >= cut._HUGE_M
     source: str
 
 
-# Steady clocks are measured (sources named). ``settle_s`` is not: 0.05 s on the L4 reproduces the R5 fix (the 0.25 s
-# sustained window catches the drop), 5 s on the Ada reproduces R9 (CUTLASS won the 0.25 s window, then ran ~16% lower
-# clock over the render). Cards with no measurement get no model (uncapped): their cell says so.
+# ``settle_s`` is not measured (any value well under the 0.25 s window gives the same verdicts). L4 (72 W): every clock
+# measured (#19807: alone CUTLASS 830-970 vs Triton 1130-1210 MHz; in a denoise-like loop 1171 vs 1299 MHz), and the
+# alone sustained timing already keeps Triton (R5, #18149). RTX 6000 Ada (300 W): ``today`` and ``paired`` are the
+# tester's R9 step clocks (CUTLASS=0 ~1240 MHz; 313 CUTLASS Linears ~1035 MHz). Its alone CUTLASS clock was not
+# measured: R9's logs show the alone race keeping a CUTLASS winner on every H3 shape, which takes any alone clock above
+# 0.90 * 1240 / 0.98 = 1139 MHz with the best tile's equal-clock speed below; 1180 is that bound plus margin. Cards
+# with no measurement get no model (uncapped): their cell says so.
 POWER_MODELS = {
     "l4": PowerModel(
         2040.0,
         0.05,
-        {"today": 1290.0, "cutlass": 855.0},
-        "diffusion_int8_cutlass.time_sustained_us: L4 72 W, H3 shapes at 16384 rows",
+        {"today": 1290.0, "cutlass": 855.0, "paired": 1171.0},
+        "diffusion_int8_cutlass.time_sustained_us + #19807's denoise-like loop: L4 72 W, H3 shapes at 19318 rows",
     ),
     "rtx6000_ada": PowerModel(
         2505.0,
-        5.0,
-        {"today": 1240.0, "cutlass": 1035.0},
+        0.05,
+        {"today": 1240.0, "cutlass": 1180.0, "paired": 1035.0},
         "tester R9: H3 video ~1240 MHz (CUTLASS=0) vs ~1035 MHz (313 CUTLASS Linears) at the 300 W cap",
     ),
 }
@@ -405,15 +413,23 @@ _TILE_SPEED = {0: 0.90, 1: 0.93, 2: 0.97}
 _TILE_ROWS = {0: 128, 1: 128, 2: 256}
 
 
+def _is_today(name: Any) -> bool:
+    return name in ("today", "cublas")
+
+
 class CardSim:
     """Timers for ``diffusion_int8_cutlass.race`` on a modelled card: ``time_us`` (short interleaved bursts run at
     the current clock) and ``time_sustained_us`` (each candidate back to back: the clock relaxes toward its steady
-    value for ``settle_s``, then the timed window's mean clock sets its speed). Each race starts at boost."""
+    value for ``settle_s``, then the timed window's mean clock sets its speed). Inside ``paired_cost_us`` (``pairing``)
+    each timed call is a (candidate, today's path) pair: both halves' work at the pair's clock. Each race starts at
+    boost."""
 
     def __init__(self, model: Optional[PowerModel]):
         self.model = model
         self.clock = model.boost_mhz if model else 1.0
         self.shape = (0, 0, 0)
+        self.pairing = False
+        self.paired_timings = 0
 
     def begin(self, m: int, n: int, k: int) -> None:
         self.shape = (int(m), int(n), int(k))
@@ -426,11 +442,15 @@ class CardSim:
             return 1.0
         if self.shape[0] < cut._HUGE_M:
             return self.model.boost_mhz
-        return self.model.steady_mhz["today" if name in ("today", "cublas") else "cutlass"]
+        if _is_today(name):
+            return self.model.steady_mhz["today"]
+        return self.model.steady_mhz["paired" if self.pairing else "cutlass"]
 
     def _work(self, name: Any) -> float:
         m, n, k = self.shape
-        speed = 1.0 if name in ("today", "cublas") else _TILE_SPEED[int(name)]
+        speed = 1.0 if _is_today(name) else _TILE_SPEED[int(name)]
+        if self.pairing:
+            speed += 1.0  # the pair's second half: one call of today's path
         return m * n * k * 1e-6 * speed
 
     def time_us(
@@ -450,6 +470,7 @@ class CardSim:
     ) -> dict:
         import math
 
+        self.paired_timings += int(self.pairing)
         out = {}
         for name in fns:
             steady = self._steady(name)
@@ -542,12 +563,23 @@ def card_sim(p: GpuProfile, model: Any = "profile"):
     for d in dicts:
         d.clear()
     tiles = tuple(sorted(_TILE_SPEED))
+    real_paired_cost_us = cut.paired_cost_us
+
+    def paired_cost_us(fns: dict, base_name: str) -> dict:
+        # the real pair check; only the timer it calls knows it is timing pairs
+        sim.pairing = True
+        try:
+            return real_paired_cost_us(fns, base_name)
+        finally:
+            sim.pairing = False
+
     try:
         with (
             _pinned(
                 cut,
                 time_us = sim.time_us,
                 time_sustained_us = sim.time_sustained_us,
+                paired_cost_us = paired_cost_us,
                 eligible = eligible,
                 has_kernel = lambda *a, **k: True,
                 probed_tiles = lambda index: tiles,
@@ -581,7 +613,7 @@ def _routing(
     family: str,
     model: Any = "profile",
 ) -> dict:
-    """``{"int8": n, "cutlass_logged": n, "cutlass_at_rows": n, "plan": {label: race outcome}}`` for the family's
+    """``{"int8": n, "cutlass_logged": n, "cutlass_at_rows": n, "plan": {label: race outcome}, "paired_timings": n}`` for the family's
     inventory after the real race on the modelled card. ``cutlass_logged`` is what the load logs (a Linear whose shape
     won any large-row slot, ``_cutlass_fused``); ``cutlass_at_rows`` counts the Linears whose calls at the tester's
     row count take a CUTLASS tile (``slot``): the 313 vs 52 of R9 / R8."""
@@ -601,9 +633,10 @@ def _routing(
         )
         weights[(n, k)] = w
         recs.append((_types.SimpleNamespace(bias = None), ("v2", None, False, w, True)))
-    with card_sim(p, model):
+    with card_sim(p, model) as sim:
         plan = g8._cutlass_plan(0, recs, True)
         out = {"int8": 0, "cutlass_logged": 0, "cutlass_at_rows": 0, "plan": {}}
+        out["paired_timings"] = sim.paired_timings  # how many races ran #19807's pair check
         for label, n, k, count, rows in inv:
             key = g8._cut_key(n, k, torch.float32, torch.bfloat16, False)
             entry = plan.get(key) or {}
@@ -2870,6 +2903,195 @@ def test_h3_exact_policy_cell_records_what_the_load_installs(key, active, golden
         assert cell["why"].startswith("inactive:"), cell
 
 
+# One profile per NVIDIA arch a tester or a release can hit. The per-arch tables below are written out so a change to
+# any value fails here (and in the golden) and is reviewed with its evidence.
+ARCH_KEYS = {
+    "sm75": "t4",
+    "sm80": "a100_40",
+    "sm86": "rtx3090",
+    "sm89": "rtx6000_ada",
+    "sm90": "h100",
+    "sm100": "b200",
+    "sm120": "rtx5090",
+}
+
+# H3 video, Studio's default load: the ``int8_exact_policy`` cell, what the load installs. Auto races INT8 attention
+# with the 4-step exact start on every arch (R7: never an arch deny-list); sm75 has no strided processor (SDPA default
+# backend), so nothing is installed there.
+H3_VIDEO_EXACT_START_PER_ARCH = {
+    "sm75": lever(False, cfg = {"kernel": "none", "steps": 0}, why = "inactive:no_strided_processor"),
+    "sm80": lever(True, cfg = {"kernel": "_native_flash", "steps": 4}),
+    "sm86": lever(True, cfg = {"kernel": "_native_cudnn", "steps": 4}),
+    "sm89": lever(True, cfg = {"kernel": "_native_flash", "steps": 4}),
+    "sm90": lever(True, cfg = {"kernel": "_native_cudnn", "steps": 4}),
+    "sm100": lever(True, cfg = {"kernel": "_native_cudnn", "steps": 4}),
+    "sm120": lever(True, cfg = {"kernel": "_native_cudnn", "steps": 4}),
+}
+
+
+@pytest.mark.parametrize("arch", sorted(ARCH_KEYS))
+def test_incident_r7_r8_h3_video_int8_attention_per_arch(arch, golden, monkeypatch):
+    """R7 / R8 per arch: #19098's sm89 deny-list turned H3 video Auto INT8 attention off on the Ada (-25%); #19344 put
+    it back on every card with a 4-step exact start, which cost the 3090 11% and the Ada 5% (R8). Per arch: Auto races
+    INT8 attention for the default request with exactly ``H3_INT8_EXACT_START_STEPS`` exact steps, and the installed
+    exact-start cell (steps, 16-bit kernel) equals both the table above and the golden. The replay bites: a deny-list
+    holding the arch (the #19098 shape) turns Auto off there and the cell moves."""
+    from core.inference import video_minimax_h3_attn as h3
+
+    p = PROFILES[ARCH_KEYS[arch]]
+    with clean_policy_env(), mock_profile(p):
+        gate, cap = _h3_video_default_gate(p)
+        cells = probe_h3_video_attention(p)
+    assert f"sm{cap[0]}{cap[1]}" == arch, cap
+    assert h3.H3_INT8_EXACT_START_STEPS == 4 and not h3.H3_INT8_AUTO_OFF_ARCHS
+    assert gate.auto and not gate.forced and gate.reason is None and gate.exact_steps == 4, gate
+    assert cells["minimax-h3.int8_attn_auto"] == lever(True, cfg = "exact_steps=4", why = "auto_race")
+    want = H3_VIDEO_EXACT_START_PER_ARCH[arch]
+    assert cells["minimax-h3.int8_exact_policy"] == want, (
+        arch,
+        cells["minimax-h3.int8_exact_policy"],
+    )
+    assert golden["cells"][f"{p.key}.minimax-h3.int8_exact_policy"] == want
+    # The replay bites: #19098's policy shape (Auto off on this arch).
+    monkeypatch.setattr(h3, "H3_INT8_AUTO_OFF_ARCHS", frozenset({tuple(cap)}))
+    with clean_policy_env(), mock_profile(p):
+        before, _ = _h3_video_default_gate(p)
+        moved = probe_h3_video_attention(p)
+    assert not before.auto and before.exact_steps == 0 and arch in (before.reason or ""), before
+    assert moved["minimax-h3.int8_attn_auto"]["on"] is False
+    assert moved["minimax-h3.int8_exact_policy"] != want or not want["on"], moved
+
+
+# ConvRot (R1): the fused rotation and the int8 GEMM route each arch takes when a family defaults ConvRot on.
+# ``stock`` rotation is the R1 defect (a separate Hadamard pass). sm75 has no fused rotation (``below_sm80``): pinned
+# here as it ships, unmeasured on a T4 (see the PR body).
+CONVROT_ROUTE_PER_ARCH = {
+    "sm75": ("stock", "cutlass"),
+    "sm80": ("rotq_tile", "arch_tile"),
+    "sm86": ("unlisted_h16", "unlisted_race"),
+    "sm89": ("rotq_tile", "arch_tile"),
+    "sm90": ("unlisted_h16", "unlisted_race"),
+    "sm100": ("unlisted_h16", "cublas_by_measurement"),
+    "sm120": ("rotq_tile", "arch_tile"),
+}
+
+
+def _convrot_route(p: GpuProfile) -> tuple:
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as g
+
+    cap = tuple(p.capability)
+    if cq.rotquant_config(cap) is not None:
+        rotation = "rotq_tile"
+    elif cq.unlisted_wanted(cap):
+        rotation = "unlisted_h16"
+    else:
+        rotation = "stock"
+    if g.arch_config(cap) is not None:
+        gemm = "arch_tile"
+    elif g.unlisted_wanted(cap):
+        gemm = "unlisted_race"
+    elif g.cutlass_wanted(cap):
+        gemm = "cutlass"
+    elif cap in g._UNLISTED_SKIP:
+        gemm = "cublas_by_measurement"
+    else:
+        gemm = "stock"
+    return rotation, gemm
+
+
+def test_incident_r1_convrot_route_per_arch():
+    """R1 per arch (#12874, fixed by #14988 / #15654): where a family defaults ConvRot on, each arch's rotation and
+    GEMM route is the table above; on sm80+ neither is ``stock``. The replay bites: without #14988's unlisted rotation
+    and #15654's unlisted GEMM race, sm86 (the tester's 3090) and sm90 fall back to stock rotation and GEMM."""
+    from unittest import mock
+
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as g
+    from core.inference import diffusion_transformer_quant as tq
+
+    with clean_policy_env():
+        assert tq.int8_convrot_enabled("qwen-image-2.1")
+        got = {}
+        for arch, key in ARCH_KEYS.items():
+            with mock_profile(PROFILES[key]):
+                got[arch] = _convrot_route(PROFILES[key])
+    assert got == CONVROT_ROUTE_PER_ARCH, got
+    for arch, (rotation, gemm) in got.items():
+        if arch != "sm75":
+            assert rotation != "stock" and gemm != "stock", (arch, rotation, gemm)
+    with (
+        clean_policy_env(),
+        mock.patch.object(cq, "unlisted_mode", lambda: "off"),
+        mock.patch.object(g, "unlisted_wanted", lambda *a, **k: False),
+        mock.patch.object(g, "cutlass_wanted", lambda *a, **k: False),
+    ):
+        for arch in ("sm86", "sm90"):
+            with mock_profile(PROFILES[ARCH_KEYS[arch]]):
+                assert _convrot_route(PROFILES[ARCH_KEYS[arch]]) == ("stock", "stock"), arch
+
+
+# INT8 attention Auto family tables (R5): which DiTs Auto races and under which limits. #18004 left H3 video out
+# (Ada / 3090 2-5% behind; forcing it was 20% / 37% faster); #18248 added it through ``FAMILY_RACE_TOKENS``.
+INT8_ATTENTION_AUTO_TABLES = {
+    "AUTO_DITS": frozenset(
+        {
+            "Flux3Transformer2DModel",
+            "Krea2Transformer2DModel",
+            "MOSSImageTransformer",
+            "HunyuanVideo15Transformer3DModel",
+            "QwenImage21Transformer2DModel",
+            "WanTransformer3DModel",
+            "ZImageTransformer2DModel",
+        }
+    ),
+    "AUTO_QUANTIZED_ONLY": frozenset({"MOSSImageTransformer"}),
+    "AUTO_SINGLE_EXPERT_ONLY": frozenset({"WanTransformer3DModel"}),
+    "AUTO_CUDA_ONLY": frozenset(
+        {
+            "Flux3Transformer2DModel",
+            "Krea2Transformer2DModel",
+            "HunyuanVideo15Transformer3DModel",
+            "ZImageTransformer2DModel",
+        }
+    ),
+    "SPEED_UNSET_DITS": frozenset(
+        {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
+    ),
+    "ROCM_AUTO_DITS": {
+        ("gfx1151", "linux"): frozenset({"QwenImage21Transformer2DModel", "WanTransformer3DModel"}),
+        ("gfx1151", "win32"): frozenset({"QwenImage21Transformer2DModel"}),
+    },
+    "FAMILY_RACE_TOKENS": {"MiniMaxH3Transformer3DModel": (16384, 8192)},
+}
+
+
+def test_incident_r5_int8_attention_auto_family_table(monkeypatch):
+    """R5 family table: the DiTs Auto INT8 attention races (and their limits) are the table above, H3 video among
+    them through its own long-sequence race, and the H3 video load calls that install. Adding or dropping a family
+    fails here for review. The replay bites: #18004's table (no H3 entry) gives the H3 DiT no Auto race."""
+    from core.inference import diffusion_int8_attention as i8
+    from core.inference import diffusion_int8_attention_dispatch as dispatch
+
+    got = {
+        name: getattr(i8 if name == "FAMILY_RACE_TOKENS" else dispatch, name)
+        for name in INT8_ATTENTION_AUTO_TABLES
+    }
+    got["FAMILY_RACE_TOKENS"] = {k: tuple(v) for k, v in got["FAMILY_RACE_TOKENS"].items()}
+    assert got == INT8_ATTENTION_AUTO_TABLES, got
+    h3_dit = type("MiniMaxH3Transformer3DModel", (), {})()
+    with clean_policy_env():
+        assert i8.resolve_policy(None).mode == "auto"
+        assert i8.family_race_tokens(h3_dit) == (16384, 8192)
+    # the H3 video load is the caller (read as text: importing video.py is not needed for the table)
+    assert "int8_attention.install_family_auto(" in (
+        _BACKEND / "core/inference/video.py"
+    ).read_text(encoding = "utf-8")
+    monkeypatch.setattr(i8, "FAMILY_RACE_TOKENS", {})
+    assert i8.family_race_tokens(h3_dit) is None
+    assert i8.install_family_auto(h3_dit, device = "cuda:0", dtype = None) == 0
+
+
 def test_incident_r5_18248_h3_video_int8_attention_auto_by_default():
     """R5, #18004 left H3 video out of Auto INT8 attention (Ada / 3090 -2 to -5%; forcing it was 20% / 37% faster);
     #18248 put it on by default and R6 measured +27% Ada, +57% 3090. Auto is the default policy, H3 video races at its
@@ -3448,38 +3670,56 @@ def test_incident_r5_18149_l4_sustained_race_keeps_triton_on_h3_video(monkeypatc
         assert _huge_rows_on_cutlass(p, "minimax-h3") == 300
 
 
-@pytest.mark.xfail(
-    strict = True,
-    raises = AssertionError,
-    reason = "R9 open: the 0.25 s sustained window settles too fast for the RTX 6000 Ada's 300 W cap; the power-aware "
-    "CUTLASS fix (branch studio-h3-video-cutlass-power) makes this pass, then drop this marker",
-)
-def test_incident_r9_power_capped_ada_keeps_triton_on_h3_video():
-    """R9: MiniMax-H3 video on the RTX 6000 Ada (and its 12 / 16 GB tiers) went 118.6 -> 133.6 s (-11%): the race
-    routed 313 int8 Linears to CUTLASS (R8: 52, same 5 winning shapes, race code unchanged) and the SM clock fell
-    ~1240 -> ~1035 MHz at the 300 W cap; UNSLOTH_DIFFUSION_INT8_CUTLASS=0 gave 121.6 / 125.4 s. The count is a race
-    outcome (104 / 52 / 52 / 313 over R6-R9), so the guard is the outcome on a modelled card: a candidate that wins a
-    short burst but settles at a lower clock must not serve the video-sized calls. Image-sized calls keep CUTLASS
-    (R9's deferred-vs-load A/B on the Ada: Klein 2.81 vs 2.79 s, Qwen-Image-2.1 6.65 vs 6.63 s, both CUTLASS). The
-    golden's ``rtx6000_ada.minimax-h3.int8_gemm_routing`` cell records today's outcome (at_rows=313, the tester's)."""
-    p = PROFILES["rtx6000_ada"]
+@pytest.mark.parametrize("key", ["rtx6000_ada", "l4"])
+def test_incident_r9_power_capped_ada_keeps_triton_on_h3_video(key, monkeypatch):
+    """R9 (fixed by #19807): MiniMax-H3 video on the RTX 6000 Ada (and its 12 / 16 GB tiers) went 118.6 -> 133.6 s
+    (-11%): the race routed 313 int8 Linears to CUTLASS (R8: 52, same 5 winning shapes, race code unchanged) and the SM
+    clock fell ~1240 -> ~1035 MHz at the 300 W cap; UNSLOTH_DIFFUSION_INT8_CUTLASS=0 gave 121.6 / 125.4 s. The count is
+    a race outcome (104 / 52 / 52 / 313 over R6-R9), so the guard is the outcome on a modelled card: a tile that wins
+    alone, sustained, but lowers the clock of what runs around it must not serve the video-sized calls. #19807's pair
+    check (each winner re-timed as (tile, today's path) pairs) keeps today's path there. Image-sized calls keep CUTLASS
+    (R9's deferred-vs-load A/B on the Ada: Klein 2.81 vs 2.79 s, Qwen-Image-2.1 6.65 vs 6.63 s, both CUTLASS)."""
+    from core.inference import diffusion_int8_cutlass as cut
+
+    p = PROFILES[key]
     with clean_policy_env(), mock_profile(p):
         assert _routing(p, "qwen-image-2.1")["cutlass_at_rows"] == 720
-        assert _huge_rows_on_cutlass(p, "minimax-h3") == 0
+        video = _routing(p, "minimax-h3")
+        assert _huge_rows_on_cutlass(p, "minimax-h3") == 0, video
+    if key == "l4":
+        # the L4's alone sustained timing already rejects the tiles (R5), so no winner reaches the pair check
+        assert video["paired_timings"] == 0, video
+        return
+    # the new path provably ran: the 16384-row winner of each of H3's 5 weight shapes went through the pair check
+    shapes = {(n, k) for _label, n, k, _count, _rows in INT8_INVENTORIES["minimax-h3"]}
+    assert video["paired_timings"] == len(shapes) == 5, video
+    # The replay bites: without the pair check (pre-#19807 race) the Ada serves every video-sized call from CUTLASS,
+    # the tester's R9 outcome.
+    monkeypatch.setenv(cut.PAIRED_ENV, "0")
+    with mock_profile(p):
+        assert _huge_rows_on_cutlass(p, "minimax-h3") == 300
+        assert _routing(p, "minimax-h3")["paired_timings"] == 0
 
 
-def test_card_sim_steady_clock_decides_once_the_window_is_long_enough():
-    """``CardSim`` sanity: with the Ada's settle time, a sustained window several times longer sees the steady clocks
-    (today 1240 vs CUTLASS 1035 MHz), where the CUTLASS tile no longer wins by the race margin."""
+def test_card_sim_alone_wins_and_the_pair_loses_on_the_ada():
+    """``CardSim`` sanity for the R9 model: on the Ada the best tile beats today's path by more than the race margin
+    timed alone, sustained (what the pre-#19807 race kept), and its (tile, today's path) pair costs more than a call of
+    today's path (what the pair check vetoes on). On a card with no power model the pair keeps the tile."""
     from core.inference import diffusion_int8_cutlass as cut
 
     sim = CardSim(POWER_MODELS["rtx6000_ada"])
     sim.begin(19318, 5376, 14336)
-    short = sim.time_us({"today": None, 0: None})
-    assert short[0] < short["today"] * (1 - cut._MARGIN)
-    sim.begin(19318, 5376, 14336)
-    long = sim.time_sustained_us({"today": None, 0: None}, settle_s = 30.0, measure_s = 30.0)
-    assert long[0] > long["today"] * (1 - cut._MARGIN)
+    alone = sim.time_sustained_us({"today": None, 0: None})
+    assert alone[0] < alone["today"] * (1 - cut._MARGIN)
+    sim.pairing = True
+    pairs = sim.time_sustained_us({"today": None, 0: None})
+    half = pairs["today"] / 2
+    assert pairs[0] - half > half * (1 - cut._MARGIN)
+    flat = CardSim(None)
+    flat.begin(19318, 5376, 14336)
+    flat.pairing = True
+    pairs = flat.time_sustained_us({"today": None, 0: None})
+    assert pairs[0] - pairs["today"] / 2 < pairs["today"] / 2 * (1 - cut._MARGIN)
 
 
 @pytest.mark.parametrize("gb", [8.188, 12.288, 16.376, 24.576, 50.9])
