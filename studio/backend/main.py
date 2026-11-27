@@ -3141,6 +3141,15 @@ def _checkpoint_quant_formats() -> list[str]:
         return []
 
 
+def _repair_recommendation() -> Optional[dict]:
+    """Torch-free; None off Windows, off CUDA, or when the install already has the managed pair."""
+    try:
+        from utils.hardware.windows_repair import windows_repair_recommendation
+        return windows_repair_recommendation()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return None
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -3306,6 +3315,8 @@ def get_system_info(
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
         # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
         "checkpoint_quant_formats": _checkpoint_quant_formats(),
+        # Windows: an existing home older than the managed torch / xFormers pair. Additive key, null otherwise.
+        "repair_recommendation": _repair_recommendation(),
     }
 
 

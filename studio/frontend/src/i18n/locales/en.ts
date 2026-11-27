@@ -2454,6 +2454,10 @@ export const en = {
         confirmDescriptionChatOnly:
           "Stops the server and reruns the installer. This is a Chat only install, so the installer also upgrades it to the full install with PyTorch, several gigabytes in total. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
+        recommendedTorch:
+          "Repair recommended: this install has PyTorch {torch}, older than the managed {managedTorch}. Training attention on RTX 50-series GPUs needs PyTorch {managedTorch} with xFormers {managedXformers}.",
+        recommendedXformers:
+          "Repair recommended: this install has xFormers {xformers}, older than the managed {managedXformers}, whose RTX 50-series build has the kernels training needs.",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
