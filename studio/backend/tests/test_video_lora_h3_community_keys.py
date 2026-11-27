@@ -57,7 +57,7 @@ def _sources(deltas, target):
         ("diffusion_model.", ".lora_{}.weight", False),  # trainer / ai-toolkit exports
         ("diffusion_model.", ".lora_{}.weight", True),  # generic LoRA with .alpha keys
         ("", ".lora_{}.weight", False),  # unprefixed export of the original module names
-        # ``.lora_{}.default.weight`` is DiffSynth-Studio's raw-DiT layout, per-head qkv: test_video_lora_h3_diffsynth_qkv.py
+        # ``.default`` (DiffSynth per-head qkv): test_video_lora_h3_diffsynth_qkv.py
     ],
 )
 def test_community_rows_map_bit_equal_to_the_released_weights(tmp_path, prefix, suffix, alpha):

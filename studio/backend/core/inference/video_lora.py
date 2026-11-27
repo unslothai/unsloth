@@ -62,8 +62,7 @@ _H3_COMMUNITY_RENAMES = (
 )
 
 
-# H3 attention head width. The raw MiniMax-H3 DiT reads its fused qkv output as [heads, 3, head_dim]
-# (DiffSynth-Studio models/minimax_h3_dit.py MiniMaxH3Attention.forward); the Comfy-Org repack as [3, heads, head_dim].
+# Raw H3 DiT reads fused qkv as [heads, 3, head_dim] (DiffSynth minimax_h3_dit.py); Comfy-Org repack as [3, heads, head_dim].
 _H3_HEAD_DIM = 128
 
 
@@ -74,8 +73,7 @@ def h3_community_key_map(
 ) -> list:
     """``[(diffusers module, B row slices or None)]`` for one community-layout H3 module with ``rows`` output rows:
     fused qkv splits by thirds into to_q / to_k / to_v, gated fc1 [gate; value] becomes ff.net.0.proj [value; gate].
-    ``per_head_qkv``: the fused qkv rows are per head ``[h0: q k v, h1: q k v, ...]`` (the raw H3 DiT layout that
-    DiffSynth-Studio LoRAs carry), so each projection gathers its 128-row slice from every head."""
+    ``per_head_qkv``: qkv rows are per head (DiffSynth-Studio layout), not contiguous thirds."""
     if module.startswith("token_refiner.blocks."):
         name = "token_refiner.refiner_blocks." + module[len("token_refiner.blocks.") :]
     else:
@@ -588,8 +586,7 @@ def read_deltas(files: Iterable[tuple[str, float]], *, family: Optional[str] = N
                     slots = parts.setdefault(_diffusers_module_name(name[: -len(hit)]), {})
                     slots[slot] = tensor
                     if slot == "b":
-                        # DiffSynth-Studio trains on the raw H3 DiT and saves PEFT's ``.default`` names: per-head qkv rows
-                        # (its own diffusers -> DiffSynth converter writes that layout, utils/lora/minimax_h3.py).
+                        # DiffSynth-Studio's PEFT ``.default`` names mean raw-DiT per-head qkv rows.
                         slots["per_head_qkv"] = hit == ".lora_B.default.weight"
                     break
         if not parts:

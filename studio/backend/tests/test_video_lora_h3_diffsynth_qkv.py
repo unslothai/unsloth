@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""DiffSynth-Studio MiniMax-H3 LoRAs (``.lora_A/B.default.weight`` on ``blocks.N.attn.qkv_proj``) are trained on the
-raw H3 DiT, whose fused qkv output is read per head as [heads, 3, head_dim] (DiffSynth-Studio
-models/minimax_h3_dit.py, MiniMaxH3Attention.forward). Splitting that B by contiguous thirds mixes heads and
-projections. The reference here applies the fused LoRA the way the raw module does, then reads q / k / v per head."""
+"""DiffSynth-Studio H3 LoRAs carry per-head fused qkv rows [heads, 3, head_dim]; contiguous thirds would mix heads."""
 
 from __future__ import annotations
 
@@ -27,7 +24,6 @@ def _fused_lora(seed):
 
 
 def _reference(a, b, scale):
-    """The raw module's delta, viewed [heads, 3, head_dim] like MiniMaxH3Attention.forward, per projection."""
     delta = (b @ a) * scale
     grouped = delta.reshape(HEADS, 3, HEAD_DIM, HIDDEN)
     return {
@@ -64,8 +60,7 @@ def test_diffsynth_fused_qkv_matches_the_raw_module(tmp_path, module, target):
 
 
 def test_diffsynth_rows_match_diffsynths_own_layout(tmp_path):
-    """DiffSynth's diffusers -> DiffSynth LoRA converter (utils/lora/minimax_h3.py, align_to_diffsynth_format) places
-    to_q / to_k / to_v rows at head * 384 + {0, 128, 256}; reading the file back must return them untouched."""
+    """DiffSynth's converter (utils/lora/minimax_h3.py) puts q / k / v rows at head * 384 + {0, 128, 256}."""
     g = torch.Generator().manual_seed(0)
     a = {p: torch.randn(RANK, HIDDEN, generator = g) for p in "qkv"}
     b = {p: torch.randn(HEADS * HEAD_DIM, RANK, generator = g) for p in "qkv"}
@@ -94,7 +89,7 @@ def test_diffsynth_rows_match_diffsynths_own_layout(tmp_path):
 
 
 def test_community_files_keep_the_contiguous_thirds(tmp_path):
-    """The ai-toolkit / ComfyUI community files (#19818) store [q; k; v] like the Comfy-Org repack: unchanged."""
+    """Community files (#19818) store contiguous [q; k; v]."""
     a, b = _fused_lora(1)
     path = _save(
         tmp_path,
