@@ -69,10 +69,12 @@ test("speech-only checkpoints cannot be selected as scheduled text models", () =
       { repo_id: "tts", size_bytes: 1 },
       { repo_id: "image", size_bytes: 1, capabilities: { can_chat: false } },
       { repo_id: "cached-text", size_bytes: 1 },
+      { repo_id: "partial-text", size_bytes: 1, partial: true, capabilities: { can_chat: false } },
+      { repo_id: "unsupported-image", size_bytes: 1, task: "image-diffusion-unsupported", capabilities: { can_chat: true } },
     ],
   );
   assert.deepEqual(local.map(({ id }) => id), ["audio-chat", "text", "cached-text"]);
-  assert.deepEqual([...incompatible], ["tts", "whisper", "image"]);
+  assert.deepEqual([...incompatible], ["tts", "whisper", "image", "unsupported-image"]);
 });
 
 const ISO_ALL = [...ISO_WEEKDAYS];
