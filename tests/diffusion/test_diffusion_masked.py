@@ -649,7 +649,6 @@ def test_output_head_hook_installed_after_first_loss():
 
 @pytest.mark.parametrize("kind", ["forward_hook", "forward_pre_hook", "instance_forward"])
 def test_output_head_wrapped_after_first_loss_takes_the_dense_path(kind):
-    # Plain torch hooks and an instance forward added to the same head module after a fused batch.
     from unsloth.models.diffusion_loss import fusable_head
 
     softcap = lambda out: 0.5 * torch.tanh(out / 0.5)
