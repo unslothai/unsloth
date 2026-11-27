@@ -2719,8 +2719,7 @@ def resolve_fp8_block_quant_linear():
 
 
 def _fp8_block_quant_linear_unresolved(X, weight, weight_scale):
-    # FBGEMM installed, probe not run yet. Inside a compiled region the probe cannot run: the torch route
-    # there (always correct), and the probe on the next eager call.
+    # FBGEMM installed, not probed yet. A compiled region cannot probe: the torch route, probed when eager.
     if torch.compiler.is_compiling():
         return _pick_fp8_block_quant_linear(fp8_torch_block_quant_forward)(X, weight, weight_scale)
     return resolve_fp8_block_quant_linear()(X, weight, weight_scale)
