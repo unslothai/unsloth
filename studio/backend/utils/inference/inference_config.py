@@ -145,7 +145,6 @@ _SAMPLING_FIELDS = {
     "presence_penalty": ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", 0.0, 0.0, 2.0, False),
 }
 
-# Public, ordered tuple of the sampling fields callers resolve.
 SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
 
 # The five fields the Chat UI's mergeBackendRecommendedInference (presets/preset-policy.ts) seeds, auto-recommended here for request parity. repetition_penalty stays manual-only (client-sent or the UNSLOTH_SAMPLING_REPETITION_PENALTY pin), matching the UI where it is never auto-filled per model.

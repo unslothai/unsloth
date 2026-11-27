@@ -49,8 +49,7 @@ def _q8_0_bytes(
     seed = 0,
     adversarial = False,
 ):
-    """Real Q8_0 blocks from gguf's own quantiser, or (adversarial) random bytes with the scale drawn over the whole
-    fp16 range, so fp16 overflow / subnormal / tie cases of the fp16 product are exercised."""
+    """Q8_0 blocks from gguf, or adversarial scales: fp16 overflow, subnormal and tie cases."""
     rng = np.random.default_rng(seed)
     if not adversarial:
         w = (rng.standard_normal((rows, cols)) * 0.02).astype(np.float32)

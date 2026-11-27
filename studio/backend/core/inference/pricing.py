@@ -80,7 +80,6 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
     # o-series / gpt-4.5 are left off the pricing page
 }
 
-# Shared multipliers (all Anthropic models).
 ANTHROPIC_CACHE_5M_WRITE_MULT = 1.25
 ANTHROPIC_CACHE_1H_WRITE_MULT = 2.0
 ANTHROPIC_CACHE_READ_MULT = 0.1
@@ -118,7 +117,6 @@ def _launch_prices(
     prices: dict[str, float],
     today: Optional[_dt.date] = None,
 ) -> dict[str, float]:
-    """Overlay a still-running launch rate onto a standard-rate table row."""
     if provider != "anthropic":
         return prices
     for key, (ends, launch) in _LAUNCH_PRICING.items():
@@ -166,8 +164,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         "priced": bool(prices),
     }
 
-    # Raw Anthropic input_tokens EXCLUDES cache buckets; raw OpenAI input_tokens and chat-style
-    # prompt_tokens INCLUDE them. Clamp >= 0 so corrupted payloads can't bill negative.
+    # Anthropic input_tokens exclude cache; OpenAI's include them. Clamp >= 0 for bad payloads.
     cache_creation = max(0, int(usage.get("cache_creation_input_tokens") or 0))
     cache_read_native_present = (
         "cache_read_input_tokens" in usage and usage.get("cache_read_input_tokens") is not None

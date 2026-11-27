@@ -82,8 +82,7 @@ def _is_weights(
     length,
     clip_max = 3.0,
 ):
-    """Mean applied IS weight and normalised ESS for rows of `length` tokens, each token log ratio d,
-    through unsloth_zoo.rl_replacements.grpo_compute_loss (flat_is_ratio is the applied weight)."""
+    """Mean flat_is_ratio and normalised ESS via unsloth_zoo.rl_replacements.grpo_compute_loss."""
     import unsloth_zoo.rl_replacements as rr
 
     rows = len(length)

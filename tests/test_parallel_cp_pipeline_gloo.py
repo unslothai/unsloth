@@ -39,7 +39,7 @@ def _skip_if_one_microbatch_refused(results):
         )
 
 
-_PP_AUX_SPLIT = "load-balancing loss per micro-batch"
+_PP_AUX_SPLIT = "only the GPipe schedule does that"
 
 
 @pytest.mark.parametrize("zoo_compile", [False, True], ids = ["forward_install", "zoo_compiled"])
@@ -117,8 +117,48 @@ def test_cpu_pipeline_eval_matches_one_process(monkeypatch, arch, aux):
     ],
     ids = ["config_flag", "trl_coef"],
 )
-@pytest.mark.parametrize("env", [{}, {"UNSLOTH_PP_SCHEDULE": "1f1b"}], ids = ["default", "1f1b"])
+@pytest.mark.parametrize(
+    "env, bs",
+    [
+        ({"UNSLOTH_PP_MICROBATCHES": "2", "UNSLOTH_PP_SCHEDULE": "gpipe"}, 2),
+        ({}, 4),  # the default schedule: 4 micro-batches (2 x pp), run as GPipe
+    ],
+    ids = ["gpipe_mb2", "default_mb4"],
+)
+@pytest.mark.parametrize("ga", [1, 2])
+def test_pp_moe_router_aux_loss_split_over_micro_batches_matches_one_process(how, env, bs, ga):
+    """A Trainer batch split into micro-batches forms the router aux loss over the whole batch, as one process
+    does: summed statistics, the whole-batch gradient handed to every micro-batch after all forwards (GPipe).
+    Failing before: refused at the Trainer init (the pipeline summed one aux loss per micro-batch)."""
+    if how.get("trl_aux"):
+        from trl import SFTConfig
+        if "router_aux_loss_coef" not in getattr(SFTConfig, "__dataclass_fields__", {}):
+            pytest.skip(
+                "TRL < 1.6 has no SFTConfig.router_aux_loss_coef: the trainer never turns the aux loss on"
+            )
+    kw = dict(bs = bs, ga = ga, steps = 3, arch = "qwen3_moe", **how)
+    (ref,) = _spawn("train", 1, **kw)
+    assert ref["output_router_logits"] or how.get("trl_aux"), ref
+    results = _spawn("train", 2, {"UNSLOTH_PP_SIZE": "2", **env}, **kw)
+    _same_rows(results, ref, what = (env, ga, how))
+    assert sorted(res.get("stage") for res in results) == [0, 1], results
+    # Engaged on the last stage for every Trainer batch (ga per optimizer step), never on the first.
+    assert sorted(res["carried_aux_steps"] for res in results) == [0, 3 * ga], results
+    for rank, res in enumerate(results):
+        _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (env, ga, how, rank))
+
+
+@pytest.mark.parametrize(
+    "how",
+    [
+        dict(router_aux = True, aux_coef = 0.5),
+        dict(trl_aux = True, aux_coef = 0.5),
+    ],
+    ids = ["config_flag", "trl_coef"],
+)
+@pytest.mark.parametrize("env", [{"UNSLOTH_PP_SCHEDULE": "1f1b"}], ids = ["1f1b"])
 def test_pp_moe_router_aux_loss_split_over_micro_batches_is_refused_at_trainer_init(how, env):
+    """An explicit 1F1B schedule runs a backward before the last forward: the whole-batch aux loss is refused."""
     env = {"UNSLOTH_PP_SIZE": "2", **env}
     for rank, res in enumerate(
         _spawn("train", 2, env, bs = 2, ga = 1, steps = 1, arch = "qwen3_moe", probe_refusal = True, **how)

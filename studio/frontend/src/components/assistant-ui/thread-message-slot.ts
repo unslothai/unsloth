@@ -13,8 +13,7 @@ export type ThreadMessageRole = "user" | "assistant" | "system";
 export type ThreadMessageKind = "edit" | "user" | "assistant" | "none";
 
 /**
- * Mirrors assistant-ui's getComponent fallback for the three components the thread supplies:
- * editing wins over role, and an unedited system message renders nothing.
+ * Mirrors assistant-ui getComponent: editing beats role; unedited system messages render nothing.
  */
 export function threadMessageKind(
   role: ThreadMessageRole,

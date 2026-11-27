@@ -244,8 +244,7 @@ def test_blockquote_inside_a_list_item_is_one_container():
 
 
 def test_indented_code_literal_is_not_a_fence_opener():
-    """Past 3 columns of indent a delimiter is code, not a fence, and a quote marker that deep is
-    literal too; neither can reopen a finished block."""
+    """Fences or quote markers indented past 3 columns are literal and cannot reopen a block."""
     for tail in ("    ```python", "    > ```python"):
         text = "First, let me show it.\n```python\nx = 1\n```\nLiteral:\n\n" + tail
         assert _has_answer_artifact(text), tail
@@ -298,8 +297,7 @@ def test_root_tag_may_carry_many_attributes():
 
 
 def test_a_sentence_word_is_not_an_info_string():
-    """``Use ```html``` here.`` is a balanced span in prose. A language token may
-    contain a dot (asp.net) but never ends in one, so "here." is not one."""
+    """A language token may contain a dot (asp.net) but not end in one, so "here." is not one."""
     text = "First, let me show it.\n<html><body>hi</body></html>\nUse ```html``` here."
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
@@ -346,8 +344,7 @@ def test_list_marker_line_opens_a_block_level_fence():
 
 
 def test_markup_closing_tag_tolerates_whitespace():
-    """`</html >` is spec-legal, and must count as an artifact AND as a close
-    in the balance count."""
+    """</html > is spec-legal: it must count as an artifact and as a close in the balance."""
     samples = [
         "First, let me show it.\n<html><body>hi</body></html >",
         'First, let me draw it.\n<svg width="10"><circle r="3"/></svg >',
@@ -973,8 +970,7 @@ def _gate_would_reprompt(
 
 
 def test_content_channel_think_block_is_not_an_answer():
-    """A think block in the content channel stays visible, but a fence rehearsed in it is not an
-    answer, so the nudge must still fire."""
+    """Fence rehearsed in a content-channel think block is no answer, so the nudge still fires."""
     think_only = "<think>First, let me write it.\n```python\nx = 1\n```\nDone.</think>"
     assert _gate_would_reprompt(think_only, "", True)
 
@@ -1015,8 +1011,7 @@ def test_reasoning_artifact_counts_only_when_the_loop_promotes_it():
 
 
 def test_only_a_leading_block_is_reasoning():
-    """A `<think>` further into the turn is the model quoting the tag, which is how
-    the Anthropic path reads it too, so a fenced example containing one is an answer."""
+    """Only a leading <think> is reasoning; a later one is quoted, so a fence is an answer."""
     example = "First, let me write it.\n```xml\n<think>private</think>\n```"
     assert _has_answer_artifact(example)
     assert not _gate_would_reprompt(example, "", True)
@@ -1041,8 +1036,7 @@ def test_reasoning_marker_inside_an_example_is_not_reasoning():
 
 
 def test_leading_block_wins_over_a_marker_named_in_its_body():
-    """A leading `<think>` that discusses `</thinking>` still ends at its own closer,
-    so none of the private body leaks into the answer."""
+    """A leading <think> that names </thinking> still ends at its own closer, leaking nothing."""
     turn = "<think>First, I will search. The </thinking> marker is different.</think>The answer is Paris."
     assert not _gate_would_reprompt(turn, "", True)
 
@@ -1071,8 +1065,7 @@ def test_tilde_info_string_may_hold_tildes():
 
 
 def test_delimiter_mention_after_a_closed_block_is_prose():
-    """Once a block has closed, an inline delimiter is a mention whether or not it
-    carries a language token. A real second block starts at column 0."""
+    """After a closed block, an inline delimiter is prose; a real fence starts at column 0."""
     for tail in ("Wrap it in ```", "The opening marker is ```python"):
         text = f"First, I will show it.\n```python\nx = 1\n```\n{tail}"
         assert _has_answer_artifact(text), tail

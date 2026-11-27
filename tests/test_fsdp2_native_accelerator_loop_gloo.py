@@ -181,8 +181,7 @@ def _case_custom(native, rank, tmp):
 
 
 def _case_fp8(native, tmp):
-    """accelerate converts to FP8 in prepare before prepare_model: refused before any conversion,
-    on a custom accelerator and on a Trainer's."""
+    """accelerate converts to FP8 in prepare before prepare_model, so refused up front."""
     from accelerate import Accelerator
 
     model = native.shard_model(_lora(1), native.FSDP2Config(param_dtype = torch.float32))

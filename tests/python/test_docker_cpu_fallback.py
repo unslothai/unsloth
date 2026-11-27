@@ -110,15 +110,13 @@ def _invoke_run_sh(
 @_posix_shell
 class TestRunShDegradesWithoutNvidia:
     def test_gpus_flag_is_dropped_when_the_host_has_no_nvidia_gpu(self, tmp_path):
-        """`--gpus all` on an NVIDIA-less host is exit 125 AT THE DAEMON, so the
-        container never starts and entrypoint.sh never gets to explain itself."""
+        """Without NVIDIA, --gpus all exits 125 at the daemon, so entrypoint.sh never runs."""
         argv, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = False)
         assert "--gpus" not in argv, f"run.sh still passed --gpus: {argv}"
         assert "no NVIDIA GPU on this host" in stderr
 
     def test_amd_host_gets_the_render_nodes_with_numeric_gids(self, tmp_path):
-        """--group-add by NAME resolves inside the container, where the host's
-        video/render groups do not exist, so the gids must be numeric."""
+        """Group names don't resolve in the container, so --group-add must take numeric gids."""
         argv, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True)
         assert "--gpus" not in argv
         assert "--device" in argv
@@ -146,16 +144,14 @@ class TestRunShDegradesWithoutNvidia:
         assert "myorg/custom:rocm" in stderr and "unsloth/unsloth" in stderr, stderr
 
     def test_the_group_lookup_is_guarded_on_getent_existing(self):
-        """A host with no getent at all (busybox, some slim images) must skip the
-        lookup rather than fail it."""
+        """On a host without getent (busybox, slim images), the lookup is skipped, not failed."""
         body = open(_RUN_SH, encoding = "utf-8").read()
         idx = body.index("getent group")
         assert "command -v getent" in body[:idx]
 
     @pytest.mark.parametrize("groups", ["none", "video_only"])
     def test_a_missing_group_record_does_not_abort_the_run(self, tmp_path, groups):
-        """getent failing for a missing group must not abort run.sh under pipefail; use the gids
-        that exist."""
+        """Under pipefail a getent miss must not abort run.sh; only existing gids are used."""
         argv, _ = _invoke_run_sh(tmp_path, nvidia = False, amd = True, groups = groups)
         assert "/dev/kfd" in argv and "/dev/dri" in argv
         assert "--gpus" not in argv
@@ -182,9 +178,8 @@ def _studio_mounts(argv):
 
 @_posix_shell
 class TestRunShMountsTheStudioVolume:
-    """Studio data lives under /opt/unsloth-studio and the image relinks its code there on each
-    start, so a named volume keeps data across docker rm; run.sh must mount it, or it would
-    diverge from the DOCKERHUB.md quick start, which keeps data."""
+    """Studio data lives in /opt/unsloth-studio, which the image relinks on each start, so run.sh
+    must mount a named volume there to keep data across docker rm, as DOCKERHUB.md does."""
 
     def test_the_default_is_a_named_volume(self, tmp_path):
         argv, _ = _invoke_run_sh(tmp_path, nvidia = True, amd = False)

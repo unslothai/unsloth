@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
@@ -11,6 +12,38 @@ SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 def _read_source() -> str:
     with open(SOURCE_PATH, "r", encoding = "utf-8") as fh:
         return fh.read()
+
+
+def _model_config_reads(src: str) -> list[int]:
+    """Lines where rl_replacements reads model.config: attribute access in its own code, or the text in a
+    string that can end up in a patched trainer. The one string exempt is the search half of a
+    `.replace(old, new)`: TRL's own `model.config` line being matched there is being removed, not added."""
+    tree = ast.parse(src)
+    search_targets = {
+        id(node.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "replace"
+        and node.args
+    }
+    hits = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "config"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "model"
+        ):
+            hits.append(node.lineno)
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "model.config" in node.value
+            and id(node) not in search_targets
+        ):
+            hits.append(node.lineno)
+    return sorted(hits)
 
 
 def test_grpo_logit_scaling_uses_model_config_helper():
@@ -28,12 +61,13 @@ def test_grpo_logit_scaling_uses_model_config_helper():
     assert src.count("model_config = _unsloth_get_model_config(model)") >= 2
     assert "inspect.getsource(_unsloth_get_model_config)" in src
     assert "inspect.getsource(_unsloth_resolve_logit_scales)" in src
-    assert "model.config" not in src
+    assert (
+        _model_config_reads(src) == []
+    ), "read the config through _unsloth_get_model_config, not model.config"
 
 
 def test_detect_logit_transforms_reads_the_unwrapped_config():
-    """Pass model_config, not the model: DDP wrappers do not forward .config, so transforms read as
-    zeros."""
+    """Pass model_config: DDP wrappers do not forward .config, so transforms read as zeros."""
     src = _read_source()
     assert "detect_logit_transforms(model)" not in src
     assert src.count("detect_logit_transforms(model_config)") >= 2
@@ -69,9 +103,21 @@ def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
 
 
 def _unsloth_get_model_config_reference(model):
-    """Mirror of rl_replacements._unsloth_get_model_config, kept local to avoid
-    importing the heavyweight module."""
+    """Copy of rl_replacements._unsloth_get_model_config, kept local to avoid a heavy import."""
     config = getattr(model, "config", None)
     if config is None and hasattr(model, "module"):
         config = getattr(model.module, "config", None)
     return config
+
+
+def test_the_model_config_guard_tells_a_search_target_from_a_read():
+    """A replace() search target is TRL's text being removed; a replacement, a snippet or real code is a read."""
+    removed = 'f = f.replace("x = model.config.model_type", "x = helper(model)")\n'
+    assert _model_config_reads(removed) == []
+    assert _model_config_reads(
+        'f = f.replace("x = helper(model)", "x = model.config.model_type")\n'
+    ) == [1]
+    assert _model_config_reads('SNIPPET = "scale = model.config.logit_scale"\n') == [1]
+    assert _model_config_reads(
+        "def g(model):\n    return model.config.final_logit_softcapping\n"
+    ) == [2]

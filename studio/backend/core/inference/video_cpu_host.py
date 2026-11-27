@@ -26,20 +26,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-# LTX-2.5's Gemma 4 encoder worker holding the hosted int8 ConvRot file on CPU: 8,087 MiB peak worker RSS (measured,
-# CPU-HM). Lower than the 13.1 GB file because the worker reads it through a mapping.
+# LTX-2.5 encoder worker on hosted int8 file: 8,087 MiB peak RSS, under 13.1 GB as mapped.
 LTX25_CPU_TE_INT8_HOST_GB = 8.5
 # MiniMax-H3 GGUF on the native engine on CPU: whole render tree RssAnon peak, 864x480x124 (measured, CPU-HM).
 H3_CPU_NATIVE_HOST_GB = 5.1
 # Activations, GGUF dequant scratch and the tiled VAE decode for a short clip at the smallest size: the LTX-2.5 peak
 # above minus its resident weights (28.7 - 8.5 - 18.4 = 1.8 GB), rounded down so the estimate stays under it.
 CPU_VIDEO_WORKING_SET_GB = 1.5
-# Families measured on CPU at their default size, where the working set is larger. Wan2.1-T2V-1.3B pipeline at
-# 832x480x33 (2 steps + decode), Colab CPU-HM: 9.45 GB RssAnon / Pss_Anon peak = DiT 5.68 (float32 file) + VAE 0.51
-# + 3.26 working set; priced at 3.0 so the estimate (9.1 GB) stays just under the measurement.
+# Wan2.1-T2V-1.3B at 832x480x33 on CPU measured 9.45 GB RssAnon peak = DiT 5.68 (float32 file) + VAE
+# 0.51 + 3.26 working set; priced at 3.0 so the 9.1 GB estimate stays under the measurement.
 CPU_VIDEO_WORKING_SET_GB_BY_FAMILY = {"wan2.1-t2v-1.3b": 3.0}
-# Official Diffusers repos whose text_encoder/ is stored in float32 (umT5, 22.72 GB): the float32 CPU target reads it
-# as views of the file mapping, no conversion, so it adds no anonymous memory (Wan2.1 1.3B above: 22.8 GB RssFile).
+# Float32 umT5 text_encoder/ (22.72 GB) reads as file-mapped views on CPU: no anonymous memory.
 STORED_FP32_TEXT_ENCODER_FAMILIES = frozenset({"wan2.1-t2v-1.3b", "wan2.1-t2v-14b"})
 
 
@@ -254,9 +251,8 @@ def gguf_copy_gb(
     *,
     mapped: Optional[bool] = None,
 ) -> Optional[float]:
-    """GB diffusers copies into memory for this GGUF denoiser, or None when Studio's mmap hook reads it mapped. The size
-    comes from a local file, the Hub cache, then the Hub; unreadable, the smallest curated quant's share of bf16. A
-    dual-expert family loads both expert files. Never raises."""
+    """GB copied to memory for this GGUF denoiser (None if mmap-mapped); MoE counts both experts;
+    size: local file, Hub cache, then Hub; else smallest quant's bf16 share; never raises."""
     try:
         if mapped is None:
             from .diffusion_gguf_mmap import gguf_mmap_enabled

@@ -28,8 +28,7 @@ __all__ = [
     "grpo_subclass_logps_and_entropies",
 ]
 
-# Read from the fused compute_loss's code object: its body imports this name, so the class that owns that body is
-# found without a marker attribute (which a generated class body cannot set on its own function).
+# Found via code object importing this name; a generated class cannot mark its own function.
 _FUSED_COMPUTE_LOSS_NAME = "grpo_subclass_compute_loss"
 
 
@@ -45,8 +44,7 @@ def _owns_fused_compute_loss(function):
 
 
 def grpo_subclass_compute_loss(trainer):
-    """The ``_compute_loss`` attribute of a class below Unsloth's fused GRPO ``compute_loss`` in the MRO, or None
-    when the fused loss is the objective (plain GRPO, or a subclass that only overrides other methods)."""
+    """Subclass _compute_loss below fused compute_loss, or None if fused is the objective."""
     mro = type(trainer).__mro__
     owner = None
     for index, klass in enumerate(mro):
@@ -86,8 +84,7 @@ def _returns_aux_loss():
 
 
 def _modern_scorer_contract():
-    """TRL >= 1.15 scores through its fused lm_head: completion pads score 0 and the entropy keeps its gradient.
-    Older TRL leaves pad scores as they come and computes the entropy under no_grad."""
+    """TRL >= 1.15: pads score 0, entropy keeps gradient; older: pads as is, entropy no_grad."""
     return _trl_at_least("1.15.0")
 
 
@@ -106,8 +103,7 @@ def _return_hidden_states(enabled):
 
 @contextlib.contextmanager
 def _keep_left_padding_mask(model):
-    """Unsloth's training forwards may drop the attention mask (they assume right padding); GRPO prompts are left
-    padded, so keep it for the scoring forward, as PPO and distillation do."""
+    """Training forwards may drop the mask (right padding assumed); GRPO left-pads, so keep it."""
     missing = object()
     try:
         states = [
@@ -137,9 +133,7 @@ def _count(trainer, key):
 
 
 def _ddp_finds_unused_parameters(trainer, model):
-    """Whether the forward runs inside a DDP wrapper that marks parameters the forward did not reach as ready."""
     from .rl import _unsloth_find_ddp
-
     for candidate in (model, getattr(trainer, "model_wrapped", None)):
         if getattr(candidate, "find_unused_parameters", False):
             return True
@@ -169,14 +163,12 @@ def _entropy_from_logits(logits):
 
 
 def _support_log_softmax(logits, targets, support):
-    """log_softmax over each token's sampling candidates (``support``: ids padded with -1), as vLLM normalised the
-    sampled token's logprob; positions without candidates use the whole vocabulary."""
+    """Log-softmax over sampling candidates (padded -1), as vLLM; no candidates: full vocab."""
     if logits.dtype in (torch.float16, torch.bfloat16):
         logits = logits.float()
     valid = support >= 0
     gathered = logits.gather(-1, support.clamp(min = 0).to(torch.long))
-    # A finite floor, not -inf: rows without candidates take the full vocabulary below, and a logsumexp over -inf
-    # alone would send NaN through torch.where's zero gradient.
+    # Finite floor, not -inf: logsumexp of all -inf gives NaN gradients through torch.where.
     gathered = gathered.masked_fill(~valid, torch.finfo(gathered.dtype).min)
     log_z = torch.where(
         valid.any(-1),
@@ -252,8 +244,7 @@ def grpo_subclass_logps_and_entropies(
         and any(p is not None and p.requires_grad for p in (head.weight, head.bias))
         and _ddp_finds_unused_parameters(self, model)
     ):
-        # The head would be used outside the DDP forward, so DDP marks it ready twice. Decided for every pass alike,
-        # so the old / reference scores come from the same route as the gradient pass.
+        # Head used outside DDP forward is marked ready twice; decided for all passes alike.
         head_info = (None, None, "DDP find_unused_parameters with a trainable head")
     use_hidden = head_info[0] is not None
     temperature = _temperature(self)
@@ -352,8 +343,7 @@ def _warn_gmpo_ignores_vllm_correction(trainer):
 
 
 def grpo_run_subclass_compute_loss(trainer, model, inputs):
-    """Run the subclass ``_compute_loss`` through ordinary method lookup, so a subclass's own scoring methods (and the
-    per-instance context parallel wrappers) stay in place; Unsloth's scorer delegates to the one above."""
+    """Ordinary lookup keeps subclass scoring methods and per-instance CP wrappers in place."""
     if not torch.compiler.is_compiling():
         _warn_gmpo_ignores_vllm_correction(trainer)
     loss = trainer._compute_loss(model, inputs)

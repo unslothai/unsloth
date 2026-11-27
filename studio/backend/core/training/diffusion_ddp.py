@@ -2,9 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Rank 0 spawns 1..N-1 as subprocesses (daemonic processes cannot have children); ranks share the
-seeded global micro-batch (N GPUs at batch b = one at N*b) and all-reduce LoRA grads before
-clipping; only rank 0 writes outputs; ranks 1..N-1 wait for its cache, weights, then join the
-collective."""
+seeded global micro-batch (N GPUs at batch b = one at N*b), all-reduce LoRA grads before
+clipping; only rank 0 writes; others wait for its cache and weights, then join the collective."""
 
 from __future__ import annotations
 
@@ -97,8 +96,7 @@ class DistContext:
         params,
         loss = None,
     ):
-        """Average every trainable gradient (None counts as zero) and the step loss in one flat fp32 all-reduce;
-        returns the averaged loss (float), or None when ``loss`` was None."""
+        """Average grads (None as zero) and loss in one fp32 all-reduce; returns loss or None."""
         import torch
         import torch.distributed as dist
 
@@ -337,9 +335,8 @@ def _free_port() -> int:
 
 
 def _loopback_store(world: int):
-    """Rank 0's store, listening on 127.0.0.1 only. A TCPStore server given just a port listens on every interface,
-    so it hands the store a socket already bound to loopback (also no free-port race); the legacy backend is the one
-    that accepts a listening fd on every supported torch. Returns (store, port)."""
+    """On 127.0.0.1 only: port-only TCPStore listens everywhere, so pass a loopback socket (no
+    free-port race); legacy backend takes its fd on every supported torch. Returns (store, port)."""
     import torch.distributed as dist
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -505,8 +502,7 @@ def worker_main() -> None:
     except BaseException:
         log.exception("multi-GPU training rank %d failed", rank)
         code = 1
-    # No communicator teardown: NCCL's finalize waits on peers that may already be gone (rank 0 is still exporting
-    # the adapter), and process exit frees the same resources.
+    # NCCL finalize can wait on gone peers (rank 0 exporting); skip teardown, exit frees them.
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(code)

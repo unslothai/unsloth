@@ -13,7 +13,6 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def is_external_host(host: str) -> bool:
-    """True when `host` is reachable from beyond loopback."""
     return host.lower() not in _LOOPBACK_HOSTS
 
 
@@ -79,7 +78,6 @@ def wildcard_ip_versions(host: str) -> tuple[int, ...]:
 
 
 def resolved_bind_address_count(host: str) -> int:
-    """Number of distinct socket addresses this host resolves to."""
     if _literal_ip_address(host) is not None:
         return 1
     if not isinstance(host, str) or not host:
@@ -102,7 +100,6 @@ def is_wildcard_host(host: str) -> bool:
 
 
 def normalize_wildcard_bind_host(host: str) -> str:
-    """Return a safe canonical bind for an effective wildcard host."""
     if isinstance(host, str):
         try:
             parsed_literal = ipaddress.ip_address(host)
@@ -151,7 +148,6 @@ def normalize_wildcard_bind_host(host: str) -> str:
 
 
 def wildcard_loopback_host(host: str) -> Optional[str]:
-    """The loopback address reachable through a wildcard bind."""
     versions = wildcard_ip_versions(host)
     if 4 in versions:
         return "127.0.0.1"

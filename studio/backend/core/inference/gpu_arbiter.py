@@ -21,7 +21,6 @@ VIDEO = "video"
 # A Decision API llama.cpp server on the GPU (the PyTorch Clef worker is not arbitrated).
 DECISIONS = "decisions"
 
-# What each kind is called in refusals and eviction reports.
 KIND_LABELS = {CHAT: "chat", DIFFUSION: "image", VIDEO: "video", DECISIONS: "decisions"}
 # Residents that "always" protects; a Decision API server is still evicted as before.
 _KEPT_UNDER_ALWAYS = frozenset({CHAT, DIFFUSION, VIDEO})
@@ -349,8 +348,7 @@ def _media_loading(owner: str) -> bool:
 
 
 def _chat_occupied() -> bool:
-    """Whether a chat load is in flight, a kept slot failed to stop, or the primary cannot be read;
-    unreadable counts as yes, so Always never evicts it blind."""
+    """Chat load in flight, stuck slot, unreadable primary is occupied; Always never evicts it."""
     try:
         from core.inference import model_slots
         from core.inference.llama_cpp import chat_load_active
@@ -434,8 +432,7 @@ def refuse_replacing_media(
 def guarded_media_begin(
     owner: str, policy: str, requested: Iterable[Optional[str]], begin: Callable[[], Any]
 ) -> Callable[[], Any]:
-    """``begin`` re-checked against a load that registered meanwhile, for use as an acquire's
-    ``register`` (which runs under ``_lock``). Off and fit begin as before."""
+    """Re-checks begin under _lock against a concurrent load; off/fit return begin unchanged."""
     if policy != "always":
         return begin
     names = tuple(requested)
@@ -472,9 +469,8 @@ def _media_slot(kind: str, owner: str, status: Optional[dict]) -> list[dict[str,
     return [{"kind": kind, "model": str(model), "account": _resident_loader(owner)}]
 
 
-# What an owner's eviction unloads, as {kind, model} with the public model id, plus the loading account under
-# "account". Patchable like _EVICTORS. Read before the evictor runs, under _lock, so a reporter must never call back
-# into the arbiter's locking functions. One that fails reports nothing rather than blocking the acquire.
+# Unloads as {kind, model (public id), account}; patchable like _EVICTORS. Read under _lock before
+# the evictor, so it must not re-lock; a failing one reports nothing rather than blocking.
 _SLOT_REPORTERS: dict[str, Callable[[], list[dict[str, Any]]]] = {
     CHAT: _chat_slots,
     DIFFUSION: _diffusion_slots,
@@ -515,7 +511,6 @@ def public_slots(slots: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def note_evictions(slots: Iterable[dict[str, Any]], evicted: Optional[list] = None) -> None:
-    """Report models a route unloaded itself, to ``evicted`` or the current eviction sink."""
     sink = evicted if evicted is not None else eviction_sink.get()
     if sink is not None:
         sink.extend(public_slots(slots))
@@ -811,7 +806,6 @@ def acquire_for(
             if owner in _accounts:
                 _owner_account, _prior_account = _accounts.pop(owner)
             elif prev_owner is None or prev_owner not in _residents:
-                # The evicted owner's accounts carry over, as they did with a single owner.
                 _owner_account, _prior_account = prev_pair
             else:
                 _owner_account, _prior_account = None, None
@@ -822,7 +816,6 @@ def acquire_for(
         if owner == CHAT and held_before is not ...:
             from core.inference import model_slots
             if register is None and not replacing and gpus_now is None:
-                # A re-assert places nothing new.
                 gpus_now = held_before
             elif alongside or model_slots.holds_vram():
                 # Every chat model kept loaded counts, not just the newest; unknown (None) means every GPU.
@@ -835,7 +828,6 @@ def acquire_for(
             result = register() if register is not None else None
         except BaseException:
             if held_before is not ...:
-                # The model already loaded stays where it was.
                 _residents[owner] = held_before
             raise
         if owner in (DIFFUSION, VIDEO) and register is not None:
@@ -945,8 +937,7 @@ def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:
 
 
 def restore_media_need(owner: str) -> None:
-    """Put back the price the newest load of ``owner`` overwrote, when that load failed and the
-    model it was replacing stays loaded; otherwise the kept model is priced as the failed one."""
+    """Restores the price a failed newest load overwrote, so a kept model keeps its own price."""
     with _lock:
         if owner not in _media_need_rollback:
             return
@@ -958,7 +949,6 @@ def restore_media_need(owner: str) -> None:
 
 
 def release(owner: str) -> None:
-    """Drop ``owner``'s residency (no-op if it isn't resident)."""
     with _lock:
         if owner == DIFFUSION and owner in _view():
             _stop_prompt_upsampler()
@@ -987,7 +977,6 @@ def current_owner() -> Optional[str]:
 
 
 def owner_account(owner: Optional[str] = None) -> Optional[str]:
-    """Account whose load put ``owner`` (default: the last claimant) on the GPU."""
     if owner is None or owner == _owner:
         return _owner_account
     return _accounts.get(owner, (None, None))[0]

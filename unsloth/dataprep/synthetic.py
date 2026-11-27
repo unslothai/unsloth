@@ -173,8 +173,7 @@ class PipeCapture:
 
 
 def _deadline(timeout):
-    """Monotonic instant timeout seconds from now, or None for never; None must stay unbounded as
-    Event.wait treated it, since a first large-model load over a slow link needs that."""
+    """None means unbounded, as Event.wait treats it: slow first large-model loads need that."""
     return None if timeout is None else time.monotonic() + timeout
 
 
@@ -289,7 +288,6 @@ class SyntheticDataKit:
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
                 engine_args["dtype"] = dtype_val.split(".")[-1]
-            # Only allow valid vLLM choices
             valid_dtypes = {"auto", "bfloat16", "float", "float16", "float32", "half"}
             if engine_args["dtype"] not in valid_dtypes:
                 engine_args["dtype"] = "auto"
@@ -318,7 +316,6 @@ class SyntheticDataKit:
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
-                # Ignore --enforce-eager True
                 subprocess_commands += [
                     "--" + flag,
                 ]
@@ -391,8 +388,7 @@ class SyntheticDataKit:
         timeout,
         poll_interval = 1.0,
     ):
-        """Blocks until the server is ready or raises why not; readiness alone cannot see the child
-        die and would burn the whole timeout, so also poll exit status and the closed pipe."""
+        """Blocks until ready or raises; polls exit and closed pipe so a dead child fails fast."""
         deadline = _deadline(timeout)
         while True:
             # Cap each wait at the time left so readiness after the deadline is not reported as success.
@@ -509,7 +505,6 @@ class SyntheticDataKit:
         self.cleanup()
 
     def chunk_data(self, filename = None):
-        # Chunks data by max tokens and generation length
         assert filename is not None
         assert os.path.exists(filename)
         assert hasattr(self, "tokenizer")
@@ -535,7 +530,6 @@ class SyntheticDataKit:
             )
         input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
-        # Get left and right boundaries
         length = len(input_ids)
         if length <= max_tokens:
             # Fits one window: the multi-chunk path would drop it or slice wrong tokens when shorter than overlap.

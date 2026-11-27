@@ -156,10 +156,8 @@ def test_a_real_namespace_misses_on_another_fingerprint(monkeypatch, tmp_path):
 
 
 def test_an_oom_the_allocator_stats_never_count_is_not_persisted(env, monkeypatch):
-    """Under PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync a probe allocation's out-of-memory error leaves num_ooms
-    at 0 (that allocator fills none of the native stats), so the repeated failure looked like a real one and the empty
-    verdict persisted: every later process on that card skipped the CUTLASS tiles. The probe's own OOM keeps it from
-    persisting."""
+    """Under PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync a probe OOM leaves num_ooms at 0 and
+    looks real; its empty verdict must not persist, or later processes skip CUTLASS tiles."""
     store, probes, _ = env
     monkeypatch.setattr(cut, "_probe_tile", _REAL_PROBE_TILE)
     monkeypatch.setattr(cut, "has_kernel", lambda *a, **k: True)
@@ -174,8 +172,7 @@ def test_an_oom_the_allocator_stats_never_count_is_not_persisted(env, monkeypatc
 
 
 def test_an_oom_probe_is_not_kept_in_process_either(env, monkeypatch):
-    """A probe that ran out of memory was memoized in _PROBED, so a long-running Studio kept CUTLASS off after the
-    card freed up. The next call probes again and keeps the healthy verdict."""
+    """An OOM probe must not be memoized in _PROBED; the next call probes again."""
     store, probes, verdict = env
     healthy = cut._probe_tile
 

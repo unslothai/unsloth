@@ -21,7 +21,6 @@ test("withDataImageSupport allows data: image sources through sanitize", () => {
 });
 
 test("withDataImageSupport carries Streamdown's own schema widening, not just defaultSchema", () => {
-  // Derived from Streamdown's own sanitize schema, not bare defaultSchema.
   const [, schema] = withDataImageSupport({ [TAG]: ["token"] })[2] as [
     unknown,
     { protocols: Record<string, string[]>; attributes: Record<string, unknown> },

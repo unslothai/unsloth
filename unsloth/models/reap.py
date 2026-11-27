@@ -182,8 +182,7 @@ def _row_text(row, tokenizer, chat):
 
 
 def _text_tokenizer(tokenizer):
-    """The text tokenizer of a processor. Only a processor is unwrapped: MistralCommonBackend is
-    itself an HF tokenizer but keeps its raw mistral_common backend in ``.tokenizer``."""
+    """Only processors unwrap; MistralCommonBackend is an HF tokenizer with a raw .tokenizer."""
     try:
         from transformers import ProcessorMixin
     except ImportError:
@@ -230,8 +229,7 @@ def _calibration_ids(dataset, tokenizer, num_samples, max_seq_length):
 
 
 def _batches(ids, max_batch_tokens, pad_id):
-    """Length-sorted right-padded batches. Right padding cannot change real tokens in a causal
-    model, so no attention mask is passed and padded positions are only masked out of saliency."""
+    """Right padding cannot change causal outputs, so no attention mask; saliency masks pads."""
     order = sorted(range(len(ids)), key = lambda i: -len(ids[i]))
     batches, current = [], []
     for i in order:
@@ -291,8 +289,7 @@ def _tensor_bytes(obj, seen = None):
 
 
 def _capture_inputs(owner, layers, input_ids):
-    """Embedding output plus the per-layer kwargs (masks, rotary embeddings, ...) the model
-    passes to each decoder layer, by running the model with every layer stubbed out."""
+    """Embedding output and per-layer kwargs, captured with every decoder layer stubbed out."""
     captured = [None] * len(layers)
     first = {}
     originals = []
@@ -413,8 +410,7 @@ class _Saliency:
         self.count.index_add_(0, expert_ids, ones)
 
     def all_reduce(self):
-        """Sum over the ranks of a distributed job, so every rank keeps the same experts (a DDP
-        job with sharded calibration data would otherwise pair unrelated experts across ranks)."""
+        """Sum over ranks so all keep the same experts; sharded data would pair unrelated ones."""
         dist = torch.distributed
         if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() < 2:
             return
@@ -508,8 +504,7 @@ class _ExpertsTap:
     ):
         self.experts = experts
         self.saliency = saliency
-        # Nemotron-H latent MoE maps the summed expert output back to the hidden size after the
-        # experts, so ||f_j|| is measured after that shared Linear (without its bias, added once).
+        # Nemotron-H latent MoE: ||f_j|| after its shared Linear, bias excluded (added once).
         self.post = post
         self.valid = None
         self.stop = False
@@ -595,8 +590,7 @@ def _resolve_dataset(dataset, tokenizer):
                 f"Unsloth: REAP got a dataset with the splits {sorted(dataset)}; pass one of them, "
                 "e.g. `dataset['validation']`."
             )
-    # A dataset name (or the default) is text; other rows are checked as they are read, since a
-    # streaming dataset built from a generator declares no columns.
+    # Text (name or None) is checked here; other rows as read, since streams have no columns.
     if (dataset is None or isinstance(dataset, str)) and tokenizer is None:
         raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
     return dataset
@@ -1108,8 +1102,7 @@ def reap_prune(
 
 
 def raise_if_unsaved_reap(model):
-    """LoRA adapters and merged saves record the base checkpoint on disk, which still holds every
-    expert after an in-memory prune."""
+    """Saves record the on-disk base, which keeps all experts after an in-memory prune."""
     if getattr(model, "_unsloth_reap_report", None) and not getattr(
         model, "_unsloth_reap_saved", None
     ):

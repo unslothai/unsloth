@@ -7,9 +7,8 @@ import {
 } from '@jupyterlab/application';
 
 /**
- * Colab-style Ctrl/Cmd+A inside a cell output: clicking an output leaves the
- * notebook in command mode, so the chord otherwise fires `notebook:select-all`.
- * Keyed off the target or last pointer-down, never the stale selection anchor.
+ * Colab-style Ctrl/Cmd+A in an output: clicks leave command mode, so the chord would fire
+ * notebook:select-all; keyed off the target or last pointer-down, never the stale selection anchor.
  */
 
 const OUTPUT_SELECTORS = ['.jp-OutputArea-output', '.jp-Cell-outputWrapper'];

@@ -39,8 +39,7 @@ def _fake_host(
     sysconfig_platform,
     machine = "unknown-cpu",
 ):
-    """`machine` defaults to something unmappable, so a passing test is passing on
-    sysconfig.get_platform() alone, which is the point."""
+    """The machine default is unmappable, so only sysconfig.get_platform() decides the result."""
     monkeypatch.setattr(sysconfig, "get_platform", lambda: sysconfig_platform)
     monkeypatch.setattr(platform, "machine", lambda: machine)
 
@@ -113,9 +112,8 @@ def test_host_cpu_family_prefers_sysconfig(monkeypatch, host_platform, machine, 
 
 
 def test_host_cpu_family_ignores_the_physical_cpu_on_windows(monkeypatch):
-    """REGRESSION. platform.machine() on Windows asks WMI for the PHYSICAL processor, so an
-    emulated x86-64 interpreter on Windows on ARM answers "ARM64" while being win-amd64. The case
-    that matters is the unloadable win_arm64 wheel read as healthy."""
+    """Regression: Windows platform.machine() asks WMI for the physical CPU, so emulated win-amd64
+    on Windows ARM says ARM64; an unloadable win_arm64 wheel read as healthy."""
     monkeypatch.setattr(sysconfig, "get_platform", lambda: "win-amd64")
     monkeypatch.setattr(platform, "machine", lambda: "ARM64")
 
@@ -575,8 +573,7 @@ def test_does_not_invent_the_flag_on_hub_versions_that_never_had_it(monkeypatch)
 
 
 def test_does_not_import_huggingface_hub_just_to_patch_it(monkeypatch):
-    """The normal ordering. Nothing is frozen yet, and importing the Hub here would move its cost
-    into every unsloth import."""
+    """Nothing is frozen yet; importing the Hub here would cost every unsloth import."""
     monkeypatch.delitem(sys.modules, "huggingface_hub", raising = False)
     for name in [n for n in sys.modules if n.startswith("huggingface_hub.")]:
         monkeypatch.delitem(sys.modules, name, raising = False)
@@ -617,8 +614,7 @@ def test_patching_is_idempotent_and_reports_only_real_changes(monkeypatch):
 
 
 def test_patching_survives_hostile_modules(monkeypatch):
-    """Lazy packages raise from __getattr__, None entries linger, modules refuse setattr. A bad
-    neighbour must not stop the module that matters from being patched."""
+    """Raising __getattr__, None entries or refused setattr must not block patching."""
     modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
 
     class Exploding(types.ModuleType):

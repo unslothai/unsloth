@@ -39,7 +39,6 @@ export function writePending(pending: Pending): void {
       localStorage.removeItem(pendingKey());
     }
   } catch {
-    // storage unavailable
   }
 }
 

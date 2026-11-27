@@ -44,7 +44,6 @@ def test_a_symbolic_width_reads_the_cuda_warps_table(module, dw, monkeypatch):
     expected = module._arch_settings(n, device, dw)
     assert expected == (calculate_settings(n)[0], warps)
     assert tuple(module._settings(_symbolic(n), device, dw)) == expected
-    # A width the table does not list keeps calculate_settings' warps.
     assert tuple(module._settings(_symbolic(n + 1), device, dw)) == tuple(calculate_settings(n + 1))
 
 

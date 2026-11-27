@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A search for a model maker ("meta", "alibaba", "zai", "google") also lists Unsloth's uploads of
- * that maker's models: the ones the Hub shows with the maker's avatar (provider-logos.ts).
+ * A maker search (meta, alibaba, zai, google) also lists Unsloth uploads with the maker's avatar.
  */
 
 import { PROVIDER_LOGOS, type ProviderLogo } from "./provider-logos.ts";
@@ -69,8 +68,7 @@ export function matchProviderByQuery(query: string): ProviderLogo | null {
 }
 
 /**
- * Hub search terms that reach the provider's repo names: its prefixes and stems without the
- * trailing dash, dropping any term that already contains a shorter one (the Hub matches substrings).
+ * Prefixes/stems, no trailing dash; drops terms containing a shorter one (Hub matches substrings).
  */
 export function providerSearchTerms(provider: ProviderLogo): string[] {
   const terms = [...provider.prefixes, ...(provider.stems ?? [])]

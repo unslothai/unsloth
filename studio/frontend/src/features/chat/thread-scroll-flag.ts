@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Header fades show only once their thread scrolls under them: over a flat page every engine rounds
-// some gradient pixels a level off the page colour (Firefox in any space, WebKit in sRGB).
+// Fades show after scrolling: browsers round flat-page gradient pixels off the page colour.
 export const THREAD_SCROLLED_ATTR = "data-thread-scrolled";
 // Static in the JSX, not set by the ref: React attaches child refs first, and they sync on mount.
 export const HOST_ATTR = "data-thread-scroll-host";

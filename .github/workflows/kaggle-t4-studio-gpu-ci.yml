@@ -21,9 +21,8 @@
 #
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
-# Red only when the payload ran on a GPU and its assertions failed; every other outcome skips.
-# Not a required check. Only the gate job sees both tokens; later steps get the chosen one by SECRET
-# NAME, never a token output; no token reaches the Kaggle kernel. The payload scrubs its own bootstrap password from uploaded logs.
+# Red only if the GPU payload ran and failed; not required. Only the gate sees tokens, later steps
+# get a SECRET NAME, no token reaches the kernel; its bootstrap password is scrubbed from logs.
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
@@ -208,8 +207,7 @@ jobs:
       matrix: ${{ fromJSON(needs.gate.outputs.matrix) }}
     # Kernel ceiling is 70 min; this only fires if the launcher wedged.
     timeout-minutes: 120
-    # Own group keyed on the account: one Studio kernel plus one notebook kernel per account is exactly
-    # Kaggle's 2-session cap, so anything pushing a second kernel must merge these groups again.
+    # One group per account (Kaggle's 2-session cap); a second kernel must merge these groups.
     concurrency:
       group: kaggle-t4-account-${{ needs.gate.outputs.account }}-studio
       cancel-in-progress: false
@@ -327,8 +325,7 @@ jobs:
             --delete-collected kaggle_collected/collect_result.json \
             --posted kaggle_collected/posted.json
 
-      # Recheck the one chosen account right before the push: the gate answer can be stale by now.
-      # --soft-fail: exhaustion found here is a stand-down, not a red.
+      # Recheck before push (stale gate); --soft-fail: exhaustion is a stand-down, not red.
       - name: Recheck the Kaggle account
         id: recheck
         env:

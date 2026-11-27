@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A1111 X/Y/Z axis syntax: comma or newline lists with CSV quoting, ranges like 1-5, steps like 1-9
- * (+2), counts like 1-10 [4] (evenly spaced, truncated for ints); a descending range keeps its end
- * (5-1 (-1) is 5..1, A1111 stops at 3) and a decimal step may omit its sign.
+ * A1111 X/Y/Z syntax: comma or newline lists with CSV quoting, ranges 1-5, steps 1-9 (+2), counts
+ * 1-10 [4]; descending range keeps its end (5-1 (-1) is 5..1); decimal step may omit sign.
  */
 
 export type AxisValueType = "int" | "float" | "str";
@@ -37,8 +36,7 @@ export function roundValue(value: number): number {
   return Number(value.toFixed(8));
 }
 
-/** csv.reader(skipinitialspace=True) over every line, each field stripped; empty fields are kept here and dropped by
- *  the typed expansion, as A1111 does for numbers. */
+/** Like csv.reader(skipinitialspace=True): fields stripped; empty ones are dropped later. */
 export function splitAxisList(text: string): string[] {
   const out: string[] = [];
   let field = "";
@@ -98,8 +96,7 @@ function inclusiveRange(start: number, end: number, step: number): number[] | nu
   return Array.from({ length: count }, (_, i) => start + step * i);
 }
 
-/** Parse one axis's text into typed values. `str` axes keep each list item as typed (no range expansion); empty
- *  items are dropped unless `keepEmpty`. */
+/** Parse axis text to typed values; str skips range expansion; empties drop unless keepEmpty. */
 export function parseAxisValues(text: string, type: AxisValueType, options: { keepEmpty?: boolean } = {}): ParsedValues {
   const items = splitAxisList(text);
   if (type === "str") {

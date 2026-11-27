@@ -363,8 +363,7 @@ def test_a_scaffold_only_difference_across_a_finished_and_a_running_arm_is_refus
 
 
 def test_the_same_two_stream_positions_with_both_arms_running_are_unchanged(page):
-    """WHY THE NULL COULD NOT SEE IT. One build against itself at two points in one stream: both
-    arms render Stop, the scaffolds match, and the bias cancels inside the control."""
+    """Null control: both arms render Stop and scaffolds match, so the bias cancels inside it."""
     a = _capture_html(page, _page(tail = "arrived at last", **_writing()))
     b = _capture_html(page, _page(tail = "arr", **_writing()))
     assert a["digest_scaffold"] == b["digest_scaffold"]
@@ -372,8 +371,7 @@ def test_the_same_two_stream_positions_with_both_arms_running_are_unchanged(page
 
 
 def test_a_real_message_difference_is_still_reported_across_a_generation_disagreement(page):
-    """The withholding is not a blanket. It applies only when the scaffold is the ONLY thing that
-    moved; a settled message that differs is reported exactly as before."""
+    """Scaffold-only changes are withheld; a settled differing message is reported as before."""
     base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
     treat_statuses = list(_STREAMING_STATUSES)
     treat = _capture_html(
@@ -402,8 +400,7 @@ def test_a_real_message_difference_is_still_reported_across_a_generation_disagre
 
 
 def test_a_scaffold_difference_with_both_arms_agreeing_is_still_a_difference(page):
-    """And the coverage this must not cost: when the arms agree about generation, the composer is
-    comparable again and a scaffolding change is reported."""
+    """Arms agreeing on generation leave the composer comparable; scaffold changes show."""
     base = _capture_html(page, _page(tail = "same", **_finished()))
     treat = _capture_html(
         page,
@@ -462,8 +459,7 @@ def test_a_composer_regression_between_two_settled_arms_is_reported(page):
 
 
 def test_a_finished_against_a_running_arm_is_still_refused_after_that(page):
-    """The suppression must not cost this case: streaming disagrees, so the arms were at different
-    points of one turn and the composer is not evidence of a change."""
+    """Streaming differs: arms sit at different points of one turn; composer is no evidence."""
     base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
     treat = _capture_html(page, _page(tail = "arr", **_writing()))
     assert base["streaming"] is False and treat["streaming"] is True
@@ -492,8 +488,7 @@ def test_a_dispatched_queue_wait_is_a_run_state_not_a_rendering_difference(page)
 
 
 def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
-    """`isRunning()` cannot tell queued-idle from settled, so the `queued_idle` flag carries this
-    pair; without it the Queue button would read as a regression."""
+    """isRunning() cannot tell queued-idle from settled; queued_idle flag carries the pair."""
     base = _capture_html(page, _page(tail = "same", **QUEUED_IDLE))
     treat = _capture_html(
         page,
@@ -574,8 +569,7 @@ def test_a_real_style_regression_between_two_arms_in_one_run_state_is_still_repo
 
 
 def test_a_composer_that_lost_its_control_is_still_a_style_finding(page):
-    """Suppression is not keyed on the composer token alone: a missing Send button changes the token
-    and probe count, but agreeing run states still report it as a regression."""
+    """Not keyed on the composer token alone: a missing Send still reports if run states agree."""
     base = _capture_html_raw(page, _page(tail = "same", **_finished()))
     treat = _capture_html_raw(
         page,

@@ -30,7 +30,6 @@ def _load_safe_is_dir():
 
 safe_is_dir = _load_safe_is_dir()
 
-# Root bypasses permission bits, so chmod 000 would not deny.
 _skip_as_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason = "root bypasses filesystem permission bits",

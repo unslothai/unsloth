@@ -76,8 +76,7 @@ def vision_endpoint() -> tuple[str, str] | None:
 
 
 def _vision_auth_headers() -> dict | None:
-    """Bearer header for the backend's API, or None. Vision calls share the chat
-    endpoint, so they need the same key under direct-stream (``--api-key``) mode."""
+    """Bearer header or None. Vision calls need that key under direct-stream (--api-key) mode."""
     try:
         from routes.inference import get_llama_cpp_backend
         return get_llama_cpp_backend()._auth_headers or None
@@ -86,8 +85,7 @@ def _vision_auth_headers() -> dict | None:
 
 
 def _direct_llama_slot():
-    """Count this call against the chat backend's slots for its duration: it reaches
-    llama-server directly, so nothing else makes the slot readout show it as busy."""
+    """Holds a chat slot for the call; it goes straight to llama-server, unseen by the readout."""
     try:
         from routes.inference import _direct_llama_request
         return _direct_llama_request()
@@ -105,8 +103,7 @@ def _vision_complete(
     max_tokens: int,
     temperature: float = 0.0,
 ) -> str | None:
-    """One image-in / text-out call to the loaded vision model's OpenAI-compatible
-    endpoint. Returns the stripped text or ``None`` on empty/failure (non-fatal)."""
+    """Vision call (image in, text out); returns stripped text, or None on empty or failure."""
     import httpx
 
     data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
@@ -207,8 +204,7 @@ def ocr_pages(
     endpoint: tuple[str, str] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[int, str]:
-    """OCR of page PNGs to text via the vision model, returned keyed by 1-based page number; {} if
-    no model or no pages; caller owns the on/off policy; capped by OCR_MAX_PAGES."""
+    """OCR via vision model; 1-based page keys; {} if none; caller gates; cap at OCR_MAX_PAGES."""
     if not page_pngs:
         return {}
     ep = endpoint or vision_endpoint()

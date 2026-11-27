@@ -39,9 +39,8 @@ def _top_level_function(src, name):
 
 
 def _is_full_finetuning_impl():
-    """The real helper, exec'd out of _utils.py so the package import chain is not needed.
-    A tree without it gets a stub that fails loudly only if a guard actually calls it, so an
-    env-only guard is judged on its answer, not on the missing name."""
+    """Exec the real _is_full_finetuning from _utils.py, with no package import chain; a stub
+    without it fails only when called, so env-only guards are judged on their answer."""
     try:
         node = _top_level_function(UTILS_SRC, "_is_full_finetuning")
     except AssertionError:

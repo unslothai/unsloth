@@ -23,7 +23,8 @@ TARGETS = ("v_proj", "o_proj")
 _CONVERTER = """
 import shutil, sys
 out = sys.argv[sys.argv.index("--outfile") + 1]
-shutil.copytree(sys.argv[1], out + ".input", ignore = shutil.ignore_patterns("*.gguf*"))
+final = out[: -len(".tmp")] if out.endswith(".tmp") else out  # the export writes a partial file, then renames it
+shutil.copytree(sys.argv[1], final + ".input", ignore = shutil.ignore_patterns("*.gguf*"))
 open(out, "wb").write(b"GGUF")
 """
 

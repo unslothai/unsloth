@@ -48,8 +48,7 @@ def resource_link(
     name: str,
     mime: Optional[str] = None,
 ) -> Union[ResourceLink, TextContent]:
-    """A resource link to ``url``. A chat call has no outer request, so its links are origin-relative,
-    which a ResourceLink cannot hold: those come back as the link in plain text instead."""
+    """Origin-relative links (no scheme) come back as text: a ResourceLink cannot hold them."""
     if not urlsplit(url).scheme:
         return TextContent(type = "text", text = f"{name}: {url}")
     return ResourceLink(type = "resource_link", uri = url, name = name, mimeType = mime)

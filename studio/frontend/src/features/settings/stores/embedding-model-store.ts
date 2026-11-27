@@ -31,8 +31,7 @@ interface EmbeddingModelState {
 // Both surfaces read on mount; only the newest read may commit.
 let latestLoad = 0;
 
-// Request order is only a guess at the backend's final state: newest answer wins, then the store
-// re-reads once every overlapping write has settled.
+// Request order only guesses backend state: newest answer wins; re-read after writes settle.
 let latestSave = 0;
 let savesInFlight = 0;
 let saveWasSuperseded = false;

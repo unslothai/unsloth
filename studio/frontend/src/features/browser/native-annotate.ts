@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Annotate in a desktop native view: commands go through `browser_view_annotate`
- *  (src-tauri/src/browser_webview.rs) and reports are polled, since the view can't message back. */
+/** Commands go via browser_view_annotate; reports are polled as the view can't message back. */
 
 import { type AnnotateEvent, parseFrameMessage } from "./frame-message";
 import { callNative } from "./native-support";

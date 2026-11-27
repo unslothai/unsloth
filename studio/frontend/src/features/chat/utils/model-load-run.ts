@@ -6,8 +6,7 @@ export type ModelLoadRunToken = {
 };
 
 /**
- * Async load callbacks may finish after a replacement run has started. Only
- * the run that still owns the slot may update or clear shared loading state.
+ * Async loads may finish after a replacement starts; only the run owning the slot may update state.
  */
 export function ownsModelLoadRun(
   active: ModelLoadRunToken | null,

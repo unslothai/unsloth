@@ -31,15 +31,13 @@ def _dtensor_class():
 @contextlib.contextmanager
 def native_quant_context(model, dtype = None):
     """Enter around the fully_shard calls; yields None for models without bitsandbytes 4-bit weights
-    (untouched), else the prepare_fsdp2_qlora info; dtype is the float storage of the packed
-    bytes."""
+    (untouched), else prepare_fsdp2_qlora info; dtype is float storage of packed bytes."""
     with fsdp2_qlora_wrap(model, native = True, dtype = dtype) as info:
         yield info
 
 
 def sharding_report(model):
-    """What FSDP2 manages after the wrap: counts of DTensor parameters, bitsandbytes 4-bit weights
-    sharded, and the names of parameters FSDP2 does not manage (trainable ones get no reduction)."""
+    """DTensor and sharded 4-bit counts; unmanaged param names (trainable get no reduction)."""
     DTensor = _dtensor_class()
     report = {
         "dtensor": 0,
