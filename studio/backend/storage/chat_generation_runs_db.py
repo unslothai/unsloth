@@ -413,7 +413,10 @@ def _apply_anthropic_workspace_event(
         (run_id,),
     ).fetchone()
     request = _loads(run["request_json"], {})
-    if not isinstance(request, dict) or request.get("provider_type") != "anthropic":
+    # Saved connections can omit provider_type. The server tags the event after routing.
+    if not isinstance(request, dict) or not (
+        request.get("provider_id") or request.get("provider_type") == "anthropic"
+    ):
         return
     applied = run["anthropic_workspace_applied"]
     # SQL NULL means no write from this run. The JSON value null records a cleared workspace.

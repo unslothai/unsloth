@@ -210,8 +210,12 @@ def test_append_events_still_persists_through_a_reused_connection():
     ],
 )
 @pytest.mark.parametrize("without_json1", [False, True])
+@pytest.mark.parametrize(
+    "routing",
+    [{"provider_type": "anthropic"}, {"provider_id": "saved-claude", "external_model": "claude"}],
+)
 def test_a_durable_anthropic_event_updates_only_the_workspace_it_started_with(
-    expected, current, workspaces, replacement, result, without_json1
+    expected, current, workspaces, replacement, result, without_json1, routing
 ):
     studio_db.upsert_chat_thread(
         {
@@ -241,7 +245,7 @@ def test_a_durable_anthropic_event_updates_only_the_workspace_it_started_with(
         request_payload = {
             "model": "claude",
             "messages": [],
-            "provider_type": "anthropic",
+            **routing,
             "anthropic_code_exec_container_id": expected,
         },
     )
