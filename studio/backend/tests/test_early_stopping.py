@@ -4,6 +4,7 @@
 """Early stopping on eval loss, driven through a real transformers Trainer on CPU."""
 
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -341,7 +342,10 @@ def test_mlx_early_stop_is_named_in_the_final_status():
     )
 
 
-def test_manual_checkpoint_resume_keeps_patience_and_restores_best_weights(tmp_path):
+@pytest.mark.parametrize("legacy_sidecar", [False, True])
+def test_manual_checkpoint_resume_keeps_patience_and_restores_best_weights(
+    tmp_path, legacy_sidecar
+):
     from transformers import TrainerCallback
 
     stopped = False
@@ -359,8 +363,12 @@ def test_manual_checkpoint_resume_keeps_patience_and_restores_best_weights(tmp_p
     original.train()
     assert original.state.global_step == 2
     original._save_checkpoint(original.model, trial = None)
-    callback.save_checkpoint(original.args.output_dir, original.state.global_step)
+    callback.save_checkpoint(original.args, original.state)
     checkpoint = tmp_path / "checkpoint-2"
+    assert [path.name for path in checkpoint.glob("*.safetensors")] == ["model.safetensors"]
+    if legacy_sidecar:
+        filename = es._EARLY_STOPPING_STATE
+        (checkpoint / es._EARLY_STOPPING_DIR / filename).rename(checkpoint / filename)
     assert original.model.w.item() == pytest.approx(_w_after_steps(tmp_path, 2))
 
     resumed = _trainer(tmp_path)
@@ -369,6 +377,39 @@ def test_manual_checkpoint_resume_keeps_patience_and_restores_best_weights(tmp_p
     assert resumed.state.global_step == 3
     assert restored.best_step == 1
     assert resumed.model.w.item() == pytest.approx(_w_after_steps(tmp_path, 1))
+
+
+def test_pipeline_checkpoint_restores_each_stages_own_weights(tmp_path):
+    checkpoint = tmp_path / "checkpoint-2"
+    checkpoint.mkdir()
+    for rank in range(2):
+        args = SimpleNamespace(
+            output_dir = str(tmp_path), process_index = rank, world_size = 2, eval_strategy = "steps"
+        )
+        state = SimpleNamespace(global_step = 1, max_steps = 3, is_world_process_zero = rank == 0)
+        model = nn.ParameterDict({f"stage{rank}": nn.Parameter(torch.tensor([rank + 1.0]))})
+
+        trainer = SimpleNamespace(
+            args = args,
+            eval_dataset = [0],
+            add_callback = lambda _: None,
+            _unsloth_pipeline_parallel = object(),
+        )
+        callback = attach_early_stopping(trainer, 2)
+        callback.on_evaluate(args, state, None, metrics = {"eval_loss": 1.0}, model = model)
+
+        state.global_step = 2
+        callback.on_save(args, state, None)
+        with torch.no_grad():
+            for param in model.parameters():
+                param.zero_()
+
+        resumed = attach_early_stopping(trainer, 2, resume_from_checkpoint = checkpoint)
+        resumed.on_train_begin(args, state, None, model = model)
+        state.global_step = 3
+        resumed.on_train_end(args, state, None, model = model)
+        assert resumed.restored
+        assert model[f"stage{rank}"].item() == rank + 1.0
 
 
 def test_steps_after_the_best_evaluation_roll_back_like_load_best_model_at_end(tmp_path):

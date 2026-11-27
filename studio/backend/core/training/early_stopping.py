@@ -16,6 +16,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MAX_EARLY_STOPPING_PATIENCE = 1000
+_EARLY_STOPPING_DIR = "studio_early_stopping"
 _EARLY_STOPPING_STATE = "studio_early_stopping.safetensors"
 # Past this the CPU copy of the best weights costs more host RAM than it is worth (a full finetune of a 1B model).
 MAX_BEST_WEIGHTS_BYTES = 2 << 30
@@ -38,6 +39,8 @@ def create_early_stopping_callback(
     patience: int,
     user_stopped = None,
     resume_from_checkpoint = None,
+    *,
+    pipeline_parallel: bool = False,
 ):
     """HF TrainerCallback: counts evaluations whose eval_loss is not below the best so far, stops the run after
     ``patience`` of them in a row, and, like load_best_model_at_end (and zoo's MLX trainer), copies the best
@@ -57,26 +60,67 @@ def create_early_stopping_callback(
             self._best_weights: Optional[dict] = None
             self._too_large = False
 
-        def on_train_begin(self, args, state, control, **kwargs):
+        def _checkpoint_path(self, folder, args):
+            name = _EARLY_STOPPING_STATE
+            if pipeline_parallel:
+                name = f"rank-{args.process_index}-of-{args.world_size}.safetensors"
+            return folder / _EARLY_STOPPING_DIR / name
+
+        def on_train_begin(
+            self,
+            args,
+            state,
+            control,
+            model = None,
+            **kwargs,
+        ):
             if not resume_from_checkpoint:
                 return
-            source = Path(resume_from_checkpoint) / _EARLY_STOPPING_STATE
+            folder = Path(resume_from_checkpoint)
+            source = self._checkpoint_path(folder, args)
+            if not pipeline_parallel and not source.exists():
+                source = folder / _EARLY_STOPPING_STATE
+            snapshot = self._read_checkpoint(source, state.global_step)
+            if pipeline_parallel:
+                from unsloth.models.portable_resume import _agree
+
+                # Every stage must resume with the same patience, even if a rank file is missing.
+                if not _agree(snapshot is not None):
+                    return
+                weights = snapshot[-1]
+                shapes = {
+                    name: param.shape
+                    for name, param in model.named_parameters()
+                    if param.requires_grad
+                }
+                if not _agree(
+                    bool(weights)
+                    and shapes == {name: value.shape for name, value in weights.items()}
+                ):
+                    snapshot = (*snapshot[:-1], None)
+            if snapshot is not None:
+                (
+                    self.best_step,
+                    self.best_loss,
+                    self.bad_evals,
+                    self._too_large,
+                    self._best_weights,
+                ) = snapshot
+
+        def _read_checkpoint(self, source, step):
             if not source.is_file() or source.is_symlink():
-                return
+                return None
             try:
                 from safetensors import safe_open
-
                 with safe_open(source, framework = "pt", device = "cpu") as saved:
                     meta = saved.metadata() or {}
-                    if int(meta["checkpoint_step"]) != state.global_step:
-                        return
+                    if int(meta["checkpoint_step"]) != step:
+                        return None
                     best_step = int(meta["best_step"]) if meta["best_step"] else None
                     best_loss = float(meta["best_loss"]) if meta["best_loss"] else None
                     bad_evals = int(meta["bad_evals"])
                     too_large = meta["too_large"] == "1"
-                    if not 0 <= bad_evals or (
-                        best_step is not None and not 0 <= best_step <= state.global_step
-                    ):
+                    if not 0 <= bad_evals or (best_step is not None and not 0 <= best_step <= step):
                         raise ValueError("invalid early-stopping progress")
                     if best_loss is not None and not math.isfinite(best_loss):
                         raise ValueError("invalid early-stopping loss")
@@ -84,21 +128,27 @@ def create_early_stopping_callback(
                     if source.stat().st_size > MAX_BEST_WEIGHTS_BYTES + 16 * 1024 * 1024:
                         raise ValueError("early-stopping weights exceed the checkpoint limit")
                     weights = {name: saved.get_tensor(name) for name in saved.keys()}
-                self.best_step, self.best_loss = best_step, best_loss
-                self.bad_evals, self._too_large = bad_evals, too_large
-                self._best_weights = weights or None
+                return best_step, best_loss, bad_evals, too_large, weights or None
             except Exception as exc:
                 logger.warning(f"Could not restore early-stopping progress: {exc}")
+                return None
 
-        def save_checkpoint(self, output_dir, step):
-            folder = Path(output_dir) / f"checkpoint-{step}"
+        def save_checkpoint(self, args, state):
+            if not pipeline_parallel and not state.is_world_process_zero:
+                return
+            step = state.global_step
+            folder = Path(args.output_dir) / f"checkpoint-{step}"
             if not folder.is_dir():
                 return
+            destination = self._checkpoint_path(folder, args)
             pending = None
             try:
                 from safetensors.torch import save_file
 
-                with tempfile.NamedTemporaryFile(dir = folder, suffix = ".tmp", delete = False) as file:
+                destination.parent.mkdir(exist_ok = True)
+                with tempfile.NamedTemporaryFile(
+                    dir = destination.parent, suffix = ".tmp", delete = False
+                ) as file:
                     pending = Path(file.name)
                 save_file(
                     {
@@ -114,7 +164,7 @@ def create_early_stopping_callback(
                         "too_large": "1" if self._too_large else "0",
                     },
                 )
-                os.replace(pending, folder / _EARLY_STOPPING_STATE)
+                os.replace(pending, destination)
             except Exception as exc:
                 logger.warning(f"Could not save early-stopping progress: {exc}")
                 if pending is not None:
@@ -124,8 +174,7 @@ def create_early_stopping_callback(
                         pass
 
         def on_save(self, args, state, control, **kwargs):
-            if state.is_world_process_zero:
-                self.save_checkpoint(args.output_dir, state.global_step)
+            self.save_checkpoint(args, state)
 
         def on_evaluate(
             self,
@@ -246,6 +295,7 @@ def attach_early_stopping(
         patience,
         user_stopped = user_stopped,
         resume_from_checkpoint = resume_from_checkpoint,
+        pipeline_parallel = getattr(trainer, "_unsloth_pipeline_parallel", None) is not None,
     )
     trainer.add_callback(callback)
     logger.info(f"Early stopping on: patience of {patience} evaluations\n")

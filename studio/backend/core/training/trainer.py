@@ -1153,10 +1153,8 @@ class UnslothTrainer:
             )
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
-            if main_rank and self._early_stopping is not None:
-                self._early_stopping.save_checkpoint(
-                    self.trainer.args.output_dir, self.trainer.state.global_step
-                )
+            if self._early_stopping is not None:
+                self._early_stopping.save_checkpoint(self.trainer.args, self.trainer.state)
             self.trainer.save_model()
             if main_rank:
                 self.tokenizer.save_pretrained(output_dir)
