@@ -17,7 +17,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from unsloth.models._utils import gguf_dequantize_kwargs
+from unsloth.models._utils import gguf_dequantize_kwargs, gguf_drop_bitsandbytes
 
 try:
     from transformers import GgufConfig
@@ -93,6 +93,45 @@ def test_both_loaders_apply_it_before_from_pretrained(filename, dtype_call):
         "gguf_dequantize_kwargs(kwargs)"
     ), f"{filename} no longer calls gguf_dequantize_kwargs"
     assert min(lines["gguf_dequantize_kwargs(kwargs)"]) > min(lines[dtype_call])
+
+
+def test_gguf_drops_bitsandbytes_with_a_notice(capsys):
+    assert gguf_drop_bitsandbytes("model.gguf", True, False) == (False, False)
+    assert "ignored" in capsys.readouterr().out
+    assert gguf_drop_bitsandbytes("model.gguf", False, True) == (False, False)
+    assert gguf_drop_bitsandbytes("model.gguf", False, False) == (False, False)
+    assert capsys.readouterr().out.count("ignored") == 1
+    # Not a GGUF load: untouched, silent.
+    assert gguf_drop_bitsandbytes(None, True, False) == (True, False)
+    assert gguf_drop_bitsandbytes("", False, True) == (False, True)
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("class_name", ["FastLanguageModel", "FastModel"])
+def test_both_entry_points_drop_bitsandbytes_for_gguf(class_name):
+    tree = ast.parse((MODELS / "loader.py").read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    calls = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Call)
+        and ast.unparse(n.value.func) == "gguf_drop_bitsandbytes"
+    ]
+    assert len(calls) == 1, f"{class_name}.from_pretrained must call gguf_drop_bitsandbytes once"
+    assert ast.unparse(calls[0].targets[0]) == "(load_in_4bit, load_in_8bit)"
+    # Before anything reads load_in_4bit to pick a checkpoint or build a bitsandbytes config.
+    first_read = min(
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Name)
+        and n.id == "load_in_4bit"
+        and isinstance(n.ctx, ast.Load)
+        and n.lineno != calls[0].lineno
+        and not (calls[0].lineno <= n.lineno <= calls[0].end_lineno)
+    )
+    assert calls[0].lineno < first_read
 
 
 def _write_tiny_llama_gguf(path, gguf):

@@ -99,6 +99,7 @@ __all__ = [
     "hf_login",
     "maybe_prefetch_hf_snapshot",
     "gguf_dequantize_kwargs",
+    "gguf_drop_bitsandbytes",
     "resolve_vllm_model_path",
     "is_moe_model",
     "install_block_swap",
@@ -3960,6 +3961,19 @@ def gguf_dequantize_kwargs(kwargs):
         return kwargs
     kwargs["quantization_config"] = GgufConfig(dequantize = True)
     return kwargs
+
+
+def gguf_drop_bitsandbytes(gguf_file, load_in_4bit, load_in_8bit):
+    """A `gguf_file` is unpacked to dense weights at load, and transformers refuses a bitsandbytes config
+    beside it. So `load_in_4bit` (the default) and `load_in_8bit` are dropped for GGUF loads, with a notice.
+    Returns the new `(load_in_4bit, load_in_8bit)`."""
+    if not gguf_file or not (load_in_4bit or load_in_8bit):
+        return load_in_4bit, load_in_8bit
+    print(
+        "Unsloth: `gguf_file` weights are dequantized at load, so load_in_4bit / load_in_8bit is ignored "
+        "and the model loads in 16bit."
+    )
+    return False, False
 
 
 def maybe_prefetch_hf_snapshot(
