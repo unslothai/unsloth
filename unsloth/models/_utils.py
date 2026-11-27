@@ -6984,6 +6984,9 @@ def patch_gradient_accumulation_fix(Trainer):
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
             _refuse_expert_parallel_env_model_init(_original_trainer_init, args, kwargs)
+            _tensor_parallel_env_prebuilt_optimizer_refusal(
+                self, _original_trainer_init, args, kwargs, model
+            )
             tp_env = _tensor_parallel_env_trainer_pre(model)
             if tp_env is None and model is not None:
                 from .ep_native import ep_env_apply, ep_refuse_prebuilt_optimizer
@@ -7513,6 +7516,35 @@ def _pipeline_parallel_env_refusals(
         train_dataset = train_dataset,
         eval_dataset = eval_dataset,
         data_collator = data_collator,
+    )
+
+
+def _tensor_parallel_env_prebuilt_optimizer_refusal(trainer, init, args, kwargs, model):
+    """UNSLOTH_TP_SIZE alone on a model get_peft_model did not shard (PEFT's own get_peft_model, full finetuning):
+    the tensor parallel split in Trainer.__init__ replaces the trainable parameters, so an optimizer built before
+    it would step the old ones and the model would never update. Under UNSLOTH_PP_SIZE the pipeline refusals
+    check this."""
+    if not os.environ.get("UNSLOTH_TP_SIZE") or not isinstance(model, torch.nn.Module):
+        return
+    from .tp_env import env_layout
+
+    layout = env_layout()
+    if layout is None or layout.tp <= 1 or layout.pp > 1:
+        return
+    from .tp_native import is_tensor_parallel
+
+    if is_tensor_parallel(model):
+        return  # already split (Unsloth's get_peft_model): the optimizer holds the parameters that train
+    if _prebuilt_optimizer(
+        trainer, init, args, kwargs
+    ) is None and not _optimizer_kwargs_hold_params(trainer, init, args, kwargs):
+        return
+    raise NotImplementedError(
+        f"Unsloth: UNSLOTH_TP_SIZE={layout.tp} (tensor parallel) splits this model in Trainer.__init__, which "
+        "replaces its trainable parameters, but Trainer(optimizers = (optimizer, ...)) or optimizer_cls_and_kwargs "
+        "= (cls, {'params': ...}) already holds them, so the model would never update. Let the Trainer build the "
+        "optimizer (TrainingArguments optim / learning_rate), override create_optimizer, or build the optimizer "
+        "after Unsloth's get_peft_model (which splits first)."
     )
 
 
