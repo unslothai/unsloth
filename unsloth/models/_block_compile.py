@@ -416,10 +416,8 @@ def _note_kept_backward(out):
 
 
 def _kept_backward_manager(hidden_states):
-    """The tree manager to hold when a block runs inside backward (a checkpoint recompute) while kept
-    layers still wait for their backward. The tree keeps one pending-backward flag that every backward
-    graph clears, and each compiled call starts a dynamo generation, so the recompute would start a
-    new generation and free the kept layers' saved activations."""
+    """Manager to hold during a checkpoint recompute while kept layers await backward: every backward
+    graph clears the tree's one pending flag, so the recompute would free their saved activations."""
     if not _CUDAGRAPH_STATE["kept"] or torch._C._current_graph_task_id() == -1:
         return None
     device = hidden_states.device.index if hidden_states.is_cuda else None
@@ -2940,7 +2938,7 @@ def _wrap(
             held.running_forwards_with_pending_backwards = True
         out = _run(self, hidden_states, args, kwargs, mode)
         if held is not None and hasattr(held, "update_generation"):
-            # A call that ran outside the tree still started a generation the next backward graph would see.
+            # A call outside the tree still started a dynamo generation.
             held.update_generation()
         if skip_down and not trial:
             _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
