@@ -275,3 +275,134 @@ def test_an_edit_between_reads_never_pairs_the_new_key_with_the_old_url(monkeypa
     client, _, _ = embed_connection._client_for("connection:Scheduler/bge")
     assert client.base_url == "http://new.local/v1"
     assert rows[:2] == ["http://old.local/v1", "http://new.local/v1"]
+
+
+def _edit(monkeypatch, *rows):
+    from storage import providers_db
+    monkeypatch.setattr(providers_db, "list_providers", lambda: [dict(r) for r in rows])
+
+
+@pytest.mark.parametrize(
+    "change", [{"base_url": "http://other.local:9000/v1"}, {"provider_type": "openai"}]
+)
+def test_vectors_from_the_old_server_are_stale_once_the_connection_is_edited(monkeypatch, change):
+    name = "connection:Scheduler/bge-m3"
+    before = embeddings.embedding_identity(name)
+    _edit(monkeypatch, {**_PROVIDERS[0], **change})
+    assert not config.embedding_identity_matches(before, embeddings.embedding_identity(name))
+
+
+def test_an_old_name_taken_by_another_server_does_not_inherit_its_vectors(monkeypatch):
+    name = "connection:Scheduler/bge-m3"
+    before = embeddings.embedding_identity(name)
+    _edit(
+        monkeypatch,
+        {**_PROVIDERS[0], "display_name": "Renamed"},
+        {**_PROVIDERS[0], "id": "p-9", "base_url": "http://other.local:9000/v1"},
+    )
+    assert not config.embedding_identity_matches(before, embeddings.embedding_identity(name))
+
+
+@pytest.mark.parametrize(
+    "before, after, same",
+    [
+        ("http://scheduler.local:9000/v1", "http://Scheduler.LOCAL:9000/", True),
+        ("http://u:old@scheduler.local:9000/v1?k=1", "http://u:new@scheduler.local:9000/v1", True),
+        ("http://localhost:8080/v1", "http://127.0.0.1:8080", True),
+        ("http://[::1]:8080/v1", "http://localhost:8080/v1", True),
+        ("http://[fd00::1]:8080/v1", "http://[FD00:0:0:0:0:0:0:1]:8080/v1", True),
+        ("https://api.example.com/v1", "https://api.example.com:443/v1", True),
+        ("http://localhost:8080/v1", "http://localhost:8081/v1", False),
+        ("http://scheduler.local:9000/v1", "http://scheduler.local:9000/tei/v1", False),
+        ("http://gpu1.local:9000/v1", "http://gpu2.local:9000/v1", False),
+    ],
+)
+def test_only_a_different_server_counts_as_a_move(monkeypatch, before, after, same):
+    name = "connection:Scheduler/bge-m3"
+    _edit(monkeypatch, {**_PROVIDERS[0], "base_url": before})
+    old = embeddings.embedding_identity(name)
+    _edit(monkeypatch, {**_PROVIDERS[0], "base_url": after})
+    assert config.embedding_identity_matches(old, embeddings.embedding_identity(name)) is same
+
+
+def test_an_edit_that_keeps_the_server_keeps_the_vectors_current(monkeypatch):
+    name = "connection:Scheduler/bge-m3"
+    before = embeddings.embedding_identity(name)
+    _edit(monkeypatch, {**_PROVIDERS[0], "is_enabled": False, "extra_headers": {"x": "1"}})
+    assert config.embedding_identity_matches(before, embeddings.embedding_identity(name))
+
+
+def test_vectors_carry_the_server_that_embedded_them(monkeypatch):
+    name = "connection:Scheduler/bge-m3"
+
+    def _edited_after_answering(request, n):
+        _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
+        return _vectors(request, n)
+
+    before = embeddings.embedding_identity(name)
+    _, embeddings._get_backend(name)._http = _server(_edited_after_answering)
+    _, identity = embeddings.encode_with_identity(["a"], model_name = name)
+    assert identity == before != embeddings.embedding_identity(name)
+
+
+def test_an_encode_split_across_two_servers_is_refused(monkeypatch):
+    name = "connection:Scheduler/bge-m3"
+    monkeypatch.setattr(config, "EMBED_BATCH", 1)
+
+    def _moved_after_the_first_batch(request, n):
+        if n == 1:
+            _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
+        return _vectors(request, n)
+
+    _, embeddings._get_backend(name)._http = _server(_moved_after_the_first_batch)
+    with pytest.raises(embed_connection.ConnectionEmbedderError, match = "changed while embedding"):
+        embeddings.encode_with_identity(["a", "b"], model_name = name)
+
+
+def test_documents_indexed_before_the_upgrade_stay_current_until_the_server_changes(
+    rag_conn, monkeypatch
+):
+    from storage import rag_db
+
+    name = "connection:Scheduler/bge-m3"
+    rag_conn.execute(
+        "INSERT INTO documents(id, scope, filename, sha256, status, created_at, embedding_model) "
+        "VALUES ('d1', 'kb_a', 'a.txt', 'h1', 'completed', '2026-01-01', ?)",
+        (config.embedding_identity("connection", name),),
+    )
+    rag_conn.execute("PRAGMA user_version = 1")
+    rag_conn.commit()
+    rag_db.reset_schema_state_for_tests()
+    conn = rag_db.get_connection()
+    try:
+        stored = conn.execute("SELECT embedding_model FROM documents WHERE id='d1'").fetchone()[0]
+    finally:
+        conn.close()
+    assert config.embedding_identity_matches(stored, embeddings.embedding_identity(name))
+    _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
+    assert not config.embedding_identity_matches(stored, embeddings.embedding_identity(name))
+
+
+def test_a_re_embed_from_the_old_server_is_not_written_after_the_connection_moves(
+    rag_conn, monkeypatch
+):
+    from core.rag import chunking, store
+
+    name = "connection:Scheduler/bge-m3"
+    old = embeddings.embedding_identity(name)
+    scope = store.kb_scope("kb_a")
+    rag_conn.execute(
+        "INSERT INTO documents(id, scope, filename, sha256, status, created_at, embedding_model) "
+        "VALUES ('d1', ?, 'a.txt', 'h1', 'completed', '2026-01-01', 'stale')",
+        (scope,),
+    )
+    store.add_lexical_chunks(rag_conn, scope, "d1", [chunking.Chunk("a", 1, None, 0, 0, 0, 1)])
+    rag_conn.commit()
+    monkeypatch.setattr(config, "effective_embedding_model", lambda fresh = False: name)
+    write = lambda: store.replace_document_vectors(
+        rag_conn, "d1", "stale", ["d1:0"], [[1.0, 0.0]], old, name
+    )
+    _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
+    assert not write()
+    _edit(monkeypatch, _PROVIDERS[0])
+    assert write()

@@ -478,6 +478,39 @@ def test_tool_uses_swap_only_when_enabled(monkeypatch, tmp_path):
     assert len(calls) == 1 and callable(calls[0]["render"]) and callable(calls[0]["stop_render"])
 
 
+def test_explicit_generator_overrides_saved_preference_but_respects_server_disable(monkeypatch):
+    from utils import openai_auto_switch_settings
+
+    monkeypatch.delenv(swap.SWAP_ENV, raising = False)
+    monkeypatch.setattr(openai_auto_switch_settings, "_cached_setting", lambda *_: False)
+    assert not swap.swap_enabled()
+
+    token = swap.request_image_model.set("local/sdxl")
+    try:
+        assert swap.swap_enabled()
+        monkeypatch.setenv(swap.SWAP_ENV, "0")
+        assert not swap.swap_enabled()
+    finally:
+        swap.request_image_model.reset(token)
+
+
+def test_tool_is_unavailable_while_another_chat_model_is_kept_loaded(monkeypatch):
+    from types import SimpleNamespace
+    from core.inference import model_slots
+    from routes import inference
+
+    monkeypatch.setenv(swap.SWAP_ENV, "1")
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = True))
+    monkeypatch.setattr(media_chat_tools, "media_chat_status", lambda task: None)
+    monkeypatch.setattr(model_slots, "slots", [])
+    assert swap.chat_can_swap()
+    assert media_chat_tools.offered_media_chat_tools({"generate_image"})
+
+    model_slots.slots.append(model_slots.ExtraSlot(None, None, "unsloth"))
+    assert not swap.chat_can_swap()
+    assert media_chat_tools.offered_media_chat_tools({"generate_image"}) == []
+
+
 def test_tool_offered_when_swap_can_load_default(monkeypatch):
     monkeypatch.setattr(media_chat_tools, "media_chat_status", lambda task: None)
     monkeypatch.setattr(swap, "chat_can_swap", lambda: False)
@@ -846,3 +879,272 @@ def test_beside_load_kept_only_after_a_finished_render(stopped):
     names = [e[0] for e in log]
     assert ("image.unload" in names) is stopped
     assert result == (swap.ERR_STOPPED if stopped else result) and chat.resident
+
+
+def test_noop_transformers_load_preserves_restore_recipe(monkeypatch):
+    from types import SimpleNamespace
+    from models.inference import LoadRequest, LoadResponse
+    from routes import inference
+
+    backend = SimpleNamespace(active_model_name = "text", models = {"text": {}}, _proc = object())
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(swap, "_transformers_load", None)
+    original = LoadRequest(model_path = "text", max_seq_length = 8192, gpu_ids = [1])
+    sparse = LoadRequest(model_path = "text")
+    sparse._advertised_id = "org/new-alias"
+    loaded = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
+    already_loaded = loaded.model_copy(update = {"status": "already_loaded"})
+
+    swap.remember_transformers_load(original, loaded, False)
+    backend.models["text"]["parallel_slots"] = 8
+    swap.remember_transformers_load(sparse, already_loaded, True)
+
+    assert swap._transformers_load.launch.max_seq_length == 8192
+    assert swap._transformers_load.launch.gpu_ids == [1]
+    assert swap._transformers_load.launch.n_parallel == 8
+    assert swap._transformers_load.launch._advertised_id == "org/new-alias"
+    assert swap._transformers_load.extra["user_loaded"] is True
+
+    backend._proc = object()
+    swap.remember_transformers_load(sparse, already_loaded, True)
+    assert swap._transformers_load is None
+
+
+def test_transformers_reload_preserves_inherited_precision(monkeypatch):
+    from types import SimpleNamespace
+    from models.inference import LoadRequest, LoadResponse
+    from routes import inference
+
+    entry = {"load_in_4bit_requested": False}
+    backend = SimpleNamespace(active_model_name = "text", models = {"text": entry}, _proc = object())
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(swap, "_transformers_load", None)
+    request = LoadRequest(model_path = "text", max_seq_length = 8192)
+    response = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
+
+    # The loader inherits precision on its private copy and stamps the new worker entry.
+    launch = request.model_copy()
+    inference._inherit_resident_load_in_4bit(backend, launch, "text")
+    assert launch.load_in_4bit is False
+    assert request.load_in_4bit is True
+    backend._proc = object()
+    backend.models["text"] = {"load_in_4bit_requested": launch.load_in_4bit}
+
+    swap.remember_transformers_load(request, response, True)
+
+    assert swap._transformers_load.launch.load_in_4bit is False
+    assert swap._transformers_load.launch.max_seq_length == 8192
+
+
+def test_image_swap_gate_is_not_a_chat_load_for_its_own_admission():
+    from core.inference.gpu_residency import chat_load_in_flight
+    async def check():
+        acquired = asyncio.Event()
+
+        async def other_request():
+            await acquired.wait()
+            return await asyncio.to_thread(chat_load_in_flight)
+
+        unrelated = asyncio.create_task(other_request())
+        async with swap._hold_swap_requests():
+            acquired.set()
+            assert await unrelated
+            assert not await asyncio.to_thread(chat_load_in_flight)
+        assert not chat_load_in_flight()
+
+    asyncio.run(check())
+
+
+def test_transformers_swap_reuses_only_the_loading_accounts_latest_token(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.inference import gpu_arbiter
+    from models.inference import LoadRequest, LoadResponse
+    from routes import inference
+    from utils.account_context import AccountContext, arun_as
+
+    backend = SimpleNamespace(active_model_name = "text", models = {"text": {}}, _proc = object())
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(swap, "_transformers_load", None)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda owner: None)
+    reload = AsyncMock()
+    monkeypatch.setattr(inference, "load_model_gated", reload)
+    token = "one-off-test-token"
+    replacement = "replacement-test-token"
+    request = LoadRequest(model_path = "text", hf_token = token)
+    response = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
+    swap.remember_transformers_load(request, response, True)
+    already_loaded = response.model_copy(update = {"status": "already_loaded"})
+    chat = swap.StudioChat(OWNER.username)
+    other = AccountContext("other", "other")
+
+    async def check():
+        snap = await chat.snapshot()
+        assert snap.launch.hf_token is None
+        assert token not in repr(snap)
+        await chat.reload(snap, None)
+        assert reload.await_args.args[0].hf_token == token
+        assert await arun_as(other, chat.snapshot()) is None
+        with pytest.raises(swap.SwapUnavailable):
+            await arun_as(other, chat.reload(snap, None))
+        assert reload.await_count == 1
+
+        async def use_other_token():
+            other_request = request.model_copy(update = {"hf_token": "other-test-token"})
+            swap.remember_transformers_load(other_request, already_loaded, True)
+
+        await arun_as(other, use_other_token())
+        assert (await chat.snapshot()).credential == snap.credential
+
+        new_request = request.model_copy(update = {"hf_token": replacement})
+        swap.remember_transformers_load(new_request, already_loaded, True)
+        swap.remember_transformers_load(LoadRequest(model_path = "text"), already_loaded, True)
+        updated = await chat.snapshot()
+        assert updated.launch.hf_token is None
+        assert replacement not in repr(updated)
+        await chat.reload(updated, None)
+        assert reload.await_args.args[0].hf_token == replacement
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("scenario", ["normal", "kept_video", "retry", "queued_media"])
+def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop, scenario):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from models.inference import LoadRequest, LoadResponse
+    from routes import inference
+    from core.inference import gpu_arbiter, gpu_residency, media_switch_backends
+
+    log = Log()
+    backend = SimpleNamespace(active_model_name = None, models = {}, _proc = None)
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, is_active = False),
+    )
+    monkeypatch.setattr(swap, "_transformers_load", None)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda owner: OWNER.account_id)
+    monkeypatch.setattr(
+        gpu_residency, "current_policy", lambda: "fit" if scenario == "kept_video" else "off"
+    )
+    monkeypatch.setattr(media_switch_backends, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(swap, "_media_busy", lambda: False)
+    monkeypatch.setenv(swap.SWAP_MODEL_ENV, "local/image")
+    monkeypatch.setenv(swap.SWAP_ENV, "1")
+    monkeypatch.setattr(media_chat_tools, "media_chat_status", lambda task: None)
+    response = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
+    recipe = LoadRequest(model_path = "text", max_seq_length = 4096)
+
+    def load(recipe):
+        backend.active_model_name = "text"
+        backend._proc = object()
+        backend.models = {"text": {}}
+        swap.remember_transformers_load(recipe, response, True)
+
+    def evict(*args, **kwargs):
+        backend.active_model_name = None
+        backend._proc = None
+
+    attempts = []
+    load_model_gated = inference.load_model_gated
+
+    async def bounded_restore(*args, **kwargs):
+        return await asyncio.wait_for(load_model_gated(*args, **kwargs), timeout = 3)
+
+    async def restore(recipe, request, subject, **kwargs):
+        from core.inference import media_keepwarm
+
+        attempts.append(recipe)
+        assert recipe.max_seq_length == 4096
+        if scenario == "kept_video":
+            assert kwargs["impl_kwargs"] == {"restoring_chat_swap": True}
+        if scenario == "retry" and len(attempts) == 1:
+            # The failed restore claimed and released CHAT itself.
+            gpu_arbiter._owner_epoch += 2
+            raise RuntimeError("The Transformers worker failed to start")
+        if scenario == "queued_media":
+            queued = asyncio.create_task(media_keepwarm.begin_request(gpu_arbiter.DIFFUSION))
+            await asyncio.sleep(0)
+            if queued.done():
+                queued.result()
+                media_keepwarm.end_request(gpu_arbiter.DIFFUSION)
+                pytest.fail("An image load was admitted before chat restored")
+            queued.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await queued
+        load(recipe)
+        return response
+
+    class Image(FakeImage):
+        async def load(self, name, should_abort):
+            if scenario == "kept_video":
+                # Fit evicts the chat on the image GPU and keeps the video on GPU 1.
+                evict()
+            await super().load(name, should_abort)
+
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", evict)
+    kept_video = {gpu_arbiter.VIDEO: frozenset({1})} if scenario == "kept_video" else {}
+    monkeypatch.setattr(gpu_arbiter, "_owner", next(iter(kept_video), None))
+    monkeypatch.setattr(gpu_arbiter, "_residents", kept_video)
+    monkeypatch.setattr(gpu_arbiter, "_owner_epoch", 0)
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: backend.active_model_name)
+    monkeypatch.setattr(inference, "load_model_gated", bounded_restore)
+    monkeypatch.setattr(inference, "_run_tracked_load_model_impl", restore)
+    monkeypatch.setattr(swap, "StudioImage", lambda subject, render: Image(log))
+    load(recipe)
+    for enabled_tools in (["web_search", "generate_image"], ["generate_image"]):
+        before = backend._proc
+        assert "generate_image" in [
+            tool["function"]["name"]
+            for tool in media_chat_tools.offered_media_chat_tools(enabled_tools)
+        ]
+        result = swap.run_in_tool(
+            loop = server_loop,
+            account = OWNER,
+            render = AsyncMock(),
+            cancel_event = None,
+            render_limit_s = 10,
+            stop_render = lambda: None,
+        )
+        assert gpu_arbiter.residents() == kept_video
+        assert result.startswith("Generated")
+        assert backend.active_model_name == "text" and backend._proc is not before
+        assert swap.chat_can_swap()
+    assert len(attempts) == (3 if scenario == "retry" else 2)
+
+
+def test_admitted_media_request_refuses_swap_before_eviction():
+    from core.inference import media_keepwarm
+    from core.inference.gpu_arbiter import DIFFUSION
+
+    async def check():
+        await media_keepwarm.begin_request(DIFFUSION)
+        try:
+            async with swap._hold_swap_requests():
+                assert swap._media_busy()
+        finally:
+            media_keepwarm.end_request(DIFFUSION)
+
+    asyncio.run(check())
+
+
+def test_edit_only_generator_leaves_chat_loaded(monkeypatch):
+    from core.inference import media_auto_switch, media_locality
+    from core.inference.media_model_index import MediaModelPick
+
+    pick = MediaModelPick("local/editor", "/models/editor")
+    monkeypatch.setattr(media_auto_switch, "_resolve_pick", lambda *args: pick)
+    monkeypatch.setattr(media_locality, "is_edit_only", lambda candidate: candidate == pick)
+    events = Log()
+    chat = FakeChat(events)
+    trip = swap.RoundTrip(
+        chat = chat, media = swap.StudioImage("unsloth", None), image_model = pick.model_id
+    )
+    with pytest.raises(swap.SwapUnavailable, match = "only edits images"):
+        asyncio.run(trip.run())
+    assert chat.resident and not events

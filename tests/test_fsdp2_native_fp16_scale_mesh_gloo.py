@@ -72,7 +72,6 @@ def _native(rank, world, layout):
             TOKENS * world
         ) // world  # HF sums the count over the world, CP divides it by cp
     else:
-        # Two disjoint 2-rank meshes [0, 1] and [2, 3]; every rank reads its own quarter of the batch.
         mesh = DeviceMesh("cpu", [[0, 1], [2, 3]], mesh_dim_names = ("pair", "shard"))["shard"]
         share = TOKENS // world
         tokens = x[rank * share : (rank + 1) * share]

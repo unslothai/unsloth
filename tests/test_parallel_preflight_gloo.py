@@ -367,7 +367,6 @@ def test_pipeline_sharded_loading_refuses_hf_distributed_kwargs_before_loading(
                 "unused", tp_plan = "auto", quantization_config = {"load_in_4bit": True}
             )
         if quantize:
-            # Without the competing kwarg the quantize-on-load path still runs.
             assert (
                 LlamaForCausalLM.from_pretrained(
                     "unused", quantization_config = {"load_in_4bit": True}

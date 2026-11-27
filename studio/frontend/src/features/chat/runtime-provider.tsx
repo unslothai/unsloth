@@ -272,6 +272,7 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
   attachmentContentText,
   attachmentsSample,
+  pastedTextOf,
 } from "./utils/pasted-text";
 import { annotationsOfFile } from "./utils/document-annotations";
 import { completeTextAttachment } from "./utils/queued-text-attachments";
@@ -730,7 +731,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
       throw new Error(reason);
     }
     try {
-      await readTextAttachmentOnce(file);
+      await readTextAttachmentOnce(file, pastedTextOf(file));
     } catch (error) {
       if (error instanceof UndecodableTextError) {
         toast.error(error.message);
@@ -749,7 +750,9 @@ class TextAttachmentAdapter implements AttachmentAdapter {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const annotations = annotationsOfFile(attachment.file);
-    const text = annotations ? "" : await readTextAttachmentOnce(attachment.file);
+    const text = annotations
+      ? ""
+      : await readTextAttachmentOnce(attachment.file, pastedTextOf(attachment.file));
     return completeTextAttachment(attachment, text);
   }
 

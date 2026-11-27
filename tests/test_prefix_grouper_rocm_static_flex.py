@@ -152,8 +152,7 @@ def _load_real_compile(monkeypatch):
 
 
 def test_rocm_static_length_inside_an_enclosing_graph(monkeypatch):
-    # The dynamic = False compile is inlined into an enclosing graph, so without the trace-time
-    # specialization one symbolic graph served every padded length.
+    # dynamic = False compile without trace-time specialization shares one symbolic graph.
     kernel, graphs, record = _load_real_compile(monkeypatch)
 
     def call(t):

@@ -138,11 +138,49 @@ def test_win_arm64_flash_attn_is_nvidias_wheel_with_its_sha256(python_tag, abi_t
     assert "#" not in wheel_utils.redact_url_credentials(url)
 
 
+NVIDIA_TORCH215 = "https://github.com/NVIDIA/pytorch-windows-ci/releases/download/Flash-Attention-for-WoA-torch2.15/"
+# The release's asset digests, copied here so a table edit cannot pass by changing both sides.
+TORCH215_SHA256 = {
+    "cp311": "aea522334852454885af363360da7a38471a29c229ef14dd1dae2e27faa87fed",
+    "cp312": "52d7c6d05b6857384336a1356504f34ec7022ec51dffaa822f09b4564fbc35f4",
+    "cp313": "a108a9f39c622d21d35a4d94ec7c3095d89718bda7878616ec31534d00e826eb",
+    "cp314": "51b34de575067b1fe6044cb924a37ff9c4e05ce60a3fb88914ad4cb2ad1fb7b8",
+    "cp314t": "f78dfbbe84e7016da1028480f4b216ec58c274f80f00639e91e2ce78d538cad7",
+    "cp315": "90b90880e663289ef935cc1bd959578d18607c9214947a818be0ba82cc706314",
+    "cp315t": "37794b35f1c32edf5c5e074b2391fc678f433390589b5efc4761426a137d7d02",
+}
+
+
+@pytest.mark.parametrize("abi_tag", sorted(TORCH215_SHA256))
+@pytest.mark.parametrize(
+    "torch_version, cuda_version", [("2.15.0+cu135", "13.5"), ("2.15.0+cu134", "13.4")]
+)
+def test_win_arm64_flash_attn_for_torch_2_15(abi_tag, torch_version, cuda_version):
+    python_tag = abi_tag.rstrip("t")
+    e = env(
+        platform_tag = "win_arm64",
+        torch_mm = "2.15",
+        python_tag = python_tag,
+        abi_tag = abi_tag,
+        torch_version = torch_version,
+        cuda_version = cuda_version,
+    )
+    assert wheel_utils.flash_attn_wheel_url(e) == (
+        f"{NVIDIA_TORCH215}flash_attn-2.8.4+cu13torch2.15-{python_tag}-{abi_tag}-win_arm64.whl"
+        f"#sha256={TORCH215_SHA256[abi_tag]}"
+    )
+    # Our own kernels are built for torch 2.14 only, so 2.15 gets none of them yet.
+    assert kernel_install.CAUSAL_CONV1D.wheel_url(e) is None
+    assert kernel_install.MAMBA_SSM.wheel_url(e) is None
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
         {"torch_mm": "2.13"},
-        {"torch_mm": "2.15"},
+        {"torch_mm": "2.16", "torch_version": "2.16.0+cu135", "cuda_version": "13.5"},
+        {"torch_mm": "2.15", "torch_version": "2.15.0+cu135", "cuda_version": "13.0"},
+        {"torch_mm": "2.15", "python_tag": "cp310", "abi_tag": "cp310"},
         {"cuda_major": "12", "cuda_version": "12.8"},
         {"cuda_version": "13.0"},
         {"python_tag": "cp310", "abi_tag": "cp310"},

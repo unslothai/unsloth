@@ -85,7 +85,6 @@ def test_rope_index_pickles_without_the_model_and_keeps_positions():
         assert torch.equal(restored(doc), rope_index(doc))
     # Images moved the mRoPE planes off the text positions, so the comparison is not trivial.
     assert not torch.equal(rope_index(docs[0])[0, 0], torch.arange(docs[0]["input_ids"].shape[1]))
-    # The original still holds the live model.
     assert rope_index.get_rope_index.__self__ is model.model
 
 

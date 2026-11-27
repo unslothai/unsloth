@@ -246,6 +246,7 @@ from ..kernels import (
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..kernels.rope_embedding import register_split_model
 from ._cache_kwarg import get_cache_kwarg
+from ._lora_scale_warning import warn_low_rank_lora_alpha
 from ._utils import (
     __version__,
     importlib_version,
@@ -1360,6 +1361,8 @@ VLLM_SUPPORTED_VLM = [
     "gemma4_unified_text",
     "muse_glimmer",
     "muse_glimmer_text",
+    # Qwen3.8-Flash-Next: GDN + QSA + hyper-connections + PLE; the zoo shares it via vllm_qwen4_exp
+    "qwen4_exp",
 ]
 
 
@@ -1415,6 +1418,30 @@ def _zoo_supports_dense_gemma4_fast_inference():
         return False
 
 
+def _deepseek_v41_fast_inference_check(
+    config,
+    load_in_4bit = False,
+    load_in_8bit = False,
+):
+    """Raise before vLLM allocates when fast_inference cannot share this DeepSeek-V4.1 load with vLLM."""
+    try:
+        from unsloth_zoo.vllm_deepseek_v41 import deepseek_v41_fast_inference_refusal
+    except Exception:
+        raise NotImplementedError(
+            "Unsloth: DeepSeek-V4.1 fast_inference needs a newer unsloth_zoo "
+            "(`pip install --upgrade unsloth_zoo`), or set fast_inference = False."
+        )
+    reason = deepseek_v41_fast_inference_refusal(
+        config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+    )
+    if reason is not None:
+        raise NotImplementedError(
+            f"Unsloth: fast_inference = True cannot share DeepSeek-V4.1 with vLLM: {reason}.\n"
+            "Load a 16-bit (BF16) copy with load_in_4bit = False and fast_inference = True, "
+            "or set fast_inference = False."
+        )
+
+
 def _is_sparse_moe_config(config):
     text_config = getattr(config, "text_config", None) or config
     return bool(
@@ -1465,6 +1492,15 @@ def _fp8_moe_fast_inference_refusal(config):
     ):
         return None
     return "this unsloth_zoo cannot share FP8 MoE experts with vLLM (upgrade unsloth_zoo)"
+
+
+def _zoo_supports_qwen4_exp_fast_inference():
+    # Older unsloth_zoo cannot map vLLM's hyper-connection, PLE and QSA weights onto the training model.
+    try:
+        from unsloth_zoo.vllm_qwen4_exp import is_qwen4_exp_config  # noqa: F401
+        return True
+    except Exception:
+        return False
 
 
 def _zoo_supports_moe_fast_inference():
@@ -4268,6 +4304,15 @@ class FastBaseModel:
 
         vllm_enable_lora = True
 
+        if fast_inference and any(mt.startswith("deepseek_v41") for mt in model_types):
+            # Unsloth's native DeepSeek-V4.1 is a text model: vLLM serves it text-only, sharing every weight.
+            _deepseek_v41_fast_inference_check(
+                auto_config,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+            )
+            is_vlm_config = False
+
         if is_vlm_config and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
@@ -4304,6 +4349,16 @@ class FastBaseModel:
             raise RuntimeError(
                 f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
                 "Please run `pip install --upgrade unsloth_zoo`."
+            )
+
+        if (
+            fast_inference
+            and "qwen4_exp" in model_types
+            and not _zoo_supports_qwen4_exp_fast_inference()
+        ):
+            raise RuntimeError(
+                "Unsloth: qwen4_exp fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`, or set fast_inference = False."
             )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
@@ -4921,6 +4976,7 @@ class FastBaseModel:
 
         # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
+        kwargs = gguf_dequantize_kwargs(kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)
         if config_attn_impl is None:
@@ -5247,6 +5303,9 @@ class FastBaseModel:
                     bnb_config,
                     is_vision_model = is_vlm_config,
                 )
+                if getattr(model, "_unsloth_vllm_nvfp4_layers", 0):
+                    # NVFP4 layers hold vLLM's kept compressed-tensors tensors: run them W4A16 like a plain load.
+                    _prepare_compressed_tensors_model(model)
                 model.vllm_engine = llm
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate
@@ -5269,7 +5328,13 @@ class FastBaseModel:
         if _modelopt_rewritten:
             keep_fp8_scale_names_on_save(model)
 
-        if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
+        # Qwen4Exp under fast_inference: its norms are views of vLLM's bf16 weights and already compute in float32
+        # ((1 + weight.float())); a float32 copy would stop sharing them with the rollout engine. DeepSeek-V4.1
+        # (weight.float() * x) marks its vLLM-shared model the same way.
+        if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1" and not (
+            (fast_inference and "qwen4_exp" in model_types)
+            or getattr(model, "_unsloth_vllm_shared_norms", False)
+        ):
             for jj, (name, module) in enumerate(model.named_modules()):
                 if (
                     name.endswith(("norm", "norm1", "norm2", "norm3", "norm4"))
@@ -5421,7 +5486,22 @@ class FastBaseModel:
         def _is_degraded_vlm(_t):
             return is_vlm and _t is not None and not hasattr(_t, "image_processor")
 
-        tokenizer, _primary_err = _acquire_processor(local_files_only)
+        # A GGUF repo with no tokenizer files: the tokenizer lives in the GGUF's metadata (text only).
+        from .._gguf_load import load_gguf_tokenizer_if_missing
+
+        tokenizer = load_gguf_tokenizer_if_missing(
+            tokenizer_name,
+            kwargs.get("gguf_file") if tokenizer_name == model_name else None,
+            revision = _tokenizer_revision,
+            token = token,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = local_files_only,
+            trust_remote_code = trust_remote_code,
+            padding_side = "left",
+        )
+        _primary_err = None
+        if tokenizer is None:
+            tokenizer, _primary_err = _acquire_processor(local_files_only)
         # Online network failure or degrade: raise so @_offline_aware_load retries from cache. Permanent / missing-file errors propagate, and when already offline keep what we got.
         if (
             (tokenizer is None or _is_degraded_vlm(tokenizer))
@@ -5774,6 +5854,7 @@ class FastBaseModel:
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
+        warn_low_rank_lora_alpha(r, lora_alpha, use_rslora)
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
         _audio_explicitly_requested = bool(finetune_audio_layers)

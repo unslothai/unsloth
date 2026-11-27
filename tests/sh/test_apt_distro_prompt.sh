@@ -138,8 +138,7 @@ run_smart() {
                 case "$_sudo_mode" in
                     nopasswd) ;;
                     cached) [ "$_ignore_cache" = true ] && return 1 ;;
-                    # Authorized, but NOPASSWD only on trivial commands: list mode says yes,
-                    # execution still needs a password.
+                    # List mode says yes for trivial NOPASSWD, but execution needs a password.
                     aptneedspasswd)
                         case " $* " in
                             *" apt-get "*) return 1 ;;
@@ -230,8 +229,7 @@ esac
 assert_contains "failure message does not blame a password exclusively" \
     "$_out" "or apt-get itself"
 
-# Both `-n true` and `-n -l` answer authorization, not authentication; only running the
-# command with -n is truthful.
+# -n true and -n -l check authorization, not authentication; only running with -n is truthful.
 _out=$(run_smart notty aptneedspasswd)
 assert_contains "apt-get needs a password: says it cannot run unattended" \
     "$_out" "cannot be done unattended"

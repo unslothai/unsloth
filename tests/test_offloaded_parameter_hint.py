@@ -60,8 +60,7 @@ def test_the_hint_states_the_remedy():
 
 
 def test_it_reports_a_few_names_not_all_of_them():
-    """A 30B MoE has thousands of offloaded tensors; pasting them all would
-    bury the actual error."""
+    """A 30B MoE has thousands of offloaded tensors; pasting them all would bury the error."""
     m = _Model([(f"layer.{i}.weight", _p("meta")) for i in range(500)])
     hint = _offloaded_parameter_hint(m)
     assert hint.count("layer.") <= 3
@@ -75,8 +74,7 @@ def test_a_mix_of_real_and_meta_still_fires():
 
 
 def test_a_fully_resident_model_gets_no_hint():
-    """The mislabelling risk. An unrelated save failure must not be blamed
-    on an offload that never happened."""
+    """An unrelated save failure must not be blamed on an offload that never happened."""
     m = _Model([("a", _p("cpu")), ("b", _p("cpu"))])
     assert _offloaded_parameter_hint(m) == ""
 
@@ -118,8 +116,7 @@ SRC = (ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
 
 
 def test_both_save_failure_paths_use_it():
-    """The GGUF export can fail at the merge step or at the plain save step,
-    and offloading breaks both."""
+    """GGUF export can fail at the merge or the plain save step; offloading breaks both."""
     assert SRC.count("_offloaded_parameter_hint(self)") == 2
 
 

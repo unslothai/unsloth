@@ -1808,6 +1808,50 @@ def vocoder_fp32_enabled() -> bool:
     return (os.environ.get(VOCODER_FP32_ENV) or "").strip().lower() not in _SWITCH_OFF
 
 
+# cuDNN's atomic transposed-conv algos make the waveform vary per process; CUDA only (MIOpen lacks the flag). "0" = off.
+VOCODER_DETERMINISTIC_ENV = "UNSLOTH_LTX_VOCODER_DETERMINISTIC"
+
+
+def vocoder_deterministic_enabled() -> bool:
+    return (os.environ.get(VOCODER_DETERMINISTIC_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+# The flag is process-global, so overlapping scopes share it: the first entry saves it, the last exit restores it.
+_DETERMINISTIC_LOCK = threading.Lock()
+_deterministic_depth = 0
+_deterministic_saved = False
+
+
+@contextlib.contextmanager
+def _deterministic_cudnn(mel_spec: Any) -> Iterator[None]:
+    global _deterministic_depth, _deterministic_saved
+    import torch
+
+    from .rocm_bf16 import is_rocm_torch
+
+    cudnn = torch.backends.cudnn
+    if (
+        getattr(getattr(mel_spec, "device", None), "type", None) != "cuda"
+        or is_rocm_torch(torch)  # AMD SDK / Radeon wheels leave torch.version.hip unset
+        or _is_compiling()
+        or not vocoder_deterministic_enabled()
+    ):
+        yield
+        return
+    with _DETERMINISTIC_LOCK:
+        if _deterministic_depth == 0:
+            _deterministic_saved = bool(cudnn.deterministic)
+            cudnn.deterministic = True
+        _deterministic_depth += 1
+    try:
+        yield
+    finally:
+        with _DETERMINISTIC_LOCK:
+            _deterministic_depth -= 1
+            if _deterministic_depth == 0:
+                cudnn.deterministic = _deterministic_saved
+
+
 def _is_compiling() -> bool:
     try:
         import torch
@@ -2031,6 +2075,10 @@ def install_vocoder_fp32_forward(vocoder: Any) -> None:
             return stored_call(self, mel_spec, args, kwargs)
 
         def forward(self, mel_spec, *args, **kwargs):
+            with _deterministic_cudnn(mel_spec):
+                return fp32_forward(self, mel_spec, *args, **kwargs)
+
+        def fp32_forward(self, mel_spec, *args, **kwargs):
             param = next(self.parameters(), None)
             compiling = _is_compiling()
             if (

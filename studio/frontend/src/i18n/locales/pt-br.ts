@@ -2430,6 +2430,10 @@ export const ptBR = {
         confirmDescriptionChatOnly:
           "Para o servidor e executa o instalador novamente. Esta é uma instalação somente chat, então o instalador também a atualiza para a instalação completa com o PyTorch, vários gigabytes no total. As conversas e as configurações são mantidas. Isso pode levar alguns minutos.",
         confirmAction: "Reparar agora",
+        recommendedTorch:
+          "Reparo recomendado: esta instalação tem o PyTorch {torch}, anterior ao {managedTorch} gerenciado no qual as GPUs da série RTX 50 são compatíveis.",
+        recommendedDriver:
+          "O PyTorch {torch} é anterior ao {managedTorch} gerenciado no qual as GPUs da série RTX 50 são compatíveis, mas este driver de GPU não é compatível com CUDA 13. Atualize primeiro o driver da GPU e depois repare a instalação.",
       },
       resetPreferences: {
         sectionTitle: "Zona de perigo",
@@ -4146,8 +4150,8 @@ export const ptBR = {
       summary: {
         single: "Treinando em uma GPU",
         layerSplit: "O modelo é dividido camada por camada entre {count} GPUs",
-        ddp: "O modelo cabe em uma GPU: paralelismo de dados em {count} GPUs",
-        fsdp2: "O modelo é grande demais para uma GPU: fragmentado entre {count} GPUs",
+        ddp: "Cada GPU treina uma cópia completa: paralelismo de dados em {count} GPUs",
+        fsdp2: "Pesos e estado do otimizador fragmentados entre {count} GPUs",
         tp: "Cada camada é dividida entre {count} GPUs",
         pp: "As camadas rodam como {count} estágios de pipeline, um por GPU",
         cp: "Cada sequência é dividida entre {count} GPUs",
@@ -4158,7 +4162,7 @@ export const ptBR = {
         noGpu: "Selecione pelo menos uma GPU.",
         singleNeedsOne: "GPU única usa exatamente uma GPU. Desmarque as outras.",
         needsTwo: "Este modo precisa de pelo menos duas GPUs.",
-        customSpec: "Digite um layout, por exemplo dp=2,tp=2.",
+        customSpec: "Digite um layout, por exemplo {example}.",
       },
     },
     preview: {
@@ -4547,6 +4551,12 @@ export const ptBR = {
       epochs: "Épocas (Epochs)",
       useMaxSteps: "Usar Passos Máximos",
       useEpochs: "Usar Épocas",
+      stepGuidancePass: "Cerca de {steps} passos é uma passada pelas suas {rows} linhas com um lote efetivo de {batch}.",
+      stepGuidanceFloor: "Uma passada pelas suas {rows} linhas tem só {passSteps} passos com um lote efetivo de {batch}, então cerca de {steps} passos (algumas passadas) é um mínimo razoável.",
+      stepGuidanceCap: "Uma passada pelas suas {rows} linhas tem {passSteps} passos com um lote efetivo de {batch}; {steps} passos treinam em parte dela, o que costuma bastar para uma primeira execução.",
+      stepGuidanceEpoch: "Uma época tem cerca de {passSteps} passos pelas suas {rows} linhas com um lote efetivo de {batch}.",
+      stepGuidancePacking: "O packing junta linhas curtas, então uma passada pode levar menos passos.",
+      useSuggestedSteps: "Usar {steps}",
       maxStepsTooltip: "Sobrescreve o total de passos do otimizador.",
       epochsTooltip: "Número de passagens completas pelo dataset.",
       contextLength: "Contexto",
@@ -5097,6 +5107,7 @@ export const ptBR = {
       showPromptDescription: "Veja as instruções exatas enviadas ao modelo.",
     },
     history: {
+      notSaved: "Não foi salva no histórico: o armazenamento do navegador está cheio.",
       title: "Histórico",
       search: "Buscar no histórico",
       empty: "Suas traduções aparecem aqui.",
@@ -6062,6 +6073,12 @@ export const ptBR = {
     maximize: "Maximizar janela",
     restore: "Restaurar janela",
     close: "Fechar janela",
+    mediaCodecs: {
+      title: "Os vídeos gerados podem não ser reproduzidos",
+      // {command}: an apt command line, never translated.
+      description: "Faltam neste sistema os decodificadores de vídeo do GStreamer. Instale-os com: {command}",
+      copy: "Copiar comando",
+    },
   },
   runtimeUpdate: {
     installAudio: "Instalar o runtime de áudio",

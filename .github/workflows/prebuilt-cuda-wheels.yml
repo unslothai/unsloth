@@ -439,6 +439,12 @@ jobs:
         if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
         run: python unsloth/.github/scripts/patch_mamba_msvc.py src
 
+      # The pinned flash-attn appends num_splits to varlen_fwd and pybind drops its default, so
+      # 21-argument callers (xFormers' FA2 operator) fail. Adds the 2.8.3 form back as an overload.
+      - name: Patch flash-attn varlen_fwd for 21-argument callers
+        if: matrix.package == 'flash-attn'
+        run: python unsloth/.github/scripts/patch_flash_attn_varlen_compat.py src
+
       # Drop causal-conv1d's and mamba-ssm's -lineinfo (same SASS, half the size), their SASS for
       # the integrated Arm GPUs on x86 wheels (sm_87 / 110 / 121), and flash-attn's PTX copy of its
       # newest arch. Asserts on the text it edits, like the mamba patches above.
@@ -829,6 +835,12 @@ jobs:
       - name: Patch mamba-ssm for the MSVC host compiler (Windows)
         if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
         run: python unsloth/.github/scripts/patch_mamba_msvc.py src
+
+      # The pinned flash-attn appends num_splits to varlen_fwd and pybind drops its default, so
+      # 21-argument callers (xFormers' FA2 operator) fail. Adds the 2.8.3 form back as an overload.
+      - name: Patch flash-attn varlen_fwd for 21-argument callers
+        if: matrix.package == 'flash-attn'
+        run: python unsloth/.github/scripts/patch_flash_attn_varlen_compat.py src
 
       # Drop causal-conv1d's and mamba-ssm's -lineinfo (same SASS, half the size), their SASS for
       # the integrated Arm GPUs on x86 wheels (sm_87 / 110 / 121), and flash-attn's PTX copy of its

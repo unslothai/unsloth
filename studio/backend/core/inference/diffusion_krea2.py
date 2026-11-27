@@ -52,7 +52,7 @@ def load_krea2_tokenizer(
         check_cancelled()
     from transformers import AutoTokenizer
 
-    from .diffusion_offline_source import offline_snapshot_source
+    from .diffusion_offline_source import tokenizer_snapshot_source
 
     cache_dir = _live_cache_dir()
     kwargs: dict[str, Any] = {
@@ -62,9 +62,13 @@ def load_krea2_tokenizer(
     }
     if hf_token:
         kwargs["token"] = hf_token
-    # Offline by repo id, transformers 5.x fails both attempts below (see diffusion_offline_source).
-    source = offline_snapshot_source(
-        repo_id, "tokenizer", local_files_only = local_files_only, cache_dir = cache_dir
+    # By repo id, transformers 5.x breaks offline and drops the token on gated repos.
+    source = tokenizer_snapshot_source(
+        repo_id,
+        "tokenizer",
+        local_files_only = local_files_only,
+        token = hf_token,
+        cache_dir = cache_dir,
     )
     try:
         return AutoTokenizer.from_pretrained(source, **kwargs)
@@ -200,15 +204,26 @@ def load_krea2_pipeline(
         name: getattr(torch, str(dt).replace("torch.", ""))
         for name, dt in (storage_dtypes or {}).items()
     }
+    from .diffusion_te_vision import (
+        drop_vision_tower,
+        family_drops_vision_tower,
+        vision_tower_skipped,
+    )
+
+    # Krea-2 conditions on text only: the encoder's vision tower is never read, so it is never loaded.
+    drop_vision = family_drops_vision_tower(KREA2_FAMILY_NAME)
     if text_encoder is None:
-        text_encoder = load_krea2_text_encoder(
-            repo_id,
-            stored.get("text_encoder", dtype),
-            hf_token = token,
-            local_files_only = local_files_only,
-            check_cancelled = check_cancelled,
-        )
+        with vision_tower_skipped(drop_vision):
+            text_encoder = load_krea2_text_encoder(
+                repo_id,
+                stored.get("text_encoder", dtype),
+                hf_token = token,
+                local_files_only = local_files_only,
+                check_cancelled = check_cancelled,
+            )
         check_cancelled()
+    if drop_vision and drop_vision_tower(text_encoder):
+        logger.info("diffusion.krea2: the text encoder's unused vision tower is not loaded")
     scheduler = diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained(
         repo_id,
         subfolder = "scheduler",
@@ -250,5 +265,9 @@ def load_krea2_pipeline(
     if transformer is not None:
         # before the attention backend / INT8 route, which read the block processors
         from .diffusion_krea2_prefix_kv import install as install_prefix_kv
+
         install_prefix_kv(transformer, logger)
+        from .diffusion_krea2_text_cache import install as install_text_cache
+
+        install_text_cache(transformer, logger)
     return pipe

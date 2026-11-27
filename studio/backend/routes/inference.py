@@ -36,6 +36,7 @@ from typing import (
     Any,
     Callable,
     Collection,
+    Hashable,
     List,
     Literal,
     NamedTuple,
@@ -293,6 +294,8 @@ _CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inf
 # Queued renders wait for the one-render slot inside their thread; on the default executor they would hold every worker.
 _IMAGE_GENERATE_EXECUTOR_ENV = "UNSLOTH_DIFFUSION_GENERATE_EXECUTOR"
 _IMAGE_GENERATE_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "image-generate")
+# Reserved-turn calls run here: queued waiters may hold every worker of the pool above.
+_IMAGE_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "image-batch")
 
 
 async def _image_generate_in_thread(func, /, *args, **kwargs):
@@ -307,6 +310,12 @@ async def _image_generate_in_thread(func, /, *args, **kwargs):
     loop = asyncio.get_running_loop()
     call = functools.partial(contextvars.copy_context().run, func, *args, **kwargs)
     return await loop.run_in_executor(_IMAGE_GENERATE_EXECUTOR, call)
+
+
+async def _image_generate_on_reserved_turn(func, /, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, func, *args, **kwargs)
+    return await loop.run_in_executor(_IMAGE_BATCH_EXECUTOR, call)
 
 
 def _loaded_chat_template() -> Optional[str]:
@@ -8457,6 +8466,27 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
+def _serving_reasoning_flags(tools = None) -> Optional[dict]:
+    """The serving model's reasoning flags, read as /status reads them; None when nothing is loaded."""
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        return {
+            name: getattr(llama_backend, name)
+            for name in (
+                "supports_reasoning",
+                "reasoning_style",
+                "reasoning_always_on",
+                "reasoning_effort_levels",
+            )
+        }
+    backend = _peek_inference_backend()
+    if backend is None or not backend.active_model_name:
+        return None
+    models = getattr(backend, "models", {}) or {}
+    model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    return _sf_rendered_features(backend, model_info, tools)[0]
+
+
 def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
     """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
     clean = public_model_id(model) or model or "model"
@@ -8763,17 +8793,21 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     )
     from utils.openai_auto_switch_settings import (
         model_override_load_kwargs,
+        resolve_fit_max_seq_length,
         resolve_override_for_load,
         stored_gpu_index_kind,
     )
 
     load_path, variant = request.model_path, request.gguf_variant
-    alias = _snapshot_repo_or_self(load_path, require_cache = True)
+    alias = request._override_alias_id or _snapshot_repo_or_self(load_path, require_cache = True)
     # A row may be keyed by the snapshot path; the scan also warms the index local_target_is_gguf reads.
     ref = f"{load_path}:{variant}" if variant else load_path
-    local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
-        resolve_local_gguf, ref
-    )
+    # Set only by a caller that already resolved the on-disk copy; a second resolution can pick another row.
+    local = None
+    if not request._override_alias_id:
+        local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
+            resolve_local_gguf, ref
+        )
     if local:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
@@ -8799,6 +8833,24 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
             fill.pop(name, None)
+        if "max_seq_length" not in sent:
+            from core.inference.llama_server_args import parse_gpu_layers_override
+
+            # The saved context depends on placement (--fit sizes it under manual auto layers); a sent -ngl wins, as in the loader.
+            try:
+                parsed = parse_gpu_layers_override(request.llama_extra_args)
+            except ValueError:
+                parsed = None
+            layers = request.gpu_layers if parsed is None else parsed
+            placed = {
+                **override,
+                "gpu_memory_mode": request.gpu_memory_mode,
+                "gpu_layers": layers if layers >= 0 else None,
+            }
+            context = resolve_fit_max_seq_length(placed, is_gguf = is_gguf)
+            fill.pop("max_seq_length", None)
+            if context is not None:
+                fill["max_seq_length"] = context
     # A filled gpu_ids would strip the sent --device / --main-gpu (_gpu_ids_own_placement).
     if _extra_args_set_any_flag(request.llama_extra_args, _DEVICE_FLAGS):
         fill.pop("gpu_ids", None)
@@ -13125,13 +13177,19 @@ async def _maybe_auto_switch_model(
                             async def _switch_load(load_request: LoadRequest) -> None:
                                 nonlocal target_backend
                                 if not beside:
-                                    await _load_model_impl(
+                                    response = await _load_model_impl(
                                         load_request,
                                         fastapi_request,
                                         current_subject,
                                         current_request_counted = True,
                                         **load_internal_kw,
                                     )
+                                    if isinstance(response, LoadResponse) and not target_is_gguf:
+                                        from core.inference.chat_media_swap import (
+                                            remember_transformers_load,
+                                        )
+                                        load_request._advertised_id = override_id
+                                        remember_transformers_load(load_request, response, False)
                                     model_slots.mark_used(None)
                                     return
                                 await load_model_gated(
@@ -13467,13 +13525,16 @@ def _chat_fit_kwargs(
     credit_gb: Optional[dict] = None,
     mlx_need_mib: Optional[int] = None,
     mlx_credit_mib: int = 0,
+    *,
+    restoring_chat_swap: bool = False,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
     audio.cpp and native audio are priced from the placement estimate, an MLX load on Apple Silicon from
     ``mlx_need_mib``. A GGUF launch prices itself (it refuses a partial fit and load_model_gated makes room).
     Anything else has no estimate before launch: When they fit evicts first, Always tries the load and turns an
-    out-of-memory failure into its refusal. ``credit_gb`` is what the outgoing primary frees per GPU when this
+    out-of-memory failure into its refusal. A discrete GPU chat restored during an image swap tries its previous
+    placement beside the remaining media first. ``credit_gb`` is what the outgoing primary frees per GPU when this
     load replaces it.
     """
     if policy is None:
@@ -13500,7 +13561,8 @@ def _chat_fit_kwargs(
         from core.inference.gpu_residency import ChatNeed
         kwargs["need_mib"] = ChatNeed({0: int(mlx_need_mib)}, credit_mib = mlx_credit_mib)
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
-        policy == "fit" or (not config.is_gguf and _unified_metal_host())
+        (policy == "fit" and not restoring_chat_swap)
+        or (not config.is_gguf and _unified_metal_host())
     ):
         # Unified memory pages past the budget: Always gets no OOM to refuse on.
         kwargs["evict_first"] = True
@@ -13810,7 +13872,7 @@ async def load_model_for_preview(
                 prior_marker = _get_preview_resident()
                 loaded_ok = False
                 try:
-                    await _load_model_impl(
+                    response = await _load_model_impl(
                         request,
                         fastapi_request,
                         current_subject,
@@ -13825,6 +13887,9 @@ async def load_model_for_preview(
                         allow_gpu_owner_eviction = False,
                     )
                     loaded_ok = True
+                    if isinstance(response, LoadResponse):
+                        from core.inference.chat_media_swap import remember_transformers_load
+                        remember_transformers_load(request, response, False)
                 except (GpuOwnerBusyError, MultiModelAlwaysRefusal) as exc:
                     untrack_current_request(scope)
                     raise HTTPException(
@@ -19231,13 +19296,15 @@ async def load_model_gated(
     current_request_counted: bool = False,
     impl_kwargs: Optional[dict] = None,
     background: bool = False,
+    swap_gates_held: bool = False,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
     In-process callers (preview) must await THIS, not the route: the route's slow
     path returns a StreamingResponse nobody in-process drains, so awaiting it would
     return mid-load and hide a late failure in an unread body. This blocks until the
-    model is resident and raises the real exception.
+    model is resident and raises the real exception. A chat-image restore already
+    holds the model load, lifecycle and media admission gates.
     """
     if is_decision_api_model(request.model_path):
         raise HTTPException(
@@ -19285,7 +19352,7 @@ async def load_model_gated(
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the gate so idle auto-unload can't unload mid-load; auto-switch already holds it.
-        async with model_load_gate():
+        async with nullcontext() if swap_gates_held else model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
             replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
@@ -19299,7 +19366,7 @@ async def load_model_gated(
                 extra.llama._llama_update_in_progress = getattr(
                     _llama_cpp_backend, "_llama_update_in_progress", False
                 )
-            async with nullcontext() if new_slot else inference_lifecycle_gate():
+            async with nullcontext() if new_slot or swap_gates_held else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 if not new_slot:
                     # An auto-switch beside checked before this gate: this load replaces a loaded model.
@@ -19352,6 +19419,15 @@ async def load_model_gated(
                         measured = isinstance(exc, GpuMemoryShortError)
                         if not measured:
                             if extra is None and _ran_out_of_memory(exc):
+                                if (impl_kwargs or {}).get("restoring_chat_swap"):
+                                    from core.inference.gpu_residency import current_policy
+                                    if (
+                                        await asyncio.to_thread(current_policy) == "fit"
+                                        and not _unified_metal_host()
+                                    ):
+                                        # Retry the layout that already fit; real memory pressure still falls back to Fit.
+                                        impl_kwargs = {**impl_kwargs, "restoring_chat_swap": False}
+                                        continue
                                 await asyncio.to_thread(_refuse_oom_beside_media_under_always)
                             # A non-GGUF load reports no fit up front: its out-of-memory failure
                             # makes room the same way, one idle kept model at a time.
@@ -19400,7 +19476,11 @@ async def load_model_gated(
                         if await _free_for_chat(exc, evicted, media_only = True):
                             continue
                         # No chat may start on a victim between its pick and teardown.
-                        async with inference_lifecycle_gate() if new_slot else nullcontext():
+                        async with (
+                            inference_lifecycle_gate()
+                            if new_slot and not swap_gates_held
+                            else nullcontext()
+                        ):
                             _check_switch_precondition(fastapi_request)
                             _require_load_keeps_chat(fastapi_request, request)
                             victims = await asyncio.to_thread(
@@ -19446,7 +19526,11 @@ async def load_model_gated(
                             request = request.model_copy(
                                 update = {"alongside": False, "force_alongside": False}
                             )
-                            async with inference_lifecycle_gate() if new_slot else nullcontext():
+                            async with (
+                                inference_lifecycle_gate()
+                                if new_slot and not swap_gates_held
+                                else nullcontext()
+                            ):
                                 if background:
                                     await _wait_for_model_switch_idle(
                                         current_request_counted = current_request_counted
@@ -19499,6 +19583,9 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
+            if extra is None and isinstance(response, LoadResponse):
+                from core.inference.chat_media_swap import remember_transformers_load
+                remember_transformers_load(request, response, user_initiated)
             twin, survivor = (
                 await asyncio.to_thread(_served_twice, extra)
                 if new_slot and extra is not None
@@ -19576,6 +19663,7 @@ async def load_model_gated(
             current_request_counted = current_request_counted,
             impl_kwargs = impl_kwargs,
             background = background,
+            swap_gates_held = swap_gates_held,
         )
     finally:
         _replaces_its_repo.reset(token)
@@ -20300,6 +20388,7 @@ async def _load_model_impl(
     cache_environment: Optional[dict[str, str]] = None,
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
+    restoring_chat_swap: bool = False,
 ):
     from core.inference.npu_backend import is_npu_model_path
 
@@ -21086,6 +21175,7 @@ async def _load_model_impl(
                         outgoing_chat_gb,
                         mlx_need_mib = None if mlx_chat_need is None else mlx_chat_need[0],
                         mlx_credit_mib = mlx_credit_mib,
+                        restoring_chat_swap = restoring_chat_swap,
                     )
                 )
                 await asyncio.to_thread(
@@ -33849,6 +33939,17 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
+    from core.inference.chat_media_swap import request_image_model
+
+    if payload.image_generator and (
+        current_account().via_api_key
+        or account_access.account_scope() is not None
+        or not _loads_anything()
+        or payload.provider_id
+        or payload.provider_type
+    ):
+        raise HTTPException(status_code = 403, detail = "An image generator requires local owner chat.")
+    request_image_model.set(payload.image_generator)
     # Opt-in per request via UI_STREAM_EVENTS_HEADER; read once so every stream generator shares it.
     _ui_events = _ui_stream_events_enabled(request)
     # Seeded at stream start, so a tool already chatty past the window still gets a keepalive.
@@ -34092,6 +34193,16 @@ async def produce_openai_chat_completions(
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")
         _preprepared_audio = _audio_preflight.get("prepared")
+    if payload._scheduled_reasoning_effort is not None:
+        from core.scheduled_tasks.scheduler import _reasoning_fields
+
+        # A tool run's turns can render the shipped template instead of an override; classify that one.
+        _tool_run = payload.enable_tools and payload.tool_choice != "none"
+        _flags = _serving_reasoning_flags(payload.tools or (({},) if _tool_run else None))
+        for _field, _value in _reasoning_fields(
+            payload._scheduled_reasoning_effort, False, _flags
+        ).items():
+            setattr(payload, _field, _value)
 
     from core.inference.npu_backend import peek_npu_backend
 
@@ -38987,14 +39098,19 @@ def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
     """(sandbox_dir, contained path) of a regular (not linked) file in the sandbox, or a 404."""
     import stat as _stat
 
-    sandbox_dir, path = _contained_sandbox_path(session_id, filename)
-    try:
-        entry = os.lstat(path)
-    except OSError:
-        raise HTTPException(status_code = 404, detail = "Not found") from None
-    if not _stat.S_ISREG(entry.st_mode):
-        raise HTTPException(status_code = 404, detail = "Not found")
-    return sandbox_dir, path
+    for _attempt in range(2):
+        sandbox_dir, path = _contained_sandbox_path(session_id, filename)
+        try:
+            entry = os.lstat(path)
+        except FileNotFoundError:
+            # The legacy sandbox move can finish between resolution and lstat.
+            continue
+        except OSError:
+            break
+        if _stat.S_ISREG(entry.st_mode):
+            return sandbox_dir, path
+        break
+    raise HTTPException(status_code = 404, detail = "Not found")
 
 
 def _unmoved_sandbox_file(root: str, path: str) -> str:
@@ -39156,6 +39272,55 @@ async def upload_sandbox_file(
     return saved
 
 
+_SANDBOX_DOWNLOAD_SECRET = _secrets.token_bytes(32)
+_SANDBOX_DOWNLOAD_TTL = 300
+
+
+def _sandbox_download_id(session_id: str, filename: str) -> str:
+    return _hashlib.sha256(json.dumps([session_id, filename]).encode()).hexdigest()
+
+
+def _sandbox_download_signature(payload: str) -> str:
+    return _hmac.new(_SANDBOX_DOWNLOAD_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
+
+
+def _sandbox_download_account(token: str, session_id: str, filename: str):
+    try:
+        target, expiration, signature = token.rsplit(".", 2)
+        payload = f"{target}.{expiration}"
+        if int(expiration) <= int(time.time()) or not _hmac.compare_digest(
+            signature.encode(), _sandbox_download_signature(payload).encode()
+        ):
+            return None
+    except ValueError:
+        return None
+    return media_link_account(target, _sandbox_download_id(session_id, filename))
+
+
+@router.post("/sandbox-download-link")
+async def create_sandbox_download_link(
+    session_id: str = Query(max_length = 4096),
+    filename: str = Query(max_length = 4096),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    from starlette.concurrency import run_in_threadpool
+
+    # The link redeems as the bare account, dropping the API caller's sandbox restrictions.
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Download links can only be created from the Unsloth UI.",
+        )
+    await run_in_threadpool(_sandbox_regular_file, session_id, filename)
+    target = media_link_target(_sandbox_download_id(session_id, filename))
+    payload = f"{target}.{int(time.time()) + _SANDBOX_DOWNLOAD_TTL}"
+    return JSONResponse(
+        {"token": f"{payload}.{_sandbox_download_signature(payload)}"},
+        headers = {"Cache-Control": "no-store"},
+    )
+
+
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
 async def serve_sandbox_file(
     session_id: str,
@@ -39163,6 +39328,7 @@ async def serve_sandbox_file(
     request: Request,
     token: Optional[str] = None,
     session: Optional[str] = None,
+    download_token: Optional[str] = None,
 ):
     """
     Serve a file a tool call created in this chat's sandbox.
@@ -39172,16 +39338,23 @@ async def serve_sandbox_file(
     or image/svg+xml would be same-origin script execution. nosniff plus a
     Content-Disposition filename is what makes serving them safe.
 
-    Accepts auth via an Authorization header or a query token. Unsloth uses an
-    authenticated fetch and object URL; query auth remains for older clients.
+    Accepts authenticated fetches, older query auth, and file-scoped download links.
     """
-    # ── Authentication (header or query param) ──────────────────
-    await _authenticate_header_or_query(request, token)
+    from starlette.concurrency import run_in_threadpool
+
+    # ── Authentication (header, query param, or download link) ──
+    account = None
+    if download_token is None:
+        await _authenticate_header_or_query(request, token)
+    else:
+        account = await run_in_threadpool(
+            _sandbox_download_account, download_token, session or session_id, filename
+        )
+        if account is None:
+            raise HTTPException(status_code = 401, detail = "Invalid or expired download link")
 
     # ── Filename sanitization + path containment ────────────────
     import stat as _stat
-
-    from starlette.concurrency import run_in_threadpool
 
     safe_filename = os.path.basename(filename)
 
@@ -39211,7 +39384,11 @@ async def serve_sandbox_file(
             raise
         return handle, info.st_size
 
-    handle, size = await run_in_threadpool(_open_checked)
+    handle, size = (
+        await run_in_threadpool(_open_checked)
+        if account is None
+        else await run_in_threadpool(run_as, account, _open_checked)
+    )
     head_only = getattr(request, "method", "GET").upper() == "HEAD"
     if head_only:
         # FastAPI adds no HEAD to GET routes; nothing is read since artifacts can be huge.
@@ -41359,6 +41536,11 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
             return model
+        # A client may echo a tag issued before tags carried the server; it names the current one.
+        if rag_config.is_connection_model(model):
+            legacy = rag_config.embedding_identity("connection", model)
+            if wanted in (legacy, _public_embedding_identity(legacy, model, label)):
+                return model
         return None
     for name in (model, repo, label, _public_embedding_name(repo)):
         if not name:
@@ -51776,6 +51958,19 @@ async def _route_nvfp4_request(
     return routed, route
 
 
+def _lora_fuse_kwarg(begin_load: Any, lora_fuse: Optional[str]) -> dict:
+    """An explicit on/off only, and only to an engine that folds LoRAs (sd.cpp / MLX take no such argument)."""
+    if not lora_fuse or lora_fuse == "auto":
+        return {}
+    try:
+        import inspect
+        if "lora_fuse" in inspect.signature(begin_load).parameters:
+            return {"lora_fuse": lora_fuse}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _nvfp4_route_kwarg(begin_load: Any, route: Any) -> dict:
     """Unchanged decisions are passed too so the backend does not re-decide; native engines take no such argument."""
     from core.inference.diffusion_nvfp4_route import ROUTE_UNCHANGED
@@ -52021,6 +52216,35 @@ async def diffusion_download_plan(
             # Keeps the probe: a capability read, never an allocation; without it a GGUF pick reports 21 GB short
             memory_verdict = not training,
         )
+        if fam is not None and planner is backend:
+            from core.inference.diffusion import _memory_request_forces_offload
+            from core.inference.diffusion_transformer_quant import plan_precision_options
+
+            # Probe verdicts need the planned card's target; while training holds the GPU only the family table answers.
+            plan_target = None
+            if not training and gpu_ordinal is not None:
+                try:
+                    plan_target = await asyncio.to_thread(
+                        backend._target_for_ordinal, fam, gpu_ordinal
+                    )
+                except Exception:  # noqa: BLE001 -- no target, no probe verdicts
+                    plan_target = None
+
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            plan = {
+                **plan,
+                "precision_options": plan_precision_options(
+                    getattr(fam, "name", None),
+                    model_kind = kind,
+                    repo_id = request.model_path,
+                    base_repo = request.base_repo,
+                    gpu_ordinal = gpu_ordinal,
+                    target = plan_target,
+                    offload = _memory_request_forces_offload(
+                        request.memory_mode, bool(request.cpu_offload)
+                    ),
+                ),
+            }
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -52573,6 +52797,7 @@ async def load_diffusion_model_gated(
                 attention_backend = request.attention_backend,
                 # Only when set: older engines and test doubles take no such argument.
                 **({"int8_attention": request.int8_attention} if request.int8_attention else {}),
+                **_lora_fuse_kwarg(engine.begin_load, request.lora_fuse),
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,
@@ -53303,7 +53528,7 @@ async def generate_diffusion_image(
         if request.xy is not None:
             response = await _generate_xy_grid(request)
         else:
-            response = await _generate_diffusion_image_core(request)
+            response = await _generate_diffusion_image_core(request, coalesce = True)
         finished = True
         return response
     finally:
@@ -53366,12 +53591,12 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
     try:
         _xy_grid_stops.append(stop)
         with render_fence():
-            for index in plan.order:
+            for position, index in enumerate(plan.order):
                 if ticket.cancelled():
                     raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
                 captured: list[Any] = []
-                # The engine binds each cell's cancel to the ticket before it waits for the slot.
-                with generation_ticket(ticket):
+                # Cells after the first continue the grid, so they go first in line.
+                with generation_ticket(ticket), _follow_up_pass() if position else nullcontext():
                     result = await _generate_diffusion_image_run(
                         plan.cells[index].request, captured = captured
                     )
@@ -53420,7 +53645,10 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
 
 
 async def _generate_diffusion_image_core(
-    request: DiffusionGenerateRequest, pinned_load = None
+    request: DiffusionGenerateRequest,
+    pinned_load = None,
+    *,
+    coalesce: bool = False,
 ) -> DiffusionGenerateResponse:
     """The local-engine image run, shared by the route and the chat generate_image tool."""
     from core.inference.diffusion_segment import render_fence
@@ -53428,13 +53656,38 @@ async def _generate_diffusion_image_core(
     # From before the run releases the mask segmenter until it ends: a Find cannot reload SAM 3 in the gap before the
     # render takes the engine's generation slot.
     with render_fence():
-        return await _generate_diffusion_image_run(request, pinned_load = pinned_load)
+        return await _generate_diffusion_image_run(
+            request, pinned_load = pinned_load, coalesce = coalesce
+        )
+
+
+def _plain_txt2img(request: DiffusionGenerateRequest, enhancement: Any, detailer: Any) -> bool:
+    """The only /images/generate shape (plain txt2img Create) that may share a batched call."""
+    return (
+        request.prompts is None
+        and request.seeds is None
+        and request.init_image is None
+        and request.mask_image is None
+        and not request.reference_images
+        and request.workflow is None
+        and request.localized_edit is None
+        and request.controlnet is None
+        and request.upscale is None
+        and request.upscale_model is None
+        and request.hires is None
+        and request.variation_seed is None
+        and not request.variation_strength
+        and request.xy is None
+        and detailer is None
+        and not getattr(enhancement, "captions", None)
+    )
 
 
 async def _generate_diffusion_image_run(
     request: DiffusionGenerateRequest,
     captured: Optional[list] = None,
     pinned_load = None,
+    coalesce: bool = False,
 ) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -53586,8 +53839,7 @@ async def _generate_diffusion_image_run(
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
-                result = await _image_generate_in_thread(
-                    backend.generate,
+                generate_kwargs = dict(
                     expected_load = expected_load,
                     **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     prompt = enhancement.encoded(request.prompt),
@@ -53636,6 +53888,22 @@ async def _generate_diffusion_image_run(
                     **_inpaint_mask_kwargs(backend.generate, request),
                     **_hires_kwargs(backend.generate, request),
                 )
+                result = None
+                if coalesce and captured is None and _plain_txt2img(request, enhancement, detailer):
+                    result = await _coalesced_image_generate(
+                        backend,
+                        status,
+                        prompt = generate_kwargs["prompt"],
+                        n = request.batch_size,
+                        seed = request.seed,
+                        generate_kwargs = {
+                            name: value
+                            for name, value in generate_kwargs.items()
+                            if name not in ("prompt", "seed", "batch_size", "prompts", "seeds")
+                        },
+                    )
+                if result is None:
+                    result = await _image_generate_in_thread(backend.generate, **generate_kwargs)
             break
         except ImageActivationShortfallError as exc:
             # Tagged so the Images page can offer "Generate anyway".
@@ -53690,10 +53958,11 @@ async def _generate_diffusion_image_run(
         _diffusion_persist_active += 1
         try:
             with account_access.media_generation("diffusion"):
-                # Crop inpaints wait on the render slot too, so use the same pool.
-                await _image_generate_in_thread(
-                    _run_detailer, backend, request, result, enhancement, detailer
-                )
+                # Crop inpaints continue this render: same pool, first in line.
+                with _follow_up_pass():
+                    await _image_generate_in_thread(
+                        _run_detailer, backend, request, result, enhancement, detailer
+                    )
         except BaseException:
             _diffusion_persist_active -= 1
             raise
@@ -53744,6 +54013,7 @@ async def _generate_diffusion_image_run(
                         "batch_index": index,
                         # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size.
                         "batch_size": 1 if list_driven else request.batch_size,
+                        **_coalesced_recipe(result, index),
                         "generation_seconds": generation_seconds,
                         "generation_count": len(result["images"]),
                         "model": result.get("repo_id"),
@@ -54747,7 +55017,18 @@ async def diffusion_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
-    status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
+    from core.inference.chat_media_swap import chat_can_swap
+
+    status_dict = {
+        **status_dict,
+        "load_id": load_id,
+        "resident_load_id": resident_load_id,
+        "chat_swap_available": not raw_status.get("loaded")
+        and not load_id
+        and _loads_anything()
+        and not account_access.resident_hidden("chat")
+        and chat_can_swap(),
+    }
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 
@@ -54899,6 +55180,18 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     return DiffusionGenerateProgressResponse(**progress)
 
 
+def _stop_batched_image_work() -> bool:
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    try:
+        stop = getattr(get_active_diffusion_engine(), "stop_waiting_work", None)
+    except Exception:  # noqa: BLE001 -- no engine: nothing batched
+        return False
+    if stop is None:
+        return False
+    return bool(stop(account_access.tracked_generation_account()))
+
+
 @studio_router.post("/images/generate/cancel")
 async def cancel_diffusion_generation(
     target: Optional[str] = None, current_subject: str = Depends(get_current_subject)
@@ -54915,6 +55208,8 @@ async def cancel_diffusion_generation(
     if target == "connection":
         return {"cancelled": _stop_external_image_runs()}
     grids = _stop_xy_grids()
+    # Before the account checks: another account's call may be rendering this account's images.
+    grids = _stop_batched_image_work() or grids
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": grids}
     mine = account_access.generation_is_mine("diffusion")
@@ -55860,6 +56155,275 @@ def _image_generation_defaults(status: dict) -> tuple[int, float]:
     )
 
 
+def _frozen_kwarg(value: Any) -> Hashable:
+    if isinstance(value, dict):
+        return tuple(sorted((str(k), _frozen_kwarg(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen_kwarg(v) for v in value)
+    if hasattr(value, "model_dump"):
+        return (type(value).__name__, _frozen_kwarg(value.model_dump()))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return (type(value).__name__, _frozen_kwarg(dataclasses.asdict(value)))
+    try:
+        hash(value)
+    except TypeError:
+        return (type(value).__name__, repr(value))
+    return value
+
+
+def _coalesced_recipe(result: dict, index: int) -> dict:
+    """Position in a coalesced call; a solo replay of the seed lands close, not exact."""
+    size = result.get("coalesced_batch_size")
+    if not size:
+        return {}
+    return {
+        "coalesced_batch_size": int(size),
+        "coalesced_index": int(result.get("coalesced_index") or 0) + index,
+    }
+
+
+@contextmanager
+def _reserved_turn(turn: Any):
+    if turn is None:
+        yield
+        return
+    from core.inference.diffusion import reserved_slot_turn
+    with reserved_slot_turn(turn):
+        yield
+
+
+@contextmanager
+def _follow_up_pass():
+    from core.inference.diffusion import slot_follow_up
+    with slot_follow_up():
+        yield
+
+
+_COALESCE_KEY_IGNORED = frozenset({"live_preview"})
+
+
+async def _coalesced_image_generate(
+    backend: Any,
+    status: Optional[dict],
+    *,
+    prompt: str,
+    n: int,
+    seed: Optional[int],
+    generate_kwargs: dict,
+) -> Optional[dict]:
+    """Join a batch while a render runs; None = render alone. ``generate_kwargs`` all go into the key."""
+    from core.inference import image_request_batching
+    from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_anima import ANIMA_FAMILY_NAME
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
+    from core.inference.generation_ticket import (
+        GenerationTicket,
+        TicketStopEvent,
+        generation_ticket,
+    )
+
+    holder = getattr(backend, "generation_holder", None)
+    if holder is None or active_engine_name() != ENGINE_DIFFUSERS:
+        return None
+    if not image_request_batching.collecting():
+        try:
+            if holder() is None:
+                return None
+        except Exception:  # noqa: BLE001 -- no busy signal; render individually
+            return None
+    if status is None:
+        status = await asyncio.to_thread(backend.status)
+    family = status.get("family")
+    if family in FLUX3_FAMILY_NAMES or family == ANIMA_FAMILY_NAME:
+        return None
+    if family and getattr(detect_family("", family), "layer_count", 0):
+        return None
+    if generate_kwargs.get("expected_load") is None:
+        # Pin to the model read here, so a swapped model is refused rather than rendering every member.
+        from core.inference.diffusion_families import load_identity
+        generate_kwargs = {
+            **generate_kwargs,
+            "expected_load": load_identity(
+                status.get("repo_id"), status.get("base_repo"), status.get("family")
+            ),
+        }
+    # Per-account resources (LoRAs, hosted adapters, embeddings) resolve under the leader: batch own account only.
+    plan = getattr(backend, "coalesce_plan", None)
+    loras = generate_kwargs.get("loras")
+    if plan is not None:
+        decided = await asyncio.to_thread(plan, prompt, bool(loras))
+        if decided is None:
+            return None
+        prompt_key, private = decided
+    else:
+        prompt_key, private = (), bool(loras)
+
+    ticket = GenerationTicket()
+    stopped = TicketStopEvent(ticket)
+
+    # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
+    arrived_behind: list = []
+    lead: dict = {}
+    reserve = getattr(backend, "reserve_slot_turn", None)
+    loop = asyncio.get_running_loop()
+    woken = asyncio.Event()
+
+    def on_lead() -> None:
+        if reserve is None:
+            return
+        lead["turn"] = reserve()
+        lead["remove"] = backend.add_slot_listener(lambda: loop.call_soon_threadsafe(woken.set))
+
+    async def wait() -> None:
+        # The timeout covers lock holders outside the line.
+        try:
+            await asyncio.wait_for(woken.wait(), timeout = 0.25)
+        except asyncio.TimeoutError:
+            pass
+        woken.clear()
+
+    def busy() -> bool:
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        if "turn" in lead:
+            return not backend.slot_turn_ready(lead["turn"])
+        try:
+            current = holder()
+        except Exception:  # noqa: BLE001 -- no busy signal; render individually
+            return False
+        if current is None:
+            return False
+        if not arrived_behind:
+            arrived_behind.append(current)
+        return current is arrived_behind[0]
+
+    def check() -> None:
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+
+    async def run_batch(
+        prompts: list[str],
+        seeds: list[int],
+        owners: Optional[list] = None,
+    ) -> dict:
+        call = dict(generate_kwargs)
+        if len(set(owners or ())) > 1:
+            # Row 0 may be another account's image, so a cross-account batch shows no preview.
+            call.update(_live_preview_kwarg(backend.generate, False))
+        runner = _image_generate_on_reserved_turn if "turn" in lead else _image_generate_in_thread
+        with generation_ticket(ticket), _reserved_turn(lead.get("turn")):
+            try:
+                return await runner(
+                    backend.generate,
+                    prompt = prompts[0],
+                    prompts = prompts,
+                    seeds = seeds,
+                    batch_size = len(seeds),
+                    **call,
+                )
+            except Exception as exc:
+                # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
+                if ticket.cancelled() and not cancelled(exc):
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
+                raise
+
+    key = (
+        current_account_id() if private else None,
+        prompt_key,
+        tuple(
+            sorted(
+                (name, _frozen_kwarg(value))
+                for name, value in generate_kwargs.items()
+                if name not in _COALESCE_KEY_IGNORED
+            )
+        ),
+    )
+
+    def cancelled(exc: BaseException) -> bool:
+        return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
+
+    def splittable(exc: BaseException) -> bool:
+        from core.inference.diffusion_batched import is_oom_error
+        from core.inference.diffusion_memory import unified_memory_refusal_code
+        return (
+            isinstance(exc, ValueError)
+            or unified_memory_refusal_code(exc) is not None
+            or is_oom_error(exc)
+        )
+
+    def salvage(exc: BaseException) -> Optional[dict]:
+        finished = getattr(exc, "_unsloth_finished_images", None)
+        if not finished or not finished.get("images"):
+            return None
+        return {
+            "images": list(finished["images"]),
+            "seeds": list(finished.get("seeds") or []),
+            "seed": (finished.get("seeds") or [0])[0],
+            "repo_id": status.get("repo_id"),
+            "model_kind": status.get("model_kind"),
+            "gguf_filename": status.get("gguf_filename"),
+            "negative_prompt": generate_kwargs.get("negative_prompt") or None,
+            "workflow": "txt2img",
+        }
+
+    sizes_of = getattr(backend, "coalesce_batch_sizes", None)
+
+    def fits(total: int) -> bool:
+        if sizes_of is None:
+            return True
+        try:
+            sizes = sizes_of(generate_kwargs.get("width"), generate_kwargs.get("height"))
+        except Exception:  # noqa: BLE001 -- unknown shapes: render alone
+            return False
+        return sizes is None or total in sizes
+
+    waiter = getattr(backend, "generation_waiter", None)
+    rider = getattr(backend, "generation_rider", None)
+
+    async def _coalesce_in_line() -> Optional[dict]:
+        result = await image_request_batching.generate(
+            key,
+            prompt,
+            n,
+            seed,
+            busy = busy,
+            run_batch = run_batch,
+            shared_outcome = cancelled,
+            owner = current_account_id(),
+            check = check,
+            ride = (lambda: rider(stopped)) if rider is not None else None,
+            fits = fits,
+            splittable = splittable,
+            salvage = salvage,
+            on_lead = on_lead,
+            wait = wait,
+        )
+        # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
+        if result is None and stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        return result
+
+    try:
+        with waiter(stopped) if waiter is not None else nullcontext():
+            result = await _coalesce_in_line()
+            if result is None and "turn" in lead and not stopped.is_set():
+                with _reserved_turn(lead["turn"]):
+                    result = await _image_generate_on_reserved_turn(
+                        backend.generate, prompt = prompt, seed = seed, batch_size = n, **generate_kwargs
+                    )
+        # Read after deregistering: a Stop that found the waiter hands back no images.
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        return result
+    finally:
+        if "remove" in lead:
+            lead["remove"]()
+        if "turn" in lead:
+            backend.release_slot_turn(lead["turn"])
+
+
 async def _batched_openai_images(
     backend: Any,
     status: dict,
@@ -55872,97 +56436,25 @@ async def _batched_openai_images(
     loras: Optional[list[tuple[str, float]]] = None,
     expected_load_loras: Optional[tuple] = None,
 ) -> Optional[dict]:
-    from core.inference import image_request_batching
-    from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
-    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
-    from core.inference.generation_ticket import (
-        GenerationTicket,
-        TicketStopEvent,
-        generation_ticket,
+    return await _coalesced_image_generate(
+        backend,
+        status,
+        prompt = body.prompt,
+        n = body.n,
+        seed = body.seed,
+        generate_kwargs = dict(
+            negative_prompt = body.negative_prompt,
+            width = width,
+            height = height,
+            steps = steps,
+            guidance = guidance,
+            expected_load = expected_load,
+            **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
+            **({"loras": loras} if loras else {}),
+            # Headless: no client polls generate-progress, so skip the per-step previewer.
+            **_live_preview_kwarg(backend.generate, False),
+        ),
     )
-
-    holder = getattr(backend, "generation_holder", None)
-    if (
-        holder is None
-        or active_engine_name() != ENGINE_DIFFUSERS
-        or status.get("family") in FLUX3_FAMILY_NAMES
-    ):
-        return None
-
-    ticket = GenerationTicket()
-    stopped = TicketStopEvent(ticket)
-
-    # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
-    arrived_behind: list = []
-
-    def busy() -> bool:
-        if stopped.is_set():
-            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-        try:
-            current = holder()
-        except Exception:  # noqa: BLE001 -- no busy signal; render individually
-            return False
-        if current is None:
-            return False
-        if not arrived_behind:
-            arrived_behind.append(current)
-        return current is arrived_behind[0]
-
-    async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
-        with generation_ticket(ticket):
-            try:
-                return await _image_generate_in_thread(
-                    backend.generate,
-                    prompt = prompts[0],
-                    negative_prompt = body.negative_prompt,
-                    width = width,
-                    height = height,
-                    steps = steps,
-                    guidance = guidance,
-                    prompts = prompts,
-                    seeds = seeds,
-                    batch_size = len(seeds),
-                    expected_load = expected_load,
-                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
-                    **({"loras": loras} if loras else {}),
-                )
-            except Exception as exc:
-                # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
-                if ticket.cancelled() and not cancelled(exc):
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
-                raise
-
-    key = (
-        current_account_id(),
-        expected_load,
-        expected_load_loras,
-        width,
-        height,
-        steps,
-        guidance,
-        body.negative_prompt or None,
-        tuple(loras or ()),
-    )
-
-    def cancelled(exc: BaseException) -> bool:
-        return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
-
-    waiter = getattr(backend, "generation_waiter", None)
-    with waiter(stopped) if waiter is not None else nullcontext():
-        result = await image_request_batching.generate(
-            key,
-            body.prompt,
-            body.n,
-            body.seed,
-            busy = busy,
-            run_batch = run_batch,
-            shared_outcome = cancelled,
-        )
-        # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
-        if result is None and stopped.is_set():
-            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-        return result
 
 
 # Split out so the monitor row can wrap the whole handler without reindenting it.
@@ -56079,6 +56571,7 @@ async def _generate_openai_images(
                         **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                         # Only when set, so engines without the parameter keep their call shape.
                         **({"loras": loras} if loras else {}),
+                        **_live_preview_kwarg(backend.generate, False),
                     )
             break
         except DiffusionModelReplacedError:
@@ -56171,7 +56664,13 @@ async def _generate_openai_images(
             saves.append(
                 (
                     image,
-                    {**recipe, "batch_index": index, "seed": seed, "batch_seed": result["seed"]},
+                    {
+                        **recipe,
+                        "batch_index": index,
+                        "seed": seed,
+                        "batch_seed": result["seed"],
+                        **_coalesced_recipe(result, index),
+                    },
                 )
             )
         for record in image_gallery.save_many(saves):

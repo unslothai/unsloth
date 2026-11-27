@@ -65,9 +65,7 @@ SURFACES = [
     "thread_scroll",
 ]
 
-# Known WebKit long-chat costs on main, pinned so the gate holds today's level. Keys: engine:mode:surface:
-# metric (open / close = long/short ratio of the time; frame = the long chat's longest frame, ms).
-# Set from main readings with margin; lower each when its fix lands.
+# engine:mode:surface:metric; open/close: long/short ratio; frame: longest ms; lower on fix.
 KNOWN_DEFAULT = {
     # Browser pane: opening or closing it narrows / widens the thread and WebKit re-lays out and repaints
     # the rows still inside the #16986 content-visibility window (macos-15 Safari engine, Round 11:
@@ -113,8 +111,7 @@ KNOWN = {
 
 @dataclass
 class Leg:
-    """One browser engine family's leg: what it runs, its limits and how its failures read. The WebKit
-    leg is WEBKIT below; _firefox_leg.py builds FIREFOX the same way."""
+    """One browser engine's leg; WEBKIT is here, _firefox_leg.py builds FIREFOX the same way."""
 
     name: str  # in reports: "WebKit"
     browser: str  # Playwright browser type: "webkit", "firefox"
@@ -163,8 +160,7 @@ ARM = """() => {
   const tick = (t) => { w.frames.push([t, t - w.last]); w.last = t; if (!w.stop) requestAnimationFrame(tick); };
   requestAnimationFrame(tick);
 }"""
-# Wait (in rAF steps) until `pred` holds, then one more frame: the time is that frame's, so it
-# includes painting the surface. Returns [ms since ARM, longest frame in the window] or null.
+# Waits (rAF steps) for pred, then one frame that paints; returns [ms, longest frame] or null.
 UNTIL = """async ([pred, timeoutMs]) => {
   const w = window.__wk; const test = (0, eval)(pred);
   const frame = () => new Promise((r) => requestAnimationFrame(r));
@@ -173,9 +169,8 @@ UNTIL = """async ([pred, timeoutMs]) => {
   const long = w.frames.filter(([ts]) => ts <= t + 1).reduce((m, [, d]) => Math.max(m, d), 0);
   return [t - w.t0, long];
 }"""
-# Surfaces judged on "settle" (typing): the frame clock plus a MutationObserver armed before the action,
-# ignoring the autoscroll follow flag and the Glass motion hold flags (state, not content). The time
-# is the last content mutation, once the page has been quiet for QUIET_MS.
+# Settle-judged: frame clock plus a MutationObserver armed pre-action, ignoring autoscroll and Glass
+# motion flags (state, not content); time is the last content change once quiet for QUIET_MS.
 QUIET_MS = 300
 SETTLE_IGNORED = ["data-aui-following", "data-glass-moving", "data-glass-settling"]
 ARM_SETTLE = """(ignored) => {

@@ -17,8 +17,7 @@ from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_comp
 
 def _rewritten():
     trl_grpo = pytest.importorskip("trl.trainer.grpo_trainer")
-    # Read TRL's own file: importing unsloth swaps GRPOTrainer for the compiled, wrapped trainer, so
-    # inspect.getsource on the class returns the wrapper and the rewrite would never anchor.
+    # Read TRL's file: importing unsloth wraps GRPOTrainer, so getsource returns the wrapper.
     text = Path(inspect.getsourcefile(trl_grpo)).read_text(encoding = "utf-8")
     node = next(
         n

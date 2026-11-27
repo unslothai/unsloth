@@ -37,6 +37,15 @@ try:
 except Exception:
     pass
 
+# Windows ROCm: PAL_DISABLE_SDMA=1 before HIP initialises (rocm-systems#12571 stale copy after an event record).
+try:
+    from utils.rocm_pal_env import (
+        apply_windows_rocm_pal_defaults as _apply_windows_rocm_pal_defaults,
+    )
+    _apply_windows_rocm_pal_defaults()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -1401,6 +1410,16 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
+def _modelscope_page_links() -> dict:
+    from utils.hub_settings import MODELSCOPE
+
+    if _active_hub_source() != MODELSCOPE:
+        return {}
+    from hub.modelscope.upstream import page_links
+
+    return {"modelscope_pages": page_links()}
+
+
 _CSP_CACHE: dict = {}
 
 
@@ -2562,6 +2581,7 @@ async def health_check(request: Request, detect_hardware: bool = False):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint.
         **_reportable_hf_endpoints(request),
         "hub_source": _active_hub_source(),
+        **_modelscope_page_links(),
         "hub_proxy": _hub_endpoint_proxy.relay_path(
             _hub_endpoint_proxy.HUB_PREFIX,
             browser_hf_endpoint(),
@@ -3121,6 +3141,24 @@ def _checkpoint_quant_formats() -> list[str]:
         return []
 
 
+def _checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
+    """Formats in ``formats`` that load but run dequantized here. Torch-free."""
+    try:
+        from utils.hardware.nvidia import get_checkpoint_quant_dequant_only
+        return get_checkpoint_quant_dequant_only(formats)
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
+
+
+def _repair_recommendation() -> Optional[dict]:
+    """Torch-free; None off Windows, off CUDA, or when the install already has the managed torch."""
+    try:
+        from utils.hardware.windows_repair import windows_repair_recommendation
+        return windows_repair_recommendation()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return None
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -3285,7 +3323,11 @@ def get_system_info(
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
         # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
-        "checkpoint_quant_formats": _checkpoint_quant_formats(),
+        "checkpoint_quant_formats": (_quant_formats := _checkpoint_quant_formats()),
+        # FP8 kinds this torch runs dequantized: fp8_rowwise without a row-wise or tensorwise fp8 GEMM. Additive key.
+        "checkpoint_quant_dequant_only": _checkpoint_quant_dequant_only(_quant_formats),
+        # Windows: an existing home older than the managed torch. Additive key, null otherwise.
+        "repair_recommendation": _repair_recommendation(),
     }
 
 

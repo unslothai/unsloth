@@ -91,8 +91,7 @@ def test_every_documented_rename_is_carried_across():
 
 
 def test_a_rename_overwrites_the_mirrored_default_not_a_real_value():
-    """The generated __init__ always passes the new name, so the rename must win
-    over the class default it carries when untouched..."""
+    """Generated __init__ passes the new name, so a rename beats an untouched class default."""
     kept, _ = _collect(ModernGRPOConfig, {"use_liger_kernel": False, "use_liger_loss": True})
     assert kept["use_liger_kernel"] is True
 
@@ -193,8 +192,7 @@ def test_the_transformers_tables_do_not_overlap_or_contradict_the_trl_ones():
 
 
 def test_a_field_the_installed_version_still_declares_is_never_migrated():
-    """Entries are consulted only once the config rejects the name, so they must be inert while it
-    exists."""
+    """Entries apply only when the config rejects a name, so they stay inert while it exists."""
     transformers = pytest.importorskip("transformers")
     fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
 
@@ -205,8 +203,7 @@ def test_a_field_the_installed_version_still_declares_is_never_migrated():
 
 
 def test_a_transformers_rename_target_exists_once_the_old_name_is_gone():
-    """A rename is only reachable after the old name goes, so that is when its
-    target has to be real. A typo there degrades the migration to a plain drop."""
+    """Rename targets must be real: reached only after the old name goes, a typo just drops it."""
     transformers = pytest.importorskip("transformers")
     fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
 
@@ -382,8 +379,7 @@ def test_an_alias_whose_target_is_read_during_post_init_is_not_a_rename():
 
 
 def test_a_rename_target_normalised_in_post_init_is_not_a_rename():
-    """`setattr` on an existing config skips `__post_init__`, so a field that
-    normalises its own value cannot be migrated by assignment."""
+    """setattr skips __post_init__, so self-normalising fields can't be migrated by assignment."""
     assert "include_tokens_per_second" in TRANSFORMERS_REMOVED_FIELD_ADVICE
     assert "include_tokens_per_second" not in TRANSFORMERS_CONFIG_RENAMES
 

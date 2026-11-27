@@ -17,8 +17,7 @@ from run_gptoss_t4 import masking_failures  # noqa: E402
 
 
 def test_a_run_that_masked_nothing_is_a_failure():
-    """The finding this file exists for. Every loss-based assertion in the leg
-    passes in this state, so only this rule can catch it."""
+    """Loss-based assertions pass when nothing is masked, so only this rule can catch it."""
     broken = masking_failures({"label_tokens": 512, "masked_tokens": 0}, expected = True)
     assert len(broken) == 1 and "NOTHING was masked" in broken[0]
 
@@ -71,8 +70,7 @@ def test_the_payload_requests_q8_and_accepts_only_mxfp4():
 
 
 def test_the_dataset_shape_and_the_text_field_cannot_both_be_set():
-    """Naming a text field TRL cannot find is how a prompt-completion dataset
-    silently falls back to training on everything."""
+    """For prompt-completion data, a text field TRL cannot find silently trains on everything."""
     src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding = "utf-8")
     assert '**({} if args.train_on_completions else {"dataset_text_field": "text"})' in src
 
@@ -136,8 +134,7 @@ def test_a_walk_that_recorded_no_names_still_fails_and_says_so():
 
 
 def _placement_record(**over):
-    """The shape a healthy gpt-oss run produces, measured on
-    unsloth-probe-gptoss-names2-ae1968."""
+    """Healthy gpt-oss placement record, measured on unsloth-probe-gptoss-names2-ae1968."""
     record = {
         "parameters_by_device": {"cpu": 579133440, "cuda:0": 10461969984},
         "off_gpu_parameters": [
@@ -172,8 +169,7 @@ def test_the_excuse_is_the_hook_flag_and_not_the_device():
 
 
 def test_a_second_tensor_off_the_card_is_still_a_failure():
-    """The excuse covers exactly one parameter. A real spill that happens to
-    include the embedding must not ride in on its coat-tails."""
+    """The excuse covers only the embedding; a second tensor off the card is still a failure."""
     from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
 
     record = _placement_record(
@@ -230,8 +226,7 @@ def test_the_text_leg_exports_once_per_leg_and_not_once_per_cycle():
 
 
 def test_skipping_every_cycle_is_still_a_failure():
-    """Skipping the GGUF export per cycle must not become missing coverage: a leg that asked for an
-    export and produced no file must fail, and the excuse must not fire on cycle 0."""
+    """A requested GGUF export with no file must fail; the excuse never fires on cycle 0."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert "every cycle skipped the GGUF export" in src
     assert (

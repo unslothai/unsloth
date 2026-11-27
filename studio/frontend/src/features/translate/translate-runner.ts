@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type CachedModelRepo,
   getInferenceStatus,
   listCachedModels,
   listGgufVariants,
@@ -127,13 +128,23 @@ type LocalModel = {
   fp8?: true;
 };
 
+type CachedModelsListing = () => Promise<readonly CachedModelRepo[]>;
+
+/** One /api/hub/cached-models read shared by every row of a probe pass, fetched on first use. */
+export function sharedCachedModelsListing(
+  signal?: AbortSignal,
+): CachedModelsListing {
+  let listing: Promise<readonly CachedModelRepo[]> | null = null;
+  return () => (listing ??= listCachedModels(undefined, signal));
+}
+
 async function repoOnDisk(
   repo: string,
-  signal?: AbortSignal,
+  list: CachedModelsListing,
 ): Promise<boolean | null> {
   try {
     const wanted = repo.toLowerCase();
-    const row = (await listCachedModels(undefined, signal)).find(
+    const row = (await list()).find(
       (entry) => entry.repo_id.toLowerCase() === wanted,
     );
     return row !== undefined && row.partial !== true;
@@ -146,10 +157,16 @@ async function repoOnDisk(
 export async function translateModelDownloaded(
   model: LocalModel,
   signal?: AbortSignal,
-  options?: { remote?: boolean },
+  options?: { remote?: boolean; cachedModels?: CachedModelsListing },
 ): Promise<boolean | null> {
   const quant = model.variant?.toLowerCase();
-  if (!quant) return model.fp8 ? repoOnDisk(model.repo, signal) : null;
+  if (!quant)
+    return model.fp8
+      ? repoOnDisk(
+          model.repo,
+          options?.cachedModels ?? (() => listCachedModels(undefined, signal)),
+        )
+      : null;
   return quantOnDisk(
     quant,
     async (localOnly) =>
