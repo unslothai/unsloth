@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Text generation for text-diffusion LMs: one sampler per DiffusionProfile name, each the family's published
-decoding recipe. Families shipping a sampler in their modeling code (Dream, LLaDA2, Nemotron-Labs-Diffusion,
-DiffusionGemma) are called as is; LLaDA / LLaDA-MoE and SDAR samplers live in separate scripts upstream and are
-re-implemented here."""
+"""Dream, LLaDA2, Nemotron-Labs-Diffusion, DiffusionGemma call samplers; LLaDA/SDAR re-implemented."""
 
 import contextlib
 import math
@@ -323,8 +320,7 @@ def _block_sample(
                 if int(high.sum()) >= count:
                     transfer[row] = high
                 else:
-                    # Never more than the masks left: the official top-k could overwrite prompt tokens sharing
-                    # the first decoded block.
+                    # Cap at masks left; top-k could overwrite prompt tokens in first block.
                     k = min(count, int(mask_index[row].sum()))
                     transfer[row, torch.topk(confidence[row], k).indices] = True
             window = x[:, start:end]

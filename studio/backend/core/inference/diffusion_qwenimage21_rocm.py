@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Speed up large Qwen-Image-2.1 ROCm attention with query chunks.
-
-Unmasked, noncausal queries are independent; each chunk keeps all keys and values.
-"""
+"""Query-chunked Qwen-Image-2.1 ROCm attention; chunks keep all keys and values (unmasked, noncausal)."""
 
 from __future__ import annotations
 
 import functools
 import os
 from typing import Any
+from .rocm_bf16 import is_rocm_torch
 
 QUERY_CHUNK_ENV = "UNSLOTH_QWEN_IMAGE_ROCM_QUERY_CHUNKING"
 QUERY_CHUNK_SIZE = 512
@@ -27,7 +25,7 @@ def _device_supported(target: Any) -> bool:
         return False
     import torch
 
-    if not getattr(torch.version, "hip", None):
+    if not is_rocm_torch(torch):
         return False
     if setting in ("1", "true", "on", "yes"):
         return True

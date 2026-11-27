@@ -12,6 +12,7 @@ DEFAULT_MODELS_GGUF = [
     "unsloth/Qwen3.6-27B-MTP-GGUF",
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
     "unsloth/DeepSeek-V4-Flash-GGUF",
+    "unsloth/DeepSeek-V4.1-Flash-1017-GGUF",
     "unsloth/gemma-4-E2B-it-GGUF",
     "unsloth/gemma-4-E4B-it-GGUF",
     "unsloth/gemma-4-31B-it-GGUF",
@@ -32,6 +33,7 @@ DEFAULT_MODELS_STANDARD = [
     "unsloth/Qwen3.6-27B-MTP-GGUF",
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
     "unsloth/DeepSeek-V4-Flash-GGUF",
+    "unsloth/DeepSeek-V4.1-Flash-1017-GGUF",
     "unsloth/gemma-4-E2B-it-GGUF",
     "unsloth/gemma-4-E4B-it-GGUF",
     "unsloth/gemma-4-31B-it-GGUF",
@@ -67,8 +69,21 @@ def suggestions_for_host(models: Iterable[str], device) -> list[str]:
     return list(dict.fromkeys(_named(model) for model in models))
 
 
-def get_default_models() -> list[str]:
-    device = hw.get_device()  # ensures detect_hardware() has run
-    if hw.CHAT_ONLY:
+def get_default_models(*, detect_hardware: bool = True) -> list[str]:
+    """Curated suggestions; read-only discovery can use the existing hardware verdict."""
+    if detect_hardware:
+        device = hw.get_device()
+        chat_only = hw.CHAT_ONLY
+    else:
+        generation = hw.DETECTION_GENERATION
+        device, chat_only = hw.DEVICE, hw.CHAT_ONLY
+        if (
+            device is None
+            or not hw.DETECTION_COMPLETE.is_set()
+            or generation != hw.DETECTION_GENERATION
+        ):
+            # Unknown is not a CPU verdict. The picker resolves compatibility on first use.
+            return list(DEFAULT_MODELS_STANDARD)
+    if chat_only:
         return list(DEFAULT_MODELS_GGUF)
     return suggestions_for_host(DEFAULT_MODELS_STANDARD, device)

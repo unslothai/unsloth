@@ -132,9 +132,7 @@ def test_one_origin_spelled_two_ways_is_still_one_origin(attach, attach_b):
 
 
 def test_the_predicate_and_the_refusal_read_the_same_origin():
-    """The two halves of this guard are in different files and only agree by construction. If
-    `origin_scoped` gated on the URL as typed while `arm_origins` canonicalised, a pair that got
-    past the refusal could still be gated onto a document that does not exist."""
+    """origin_scoped (typed URL) and arm_origins (canonicalised) must agree or a pair gates onto nothing."""
 
     from studiobench.__main__ import arm_origins
     from studiobench.runtime.ab import origin_scoped
@@ -198,8 +196,7 @@ def test_a_self_installed_pair_may_inject():
 
 
 def test_one_origin_without_the_injection_is_still_allowed():
-    """THE CONTROL THAT MATTERS MOST. One attached Unsloth driven twice is a null control, and
-    refusing it outright would remove the calibration run this tool exists to support."""
+    """One attached Unsloth driven twice is a null control; refusing it would drop calibration."""
 
     args = _inject_args("http://127.0.0.1:5401", "http://127.0.0.1:5401")
     assert stream_cost_injection_problem(side_specs(args, "main"), None) is None
@@ -231,8 +228,7 @@ def test_an_attached_treatment_pointed_at_the_installed_base_is_a_null_control()
 
 
 def test_two_owned_installs_of_different_refs_are_still_an_ordinary_ab():
-    """The control for the reorder: owned sides get `port` and `port + 1`, so they never collide
-    on a URL and the ref and commit comparisons below still decide them."""
+    """Owned sides get port and port + 1 so their URLs differ; ref and commit still decide."""
 
     sides = [
         _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),

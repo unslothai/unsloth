@@ -107,10 +107,8 @@ def _cuda_is_available():
 
 @pytest.mark.skipif(not _cuda_is_available(), reason = "needs a GPU to load a 4-bit model")
 def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypatch):
-    """The arm that fails without the fix: PEFT's Linear4bit forward is left in place.
-
-    Skips only on errors meaning the checkpoint cannot be built here (old transformers, no torchvision, offline).
-    """
+    """The arm that fails without the fix keeps PEFT's Linear4bit forward in place; it skips only
+    when the checkpoint cannot be built here (old transformers, no torchvision, offline)."""
     monkeypatch.chdir(tmp_path)  # fresh unsloth_compiled_cache
     import torch
     import unsloth  # noqa: F401

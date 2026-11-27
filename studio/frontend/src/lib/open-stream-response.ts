@@ -8,14 +8,8 @@ export type StreamFetcher = (
 ) => Promise<Response>;
 
 /**
- * Open an event stream over POST, retrying once as GET on 405.
- *
- * Quick tunnels hold a streamed GET until it closes, so POST is the verb that works.
- * The retry covers version skew only: the desktop app ships its own SPA but updates the
- * Python backend separately, so a newer UI can meet a GET-only backend. That pairing is
- * always loopback, where a streamed GET is fine.
- *
- * 405 only. These routes answer 404 for an unknown job, and retrying would double misses.
+ * Quick tunnels hold a streamed GET until it closes, so POST is used. The GET retry on 405 only
+ * covers a newer desktop UI with an older loopback backend. Not on 404, which would double misses.
  */
 export async function openStreamResponse(
   fetcher: StreamFetcher,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
+import { afterLlamaInstallChanged } from "@/hooks/use-llama-update-check";
 import { useT } from "@/i18n";
 import {
   signalLlamaJobStarted,
@@ -21,10 +21,8 @@ import {
 } from "../api/llama-backend";
 import { backendDisplayName } from "../lib/llama-backend-labels";
 
-// Fast enough to track the installer's progress milestones without hammering.
 const JOB_POLL_MS = 700;
 
-/** Manage backend selection and the shared llama.cpp install job. */
 export function useLlamaBackendSwitch() {
   const t = useT();
   const [status, setStatus] = useState<LlamaBackendStatus | null>(null);
@@ -33,10 +31,8 @@ export function useLlamaBackendSwitch() {
   const [applying, setApplying] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const mounted = useRef(false);
-  // Prevent overlapping resolver polls.
   const polling = useRef(false);
-  // Updates share this job, so completion belongs to this surface only when
-  // it has the identity of the switch accepted by apply().
+  // Updates share this job; completion is ours only for the switch apply() started.
   const ownedJob = useRef<{ startedAt: string | null } | null>(null);
 
   const refresh = useCallback(async (forceRefresh = false) => {
@@ -57,8 +53,7 @@ export function useLlamaBackendSwitch() {
 
   useEffect(() => {
     mounted.current = true;
-    // Opening the picker is an explicit host-capability recheck. If an install
-    // is running, the poll repeats it once the backend can resolve options.
+    // Opening the picker rechecks host capability; during an install the poll repeats it.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh(true);
     return () => {
@@ -76,13 +71,9 @@ export function useLlamaBackendSwitch() {
         return;
       }
       setApplying(false);
-      // The install marker is authoritative after completion.
       setSelected(next.backendRequest);
-      // Here rather than where the switch is requested: that call only STARTS the
-      // install, so the binary whose --help the flag catalogue describes is still
-      // the old one, and a panel opened during the job would cache it again. Before
-      // the owned-job check, so a tab that merely watched the switch drops it too.
-      invalidateLlamaFlagCatalog();
+      // On completion, when the new binary is in place; before the ownership check so watching tabs refresh too.
+      afterLlamaInstallChanged();
       if (!outcome) {
         return;
       }
@@ -99,7 +90,6 @@ export function useLlamaBackendSwitch() {
         });
         return;
       }
-      // The job detail includes reload or dictation repair information.
       toast.success(
         t("settings.resources.llamaBackend.switchedTo", {
           backend: backendDisplayName(next.backend, t),
@@ -123,8 +113,7 @@ export function useLlamaBackendSwitch() {
       }
       polling.current = true;
       try {
-        // The backend skips option resolution while a job is running, so this
-        // becomes one forced host probe on the first terminal status.
+        // The backend skips option resolution during a job, so force one probe now.
         const next = await refresh(true);
         if (!next) {
           return;
@@ -147,7 +136,6 @@ export function useLlamaBackendSwitch() {
     }, JOB_POLL_MS);
   }, [refresh, finish]);
 
-  // Follow jobs started by another surface or browser tab.
   useEffect(
     () =>
       subscribeToLlamaJobStarted(() => {
@@ -202,10 +190,8 @@ export function useLlamaBackendSwitch() {
     })();
   }, [selected, status?.backendRequest, refresh, startPolling, t]);
 
-  // The component derives the untouched value from status.backendRequest.
   const running = applying || status?.job.state === "running";
 
-  // Follow any shared job already present in status.
   useEffect(() => {
     if (status?.job.state === "running" && !pollTimer.current) {
       startPolling();

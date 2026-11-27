@@ -303,7 +303,6 @@ test("an edit sends the source by id, its ranges and the action's own value", ()
     ),
   );
   assert.deepEqual(restyle.edit, { action: "restyle", strength: 0.9 });
-  // An untouched slider sends the value it shows, not the runtime's 1.0.
   const untouched = (action: "restyle" | "cover") =>
     buildAudioRunBody(
       buildMusicRunRequest(

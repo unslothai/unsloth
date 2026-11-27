@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// New frontend against an OLD backend that has no /api/providers/{id}/codex/models.
-// Three shapes that skew actually produces -- 404 JSON, a 200 SPA index.html, and a
-// 401 from an auth gateway -- must all land on the curated seed with the saved
-// selection intact. A wipe here is not cosmetic: the next unrelated Save persists the
-// emptied picker and the connection loses models the account can still reach.
+// Old backends without the codex/models route must land on the seed with the selection intact.
 
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
@@ -22,7 +18,6 @@ type Fetch = (
   options?: { refresh?: boolean },
 ) => Promise<SubscriptionModels>;
 type Resolve = (
-  curated: string[],
   savedModels: string[],
   listed: SubscriptionModels | null,
 ) => { catalog: string[]; selected: string[] };
@@ -31,7 +26,6 @@ let vite: ViteDevServer;
 let fetchCodexSubscriptionModels: Fetch;
 let resolveCodexPickerModels: Resolve;
 
-const CURATED = ["gpt-5.4", "gpt-5.5"];
 const SAVED = ["gpt-5.4", "gpt-5.7-nova"];
 
 before(async () => {
@@ -54,7 +48,6 @@ function stubFetch(response: Response): () => void {
   };
 }
 
-/** What applyCodexSubscriptionModels does with the call: any throw degrades to null. */
 async function listedOrNull(providerId: string): Promise<SubscriptionModels | null> {
   try {
     return await fetchCodexSubscriptionModels(providerId);
@@ -63,7 +56,7 @@ async function listedOrNull(providerId: string): Promise<SubscriptionModels | nu
   }
 }
 
-test("an old backend's 404 degrades to the curated seed and keeps the selection", async () => {
+test("an old backend's 404 keeps the saved models and the selection", async () => {
   const restore = stubFetch(
     new Response(JSON.stringify({ detail: "Not Found" }), {
       status: 404,
@@ -73,18 +66,15 @@ test("an old backend's 404 degrades to the curated seed and keeps the selection"
   try {
     const listed = await listedOrNull("provider-1");
     assert.equal(listed, null);
-    const { catalog, selected } = resolveCodexPickerModels(CURATED, SAVED, listed);
+    const { catalog, selected } = resolveCodexPickerModels(SAVED, listed);
     assert.deepEqual(selected, SAVED);
-    for (const model of CURATED) assert.ok(catalog.includes(model));
+    assert.deepEqual(catalog, SAVED);
   } finally {
     restore();
   }
 });
 
-test("an old backend's SPA index.html degrades to the curated seed", async () => {
-  // A dev proxy or a single-page fallback answers an unknown /api path with 200 and
-  // the app shell. response.json() rejects and parseJsonOrThrow hands back null on an
-  // ok response, so the picker must read that the same way it reads a throw.
+test("an old backend's SPA index.html keeps the selection", async () => {
   const restore = stubFetch(
     new Response("<!doctype html><html><body></body></html>", {
       status: 200,
@@ -94,7 +84,7 @@ test("an old backend's SPA index.html degrades to the curated seed", async () =>
   try {
     const listed = await listedOrNull("provider-1");
     assert.equal(listed, null);
-    const { selected } = resolveCodexPickerModels(CURATED, SAVED, listed);
+    const { selected } = resolveCodexPickerModels(SAVED, listed);
     assert.deepEqual(selected, SAVED);
   } finally {
     restore();
@@ -102,8 +92,6 @@ test("an old backend's SPA index.html degrades to the curated seed", async () =>
 });
 
 test("a body without a source field is not mistaken for a plan catalog", async () => {
-  // An intermediate backend that grew the route before the source discriminator would
-  // otherwise be read as authoritative and retire every saved slug it omits.
   const restore = stubFetch(
     new Response(JSON.stringify({ models: [{ id: "gpt-5.4" }] }), {
       status: 200,
@@ -113,7 +101,7 @@ test("a body without a source field is not mistaken for a plan catalog", async (
   try {
     const listed = await fetchCodexSubscriptionModels("provider-1");
     assert.notEqual(listed?.source, "subscription");
-    const { selected } = resolveCodexPickerModels(CURATED, SAVED, listed);
+    const { selected } = resolveCodexPickerModels(SAVED, listed);
     assert.deepEqual(selected, SAVED);
   } finally {
     restore();
@@ -121,10 +109,7 @@ test("a body without a source field is not mistaken for a plan catalog", async (
 });
 
 test("a gateway 401 on the unknown path still keeps the selection", async () => {
-  // Kept last: authFetch reads every 401 as an expired Unsloth session and runs the
-  // refresh-and-retry path, which is why the backend answers a dead ChatGPT connection
-  // with 200 + source:"reauthorization_required" instead of a 401. Whatever that path
-  // decides, the picker must still land on the seed with the selection intact.
+  // Kept last: a gateway 401 runs authFetch's refresh path, so the picker must still keep the selection.
   const location = { pathname: "/chat", href: "/chat" };
   const globals = globalThis as { window?: unknown; localStorage?: unknown };
   const originalWindow = globals.window;
@@ -148,10 +133,8 @@ test("a gateway 401 on the unknown path still keeps the selection", async () => 
   try {
     const listed = await listedOrNull("provider-1");
     assert.equal(listed, null);
-    const { selected } = resolveCodexPickerModels(CURATED, SAVED, listed);
+    const { selected } = resolveCodexPickerModels(SAVED, listed);
     assert.deepEqual(selected, SAVED);
-    // The session-expiry path may also navigate; either way it must not have
-    // rewritten the picker.
     await new Promise((resolve) => setTimeout(resolve, 50));
   } finally {
     restore();

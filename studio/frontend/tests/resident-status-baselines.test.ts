@@ -6,7 +6,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { selectResidentEstimateSettings } from "../src/features/model-picker/model-config/resident-memory-request.ts";
 
-// Execute the shipped status patch without importing the browser store graph.
 const source = readFileSync(
   new URL(
     "../src/features/chat/lib/apply-inference-status-to-store.ts",
@@ -160,8 +159,7 @@ test("speculative defaults still seed on adoption when older backends omit the m
   assert.equal(next.loadedSpeculativeType, "auto");
 });
 
-// The slot echo is resolved, so unlike the controls above it only advances the
-// baseline. A blank control must continue to mean server default.
+// The slot echo only advances the baseline; a blank control must still mean server default.
 const slotStart = source.indexOf("    // Baseline only, never the control:");
 const slotEnd = source.indexOf(
   "    // Per-model: a change underneath this tab",

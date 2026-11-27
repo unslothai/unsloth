@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TrainingMethod } from "@/types/training";
+import { formatBytes } from "../hub/lib/format.ts";
 
 export type ExportMethod = "merged" | "lora" | "gguf";
 
@@ -22,7 +23,7 @@ export const EXPORT_METHODS: {
   {
     value: "lora",
     title: "LoRA Only",
-    description: "Lightweight adapter files (~100 MB). Needs base model.",
+    description: "Lightweight adapter files. Needs base model.",
     tooltip:
       "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
   },
@@ -39,7 +40,7 @@ export const QUANT_OPTIONS: {
   value: string;
   label: string;
   recommended?: boolean;
-  imatrix?: boolean; // IQ quants require an importance matrix (the imatrix toggle below)
+  imatrix?: boolean; // IQ quants require an importance matrix
 }[] = [
   { value: "iq2_xxs", label: "IQ2_XXS", imatrix: true },
   { value: "iq2_m", label: "IQ2_M", imatrix: true },
@@ -58,12 +59,8 @@ export const QUANT_OPTIONS: {
 ];
 
 /**
- * Merged-export precision formats, sorted by bit width. Three backends:
- *   - "plain":      standard save (16-bit); `formatType` is the backend `format_type`.
- *   - "compressed": llm-compressor compressed-tensors (vLLM), NVIDIA-only; `value` is the alias.
- *   - "torchao":    portable FP8/INT8, no NVIDIA GPU needed; `value` is the alias.
- * `common` entries are quick pills, the rest the "More formats" dropdown; `needsNvidia` entries
- * are hidden on non-NVIDIA hardware.
+ * Merged-export backends: "plain" (16-bit), "compressed" (compressed-tensors, NVIDIA only),
+ * "torchao" (portable FP8/INT8). `needsNvidia` entries are hidden elsewhere.
  */
 export type MergedBackend = "plain" | "compressed" | "torchao";
 
@@ -77,7 +74,6 @@ export type MergedFormatOption = {
   needsNvidia: boolean;
   needsCalibration?: boolean;
   hint: string;
-  /** Backend `format_type` for a "plain" save (unused for compressed/torchao). */
   formatType?: string;
 };
 
@@ -85,7 +81,6 @@ export type MergedFormatOption = {
 export type MergedFormat = string;
 
 export const MERGED_FORMATS: MergedFormatOption[] = [
-  // 16-bit
   {
     value: "16-bit",
     label: "16-bit",
@@ -97,7 +92,6 @@ export const MERGED_FORMATS: MergedFormatOption[] = [
     hint: "Full precision, runs anywhere.",
     formatType: "16-bit (FP16)",
   },
-  // 8-bit
   {
     value: "fp8",
     label: "FP8",
@@ -169,7 +163,6 @@ export const MERGED_FORMATS: MergedFormatOption[] = [
     needsNvidia: true,
     hint: "Microscaling FP8. Needs a newer compressed-tensors stack.",
   },
-  // 4-bit
   {
     value: "w4a16",
     label: "INT4 (W4A16)",
@@ -203,12 +196,10 @@ export const MERGED_FORMATS: MergedFormatOption[] = [
   },
 ];
 
-/** Look up a merged format option by its stable value. */
 export function findMergedFormat(value: string): MergedFormatOption | undefined {
   return MERGED_FORMATS.find((f) => f.value === value);
 }
 
-/** Backend payload for one merged format: plain -> formatType, compressed/torchao -> the alias. */
 export function mergedFormatPayload(value: string): {
   formatType: string;
   compressedMethod: string | null;
@@ -223,14 +214,9 @@ export function mergedFormatPayload(value: string): {
   return { formatType: "16-bit (FP16)", compressedMethod: opt.value };
 }
 
-/** GGUF quants FastFlowLM's Q4NX converter packs directly for the AMD Ryzen AI NPU. */
 export const Q4NX_SOURCE_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
 
-/**
- * llama.cpp effective bits-per-weight per quant; GGUF size ~= fp16_bytes * bpw / 16.
- * K-quant values are published average bit-rates (Q2_K_L = Unsloth Q2_K + Q8_0
- * embeddings). Approximate ("~"), not exact file sizes.
- */
+/** Approximate llama.cpp bits per weight; GGUF size ~= fp16_bytes * bpw / 16. */
 export const GGUF_BPW: Record<string, number> = {
   iq2_xxs: 2.06,
   iq2_m: 2.7,
@@ -250,25 +236,6 @@ export const GGUF_BPW: Record<string, number> = {
 
 const FP16_BPW = 16;
 
-/**
- * Human-readable base-1024 size ("67 GB"), matching the model-selector picker.
- * Do NOT use the base-1000 hub formatBytes here -- it would disagree ("72 GB").
- */
-export function formatModelSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "";
-  }
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  // clamp: bytes < 1 would give a negative index
-  const i = Math.max(
-    0,
-    Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1),
-  );
-  const value = bytes / 1024 ** i;
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
-}
-
-/** Estimated on-disk bytes for one GGUF quant, scaled from the real fp16 size. */
 export function estimateQuantBytes(
   fp16Bytes: number | null | undefined,
   quant: string,
@@ -283,16 +250,14 @@ export function estimateQuantBytes(
   return fp16Bytes * (bpw / FP16_BPW);
 }
 
-/** "~X GB" label for a quant, or "" when the real model size is unknown. */
 export function formatQuantSize(
   fp16Bytes: number | null | undefined,
   quant: string,
 ): string {
   const bytes = estimateQuantBytes(fp16Bytes, quant);
-  return bytes == null ? "" : `~${formatModelSize(bytes)}`;
+  return bytes == null ? "" : `~${formatBytes(bytes)}`;
 }
 
-/** value -> "~X GB" for every quant option (blank when size unknown). */
 export function buildQuantSizeLabels(
   fp16Bytes: number | null | undefined,
 ): Record<string, string> {
@@ -303,10 +268,9 @@ export function buildQuantSizeLabels(
   return out;
 }
 
-/**
- * Estimated total export size for the summary line; scales from the model's
- * real fp16 size, returns "" when unknown so the UI can hide a wrong number.
- */
+export const MOE_GGUF_ADAPTER_HINT =
+  "This adapter trains MoE expert weights. If your llama.cpp cannot convert those yet, the export stops and says so; the full-model GGUF export works either way.";
+
 export function getEstimatedSize(
   method: ExportMethod | null,
   quantLevels: string[],
@@ -315,19 +279,19 @@ export function getEstimatedSize(
   if (method === "gguf" && quantLevels.length > 0) {
     const perQuant = quantLevels.map((q) => estimateQuantBytes(fp16Bytes, q));
     if (perQuant.some((b) => b == null)) {
-      return ""; // unknown -> blank
+      return "";
     }
     let total = 0;
     for (const b of perQuant) {
       total += b ?? 0;
     }
-    const label = `~${formatModelSize(total)}`;
+    const label = `~${formatBytes(total)}`;
     return quantLevels.length === 1
       ? label
       : `${label} (${quantLevels.length} files)`;
   }
   if (method === "merged") {
-    return fp16Bytes && fp16Bytes > 0 ? `~${formatModelSize(fp16Bytes)}` : "";
+    return fp16Bytes && fp16Bytes > 0 ? `~${formatBytes(fp16Bytes)}` : "";
   }
   if (method === "lora") {
     // Adapter size is bounded by LoRA rank, not the base model size.
@@ -362,7 +326,7 @@ export interface AdapterFeatures {
 
 export type AdapterFormat = "mlx" | "peft";
 
-/** The vLLM claim needs VERIFIED plain LoRA: vLLM rejects DoRA / modules_to_save and ignores per-module rank/alpha. */
+/** vLLM rejects DoRA / modules_to_save and ignores per-module rank, so require verified LoRA. */
 export function adapterCompatibilityTip(
   format: AdapterFormat,
   features: AdapterFeatures | null | undefined,
@@ -413,4 +377,10 @@ export function adapterCompatibilityTip(
 // The image LoRA route reports a path relative to the exports folder unless the user typed an absolute one.
 export function savedLabel(path: string): string {
   return /^([a-zA-Z]:[\\/]|[\\/])/.test(path) ? path : `exports/${path}`;
+}
+
+export type ExportTab = "llm" | "diffusion-lora" | "q4nx";
+
+export function resolveExportTab(tab: ExportTab, hasNpu: boolean): ExportTab {
+  return tab === "q4nx" && !hasNpu ? "llm" : tab;
 }

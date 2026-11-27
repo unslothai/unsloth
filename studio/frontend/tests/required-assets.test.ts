@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  imageCheckpointSelection,
   checkpointFirst,
   assetLabel,
   additionalAssetDownloads,
@@ -111,4 +112,21 @@ test("the download manager names companion files, falling back to required asset
     assetLabel({ repoId: "Qwen/Qwen-Image-2.1", bytes: 0 }),
     "Qwen-Image-2.1",
   );
+});
+
+test("reopening an SDXL card follows its queued or adopted checkpoint through completion", () => {
+  const repo = "owner/animagine";
+  const standard = { filename: "animagine.safetensors", bytes: 123 };
+  const opt = { filename: "animagine-opt.safetensors", bytes: 124 };
+  const files = [opt, standard];
+  const select = (picked?: string, queued?: string, scoped?: string[]) =>
+    imageCheckpointSelection(repo, files, picked, queued, scoped);
+  assert.equal(select().selected, standard);
+  const reopened = select(undefined, opt.filename);
+  assert.equal(reopened.active, opt);
+  assert.equal(reopened.selected, opt);
+  assert.equal(select(reopened.active?.filename).selected, opt);
+  assert.equal(select(standard.filename, undefined, [opt.filename]).selected, opt);
+  assert.equal(select(undefined, standard.filename, [opt.filename]).selected, opt);
+  assert.equal(select(undefined, undefined, ["tokenizer/config.json"]).active, undefined);
 });

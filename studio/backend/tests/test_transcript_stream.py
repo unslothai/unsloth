@@ -48,10 +48,7 @@ def test_phases_are_never_throttled(monkeypatch):
 
 
 def test_back_to_back_phases_all_reach_the_client(monkeypatch):
-    """A sidecar that loads within one tick reports "loading" and "transcribing" from its worker
-    thread back to back, and may finish right after. Both phases have to reach the client, in order,
-    ahead of the result: with a latest-wins queue of one, "transcribing" evicted "loading" whenever
-    both landed before the reader ran, which is what made the source-route test flaky under xdist."""
+    """Back-to-back phases must all reach the client in order; a latest-wins queue evicted loading."""
     monkeypatch.setattr(transcript_stream.transcript_gallery, "save", lambda result, title: {})
 
     def worker(progress):

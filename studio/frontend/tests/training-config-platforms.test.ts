@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The config plumbing reads the platform store, and config files travel between
-// machines, so pin the value mapping against every device type and every shipped
-// model config rather than the one config the round-trip test seeds from.
+// Config files travel between machines, so pin the mapping for every device type and shipped config.
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -29,8 +27,7 @@ const { useTrainingConfigStore } = await import(
   "../src/features/training/stores/training-config-store.ts"
 );
 
-// main.py maps sys.platform, so WSL arrives as "linux" and anything exotic
-// arrives verbatim; the browser fallback in env.ts only ever guesses these three.
+// main.py maps sys.platform: WSL arrives as "linux", anything exotic verbatim.
 const DEVICE_TYPES = ["linux", "windows", "mac", "freebsd"];
 
 const MODEL_DEFAULTS_DIR = new URL(
@@ -59,8 +56,7 @@ function patchFor(training: Record<string, unknown>): Record<string, unknown> {
 }
 
 test("gradient_checkpointing only ever maps to a value the picker can show", () => {
-  // Whatever a hand-written or shipped file holds, the store must not end up
-  // with a value <Select> cannot render.
+  // The store must never end up with a value <Select> cannot render.
   const rawValues: unknown[] = [
     true,
     false,
@@ -104,7 +100,6 @@ test("Unsloth GC is still never selected on a Mac", () => {
     patchFor({ gradient_checkpointing: "unsloth" }).gradientCheckpointing,
     "mlx",
   );
-  // The boolean path must not sneak past that remap either.
   assert.equal(
     patchFor({ gradient_checkpointing: true }).gradientCheckpointing,
     "true",
@@ -187,7 +182,6 @@ test("a config file written on another OS still imports", () => {
   setDeviceType("windows");
   useTrainingConfigStore.setState({ epochs: 3, gradientCheckpointing: "none" });
   const saved = serializeConfigToYaml(useTrainingConfigStore.getState(), false);
-  // A file saved on Windows, or one an editor wrote with a byte order mark.
   const bom = "\uFEFF";
   const variants: [string, string][] = [
     ["CRLF", saved.replace(/\n/g, "\r\n")],

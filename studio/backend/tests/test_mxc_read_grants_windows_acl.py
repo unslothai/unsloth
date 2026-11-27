@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Persistent MXC read grants against real Windows ACLs and icacls (#12941).
-
-A Microsoft Store Python lives under Program Files\\WindowsApps, owned by TrustedInstaller with
-read and execute only for everyone else, so icacls can neither add nor remove an entry there. The
-locked folder below reproduces that with the same owner and DACL.
-"""
+"""Store Python sits in a TrustedInstaller-owned folder that icacls cannot edit; this reproduces it."""
 
 from __future__ import annotations
 

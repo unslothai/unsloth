@@ -26,13 +26,12 @@ def _stub_data_designer(monkeypatch, seen):
 
     class _Client:
         def __init__(self, token):
-            pass
+            self._api = SimpleNamespace(upload_folder = lambda **kwargs: None)
 
         def __getattr__(self, name):
             return lambda **kwargs: None
 
         def _upload_config_files(self, *, repo_id, metadata_path, builder_config_path):
-            # The real client gates each of the two files on .exists() on its own.
             if metadata_path.exists():
                 seen["uploaded_metadata"] = metadata_path.name
             if builder_config_path.exists():

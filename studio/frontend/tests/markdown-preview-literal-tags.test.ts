@@ -8,11 +8,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as jsxRuntime from "react/jsx-runtime";
 import * as streamdown from "streamdown";
 import * as streamdownMath from "@streamdown/math";
-import * as streamdownMermaid from "@streamdown/mermaid";
 import ts from "@typescript/typescript6";
 
 import type * as ComposerDraftPreviewModule from "../src/components/assistant-ui/composer-draft-preview.tsx";
 import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
+import * as mermaidPlugin from "../src/components/assistant-ui/mermaid-plugin.ts";
 import * as inertComponents from "../src/components/markdown/inert-components.ts";
 import type * as MarkdownPreviewModule from "../src/components/markdown/markdown-preview.tsx";
 import * as markdownDataImages from "../src/lib/markdown-data-images.ts";
@@ -50,7 +50,7 @@ const { MarkdownPreview } = loadWithStubs<typeof MarkdownPreviewModule>(
       codePlugin: createCodePlugin(),
     },
     "@streamdown/math": streamdownMath,
-    "@streamdown/mermaid": streamdownMermaid,
+    "@/components/assistant-ui/mermaid-plugin": mermaidPlugin,
     "@/lib/markdown-plugins": markdownPlugins,
     "@/lib/open-link": { openLink: () => false },
     "@/lib/safe-markdown-url": safeMarkdownUrl,
@@ -197,8 +197,8 @@ test("Hub model cards are wired to the literal-tag pipeline", () => {
     ts.forEachChild(node, visit);
   })(source);
   assert.ok(rehypePlugins, `${path}: Streamdown has no rehypePlugins`);
-  assert.equal(
+  assert.match(
     initializers.get(rehypePlugins) ?? rehypePlugins,
-    "withLiteralUnknownTags(README_ALLOWED_TAGS)",
+    /withLiteralUnknownTags\(\s*README_ALLOWED_TAGS,/,
   );
 });

@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth doctor --gpus`: a multi-GPU preflight to run before a distributed job.
+"""unsloth doctor --gpus: multi-GPU preflight; torch imported lazily to keep --help fast."""
 
-Reports the GPUs, versions and interconnect, checks that peer copies keep their
-data, runs a short all_reduce across every visible GPU, and ends with a verdict
-and the settings to try. torch is imported lazily so `unsloth --help` stays fast.
-"""
-
+import importlib
+import importlib.metadata
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -85,8 +83,12 @@ def collect_gpus(torch) -> dict:
         "hip": hip,
         "nccl": None,
         "gpus": [],
+        "accelerator": None,
     }
     if not torch.cuda.is_available():
+        # A CUDA build that sees no device stays a failure.
+        if not info["cuda"] and not hip:
+            info["accelerator"] = _non_cuda_accelerator(torch)
         return info
     try:
         nccl = torch.cuda.nccl.version()
@@ -117,6 +119,22 @@ def collect_gpus(torch) -> dict:
     return info
 
 
+def _non_cuda_accelerator(torch) -> Optional[str]:
+    for name, probe in (
+        (
+            "mps",
+            getattr(getattr(getattr(torch, "backends", None), "mps", None), "is_available", None),
+        ),
+        ("xpu", getattr(getattr(torch, "xpu", None), "is_available", None)),
+    ):
+        try:
+            if callable(probe) and probe():
+                return name
+        except Exception:
+            pass
+    return None
+
+
 def driver_version(pynvml = None) -> Optional[str]:
     if pynvml is not None:
         try:
@@ -143,20 +161,29 @@ def driver_version(pynvml = None) -> Optional[str]:
         return None
 
 
-def nvml_topology(pynvml, gpus: List[dict]):
-    """({(a, b): {"level": "PHB", "nvlink": bool, "p2p_read": bool}} keyed by torch index, error).
+def _nvml_int(pynvml, name, default):
+    """An NVML enum constant as an int. nvidia-ml-py defines NVML_P2P_CAPS_INDEX_READ = 0, (a
+    1-tuple, stray comma), which ctypes refuses, so every P2P read query would fail."""
+    value = getattr(pynvml, name, default)
+    if isinstance(value, (tuple, list)):
+        value = value[0] if len(value) == 1 else default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
-    Handles are looked up by PCI bus id (else device UUID), since NVML numbers GPUs in
-    PCI order and ignores CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER, which renumber them.
-    A query a virtualised GPU refuses degrades that field instead of the whole table.
-    """
+
+def nvml_topology(pynvml, gpus: List[dict]):
+    """Returns ({(a, b): {level: PHB, nvlink: bool, p2p_read: bool}} keyed by torch index, error);
+    handles by PCI bus id, else UUID, since NVML numbers GPUs in PCI order and ignores
+    CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER; a refused query degrades only its field."""
     if pynvml is None:
         return None, "nvidia-ml-py is not installed"
     if len(gpus) < 2 or any(g["pci"] is None and not g.get("uuid") for g in gpus):
         return None, "torch reports neither PCI bus ids nor device UUIDs"
-    read_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
-    nvlink_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", 2)
-    status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", 0)
+    read_idx = _nvml_int(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
+    nvlink_idx = _nvml_int(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", 2)
+    status_ok = _nvml_int(pynvml, "NVML_P2P_STATUS_OK", 0)
 
     def query(fn, *args):
         try:
@@ -295,11 +322,8 @@ def allreduce_smoke(
     extra_env: Optional[dict] = None,
     numel: int = 16 * 1024 * 1024,
 ) -> dict:
-    """Run one all_reduce over `world` local ranks in fresh processes.
-
-    Separate interpreters rather than threads: a hung NCCL communicator can only be
-    recovered by killing its process, and the doctor must answer instead of hanging.
-    """
+    """Run one all_reduce over world local ranks in fresh processes: a hung NCCL communicator only
+    recovers by killing its process, so the doctor must not hang."""
     env = dict(os.environ)
     env.update(
         MASTER_ADDR = "127.0.0.1",
@@ -357,8 +381,7 @@ def allreduce_smoke(
             f.seek(0)
             outputs.append(f.read())
     finally:
-        # Ctrl-C on a hung run must not leave ranks holding GPU contexts behind. Bounded:
-        # a rank stuck in an uninterruptible driver call may never be reaped.
+        # Ctrl-C must not orphan GPU ranks; reaping is bounded, as a stuck rank may survive.
         for q in procs:
             if q.poll() is None:
                 q.kill()
@@ -391,6 +414,9 @@ def verdict(
     """(healthy, hints). Pure, so every branch is testable without GPUs."""
     hints = []
     gpus = info["gpus"]
+    if not gpus and info.get("accelerator"):
+        name = "Metal (MPS)" if info["accelerator"] == "mps" else "Intel XPU"
+        return True, [f"{name} detected: multi-GPU CUDA checks skipped."]
     if not gpus:
         return False, [
             "No GPU is visible to torch. Check `nvidia-smi`, CUDA_VISIBLE_DEVICES, and "
@@ -475,10 +501,22 @@ def _load_pynvml():
 
 
 def doctor(
+    ctx: typer.Context,
     gpus: bool = typer.Option(
         True,
         "--gpus/--no-gpus",
         help = "Check GPUs, interconnect and a multi-GPU all_reduce (the default check).",
+    ),
+    mcp: bool = typer.Option(
+        False,
+        "--mcp",
+        help = "Check the Unsloth Studio MCP server, the API key and agent timeouts. "
+        "Skips the GPU checks unless --gpus is also given.",
+    ),
+    env_var: str = typer.Option(
+        "UNSLOTH_API_KEY",
+        "--env-var",
+        help = "With --mcp: the environment variable that holds the Unsloth Studio API key.",
     ),
     timeout: float = typer.Option(
         60.0,
@@ -487,9 +525,182 @@ def doctor(
     ),
 ):
     """Preflight checks for this machine. Exit status 1 means a problem was found."""
-    if not gpus:
-        typer.echo("Nothing to check.")
-        raise typer.Exit()
+    # Plain --mcp skips the GPU checks; an explicit --gpus keeps them.
+    # By name: newer typer ships its own copy of click's ParameterSource.
+    explicit = getattr(ctx.get_parameter_source("gpus"), "name", "") != "DEFAULT"
+    run_gpus = gpus if explicit else not mcp
+    code = 0
+    if mcp:
+        from unsloth_cli.commands.mcp import mcp_doctor
+        code = mcp_doctor(env_var)
+    if not run_gpus:
+        if not mcp:
+            typer.echo("Nothing to check.")
+        raise typer.Exit(code)
+    if mcp:
+        typer.echo("")
+    try:
+        if mlx_backend_active():
+            _mlx_checks()
+        else:
+            _gpu_checks(timeout)
+    except typer.Exit as e:
+        raise typer.Exit(max(e.exit_code, code))
+
+
+def mlx_backend_active() -> bool:
+    """True when this machine trains through the MLX backend instead of CUDA / ROCm.
+
+    Apple Silicon runs Unsloth through `unsloth_zoo.mlx`, so the CUDA checks in
+    `_gpu_checks` cannot see anything and would report a false failure.
+    """
+    if os.environ.get("UNSLOTH_FORCE_GPU_PATH") == "1":
+        return False
+    # Not gated on mlx being importable: a Mac without it should get the MLX
+    # verdict's install hint, not the CUDA path's nvidia-smi one.
+    try:
+        from studio.backend.core.training.training import should_use_mlx_training_backend
+        return bool(should_use_mlx_training_backend())
+    except Exception:
+        # The repo gate is a platform check; keep it if the studio backend can't import.
+        return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def collect_mlx_info() -> dict:
+    """Everything the MLX preflight needs. Never raises."""
+    info = {
+        "platform": f"{platform.system()} {platform.machine()}",
+        "mlx": None,
+        "metal": False,
+        "device": None,
+        "architecture": None,
+        "memory_gib": None,
+        "working_set_gib": None,
+        "zoo": None,
+        "zoo_mlx": False,
+        "stack_blockers": None,
+        "errors": [],
+    }
+    try:
+        info["mlx"] = importlib.metadata.version("mlx")
+    except Exception as e:
+        info["errors"].append(f"mlx version: {type(e).__name__}: {e}")
+    try:
+        import mlx.core as mx
+
+        info["metal"] = bool(mx.metal.is_available())
+        details = None
+        get_info = getattr(mx, "device_info", None)
+        if callable(get_info):
+            try:
+                details = get_info()
+            except Exception:
+                details = None
+        if details is None:
+            # mx.metal.device_info() is deprecated; keep it only as a fallback.
+            details = mx.metal.device_info()
+        details = dict(details or {})
+        info["device"] = details.get("device_name")
+        info["architecture"] = details.get("architecture")
+        memory = details.get("memory_size")
+        if isinstance(memory, (int, float)):
+            info["memory_gib"] = round(memory / (1024**3), 2)
+        working_set = details.get("max_recommended_working_set_size")
+        if isinstance(working_set, (int, float)):
+            info["working_set_gib"] = round(working_set / (1024**3), 2)
+    except Exception as e:
+        info["errors"].append(f"mlx: {type(e).__name__}: {e}")
+    try:
+        info["zoo"] = importlib.metadata.version("unsloth_zoo")
+    except Exception as e:
+        info["errors"].append(f"unsloth_zoo version: {type(e).__name__}: {e}")
+    info["zoo_mlx"] = True
+    # Names written out: the risky-loader lint flags import_module on a variable.
+    for module, load in (
+        ("unsloth_zoo.mlx.trainer", lambda: importlib.import_module("unsloth_zoo.mlx.trainer")),
+        ("unsloth_zoo.mlx.loader", lambda: importlib.import_module("unsloth_zoo.mlx.loader")),
+    ):
+        try:
+            load()
+        except Exception as e:
+            info["errors"].append(f"{module}: {type(e).__name__}: {e}")
+            info["zoo_mlx"] = False
+    # The gate Unsloth Studio uses for Train/Export: mlx-lm / mlx-vlm imports and minimum versions.
+    try:
+        from unsloth_cli._inference import ensure_studio_backend_path
+
+        ensure_studio_backend_path(seed_cache_env = False)
+        from utils.mlx_repair import mlx_stack_blockers
+
+        info["stack_blockers"] = list(mlx_stack_blockers())
+    except Exception as e:
+        info["errors"].append(f"mlx stack check: {type(e).__name__}: {e}")
+    return info
+
+
+def verdict_mlx(info: dict) -> Tuple[bool, List[str]]:
+    """(healthy, hints). Pure, so every branch is testable without an Apple Silicon GPU."""
+    # `unsloth studio update` installs with the pins that keep Transformers where Unsloth
+    # expects it; a plain `pip install mlx-lm` can move it and leave Train/Export disabled.
+    if not info.get("mlx"):
+        return False, [
+            "mlx is not installed. Run `unsloth studio update` to install the Apple Silicon stack."
+        ]
+    if not info.get("zoo_mlx"):
+        return False, [
+            "The installed unsloth_zoo has no usable `unsloth_zoo.mlx` backend. Run "
+            "`unsloth studio update` to upgrade it."
+        ]
+    blockers = info.get("stack_blockers")
+    if blockers is None:
+        # It needs the same modules training does, so a check that cannot run is a failure.
+        return False, [
+            "The MLX stack check could not run (see the note above). Run "
+            "`unsloth studio update` to repair the install."
+        ]
+    if blockers:
+        return False, [
+            "The MLX stack cannot train: "
+            + "; ".join(blockers)
+            + ". Run `unsloth studio update` to repair it."
+        ]
+    if not info.get("metal"):
+        return False, [
+            "Metal is not available, so MLX cannot use the GPU. Check that this is a "
+            "supported Apple Silicon machine and that macOS is up to date."
+        ]
+    if not info.get("device"):
+        return False, ["MLX did not report a device. The GPU may be unavailable to this process."]
+    return True, [
+        "Apple Silicon GPU through the MLX backend. Multi-GPU, NCCL and peer-copy "
+        "checks do not apply to this backend, so they were skipped."
+    ]
+
+
+def _mlx_checks():
+    info = collect_mlx_info()
+    typer.echo("=== Versions ===")
+    typer.echo(f"platform {info['platform']}")
+    typer.echo("backend mlx")
+    typer.echo(f"mlx {info['mlx']}")
+    typer.echo(f"unsloth_zoo {info['zoo']}")
+    typer.echo(f"Metal {'available' if info['metal'] else 'unavailable'}")
+    typer.echo("")
+    typer.echo("=== Device ===")
+    typer.echo(f"  {info['device']}  {info['architecture']}")
+    typer.echo(f"  memory {info['memory_gib']} GiB")
+    typer.echo(f"  recommended working set {info['working_set_gib']} GiB")
+    for error in info["errors"]:
+        typer.echo(f"note: {error}")
+    healthy, hints = verdict_mlx(info)
+    typer.echo("")
+    typer.echo(f"=== Verdict: {'OK' if healthy else 'PROBLEMS FOUND'} ===")
+    for hint in hints:
+        typer.echo(f"- {hint}")
+    raise typer.Exit(code = 0 if healthy else 1)
+
+
+def _gpu_checks(timeout: float):
     try:
         import torch
     except ImportError:

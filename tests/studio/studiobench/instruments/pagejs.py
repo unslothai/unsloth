@@ -83,9 +83,7 @@ class FramesInstrument(_PageInstrument):
         self._arm_screencast()
 
     def _arm_screencast(self) -> None:
-        """CDP presented frames: the only one of the three clocks that is not the page's own
-        opinion of itself. A page whose main thread is wedged reports nothing from rAF and nothing
-        from a timer; the compositor still presents, or visibly does not."""
+        """CDP frames: the only clock the page cannot skew; wedged threads silence rAF/timers."""
         ctx = self.ctx
         if ctx is None or ctx.cdp is None:
             return
@@ -118,8 +116,7 @@ class FramesInstrument(_PageInstrument):
             self._screencast_on = False
 
     def calibrate(self, idle_ms: int = 1200) -> dict:
-        """Calibrate only in an enforced idle window: a loaded page's load would be read as the
-        timer floor."""
+        """Calibrate only in an enforced idle window; page load would read as the timer floor."""
         if self.page is None:
             self.clamp = {"clampMs": None, "reason": "no page"}
             return self.clamp
@@ -154,8 +151,7 @@ class FramesInstrument(_PageInstrument):
         return out
 
     def _clock_agreement(self, out: dict, presented: int, elapsed_ms: float) -> dict:
-        """Screencast is liveness only, as it emits on visual change; agreement is rAF against the
-        1ms timer."""
+        """Screencast is liveness only; agreement is rAF against the 1ms timer."""
         raf = out.get("frames")
         lag_ticks = out.get("lag_ticks")
         clamp = out.get("clamp_ms")
@@ -206,8 +202,7 @@ def _input():
 
 
 class InputInstrument(_PageInstrument):
-    """Armed and drained by the keystroke action rather than per window: a window that contained
-    no typing has nothing to report, and reporting a zero for it would be a bare zero."""
+    """Armed and drained per keystroke, not per window; an untyped window reports nothing."""
 
     name = "input"
     level = 0
@@ -220,8 +215,7 @@ class InputInstrument(_PageInstrument):
         }
 
     def settled(self) -> dict:
-        """Whether a keystroke's paint is still in flight. `None` when the page cannot answer, so
-        a caller polling on it stops rather than looping to its bound."""
+        """Keystroke paint in flight; None when the page cannot answer, so pollers stop."""
         return self._eval("() => window.__sb.input.settled()")
 
     def collect(self, expected: int) -> dict:
@@ -241,8 +235,7 @@ def _glass():
 
 
 class GlassInstrument(_PageInstrument):
-    """Level 1: it wraps hot accessors on Element.prototype and perturbs what it measures. The
-    headline numbers come from level 0, where it is not installed at all."""
+    """Level 1 perturbs timing via Element.prototype hooks; headline numbers come from level 0."""
 
     name = "glass"
     level = 1

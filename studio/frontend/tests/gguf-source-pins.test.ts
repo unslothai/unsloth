@@ -22,7 +22,6 @@ const source = readFileSync(
   "utf8",
 );
 const declaration = source
-  // Both functions travel together: the reconciler calls the non-GGUF survivor probe.
   .slice(source.indexOf("async function hasRunnableNonGgufCopy"))
   .replace("export ", "");
 const compile = new Function(
@@ -92,8 +91,6 @@ for (const requested of ["Org/Model", "org/model"]) {
         scan_confirmed: true,
       });
       const run = compile(
-        // The bare pin must survive the last quant when a non-GGUF copy of the same
-        // repo is still cached and runnable, and fall only when none is left.
         async () => (await inventory()).cached,
         inventory,
         modelsInventory,
@@ -111,7 +108,6 @@ for (const requested of ["Org/Model", "org/model"]) {
                 downloaded:
                   !remaining.startsWith("anonymous") &&
                   !remaining.endsWith("partial") &&
-                  // The last quant is what was just deleted; only a non-GGUF copy is left.
                   remaining !== "non-gguf-survivor",
               },
             ],
@@ -129,8 +125,6 @@ for (const requested of ["Org/Model", "org/model"]) {
         modelIdsMatchForPicker,
         ggufVariantsMatchForPicker,
       );
-      // The survivor case carries a token: an anonymous listing stops at the guard that
-      // trusts the complete copy on disk, before any pin is reconsidered.
       await run(
         requested,
         remaining === "non-gguf-survivor" ? "hf_fixture_token" : undefined,

@@ -224,3 +224,263 @@ def test_transcript_routes_get_rename_and_archive(stub):
         cleared = client.patch(url, json = {"speaker_names": {"S01": None}, "archived": True}).json()
         assert "speaker_names" not in cleared and cleared["archived"] is True
         assert client.get("/api/inference/audio/transcripts/" + "e" * 32).status_code == 404
+
+
+@pytest.fixture
+def connection(monkeypatch):
+    import httpx
+
+    from core.inference import external_provider, providers
+
+    config = {
+        "provider_type": "custom",
+        "display_name": "Whisper Box",
+        "base_url": "http://stt.local:8000/v1",
+        "is_enabled": True,
+    }
+    monkeypatch.setattr(
+        inference.providers_db,
+        "get_provider",
+        lambda pid: dict(config) if pid == "conn-1" else None,
+    )
+    for module in (inference, providers):
+        monkeypatch.setattr(module, "validate_provider_base_url", lambda url: url)
+    monkeypatch.setattr(inference, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test")
+    calls = []
+    reply = {
+        "task": "transcribe",
+        "language": "english",
+        "duration": 1.0,
+        "text": " Hello there.",
+        "segments": [{"id": 0, "seek": 0, "start": 0.0, "end": 1.0, "text": " Hello there."}],
+        "words": [{"word": " Hello", "start": 0.0, "end": 0.4}],
+    }
+
+    class _Http:
+        async def post(self, url, **kwargs):
+            calls.append({"url": url, **kwargs})
+            return httpx.Response(200, json = reply, request = httpx.Request("POST", url))
+
+    monkeypatch.setattr(external_provider, "_client", lambda: _Http())
+    return calls
+
+
+def test_a_connection_transcribes_the_source_and_saves_it(stub, connection):
+    input_id = _input(ALICE)
+    with _client(ALICE) as client:
+        response, events = _post(
+            client,
+            provider_id = "conn-1",
+            model = "whisper-1",
+            source = {"input_id": input_id},
+            timestamps = True,
+        )
+    assert response.status_code == 200, response.text
+    assert not (stub.paths or stub.bytes or stub.loads)
+    (call,) = connection
+    assert call["url"] == "http://stt.local:8000/v1/audio/transcriptions"
+    name, audio, content_type = call["files"]["file"]
+    assert (name, content_type, audio[:4]) == ("audio.flac", "audio/flac", b"fLaC")
+    assert call["data"]["model"] == "whisper-1"
+    assert call["data"]["response_format"] == "verbose_json"
+    assert call["data"]["timestamp_granularities[]"] == ["segment", "word"]
+    complete = events[-1]
+    assert complete["type"] == "complete" and complete["text"] == "Hello there."
+    assert complete["segments"] == [{"start": 0.0, "end": 1.0, "text": "Hello there."}]
+    assert complete["words"] == [{"start": 0.0, "end": 0.4, "word": "Hello"}]
+    assert complete["timestamps"] is True and complete["duration"] == pytest.approx(1.0, abs = 0.05)
+    record = complete["record"]
+    assert (record["model"], record["language"]) == ("whisper-1", "english")
+    assert record["source"] == {"kind": "input", "id": input_id, "name": "meeting.webm"}
+
+
+def test_a_source_past_the_connection_limit_is_refused_before_upload(stub, connection, monkeypatch):
+    monkeypatch.setattr(inference, "_MAX_AUDIO_RAW_BYTES", 1024)
+    with _client(ALICE) as client:
+        _, events = _post(
+            client, provider_id = "conn-1", model = "whisper-1", source = {"input_id": _input(ALICE)}
+        )
+    assert events[-1]["type"] == "error"
+    assert "a connection takes" in events[-1]["message"]
+    assert not connection and not stub.bytes
+
+
+def test_mtmd_source_keeps_its_context_preference_through_streaming(stub, monkeypatch):
+    calls = []
+    original = stub.transcribe
+
+    def transcribe(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stub, "transcribe", transcribe)
+    with _client(ALICE) as client:
+        response, events = _post(
+            client,
+            model = "qwen3-asr-0.6b",
+            engine = "mtmd",
+            source = {"input_id": _input(ALICE)},
+            context_length = 8192,
+        )
+    assert response.status_code == 200, response.text
+    assert events[-1]["type"] == "complete", events
+    assert calls[0]["context_length"] == 8192
+
+
+def _long_input(account, seconds = 3.0) -> str:
+    save = audio_inputs.save_stream(_chunks([wav_bytes(seconds)]), "long.wav")
+    return run_as(account, lambda: asyncio.run(save)[0]["id"])
+
+
+@pytest.fixture
+def short_caps(monkeypatch):
+    from core.inference import stt_sidecar
+
+    monkeypatch.delenv(audio_inputs.TRANSCRIBE_MAX_MINUTES_ENV, raising = False)
+    monkeypatch.setattr(audio_inputs, "MAX_SECONDS", 1)
+    monkeypatch.setattr(stt_sidecar, "_MAX_AUDIO_SECONDS", 1)
+
+
+def test_audio_cpp_reads_the_whole_source_past_the_other_engines_cap(stub, short_caps):
+    input_id = _long_input(ALICE)
+    with _client(ALICE) as client:
+        response, events = _post(client, source = {"input_id": input_id})
+    assert response.status_code == 200, response.text
+    ((path, rate, _, _),) = stub.paths
+    assert path.name == f"{input_id}.16000.mono.m14400.wav"
+    with wave.open(str(path)) as w:
+        assert w.getnframes() / w.getframerate() == pytest.approx(3.0, abs = 0.05)
+    assert events[-1]["type"] == "complete"
+
+
+def test_another_engine_refuses_a_source_past_its_cap_before_loading(stub, short_caps):
+    source = {"input_id": _long_input(ALICE)}
+    with _client(ALICE) as client:
+        response, _ = _post(client, model = "small", engine = "transformers", source = source)
+    assert response.status_code == 413
+    assert response.json()["detail"] == (
+        "This model transcribes up to 0 minutes of audio. Trim it, or pick an audio.cpp model, "
+        "which takes up to 4 hours."
+    )
+    assert not (stub.loads or stub.bytes or stub.paths)
+
+
+def test_a_source_just_past_the_cap_is_refused_not_cut(stub, short_caps):
+    source = {"input_id": _long_input(ALICE, seconds = 1.5)}
+    with _client(ALICE) as client:
+        response, _ = _post(client, model = "small", engine = "transformers", source = source)
+    assert response.status_code == 413
+    assert not (stub.loads or stub.bytes or stub.paths)
+
+
+def test_a_connection_refuses_a_source_past_its_cap_before_upload(stub, connection, short_caps):
+    source = {"input_id": _long_input(ALICE)}
+    with _client(ALICE) as client:
+        response, _ = _post(client, provider_id = "conn-1", model = "whisper-1", source = source)
+    assert response.status_code == 413
+    assert response.json()["detail"].startswith("A connection takes up to 0 minutes of audio.")
+    assert connection == [] and not (stub.loads or stub.bytes)
+
+
+def test_a_speaker_accent_reaches_qwen3_asr_on_llama_cpp(stub, monkeypatch):
+    calls = []
+    original = stub.transcribe
+
+    def transcribe(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stub, "transcribe", transcribe)
+    source = {"input_id": _input(ALICE)}
+    with _client(ALICE) as client:
+        response, events = _post(
+            client,
+            model = "qwen3-asr-0.6b",
+            engine = "mtmd",
+            source = source,
+            language = "en",
+            speaker_accent = "  Chinese-accented\n English ",
+        )
+    assert response.status_code == 200, response.text
+    assert events[-1]["type"] == "complete", events
+    assert calls[0]["prompt"] == "Speaker accent: Chinese-accented English."
+    # The transcript stays in the selected language: the hint changes nothing else.
+    assert events[-1]["language"] == "en"
+
+
+def test_no_accent_sends_no_prompt(stub, monkeypatch):
+    calls = []
+    monkeypatch.setattr(stub, "transcribe", lambda *a, **k: calls.append(k) or {"text": "x"})
+    with _client(ALICE) as client:
+        response, _ = _post(
+            client,
+            model = "qwen3-asr-0.6b",
+            engine = "mtmd",
+            source = {"input_id": _input(ALICE)},
+            speaker_accent = "   ",
+        )
+    assert response.status_code == 200, response.text
+    assert calls[0]["prompt"] is None
+
+
+@pytest.mark.parametrize(
+    "model,engine", [(MOSS, None), (QWEN3, None), ("small", "transformers"), ("small", "gguf")]
+)
+def test_an_accent_for_a_model_that_cannot_take_it_is_422_not_ignored(stub, model, engine):
+    body = {
+        "model": model,
+        "source": {"input_id": _input(ALICE)},
+        **({"engine": engine} if engine else {}),
+    }
+    with _client(ALICE) as client:
+        response, _ = _post(client, **body, speaker_accent = "Indian English")
+    assert response.status_code == 422
+    assert "cannot take a speaker accent hint" in response.json()["detail"]
+    assert not stub.paths and not stub.bytes and not stub.loads
+
+
+def test_an_accent_longer_than_200_characters_is_422(stub):
+    with _client(ALICE) as client:
+        response, _ = _post(
+            client,
+            model = "small",
+            engine = "transformers",
+            source = {"input_id": _input(ALICE)},
+            speaker_accent = "x" * 201,
+        )
+    assert response.status_code == 422 and not stub.bytes
+
+
+def test_a_connection_gets_the_accent_as_its_prompt(stub, connection):
+    with _client(ALICE) as client:
+        response, events = _post(
+            client,
+            provider_id = "conn-1",
+            model = "gpt-4o-transcribe",
+            source = {"input_id": _input(ALICE)},
+            speaker_accent = "Japanese-accented English",
+        )
+    assert response.status_code == 200, response.text
+    (call,) = connection
+    assert call["data"]["prompt"] == "Speaker accent: Japanese-accented English."
+    assert events[-1]["type"] == "complete"
+
+
+def test_a_connection_without_an_accent_gets_no_prompt(stub, connection):
+    with _client(ALICE) as client:
+        _post(client, provider_id = "conn-1", model = "whisper-1", source = {"input_id": _input(ALICE)})
+    (call,) = connection
+    assert "prompt" not in call["data"]
+
+
+@pytest.mark.parametrize("model", ["gpt-4o-transcribe-diarize", "whisper-1"])
+def test_an_accent_for_a_whisper_or_diarizing_connection_model_is_422(stub, connection, model):
+    with _client(ALICE) as client:
+        response, _ = _post(
+            client,
+            provider_id = "conn-1",
+            model = model,
+            source = {"input_id": _input(ALICE)},
+            speaker_accent = "Japanese-accented English",
+        )
+    assert response.status_code == 422 and not connection

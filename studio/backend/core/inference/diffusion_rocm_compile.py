@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-process probe: can this ROCm install regionally compile a transformer block?
-
-ROCm was refused because inductor's pooled buffers (``memory_planning``) are views AOTAutograd rejects; Studio now
-compiles with it off and no cudagraphs on ROCm. The probe compiles one small block as the default tier does and checks
-it against eager; any failure stays eager.
-
-``UNSLOTH_DIFFUSION_ROCM_COMPILE``: ``0`` never compiles on ROCm, ``1`` skips the probe, unset / ``auto`` probes.
-"""
+"""Per-process probe that a regional block compile matches eager on ROCm; failure stays eager; ROCm
+compiles with memory_planning off and no cudagraphs; UNSLOTH_DIFFUSION_ROCM_COMPILE=0 off, 1
+skips probe"""
 
 from __future__ import annotations
 

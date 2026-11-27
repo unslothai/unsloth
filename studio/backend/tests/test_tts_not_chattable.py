@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A TTS model must never be chat-loadable.
-
-The Audio page loads speech models into the single slot chat reads, and
-``openai_chat_completions`` answers a turn on one by SYNTHESIZING the prompt
-rather than refusing it. Auto-load picks the smallest downloaded model and TTS
-models are small, so one became the default chat model on a fresh install.
-
-Architecture cannot answer this -- Orpheus and OuteTTS are ``LlamaForCausalLM``,
-Spark is ``Qwen2ForCausalLM`` -- so the codec vocabulary in
-``tokenizer_config.json`` is the signal, with the curated ids covering the GGUF
-companions that ship no tokenizer at all.
-"""
+"""TTS models must never be chat-loadable: chat would synthesize the prompt, not refuse it."""
 
 from __future__ import annotations
 
@@ -139,7 +128,6 @@ def test_is_tts_audio_type_excludes_the_input_only_types():
 
 
 def test_the_tts_set_is_a_subset_of_the_classifier():
-    # A type here that the patterns cannot produce would never fire.
     assert TTS_AUDIO_TYPES <= set(AUDIO_TOKEN_PATTERNS)
 
 
@@ -152,14 +140,12 @@ def test_curated_tts_repo_ids_cover_the_gguf_companion():
     assert is_curated_tts_repo_id("unsloth/Llama-OuteTTS-1.0-1B")
     assert not is_curated_tts_repo_id("unsloth/gemma-4-E2B-it")
     assert not is_curated_tts_repo_id(None)
-    # The two curated sets describe different halves of the Audio page.
     assert not is_curated_tts_repo_id("unsloth/whisper-large-v3")
     assert not is_curated_stt_repo_id("unsloth/orpheus-3b-0.1-ft")
 
 
 def test_a_curated_tts_repo_row_is_not_chat_loadable(tmp_path):
-    """can_chat is what auto-load filters on, and a GGUF row's capabilities come from
-    the file format alone."""
+    """can_chat drives auto-load; GGUF rows get capabilities from the file format alone."""
     from hub.services.models.cache_inventory import _cache_inventory_fields
 
     fields = _cache_inventory_fields(
@@ -181,8 +167,7 @@ def test_an_ordinary_gguf_repo_row_still_chats(tmp_path):
 
 
 def test_a_lora_over_a_speech_base_is_not_chattable(tmp_path):
-    """Studio trains Orpheus LoRAs, and an adapter resolves its base to decide this, so
-    without the probe every voice fine-tune became chat-loadable too."""
+    """Adapters resolve their base; without the probe, voice LoRAs became chat-loadable."""
     from hub.services.models.common import _local_path_can_chat
 
     base = _model_dir(tmp_path, "orpheus-base", ["LlamaForCausalLM"], _snac_tokens())

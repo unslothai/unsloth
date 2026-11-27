@@ -86,8 +86,7 @@ export function DatasetDownloadSection({
   const downloadAction = useDownloadCardState({
     job,
     variant: null,
-    // The datasets-server size above is a parquet/original estimate, not the raw
-    // repo bytes snapshot_download fetches; 0 lets the backend resolve the true total.
+    // The size above is an estimate, not raw repo bytes; 0 lets the backend resolve the total.
     expectedBytes: 0,
     downloading,
     disabled: cancelling || deleting,
@@ -135,7 +134,6 @@ export function DatasetDownloadSection({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" sideOffset={4}>
-                {/* The badge is a status dot, not a control. */}
                 {downloadAction.partialHint}
               </TooltipContent>
             </Tooltip>

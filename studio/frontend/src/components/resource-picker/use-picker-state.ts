@@ -43,6 +43,7 @@ export function usePickerState({
   const [lockedInferredTab, setLockedInferredTab] = useState<PickerTab | null>(
     null,
   );
+  const [hasCurrentTabChoice, setHasCurrentTabChoice] = useState(false);
   const [hubQuery, setHubQuery] = useState("");
   const [deviceQuery, setDeviceQuery] = useState("");
   const [hasExplicitTabPreference, setHasExplicitTabPreference] = useState(
@@ -54,6 +55,7 @@ export function usePickerState({
 
   const handleTabChange = useCallback(
     (next: PickerTab) => {
+      setHasCurrentTabChoice(true);
       setLockedInferredTab(null);
       setHasExplicitTabPreference(true);
       setTabState(next);
@@ -64,6 +66,7 @@ export function usePickerState({
 
   const closePicker = useCallback(() => {
     setOpen(false);
+    setHasCurrentTabChoice(false);
     setLockedInferredTab(null);
   }, []);
 
@@ -74,6 +77,7 @@ export function usePickerState({
     }: PickerViewInput): PickerViewState => {
       const tab = resolvePickerTab({
         hasDeviceItems,
+        hasCurrentTabChoice,
         hasExplicitTabPreference,
         isDeviceInventorySettled,
         lockedInferredTab,
@@ -115,6 +119,7 @@ export function usePickerState({
       deviceQuery,
       closePicker,
       hasExplicitTabPreference,
+      hasCurrentTabChoice,
       hubQuery,
       lockedInferredTab,
       online,

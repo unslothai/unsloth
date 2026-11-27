@@ -100,8 +100,7 @@ class TestAnAttemptWithNoDigestIsDropped:
         assert kept[0].runtime_sha256 == SHA_B
 
     def test_an_uncovered_runtime_unpairs_rather_than_riding_along(self):
-        """Dropping the whole attempt would lose CUDA over a missing side archive, and
-        keeping the pair would install one unverified. Unpairing is neither."""
+        """Unpairing an uncovered runtime avoids losing CUDA and installing one unverified."""
         kept = ip._apply_release_digests(
             [self._choice(runtime = "cudart.zip")], {"bundle.zip": SHA_A}
         )

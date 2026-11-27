@@ -10,6 +10,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type * as ChipModule from "../src/features/rag/components/document-status-chip.tsx";
 import type * as SourceChipModule from "../src/features/rag/components/project-source-chip.tsx";
+import * as sourceFolderCopy from "../src/features/rag/components/source-folder-copy.ts";
 import { type StubElement, loadWithStubs, stubJsxRuntime } from "./helpers/module-stubs.ts";
 
 const Nothing = () => null;
@@ -26,8 +27,10 @@ const chip = loadWithStubs<typeof ChipModule>(
     "@/components/ui/spinner": { Spinner: Nothing },
     "@/lib/utils": { cn: (...parts: unknown[]) => parts.filter(Boolean).join(" ") },
     "@hugeicons/core-free-icons": {},
+    "@/lib/folder-icons": {},
     "@hugeicons/react": { HugeiconsIcon: Nothing },
     "lucide-react": { XIcon: Nothing },
+    "./source-folder-copy": sourceFolderCopy,
   },
 );
 

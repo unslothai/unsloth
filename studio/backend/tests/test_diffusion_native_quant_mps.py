@@ -52,6 +52,34 @@ def test_mps_refuses_everything_but_int8(scheme):
     assert tq.native_quant_scheme(_mps_target(), scheme) is None
 
 
+@pytest.mark.skipif(not _MPS, reason = "needs Apple MPS")
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
+def test_mps_fp8_dequant_matches_the_cpu_cast_bitwise(fmt, dtype):
+    """Every code, NaN and inf included, against the CPU cast; MPS has no fp8 cast before torch 2.15."""
+    codes = torch.arange(256, dtype = torch.uint8).repeat(4, 1).view(getattr(torch, fmt))
+    scale = torch.tensor([[1.0], [0.5], [3.0], [2.0**-9]])
+    linear = torch.nn.Linear(256, 4, dtype = torch.bfloat16)
+    layer = nq.native_linear_class()(linear, "fp8", codes = codes, scale = scale)
+    want = layer.dequantized_weight(getattr(torch, dtype))
+    got = layer.to("mps").dequantized_weight(getattr(torch, dtype)).cpu()
+    nan = want.isnan()
+    assert torch.equal(got.isnan(), nan)
+    bits = torch.int32 if dtype == "float32" else torch.int16
+    assert torch.equal(got[~nan].view(bits), want[~nan].view(bits))
+
+
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+def test_fp8_lookup_table_matches_the_cast_bitwise(fmt):
+    # Runs everywhere: the MPS dispatch test above skips off Apple Silicon.
+    codes = torch.arange(256, dtype = torch.uint8)
+    got = nq.fp8_lookup_table(fmt, "cpu").index_select(0, codes.int())
+    want = codes.view(getattr(torch, fmt)).float()
+    nan = want.isnan()
+    assert torch.equal(got.isnan(), nan)
+    assert torch.equal(got[~nan].view(torch.int32), want[~nan].view(torch.int32))
+
+
 @pytest.mark.parametrize("dtype", ["float16", "float32"])
 def test_mps_without_bf16_is_not_native(dtype):
     target = _mps_target(getattr(torch, dtype))

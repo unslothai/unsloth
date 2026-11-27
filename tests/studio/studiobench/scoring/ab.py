@@ -73,8 +73,7 @@ class Pair:
 
     @staticmethod
     def _divisible(measure: Measure) -> float | None:
-        """A measured zero is a reading; a sub-floor value uses the floor, giving a bound rather
-        than infinity."""
+        """A zero is a reading; a sub-floor value uses the floor, a bound rather than infinity."""
         if not measure.has_reading:
             return None
         value = float(measure.value)
@@ -264,8 +263,7 @@ def compare(
     is_null_control: bool = False,
     bootstrap_seed: int = 0,
 ) -> AbResult:
-    """Raises on identity mismatch; returns a VOID result, not an error, when data cannot support a
-    claim."""
+    """Identity mismatch raises; unsupported data yields a VOID result, not an error."""
 
     assert_comparable(identity_base, identity_treatment)
 

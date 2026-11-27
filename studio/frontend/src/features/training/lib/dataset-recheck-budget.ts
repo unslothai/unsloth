@@ -1,30 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
-* Retry budget for the cached dataset format re-check.
-*
-* When a format check finishes against a cache generation that has since advanced, the answer
-* may be stale and the store re-runs it. The rejection tracker advances that generation on any
-* inventory-fingerprint change, and the fingerprint includes sizeBytes, so a dataset that is
-* still downloading invalidates every in-flight check. Unbounded, that pair never converges
-* (unslothai/unsloth#7853). The budget is keyed on the selection so a new one starts fresh.
-*/
+/** The cache generation advances on any fingerprint change, including sizeBytes while downloading,
+ * so unbounded re-checks never converge. Keyed on the selection. */
 
 export const DATASET_CACHE_RECHECK_LIMIT = 3;
 
 let currentKey: string | null = null;
 let attempts = 0;
 
-/**
-* Identity of a dataset *selection*, mirroring the four user-chosen dimensions of
-* DatasetCacheUsabilityIdentity. Keying on fewer fields makes a genuinely different selection
-* inherit an exhausted budget and lose its local-cache preference.
-*
-* cachePath is deliberately excluded even though the usability identity carries it: it is
-* derived state that moves as a download populates the cache, so keying on it would re-arm the
-* non-terminating loop this module exists to bound (unslothai/unsloth#7853).
-*/
+/** Mirrors the four user-chosen fields of DatasetCacheUsabilityIdentity. cachePath is excluded:
+ * it moves during a download and would re-arm the loop. */
 export interface DatasetRecheckSelection {
   dataset: string;
   subset: string | null;
@@ -33,8 +19,7 @@ export interface DatasetRecheckSelection {
 }
 
 export function datasetCacheRecheckKey(selection: DatasetRecheckSelection): string {
-  // JSON encoding rather than a separator: no delimiter can collide with a name that
-  // happens to contain it, and null is distinguishable from the string "null".
+  // JSON rather than a separator: no delimiter collisions, and null differs from "null".
   return JSON.stringify([
     selection.dataset,
     selection.subset,
@@ -43,7 +28,6 @@ export function datasetCacheRecheckKey(selection: DatasetRecheckSelection): stri
   ]);
 }
 
-/** True while the selection still has re-checks left; consumes one. */
 export function claimDatasetCacheRecheck(key: string): boolean {
   if (currentKey !== key) {
     currentKey = key;

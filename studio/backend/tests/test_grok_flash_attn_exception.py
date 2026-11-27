@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Grok is priced without flash attention, whatever else the launch resolves.
-
-``llama_init_from_model`` forces it off for LLM_ARCH_GROK above both later upgrades, so
-answering "on" would publish a context the child cannot hold. The rule is easy to lose in a
-merge (#11043 against #9697, #10489), so these tests hold both ends: the rule itself, and
-the architecture reaching the resolver at every sizing seam.
-"""
+"""Grok is priced without flash attention; answering on would publish a context the child cannot hold."""
 
 from __future__ import annotations
 
@@ -72,7 +66,6 @@ class TestNothingPutsItBack:
             _planned_flash_attn_state(planned_cache_types = ("f16", v_type), architecture = "grok")
             is False
         )
-        # The same pair elsewhere still forces it on: not asserting a constant.
         assert (
             _planned_flash_attn_state(planned_cache_types = ("f16", v_type), architecture = "qwen3")
             is True
@@ -99,8 +92,7 @@ class TestNothingPutsItBack:
         )
 
     def test_the_reserve_wrapper_keeps_it_off(self):
-        """The wrapper only holds a reading DOWN, including in tensor mode, the one case
-        it returns ``planned`` unread."""
+        """Flash attention stays off even in tensor mode, where planned is returned unread."""
         for tensor_parallel in (False, True):
             planned = _planned_flash_attn_state(
                 ["-fa", "on"],
@@ -136,8 +128,7 @@ def _states_seen(tmp_path, architecture: str, method: str, **load_kwargs):
 
 
 class TestTheLoadPricesGrokWithoutIt:
-    """The load end to end. A quantized V under a tensor split is the hardest case: both
-    upgrades ask at once, and on Grok neither gets it."""
+    """Grok gets neither upgrade, even when a quantized V under a tensor split asks for both."""
 
     def test_the_kv_cache_is_priced_without_it(self, tmp_path):
         seen = _states_seen(
@@ -218,8 +209,7 @@ def _calls_to(source: str, name: str) -> list[ast.Call]:
 
 
 class TestEverySeamHandsTheArchitectureOver:
-    """Read by AST, not text: a comment naming the architecture would pass a string match
-    and a reflow would fail one, and neither says what the call passes."""
+    """Checked by AST, since a string match passes on a comment and fails on a reflow."""
 
     def test_the_loader_does(self):
         source = inspect.getsource(inspect.unwrap(LlamaCppBackend.load_model))
@@ -251,8 +241,7 @@ class TestEverySeamHandsTheArchitectureOver:
 
 
 class TestOneStateNotTwo:
-    """The rule can also be lost by RE-DERIVING the state beside the resolved one, which is
-    how the compute buffers came to be priced from their own reading."""
+    """Deriving the state twice lets compute buffers be priced from their own reading."""
 
     def test_both_sizing_seams_price_the_one_resolved_state(self):
         source = inspect.getsource(inspect.unwrap(LlamaCppBackend.load_model))

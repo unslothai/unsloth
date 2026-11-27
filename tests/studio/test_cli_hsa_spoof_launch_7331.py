@@ -140,9 +140,7 @@ class TestClearingTheContradictingOverride:
         assert os.environ["HSA_OVERRIDE_GFX_VERSION"] == "11.5.1"
 
     def test_generic_wheels_keep_the_override(self, tmp_path, monkeypatch):
-        """The override is often the ONLY thing making an unsupported card usable against
-        a generic multi-arch index. Clearing it there breaks a working machine, which is
-        worse than #7331."""
+        """Clearing it on generic wheels breaks a working machine, which is worse than #7331."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, None)
@@ -172,8 +170,7 @@ class TestClearingTheContradictingOverride:
 
 
 class TestTheLaunchPathActuallyCallsIt:
-    """The call has to sit ABOVE all three launch paths (os.execvp, the Windows Popen,
-    the in-process run_server), or the child inherits the spoof anyway."""
+    """Must run before os.execvp, Popen and run_server, or the child inherits the override."""
 
     def test_called_before_every_launch_path(self):
         source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
@@ -191,8 +188,7 @@ class TestTheLaunchPathActuallyCallsIt:
             assert call < at, f"the clear must precede {marker}"
 
     def test_it_mutates_the_environment_the_child_inherits(self, tmp_path, monkeypatch):
-        """os.execvp and Popen pass os.environ through, so popping the key there is what
-        reaches the launched process. A local variable would not."""
+        """os.execvp and Popen inherit os.environ, so pop the key there, not a local variable."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
@@ -218,14 +214,12 @@ class TestOrphanedRuntimesFromAFamilySwitch:
         assert studio_cli._installed_rocm_single_arch(venv) == "gfx1151"
 
     def test_an_orphan_alone_arbitrates_nothing(self, tmp_path):
-        """Switched to generic wheels: `rocm` is gone, the old runtime is not, so there
-        is no active single-arch install and nothing may be cleared."""
+        """Orphan runtime with generic wheels is no active install, so nothing may be cleared."""
         venv = _make_venv(tmp_path, None, orphans = ("gfx1151",))
         assert studio_cli._installed_rocm_single_arch(venv) is None
 
     def test_switching_to_generic_wheels_keeps_the_override(self, tmp_path, monkeypatch):
-        """The failure the orphan causes end to end: a host that once had gfx1151 wheels
-        and now runs generic ones would lose its override to a directory nothing uses."""
+        """Orphan gfx1151 dir must not clear the override when switching to generic wheels."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, None, orphans = ("gfx1151",))
@@ -233,8 +227,7 @@ class TestOrphanedRuntimesFromAFamilySwitch:
         assert os.environ["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0"
 
     def test_a_multi_arch_family_contradicts_nothing(self, tmp_path):
-        """gfx120x-all carries kernels for several ISAs, so an override naming one is
-        not asking for code the install lacks."""
+        """gfx120x-all has kernels for several ISAs, so an override naming one lacks nothing."""
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx120X-all")
         assert studio_cli._installed_rocm_single_arch(venv) is None
 
@@ -271,8 +264,7 @@ class TestEveryLaunchEntryPointClearsIt:
         ), "one definition plus a call from each entry point"
 
     def test_the_helper_is_idempotent(self, tmp_path, monkeypatch):
-        """studio_default and run can both run in one process; the second call must not
-        raise on an already-removed key."""
+        """Two clears in one process (studio_default and run) must not fail on a removed key."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
@@ -282,8 +274,7 @@ class TestEveryLaunchEntryPointClearsIt:
         assert "HSA_OVERRIDE_GFX_VERSION" not in os.environ
 
     def test_the_top_level_run_alias_is_the_same_function(self):
-        """unsloth_cli/__init__.py binds `unsloth run` to studio_run directly, so the
-        group callback is skipped there."""
+        """unsloth_cli binds `unsloth run` to studio_run, so the group callback is skipped."""
         import unsloth_cli
         assert unsloth_cli.studio_run is studio_cli.run
 

@@ -1,0 +1,18 @@
+{
+  "0.6.14+cu130": {
+    "arches": ["7.5", "8.0", "8.9", "9.0a", "10.0a", "10.3a", "12.0f"],
+    "x86_64": {
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu130-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "22b666dffe4cca7de0ea67668c16c0be819e8a67cdb34c404cf89abeb3d2b510",
+      "size": 1575158877
+    }
+  },
+  "0.6.18.post1+cu130": {
+    "arches": ["8.0", "8.9", "9.0a", "10.0a", "10.3a", "12.0f"],
+    "x86_64": {
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.18.post1/flashinfer_jit_cache-0.6.18.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "d1729490636a98f22f158518e10c257eec5a188d3dadf30b4c9de298675d8d4b",
+      "size": 1016190653
+    }
+  }
+}

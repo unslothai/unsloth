@@ -105,6 +105,17 @@ export async function trackRecipeExecution({
   let completedEventPayload: Record<string, unknown> | null = null;
   let latestExecution: RecipeExecutionRecord = initialExecution;
   let lastDatasetPollAt = 0;
+  let wakePollSleep: (() => void) | null = null;
+  const sleepUntilNextPoll = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      const finish = () => {
+        window.clearTimeout(timer);
+        wakePollSleep = null;
+        resolve();
+      };
+      const timer = window.setTimeout(finish, ms);
+      wakePollSleep = finish;
+    });
 
   const eventsAbortController = new AbortController();
   void streamRecipeJobEvents({
@@ -152,7 +163,7 @@ export async function trackRecipeExecution({
         latestExecution = {
           ...latestExecution,
           status: "completed",
-          finishedAt: Date.now(),
+          finishedAt: latestExecution.finishedAt ?? Date.now(),
           artifact_path:
             typeof event.payload.artifact_path === "string"
               ? event.payload.artifact_path
@@ -160,6 +171,7 @@ export async function trackRecipeExecution({
           error: null,
         };
         onUpsert(latestExecution);
+        wakePollSleep?.();
         return;
       }
 
@@ -169,13 +181,14 @@ export async function trackRecipeExecution({
         latestExecution = {
           ...latestExecution,
           status: "error",
-          finishedAt: Date.now(),
+          finishedAt: latestExecution.finishedAt ?? Date.now(),
           error:
             typeof event.payload.error === "string"
               ? event.payload.error
               : (latestExecution.error ?? `${label} failed.`),
         };
         onUpsert(latestExecution);
+        wakePollSleep?.();
         return;
       }
 
@@ -194,10 +207,11 @@ export async function trackRecipeExecution({
         latestExecution = {
           ...latestExecution,
           status: "cancelled",
-          finishedAt: Date.now(),
+          finishedAt: latestExecution.finishedAt ?? Date.now(),
           error: latestExecution.error ?? "Run cancelled.",
         };
         onUpsert(latestExecution);
+        wakePollSleep?.();
         return;
       }
 
@@ -251,7 +265,7 @@ export async function trackRecipeExecution({
         }
       }
       if (!done) {
-        await delay(1200);
+        await sleepUntilNextPoll(1200);
       }
     }
   } catch (error) {

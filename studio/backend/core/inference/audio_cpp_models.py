@@ -1,24 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Recognise a GGUF that audio.cpp runs, and work out what Studio needs to run it.
-
-Every GGUF audio.cpp writes declares ``general.architecture = "audiocpp"`` and, in
-most cases, names its loader in ``audiocpp.model_spec.family`` and embeds the full
-model spec in ``audiocpp.model_spec.json``. The server has no auto-detection, so
-Studio reads the family itself and hands it over together with a runtime task token.
-
-A model is any Hub repo (or local file) holding such GGUFs. The ``audio-cpp/audio.cpp-gguf``
-repo publishes many models side by side, one per top-level folder, so a model there is
-named by three segments (``audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF``); three segments
-cannot collide with a real ``owner/name`` repo id. Variants are the quants in that repo
-or folder, like any llama.cpp GGUF repo. A few families (MiniMax Music 3, YuE2) are
-packages of several GGUFs plus config files that load as one directory; their variants
-are the component mixes the package defines.
-
-Everything that needs the repo, the files, the family or the variant goes through
-``resolve``; nothing else parses the id.
-"""
+"""Models are Hub repos or local files of audiocpp GGUFs (general.architecture); variants are
+quants, or component mixes for packages like YuE2. audio-cpp/audio.cpp-gguf models take three-
+segment ids. Studio reads audiocpp.model_spec.family (the server cannot detect it). Only
+resolve() parses ids."""
 
 from __future__ import annotations
 
@@ -32,16 +18,19 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Optional, Sequence
+from typing import Any, BinaryIO, Callable, Iterable, Optional, Sequence
 
+from core.inference import audio_cpp_spec_packages as spec_packages
 from core.inference.audio_cpp_option_table import (
     ACE_STEP_BASE_NAME,
     ENUM_PRESETS,
+    OPTION_RENAMES,
     STUDIO_OPTION_LISTS,
     OptionRule,
     rules_for,
 )
 from loggers import get_logger
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -56,6 +45,16 @@ AUDIO_CPP_SEP_AUDIO_TYPE = "audiocpp_sep"
 AUDIO_CPP_AUDIO_TYPES = frozenset(
     (AUDIO_CPP_TTS_AUDIO_TYPE, AUDIO_CPP_MUSIC_AUDIO_TYPE, AUDIO_CPP_SEP_AUDIO_TYPE)
 )
+_AUDIO_TYPE_BY_TASK = {
+    "tts": AUDIO_CPP_TTS_AUDIO_TYPE,
+    "music": AUDIO_CPP_MUSIC_AUDIO_TYPE,
+    "sep": AUDIO_CPP_SEP_AUDIO_TYPE,
+}
+
+
+def audio_type_for_task(task: Optional[str]) -> Optional[str]:
+    return _AUDIO_TYPE_BY_TASK.get(task or "")
+
 
 # Studio task -> the Hub pipeline task its rows carry.
 HUB_TASKS = {
@@ -84,8 +83,7 @@ class WorkflowBinding:
     request fields the workflow sends."""
 
     server_task: str
-    # ``speech`` (/v1/audio/speech), ``tasks`` (/v1/tasks/run) or ``transcriptions``
-    # (/v1/audio/transcriptions).
+    # Routes: speech /v1/audio/speech, tasks /v1/tasks/run, transcriptions /v1/audio/transcriptions
     endpoint: str
     route: Optional[str] = None
     inputs: tuple[str, ...] = ()
@@ -93,20 +91,20 @@ class WorkflowBinding:
 
 @dataclass(frozen = True)
 class CloneSpec:
-    """How a family clones a voice from a reference clip (``voice_ref``) on the speech endpoint."""
+    """Transcript of the clip: required, optional or unused"""
 
-    # Transcript of the clip: ``required``, ``optional`` or ``unused``.
     reference_text: str = "optional"
     # Options the runtime spec omits but the family reads; validated like spec options.
     tool_options: tuple[dict, ...] = field(default = (), hash = False)
-    # ``(option, values)`` under which a required transcript is not needed; under ``dropped`` (a
-    # subset) a given one is not even sent.
+    # Transcript not needed under (option, values) waivers; under dropped (a subset) it is not sent
     reference_text_waived: tuple[tuple[str, tuple[str, ...]], ...] = ()
     reference_text_dropped: tuple[tuple[str, tuple[str, ...]], ...] = ()
     emotion_audio: bool = False
     language_names: bool = False
     speed: bool = False
     instructions: bool = False
+    # Reads a free voice or style description beside the reference (Breeze, VoxCPM2).
+    description: bool = False
 
 
 @dataclass(frozen = True)
@@ -157,10 +155,17 @@ class ConvertSpec:
 
 @dataclass(frozen = True)
 class SeparationSpec:
-    """How a family splits a track into stems on /v1/tasks/run (task ``sep``, 44.1 kHz input)."""
+    """Changing overlap_option restarts the server"""
 
-    # Changing it restarts the server.
     overlap_option: Optional[str] = None
+    goal: str = "stems"
+    # An s2s answer carries one top-level audio and no named outputs; its file gets this id.
+    output: Optional[str] = None
+    # Apollo refuses any rate but 44.1 kHz; a 48 kHz filter keeps the top of the band.
+    rate: int = 44100
+    # Bandwidths an upscaler's input_sample_rate takes; unset, it is the source's (UniverSR reads
+    # the prepared file's rate otherwise, which no bandwidth matches).
+    input_rates: tuple[int, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -198,8 +203,6 @@ class MusicSpec:
     description_option: Optional[str] = None
     instrumental_lyrics: Optional[str] = None
     edit_rate: Optional[int] = None
-    # The runtime's default seed is fixed, so repeat runs would be identical.
-    fixed_seed: bool = True
     rtf: float = 4.0
     # A model that ends the song itself gets no length budget; the runtime caps it at this many s.
     self_ending_s: Optional[float] = None
@@ -228,7 +231,6 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
     "stable_audio": MusicSpec(
         (_STABLE_AUDIO_SONG, _STABLE_AUDIO_EDIT),
         edit_rate = 44100,
-        fixed_seed = False,
         rtf = 1.0,
     ),
     "heartmula": MusicSpec(
@@ -376,7 +378,7 @@ def _bindings_for(
     if task == "asr":
         return {"transcribe": WorkflowBinding("asr", "transcriptions", None, ("audio",))}
     if task == "sep":
-        return {"separate": WorkflowBinding("sep", "tasks", None, ("audio",))}
+        return {"separate": WorkflowBinding(server_task or "sep", "tasks", None, ("audio",))}
     return {}
 
 
@@ -388,8 +390,7 @@ class AudioCppFamily:
     server_task: Optional[str] = None
     # Phonemizes with eSpeak-ng, so it needs a bundle built with AUDIOCPP_STATIC_ESPEAK.
     needs_espeak: bool = False
-    # Default request fields for speech (e.g. a built-in ``voice``). An ``options`` dict here is merged
-    # under the request's own options.
+    # Default speech fields (e.g. voice); an options dict here merges under the request's own options
     request_defaults: dict = field(default_factory = dict, hash = False, compare = False)
     # Values injected into the server config's model entry.
     model_options: dict = field(default_factory = dict, hash = False, compare = False)
@@ -503,8 +504,7 @@ _QWEN3_BASE = AudioCppFamily(
     ),
 )
 _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
-    # Loads only as a cloning session: "Chatterbox supports VoiceCloning and VoiceConversion".
-    # Chatterbox-Turbo is its own family and still speaks.
+    # Clone-only (VoiceCloning, VoiceConversion); Chatterbox-Turbo is its own family and still speaks
     AudioCppFamily(
         "chatterbox",
         "tts",
@@ -578,9 +578,10 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
             instructions = True,
         ),
     ),
-    AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional")),
+    AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional", description = True)),
     AudioCppFamily("fish_audio", "tts", clone = CloneSpec("required")),
-    AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required", description = True)),
+    # Its clone instruction takes only fixed attribute words; free text fails the run.
     AudioCppFamily("omnivoice", "tts", clone = CloneSpec("required")),
     AudioCppFamily("voxcpm1", "tts", clone = CloneSpec("required")),
     AudioCppFamily("dots_tts", "tts", clone = CloneSpec("optional")),
@@ -588,6 +589,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     # MOSS ignores a transcript; Irodori refuses one ("unknown Irodori-TTS request option").
     AudioCppFamily("moss_tts_local", "tts", clone = CloneSpec("unused")),
     AudioCppFamily("moss_tts_nano", "tts", clone = CloneSpec("unused")),
+    # No description: the 500M v3 checkpoint refuses one (no caption conditioning weights).
     AudioCppFamily("irodori_tts", "tts", clone = CloneSpec("unused")),
     AudioCppFamily("echo_tts", "tts", server_task = "clon", speaks = False, clone = CloneSpec("unused")),
     AudioCppFamily(
@@ -611,8 +613,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
             claims = ("template_name", "instruction"),
         ),
     ),
-    # Vevo2 reads a sent transcript as text to speak, so it never gets one. It edits only as an s2s
-    # session, so an edit after a Clone restarts the server.
+    # Vevo2 reads a sent transcript as text to speak, so it never gets one; it edits only as an s2s session, and an edit after Clone restarts the server
     AudioCppFamily(
         "vevo2",
         "tts",
@@ -651,6 +652,16 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
             ),
         ),
     ),
+    # Both need a reference clip on every run (mira_tts/session.cpp, sopro_tts/session.cpp).
+    AudioCppFamily("mira_tts", "tts", speaks = False, clone = CloneSpec("unused")),
+    AudioCppFamily("sopro_tts", "tts", speaks = False, clone = CloneSpec("unused")),
+    # Spec lists only tts, yet each run needs a reference clip (xtts_v2 needs a reference WAV).
+    AudioCppFamily("xtts_v2", "tts", speaks = False, clone = CloneSpec("unused")),
+    # Plain tts fails with "VieNeu-TTS TTS requires a voice": the voices its package ships are
+    # reference codes the runtime does not pick up by name.
+    AudioCppFamily("vieneu_v3_turbo", "tts", speaks = False, clone = CloneSpec("unused")),
+    # No built-in voice: without a reference clip many seeds decode to silence.
+    AudioCppFamily("zonos3", "tts", speaks = False, clone = CloneSpec("unused")),
 )
 
 
@@ -707,17 +718,57 @@ _CONVERT_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
+_SPEAKERS = SeparationSpec(goal = "speakers")
+_ISOLATE_VOICE = SeparationSpec(goal = "voice", output = "voice", rate = 48000)
+_RESTORE = SeparationSpec(goal = "restore", output = "restored")
+_RESTORE_48K = SeparationSpec(goal = "restore", output = "restored", rate = 48000)
+
 _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("htdemucs", "sep", separation = SeparationSpec()),
     AudioCppFamily("htdemucs_6stems", "sep", separation = SeparationSpec()),
     AudioCppFamily("bs_roformer", "sep", separation = SeparationSpec("num_overlap")),
     AudioCppFamily("mel_band_roformer", "sep", separation = SeparationSpec("num_overlap")),
+    AudioCppFamily("tf_gridnet", "sep", separation = _SPEAKERS),
+    # SS splits two speakers; the SE and SR files are s2s (with_variant picks by file name).
+    AudioCppFamily("mossformer2", "sep", separation = _SPEAKERS),
+    AudioCppFamily("voice_isolator", "sep", server_task = "s2s", separation = _ISOLATE_VOICE),
+    AudioCppFamily("apollo", "sep", server_task = "s2s", separation = _RESTORE),
+    *(
+        AudioCppFamily(name, "sep", server_task = "s2s", separation = _RESTORE_48K)
+        for name in ("sidon", "audiosr")
+    ),
+    AudioCppFamily(
+        "universr",
+        "sep",
+        server_task = "s2s",
+        separation = replace(_RESTORE_48K, input_rates = (8000, 12000, 16000, 24000)),
+    ),
 )
 
 
+# Table families can be newer than some runtimes, so the runtime check still applies to them.
+_RUNTIME_GATED_FAMILIES = frozenset(
+    (
+        "mira_tts",
+        "sopro_tts",
+        "xtts_v2",
+        "zonos3",
+        "voice_isolator",
+        "sidon",
+        "apollo",
+        "audiosr",
+        "universr",
+        "mossformer2",
+        "tf_gridnet",
+    )
+)
+
+_MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
+PACKAGE_INCOMPLETE = "This repository does not publish every file this model package needs."
+LOCAL_PACKAGE_INCOMPLETE = "This model needs the other files of its package in the same folder."
+
 _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
-    # Text to speech. Kokoro, KittenTTS, Piper and Inflect phonemize with eSpeak-ng, which the Unsloth
-    # bundles link statically (GPL-3.0-or-later) with its data file beside the server.
+    # eSpeak-ng is linked statically (GPL-3.0-or-later) in the Unsloth bundles.
     AudioCppFamily("kokoro_tts", "tts", needs_espeak = True),
     AudioCppFamily("kitten_tts", "tts", needs_espeak = True),
     AudioCppFamily("piper_tts", "tts", needs_espeak = True),
@@ -751,7 +802,6 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
             "sanotts",
             "soprano_tts",
             "zipvoice",
-            "vieneu_v3_turbo",
             "audio8_tts",
         )
     ),
@@ -908,8 +958,14 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
             _opt("semantic_top_k", "int", "Semantic codec top-k sampling limit.", min = 1),
         ),
     ),
-    # Speech to text.
-    # Full context fails past the ~400 s encoder ceiling; windows drop about a third of the words.
+    # Its default chunking loads a Silero VAD the Unsloth bundles do not ship ("Silero VAD model
+    # path does not exist: assets/framework/models/silero_vad"); fixed windows need none.
+    AudioCppFamily(
+        "sense_asr",
+        "asr",
+        model_options = {"default_request_options": {"audio_chunk_mode": "fixed"}},
+    ),
+    # Full context fails past ~400 s encoder ceiling; windows drop about a third of words.
     AudioCppFamily(
         "parakeet_tdt",
         "asr",
@@ -939,7 +995,6 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
             "vibevoice_asr_streaming",
             "hviske_asr",
             "fun_asr_nano",
-            "sense_asr",
             "confucius4_r2t2",
             "audio8_asr",
         )
@@ -950,7 +1005,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         AudioCppFamily(
             name,
             "",
-            unsupported = "This model ships as a multi-file package Studio cannot load yet.",
+            unsupported = _MULTI_FILE_PACKAGE,
         )
         for name in ("minimax_h3", "auk", "liveavatar", "vibeasr")
     ),
@@ -961,22 +1016,35 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     ),
     # Tasks Studio has no page for.
     *(
-        AudioCppFamily(name, "", unsupported = f"{what} models are not supported in Studio yet.")
+        AudioCppFamily(
+            name, "", unsupported = f"{what} models are not supported in Unsloth Studio yet."
+        )
         for names, what in (
             (("qwen3_forced_aligner", "mms_forced_aligner"), "Forced-alignment"),
             (("sortformer_diar", "sortformer_diar_v2", "nemotron_3_diar"), "Speaker diarization"),
             (("pulsevad", "silero_vad", "marblenet_vad"), "Voice activity detection"),
             (("muscriptor", "sheetsage2"), "Music transcription"),
-            (("apollo", "audiosr", "universr", "personaplex"), "Speech-to-speech"),
         )
         for name in names
+    ),
+    AudioCppFamily(
+        "personaplex",
+        "",
+        unsupported = "PersonaPlex is a voice conversation model, which Unsloth Studio does not "
+        "support yet.",
+    ),
+    AudioCppFamily(
+        "sam_audio",
+        "",
+        unsupported = "SAM Audio needs a prompt marking the sound to keep, which Unsloth Studio "
+        "cannot give it yet.",
     ),
     # Its spec says ASR, but it answers with a description of the audio, not what was said.
     AudioCppFamily(
         "samsone",
         "",
-        unsupported = "SAMSONE describes audio rather than transcribing speech, so Studio does not "
-        "offer it for transcription.",
+        unsupported = "SAMSONE describes audio rather than transcribing speech, so Unsloth Studio "
+        "does not offer it for transcription.",
     ),
 )
 
@@ -996,15 +1064,12 @@ _SPEC_TO_SERVER_TASK = {
     "design": "vdes",
     "speaker": "spk",
 }
-_SERVER_TO_STUDIO_TASK = {"tts": "tts", "gen": "music", "asr": "asr", "sep": "sep"}
 _TASK_NAMES = {
     "align": "Forced-alignment",
     "diar": "Speaker diarization",
     "sep": "Source separation",
     "vad": "Voice activity detection",
     "midi": "Music transcription",
-    "vc": "Voice conversion",
-    "svc": "Singing voice conversion",
     "s2s": "Speech-to-speech",
     "spk": "Speaker embedding",
     "turn": "Turn detection",
@@ -1013,56 +1078,101 @@ _TASK_NAMES = {
 }
 
 
+def recommended_gguf_files(spec: Optional[dict]) -> tuple[str, ...]:
+    """Base names of the GGUFs in the spec's recommended package, else its default GGUF package."""
+    packages = spec_packages.spec_packages(spec)
+    package = next((p for p in packages if p.recommended), None) or next(
+        (p for p in packages if p.default), None
+    )
+    return tuple(f.rsplit("/", 1)[-1] for f in package.gguf_files) if package else ()
+
+
+def _spec_music(tasks: Sequence[str], request: Optional[list]) -> MusicSpec:
+    """Music modes for a family the table does not list, from its spec tasks and options."""
+    names = {str(o.get("name")) for o in request or [] if isinstance(o, dict)}
+    sings = "lyrics" in names
+    modes = []
+    if "music" in tasks or "sfx" not in tasks:
+        modes.append(
+            MusicMode(
+                "song",
+                lyrics = "optional" if sings else "unused",
+                instrumental = "toggle" if sings else "always",
+            )
+        )
+    if "sfx" in tasks:
+        modes.append(MusicMode("sfx", duration = (1.0, 60.0, 8.0)))
+    # Whether a seed is sent follows the spec's request keys (takes_seed).
+    return MusicSpec(tuple(modes))
+
+
+def _enhances(spec: Optional[dict]) -> bool:
+    """An s2s spec that filters one recording (audio_enhancement), not a voice chat or a prompted
+    separation: only that kind runs on Separate."""
+    capabilities = (spec or {}).get("capabilities")
+    s2s = capabilities.get("s2s") if isinstance(capabilities, dict) else None
+    return isinstance(s2s, list) and "audio_enhancement" in s2s
+
+
 def _family_from_spec_tasks(
     family: str,
     spec: Optional[dict],
     label: Optional[str] = None,
 ) -> AudioCppFamily:
-    """Policy for a family Studio does not list, from the tasks its spec declares.
+    """Policy for a family Unsloth Studio does not list, from the tasks its spec declares.
 
     The spec can be the one a GGUF embeds, newer than the installed runtime, so a family the
     runtime does not load is refused here rather than failing at load with "unsupported model
     family hint". ``label`` names the model in that refusal.
     """
     tasks = [str(t).lower() for t in (spec or {}).get("tasks") or [] if isinstance(t, str)]
-    tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks]
-    # Speech first, then music, then transcription: a model that speaks is most useful spoken.
-    # A clone-only family comes next: it loads as a cloning session and offers Clone alone.
-    for token in ("tts", "vdes", "gen", "asr", "clon", "sep"):
-        if token in tokens:
-            if runtime_knows_family(family) is False:
-                return AudioCppFamily(
-                    family,
-                    "",
-                    unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
-                )
+    # ``edit`` is a music edit for some families and a speech edit for others, so it names no page.
+    tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks if t != "edit"] or tasks
+    request = ((spec or {}).get("options") or {}).get("request") or None
+    request = request if isinstance(request, list) else None
+    # One page set per family. Speech first (with Clone when the spec clones), then music, then
+    # transcription; a clone-only family loads as a cloning session and offers Clone alone.
+    for token in ("tts", "vdes", "gen", "asr", "clon", "sep", "s2s"):
+        if token not in tokens or (token == "s2s" and not _enhances(spec)):
+            continue
+        if runtime_knows_family(family) is False:
+            return AudioCppFamily(
+                family,
+                "",
+                unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
+            )
+        if token in ("tts", "vdes", "clon"):
+            clone = None
+            if "clon" in tokens:
+                # Clone always sends a reference, and a family that declares reference_text then
+                # needs it (fish_drama3, kitten_tts2); an undeclared option is refused.
+                names = {str(o.get("name")) for o in request or [] if isinstance(o, dict)}
+                text = "optional" if request is None else "unused"
+                clone = CloneSpec("required" if "reference_text" in names else text)
             if token == "clon":
-                return AudioCppFamily(
-                    family,
-                    "tts",
-                    server_task = "clon",
-                    speaks = False,
-                    clone = CloneSpec("optional"),
-                )
-            if token == "sep":
-                return AudioCppFamily(family, "sep", separation = SeparationSpec())
-            studio = "tts" if token == "vdes" else _SERVER_TO_STUDIO_TASK[token]
-            return AudioCppFamily(family, studio, server_task = token)
+                return AudioCppFamily(family, "tts", server_task = "clon", speaks = False, clone = clone)
+            return AudioCppFamily(family, "tts", server_task = token, clone = clone)
+        if token == "gen":
+            music = _spec_music(tasks, request)
+            return AudioCppFamily(family, "music", server_task = "gen", music = music)
+        if token == "sep":
+            return AudioCppFamily(family, "sep", separation = SeparationSpec())
+        if token == "s2s":
+            return AudioCppFamily(family, "sep", server_task = "s2s", separation = _RESTORE)
+        return AudioCppFamily(family, "asr", server_task = "asr")
     if tokens:
         what = _TASK_NAMES.get(tokens[0])
-        return AudioCppFamily(
-            family,
-            "",
-            unsupported = (
-                f"{what} models are not supported in Studio yet."
-                if what
-                else f"Studio does not support the '{tokens[0]}' task yet."
-            ),
-        )
+        if tokens[0] in ("vc", "svc"):
+            message = "Unsloth Studio doesn't support voice conversion models yet."
+        elif what:
+            message = f"{what} models are not supported in Unsloth Studio yet."
+        else:
+            message = f"Unsloth Studio does not support the '{tokens[0]}' task yet."
+        return AudioCppFamily(family, "", unsupported = message)
     return AudioCppFamily(
         family,
         "",
-        unsupported = f"Studio does not know what the model family '{family}' does.",
+        unsupported = f"Unsloth Studio does not know what the model family '{family}' does.",
     )
 
 
@@ -1072,11 +1182,14 @@ def family_policy(
     names: Iterable[str] = (),
     label: Optional[str] = None,
 ) -> AudioCppFamily:
-    """What Studio does with ``family``: the table entry, else what its spec says it does.
-
-    ``names`` (repo, folder and file names) pick the Qwen3-TTS package kind, which the family
-    alone does not say: CustomVoice needs a speaker, VoiceDesign designs one, Base only clones.
-    """
+    """Table entry, else the spec; names pick the Qwen3-TTS kind (CustomVoice needs a speaker,
+    VoiceDesign designs one, Base only clones)."""
+    if family in _RUNTIME_GATED_FAMILIES and runtime_knows_family(family) is False:
+        return AudioCppFamily(
+            family,
+            "",
+            unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
+        )
     policy = FAMILIES.get(family) or _family_from_spec_tasks(family, spec, label)
     if family == "qwen3_tts":
         text = " ".join(names).lower()
@@ -1258,10 +1371,7 @@ class AudioCppHeader:
 
 
 def parse_header(stream: BinaryIO) -> Optional[AudioCppHeader]:
-    """The audio.cpp keys of a GGUF header, reading only up to the last one wanted.
-
-    Truncation-safe: a prefix that stops early answers with what it read and ``complete=False``.
-    """
+    """Truncation-safe: a prefix that ends early returns what was read, with complete=False."""
     try:
         head = stream.read(24)
         if len(head) < 24:
@@ -1395,12 +1505,7 @@ def read_remote_header(
     *,
     size: Optional[int] = None,
 ) -> Optional[AudioCppHeader]:
-    """The audio.cpp header keys of a Hub GGUF from a ranged read of its first bytes.
-
-    The architecture is the first key, so 64 KiB answers "is this audio.cpp". Some writers put the
-    spec after the embedded sidecar files, so an audio.cpp file whose prefix held no family is read
-    again further in.
-    """
+    """Ranged read of the first 64 KiB of a Hub GGUF, enough to say audio.cpp; a prefix with no family is read further, past embedded sidecars"""
 
     def compute():
         from core.inference.diffusion_compat import _read_gguf_header
@@ -1428,10 +1533,8 @@ def read_remote_header(
 class RepoFile:
     path: str
     size: int = 0
-
-
-def hub_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
+    # The Hub listing's LFS sha256, when known; not part of equality.
+    sha256: str = field(default = "", compare = False)
 
 
 def _hub_cache() -> Path:
@@ -1459,7 +1562,7 @@ def snapshot_dirs(repo_id: str, hub_cache: Optional[Path] = None) -> list[Path]:
         return snapshot_dirs(match.name[len("models--") :].replace("--", "/"), root)
     try:
         main_sha = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         main_sha = ""
 
     def order(p: Path) -> tuple[int, float]:
@@ -1505,7 +1608,8 @@ def _hub_listing(repo_id: str, folder: str, hf_token: Optional[str]) -> list[Rep
         size = getattr(entry, "size", None)
         if size is None:  # a folder
             continue
-        out.append(RepoFile(str(entry.path), int(size or 0)))
+        sha256 = getattr(getattr(entry, "lfs", None), "sha256", "") or ""
+        out.append(RepoFile(str(entry.path), int(size or 0), str(sha256).lower()))
     return sorted(out, key = lambda f: f.path)
 
 
@@ -1525,7 +1629,7 @@ def list_files(
     from hub.utils.hf_tokens import normalize_token
 
     token = normalize_token(hf_token) if hf_token is not False else None
-    use_hub = network and not hub_offline()
+    use_hub = network and not hf_env_offline()
     key = (repo_id.lower(), folder.lower(), hashlib.sha1(str(token).encode()).hexdigest()[:8])
     if use_hub:
         with _listing_lock:
@@ -1543,13 +1647,30 @@ def list_files(
 
 
 _QUANT_RE = re.compile(
-    r"(?:^|[-_.])((?:i?q\d(?:_[a-z0-9]+)*)|bf16|f16|f32|fp16|fp32|orig)(?=$|[-_.])", re.IGNORECASE
+    r"(?:^|[-_.])((?:[it]?q\d(?:_[a-z0-9]+)*)|bf16|f16|f32|fp16|fp32|orig)(?=$|[-_.])",
+    re.IGNORECASE,
 )
-_QUANT_PREFERENCE = ("Q8_0", "F16", "BF16", "ORIG", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_0", "F32")
+# Ternary TQ2_1 (GGUF type 44) has only a CPU kernel; CUDA aborts on it (kitten_tts2 docs).
+CPU_ONLY_QUANTS = frozenset(("TQ2_1",))
+# K and IQ quants come after F32 so the established order stays as it was.
+_QUANT_PREFERENCE = (
+    *("Q8_0", "F16", "BF16", "ORIG", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_0", "F32"),
+    *("Q5_K", "Q5_K_S", "Q4_K", "Q4_K_S", "IQ4_NL", "IQ4_XS", "Q3_K_L", "Q3_K_M", "Q3_K"),
+    *("Q3_K_S", "IQ3_M", "IQ3_S", "IQ3_XS", "IQ3_XXS", "Q2_K", "IQ2_M", "IQ2_XS", "IQ2_XXS"),
+)
 _PREFERRED_SCOPES = ("turbo", "english", "tiny")
 _SKIP_FILE_RE = re.compile(
     r"(^|/)(readme[^/]*|license[^/]*|\.gitattributes|[^/]*\.(md|mp4|mp3|wav|png|jpe?g|gif))$", re.I
 )
+# q4-ios stores a rank-3 ConvTranspose weight as 2-D Q4_K: "quantized tensor byte size mismatch".
+_UNLOADABLE_FILES = {
+    "vibevoice-1.5b-q4-ios.gguf": "This VibeVoice Q4 build cannot be loaded by audio.cpp. "
+    "Use the Q8_0 or BF16 variant.",
+}
+
+
+def _unloadable_reason(path: str) -> Optional[str]:
+    return _UNLOADABLE_FILES.get(Path(path).name.lower())
 
 
 def _is_quant(word: str) -> bool:
@@ -1578,6 +1699,8 @@ class AudioCppVariant:
     primary: str
     session_options: dict = field(default_factory = dict, hash = False, compare = False)
     label: Optional[str] = None
+    # A spec package's strip_prefix: the repo directory the runtime sees as the model root.
+    root: str = ""
 
     @property
     def size_bytes(self) -> int:
@@ -1592,7 +1715,12 @@ class AudioCppVariant:
         return max(ggufs, key = lambda f: f.size).path if ggufs else self.files[0].path
 
 
-def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioCppVariant]:
+def _single_file_variants(
+    files: Sequence[RepoFile],
+    folder: str,
+    *,
+    unloadable: bool = False,
+) -> list[AudioCppVariant]:
     prefix = f"{folder}/" if folder else ""
     ggufs = [
         f
@@ -1600,6 +1728,7 @@ def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioC
         if f.path.lower().endswith(".gguf")
         and "mmproj" not in f.path.lower()
         and "imatrix" not in f.path.lower()
+        and (unloadable or _unloadable_reason(f.path) is None)
     ]
     rows = []
     for gguf in ggufs:
@@ -1680,6 +1809,56 @@ def _package_variants(
     return variants
 
 
+def _local_package_complete(spec: Optional[dict], local_path: str) -> bool:
+    """False when a local GGUF isn't its package's primary, or a package file is not beside it."""
+    path = Path(local_path)
+    split = [
+        p
+        for p in spec_packages.spec_packages(spec)
+        if len(p.gguf_files) > 1
+        and path.name.lower() in {Path(f).name.lower() for f in p.gguf_files}
+    ]
+    for package in split:
+        own = spec_packages._local(package.strip_prefix, package.primary)
+        if Path(own).name.lower() != path.name.lower():
+            continue  # the runtime is handed the primary; another member is no model on its own
+        depth = len(Path(own).parts)
+        root = path.parents[depth - 1] if depth <= len(path.parents) else path.parent
+        if all(
+            (root / spec_packages._local(package.strip_prefix, f)).is_file() for f in package.files
+        ):
+            return True
+    return not split
+
+
+def spec_package_variants(
+    spec: Optional[dict], repo_id: Optional[str], folder: str, files: Sequence[RepoFile]
+) -> Optional[list[AudioCppVariant]]:
+    """Variants of a repo with multi-file packages in its runtime spec (weights split over GGUFs, or
+    a GGUF with side files), recommended first; None when the spec gives the repo no package (its
+    GGUFs then load one by one); empty when the repo lacks a file of every package."""
+    every = spec_packages.spec_packages(spec)
+    packages = spec_packages.packages_for_repo(every, repo_id or "", AUDIO_CPP_REPO, folder)
+    if not packages and len(recommended_gguf_files(spec)) > 1:
+        # A mirror of a family split over several GGUFs loads only in the spec's layout.
+        packages = every
+    if not any(len(p.files) > 1 for p in packages):
+        return None
+    by_path = {f.path: f for f in files}
+    keys = spec_packages.variant_keys(packages)
+    return [
+        AudioCppVariant(
+            keys[p.id],
+            tuple(by_path[path] for path in p.files),
+            p.primary,
+            label = p.display_name,
+            root = p.strip_prefix,
+        )
+        for p in spec_packages.available(packages, by_path)
+        if p.primary and _unloadable_reason(p.primary) is None
+    ]
+
+
 def _variant_rank(variant: AudioCppVariant) -> tuple:
     sub = variant.key.rpartition("/")[0].lower()
     scope_rank = (
@@ -1740,12 +1919,7 @@ def _match_by_words(
     low: str,
     folder: str = "",
 ) -> Optional[AudioCppVariant]:
-    """A key named by the words of its file (``tiny/Q8_0`` or ``tiny``), whatever the listing keyed it.
-
-    Which rows need a name beyond their quant depends on the listing: with only Moonshine tiny in
-    the cache it is simply ``Q8_0``, while the Hub listing (and /gguf-variants) calls it
-    ``tiny/Q8_0``. Matching the scope words against the file keeps both spellings loading it.
-    """
+    """Matches the key's words against the file, so bare Q8_0 and the listing's tiny/Q8_0 both load it."""
     parts = [part for part in low.split("/") if part]
     if not parts:
         return None
@@ -1835,6 +2009,19 @@ CONVERT_DRIVEN_OPTIONS = frozenset(
         "style_ref_text",
     }
 )
+# Options the runtime opens host files from, though their names do not end in _file, _path or _dir:
+# a clip path (Vevo2), WAV paths per speaker (VibeVoice, MOSS-TTSD) and JSON rows that name clips
+# (Audio8, Fish Audio, Plapre). Most are typed string, so the name is what keeps them out of a run.
+FILE_OPTIONS = frozenset(
+    {
+        "target_voice",
+        "voice_samples",
+        "multi_reference_cond",
+        "references",
+        "previous_takes",
+        "pronunciations",
+    }
+)
 _RENDERABLE_TYPES = frozenset({"bool", "int", "float", "string", "enum"})
 _MAX_STRING_OPTION = 4000
 
@@ -1861,21 +2048,89 @@ def runtime_spec(family: str) -> Optional[dict]:
     return None
 
 
+_runtime_specs_cache: dict[tuple[str, float], dict[str, dict]] = {}
+
+
+def runtime_specs() -> dict[str, dict]:
+    """Every ``model_specs/<family>.json`` of the installed runtime, by family; empty without one."""
+    try:
+        from core.inference.audio_cpp_server import find_audio_cpp_server_binary
+
+        binary = find_audio_cpp_server_binary()
+        parents = list(Path(binary).resolve().parents)[:3] if binary else []
+        folder = next((p / "model_specs" for p in parents if (p / "model_specs").is_dir()), None)
+        if folder is None:
+            return {}
+        key = (str(folder), folder.stat().st_mtime)
+    except Exception:  # noqa: BLE001 - no runtime, no specs
+        return {}
+    hit = _runtime_specs_cache.get(key)
+    if hit is not None:
+        return hit
+    out: dict[str, dict] = {}
+    try:
+        paths = sorted(folder.glob("*.json"))[:512]
+    except OSError:
+        paths = []
+    for path in paths:
+        try:
+            if path.stat().st_size > 1 << 20:
+                continue
+            data = json.loads(path.read_text(encoding = "utf-8"))
+        except (OSError, ValueError):
+            continue
+        family = data.get("family", path.stem) if isinstance(data, dict) else None
+        if isinstance(family, str) and re.fullmatch(r"[a-z0-9_]+", family):
+            out.setdefault(family, data)
+    _runtime_specs_cache.clear()
+    _runtime_specs_cache[key] = out
+    return out
+
+
+def spec_vouched_family(repo_id: Optional[str]) -> Optional[str]:
+    """The one family whose runtime spec downloads its GGUF packages from ``repo_id``, else None.
+
+    The installed runtime vouches for such a repo: it loads those files whatever architecture their
+    headers name (Zonos3's backbone says ``zonos3``, LFM2.5's ``lfm2``), and the files carry no
+    family of their own. A repo several families share is no one model, and the umbrella places its
+    folders itself."""
+    repo = (repo_id or "").strip().lower()
+    if not repo or repo == AUDIO_CPP_REPO.lower():
+        return None
+    return vouched_repos().get(repo)
+
+
+_vouched_cache: list[tuple[dict, dict[str, str]]] = []
+
+
+def vouched_repos() -> dict[str, str]:
+    """``{repo id, lower-cased: family}`` for every repo spec_vouched_family answers, built once per
+    set of runtime specs."""
+    specs = runtime_specs()
+    # Held by identity: the entry keeps its specs alive, so a later dict cannot pass for it.
+    if _vouched_cache and _vouched_cache[0][0] is specs:
+        return _vouched_cache[0][1]
+    named: dict[str, set[str]] = {}
+    for family, spec in specs.items():
+        for package in spec_packages.spec_packages(spec):
+            if package.repo and package.repo.lower() != AUDIO_CPP_REPO.lower():
+                named.setdefault(package.repo.lower(), set()).add(family)
+    out = {repo: next(iter(families)) for repo, families in named.items() if len(families) == 1}
+    _vouched_cache[:] = [(specs, out)]
+    return out
+
+
 def runtime_knows_family(family: str) -> Optional[bool]:
     """Whether the installed runtime loads ``family``; None when Unsloth Studio cannot tell.
 
-    A runtime that ships ``model_specs/`` answers from it. The prebuilt bundles do not ship that
-    folder, so for the prebuilt releases in ``AUDIO_CPP_SPEC_FAMILIES_TAGS`` the families their
-    source tree specs are listed in ``audio_cpp_spec_families``. Any other runtime (no install, a
-    custom build, an unlisted tag) is unknown, and the spec's own tasks decide as before.
+    The install fetches ``model_specs/`` from the release's source commit and puts it beside the
+    server. With that folder, a family is known exactly when it has a spec file there. No folder
+    (a custom build, or a fetch that failed) means unknown, and the spec's own tasks decide.
     """
     if not family or not re.fullmatch(r"[a-z0-9_]+", family):
         return None
     try:
-        from core.inference.audio_cpp_server import (
-            find_audio_cpp_server_binary,
-            read_install_record,
-        )
+        from core.inference.audio_cpp_server import find_audio_cpp_server_binary
         binary = find_audio_cpp_server_binary()
     except Exception:  # noqa: BLE001 - no runtime, no answer
         return None
@@ -1887,17 +2142,9 @@ def runtime_knows_family(family: str) -> Optional[bool]:
         parents = list(Path(binary).resolve().parents)[:3]
         if any((parent / "model_specs").is_dir() for parent in parents):
             return False
-        tag = read_install_record(binary).get("release_tag")
     except (OSError, ValueError):
         return None
-    from core.inference.audio_cpp_spec_families import (
-        AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAGS,
-    )
-
-    if tag not in AUDIO_CPP_SPEC_FAMILIES_TAGS:
-        return None
-    return family in AUDIO_CPP_SPEC_FAMILIES
+    return None
 
 
 def _clean_option(raw: Any) -> Optional[dict]:
@@ -1908,6 +2155,8 @@ def _clean_option(raw: Any) -> Optional[dict]:
     if not name or "." in name or kind not in _RENDERABLE_TYPES:
         return None
     if name in _STUDIO_DRIVEN_OPTIONS or name.endswith(("_file", "_path", "_dir")):
+        return None
+    if name in FILE_OPTIONS:
         return None
     option: dict[str, Any] = {
         "name": name,
@@ -1942,16 +2191,50 @@ def _clean_option(raw: Any) -> Optional[dict]:
     return option
 
 
+class SeparationOptionsError(ValueError):
+    """A Separate run asked for an option the loaded model does not take."""
+
+
+def separation_options(
+    options: Optional[dict],
+    *,
+    server_task: Optional[str],
+    family: Optional[str],
+    offered: Sequence[dict],
+    label: str,
+) -> Optional[dict]:
+    """A Separate run's options, checked against the loaded model: an s2s filter takes the spec
+    options Separate offers (``offered``), as validate_options keeps them, the values the run
+    sends; a separation family takes only its overlap. SeparationOptionsError says why not."""
+    if not options:
+        return None
+    if server_task == "s2s":
+        names = {o.get("name") for o in offered if isinstance(o, dict)}
+        for name in options:
+            if name not in names:
+                raise SeparationOptionsError(f"Unknown option '{name}'.")
+        return validate_options([o for o in offered if isinstance(o, dict)], options) or None
+    policy = FAMILIES.get(family or "")
+    if policy is None or policy.separation is None or not policy.separation.overlap_option:
+        raise SeparationOptionsError(f"{label} has no separation options.")
+    for name in options:
+        if name != "num_overlap":
+            raise SeparationOptionsError(f"Unknown option '{name}'.")
+    value = options["num_overlap"]
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
+        raise SeparationOptionsError("num_overlap must be a whole number from 1 to 8.")
+    return {"num_overlap": value}
+
+
 def option_schema(
     policy: AudioCppFamily, spec: Optional[dict], embedded: Optional[dict]
 ) -> tuple[dict, ...]:
-    """The request options Studio offers for this model, in the spec's order.
-
-    A family with a Studio-side list (MiniMax Music 3, YuE2) shows that list: their specs carry
-    dozens of planner and debugging knobs, and the published GGUFs embed a stale copy. Everyone
-    else gets the runtime's spec, else the one embedded in the GGUF.
-    """
-    if policy.task == "sep":
+    """MiniMax Music 3 and YuE2 show a Studio-side list: their specs carry dozens of knobs and the published GGUFs embed a stale copy"""
+    if (
+        policy.task == "sep"
+        and policy.default_server_task != "s2s"
+        and policy.family not in VARIANT_TASKS
+    ):
         return ()
     if policy.options:
         source = {"options": {"request": list(policy.options)}}
@@ -1968,13 +2251,19 @@ def option_schema(
     driven = _MUSIC_DRIVEN_OPTIONS if policy.task == "music" else frozenset()
     if policy.convert is not None:
         driven = driven | frozenset(policy.convert.hidden_options)
+    # A renamed option shows once, under the legacy name every runtime reads.
+    legacy = {canonical: old for old, canonical in OPTION_RENAMES.get(policy.family, ())}
     out = []
     names = set()
     for item in raw:
         option = _clean_option(item)
+        if option is not None and option["name"] in legacy:
+            option["name"] = legacy[option["name"]]
         if option is None or option["name"] in driven or option["name"] in names:
             continue
         if option["name"] == "voice":
+            continue
+        if policy.task == "tts" and _is_alias_or_json_row(option):
             continue
         names.add(option["name"])
         out.append(option)
@@ -1997,7 +2286,17 @@ def option_schema(
                     "values": list(voices),
                 },
             )
+            # The built-in voice row is the one voice control; the server reads it for these too.
+            out = [o for o in out if o["name"] not in ("voice_id", "speaker")]
     return tuple(out)
+
+
+def _is_alias_or_json_row(option: dict) -> bool:
+    """A spec row that repeats another under a second name, or wants raw JSON typed in."""
+    description = option.get("description") or ""
+    return description.startswith("Alias of") or (
+        option["type"] == "string" and re.search(r"\bJSON\b", description) is not None
+    )
 
 
 def validate_options(schema: Sequence[dict], values: Optional[dict]) -> dict:
@@ -2080,10 +2379,20 @@ class AudioCppModel:
     # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
     request_keys: Optional[frozenset[str]] = field(default = None, hash = False, compare = False)
     from_hub: bool = field(default = False, hash = False, compare = False)
+    # Listed files audio.cpp cannot load: never in ``variants``, still the cache's to delete.
+    unloadable: tuple[AudioCppVariant, ...] = ()
+    # False for a spec family whose one option list serves several tasks (LFM2.5 Audio: asr, tts,
+    # s2s): the runtime refuses another task's option, so only what the user set is sent.
+    fills_option_defaults: bool = True
+    spec_packaged: bool = field(default = False, hash = False, compare = False)
 
     def __post_init__(self) -> None:
         if not self.spec_options and self.options:
             object.__setattr__(self, "spec_options", tuple(self.options))
+
+    @property
+    def cache_variants(self) -> tuple[AudioCppVariant, ...]:
+        return self.variants + self.unloadable
 
     @property
     def is_package(self) -> bool:
@@ -2102,14 +2411,13 @@ class AudioCppModel:
         return self.variant.size_bytes
 
     @property
+    def cpu_only(self) -> bool:
+        """The variant's weights have no GPU kernel in audio.cpp, so it runs on the CPU backend."""
+        return quant_label(self.gguf_file) in CPU_ONLY_QUANTS
+
+    @property
     def audio_type(self) -> Optional[str]:
-        if self.task == "tts":
-            return AUDIO_CPP_TTS_AUDIO_TYPE
-        if self.task == "music":
-            return AUDIO_CPP_MUSIC_AUDIO_TYPE
-        if self.task == "sep":
-            return AUDIO_CPP_SEP_AUDIO_TYPE
-        return None
+        return audio_type_for_task(self.task)
 
     @property
     def hub_task(self) -> Optional[str]:
@@ -2155,11 +2463,30 @@ class AudioCppModel:
                 **variant.session_options,
             }
         changes = _ace_step_variant(self, variant) if self.family == "ace_step" else {}
+        if self.family in VARIANT_TASKS:
+            changes = VARIANT_TASKS[self.family](variant)
         model = replace(self, variant = variant, model_options = model_options, **changes)
+        if model.task == "sep" and model.server_task != "s2s":
+            return replace(model, options = (), option_hidden = {})
         options, hidden = apply_option_rules(
             model.family, _rule_text(model), model.spec_options, Path(variant.primary).name
         )
         return replace(model, options = options, option_hidden = hidden)
+
+
+def _mossformer2_variant(variant: AudioCppVariant) -> dict[str, Any]:
+    """SS splits two speakers (sep); SE enhances and SR upscales speech, which only s2s runs
+    ("MossFormer2 SE/SR supports offline s2s")."""
+    name = Path(variant.primary).name.lower()
+    for token, separation in (("se", _ISOLATE_VOICE), ("sr", _RESTORE_48K)):
+        if re.search(rf"(^|[-_]){token}([-_.]|$)", name):
+            return {"server_task": "s2s", "separation": separation}
+    return {"server_task": "sep", "separation": _SPEAKERS}
+
+
+VARIANT_TASKS: dict[str, Callable[[AudioCppVariant], dict[str, Any]]] = {
+    "mossformer2": _mossformer2_variant,
+}
 
 
 def _rule_text(model: "AudioCppModel") -> str:
@@ -2220,12 +2547,84 @@ def _apply_rule(rule: OptionRule, option: dict) -> None:
 
 def filled_options(model: "AudioCppModel", workflow: str, values: Optional[dict]) -> dict:
     """``values`` over the model's recommended defaults; tool panels send their own options."""
-    return request_options(
+    pairs = OPTION_RENAMES.get(model.family, ())
+    keys = model.request_keys
+    if pairs and keys is not None:
+        # The schema names a renamed option by its legacy name, so strict keys must too.
+        keys = keys | {old for old, canonical in pairs if canonical in keys}
+    out = request_options(
         workflow_options(model, workflow),
-        values,
-        model.request_keys,
-        fill = (o["name"] for o in model.options),
+        _legacy_option_names(values, pairs),
+        keys,
+        fill = (o["name"] for o in model.options) if model.fills_option_defaults else (),
     )
+    return _wire_option_names(out, pairs, model.request_keys)
+
+
+def _legacy_option_names(
+    values: Optional[dict], pairs: tuple[tuple[str, str], ...]
+) -> Optional[dict]:
+    """``values`` with renamed options under their legacy name; a legacy value given too wins."""
+    if not pairs or not isinstance(values, dict):
+        return values
+    out = dict(values)
+    for old, canonical in pairs:
+        if canonical in out:
+            value = out.pop(canonical)
+            if out.get(old) is None:
+                out[old] = value
+    return out
+
+
+def _wire_option_names(
+    options: dict, pairs: tuple[tuple[str, str], ...], keys: Optional[frozenset[str]]
+) -> dict:
+    """One name per renamed option: the canonical one only when the strict contract lists it."""
+    renamed = {old: canonical for old, canonical in pairs if keys is not None and canonical in keys}
+    if not renamed:
+        return options
+    return {renamed.get(name, name): value for name, value in options.items()}
+
+
+def takes_seed(model: "AudioCppModel", workflow: str) -> bool:
+    """Speak, Clone and Music take a seed unless a strict spec leaves it out."""
+    return workflow in ("speak", "clone", "music") and (
+        model.request_keys is None or "seed" in model.request_keys
+    )
+
+
+def ignored_options(model: "AudioCppModel", workflow: str, values: Optional[dict]) -> list[str]:
+    """User-sent option names the request will not carry: not offered for ``workflow``, or left out
+    of a strict spec. ``voice`` travels top level and ``seed`` is the caller's to check. A renamed
+    option is judged under its legacy name, as ``filled_options`` sends it."""
+    if not isinstance(values, dict):
+        return []
+    offered = {o["name"] for o in workflow_options(model, workflow)}
+    pairs = OPTION_RENAMES.get(model.family, ())
+    legacy = {canonical: old for old, canonical in pairs}
+    keys = model.request_keys
+    if pairs and keys is not None:
+        keys = keys | {old for old, canonical in pairs if canonical in keys}
+
+    def dropped(name: str) -> bool:
+        name = legacy.get(name, name)
+        return name not in offered or (keys is not None and name not in keys)
+
+    return sorted(
+        name for name in map(str, values) if name not in ("seed", "voice") and dropped(name)
+    )
+
+
+_SEED_OPTION = dict(
+    name = "seed",
+    type = "int",
+    required = False,
+    default = None,
+    min = 0,
+    max = 2147483647,
+    values = None,
+    description = "The model default gives each take a new random seed. Reuse one from a clip's menu.",
+)
 
 
 def workflow_options(model: "AudioCppModel", workflow: str) -> tuple[dict, ...]:
@@ -2242,7 +2641,8 @@ def workflow_options(model: "AudioCppModel", workflow: str) -> tuple[dict, ...]:
     hidden = set(model.option_hidden.get("*", ())) | set(model.option_hidden.get(workflow, ()))
     if workflow in ("clone", "edit", "convert"):
         hidden.add("voice")
-    return tuple(o for o in options if o["name"] not in hidden)
+    shown = tuple(o for o in options if o["name"] not in hidden)
+    return (*shown, dict(_SEED_OPTION)) if takes_seed(model, workflow) else shown
 
 
 def request_options(
@@ -2251,8 +2651,7 @@ def request_options(
     request_keys: Optional[frozenset[str]] = None,
     fill: Optional[Iterable[str]] = None,
 ) -> dict:
-    """Recommended defaults (names in ``fill``, never ``voice``; only ``request_keys`` when strict)
-    under the user's own values."""
+    """Defaults for fill names (never voice; request_keys only when strict), under user values."""
     fill = None if fill is None else frozenset(fill)
     defaults = {
         o["name"]: o["default"]
@@ -2300,8 +2699,11 @@ def family_from_names(names: Iterable[str]) -> Optional[str]:
     text = " ".join(names).lower().replace(".", "")
     for family in sorted(FAMILIES, key = len, reverse = True):
         # re.escape leaves "_" alone, so the separator is matched loosely here: "Chatterbox-Turbo"
-        # is chatterbox_turbo, not chatterbox.
+        # is chatterbox_turbo, not chatterbox. A digit right after a name that ends in a letter is
+        # another family (kitten-tts2); after a digit it is a stripped version dot (IndexTTS2.5).
         pattern = re.escape(family).replace("_", "[-_]?")
+        if not family[-1].isdigit():
+            pattern += r"(?![0-9])"
         if re.search(pattern, text):
             return family
     hints = (
@@ -2315,12 +2717,13 @@ def family_from_names(names: Iterable[str]) -> Optional[str]:
         (r"nemotron.*asr", "nemotron_asr"),
         (r"pocket[-_]?tts", "pocket_tts"),
         (r"kokoro", "kokoro_tts"),
-        (r"kitten", "kitten_tts"),
+        (r"kitten(?![-_]?tts[-_]?2)", "kitten_tts"),
         (r"piper", "piper_tts"),
         (r"inflect", "inflect_v2"),
         (r"ace[-_]?step", "ace_step"),
         (r"stable[-_]?audio", "stable_audio"),
-        (r"voxtral", "voxtral_realtime"),
+        # Voxtral TTS speaks; only the realtime ASR model is voxtral_realtime.
+        (r"voxtral(?![^ ]*tts)", "voxtral_realtime"),
     )
     for pattern, family in hints:
         if re.search(pattern, text):
@@ -2350,7 +2753,7 @@ def _probe_header(
         header = None
         if local is not None:
             header = read_local_header(local)
-        elif network and not hub_offline() and ref.repo_id:
+        elif network and not hf_env_offline() and ref.repo_id:
             header = read_remote_header(ref.repo_id, f.path, hf_token, size = f.size or None)
         if header is None:
             continue
@@ -2377,6 +2780,17 @@ def looks_like_audio_cpp(identifier: Optional[str]) -> bool:
     return base.lower() in _known_audio_cpp_ids
 
 
+def is_spec_vouched_id(identifier: Optional[str]) -> bool:
+    """Whether ``identifier`` is a Hub repo the installed runtime's specs name (spec_vouched_family).
+    Reads the runtime's spec folder, so it is for load paths, not for looks_like_audio_cpp."""
+    try:
+        base, _variant = split_variant_ref(str(identifier or ""))
+        ref = parse_identifier(base)
+    except Exception:  # noqa: BLE001 - not an id audio.cpp could own
+        return False
+    return ref is not None and not ref.local_path and bool(spec_vouched_family(ref.repo_id))
+
+
 def resolve(
     identifier: Optional[str],
     variant: Optional[str] = None,
@@ -2386,14 +2800,7 @@ def resolve(
     tags: Sequence[str] = (),
     gguf_hint: Optional[str] = None,
 ) -> Optional[AudioCppModel]:
-    """The audio.cpp model ``identifier`` names at ``variant`` (default when None), else None.
-
-    None means "not an audio.cpp model". A model Studio cannot run (unsupported task, missing
-    variant) still resolves, with ``unsupported`` set, so callers can refuse it clearly.
-    ``network=False`` answers from the HF cache only. ``gguf_hint`` names a GGUF the caller
-    already found in the repo: its header alone rules out an ordinary llama.cpp repo, before
-    any listing.
-    """
+    """None for a non-audio.cpp identifier; unrunnable models still resolve, marked unsupported; network=False reads only the HF cache"""
     if identifier is None:
         return None
     base, ref_variant = split_variant_ref(str(identifier))
@@ -2418,7 +2825,7 @@ def resolve(
         return hit[1]
     if gguf_hint and ref.repo_id and not is_umbrella_id(ref.id):
         header = _probe_header(ref, [RepoFile(gguf_hint)], hf_token, network)
-        if header is not None and not header.is_audio_cpp:
+        if header is not None and not header.is_audio_cpp and not spec_vouched_family(ref.repo_id):
             with _resolve_lock:
                 _resolve_cache[key] = (time.monotonic(), None)
             return None
@@ -2461,6 +2868,8 @@ def _resolve_uncached(
         files = [RepoFile(Path(ref.local_path).name, _size(ref.local_path))]
     else:
         files, from_hub = list_files(ref.repo_id, ref.folder, hf_token, network = network)
+    # A spec package may name a file the single-file listing leaves out (a preset voice clip).
+    listed = list(files)
     files = [f for f in files if not _SKIP_FILE_RE.search(f.path)]
     ggufs = [f for f in files if f.path.lower().endswith(".gguf")]
     if not ggufs:
@@ -2468,10 +2877,11 @@ def _resolve_uncached(
     header = _probe_header(ref, ggufs, hf_token, network)
     names = _names_for(ref, files)
     umbrella = ref.repo_id is not None and ref.repo_id.lower() == AUDIO_CPP_REPO.lower()
-    if header is not None and not header.is_audio_cpp:
+    vouched = None if ref.local_path else spec_vouched_family(ref.repo_id)
+    if header is not None and not header.is_audio_cpp and not vouched:
         return None
-    family = header.family if header is not None else None
-    if header is None:
+    family = (header.family if header is not None and header.is_audio_cpp else None) or vouched
+    if header is None and not vouched:
         # Unread (offline, not cached): only a repo that says it is audio.cpp counts.
         owner = str(ref.repo_id or "").split("/")[0].lower()
         text = " ".join(names).lower()
@@ -2485,7 +2895,7 @@ def _resolve_uncached(
             (t for t in tags if _TAG_FAMILY_RE.match(t) and t in FAMILIES), None
         ) or family_from_names(names)
     if not family:
-        reason = "Studio could not tell which model family this audio GGUF is."
+        reason = "Unsloth Studio could not tell which model family this audio GGUF is."
         variant = AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)
         return AudioCppModel(
             id = ref.id,
@@ -2504,24 +2914,55 @@ def _resolve_uncached(
         )
     spec = runtime_spec(family)
     embedded = header.spec if header is not None else None
-    policy = family_policy(family, spec or embedded, names, ref.display_name)
+    from core.inference.audio_cpp_server import SPEC_FIRST_RUNTIME, runtime_release_key
+
+    # Follow the spec the runtime checks: v0.9.2 puts model_specs/ first, an older prebuilt
+    # only the GGUF's own (a backfilled folder must not change its options or tasks).
+    release = runtime_release_key()
+    runtime_first = release is not None and release >= SPEC_FIRST_RUNTIME
+    contract = None if release is not None and not runtime_first else spec
+    policy = family_policy(family, contract or embedded, names, ref.display_name)
+    unloadable: list[AudioCppVariant] = []
+    # Umbrella folders of table families keep loading one GGUF: the table owns their layout.
+    packaged = None
+    if not policy.package and not ref.local_path and (not umbrella or family not in FAMILIES):
+        packaged = spec_package_variants(spec or embedded, ref.repo_id, ref.folder, listed)
     if policy.package:
         # In the package's own order: its first mix is the one the runtime defaults to.
         variants = _package_variants(policy, files, ref.folder)
+    elif packaged is not None:
+        variants = packaged
     else:
-        variants = _single_file_variants(files, ref.folder)
+        variants = _single_file_variants(files, ref.folder, unloadable = True)
         if ref.local_path:
             variants = [
                 AudioCppVariant(v.key, v.files, ref.local_path, label = v.label) for v in variants
             ]
         variants.sort(key = _variant_rank)
+        # The spec's recommended package leads, so two files at one quant pick the right one.
+        recommended = {f.lower() for f in recommended_gguf_files(spec or embedded)}
+        if len(recommended) == 1:
+            variants.sort(key = lambda v: Path(v.main_file).name.lower() not in recommended)
+        unloadable = [v for v in variants if _unloadable_reason(v.primary)]
+        variants = [v for v in variants if not _unloadable_reason(v.primary)]
     unsupported = policy.unsupported
-    if not variants:
-        unsupported = (
-            unsupported or "This repository does not publish every file this model package needs."
-        )
-        variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
-    default = variants[0]
+    if (
+        ref.local_path
+        and not policy.package
+        and not _local_package_complete(spec or embedded, ref.local_path)
+    ):
+        unsupported = unsupported or LOCAL_PACKAGE_INCOMPLETE
+    if not variants and unloadable:
+        unsupported = unsupported or _unloadable_reason(unloadable[0].primary)
+        default = unloadable[0]
+    else:
+        if not variants:
+            unsupported = unsupported or PACKAGE_INCOMPLETE
+            variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
+        default = variants[0]
+    if unsupported and vouched and not (header is not None and header.is_audio_cpp):
+        # Only the spec claims it (d1-Omni: a llama.cpp chat GGUF): leave it to llama.cpp as before.
+        return None
     chosen = match_variant(variants, wanted, ref.folder) if wanted else default
     if (
         chosen is not None
@@ -2548,6 +2989,7 @@ def _resolve_uncached(
                 chosen.primary,
                 dict(chosen.session_options),
                 f"{quant} · {scope.rsplit('/', 1)[-1]}",
+                chosen.root,
             )
     if chosen is None:
         unsupported = unsupported or (
@@ -2575,22 +3017,39 @@ def _resolve_uncached(
         needs_espeak = policy.needs_espeak,
         request_defaults = dict(policy.request_defaults),
         model_options = dict(policy.model_options),
-        spec_options = option_schema(policy, spec, embedded),
+        spec_options = option_schema(policy, contract, embedded),
         unsupported = unsupported,
         local_path = ref.local_path,
         tags = tuple(tags),
         speaks = policy.speaks,
         clone = policy.clone,
         companions = policy.companions,
-        required_inputs = _required_inputs(spec, embedded, policy),
+        required_inputs = _required_inputs(contract, embedded, policy),
         edit = policy.edit,
         convert = policy.convert,
         separation = policy.separation,
-        music = music_with_spec_bounds(policy.music, _raw_request_options(spec, embedded)),
-        request_keys = _request_keys(spec, embedded),
+        music = music_with_spec_bounds(policy.music, _raw_request_options(contract, embedded)),
+        request_keys = _request_keys(contract, embedded, runtime_first = runtime_first),
         from_hub = from_hub,
+        unloadable = tuple(unloadable),
+        fills_option_defaults = family in FAMILIES or not _spans_tasks(contract or embedded),
+        spec_packaged = packaged is not None and not policy.package,
     )
     return model.with_variant(chosen)
+
+
+def _spans_tasks(spec: Optional[dict]) -> bool:
+    """Whether a spec declares more than one kind of work (speech, music, transcription, ...)."""
+    kinds = set()
+    for task in (spec or {}).get("tasks") or []:
+        name = str(task).lower()
+        # ``edit`` names no kind of its own (a music edit for some families, a speech edit for others).
+        token = None if name == "edit" else _SPEC_TO_SERVER_TASK.get(name, name)
+        if token in ("tts", "clon", "vdes"):
+            kinds.add("speech")
+        elif token in ("gen", "asr", "sep", "s2s"):
+            kinds.add(token)
+    return len(kinds) > 1
 
 
 def _request_source(spec: Optional[dict], embedded: Optional[dict]) -> dict:
@@ -2604,9 +3063,17 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
     return raw if isinstance(raw, list) else []
 
 
-def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
-    # The server prefers an embedded v1 contract over model_specs/ (model_spec/package.cpp).
-    if isinstance(embedded, dict) and embedded.get("schema_version") is not None:
+def _request_keys(
+    spec: Optional[dict],
+    embedded: Optional[dict],
+    runtime_first: bool = False,
+) -> Optional[frozenset[str]]:
+    # v0.9.1 checks the GGUF's embedded v1 contract first; v0.9.2 checks model_specs/ first.
+    if (
+        not runtime_first
+        and isinstance(embedded, dict)
+        and embedded.get("schema_version") is not None
+    ):
         if (embedded.get("options") or {}).get("request"):
             spec = None
     if _request_source(spec, embedded).get("schema_version") is None:
@@ -2666,6 +3133,33 @@ def package_variant_files(names: Iterable[str]) -> Optional[dict[str, tuple[str,
         }
         if found:
             return found
+    return spec_package_files(present)
+
+
+_spec_primaries_cache: list[tuple[dict, frozenset[str]]] = []
+
+
+def spec_package_files(present: set) -> Optional[dict[str, tuple[str, ...]]]:
+    """The runtime spec packages a repo's listing holds in full, keyed as resolve() keys them."""
+    specs = runtime_specs()
+    if not _spec_primaries_cache or _spec_primaries_cache[0][0] is not specs:
+        primaries = frozenset(
+            p.primary
+            for spec in specs.values()
+            for p in spec_packages.spec_packages(spec)
+            if p.primary and len(p.files) > 1
+        )
+        _spec_primaries_cache[:] = [(specs, primaries)]
+    if present.isdisjoint(_spec_primaries_cache[0][1]):
+        return None
+    listing = [RepoFile(name, 0) for name in present]
+    for spec in specs.values():
+        umbrella = AUDIO_CPP_REPO.lower()
+        repos = {p.repo for p in spec_packages.spec_packages(spec) if p.repo.lower() != umbrella}
+        for repo in sorted(repos - {""}):
+            variants = spec_package_variants(spec, repo, "", listing)
+            if variants:
+                return {v.key: tuple(f.path for f in v.files) for v in variants}
     return None
 
 
@@ -2687,23 +3181,154 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _download_job_offline() -> bool:
+    """The download job's own Hub client decides, so read its env with huggingface_hub's rule (no strip, HF_HUB_OFFLINE first)."""
+    try:
+        from huggingface_hub.constants import ENV_VARS_TRUE_VALUES
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        env = get_hf_cache_paths().child_env()
+        value = env.get("HF_HUB_OFFLINE") or env.get("TRANSFORMERS_OFFLINE")
+        return bool(value) and value.upper() in ENV_VARS_TRUE_VALUES
+    except Exception:  # noqa: BLE001
+        return hf_env_offline()
+
+
+def _fetches_gguf(
+    repo_id: str,
+    path: str,
+    hf_token: Optional[str],
+    hub_cache: Optional[Path] = None,
+) -> bool:
+    """Whether a download job into ``hub_cache`` fetches GGUF ``path``: true unless the Hub's current
+    file is already there (its etag blob, or the commit's snapshot without symlinks). Offline: any copy."""
+    if not path.lower().endswith(".gguf"):
+        return False
+    try:
+        snapshots = snapshot_dirs(repo_id, hub_cache)
+    except Exception:  # noqa: BLE001 - an unreadable cache is one to fetch into
+        snapshots = []
+    on_disk = any((snapshot / path).is_file() for snapshot in snapshots)
+    if _download_job_offline():
+        return not on_disk
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        meta = get_hf_file_metadata(hf_hub_url(repo_id, path), token = hf_token or None, timeout = 10)
+    except Exception:  # noqa: BLE001 - unreachable Hub: judge by the cache alone
+        return not on_disk
+    etag, commit = getattr(meta, "etag", None), getattr(meta, "commit_hash", None)
+    if not etag or not snapshots:
+        return not on_disk
+    repo_dir = snapshots[0].parent.parent
+    if (repo_dir / "blobs" / etag).is_file():
+        return False
+    return not (commit and (repo_dir / "snapshots" / commit / path).is_file())
+
+
+def _refuse_stale_download(
+    model: AudioCppModel,
+    hf_token: Optional[str],
+    fetched: Sequence[str] = (),
+    hub_cache: Optional[Path] = None,
+) -> None:
+    """Raise ``AudioCppRuntimeTooOldError`` when a download job for ``model`` would fetch GGUFs
+    the installed runtime is too old to load; ``fetched`` are files already known to be fetched."""
+    from core.inference.audio_cpp_server import (
+        SPEC_FIRST_RUNTIME,
+        AudioCppRuntimeTooOldError,
+        runtime_release_key,
+        stale_runtime_download_problem,
+    )
+
+    release = runtime_release_key()
+    if release is None or release >= SPEC_FIRST_RUNTIME:
+        return
+    # The planner adds the companions' files (MioTTS's MioCodec) to the same job.
+    checked = [model]
+    for companion in model.companions:
+        try:
+            found = resolve(companion.id, companion.variant, hf_token, network = not hf_env_offline())
+        except Exception:  # noqa: BLE001 - the planner reports a companion it cannot find
+            found = None
+        if found is not None:
+            checked.append(found)
+    for item in checked:
+        if item.local_path or not item.repo_id:
+            continue
+        if any(
+            f.path in fetched or _fetches_gguf(item.repo_id, f.path, hf_token, hub_cache)
+            for f in item.variant.files
+        ):
+            raise AudioCppRuntimeTooOldError(
+                stale_runtime_download_problem(item, assume_fetched = True)
+            )
+
+
+def refuse_stale_download(
+    identifier: Optional[str],
+    variant: Optional[str],
+    hf_token: Optional[str] = None,
+    *,
+    files: Sequence[str] = (),
+    hub_cache: Optional[Path] = None,
+) -> None:
+    """The old-runtime gate for a download job of a repo outside the umbrella, such as
+    ``audio-cpp/MiniMax-Music3-GGUF``, or of a scoped job's ``files`` in any repo;
+    ``download_target`` gates the umbrella's folder rows."""
+    from core.inference.audio_cpp_server import SPEC_FIRST_RUNTIME, runtime_release_key
+
+    release = runtime_release_key()
+    if release is None or release >= SPEC_FIRST_RUNTIME or not identifier:
+        return
+    # Row -> the files the job fetches there; None means the row's own variant.
+    rows: dict[str, Optional[list[str]]] = {identifier: None}
+    if files:
+        # A scoped job fetches exactly these files: only the GGUFs it would download count.
+        wanted = [f for f in files if _fetches_gguf(identifier, f, hf_token, hub_cache)]
+        umbrella = identifier.lower() + "/" == _UMBRELLA_PREFIX
+        rows = {}
+        for name in wanted:
+            if umbrella and "/" not in name:
+                continue
+            row = f"{AUDIO_CPP_REPO}/{name.split('/')[0]}" if umbrella else identifier
+            rows.setdefault(row, []).append(name)
+    elif is_umbrella_id(identifier):
+        return
+    network = not hf_env_offline()
+    for row, names in sorted(rows.items()):
+        try:
+            model = resolve(row, None if names else variant, hf_token, network = network)
+            checked = [model] if model is not None else []
+            if model is not None and names:
+                keys = {v.key for v in model.variants if any(f.path in names for f in v.files)}
+                checked = [
+                    model
+                    if key == model.variant.key
+                    else resolve(row, key, hf_token, network = network)
+                    for key in sorted(keys)
+                ] or checked
+        except Exception:  # noqa: BLE001 - a repo that cannot be resolved is the downloader's to report
+            continue
+        for found in checked:
+            if found is not None:
+                _refuse_stale_download(found, hf_token, names or (), hub_cache)
+
+
 def download_target(
     identifier: Optional[str],
     variant: Optional[str],
     hf_token: Optional[str] = None,
     persist: bool = True,
+    hub_cache: Optional[Path] = None,
 ) -> Optional[tuple[str, str]]:
-    """``(repo, variant key)`` the Hub GGUF downloader fetches for an umbrella folder row, else None.
-
-    The frontend names an umbrella model as ``audio-cpp/audio.cpp-gguf/<Folder>`` plus a quant, like
-    any GGUF repo; the downloader and its progress work on the real repo and the path-qualified key
-    its variant planner derives from the file.
-    """
+    """Maps an umbrella folder id to the real repo and path-qualified variant key the downloader uses."""
     if not is_umbrella_id(identifier):
         return None
-    model = resolve(identifier, variant, hf_token, network = not hub_offline())
+    model = resolve(identifier, variant, hf_token, network = not hf_env_offline())
     if model is None or not model.repo_id or not model.variant.primary:
         return None
+    if persist:
+        _refuse_stale_download(model, hf_token, hub_cache = hub_cache)
     from hub.utils.gguf import gguf_variant_key
 
     key = gguf_variant_key(model.variant.primary)
@@ -2810,7 +3435,7 @@ def folder_row_for_download(repo_id: str, variant: Optional[str]) -> Optional[tu
         model = None
     if model is not None:
         from hub.utils.gguf import gguf_variant_key
-        for candidate in model.variants:
+        for candidate in model.cache_variants:
             if candidate.primary and gguf_variant_key(candidate.primary).lower() == variant.lower():
                 return row_id, candidate.key
     return row_id, "/".join([*parts[1:-1], quant_label(f"{parts[-1]}.gguf")])
@@ -2840,12 +3465,12 @@ def cached_folder_target(
     chosen: list[AudioCppVariant] = []
     if model is not None and model.repo_id:
         if wanted:
-            chosen = _cached_variants_named(model.variants, wanted, ref.folder)
+            chosen = _cached_variants_named(model.cache_variants, wanted, ref.folder)
         else:
             snapshots = snapshot_dirs(model.repo_id)
             chosen = [
                 v
-                for v in model.variants
+                for v in model.cache_variants
                 if v.primary
                 and any((s / v.primary).exists() or (s / v.primary).is_symlink() for s in snapshots)
             ]
@@ -2854,7 +3479,11 @@ def cached_folder_target(
     keys = [gguf_variant_key(v.primary) for v in chosen if v.primary]
     if wanted and keys:
         return AUDIO_CPP_REPO, keys
-    if wanted and model is not None and _on_disk_quant_named(model.variants, wanted, ref.folder):
+    if (
+        wanted
+        and model is not None
+        and _on_disk_quant_named(model.cache_variants, wanted, ref.folder)
+    ):
         return AUDIO_CPP_REPO, []
     # A quant cancelled before any file finished has only download state; the variant delete clears it.
     partial = _folder_state_keys(ref.folder)
@@ -2986,7 +3615,7 @@ def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
     from core.inference.audio_cpp_files import _file_complete
 
     model = resolve(ref.id, network = False)
-    variants = [v for v in (model.variants if model is not None else ()) if v.files]
+    variants = [v for v in (model.cache_variants if model is not None else ()) if v.files]
     for snapshot in snapshots:
         if any(all(_file_complete(snapshot / f.path, f.size) for f in v.files) for v in variants):
             return snapshot / ref.folder
@@ -3039,11 +3668,7 @@ _DOWNLOADED_TTL_SECONDS = 10.0
 
 
 def downloaded_models(task: Optional[str] = None) -> list[AudioCppModel]:
-    """audio.cpp models with a variant fully in the HF cache, found by header.
-
-    Walks the active hub cache's repos, reading only GGUF headers (memoized). Umbrella folders
-    are listed per folder. Status polls call this, so the answer is kept for a few seconds.
-    """
+    """Found by reading only GGUF headers; status polls hit this, so results are cached a few seconds."""
     with _resolve_lock:
         hit = _downloaded_cache.get(task)
         generation = _forget_generation
@@ -3065,6 +3690,7 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
         repo_dirs = [p for p in root.iterdir() if p.name.startswith("models--") and p.is_dir()]
     except OSError:
         return out
+    vouched = vouched_repos()
     for repo_dir in repo_dirs:
         repo_id = repo_dir.name[len("models--") :].replace("--", "/")
         snapshots = snapshot_dirs(repo_id, root)
@@ -3082,8 +3708,7 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
         else:
             first_gguf = None
             for snapshot in snapshots:
-                # The root or one folder down, where audio.cpp repos keep their GGUFs; a full walk of
-                # every cached checkpoint on each status poll would cost more than it finds.
+                # Root or one folder down holds GGUFs; a full cache walk per status poll costs more than it finds
                 first_gguf = next(
                     iter(sorted([*snapshot.glob("*.gguf"), *snapshot.glob("*/*.gguf")])), None
                 )
@@ -3091,9 +3716,10 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
                     break
             if first_gguf is None:
                 continue
-            header = read_local_header(first_gguf)
-            if header is None or not header.is_audio_cpp:
-                continue
+            if repo_id.lower() not in vouched:
+                header = read_local_header(first_gguf)
+                if header is None or not header.is_audio_cpp:
+                    continue
             ids = [repo_id]
         for model_id in ids:
             try:
@@ -3102,12 +3728,24 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
                 model = None
             if model is None or (model.unsupported and not model.family):
                 continue
+            if model.unsupported == PACKAGE_INCOMPLETE and repo_id.lower() in vouched:
+                # Vouched for without a header read: a partial package is no cached model.
+                continue
             if task is not None and model.task != task:
                 continue
-            ready = next(
-                (v for v in model.variants if audio_cpp_files.cached_files(model.with_variant(v))),
+            cached = next(
+                (
+                    v
+                    for v in model.cache_variants
+                    if audio_cpp_files.cached_files(model.with_variant(v))
+                ),
                 None,
             )
-            if ready is not None:
-                out.append(model.with_variant(ready))
+            if cached is None:
+                continue
+            row = model.with_variant(cached)
+            if cached in model.unloadable:
+                reason = model.unsupported or _unloadable_reason(cached.primary)
+                row = replace(row, unsupported = reason)
+            out.append(row)
     return out

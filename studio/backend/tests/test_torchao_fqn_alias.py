@@ -23,13 +23,7 @@ def _loaded_packages() -> dict:
 
 @pytest.fixture(autouse = True)
 def _restore_diffusers_and_torchao_modules():
-    """Put sys.modules back exactly as it was for diffusers and torchao after every test.
-
-    Tests here import a fake ``diffusers`` from tmp_path. monkeypatch.delitem only records
-    entries that existed, so when the real diffusers had not been imported yet in this worker
-    the fake one stayed in sys.modules, and every later test there got a diffusers without
-    AutoencoderKLWan, the pipelines, and so on.
-    """
+    """Restore sys.modules for diffusers/torchao: monkeypatch.delitem misses modules not yet imported."""
     before = _loaded_packages()
     yield
     for name in list(_loaded_packages()):

@@ -6,15 +6,10 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import type { ComponentProps } from "react";
 import type { AudioGalleryClip } from "../api";
-import {
-  isMusicGenerationModel,
-  macTtsCatalogChoiceIsRunnable,
-} from "../catalog";
 import { AudioHistoryProvider } from "../components/audio-source-input";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import { LyricsEditor } from "../components/lyrics-editor";
 import { MusicEditInputs } from "../components/music-edit-inputs";
 import type { MusicGeneration } from "../hooks/use-music-generation";
@@ -31,67 +26,13 @@ import {
 } from "../music/music-policy";
 import type { MusicMode, MusicModeRule } from "../music/music-types";
 import { useAudioMusicStore } from "../stores/audio-music-store";
+import { PromptExamples } from "../components/prompt-examples";
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
 import { TtsOutput, TtsRailFields } from "./tts-workspace";
 
 export const MUSIC_DESCRIPTION_FIELD_ID = "music-description";
 export const MUSIC_LYRICS_FIELD_ID = "music-lyrics";
 export const MUSIC_SFX_FIELD_ID = "music-sfx-prompt";
-
-export function musicPageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models.filter(
-    (model) =>
-      isMusicGenerationModel(model.id, model.audioType) &&
-      (!isMac || macTtsCatalogChoiceIsRunnable(model.id)),
-  );
-}
-
-/** One line under a prompt: example picks while it is empty, the hint once it has text. */
-function ExamplesOrHint({
-  label,
-  examples,
-  empty,
-  hint,
-  onPick,
-  disabled,
-}: {
-  label: string;
-  examples: readonly { label: string; text: string }[];
-  empty: boolean;
-  hint: string;
-  onPick: (text: string) => void;
-  disabled: boolean;
-}) {
-  if (!empty) {
-    return (
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">{hint}</p>
-    );
-  }
-  return (
-    <fieldset
-      className="m-0 flex min-w-0 flex-wrap items-center gap-1 border-0 p-0"
-      aria-label={label}
-    >
-      <span className="me-0.5 text-ui-11p5 text-muted-foreground">Try</span>
-      {examples.map((example) => (
-        <Button
-          key={example.label}
-          type="button"
-          variant="muted"
-          size="sm"
-          disabled={disabled}
-          className="h-[calc(24px*var(--ui-space-scale,1))] px-2.5 text-ui-11p5 font-normal"
-          title={example.text}
-          onClick={() => onPick(example.text)}
-        >
-          {example.label}
-        </Button>
-      ))}
-    </fieldset>
-  );
-}
 
 function SecondsSlider({
   rule,
@@ -142,7 +83,7 @@ function VariationsSlider({
   const max = variationsMax(rule);
   if (max === null) return null;
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <ParamSlider
         label="Variations"
         value={Math.min(max, Math.max(1, value))}
@@ -156,7 +97,7 @@ function VariationsSlider({
         info="Several takes of the same request, kept together in history."
       />
       {notice ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           {notice}
         </p>
       ) : null}
@@ -188,11 +129,8 @@ function SongInputs({
     <>
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1.5">
         <Field
-          label={
-            rule.description === "required"
-              ? "Description"
-              : "Description (optional)"
-          }
+          label="Description"
+          optional={rule.description !== "required"}
           htmlFor={MUSIC_DESCRIPTION_FIELD_ID}
         >
           <Textarea
@@ -209,7 +147,7 @@ function SongInputs({
             className="min-h-16"
           />
         </Field>
-        <ExamplesOrHint
+        <PromptExamples
           label="Example descriptions"
           examples={
             instrumental.value
@@ -228,7 +166,7 @@ function SongInputs({
       </div>
       {instrumental.shown ? (
         <div className="grid gap-1">
-          <label
+          <FieldLabel
             htmlFor="music-instrumental"
             className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
           >
@@ -241,17 +179,18 @@ function SongInputs({
                 patch("song", { instrumental: checked })
               }
             />
-          </label>
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          </FieldLabel>
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {instrumental.reason ?? "No vocals; the lyrics are kept for later."}
           </p>
         </div>
       ) : null}
       {showLyrics ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <LyricsEditor
             id={MUSIC_LYRICS_FIELD_ID}
-            label={rule.lyrics === "required" ? "Lyrics" : "Lyrics (optional)"}
+            label="Lyrics"
+            optional={rule.lyrics !== "required"}
             value={lyrics}
             onChange={setLyrics}
             sectionCase={rule.section_case}
@@ -265,14 +204,14 @@ function SongInputs({
           {lyrics.trim() ? (
             <p
               id="music-lyrics-hint"
-              className="text-ui-11p5 leading-snug text-muted-foreground"
+              className="text-ui-12 leading-normal text-muted-foreground"
             >
               Section tags shape the song.
             </p>
           ) : (
             <p
               id="music-lyrics-hint"
-              className="text-ui-11p5 leading-snug text-muted-foreground"
+              className="text-ui-12 leading-normal text-muted-foreground"
             >
               Section tags shape the song.{" "}
               <Button
@@ -335,7 +274,7 @@ function SfxInputs({
             className="min-h-16"
           />
         </Field>
-        <ExamplesOrHint
+        <PromptExamples
           label="Example sounds"
           examples={MUSIC_EXAMPLES.sfx}
           empty={!music.sfx.prompt.trim()}
@@ -383,8 +322,9 @@ export function MusicStudioInputs({
   const modes = capabilities.modes.map((mode) => mode.id);
   return (
     <AudioHistoryProvider value={historyClips}>
+      {/* One mode has nothing to pick, and the page subtitle already says what it makes. */}
       {modes.length > 1 ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <PillTabs
             ariaLabel="What to make"
             value={rule.id}
@@ -398,20 +338,15 @@ export function MusicStudioInputs({
               label: musicModeLabel(mode),
             }))}
           />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {musicModeHint(rule)}
           </p>
         </div>
-      ) : (
-        <div className="grid gap-0.5">
-          <span className="text-ui-13 font-medium text-foreground">
-            {musicModeLabel(rule)}
-          </span>
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
-            {musicModeHint(rule)}
-          </p>
-        </div>
-      )}
+      ) : rule.id === "song" && rule.instrumental === "always" ? (
+        <p className="text-ui-12 leading-normal text-muted-foreground">
+          {musicModeHint(rule)}
+        </p>
+      ) : null}
       {rule.id === "song" ? (
         <SongInputs
           rule={rule}
@@ -458,7 +393,6 @@ export function MusicRail({
   return (
     <TtsRailFields
       {...props}
-      // Length lives in the page's fields, so Advanced keeps only the model's options.
       musicGeneration={false}
       samplingControls={false}
       inputs={
@@ -478,17 +412,39 @@ export function MusicRail({
 
 export function MusicOutput({
   modelReady,
+  loading,
+  onChooseModel,
+  recommendedModels = [],
+  onPickModel,
   ...props
-}: Omit<ComponentProps<typeof TtsOutput>, "emptyText"> & {
+}: Omit<ComponentProps<typeof TtsOutput>, "emptyTitle" | "emptyText" | "emptyActions"> & {
   modelReady: boolean;
+  loading: boolean;
+  onChooseModel: () => void;
+  recommendedModels?: readonly { id: string; name: string }[];
+  onPickModel?: (id: string) => void;
 }) {
   return (
     <TtsOutput
       {...props}
+      emptyTitle={
+        loading && !modelReady ? undefined : "Generated music will appear here"
+      }
       emptyText={
         modelReady
-          ? "Generated music lands here. Write lyrics or a description, then press Generate."
-          : "Generated music lands here. Load a music model, write lyrics or a description, and press Generate."
+          ? "Add a description or lyrics on the left, then select Generate."
+          : loading
+            ? "Loading your music model…"
+            : "Choose a music model, then describe a sound or add lyrics."
+      }
+      emptyActions={
+        modelReady || loading ? undefined : onPickModel && recommendedModels.length > 0 ? (
+          <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+        ) : (
+          <Button type="button" variant="outline" size="sm" onClick={onChooseModel}>
+            Choose music model
+          </Button>
+        )
       }
     />
   );

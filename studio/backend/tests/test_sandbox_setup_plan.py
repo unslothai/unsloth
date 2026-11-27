@@ -6,6 +6,7 @@
 import os
 import platform
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,7 +39,7 @@ def linux(monkeypatch, tmp_path):
     monkeypatch.setattr(plan_mod, "_APPARMOR_PROFILE", str(tmp_path / "bwrap-userns-restrict"))
     monkeypatch.setattr(plan_mod, "_is_wsl", lambda: state["wsl"])
     monkeypatch.setattr(plan_mod, "_running_as_root", lambda: state["root"])
-    state["bwrap"] = None  # None: follow PATH, as a trusted copy would
+    state["bwrap"] = None
 
     def bwrap_state():
         if state["bwrap"] is not None:
@@ -142,7 +143,7 @@ def test_a_profile_that_is_there_but_not_in_force_is_only_loaded(linux):
 
 def test_an_untrusted_bwrap_on_path_still_gets_the_install(linux):
     linux["tool"]("apt-get", "bwrap")
-    linux["bwrap"] = "missing"  # e.g. ~/.local/bin/bwrap and no system copy
+    linux["bwrap"] = "missing"
     plan = plan_mod.detect(False)
     assert plan.action == plan_mod.LINUX_INSTALL
     assert "bubblewrap" in plan.manual_command
@@ -370,8 +371,18 @@ def windows(monkeypatch):
     from core.inference import mxc_policy, mxc_probe, mxc_runtime
     from utils import mxc_isolation_settings
 
+    from core.inference import wsl_host
+
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86_64")
+    # A supported build whatever the test host runs (Windows Server 2022 CI is build 20348).
+    monkeypatch.setattr(
+        sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = plan_mod.MXC_MIN_WINDOWS_BUILD, product_type = 1),
+        raising = False,
+    )
     state = {
         "installed": True,
         "missing": ("prepare-null-device",),
@@ -384,7 +395,9 @@ def windows(monkeypatch):
             raise FileNotFoundError("no runtime")
         return "identity"
 
-    monkeypatch.setattr(mxc_runtime, "installation_identity", identity)
+    monkeypatch.setattr(mxc_runtime, "verified_installation_identity", identity)
+    monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: state["pin"])
+    state["pin"] = mxc_runtime.LEGACY_PIN
     monkeypatch.setattr(mxc_runtime, "probe_host_prep_steps", lambda **_kw: state["missing"])
     monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: state["opted_in"])
     monkeypatch.setattr(
@@ -399,6 +412,25 @@ def windows(monkeypatch):
         plan_mod, "windows_runtime_install_command", lambda: ["python", "install_mxc_prebuilt.py"]
     )
     return state
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_windows_with_the_built_in_container_only_installs_mxc(windows, installed):
+    from core.inference import mxc_runtime
+
+    windows["pin"] = mxc_runtime.PRIMARY_PIN
+    windows["installed"] = installed
+    windows["missing"] = None  # no probe answer must still never add host preparation
+    plan = plan_mod.detect(False)
+    assert not any("--prepare-host" in step for step in plan.steps)
+    assert plan.elevation is None and plan.needs_consent is False
+    # windows-setup, the action Chat and Settings already offer, with only the install step: installed but
+    # failing, the installer probes 1.1.0 again and moves a PC without the built-in container to 1.0.1.
+    assert plan.action == plan_mod.WINDOWS_SETUP
+    assert plan.steps == (("python", "install_mxc_prebuilt.py"),)
+    assert (
+        "live check did not pass" if installed else "MXC runtime is not installed"
+    ) in plan.reason
 
 
 def test_windows_without_the_runtime_installs_then_prepares(windows):
@@ -441,11 +473,22 @@ def test_windows_opt_in_locked_off_by_the_environment_is_not_offered(windows):
     assert "--prepare-host" in plan.manual_command
 
 
-def test_windows_arm64_is_not_offered_a_runtime_it_cannot_run(windows, monkeypatch):
+def test_windows_arm64_is_offered_its_runtime(windows, monkeypatch):
+    from core.inference import wsl_host
+
     windows["installed"] = False
-    monkeypatch.setattr(platform, "machine", lambda: "ARM64")
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "arm64")
+    assert plan_mod.windows_runtime_unsupported() is None
+    assert plan_mod.windows_runtime_plan().action == plan_mod.WINDOWS_RUNTIME
+
+
+def test_windows_x86_is_not_offered_a_runtime_it_cannot_run(windows, monkeypatch):
+    from core.inference import wsl_host
+
+    windows["installed"] = False
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86")
     plan = plan_mod.detect(False)
-    assert plan.action is None and "x64" in plan.reason
+    assert plan.action is None and "ARM64" in plan.reason
     assert plan_mod.windows_runtime_plan().action is None
 
 

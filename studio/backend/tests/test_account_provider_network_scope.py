@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A managed account must not reach owner-local or LAN provider endpoints.
-
-Managed MCP servers are already restricted to public destinations; provider base
-URLs are the same caller-controlled server-side egress, so they get the same rule.
-"""
+"""Managed accounts must not reach owner-local or LAN provider URLs, as MCP servers already don't."""
 
 import http.server
 import threading
@@ -27,7 +23,6 @@ from utils.account_context import OWNER, AccountContext, bind_account, reset_acc
 
 ALICE = AccountContext("a" * 32, "alice")
 
-# What an owner-local llama-server would expose and a tenant must never see.
 OWNER_LOCAL_MODEL = "owner-local-secret-model"
 
 
@@ -120,7 +115,7 @@ def owner_allows_private_urls(monkeypatch):
     monkeypatch.setattr(
         managed_provider_url_settings, "get_managed_private_provider_urls_allowed", lambda: True
     )
-    # The pinning client is a module-level singleton; drop it so the choice is made fresh.
+    # Module-level singleton; reset so the choice is made fresh.
     monkeypatch.setattr(external_provider, "_managed_clients", {}, raising = False)
 
 

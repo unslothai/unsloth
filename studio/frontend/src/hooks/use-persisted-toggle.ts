@@ -3,8 +3,7 @@
 
 import { useCallback, useState } from "react";
 
-/** A boolean that survives reloads, off by default. Only "true" is stored, so the
- *  default stays off. Storage failures keep the toggle working for the session. */
+/** Only "true" is stored, so the default stays off. Storage failures are tolerated. */
 export function usePersistedToggle(
   key: string,
 ): [boolean, (next: boolean) => void] {

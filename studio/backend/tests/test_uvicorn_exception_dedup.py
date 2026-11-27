@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unhandled request exception must be logged once, not twice.
-
-LoggingMiddleware emits request_failed with the full traceback in its structured
-"exception" field, then re-raises; uvicorn logs the very same exception again on
-stderr as "Exception in ASGI application", and the desktop shell copies every
-stderr line into tauri.log separately (~90 lines per failure). The filter drops
-uvicorn's copy only for exceptions the middleware already reported, so a failure
-raised above the middleware, or a run with --verbose, keeps both.
-"""
+"""Drop uvicorn's duplicate traceback only for exceptions LoggingMiddleware already reported."""
 
 import asyncio
 import logging
@@ -70,8 +62,7 @@ def _uvicorn_record(exc, msg = _UVICORN_MSG):
 
 
 def _raise_through_middleware(exc, path = "/api/rag/knowledge-bases"):
-    """Run a failing app under the middleware and hand back the exception uvicorn
-    would see (the same object, re-raised)."""
+    """Re-raise exc through the middleware and return the same object uvicorn would see."""
 
     async def app(scope, receive, send):
         raise exc
@@ -93,8 +84,7 @@ def test_uvicorn_duplicate_traceback_is_dropped(logs):
 
 
 def test_exception_never_seen_by_the_middleware_still_logs():
-    # Raised above LoggingMiddleware (CORS, remote-access, the protocol layer): it
-    # carries no marker, so uvicorn's traceback is the only record of it and must stay.
+    # Raised above LoggingMiddleware: no marker, so uvicorn's traceback must stay.
     try:
         raise RuntimeError("cors blew up")
     except RuntimeError as exc:
@@ -103,8 +93,7 @@ def test_exception_never_seen_by_the_middleware_still_logs():
 
 
 def test_other_uvicorn_error_records_pass_through(logs):
-    # Only the ASGI-application traceback is a duplicate; every other uvicorn error
-    # line is uvicorn's alone.
+    # Only the ASGI-application traceback is a duplicate; other uvicorn errors pass through.
     raised = _raise_through_middleware(RuntimeError("boom"))
     record = _uvicorn_record(raised, msg = "ASGI callable returned without starting response.")
     assert _DropDuplicateAsgiException().filter(record) is True
@@ -130,8 +119,7 @@ def test_verbose_keeps_both_copies(logs, monkeypatch):
 
 
 def test_installed_filter_suppresses_the_record_on_uvicorn_error(logs):
-    # End to end through the logging module: the filter is attached to the
-    # uvicorn.error logger, so the handler never sees the duplicate.
+    # The filter is attached to uvicorn.error, so the handler never sees the duplicate.
     uvicorn_logger = logging.getLogger("uvicorn.error")
     before = list(uvicorn_logger.filters)
     seen = []
